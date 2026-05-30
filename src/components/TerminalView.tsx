@@ -32,6 +32,15 @@ const TerminalView = ({
   useEffect(() => {
     disabledRef.current = disabled;
   }, [disabled]);
+  // Mirror of `isActive` readable inside the ResizeObserver callback. The
+  // observer is bound once at mount and runs for the lifetime of the
+  // terminal, so a stale closure over the initial `isActive` would block
+  // the gate from ever flipping. A ref is the cheapest way to expose live
+  // state to that callback.
+  const isActiveRef = useRef(isActive);
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
 
   // Repaint when this terminal becomes the active one. The parent uses
   // opacity (within a session) or display:none (across sessions/tabs) to
@@ -201,13 +210,26 @@ const TerminalView = ({
     // fit+refresh per frame — without this the IPC channel to the
     // backend would be flooded with resize_terminal calls during any
     // window drag.
+    //
+    // Skip the refit entirely when this terminal isn't the visible tab.
+    // Hidden terminals stay mounted with non-zero `absolute inset-0`
+    // dimensions, so any session layout change (toggling the tool pane,
+    // dragging the divider, resizing the window) fires this observer on
+    // every tab at once. If we let it run, fit() reports a new cols/rows,
+    // term.onResize → invoke('resize_terminal') → SIGWINCH lands on the
+    // hidden tab's PTY, bash's checkwinsize redraws its prompt, and the
+    // user comes back to a stack of duplicated `[user@host]#` lines.
+    // The become-visible effect refits and refreshes when the tab is
+    // shown again, so nothing is lost by gating here.
     let rafId = 0;
     const resizeObserver = new ResizeObserver(() => {
       if (!xtermRef.current) return;
+      if (!isActiveRef.current) return;
       if (rafId) return; // a rAF is already queued; coalesce
       rafId = requestAnimationFrame(() => {
         rafId = 0;
         if (!xtermRef.current) return;
+        if (!isActiveRef.current) return;
         try {
           fitAddon.fit();
           const t = xtermRef.current;
