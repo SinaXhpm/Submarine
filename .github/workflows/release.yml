@@ -197,6 +197,12 @@ jobs:
           # fakeroot/binutils/etc; we create an unprivileged build user
           # because makepkg refuses to run as root. --skipinteg because
           # the PKGBUILD has no source= entries (everything is local).
+          # --nodeps because the depends=() are RUNTIME-only (webkit2gtk-
+          # 4.1 / gtk3 / libsoup3 — what the user's machine needs to
+          # actually launch the app). package() doesn't compile or link
+          # anything; it just installs the already-built Tauri binary +
+          # .desktop + icon, so the dep check in the build container
+          # would only force us to download those packages for nothing.
           docker run --rm \
             -v "$PWD/arch-build:/build" \
             -w /build \
@@ -209,7 +215,7 @@ jobs:
               echo "b ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
               chown -R b:b /build
               sudo -u b sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
-              sudo -u b makepkg -f --noconfirm --skipinteg
+              sudo -u b makepkg -f --noconfirm --skipinteg --nodeps
             '
 
       # macOS: zip the .app bundle so a user can download a single file
