@@ -361,7 +361,18 @@ function DesktopApp() {
         <span className="text-[12px] font-bold text-white tracking-tight">Submarine</span>
       </div>
       
-      <div className="flex-1 flex gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1" data-tauri-drag-region>
+      {/* Tab strip. NO data-tauri-drag-region here: that would route every
+          mousedown (including clicks on the scrollbar thumb or the gaps
+          between tabs) to the OS as a window-drag, so users could neither
+          drag the scrollbar nor reliably miss it when targeting a tab.
+          Horizontal scroll comes from the mouse wheel via onWheel so we
+          don't need a visible scrollbar at all — it stays hidden via
+          .no-scrollbar (forced to win over the global !important
+          ::-webkit-scrollbar rule by adding its own !important). */}
+      <div
+        className="no-drag flex-1 flex gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1"
+        onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY; }}
+      >
         {sessions.map(s => {
           const st = sessionStatuses[s.id] ?? "connecting";
           // Dot palette: green = connected, amber = connecting, red = failed

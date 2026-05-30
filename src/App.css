@@ -60,13 +60,20 @@ select optgroup {
     @apply bg-zinc-800 rounded-full hover:bg-primary/50 transition-all;
   }
 
+  /* !important here because the global ::-webkit-scrollbar rule further
+     down in this file sets width/height with !important and lives outside
+     any @layer; layered rules without !important lose that cascade fight
+     and the scrollbar reappears (6px tall, which then pushes h-7 tabs up
+     inside the h-10 title bar). Same for the firefox / IE properties. */
   .no-scrollbar::-webkit-scrollbar {
-    display: none;
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
   }
 
   .no-scrollbar {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
+    -ms-overflow-style: none !important;
+    scrollbar-width: none !important;
   }
 
   .drag {
