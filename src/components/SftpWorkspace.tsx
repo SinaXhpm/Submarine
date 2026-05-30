@@ -165,6 +165,7 @@ const SftpWorkspace = ({ sessionId, disabled = false }: SftpWorkspaceProps) => {
           onDragMove={handleDragMove}
           initialPath={savedDirsRef.current.local}
           onPathChange={(p) => saveDir("local", p)}
+          getOppositeDir={() => remoteRef.current?.currentDir()}
         />
       </div>
       <div className="flex-1 min-h-0">
@@ -176,6 +177,7 @@ const SftpWorkspace = ({ sessionId, disabled = false }: SftpWorkspaceProps) => {
           onDragMove={handleDragMove}
           initialPath={savedDirsRef.current.remote}
           onPathChange={(p) => saveDir("remote", p)}
+          getOppositeDir={() => localRef.current?.currentDir()}
         />
       </div>
 

@@ -41,6 +41,13 @@ export interface FilePanelProps {
   initialPath?: string;
   /** Fires after every successful navigation — workspace uses it to persist. */
   onPathChange?: (path: string) => void;
+  /**
+   * Live read of whatever directory the *other* pane is currently in. Wired
+   * from SftpWorkspace via the sibling's FilePanelHandle. Used by the remote
+   * pane's download action: if the local pane has a directory open, the
+   * download lands there directly instead of popping a folder picker.
+   */
+  getOppositeDir?: () => string | undefined;
 }
 
 export interface FilePanelHandle {
@@ -55,11 +62,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   onDragMove,
   initialPath,
   onPathChange,
+  getOppositeDir,
 }, ref) => {
   const [currentPath, setCurrentPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
-  const [selected, setSelected] = useState<FileEntry | null>(null);
+  // Multi-selection lives as a Set of paths. Single-click replaces, Ctrl/⌘-
+  // click toggles a row in/out, Shift-click extends from the last-clicked
+  // anchor. lastSelectedPathRef remembers that anchor across renders.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const lastSelectedPathRef = useRef<string | null>(null);
   const [sort, setSort] = useState<SortState>({ column: "name", asc: true });
 
   const [tempInput, setTempInput] = useState("");
@@ -67,7 +79,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
-  const [modal, setModal] = useState<{ type: "rename" | "mkdir" | "properties" | "move"; entry?: FileEntry; v1?: string; v2?: string } | null>(null);
+  const [modal, setModal] = useState<{ type: "rename" | "mkdir" | "properties" | "move" | "move-bulk"; entry?: FileEntry; v1?: string; v2?: string } | null>(null);
   const [notification, setNotification] = useState<{ msg: string; type: "info" | "success" | "error" } | null>(null);
 
   const [dragOver, setDragOver] = useState(false);
@@ -116,7 +128,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       setEntries(result.entries);
       setCurrentPath(result.currentPath);
       setTempInput(result.currentPath);
-      setSelected(null);
+      setSelected(new Set());
+      lastSelectedPathRef.current = null;
       onPathChange?.(result.currentPath);
     } catch (err: any) {
       notify(`List failed: ${err}`, "error");
@@ -136,7 +149,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         setEntries(result.entries);
         setCurrentPath(result.currentPath);
         setTempInput(result.currentPath);
-        setSelected(null);
+        setSelected(new Set());
+      lastSelectedPathRef.current = null;
         onPathChange?.(result.currentPath);
       };
       setLoading(true);
@@ -162,6 +176,37 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   }), []);
 
   const goUp = () => fetch(provider.parentPath(currentPath));
+
+  // ---- selection -------------------------------------------------------------
+
+  // Three click modes match every desktop file manager people already know:
+  //   - plain click  → replace selection with this row
+  //   - Ctrl/⌘+click → toggle this row in / out of the existing set
+  //   - Shift+click  → extend the range from the last anchor to this row
+  // Shift-extend uses `sortedEntries` (the rendered order), not `entries`,
+  // so the visual range matches what the user just dragged across.
+  const onRowClick = (e: React.MouseEvent, entry: FileEntry, ordered: FileEntry[]) => {
+    if (e.shiftKey && lastSelectedPathRef.current) {
+      const a = ordered.findIndex(x => x.path === lastSelectedPathRef.current);
+      const b = ordered.findIndex(x => x.path === entry.path);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a <= b ? [a, b] : [b, a];
+        const range = ordered.slice(lo, hi + 1).map(x => x.path);
+        setSelected(new Set([...selected, ...range]));
+        return;
+      }
+    }
+    if (e.ctrlKey || e.metaKey) {
+      const next = new Set(selected);
+      if (next.has(entry.path)) next.delete(entry.path);
+      else next.add(entry.path);
+      setSelected(next);
+      lastSelectedPathRef.current = entry.path;
+      return;
+    }
+    setSelected(new Set([entry.path]));
+    lastSelectedPathRef.current = entry.path;
+  };
 
   // Autocomplete suggestions for the path input — only when typing inside the
   // current directory, otherwise the dropdown becomes noise.
@@ -204,7 +249,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const MENU_W = 200, MENU_H = 320;
     const x = Math.min(e.clientX, window.innerWidth - MENU_W - 4);
     const y = Math.min(e.clientY, window.innerHeight - MENU_H - 4);
-    setSelected(entry);
+    // Right-click on a row that isn't already part of the selection should
+    // switch focus to it (Explorer/Finder behaviour). Right-click on a row
+    // that IS selected keeps the multi-selection so bulk actions apply.
+    if (!selected.has(entry.path)) {
+      setSelected(new Set([entry.path]));
+      lastSelectedPathRef.current = entry.path;
+    }
     setContextMenu({ x: Math.max(4, x), y: Math.max(4, y), entry });
   };
 
@@ -304,6 +355,25 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         // v1 is the absolute destination path the user typed.
         await provider.rename(entry.path, v1);
         notify(`Moved to ${v1}`, "success");
+      } else if (type === "move-bulk" && v1) {
+        // v1 is the destination *directory*; each selected item keeps its
+        // own name under it.
+        const dest = v1.replace(/[\\/]+$/, "");
+        const items = sortedEntries.filter(e => selected.has(e.path));
+        let count = 0;
+        for (const it of items) {
+          try {
+            await provider.rename(it.path, provider.joinPath(dest, it.name));
+            count++;
+          } catch (err: any) {
+            notify(`Move failed for ${it.name}: ${err}`, "error");
+          }
+        }
+        if (count > 0) {
+          setSelected(new Set());
+          lastSelectedPathRef.current = null;
+          notify(items.length === 1 ? `Moved ${items[0].name} → ${dest}` : `Moved ${count} of ${items.length} items → ${dest}`, "success");
+        }
       } else if (type === "mkdir" && v1) {
         await provider.mkdir(provider.joinPath(currentPath, v1));
         notify(`Created ${v1}`, "success");
@@ -329,42 +399,69 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   const confirmDialog = useConfirm();
 
-  const deleteEntry = async (entry: FileEntry) => {
+  // Bulk-aware delete. Pops a single confirm dialog regardless of count, then
+  // applies provider.remove to each item in turn — best-effort: per-item
+  // failures notify but don't halt the rest. Selection is cleared on success
+  // so the user isn't left with stale paths highlighted.
+  const removeItems = async (items: FileEntry[]) => {
+    if (items.length === 0) return;
     const ok = await confirmDialog({
-      title: "Delete item",
-      message: entry.isDir
-        ? `Permanently delete folder “${entry.name}” and everything inside?`
-        : `Permanently delete “${entry.name}”?`,
+      title: items.length === 1 ? "Delete item" : `Delete ${items.length} items`,
+      message: items.length === 1
+        ? (items[0].isDir
+            ? `Permanently delete folder “${items[0].name}” and everything inside?`
+            : `Permanently delete “${items[0].name}”?`)
+        : `Permanently delete ${items.length} items? Folders include their contents.`,
       okLabel: "Delete",
       destructive: true,
     });
     if (!ok) return;
-    try {
-      await provider.remove(entry.path, entry.isDir);
-      notify(`Deleted ${entry.name}`, "success");
+    let count = 0;
+    for (const it of items) {
+      try { await provider.remove(it.path, it.isDir); count++; }
+      catch (err: any) { notify(`Delete failed for ${it.name}: ${err}`, "error"); }
+    }
+    if (count > 0) {
+      setSelected(new Set());
+      lastSelectedPathRef.current = null;
+      notify(items.length === 1 ? `Deleted ${items[0].name}` : `Deleted ${count} of ${items.length} items`, "success");
       await fetch(currentPath);
-    } catch (err: any) {
-      notify(`Delete failed: ${err}`, "error");
     }
   };
 
   // ---- contextual actions -----------------------------------------------------
 
-  // Remote: download to a user-picked folder via the native dialog.
-  const downloadEntry = async (entry: FileEntry) => {
+  // Remote → local download. Bulk-aware. Destination is whatever the local
+  // pane is currently showing (`getOppositeDir`) — that's almost always what
+  // the user wants and saves the round-trip through a folder picker every
+  // single time. Only falls back to the native picker if the sibling pane
+  // hasn't reported a directory yet (e.g. it's still loading).
+  const downloadItems = async (items: FileEntry[]) => {
     if (!sessionId) return;
-    if (entry.isDir) { notify("Folder download not supported", "error"); return; }
-    try {
-      const folder = await invoke<string | null>("select_local_folder");
-      if (!folder) return;
-      const sep = folder.includes("\\") ? "\\" : "/";
-      const trimmed = folder.replace(/[\\/]+$/, "");
-      const dest = `${trimmed}${sep}${entry.name}`;
-      notify(`Downloading ${entry.name}…`, "info");
-      await invoke("sftp_download_file", { sessionId, remotePath: entry.path, localPath: dest });
-      notify(`Downloaded ${entry.name}`, "success");
-    } catch (err: any) {
-      notify(`Download failed: ${err}`, "error");
+    const files = items.filter(e => !e.isDir);
+    if (files.length === 0) { notify("Folder download not supported", "error"); return; }
+    let dest = getOppositeDir?.();
+    if (!dest) {
+      try { dest = (await invoke<string | null>("select_local_folder")) || undefined; }
+      catch (err: any) { notify(`Pick folder failed: ${err}`, "error"); return; }
+      if (!dest) return;
+    }
+    const sep = dest.includes("\\") ? "\\" : "/";
+    const trimmed = dest.replace(/[\\/]+$/, "");
+    notify(files.length === 1 ? `Downloading ${files[0].name}…` : `Downloading ${files.length} files…`, "info");
+    let count = 0;
+    for (const f of files) {
+      try {
+        await invoke("sftp_download_file", {
+          sessionId, remotePath: f.path, localPath: `${trimmed}${sep}${f.name}`,
+        });
+        count++;
+      } catch (err: any) {
+        notify(`Download failed for ${f.name}: ${err}`, "error");
+      }
+    }
+    if (count > 0) {
+      notify(files.length === 1 ? `Downloaded ${files[0].name}` : `Downloaded ${count} of ${files.length} files`, "success");
     }
   };
 
@@ -547,6 +644,47 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         </div>
       </div>
 
+      {/* Bulk action bar — only when ≥2 rows are selected. Single-selection
+          users get the same actions via right-click; the bar exists so
+          multi-select doesn't force a right-click round-trip. */}
+      {selected.size > 1 && (
+        <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 bg-indigo-950/40 border border-indigo-500/30 rounded text-[10.5px] text-indigo-100 font-mono">
+          <span className="font-bold uppercase tracking-wider text-[9.5px] text-indigo-300 shrink-0">
+            {selected.size} selected
+          </span>
+          <div className="flex-1" />
+          {isRemote && (
+            <button
+              onClick={() => downloadItems(sortedEntries.filter(e => selected.has(e.path)))}
+              title={getOppositeDir?.()
+                ? `Download to ${getOppositeDir!()}`
+                : "Pick a destination folder…"}
+              className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 flex items-center gap-1"
+            >
+              <Download size={10} /> Download
+            </button>
+          )}
+          <button
+            onClick={() => setModal({ type: "move-bulk", v1: currentPath })}
+            className="px-2 py-0.5 rounded bg-white/5 text-zinc-200 hover:bg-white/10 flex items-center gap-1"
+          >
+            <Move size={10} /> Move…
+          </button>
+          <button
+            onClick={() => removeItems(sortedEntries.filter(e => selected.has(e.path)))}
+            className="px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 hover:bg-rose-500/25 flex items-center gap-1"
+          >
+            <Trash2 size={10} /> Delete
+          </button>
+          <button
+            onClick={() => { setSelected(new Set()); lastSelectedPathRef.current = null; }}
+            className="px-2 py-0.5 rounded bg-white/5 text-zinc-400 hover:bg-white/10 flex items-center gap-1"
+          >
+            <X size={10} /> Clear
+          </button>
+        </div>
+      )}
+
       {/* List */}
       <div
         ref={dropTargetRef}
@@ -572,7 +710,17 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           )}
         </div>
 
-        <div className="min-w-full p-1 font-mono text-[11px]">
+        <div className="min-w-full p-1 font-mono text-[11px]"
+             onClick={(e) => {
+               // Click landed on the bare list background (not on a row, since
+               // rows stopPropagation via their own onClick chain implicitly
+               // by being the click target). Clear selection so users can
+               // escape a multi-selection without a keyboard shortcut.
+               if (e.target === e.currentTarget) {
+                 setSelected(new Set());
+                 lastSelectedPathRef.current = null;
+               }
+             }}>
           {loading && sortedEntries.length === 0 ? (
             <div className="text-center py-14 text-zinc-400">Loading…</div>
           ) : sortedEntries.length === 0 ? (
@@ -583,7 +731,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 key={entry.path}
                 onMouseDown={(e) => handleRowMouseDown(e, entry)}
                 onContextMenu={(e) => openMenu(e, entry)}
-                onClick={() => setSelected(entry)}
+                onClick={(e) => onRowClick(e, entry, sortedEntries)}
                 onDoubleClick={() => {
                   if (entry.isDir) { fetch(entry.path); return; }
                   // For files: remote → live-edit (download + open editor +
@@ -592,7 +740,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                   else openLocalEntry(entry);
                 }}
                 className={`grid ${showPerms ? "grid-cols-[minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[minmax(180px,1fr)_75px_125px]"} gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
-                  selected?.path === entry.path
+                  selected.has(entry.path)
                     ? "bg-indigo-950/40 border-indigo-400 text-indigo-100 font-bold"
                     : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
                 }`}
@@ -624,38 +772,51 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         </div>
       </div>
 
-      {/* Context menu (portal) */}
-      {contextMenu && createPortal(
+      {/* Context menu (portal) — bulk-aware. When the right-click anchor is
+          part of a multi-selection, actions like Download / Move / Delete
+          apply to the whole set; per-item actions (Rename, Properties,
+          Edit) only show when exactly one row is selected. */}
+      {contextMenu && createPortal((() => {
+        const selectedEntries = sortedEntries.filter(e => selected.has(e.path));
+        const acting = selectedEntries.length > 0 ? selectedEntries : [contextMenu.entry];
+        const multi = acting.length > 1;
+        const selectedFileCount = acting.filter(e => !e.isDir).length;
+        return (
         <div ref={menuRef}
           style={{ top: contextMenu.y, left: contextMenu.x }}
           className="fixed z-[9999] min-w-[180px] bg-[#0c0c0e] border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11.5px] text-zinc-200">
 
           {/* Primary action: open folder, or transfer/edit file. The exact
               set depends on which side this panel is on. */}
-          {contextMenu.entry.isDir ? (
+          {contextMenu.entry.isDir && !multi ? (
             <button onClick={() => { setContextMenu(null); fetch(contextMenu.entry.path); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <Folder size={11} className="text-indigo-400" /><span>Open</span>
             </button>
           ) : isRemote ? (
             <>
-              <button onClick={() => { setContextMenu(null); downloadEntry(contextMenu.entry); }}
+              <button onClick={() => { setContextMenu(null); downloadItems(acting); }}
                 className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-                <Download size={11} className="text-emerald-400" /><span>Download…</span>
+                <Download size={11} className="text-emerald-400" />
+                <span>Download{multi ? ` (${selectedFileCount})` : "…"}</span>
               </button>
-              <button onClick={() => { setContextMenu(null); liveEditEntry(contextMenu.entry); }}
-                className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-                <ExternalLink size={11} className="text-indigo-400" /><span>Edit (auto-upload)</span>
-              </button>
+              {!multi && !contextMenu.entry.isDir && (
+                <button onClick={() => { setContextMenu(null); liveEditEntry(contextMenu.entry); }}
+                  className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+                  <ExternalLink size={11} className="text-indigo-400" /><span>Edit (auto-upload)</span>
+                </button>
+              )}
             </>
           ) : (
-            <button onClick={() => { setContextMenu(null); openLocalEntry(contextMenu.entry); }}
-              className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-              <ExternalLink size={11} className="text-indigo-400" /><span>Open</span>
-            </button>
+            !multi && !contextMenu.entry.isDir && (
+              <button onClick={() => { setContextMenu(null); openLocalEntry(contextMenu.entry); }}
+                className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+                <ExternalLink size={11} className="text-indigo-400" /><span>Open</span>
+              </button>
+            )
           )}
 
-          {!isRemote && (
+          {!isRemote && !multi && (
             <button onClick={() => { setContextMenu(null); revealLocalEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <FolderSearch size={11} className="text-emerald-300" /><span>Reveal in Explorer</span>
@@ -668,15 +829,21 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
             <Plus size={11} className="text-indigo-300" /><span>New Folder</span>
           </button>
-          <button onClick={() => { setContextMenu(null); setModal({ type: "rename", entry: contextMenu.entry, v1: contextMenu.entry.name }); }}
+          {!multi && (
+            <button onClick={() => { setContextMenu(null); setModal({ type: "rename", entry: contextMenu.entry, v1: contextMenu.entry.name }); }}
+              className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+              <Edit3 size={11} /><span>Rename</span>
+            </button>
+          )}
+          <button onClick={() => {
+              setContextMenu(null);
+              if (multi) setModal({ type: "move-bulk", v1: currentPath });
+              else setModal({ type: "move", entry: contextMenu.entry, v1: contextMenu.entry.path });
+            }}
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-            <Edit3 size={11} /><span>Rename</span>
+            <Move size={11} /><span>{multi ? `Move (${acting.length}) to…` : "Move to…"}</span>
           </button>
-          <button onClick={() => { setContextMenu(null); setModal({ type: "move", entry: contextMenu.entry, v1: contextMenu.entry.path }); }}
-            className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-            <Move size={11} /><span>Move to…</span>
-          </button>
-          {provider.chmod && (
+          {!multi && provider.chmod && (
             <button onClick={() => { setContextMenu(null); setModal({ type: "properties", entry: contextMenu.entry, v1: (contextMenu.entry.permissions ? (contextMenu.entry.permissions & 0o777).toString(8) : "755"), v2: contextMenu.entry.uid?.toString() }); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <Shield size={11} /><span>Properties</span>
@@ -684,11 +851,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           )}
 
           <div className="h-px bg-white/5 my-1" />
-          <button onClick={() => { setContextMenu(null); deleteEntry(contextMenu.entry); }}
+          <button onClick={() => { setContextMenu(null); removeItems(acting); }}
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-rose-950/20 text-left text-rose-400">
-            <Trash2 size={11} /><span>Delete</span>
+            <Trash2 size={11} /><span>Delete{multi ? ` (${acting.length})` : ""}</span>
           </button>
-        </div>,
+        </div>
+        );
+      })(),
         document.body
       )}
 
@@ -701,7 +870,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               <span className="font-black uppercase tracking-wider text-zinc-300">
                 {modal.type === "rename" ? "Rename" :
                  modal.type === "mkdir" ? "New Directory" :
-                 modal.type === "move" ? "Move to…" : "Properties"}
+                 modal.type === "move" ? "Move to…" :
+                 modal.type === "move-bulk" ? `Move ${selected.size} items to…` : "Properties"}
               </span>
               <button onClick={() => setModal(null)} className="text-zinc-500 hover:text-white"><X size={12} /></button>
             </div>
@@ -786,7 +956,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               ) : (
                 <div>
                   <label className="text-[10px] text-zinc-400 block mb-1">
-                    {modal.type === "move" ? "Destination path" : "Name"}
+                    {modal.type === "move" ? "Destination path" :
+                     modal.type === "move-bulk" ? "Destination directory" : "Name"}
                   </label>
                   <input type="text" autoFocus value={modal.v1 || ""}
                     onChange={(e) => setModal({ ...modal, v1: e.target.value })}
