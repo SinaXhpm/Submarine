@@ -63,7 +63,10 @@ Grab a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 |---|---|
 | Windows | `Submarine_x.y.z_x64-setup.exe` or `.msi` |
 | macOS (Apple Silicon) | `Submarine-vx.y.z-macos-arm64.app.zip` or `.dmg` |
-| Linux | `submarine_x.y.z_amd64.AppImage` |
+| Debian / Ubuntu / Mint | `submarine_x.y.z_amd64.deb` |
+| Fedora / RHEL / openSUSE | `submarine-x.y.z-1.x86_64.rpm` |
+| Arch / Manjaro / EndeavourOS | `submarine-x.y.z-1-x86_64.pkg.tar.zst` (`sudo pacman -U`) |
+| Any Linux | `submarine_x.y.z_amd64.AppImage` (chmod +x and run) |
 
 > Builds are currently **unsigned**. Windows SmartScreen will prompt — click "More info → Run anyway". macOS users may need `xattr -d com.apple.quarantine /Applications/Submarine.app`.
 

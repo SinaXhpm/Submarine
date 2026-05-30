@@ -62,12 +62,17 @@ jobs:
             bundles: "app,dmg"
             rust_target: aarch64-apple-darwin
 
-          # Linux: AppImage only. Runs on any modern distro, no install
-          # required — chmod +x and double-click. Skipping .deb/.rpm to
-          # keep the matrix slim and avoid needing rpmbuild on the runner.
+          # Linux: ship four flavours so users on any major distro can
+          # double-click an installer that matches their package manager:
+          #   - .deb   → Debian / Ubuntu / Mint
+          #   - .rpm   → Fedora / RHEL / openSUSE
+          #   - .AppImage → distro-agnostic, no install required
+          # And a separate Arch step further down produces .pkg.tar.zst
+          # via makepkg inside an Arch Docker container (Tauri's bundler
+          # has no native Arch backend).
           - platform: ubuntu-22.04
             os_name: linux-x64
-            bundles: "appimage"
+            bundles: "deb,rpm,appimage"
             rust_target: x86_64-unknown-linux-gnu
 
     runs-on: ${{ matrix.platform }}
@@ -131,9 +136,10 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # Linux-only: WebKit + AppImage tooling. The Tauri Linux build links
-      # webkit2gtk-4.1 and ships an AppImage built via `linuxdeploy` which
-      # needs librsvg + libsoup3.
+      # Linux-only: WebKit + AppImage tooling + rpmbuild. The Tauri Linux
+      # build links webkit2gtk-4.1, ships an AppImage built via
+      # `linuxdeploy` (needs librsvg + libsoup3), and now also produces an
+      # .rpm which requires the `rpm` package's `rpmbuild` binary.
       - name: Install Linux deps
         if: matrix.os_name == 'linux-x64'
         run: |
@@ -146,7 +152,8 @@ jobs:
             libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev \
             patchelf \
-            file
+            file \
+            rpm
 
       - name: Install npm deps
         run: npm ci
@@ -166,6 +173,44 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         with:
           args: --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }} --features full-ssh-algos
+
+      # Arch: Tauri's bundler has no native pacman backend, so we run
+      # makepkg ourselves inside an `archlinux:latest` container. The
+      # PKGBUILD in packaging/arch/ installs the already-built Tauri
+      # release binary plus a .desktop and icon from $startdir — no
+      # source download / no rebuild — so the result is the same binary
+      # users get from the .deb, just packaged for pacman. Compression
+      # stays at pacman's default (zstd at level 19, what every Arch
+      # mirror uses) — no custom XZ / no MAKEPKG_CONF tweaks.
+      - name: Build Arch package
+        if: matrix.os_name == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p arch-build
+          cp packaging/arch/PKGBUILD             arch-build/
+          cp packaging/arch/submarine.desktop    arch-build/
+          cp src-tauri/target/${{ matrix.rust_target }}/release/submarine arch-build/
+          cp src-tauri/icons/icon.png            arch-build/
+
+          # Run makepkg in a throwaway Arch container. base-devel pulls in
+          # fakeroot/binutils/etc; we create an unprivileged build user
+          # because makepkg refuses to run as root. --skipinteg because
+          # the PKGBUILD has no source= entries (everything is local).
+          docker run --rm \
+            -v "$PWD/arch-build:/build" \
+            -w /build \
+            -e VERSION="$VERSION" \
+            archlinux:latest \
+            bash -c '
+              set -e
+              pacman -Syu --noconfirm --needed base-devel sudo
+              useradd -m b
+              echo "b ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+              chown -R b:b /build
+              sudo -u b sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+              sudo -u b makepkg -f --noconfirm --skipinteg
+            '
 
       # macOS: zip the .app bundle so a user can download a single file
       # and just double-click. No DMG drag-to-Applications dance.
@@ -201,7 +246,13 @@ jobs:
         if: matrix.os_name == 'linux-x64'
         run: |
           mkdir -p artifacts
-          find "src-tauri/target/${{ matrix.rust_target }}/release/bundle/appimage" -name "*.AppImage" -exec cp {} artifacts/ \;
+          # Tauri bundles land in target/.../release/bundle/{deb,rpm,appimage}/.
+          # Arch .pkg.tar.zst is in arch-build/ from the previous step.
+          find "src-tauri/target/${{ matrix.rust_target }}/release/bundle" \
+            \( -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \) \
+            -exec cp {} artifacts/ \;
+          find arch-build -maxdepth 1 -name "*.pkg.tar.zst" -exec cp {} artifacts/ \;
+          ls -la artifacts/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -225,7 +276,12 @@ jobs:
       - name: Flatten into a single folder
         run: |
           mkdir -p release-files
-          find dist -type f \( -name "*.msi" -o -name "*.exe" -o -name "*.dmg" -o -name "*.app.zip" -o -name "*.AppImage" \) -exec cp {} release-files/ \;
+          find dist -type f \( \
+            -name "*.msi" -o -name "*.exe" \
+            -o -name "*.dmg" -o -name "*.app.zip" \
+            -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \
+            -o -name "*.pkg.tar.zst" \
+            \) -exec cp {} release-files/ \;
           ls -la release-files/
 
       - name: Create / update GitHub Release

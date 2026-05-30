@@ -1,0 +1,33 @@
+# Maintainer: Sina <https://sinaxhpm.com>
+#
+# This PKGBUILD is intended to be driven by the GitHub Actions release
+# workflow, not built standalone from an unpacked tarball. CI stamps the
+# real version into pkgver at build time and drops the prebuilt Linux
+# binary + .desktop + icon next to this file before invoking makepkg,
+# so package() can install straight from $startdir with no source= /
+# download step.
+#
+# If you want to build it yourself: copy the release binary into this
+# directory as `submarine`, copy submarine.desktop and icon.png in, then
+# run `makepkg -f`.
+
+pkgname=submarine
+pkgver=0.0.0
+pkgrel=1
+pkgdesc='A modern, secure SSH/SFTP desktop client'
+arch=('x86_64')
+url='https://github.com/sinaxhpm/submarine'
+license=('MIT')
+# Runtime libs the Tauri release binary links against. webkit2gtk-4.1 +
+# gtk3 + libsoup3 match the same triple the AppImage/.deb depends on.
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3')
+optdepends=('libayatana-appindicator: system-tray icon support')
+# Binary is already release-built and stripped by the toolchain; running
+# makepkg's strip pass again is a no-op and just slows the build.
+options=('!strip')
+
+package() {
+  install -Dm755 "$startdir/submarine"         "$pkgdir/usr/bin/submarine"
+  install -Dm644 "$startdir/submarine.desktop" "$pkgdir/usr/share/applications/submarine.desktop"
+  install -Dm644 "$startdir/icon.png"          "$pkgdir/usr/share/icons/hicolor/512x512/apps/submarine.png"
+}
