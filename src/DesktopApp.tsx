@@ -80,7 +80,10 @@ function DesktopApp() {
   const defaultNode = {
     id: null as number | null,
     name: "", host: "", port: 22, username: "", password: "",
-    authType: "vault", credentialId: "", folderId: "", keyId: "",
+    // "custom_pass" picked as default because most users adding a new
+    // server have a password in hand; the vault option is mainly useful
+    // *after* they've saved a few credentials and want to reuse one.
+    authType: "custom_pass", credentialId: "", folderId: "", keyId: "",
     proxyType: "none", proxyHost: "", proxyPort: 1080,
     tunnels: [] as { local: string, remote: string, type: string }[],
     autostart: false,
