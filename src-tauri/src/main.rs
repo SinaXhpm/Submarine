@@ -2331,7 +2331,45 @@ async fn sftp_rename(
     newpath: String,
 ) -> Result<(), String> {
     let sftp = get_sftp_session(&state, &session_id).await?;
-    sftp.rename(oldpath, newpath).await.map_err(|e| e.to_string())?;
+
+    // First try the rename as-is — the common case is the target's parent
+    // already exists.
+    if let Err(first_err) = sftp.rename(&oldpath, &newpath).await {
+        // SSH_FX_FAILURE on rename is most commonly "destination parent
+        // directory doesn't exist" — user types a path into a subfolder
+        // they haven't created yet. Pre-check the parent explicitly so
+        // we don't paper over real errors (permission denied, destination
+        // already exists, cross-filesystem) with a silent retry that
+        // would just swap one confusing message for another.
+        let parent_str = std::path::Path::new(&newpath)
+            .parent()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .filter(|s| !s.is_empty() && s != "/");
+        let needs_mkdir = match &parent_str {
+            Some(p) => sftp.metadata(p.as_str()).await.is_err(),
+            None => false,
+        };
+        if !needs_mkdir {
+            return Err(format!("rename '{}' -> '{}': {}", oldpath, newpath, first_err));
+        }
+        // mkdir -p the missing chain. AlreadyExists is treated as success
+        // so a parallel rename racing into the same tree doesn't break us.
+        let p = parent_str.unwrap();
+        let parts: Vec<&str> = p.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+        let mut cur = String::from("/");
+        for part in parts {
+            if cur != "/" { cur.push('/'); }
+            cur.push_str(part);
+            if sftp.metadata(cur.as_str()).await.is_ok() { continue; }
+            if let Err(e) = sftp.create_dir(&cur).await {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("exist") { continue; }
+                return Err(format!("create destination parent '{}': {}", cur, e));
+            }
+        }
+        sftp.rename(&oldpath, &newpath).await
+            .map_err(|e| format!("rename '{}' -> '{}' (after creating parent): {}", oldpath, newpath, e))?;
+    }
     Ok(())
 }
 
@@ -2863,7 +2901,17 @@ async fn local_remove(path: String, is_dir: bool) -> Result<(), String> {
 async fn local_rename(from: String, to: String) -> Result<(), String> {
     let safe_from = guard_local_path(&from, false)?;
     let safe_to = guard_local_path(&to, true)?;
-    std::fs::rename(&safe_from, &safe_to).map_err(|e| format!("Failed to rename: {}", e))
+    // Same auto-mkdir-parent UX as sftp_rename: moving a file into a
+    // subfolder that doesn't exist yet would otherwise fail with a
+    // confusing "system cannot find the path specified" / ENOENT.
+    if let Some(parent) = safe_to.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create destination parent {:?}: {}", parent, e))?;
+        }
+    }
+    std::fs::rename(&safe_from, &safe_to)
+        .map_err(|e| format!("rename {:?} -> {:?}: {}", safe_from, safe_to, e))
 }
 
 #[tauri::command]
