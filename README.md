@@ -161,3 +161,7 @@ Designed and built by [Sina](https://sinaxhpm.com) in collaboration with [Claude
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+<sub><i>Bitvise, forever in my heart.</i></sub>
