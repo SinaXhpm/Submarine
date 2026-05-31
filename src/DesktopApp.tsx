@@ -364,16 +364,16 @@ function DesktopApp() {
         <span className="text-[12px] font-bold text-white tracking-tight">Submarine</span>
       </div>
       
-      {/* Tab strip. NO data-tauri-drag-region here: that would route every
-          mousedown (including clicks on the scrollbar thumb or the gaps
-          between tabs) to the OS as a window-drag, so users could neither
-          drag the scrollbar nor reliably miss it when targeting a tab.
-          Horizontal scroll comes from the mouse wheel via onWheel so we
-          don't need a visible scrollbar at all — it stays hidden via
-          .no-scrollbar (forced to win over the global !important
-          ::-webkit-scrollbar rule by adding its own !important). */}
+      {/* Tab strip is a drag region — clicks that land between tabs or on
+          empty title-bar space should move the window, matching how every
+          other tabbed desktop app behaves. The individual tabs below
+          carry `no-drag` so clicking a tab still selects it; the
+          previously-feared scrollbar-drag conflict is moot because the
+          scrollbar is force-hidden via .no-scrollbar, and horizontal
+          scroll comes from the wheel handler instead. */}
       <div
-        className="no-drag flex-1 flex gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1"
+        data-tauri-drag-region
+        className="flex-1 flex gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1"
         onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY; }}
       >
         {sessions.map(s => {
