@@ -633,6 +633,7 @@ export const SessionView = ({ session, onClose, addLog, onStatusChange }: any) =
                 <div className="flex-1 overflow-hidden relative">
                   <MirrorsPanel
                     sessionId={session.id}
+                    serverId={session.serverId}
                     configuredMirrors={(() => {
                       try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
                     })()}

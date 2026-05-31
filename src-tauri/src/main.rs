@@ -956,6 +956,56 @@ async fn edit_server(
     Ok(())
 }
 
+/// Append a single mirror spec to a saved server's mirrors column.
+///
+/// Exists so the live MirrorsPanel's "new mirror" flow can persist the
+/// mirror it just started without round-tripping the whole edit_server
+/// payload (which would force the panel to know about every other
+/// node field — username, tunnels, auth_type, etc.). Pairs with
+/// re-encrypting the vault on the way out, the same as the full edit
+/// path does. Duplicate (local, remote) entries are coalesced so
+/// hitting "Start mirror" twice on the same pair doesn't bloat the row.
+#[tauri::command]
+async fn add_mirror_to_server(
+    state: tauri::State<'_, DbState>,
+    server_id: i32,
+    mirror: serde_json::Value,
+) -> Result<(), String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+
+    let existing: String = conn.query_row(
+        "SELECT mirrors FROM servers WHERE id = ?1",
+        rusqlite::params![server_id],
+        |row| row.get::<_, Option<String>>(0).map(|v| v.unwrap_or_else(|| "[]".into())),
+    ).map_err(|e| format!("[DATABASE] SERVER_LOOKUP_FAILED: {}", e))?;
+
+    let mut list: Vec<serde_json::Value> = serde_json::from_str(&existing).unwrap_or_default();
+    let local  = mirror.get("local").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let remote = mirror.get("remote").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if local.is_empty() || remote.is_empty() {
+        return Err("mirror needs both local and remote paths".into());
+    }
+    // Replace any prior entry for the same (local, remote) pair so the
+    // latest spec (e.g. updated excludes / conflict mode) wins instead of
+    // piling a duplicate row beside it.
+    list.retain(|m| {
+        m.get("local").and_then(|v| v.as_str()) != Some(&local)
+            || m.get("remote").and_then(|v| v.as_str()) != Some(&remote)
+    });
+    list.push(mirror);
+
+    let next = serde_json::to_string(&list).map_err(|e| format!("[DATABASE] SERIALIZE_FAILED: {}", e))?;
+    conn.execute(
+        "UPDATE servers SET mirrors = ?1 WHERE id = ?2",
+        rusqlite::params![next, server_id],
+    ).map_err(|e| format!("[DATABASE] MIRROR_SAVE_FAILED: {}", e))?;
+
+    drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn delete_server(state: tauri::State<'_, DbState>, id: i32) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
@@ -3536,7 +3586,7 @@ fn main() {
             cloud::cloud_force_upload_profile, cloud::cloud_download_profile,
             cloud::cloud_delete_remote_profile,
             cloud::cloud_sync_overview, cloud::cloud_sync_all,
-            add_server, edit_server, delete_server, get_servers, get_ssh_keys, 
+            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, 
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,
             add_command, edit_command, delete_command, get_commands,

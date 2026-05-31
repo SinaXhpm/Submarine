@@ -55,19 +55,43 @@ interface DryRunReport {
 
 interface MirrorsPanelProps {
   sessionId: string;
+  /**
+   * Saved server row id. >0 means this session is backed by a saved node
+   * and ad-hoc mirrors we create here can be persisted into that node's
+   * mirrors column. 0 (or undefined) is a quick-connect session — no DB
+   * row to attach to, so the "save into profile" call is skipped.
+   */
+  serverId?: number;
   configuredMirrors: MirrorSpec[];  // from server.mirrors
   disabled?: boolean;
 }
 
 const LOG_CAP = 200;
 
-const MirrorsPanel = ({ sessionId, configuredMirrors, disabled = false }: MirrorsPanelProps) => {
+const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = false }: MirrorsPanelProps) => {
   const [statuses, setStatuses] = useState<Record<string, MirrorStatus>>({});
   const [logs, setLogs] = useState<MirrorLogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState<MirrorSpec>({ local: "", remote: "", soft_delete: true, excludes: [], conflict_resolution: "local" });
   const [excludesText, setExcludesText] = useState("");
+  // Mirrors saved into the profile *during this session* — kept here so the
+  // "Saved on this node" group lights up immediately without waiting for the
+  // user to close + reopen the session for the props-level configuredMirrors
+  // to refresh from DesktopApp's servers state.
+  const [extraSaved, setExtraSaved] = useState<MirrorSpec[]>([]);
+  // Merged view of the two saved sources, dedup-ed by (local, remote) —
+  // matches the backend's coalescing rule so the UI never double-lists a
+  // mirror that the user just re-saved with updated excludes / conflict mode.
+  const allSavedMirrors = (() => {
+    const k = (m: MirrorSpec) => `${m.local}|${m.remote}`;
+    const out: MirrorSpec[] = [...configuredMirrors];
+    for (const m of extraSaved) {
+      const idx = out.findIndex(x => k(x) === k(m));
+      if (idx >= 0) out[idx] = m; else out.push(m);
+    }
+    return out;
+  })();
   // Map from configured-mirror index (by `local|remote` key) to the live
   // mirror id while it's running. Lets us show Start vs Stop on each row
   // without scanning statuses every render.
@@ -177,6 +201,24 @@ const MirrorsPanel = ({ sessionId, configuredMirrors, disabled = false }: Mirror
     setWorking(true); setError(null);
     try {
       await invoke("start_mirror", { sessionId, spec: pending.spec });
+      // Persist into the saved-node row (serverId > 0 means this isn't a
+      // quick-connect; backend coalesces by local|remote so re-saving an
+      // existing pair just updates its excludes/conflict mode in place).
+      // Persistence failure is non-fatal — the mirror is already running;
+      // we just surface the error so the user knows it didn't reach the
+      // profile.
+      if (serverId > 0) {
+        try {
+          await invoke("add_mirror_to_server", { serverId, mirror: pending.spec });
+          setExtraSaved(prev => {
+            const k = (m: MirrorSpec) => `${m.local}|${m.remote}`;
+            const without = prev.filter(m => k(m) !== k(pending.spec));
+            return [...without, pending.spec];
+          });
+        } catch (e: any) {
+          setError(`Mirror started but not saved to profile: ${e}`);
+        }
+      }
       // Mirror is now spawned — collapse the preview, close the ad-hoc
       // form, and reset the draft inputs. The newly-started mirror takes
       // over as a live status row in the list below, which is what the
@@ -227,7 +269,7 @@ const MirrorsPanel = ({ sessionId, configuredMirrors, disabled = false }: Mirror
       <div className="shrink-0 px-3 py-2 flex items-center justify-between border-b border-white/5 bg-[#121214]">
         <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400">
           <FolderUp size={12} />
-          <span>{Object.keys(statuses).length} running · {configuredMirrors.length} saved</span>
+          <span>{Object.keys(statuses).length} running · {allSavedMirrors.length} saved</span>
         </div>
         <button
           onClick={() => { setAdding((a) => !a); setError(null); }}
@@ -375,10 +417,10 @@ const MirrorsPanel = ({ sessionId, configuredMirrors, disabled = false }: Mirror
       <div className="flex-1 overflow-auto p-2 space-y-1.5">
         {/* Configured mirrors stored on the node — Start button picks up
             saved config and confirms via the dry-run preview. */}
-        {configuredMirrors.length > 0 && (
+        {allSavedMirrors.length > 0 && (
           <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 px-1 pt-1">Saved on this node</div>
         )}
-        {configuredMirrors.map((m, i) => {
+        {allSavedMirrors.map((m, i) => {
           const key = `${m.local}|${m.remote}`;
           const liveId = runningByPair[key];
           const live = liveId ? statuses[liveId] : null;
@@ -427,11 +469,11 @@ const MirrorsPanel = ({ sessionId, configuredMirrors, disabled = false }: Mirror
         })}
 
         {/* Ad-hoc / live mirrors that aren't in the saved list. */}
-        {Object.values(statuses).filter((s) => !configuredMirrors.some((m) => m.local === s.local && m.remote === s.remote)).length > 0 && (
+        {Object.values(statuses).filter((s) => !allSavedMirrors.some((m) => m.local === s.local && m.remote === s.remote)).length > 0 && (
           <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 px-1 pt-2">Ad-hoc this session</div>
         )}
         {Object.values(statuses)
-          .filter((s) => !configuredMirrors.some((m) => m.local === s.local && m.remote === s.remote))
+          .filter((s) => !allSavedMirrors.some((m) => m.local === s.local && m.remote === s.remote))
           .map((live) => (
             <div key={live.id} className="rounded border border-white/5 bg-white/[0.02] p-2 font-mono text-[11px]">
               <div className="flex items-center gap-2">
@@ -460,7 +502,7 @@ const MirrorsPanel = ({ sessionId, configuredMirrors, disabled = false }: Mirror
             </div>
           ))}
 
-        {configuredMirrors.length === 0 && Object.keys(statuses).length === 0 && (
+        {allSavedMirrors.length === 0 && Object.keys(statuses).length === 0 && (
           <div className="text-center py-12 text-zinc-500 text-[11px] font-mono">
             No mirrors yet.<br />
             <span className="text-zinc-600 text-[10px]">Add one with “New mirror”, or define them on the node form.</span>
