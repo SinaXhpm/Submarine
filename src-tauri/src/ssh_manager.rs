@@ -40,6 +40,11 @@ pub struct SshState {
     /// "R" tunnels and consulted by `ClientHandler` when a forwarded channel
     /// arrives.
     pub forwarded_targets: Arc<Mutex<HashMap<String, crate::tunnel::ForwardedTargets>>>,
+    /// One AtomicBool per in-flight SFTP transfer, keyed by transfer id.
+    /// `sftp_cancel_transfer` flips the flag; the chunked read/write loops
+    /// in `sftp_download_file` / `sftp_upload_file` poll it each iteration
+    /// and bail out with a cancelled-status event when it goes true.
+    pub transfer_cancels: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
 }
 
 impl SshState {
@@ -52,6 +57,7 @@ impl SshState {
             sftp_sessions: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Arc::new(Mutex::new(HashMap::new())),
             forwarded_targets: Arc::new(Mutex::new(HashMap::new())),
+            transfer_cancels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

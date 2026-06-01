@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { File as FileIcon, Download, Upload, AlertTriangle, Check } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { File as FileIcon, Download, Upload, AlertTriangle, Check, X, Ban } from "lucide-react";
 import FilePanel, { ActiveDrag, FilePanelHandle } from "./FilePanel";
 import { createLocalProvider } from "../fs/localProvider";
 import { createRemoteProvider } from "../fs/remoteProvider";
@@ -74,7 +75,7 @@ const SftpWorkspace = ({ sessionId, disabled = false }: SftpWorkspaceProps) => {
     kind: "upload" | "download";
     bytes: number;
     total: number;
-    status: "progress" | "done" | "error";
+    status: "progress" | "done" | "error" | "cancelled";
     error?: string;
   }
   const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
@@ -85,10 +86,10 @@ const SftpWorkspace = ({ sessionId, disabled = false }: SftpWorkspaceProps) => {
       const t = event.payload;
       if (!t || !t.id) return;
       setTransfers((prev) => ({ ...prev, [t.id]: t }));
-      if (t.status === "done" || t.status === "error") {
+      if (t.status === "done" || t.status === "error" || t.status === "cancelled") {
         // Leave the final state visible briefly before clearing the card so
-        // the user sees the success tick / failure colour.
-        const linger = t.status === "error" ? 6000 : 1800;
+        // the user sees the success tick / failure colour / cancel notice.
+        const linger = t.status === "error" ? 6000 : t.status === "cancelled" ? 3000 : 1800;
         setTimeout(() => {
           setTransfers((prev) => {
             const { [t.id]: _, ...rest } = prev;
@@ -99,6 +100,12 @@ const SftpWorkspace = ({ sessionId, disabled = false }: SftpWorkspaceProps) => {
     }).then((fn) => { unlisten = fn; });
     return () => { if (unlisten) unlisten(); };
   }, [sessionId]);
+
+  const cancelTransfer = (id: string) => {
+    // Fire-and-forget: the backend emits its own "cancelled" event when the
+    // loop notices the flag, which is what wipes the card.
+    invoke("sftp_cancel_transfer", { transferId: id }).catch(() => {});
+  };
 
   const formatBytes = (n: number) => {
     if (!n) return "0 B";
@@ -197,29 +204,44 @@ const SftpWorkspace = ({ sessionId, disabled = false }: SftpWorkspaceProps) => {
           {Object.values(transfers).map((t) => {
             const pct = t.total > 0 ? Math.min(100, Math.round((t.bytes * 100) / t.total)) : 0;
             const tone =
-              t.status === "error" ? "border-rose-500/40 bg-rose-950/85 text-rose-200" :
-              t.status === "done"  ? "border-emerald-500/40 bg-emerald-950/85 text-emerald-200" :
-                                     "border-indigo-500/40 bg-indigo-950/85 text-indigo-100";
+              t.status === "error"     ? "border-rose-500/40 bg-rose-950/85 text-rose-200" :
+              t.status === "done"      ? "border-emerald-500/40 bg-emerald-950/85 text-emerald-200" :
+              t.status === "cancelled" ? "border-amber-500/40 bg-amber-950/85 text-amber-200" :
+                                         "border-indigo-500/40 bg-indigo-950/85 text-indigo-100";
             const barTone =
-              t.status === "error" ? "bg-rose-500" :
-              t.status === "done"  ? "bg-emerald-500" :
-                                     "bg-indigo-500";
+              t.status === "error"     ? "bg-rose-500" :
+              t.status === "done"      ? "bg-emerald-500" :
+              t.status === "cancelled" ? "bg-amber-500" :
+                                         "bg-indigo-500";
             const Icon =
-              t.status === "error" ? AlertTriangle :
-              t.status === "done"  ? Check :
-              t.kind   === "upload" ? Upload :
-                                      Download;
+              t.status === "error"     ? AlertTriangle :
+              t.status === "done"      ? Check :
+              t.status === "cancelled" ? Ban :
+              t.kind   === "upload"    ? Upload :
+                                         Download;
+            const statusLabel =
+              t.status === "error"     ? "failed"
+              : t.status === "cancelled" ? "cancelled"
+              : t.total > 0              ? `${pct}%`
+                                         : formatBytes(t.bytes);
             return (
               <div key={t.id} className={`px-2.5 py-1.5 rounded border ${tone} font-mono text-[10.5px] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4`}>
                 <div className="flex items-center gap-1.5 mb-1">
                   <Icon size={11} className="shrink-0" />
                   <span className="truncate flex-1" title={t.name}>{t.name}</span>
-                  <span className="text-[9.5px] opacity-80 shrink-0">
-                    {t.status === "error" ? "failed"
-                      : t.total > 0
-                        ? `${pct}%`
-                        : formatBytes(t.bytes)}
-                  </span>
+                  <span className="text-[9.5px] opacity-80 shrink-0">{statusLabel}</span>
+                  {/* Stop button — only while the transfer is still running.
+                      Finished / failed / cancelled cards fade out on their
+                      own timer; no button needed. */}
+                  {t.status === "progress" && (
+                    <button
+                      onClick={() => cancelTransfer(t.id)}
+                      title="Cancel"
+                      className="shrink-0 p-0.5 rounded hover:bg-white/15 text-zinc-300 hover:text-rose-300"
+                    >
+                      <X size={11} />
+                    </button>
+                  )}
                 </div>
                 {t.status !== "error" && (
                   <div className="h-1 bg-white/10 rounded overflow-hidden">

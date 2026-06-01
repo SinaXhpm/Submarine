@@ -2479,6 +2479,7 @@ async fn sftp_download_file(
 ) -> Result<(), String> {
     use tauri::Emitter;
     use tokio::io::AsyncReadExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     let sftp = get_sftp_session(&state, &session_id).await?;
 
@@ -2506,6 +2507,28 @@ async fn sftp_download_file(
             }),
         );
     };
+
+    // Register a cancel flag the user can flip via `sftp_cancel_transfer`.
+    // RAII-removed at the end so the map doesn't pile up across many
+    // sequential transfers.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancels_map = Arc::clone(&state.transfer_cancels);
+    cancels_map.lock().await.insert(id.clone(), Arc::clone(&cancel));
+    struct CancelGuard {
+        map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+        id: String,
+    }
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            // Best-effort cleanup; if the lock is contended we'd rather leak
+            // a slot than block the drop, but in practice this never blocks.
+            if let Ok(mut g) = self.map.try_lock() {
+                g.remove(&self.id);
+            }
+        }
+    }
+    let _guard = CancelGuard { map: Arc::clone(&cancels_map), id: id.clone() };
+
     emit_progress(0, "progress", None);
 
     let mut remote_file = sftp
@@ -2519,12 +2542,20 @@ async fn sftp_download_file(
     // 256 KiB chunks: large enough to keep the SSH window pipelined on
     // high-latency links (with window_size=8 MiB we want ~16+ chunks in
     // flight), small enough to keep per-iteration latency low for the
-    // progress meter.
+    // progress meter (and the cancel poll).
     let mut buf = vec![0u8; 256 * 1024];
     let mut transferred: u64 = 0;
     let mut last_report = std::time::Instant::now();
     use tokio::io::AsyncWriteExt;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            // Drop the partial local file so we don't leave a half-baked
+            // download behind; ignore errors (e.g. on Windows file-locking).
+            drop(local_file);
+            let _ = tokio::fs::remove_file(&local_path).await;
+            emit_progress(transferred, "cancelled", None);
+            return Err("cancelled".into());
+        }
         let n = remote_file
             .read(&mut buf)
             .await
@@ -2558,6 +2589,7 @@ async fn sftp_upload_file(
     use russh_sftp::protocol::OpenFlags;
     use tauri::Emitter;
     use tokio::io::AsyncWriteExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     let sftp = get_sftp_session(&state, &session_id).await?;
 
@@ -2581,6 +2613,25 @@ async fn sftp_upload_file(
             }),
         );
     };
+
+    // Symmetric to sftp_download_file: register a cancel flag and clean it
+    // up via RAII so a long-running upload can be stopped from the UI.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancels_map = Arc::clone(&state.transfer_cancels);
+    cancels_map.lock().await.insert(id.clone(), Arc::clone(&cancel));
+    struct CancelGuard {
+        map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+        id: String,
+    }
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            if let Ok(mut g) = self.map.try_lock() {
+                g.remove(&self.id);
+            }
+        }
+    }
+    let _guard = CancelGuard { map: Arc::clone(&cancels_map), id: id.clone() };
+
     emit_progress(0, "progress", None);
 
     // Stream the file from disk in chunks rather than slurping the whole thing
@@ -2603,6 +2654,13 @@ async fn sftp_upload_file(
     let mut last_report = std::time::Instant::now();
     use tokio::io::AsyncReadExt;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            // Close the remote handle so the server doesn't keep an
+            // open-write descriptor for a file we'll never finish.
+            let _ = remote_file.shutdown().await;
+            emit_progress(transferred, "cancelled", None);
+            return Err("cancelled".into());
+        }
         let n = local_file
             .read(&mut buf)
             .await
@@ -2623,6 +2681,22 @@ async fn sftp_upload_file(
         .await
         .map_err(|e| format!("Failed to close remote file: {}", e))?;
     emit_progress(transferred, "done", None);
+    Ok(())
+}
+
+/// Flip the cancel flag for an in-flight SFTP transfer. The download / upload
+/// loop polls the flag every chunk (every ~256 KiB) and exits with a
+/// "cancelled" status event as soon as it sees true. Unknown ids are a no-op
+/// — by the time the UI's stop button click reaches us the transfer may have
+/// already finished on its own.
+#[tauri::command]
+async fn sftp_cancel_transfer(
+    state: tauri::State<'_, SshState>,
+    transfer_id: String,
+) -> Result<(), String> {
+    if let Some(flag) = state.transfer_cancels.lock().await.get(&transfer_id) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     Ok(())
 }
 
@@ -3622,7 +3696,7 @@ fn main() {
             local_home_dir, local_desktop_dir, local_create_dir, local_remove, local_rename,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner,
-            sftp_download_file, sftp_upload_file, sftp_open_remote_file,
+            sftp_download_file, sftp_upload_file, sftp_cancel_transfer, sftp_open_remote_file,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
             monitor_list, monitor_add, monitor_remove, monitor_set_metrics, monitor_set_custom_metrics,
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,
