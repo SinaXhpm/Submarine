@@ -1,9 +1,6 @@
 import { useEffect, useState } from "react";
 
-// Live viewport-width hook. Replaces the old one-shot UA-based isMobile
-// detection, which couldn't see a desktop window being shrunk to a narrow
-// width. Components consume `width` directly or use the derived `isNarrow`
-// / `isCompact` flags below.
+// Live viewport-width hook with derived isNarrow / isCompact flags.
 
 const NARROW_BREAKPOINT = 640;   // sm — labels collapse to icons
 const COMPACT_BREAKPOINT = 900;  // 2-pane layouts collapse to single column

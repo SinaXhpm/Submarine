@@ -110,12 +110,10 @@ pub(crate) fn validate_profile_name(name: &str) -> Result<(), String> {
 //   t_cost   3       — passes over the buffer
 //   p_cost   4       — parallelism; up to 4 lanes if available
 //   output   32 B    — AES-256-GCM key length
-// Higher than OWASP's recommended interactive-login params, but appropriate
-// for a long-lived KDF that protects the entire profile vault. The dev
-// build feels slow because debug Rust can't vectorise the mixing loops;
-// release builds derive the key in ~200-400 ms. Changing these values
-// invalidates every existing vault — only bump on a deliberate re-keying
-// migration.
+// Tuned higher than OWASP's interactive-login defaults because this protects
+// the entire profile vault, not a single-request login. Changing these
+// values invalidates every existing vault — bump only on a deliberate
+// re-keying migration.
 const ARGON2_M_COST: u32 = 64 * 1024;
 const ARGON2_T_COST: u32 = 3;
 const ARGON2_P_COST: u32 = 4;
@@ -243,8 +241,21 @@ fn save_vault_internal(state: &DbState) -> Result<(), String> {
         let compressed = Zeroizing::new(vault_compress(&*serialized)?);
         let (ciphertext, nonce) = encrypt_with_key(&compressed, key)?;
         let blob = write_vault_blob(salt, &nonce, &ciphertext);
-        fs::write(path, blob)
-            .map_err(|e| format!("[FILE] VAULT_WRITE_FAILED at {:?}: {}", path, e))?;
+        // Atomic write: tmp -> fsync -> rename. A crash / power loss in the
+        // middle of a direct fs::write would leave the vault truncated, and
+        // every saved credential would be unrecoverable on next launch.
+        let tmp_path = path.with_extension("submarine.tmp");
+        {
+            use std::io::Write as _;
+            let mut f = fs::File::create(&tmp_path)
+                .map_err(|e| format!("[FILE] VAULT_TMP_CREATE_FAILED at {:?}: {}", tmp_path, e))?;
+            f.write_all(&blob)
+                .map_err(|e| format!("[FILE] VAULT_TMP_WRITE_FAILED at {:?}: {}", tmp_path, e))?;
+            f.sync_all()
+                .map_err(|e| format!("[FILE] VAULT_TMP_SYNC_FAILED at {:?}: {}", tmp_path, e))?;
+        }
+        fs::rename(&tmp_path, path)
+            .map_err(|e| format!("[FILE] VAULT_RENAME_FAILED {:?} -> {:?}: {}", tmp_path, path, e))?;
     } else {
         return Err("[STATE] MISSING_REQUIRED_RESOURCES_FOR_SAVE".into());
     }
@@ -2251,9 +2262,8 @@ pub async fn get_sftp_session(
     state: &SshState,
     session_id: &str,
 ) -> Result<Arc<russh_sftp::client::SftpSession>, String> {
-    // Reuse a cached SFTP subsystem for the lifetime of the SSH session.
-    // Previously a new channel + sftp subsystem was opened for every call,
-    // which leaked channels on the server side.
+    // Reuse one SFTP subsystem per SSH session to avoid leaking server-side
+    // channels.
     if let Some(s) = state.sftp_sessions.lock().await.get(session_id) {
         return Ok(Arc::clone(s));
     }
@@ -2814,31 +2824,42 @@ async fn sftp_prepare_drag(
         data.extend_from_slice(&buffer[..n]);
     }
     
-    let filename = std::path::Path::new(&remote_path)
+    // Sanitize the filename: a hostile (or compromised) SFTP server picks
+    // remote_path, and we used to drop the basename straight into the OS
+    // temp dir — letting the server pick any filename it wanted at top of
+    // temp. Restrict to a safe leaf name (no path separators, no `..`,
+    // no drive markers) and scope to a per-session subdir so parallel
+    // drags don't clobber each other.
+    let raw_name = std::path::Path::new(&remote_path)
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("file")
-        .to_string();
-        
-    let temp_dir = std::env::temp_dir();
-    let temp_file_path = temp_dir.join(&filename);
+        .unwrap_or("file");
+    let bad = |c: char| matches!(c, '/' | '\\' | ':' | '\0');
+    if raw_name.is_empty() || raw_name == "." || raw_name == ".." || raw_name.contains(bad) {
+        return Err(format!("refusing to drag file with unsafe name: {:?}", raw_name));
+    }
+    let session_dir = std::env::temp_dir().join(format!("submarine_drag_{}", session_id));
+    std::fs::create_dir_all(&session_dir)
+        .map_err(|e| format!("Failed to create drag staging dir: {}", e))?;
+    let temp_file_path = session_dir.join(raw_name);
     std::fs::write(&temp_file_path, &data).map_err(|e| format!("Failed to write temporary file: {}", e))?;
-    
+
     Ok(temp_file_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 async fn local_open_file(local_path: String) -> Result<(), String> {
-    open::that(&local_path).map_err(|e| format!("Failed to open local file: {}", e))?;
+    let safe = guard_local_path(&local_path, false)?;
+    open::that(&safe).map_err(|e| format!("Failed to open local file: {}", e))?;
     Ok(())
 }
 
 #[tauri::command]
 async fn local_open_in_explorer(local_path: String) -> Result<(), String> {
-    let path = std::path::Path::new(&local_path);
-    if path.is_dir() {
-        open::that(path).map_err(|e| format!("Failed to open folder: {}", e))?;
-    } else if let Some(parent) = path.parent() {
+    let safe = guard_local_path(&local_path, false)?;
+    if safe.is_dir() {
+        open::that(&safe).map_err(|e| format!("Failed to open folder: {}", e))?;
+    } else if let Some(parent) = safe.parent() {
         open::that(parent).map_err(|e| format!("Failed to open folder: {}", e))?;
     }
     Ok(())

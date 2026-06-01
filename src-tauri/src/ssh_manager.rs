@@ -100,13 +100,11 @@ impl client::Handler for ClientHandler {
         let mut is_known = false;
         let mut had_any_prior = false;
         let mut prior_fingerprints: Vec<String> = Vec::new();
-        // Read the existing known_hosts rows in a SCOPED block. The std
-        // mutex guard must NOT live across any subsequent `.await` —
-        // its !Send nature would otherwise break the future's Send
-        // bound. A poisoned mutex used to be silently treated as
-        // "unknown host" (re-prompts the user, hides MITM); now we
-        // fail closed by setting an `aborted` flag and returning after
-        // the scope ends.
+        // Read known_hosts in a SCOPED block — the std mutex guard mustn't
+        // cross any `.await` (the !Send guard would break the future's Send
+        // bound). A poisoned mutex sets `aborted` so we fail closed instead
+        // of silently treating it as "unknown host" (which would re-prompt
+        // the user and hide a possible MITM).
         let mut aborted = false;
         {
             match self.db.lock() {

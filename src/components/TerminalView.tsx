@@ -205,22 +205,9 @@ const TerminalView = ({
       term.write(data);
     });
 
-    // Resize Observer for container resizing. Coalesce via rAF so a
-    // drag burst (60Hz worth of layout-change events) collapses to one
-    // fit+refresh per frame — without this the IPC channel to the
-    // backend would be flooded with resize_terminal calls during any
-    // window drag.
-    //
-    // Skip the refit entirely when this terminal isn't the visible tab.
-    // Hidden terminals stay mounted with non-zero `absolute inset-0`
-    // dimensions, so any session layout change (toggling the tool pane,
-    // dragging the divider, resizing the window) fires this observer on
-    // every tab at once. If we let it run, fit() reports a new cols/rows,
-    // term.onResize → invoke('resize_terminal') → SIGWINCH lands on the
-    // hidden tab's PTY, bash's checkwinsize redraws its prompt, and the
-    // user comes back to a stack of duplicated `[user@host]#` lines.
-    // The become-visible effect refits and refreshes when the tab is
-    // shown again, so nothing is lost by gating here.
+    // Coalesce resize bursts via rAF, and skip the refit on hidden tabs
+    // so SIGWINCH doesn't leak to background PTYs (the become-visible
+    // effect refits when the tab is shown again).
     let rafId = 0;
     const resizeObserver = new ResizeObserver(() => {
       if (!xtermRef.current) return;

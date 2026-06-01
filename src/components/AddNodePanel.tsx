@@ -100,14 +100,6 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               </select>
             </div>
 
-            {/*
-              Identity is now picked exclusively inside this auth section so
-              there's exactly one place a username can come from — either the
-              vault credential or the node's own inline fields. Removed the
-              redundant top-level User input that used to silently lose to
-              the vault row at connection time.
-            */}
-
             {newNode.authType === 'vault' && (() => {
               const selectedCred = credentials?.find((c: any) => c.id?.toString() === newNode.credentialId?.toString());
               return (

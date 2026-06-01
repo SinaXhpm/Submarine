@@ -277,16 +277,10 @@ async fn local_mtime(path: &Path) -> Option<u64> {
     meta.modified().ok()?.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
 }
 
-/// Stream a single file from disk into a freshly-opened SFTP write handle.
-/// We chunk the read so a multi-GB file doesn't try to live in RAM at once.
-///
-/// We do NOT touch the remote's mtime after upload — earlier versions did,
-/// and at least one SFTP server interpreted the round-tripped SETSTAT in
-/// a way that re-truncated the file to zero (the `mod up → empty file`
-/// bug). The downside of skipping is that subsequent dry-runs will see
-/// the just-uploaded file with local-mtime ≠ remote-mtime and fall back
-/// to the hash compare; but that's harmless — same content hashes equal,
-/// the file is correctly marked Identical, and no transfer happens.
+/// Stream a file to SFTP in 64 KiB chunks. We do NOT set the remote mtime
+/// after upload — some SFTP servers truncated the file on a round-tripped
+/// SETSTAT. Subsequent dry-runs fall back to hash compare, which catches
+/// real changes correctly.
 async fn sftp_upload_file(sftp: &SftpSession, local: &Path, remote: &str) -> Result<(), String> {
     if let Some(parent) = std::path::Path::new(remote).parent() {
         let pstr = parent.to_string_lossy().replace('\\', "/");
@@ -307,9 +301,7 @@ async fn sftp_upload_file(sftp: &SftpSession, local: &Path, remote: &str) -> Res
         if n == 0 { break; }
         handle.write_all(&buf[..n]).await.map_err(|e| format!("sftp write: {}", e))?;
     }
-    // Flush queued writes then close cleanly. Errors here are real — they
-    // mean bytes didn't land. Earlier the close error was `.ok()`-swallowed,
-    // which would mask a half-written file as success.
+    // Flush + close errors are real (bytes may not have landed) — propagate.
     handle.flush().await.map_err(|e| format!("sftp flush {}: {}", remote, e))?;
     handle.shutdown().await.map_err(|e| format!("sftp close {}: {}", remote, e))?;
     Ok(())

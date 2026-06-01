@@ -24,6 +24,14 @@ export const SessionView = ({ session, onClose, addLog, onStatusChange }: any) =
   }, [status, session?.id, onStatusChange]);
   const [disconnectReason, setDisconnectReason] = useState<string>("");
   const [logs, setLogs] = useState<{ msg: string, type: string }[]>([]);
+  // Cap to keep a chatty session (monitors, mirrors, MOTD spam) from
+  // ballooning React state — each render copies the whole array, so an
+  // unbounded log makes the UI quadratically slower over time.
+  const LOG_CAP = 500;
+  const pushLog = (entry: { msg: string, type: string }) =>
+    setLogs(prev => prev.length >= LOG_CAP
+      ? [...prev.slice(prev.length - LOG_CAP + 1), entry]
+      : [...prev, entry]);
   const [fingerprintPrompt, setFingerprintPrompt] = useState<any>(null);
   const [isAuthError, setIsAuthError] = useState(false);
   const [customPassword, setCustomPassword] = useState("");
@@ -97,13 +105,13 @@ export const SessionView = ({ session, onClose, addLog, onStatusChange }: any) =
     // same effect closure (the effect itself only runs once).
     invoke("initiate_connection", { sessionId: session.id, serverId: session.serverId, customPassword: customPasswordRef.current || null, quickAuth: session.quickAuth || null })
       .catch(e => {
-        setLogs(prev => [...prev, { msg: `Failed to initiate: ${e}`, type: 'error' }]);
+        pushLog({ msg: `Failed to initiate: ${e}`, type: 'error' });
         setStatus('failed');
       });
 
     // Setup listeners
     const unlistenLog = listen(`session-log-${session.id}`, (event: any) => {
-      setLogs(prev => [...prev, event.payload]);
+      pushLog(event.payload);
     });
 
     const unlistenPrompt = listen(`fingerprint-prompt-${session.id}`, (event: any) => {
@@ -125,7 +133,7 @@ export const SessionView = ({ session, onClose, addLog, onStatusChange }: any) =
     });
 
     const unlistenFailed = listen(`connection-failed-${session.id}`, (event: any) => {
-      setLogs(prev => [...prev, { msg: `Connection failed: ${event.payload?.reason}`, type: 'error' }]);
+      pushLog({ msg: `Connection failed: ${event.payload?.reason}`, type: 'error' });
       const isAuth = !!event.payload?.is_auth_error;
       setStatus('failed');
       setIsAuthError(isAuth);

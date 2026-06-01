@@ -364,13 +364,8 @@ function DesktopApp() {
         <span className="text-[12px] font-bold text-white tracking-tight">Submarine</span>
       </div>
       
-      {/* Tab strip is a drag region — clicks that land between tabs or on
-          empty title-bar space should move the window, matching how every
-          other tabbed desktop app behaves. The individual tabs below
-          carry `no-drag` so clicking a tab still selects it; the
-          previously-feared scrollbar-drag conflict is moot because the
-          scrollbar is force-hidden via .no-scrollbar, and horizontal
-          scroll comes from the wheel handler instead. */}
+      {/* Tab strip is a drag region; tabs themselves opt out via no-drag so
+          clicking a tab selects it instead of dragging the window. */}
       <div
         data-tauri-drag-region
         className="flex-1 flex gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1"
