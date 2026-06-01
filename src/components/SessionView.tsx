@@ -593,69 +593,70 @@ export const SessionView = ({ session, onClose, addLog, onStatusChange }: any) =
           />
         )}
 
-        {/* Right Panel: Side Panel (SFTP, Ports, CMDS).
-            Fixed width on desktop (user-resizable via divider); full width
-            on compact so users on smaller windows actually get a usable
-            file browser / tunnel list. */}
-        {activeTool && (
-          <div
-            style={isCompact ? undefined : { width: `${toolPanelWidth}px` }}
-            className={`${isCompact ? 'flex-1 min-w-0' : 'shrink-0'} bg-[#121214]/95 flex flex-col h-full overflow-hidden animate-in slide-in-from-right duration-300`}
-          >
-            {activeTool === 'sftp' && (
-              <div className="flex-1 flex flex-col overflow-hidden">
-                <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">SFTP File Browser</span>
-                  <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="flex-1 overflow-hidden relative">
-                  <SftpWorkspace sessionId={session.id} disabled={status !== 'connected'} />
-                </div>
+        {/* Tool side panel. MirrorsPanel stays mounted even when the user
+            pops over to SFTP / Ports / CMDS so its live status, log, and
+            event subscriptions don't reset every tool switch — a mirror in
+            initial-sync used to "look like it restarted" because the React
+            tree was torn down. Other tools still conditional-render: they
+            don't carry live state worth preserving across switches. */}
+        <div
+          style={activeTool && !isCompact ? { width: `${toolPanelWidth}px` } : undefined}
+          className={`${activeTool ? (isCompact ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-[#121214]/95 flex flex-col h-full overflow-hidden ${activeTool ? 'animate-in slide-in-from-right duration-300' : ''}`}
+        >
+          {activeTool === 'sftp' && (
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">SFTP File Browser</span>
+                <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
+                  <X size={14} />
+                </button>
               </div>
-            )}
-
-            {activeTool === 'tunnels' && (
-              <div className="flex-1 flex flex-col overflow-hidden">
-                <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Port Forwarding</span>
-                  <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="flex-1 overflow-hidden relative">
-                  <TunnelsPanel sessionId={session.id} disabled={status !== 'connected'} />
-                </div>
+              <div className="flex-1 overflow-hidden relative">
+                <SftpWorkspace sessionId={session.id} disabled={status !== 'connected'} />
               </div>
-            )}
+            </div>
+          )}
 
-            {activeTool === 'mirrors' && (
-              <div className="flex-1 flex flex-col overflow-hidden">
-                <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Folder mirror</span>
-                  <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="flex-1 overflow-hidden relative">
-                  <MirrorsPanel
-                    sessionId={session.id}
-                    serverId={session.serverId}
-                    configuredMirrors={(() => {
-                      try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
-                    })()}
-                    disabled={status !== 'connected'}
-                  />
-                </div>
+          {activeTool === 'tunnels' && (
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Port Forwarding</span>
+                <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
+                  <X size={14} />
+                </button>
               </div>
-            )}
+              <div className="flex-1 overflow-hidden relative">
+                <TunnelsPanel sessionId={session.id} disabled={status !== 'connected'} />
+              </div>
+            </div>
+          )}
 
-            {activeTool === 'cmds' && (
-              <CmdsPanel activeTab={activeTab} onClose={() => setActiveTool(null)} />
-            )}
+          {/* Mirror sub-pane: keep MOUNTED (CSS hidden) when another tool
+              is active so the live worker's logs and counters stay on
+              screen the next time the user opens it. */}
+          <div className={`${activeTool === 'mirrors' ? 'flex-1 flex flex-col overflow-hidden' : 'hidden'}`}>
+            <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Folder mirror</span>
+              <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
+                <X size={14} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden relative">
+              <MirrorsPanel
+                sessionId={session.id}
+                serverId={session.serverId}
+                configuredMirrors={(() => {
+                  try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
+                })()}
+                disabled={status !== 'connected'}
+              />
+            </div>
           </div>
-        )}
+
+          {activeTool === 'cmds' && (
+            <CmdsPanel activeTab={activeTab} onClose={() => setActiveTool(null)} />
+          )}
+        </div>
       </div>
     </div>
   );

@@ -208,17 +208,63 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     lastSelectedPathRef.current = entry.path;
   };
 
-  // Autocomplete suggestions for the path input — only when typing inside the
-  // current directory, otherwise the dropdown becomes noise.
+  // Forward-walking autocomplete. As the user types a path, look at the
+  // segment AFTER the last separator and prefix-match it against whichever
+  // directory's listing applies. Three sources, in order of preference:
+  //   1. typed path's parent matches the pane's current directory → use
+  //      the already-loaded `entries` (free, no SFTP roundtrip).
+  //   2. typed parent matches a previously-prefetched lookahead → reuse
+  //      that cached listing.
+  //   3. typed parent is somewhere else → kick a debounced provider.list
+  //      to load it (effect below), then case 2 lights up.
+  const [lookaheadParent, setLookaheadParent] = useState<string>("");
+  const [lookaheadEntries, setLookaheadEntries] = useState<FileEntry[]>([]);
+
+  // Split the typed input into (parent_dir, leaf_prefix) using either '/'
+  // or '\' as the separator so Windows local paths work too.
+  const splitInputPath = (input: string): { parent: string; leaf: string } | null => {
+    const sep = Math.max(input.lastIndexOf('/'), input.lastIndexOf('\\'));
+    if (sep < 0) return null;
+    // Keep the trailing separator on the parent so "/var/" parses as
+    // parent=/var/, leaf="" — that's what makes typing the slash trigger
+    // a fresh listing of the directory below.
+    const parent = input.substring(0, sep + 1);
+    const leaf = input.substring(sep + 1);
+    return { parent, leaf };
+  };
+
+  // Prefetch listings for typed paths outside the current directory. Debounced
+  // so a fast typist doesn't fire one SFTP request per keystroke; skipped
+  // when the typed parent already matches currentPath (free from `entries`).
+  useEffect(() => {
+    if (!inputFocused) return;
+    const split = splitInputPath(tempInput);
+    if (!split) return;
+    // Normalize: most providers report paths without the trailing '/'.
+    const probe = split.parent.replace(/[\\/]+$/, "") || "/";
+    if (probe === currentPath || probe === lookaheadParent) return;
+    const t = setTimeout(async () => {
+      try {
+        const result = await provider.list(probe);
+        setLookaheadEntries(result.entries);
+        setLookaheadParent(result.currentPath);
+      } catch { /* parent doesn't exist (yet) — suggestions just stay empty */ }
+    }, 220);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tempInput, inputFocused, currentPath]);
+
   const suggestions = (() => {
     if (!inputFocused) return [];
-    if (tempInput.startsWith(currentPath)) {
-      const suffix = tempInput.substring(currentPath.length).replace(/^[\\/]/, "");
-      if (!suffix.includes("/") && !suffix.includes("\\")) {
-        return entries.filter(e => e.name.toLowerCase().startsWith(suffix.toLowerCase()));
-      }
-    }
-    return [];
+    const split = splitInputPath(tempInput);
+    if (!split) return [];
+    const probe = split.parent.replace(/[\\/]+$/, "") || "/";
+    const source =
+      probe === currentPath      ? entries :
+      probe === lookaheadParent  ? lookaheadEntries :
+                                   [];
+    const leafLower = split.leaf.toLowerCase();
+    return source.filter(e => e.name.toLowerCase().startsWith(leafLower));
   })();
 
   const pickSuggestion = (e: FileEntry) => {
@@ -548,7 +594,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       )}
 
       {notification && (
-        <div className={`absolute top-3 right-3 z-50 px-3 py-1.5 rounded-lg border text-[11px] font-mono shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-4 duration-300 ${
+        // Bottom-right of the pane, not top-right — top-right used to sit
+        // on top of the path-bar header and obscure the first row of
+        // entries on a short pane. Bottom keeps the file list visible.
+        <div className={`absolute bottom-3 right-3 z-50 max-w-[80%] px-3 py-1.5 rounded-lg border text-[11px] font-mono shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-4 duration-300 ${
           notification.type === "success" ? "bg-emerald-950/90 border-emerald-500/30 text-emerald-400" :
           notification.type === "error"   ? "bg-rose-950/90 border-rose-500/30 text-rose-400" :
                                             "bg-indigo-950/90 border-indigo-500/30 text-indigo-400"

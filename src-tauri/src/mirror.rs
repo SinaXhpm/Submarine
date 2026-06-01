@@ -48,6 +48,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{oneshot, Mutex};
+use tokio::task::JoinSet;
 
 use crate::ssh_manager::ClientHandler;
 
@@ -93,7 +94,7 @@ pub struct MirrorStatus {
     pub session_id: String,
     pub local: String,
     pub remote: String,
-    /// "starting" | "initial-sync" | "watching" | "error" | "stopped"
+    /// "starting" | "scanning" | "initial-sync" | "watching" | "error" | "stopped"
     pub state: String,
     /// Pending FS events queued for the worker.
     pub queue_depth: u32,
@@ -102,6 +103,16 @@ pub struct MirrorStatus {
     /// phase is push-only so it stays at the initial-sync value afterwards.
     pub downloaded: u32,
     pub deleted: u32,
+    /// Files visited so far during the scan/compare phase. Lets the UI
+    /// show "Scanning… (N files checked)" instead of an opaque spinner
+    /// on big trees where compare_files can take a while.
+    pub scanned: u32,
+    /// Total transfers the initial sync will do (uploads + downloads).
+    /// 0 until the scan completes.
+    pub transfer_total: u32,
+    /// Transfers finished so far during the initial sync — uploaded +
+    /// downloaded combined. Lets the UI render a progress bar.
+    pub transfer_done: u32,
     /// Wall-clock time (ms since epoch) of the most recent successful action.
     pub last_event_ms: u128,
     pub error: Option<String>,
@@ -478,11 +489,12 @@ pub async fn dry_run(
     // files that exist on the server but not in `seen`, i.e. truly
     // remote-only paths. This split avoids hashing each ambiguous
     // file twice.
+    let mut scanned = 0u32;
     walk_local(&local_root, &local_root, &spec.remote, &spec.excludes, &sftp,
                &spec.conflict_resolution,
-               &mut entries, &mut total_bytes, &mut seen).await?;
+               &mut entries, &mut total_bytes, &mut seen, &mut scanned).await?;
     walk_remote(&sftp, &local_root, &spec.remote, &spec.remote, &spec.excludes,
-                &mut entries, &mut total_bytes, &seen).await?;
+                &mut entries, &mut total_bytes, &seen, &mut scanned).await?;
     Ok(DryRunReport { entries, total_bytes })
 }
 
@@ -491,6 +503,7 @@ pub async fn dry_run(
 /// direction using the mirror's `conflict_resolution` setting. Every
 /// visited rel path goes into `seen` so walk_remote can identify which
 /// remote files weren't covered here and need a download-new entry.
+/// `scanned` increments once per file visited (for progress UI).
 async fn walk_local(
     root: &Path,
     dir: &Path,
@@ -501,6 +514,7 @@ async fn walk_local(
     out: &mut Vec<DryRunEntry>,
     total: &mut u64,
     seen: &mut HashSet<String>,
+    scanned: &mut u32,
 ) -> Result<(), String> {
     let mut rd = tokio::fs::read_dir(dir).await.map_err(|e| format!("read_dir {:?}: {}", dir, e))?;
     while let Some(entry) = rd.next_entry().await.map_err(|e| format!("dir iter: {}", e))? {
@@ -509,10 +523,11 @@ async fn walk_local(
         if is_excluded(&rel, excludes) { continue; }
         let meta = match entry.metadata().await { Ok(m) => m, Err(_) => continue };
         if meta.is_dir() {
-            Box::pin(walk_local(root, &path, remote_root, excludes, sftp, conflict_mode, out, total, seen)).await?;
+            Box::pin(walk_local(root, &path, remote_root, excludes, sftp, conflict_mode, out, total, seen, scanned)).await?;
             continue;
         }
         if !meta.is_file() { continue; } // skip symlinks / sockets / pipes
+        *scanned = scanned.saturating_add(1);
         let remote_path = match local_to_remote(&path, root, remote_root) {
             Some(r) => r, None => continue,
         };
@@ -564,6 +579,7 @@ async fn walk_remote(
     out: &mut Vec<DryRunEntry>,
     total: &mut u64,
     seen: &HashSet<String>,
+    scanned: &mut u32,
 ) -> Result<(), String> {
     let read = match sftp.read_dir(remote_dir).await {
         Ok(r) => r,
@@ -583,9 +599,10 @@ async fn walk_remote(
         if is_excluded(&rel, excludes) { continue; }
 
         if entry.file_type().is_dir() {
-            Box::pin(walk_remote(sftp, local_root, remote_root, &remote_path, excludes, out, total, seen)).await?;
+            Box::pin(walk_remote(sftp, local_root, remote_root, &remote_path, excludes, out, total, seen, scanned)).await?;
             continue;
         }
+        *scanned = scanned.saturating_add(1);
         // walk_local already decided this file's fate — don't double-emit.
         if seen.contains(&rel) { continue; }
         let attr = entry.metadata();
@@ -623,6 +640,9 @@ pub async fn start(
         uploaded: 0,
         downloaded: 0,
         deleted: 0,
+        scanned: 0,
+        transfer_total: 0,
+        transfer_done: 0,
         last_event_ms: now_ms(),
         error: None,
     };
@@ -717,53 +737,116 @@ async fn run_mirror(
     mut stop_rx: oneshot::Receiver<()>,
 ) -> Result<(), String> {
     let local_root = PathBuf::from(&spec.local);
-    let sftp = open_sftp(&handle).await?;
+    // Shared so the parallel transfer pool can hold references concurrently.
+    // SftpSession is internally async-safe — concurrent ops multiplex over
+    // request IDs on the same channel.
+    let sftp = Arc::new(open_sftp(&handle).await?);
 
-    // --- Initial sync: two-way reconciliation, content-aware ---
-    set_state(&app, &status, "initial-sync", None).await;
+    // --- Scan phase: walk both sides, decide what moves where -----------------
+    // Separate from initial-sync state so a big tree doesn't look hung while
+    // compare_files chews through SFTP metadata + hash compares.
+    set_state(&app, &status, "scanning", None).await;
+    emit_log(&app, &session_id, &mirror_id, "info", "scan-start",
+             Some(spec.local.clone()), None);
     let mut work = Vec::new();
     let mut total = 0u64;
     let mut seen = HashSet::new();
+    let mut scanned = 0u32;
     walk_local(&local_root, &local_root, &spec.remote, &spec.excludes,
-               &sftp, &spec.conflict_resolution,
-               &mut work, &mut total, &mut seen).await?;
-    walk_remote(&sftp, &local_root, &spec.remote, &spec.remote, &spec.excludes,
-                &mut work, &mut total, &seen).await?;
-    for entry in &work {
-        if stop_rx.try_recv().is_ok() { return Ok(()); }
-        let local_path = local_root.join(entry.path.replace('/', std::path::MAIN_SEPARATOR_STR));
-        let remote_path = match local_to_remote(&local_path, &local_root, &spec.remote) {
-            Some(r) => r, None => continue,
+               &*sftp, &spec.conflict_resolution,
+               &mut work, &mut total, &mut seen, &mut scanned).await?;
+    walk_remote(&*sftp, &local_root, &spec.remote, &spec.remote, &spec.excludes,
+                &mut work, &mut total, &seen, &mut scanned).await?;
+    {
+        let mut s = status.lock().await;
+        s.scanned = scanned;
+        s.transfer_total = work.len() as u32;
+        s.transfer_done = 0;
+    }
+    emit_update(&app, &status.lock().await.clone()).await;
+    emit_log(&app, &session_id, &mirror_id, "info", "scan-done", None,
+             Some(format!("scanned {} files, {} to transfer ({} bytes)",
+                          scanned, work.len(), total)));
+
+    // --- Transfer phase: parallel pool of N workers sharing one SFTP channel.
+    // Big speedup on high-latency links because while one transfer is waiting
+    // on packet round-trips, the others can be writing/reading.
+    if !work.is_empty() {
+        set_state(&app, &status, "initial-sync", None).await;
+        const PARALLEL: usize = 4;
+        let mut set: JoinSet<(DryRunEntry, Result<(), String>, bool)> = JoinSet::new();
+        let mut iter = work.into_iter();
+
+        let spawn_one = |js: &mut JoinSet<_>, entry: DryRunEntry| {
+            let is_download = entry.action.starts_with("download-");
+            let sftp = Arc::clone(&sftp);
+            let local_root = local_root.clone();
+            let remote_root = spec.remote.clone();
+            js.spawn(async move {
+                let local_path = local_root.join(entry.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+                let remote_path = match local_to_remote(&local_path, &local_root, &remote_root) {
+                    Some(r) => r,
+                    None => return (entry, Err("path mapping failed".into()), is_download),
+                };
+                let res = if is_download {
+                    let mt = sftp_remote_mtime(&*sftp, &remote_path).await;
+                    sftp_download_file(&*sftp, &remote_path, &local_path, mt).await
+                } else {
+                    sftp_upload_file(&*sftp, &local_path, &remote_path).await
+                };
+                (entry, res, is_download)
+            });
         };
-        let is_download = entry.action.starts_with("download-");
-        let res = if is_download {
-            let mt = sftp_remote_mtime(&sftp, &remote_path).await;
-            sftp_download_file(&sftp, &remote_path, &local_path, mt).await
-        } else {
-            sftp_upload_file(&sftp, &local_path, &remote_path).await
-        };
-        match res {
-            Ok(_) => {
-                {
-                    let mut s = status.lock().await;
-                    if is_download {
-                        s.downloaded = s.downloaded.saturating_add(1);
-                    } else {
-                        s.uploaded = s.uploaded.saturating_add(1);
+
+        // Prime the pool.
+        for _ in 0..PARALLEL {
+            if let Some(e) = iter.next() { spawn_one(&mut set, e); } else { break; }
+        }
+
+        while !set.is_empty() {
+            // Race the stop signal against the next transfer finishing.
+            // On stop we abort the whole pool; tokio drops in-flight tasks
+            // cleanly and we exit before re-entering the watcher phase.
+            let joined = tokio::select! {
+                _ = &mut stop_rx => { set.shutdown().await; return Ok(()); }
+                j = set.join_next() => j,
+            };
+            let Some(joined) = joined else { break };
+            let (entry, res, is_download) = match joined {
+                Ok(t) => t,
+                Err(_) => { continue }
+            };
+            match res {
+                Ok(_) => {
+                    {
+                        let mut s = status.lock().await;
+                        if is_download {
+                            s.downloaded = s.downloaded.saturating_add(1);
+                        } else {
+                            s.uploaded = s.uploaded.saturating_add(1);
+                        }
+                        s.transfer_done = s.transfer_done.saturating_add(1);
+                        s.last_event_ms = now_ms();
                     }
-                    s.last_event_ms = now_ms();
+                    emit_update(&app, &status.lock().await.clone()).await;
+                    emit_log(&app, &session_id, &mirror_id, "info",
+                             if is_download { "download" } else { "upload" },
+                             Some(entry.path.clone()),
+                             Some(format!("{} ({} bytes)", entry.action, entry.size)));
                 }
-                emit_update(&app, &status.lock().await.clone()).await;
-                emit_log(&app, &session_id, &mirror_id, "info",
-                         if is_download { "download" } else { "upload" },
-                         Some(entry.path.clone()),
-                         Some(format!("{} ({} bytes)", entry.action, entry.size)));
+                Err(e) => {
+                    {
+                        let mut s = status.lock().await;
+                        s.transfer_done = s.transfer_done.saturating_add(1);
+                    }
+                    emit_update(&app, &status.lock().await.clone()).await;
+                    emit_log(&app, &session_id, &mirror_id, "error",
+                             if is_download { "download-fail" } else { "upload-fail" },
+                             Some(entry.path.clone()), Some(e));
+                }
             }
-            Err(e) => {
-                emit_log(&app, &session_id, &mirror_id, "error",
-                         if is_download { "download-fail" } else { "upload-fail" },
-                         Some(entry.path.clone()), Some(e));
-            }
+            // Refill the slot the finished task vacated.
+            if let Some(e) = iter.next() { spawn_one(&mut set, e); }
         }
     }
 
@@ -817,7 +900,7 @@ async fn run_mirror(
                 emit_update(&app, &status.lock().await.clone()).await;
                 for path in paths {
                     process_event(&app, &session_id, &mirror_id, &local_root, &spec,
-                                  &sftp, &status, &path).await;
+                                  &*sftp, &status, &path).await;
                     {
                         let mut s = status.lock().await;
                         s.queue_depth = s.queue_depth.saturating_sub(1);

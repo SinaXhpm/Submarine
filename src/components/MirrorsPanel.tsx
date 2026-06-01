@@ -30,11 +30,14 @@ interface MirrorStatus {
   session_id: string;
   local: string;
   remote: string;
-  state: string;       // "starting" | "initial-sync" | "watching" | "error" | "stopped"
+  state: string;       // "starting" | "scanning" | "initial-sync" | "watching" | "error" | "stopped"
   queue_depth: number;
   uploaded: number;
   downloaded: number;
   deleted: number;
+  scanned: number;
+  transfer_total: number;
+  transfer_done: number;
   last_event_ms: number;
   error?: string;
 }
@@ -67,6 +70,45 @@ interface MirrorsPanelProps {
 }
 
 const LOG_CAP = 200;
+
+// Shared status row used by every mirror card (saved + ad-hoc). Renders the
+// state badge, transfer counters, and an inline progress bar that lights up
+// during the initial-sync transfer phase.
+function MirrorLiveStatus({ live }: { live: MirrorStatus }) {
+  const stateBadge =
+    live.state === "watching"     ? "bg-emerald-500/15 text-emerald-300" :
+    live.state === "initial-sync" ? "bg-indigo-500/15 text-indigo-300"   :
+    live.state === "scanning"     ? "bg-sky-500/15 text-sky-300"         :
+    live.state === "error"        ? "bg-rose-500/15 text-rose-300"       :
+                                    "bg-white/5 text-zinc-400";
+  const pct = live.transfer_total > 0
+    ? Math.round((live.transfer_done * 100) / live.transfer_total)
+    : 0;
+  return (
+    <div className="mt-1 space-y-1">
+      <div className="flex items-center gap-3 text-[10px] text-zinc-500 flex-wrap">
+        <span className={`px-1.5 rounded ${stateBadge}`}>{live.state}</span>
+        {live.state === "scanning" && (
+          <span className="text-sky-300">scanned {live.scanned}</span>
+        )}
+        {live.state === "initial-sync" && live.transfer_total > 0 && (
+          <span className="text-indigo-300">{live.transfer_done}/{live.transfer_total} ({pct}%)</span>
+        )}
+        <span>↑ {live.uploaded}</span>
+        <span>↓ {live.downloaded}</span>
+        <span>✗ {live.deleted}</span>
+        {live.queue_depth > 0 && <span className="text-amber-300">queue {live.queue_depth}</span>}
+        {live.error && <span className="text-rose-400 truncate" title={live.error}>· {live.error}</span>}
+      </div>
+      {live.state === "initial-sync" && live.transfer_total > 0 && (
+        <div className="h-1 bg-white/5 rounded overflow-hidden">
+          <div className="h-full bg-indigo-500 transition-[width] duration-150"
+               style={{ width: `${pct}%` }} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = false }: MirrorsPanelProps) => {
   const [statuses, setStatuses] = useState<Record<string, MirrorStatus>>({});
@@ -449,21 +491,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                   </button>
                 )}
               </div>
-              {live && (
-                <div className="mt-1 flex items-center gap-3 text-[10px] text-zinc-500">
-                  <span className={`px-1.5 rounded ${
-                    live.state === "watching"     ? "bg-emerald-500/15 text-emerald-300" :
-                    live.state === "initial-sync" ? "bg-indigo-500/15 text-indigo-300" :
-                    live.state === "error"        ? "bg-rose-500/15 text-rose-300" :
-                                                    "bg-white/5 text-zinc-400"
-                  }`}>{live.state}</span>
-                  <span>↑ {live.uploaded}</span>
-                  <span>↓ {live.downloaded}</span>
-                  <span>✗ {live.deleted}</span>
-                  {live.queue_depth > 0 && <span className="text-amber-300">queue {live.queue_depth}</span>}
-                  {live.error && <span className="text-rose-400 truncate" title={live.error}>· {live.error}</span>}
-                </div>
-              )}
+              {live && <MirrorLiveStatus live={live} />}
             </div>
           );
         })}
@@ -488,17 +516,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                   <Square size={11} />
                 </button>
               </div>
-              <div className="mt-1 flex items-center gap-3 text-[10px] text-zinc-500">
-                <span className={`px-1.5 rounded ${
-                  live.state === "watching"     ? "bg-emerald-500/15 text-emerald-300" :
-                  live.state === "initial-sync" ? "bg-indigo-500/15 text-indigo-300" :
-                  live.state === "error"        ? "bg-rose-500/15 text-rose-300" :
-                                                  "bg-white/5 text-zinc-400"
-                }`}>{live.state}</span>
-                <span>↑ {live.uploaded}</span>
-                <span>✗ {live.deleted}</span>
-                {live.queue_depth > 0 && <span className="text-amber-300">queue {live.queue_depth}</span>}
-              </div>
+              <MirrorLiveStatus live={live} />
             </div>
           ))}
 
