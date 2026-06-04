@@ -223,6 +223,16 @@ export const SessionView = ({ session, onClose, addLog, onStatusChange }: any) =
     }).catch(console.error);
   };
 
+  // Tab-strip right-click "Reconnect" fires a DOM CustomEvent rather than
+  // round-tripping through React props — keeps DesktopApp's tab UI decoupled
+  // from SessionView's reconnect lifecycle.
+  useEffect(() => {
+    const onReconnect = () => reconnect();
+    const evt = `session-reconnect-${session.id}`;
+    window.addEventListener(evt, onReconnect);
+    return () => window.removeEventListener(evt, onReconnect);
+  }, [session.id, customPassword]);
+
   // ---- Tool pane sizing + window growth ------------------------------------
   // Philosophy: the terminal column is sacred. Opening a tool pane or
   // dragging the divider grows or shrinks the OS window in lockstep so the

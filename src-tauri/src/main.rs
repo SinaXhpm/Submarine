@@ -618,6 +618,20 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
                 return Err(format!("[DATABASE] MIRRORS_MIGRATION_FAILED: {}", s));
             }
         }
+        // Schema migrations for the per-node and per-folder colour bar. NULL
+        // means "use the default ring" — the UI treats absence as the same
+        // visual as before this column existed.
+        for stmt in [
+            "ALTER TABLE servers ADD COLUMN color TEXT",
+            "ALTER TABLE folders ADD COLUMN color TEXT",
+        ] {
+            if let Err(e) = conn.execute(stmt, []) {
+                let s = e.to_string();
+                if !s.contains("duplicate column name") {
+                    return Err(format!("[DATABASE] COLOR_MIGRATION_FAILED: {}", s));
+                }
+            }
+        }
     } else {
         let mut fresh = [0u8; SALT_LEN];
         rand::thread_rng().fill(&mut fresh);
@@ -638,10 +652,10 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
         conn = Connection::open_in_memory()
             .map_err(|e| format!("[DATABASE] MEM_INIT_FAILED: {}", e))?;
         conn.execute_batch(
-            "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER);
+            "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT);
@@ -892,6 +906,7 @@ async fn add_server(
     key_id: Option<i32>,
     autostart: Option<bool>,
     mirrors: Option<Vec<serde_json::Value>>,
+    color: Option<String>,
 ) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
@@ -911,8 +926,8 @@ async fn add_server(
 
     let autostart_i: i32 = if autostart.unwrap_or(false) { 1 } else { 0 };
     let res = conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-        rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json],
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color],
     ).map_err(|e| format!("[DATABASE] SERVER_INSERT_FAILED: SQL_ERROR={}", e))?;
 
     if res == 0 {
@@ -943,6 +958,7 @@ async fn edit_server(
     key_id: Option<i32>,
     autostart: Option<bool>,
     mirrors: Option<Vec<serde_json::Value>>,
+    color: Option<String>,
 ) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
@@ -958,8 +974,8 @@ async fn edit_server(
 
     let autostart_i: i32 = if autostart.unwrap_or(false) { 1 } else { 0 };
     conn.execute(
-        "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15 WHERE id=?16",
-        rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, id],
+        "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
+        rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
     ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
 
     drop(conn_guard);
@@ -1017,6 +1033,59 @@ async fn add_mirror_to_server(
     Ok(())
 }
 
+/// Light-weight colour write — used by the NodeGrid swatch picker so the
+/// caller doesn't have to round-trip the whole edit_server payload just to
+/// change one tag. Pass `None` to clear back to the default ring.
+#[tauri::command]
+async fn set_server_color(state: tauri::State<'_, DbState>, id: i32, color: Option<String>) -> Result<(), String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    conn.execute(
+        "UPDATE servers SET color=?1 WHERE id=?2",
+        rusqlite::params![color, id],
+    ).map_err(|e| format!("[DATABASE] SERVER_COLOR_FAILED: {}", e))?;
+    drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_folder_color(state: tauri::State<'_, DbState>, id: i32, color: Option<String>) -> Result<(), String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    conn.execute(
+        "UPDATE folders SET color=?1 WHERE id=?2",
+        rusqlite::params![color, id],
+    ).map_err(|e| format!("[DATABASE] FOLDER_COLOR_FAILED: {}", e))?;
+    drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(())
+}
+
+/// Duplicate a server row verbatim — including credentials linkage, tunnels,
+/// mirrors, proxy config, colour. The clone gets a "{name} (copy)" suffix so
+/// it shows up beside the original in the grid; everything else is identical
+/// so the user can connect to the same target with a different label or
+/// tweak one field without retyping the rest.
+#[tauri::command]
+async fn clone_server(state: tauri::State<'_, DbState>, id: i32) -> Result<i64, String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    let affected = conn.execute(
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color)
+         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color
+         FROM servers WHERE id = ?1",
+        rusqlite::params![id],
+    ).map_err(|e| format!("[DATABASE] SERVER_CLONE_FAILED: {}", e))?;
+    if affected == 0 {
+        return Err(format!("[DATABASE] SERVER_CLONE_FAILED: no row with id {}", id));
+    }
+    let new_id = conn.last_insert_rowid();
+    drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(new_id)
+}
+
 #[tauri::command]
 async fn delete_server(state: tauri::State<'_, DbState>, id: i32) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
@@ -1034,7 +1103,7 @@ async fn delete_server(state: tauri::State<'_, DbState>, id: i32) -> Result<(), 
 async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json::Value>, String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors FROM servers")
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color FROM servers")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -1055,6 +1124,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             "key_id": row.get::<_, Option<i32>>(13)?,
             "autostart": row.get::<_, i32>(14).unwrap_or(0) != 0,
             "mirrors": row.get::<_, Option<String>>(15)?.unwrap_or_else(|| "[]".to_string()),
+            "color": row.get::<_, Option<String>>(16)?,
         }))
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
@@ -1206,13 +1276,14 @@ async fn delete_folder(state: tauri::State<'_, DbState>, id: i32) -> Result<(), 
 async fn get_folders(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json::Value>, String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-    let mut stmt = conn.prepare("SELECT id, name, parent_id FROM folders").map_err(|e| e.to_string())?;
-    
+    let mut stmt = conn.prepare("SELECT id, name, parent_id, color FROM folders").map_err(|e| e.to_string())?;
+
     let rows = stmt.query_map([], |row| {
         Ok(json!({
-            "id": row.get::<_, i32>(0)?, 
-            "name": row.get::<_, String>(1)?, 
-            "parent_id": row.get::<_, Option<i32>>(2)?
+            "id": row.get::<_, i32>(0)?,
+            "name": row.get::<_, String>(1)?,
+            "parent_id": row.get::<_, Option<i32>>(2)?,
+            "color": row.get::<_, Option<String>>(3)?,
         }))
     }).map_err(|e| e.to_string())?;
     
@@ -1425,8 +1496,17 @@ async fn initiate_connection(
     let state_connections = Arc::clone(&state.connections);
     let state_sftp_sessions = Arc::clone(&state.sftp_sessions);
     let state_tunnels = Arc::clone(&state.tunnels);
+    let state_session_tunnel_specs = Arc::clone(&state.session_tunnel_specs);
     let fp_txs_clone = Arc::clone(&state.fp_txs);
     let db_conn_shared = Arc::clone(&db_state.conn);
+
+    // Reconnect path: tear down any stale listeners + R-tunnel registrations
+    // bound to this session_id. Without this, the old TCP listener stays bound
+    // to the local port, the new start_tunnel below hits a bind conflict, and
+    // every existing tunnel silently routes traffic into a dead SSH handle.
+    // First-connect is a no-op (no entries to remove).
+    tunnel::stop_all_for_session(&state.tunnels, &session_id).await;
+    state.forwarded_targets.lock().await.remove(&session_id);
 
     // Per-session map for R-tunnel target lookups. Created here so the same
     // Arc can be handed to both the ClientHandler (consulted on incoming
@@ -1769,11 +1849,12 @@ async fn initiate_connection(
 
         emit_log("Starting SSH Handshake and establishing secure session...", "info");
         let mut config = client::Config::default();
-        // russh sends a keepalive request every 30s once the connection is up.
-        // Without this, idle servers behind NAT/firewall happily drop the TCP
-        // session after a few minutes of silence. Pair it with the watcher
-        // task below so we surface lost connections to the UI promptly.
-        config.keepalive_interval = Some(Duration::from_secs(30));
+        // SSH keepalive every 20s. The shorter interval matters because most
+        // consumer routers drop idle NAT mappings around the 2-minute mark,
+        // and many corporate firewalls are stricter still. russh 0.40 has
+        // no `keepalive_max` knob, so the watcher loop below relies on
+        // `is_closed()` to surface drops within a couple of seconds.
+        config.keepalive_interval = Some(Duration::from_secs(20));
         // Bigger receive window + max-allowed packet size: lets SFTP/tunnel
         // streams keep the BDP full on high-latency links. Default 2 MiB
         // window caps a single channel at ~16 Mbps over 1s RTT; 8 MiB lifts
@@ -1891,33 +1972,47 @@ async fn initiate_connection(
                             serde_json::json!({}),
                         );
 
-                        // Auto-start any tunnel rules the user attached to this
-                        // server. Failures are surfaced in-app via the tunnel
-                        // status event — they don't fail the SSH connect.
-                        match serde_json::from_str::<Vec<tunnel::TunnelSpec>>(&tunnels_json) {
-                            Ok(specs) => {
-                                for spec in specs {
-                                    let started = tunnel::start_tunnel(
-                                        app.clone(),
-                                        session_id_clone.clone(),
-                                        Arc::clone(&session_arc),
-                                        Arc::clone(&state_tunnels),
-                                        Arc::clone(&session_forwarded_targets),
-                                        spec.clone(),
-                                    ).await;
-                                    match started {
-                                        Ok(id) => emit_log(
-                                            &format!("Tunnel started [{}]: {} {}", id, spec.kind, spec.local),
-                                            "info",
-                                        ),
-                                        Err(e) => emit_log(
-                                            &format!("Tunnel start failed ({} {}): {}", spec.kind, spec.local, e),
-                                            "error",
-                                        ),
+                        // Auto-start every tunnel attached to this session.
+                        // Source of truth is the in-memory `session_tunnel_specs`
+                        // map, which carries both the DB-saved rules AND any
+                        // ad-hoc tunnels the user opened during the previous
+                        // session lifetime. On first connect it's empty, so
+                        // we seed it from the DB row's `tunnels` JSON.
+                        let specs_to_start: Vec<tunnel::TunnelSpec> = {
+                            let mut map = state_session_tunnel_specs.lock().await;
+                            match map.get(&session_id_clone).cloned() {
+                                Some(existing) if !existing.is_empty() => existing,
+                                _ => match serde_json::from_str::<Vec<tunnel::TunnelSpec>>(&tunnels_json) {
+                                    Ok(db_specs) => {
+                                        map.insert(session_id_clone.clone(), db_specs.clone());
+                                        db_specs
+                                    }
+                                    Err(e) => {
+                                        emit_log(&format!("Tunnels JSON parse error: {}", e), "error");
+                                        Vec::new()
                                     }
                                 }
                             }
-                            Err(e) => emit_log(&format!("Tunnels JSON parse error: {}", e), "error"),
+                        };
+                        for spec in &specs_to_start {
+                            let started = tunnel::start_tunnel(
+                                app.clone(),
+                                session_id_clone.clone(),
+                                Arc::clone(&session_arc),
+                                Arc::clone(&state_tunnels),
+                                Arc::clone(&session_forwarded_targets),
+                                spec.clone(),
+                            ).await;
+                            match started {
+                                Ok(id) => emit_log(
+                                    &format!("Tunnel started [{}]: {} {}", id, spec.kind, spec.local),
+                                    "info",
+                                ),
+                                Err(e) => emit_log(
+                                    &format!("Tunnel start failed ({} {}): {}", spec.kind, spec.local, e),
+                                    "error",
+                                ),
+                            }
                         }
 
                         // Health watcher: polls the SSH handle every 5s. If
@@ -1934,7 +2029,7 @@ async fn initiate_connection(
                         let state_sftp_w = Arc::clone(&state_sftp_sessions);
                         tauri::async_runtime::spawn(async move {
                             loop {
-                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                tokio::time::sleep(Duration::from_secs(2)).await;
 
                                 let handle_opt = {
                                     let conns = state_w.lock().await;
@@ -1945,6 +2040,12 @@ async fn initiate_connection(
                                     None => break, // explicit disconnect — quiet
                                 };
 
+                                // is_closed() catches everything russh's own
+                                // keepalive_max disconnect tripped, plus any
+                                // TCP RST / FIN from the peer. With the 2s
+                                // poll the UI sees the drop within seconds
+                                // instead of waiting for the next user action
+                                // to fail.
                                 let is_closed = {
                                     let h = handle_arc.lock().await;
                                     h.is_closed()
@@ -1969,8 +2070,39 @@ async fn initiate_connection(
                         let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": "Access Denied", "is_auth_error": true}));
                     },
                     Err(e) => {
-                        emit_log(&format!("Auth error: {}", e), "error");
-                        let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": e.to_string(), "is_auth_error": true}));
+                        // russh bubbles transport errors up through the same
+                        // Result that signals real credential rejection. We
+                        // don't want a transient network blip to look like a
+                        // permanent "wrong password" — that's why connect-
+                        // failed carries `is_auth_error`. Sniff the string
+                        // for the few unambiguous transport markers (io,
+                        // disconnect, eof, reset, broken pipe, timed out)
+                        // and only flag the remainder as real auth errors.
+                        let raw = e.to_string();
+                        let lc = raw.to_lowercase();
+                        let is_network = lc.contains("timed out")
+                            || lc.contains("timeout")
+                            || lc.contains("io error")
+                            || lc.contains("connection reset")
+                            || lc.contains("broken pipe")
+                            || lc.contains("connection aborted")
+                            || lc.contains("connection refused")
+                            || lc.contains("eof")
+                            || lc.contains("disconnected")
+                            || lc.contains("disconnect");
+                        let reason = if is_network {
+                            format!("Connection lost during authentication: {}", raw)
+                        } else {
+                            format!("Authentication error: {}", raw)
+                        };
+                        emit_log(&reason, "error");
+                        let _ = app.emit(
+                            &format!("connection-failed-{}", session_id_clone),
+                            serde_json::json!({
+                                "reason": reason,
+                                "is_auth_error": !is_network,
+                            }),
+                        );
                     }
                 }
             },
@@ -2027,7 +2159,18 @@ async fn start_tunnel(
         map.get(&session_id).cloned()
             .ok_or_else(|| "Session forwarded-targets map missing — reconnect first".to_string())?
     };
-    tunnel::start_tunnel(app, session_id, handle, Arc::clone(&state.tunnels), forwarded, spec).await
+    let id = tunnel::start_tunnel(app, session_id.clone(), handle, Arc::clone(&state.tunnels), forwarded, spec.clone()).await?;
+    // Record this ad-hoc spec against the session so a future reconnect can
+    // re-open it. Dedup against (kind, local, remote) so toggling the same
+    // tunnel off-and-on doesn't accumulate duplicates.
+    {
+        let mut map = state.session_tunnel_specs.lock().await;
+        let entry = map.entry(session_id).or_insert_with(Vec::new);
+        if !entry.contains(&spec) {
+            entry.push(spec);
+        }
+    }
+    Ok(id)
 }
 
 #[tauri::command]
@@ -2035,7 +2178,29 @@ async fn stop_tunnel(
     state: tauri::State<'_, SshState>,
     tunnel_id: String,
 ) -> Result<(), String> {
-    tunnel::stop_tunnel(&state.tunnels, &tunnel_id).await
+    // Snapshot spec + session BEFORE stop — the listener task removes itself
+    // from the tunnels map on exit, racing this lookup. With the snapshot in
+    // hand we can drop the matching entry from the session's replay list so
+    // a user who explicitly stopped a tunnel doesn't see it return on the
+    // next reconnect.
+    let snapshot = {
+        let map = state.tunnels.lock().await;
+        match map.get(&tunnel_id) {
+            Some(t) => {
+                let status = t.status.lock().await;
+                Some((t.spec.clone(), status.session_id.clone()))
+            }
+            None => None,
+        }
+    };
+    tunnel::stop_tunnel(&state.tunnels, &tunnel_id).await?;
+    if let Some((spec, sid)) = snapshot {
+        let mut map = state.session_tunnel_specs.lock().await;
+        if let Some(list) = map.get_mut(&sid) {
+            list.retain(|s| s != &spec);
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2112,6 +2277,10 @@ async fn disconnect_session(
     // bounce off a dead channel).
     tunnel::stop_all_for_session(&state.tunnels, &session_id).await;
     state.forwarded_targets.lock().await.remove(&session_id);
+    // Explicit user disconnect — drop the replay list too. (Auto-reconnect
+    // calls `initiate_connection` directly and never hits this path, so
+    // those tunnels survive the cycle.)
+    state.session_tunnel_specs.lock().await.remove(&session_id);
     // Same idea for any mirror that's still running — its watcher would
     // try to push uploads through a dead SSH handle otherwise.
     mirror::stop_all_for_session(&mirrors, &session_id).await;
@@ -3681,7 +3850,7 @@ fn main() {
             cloud::cloud_force_upload_profile, cloud::cloud_download_profile,
             cloud::cloud_delete_remote_profile,
             cloud::cloud_sync_overview, cloud::cloud_sync_all,
-            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, 
+            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, clone_server,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,
             add_command, edit_command, delete_command, get_commands,

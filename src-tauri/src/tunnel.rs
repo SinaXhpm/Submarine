@@ -30,7 +30,7 @@ use crate::ssh_manager::ClientHandler;
 // Public types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TunnelSpec {
     /// "D" (dynamic / SOCKS5), "L" (local forward), "R" (remote forward —
     /// not implemented yet; start_tunnel returns an error for this kind).
@@ -74,6 +74,11 @@ pub struct ActiveTunnel {
     /// Without this the port stays bound for several seconds on Windows
     /// while the OS keeps the socket in TIME_WAIT, racing with reconnects.
     pub join: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// The original spec used to start this tunnel. Carried so that an
+    /// explicit `stop_tunnel` command can drop the matching entry from the
+    /// per-session replay list (otherwise stopped tunnels would silently
+    /// re-open on the next reconnect).
+    pub spec: TunnelSpec,
 }
 
 pub type TunnelMap = Arc<Mutex<HashMap<String, ActiveTunnel>>>;
@@ -419,6 +424,7 @@ pub async fn start_tunnel(
             status: Arc::clone(&status_arc),
             stop_tx: Some(stop_tx),
             join: Some(join),
+            spec,
         },
     );
 

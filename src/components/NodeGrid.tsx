@@ -1,7 +1,51 @@
-import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X } from "lucide-react";
+import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy, Palette } from "lucide-react";
 import { useState } from "react";
 
-export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, isMobile }: any) => {
+const COLOR_PALETTE: { name: string; value: string | null; cls: string }[] = [
+  { name: "Default", value: null,      cls: "bg-zinc-500" },
+  { name: "Rose",    value: "#f43f5e", cls: "bg-rose-500" },
+  { name: "Amber",   value: "#f59e0b", cls: "bg-amber-500" },
+  { name: "Emerald", value: "#10b981", cls: "bg-emerald-500" },
+  { name: "Sky",     value: "#0ea5e9", cls: "bg-sky-500" },
+  { name: "Indigo",  value: "#6366f1", cls: "bg-indigo-500" },
+  { name: "Fuchsia", value: "#d946ef", cls: "bg-fuchsia-500" },
+  { name: "Slate",   value: "#64748b", cls: "bg-slate-500" },
+];
+
+const ColorPicker = ({ current, onPick }: { current?: string | null; onPick: (c: string | null) => void }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+        title="Change colour"
+        className="p-1.5 text-zinc-500 hover:text-primary transition-all"
+      >
+        <Palette size={14} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
+          <div
+            className="absolute right-0 top-full mt-1 z-50 p-2 bg-[#15151a] border border-white/10 rounded-md shadow-2xl flex gap-1.5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {COLOR_PALETTE.map(p => (
+              <button
+                key={p.name}
+                title={p.name}
+                onClick={(e) => { e.stopPropagation(); onPick(p.value); setOpen(false); }}
+                className={`w-5 h-5 rounded-full ${p.cls} ring-2 ring-transparent hover:ring-white/30 transition-all ${(current ?? null) === p.value ? "ring-white" : ""}`}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, onSetServerColor, onSetFolderColor, isMobile }: any) => {
   const [search, setSearch] = useState("");
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
   // Per-folder inline rename state. Only one folder can be in edit mode at
@@ -16,8 +60,8 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
     setRenaming(null);
   };
 
-  const filteredServers = servers?.filter((s: any) => 
-    s.name.toLowerCase().includes(search.toLowerCase()) || 
+  const filteredServers = servers?.filter((s: any) =>
+    s.name.toLowerCase().includes(search.toLowerCase()) ||
     s.host.includes(search)
   ) || [];
 
@@ -27,15 +71,21 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
   // or still respect the folder. Let's just show them flat if searching.
   const isSearching = search.trim() !== "";
 
-  const displayedServers = isSearching 
-    ? filteredServers 
+  const displayedServers = isSearching
+    ? filteredServers
     : filteredServers.filter((s: any) => s.folder_id === activeFolderId);
   const ServerCard = ({ s }: { s: any }) => (
-    <div 
-      key={s.id} 
+    <div
+      key={s.id}
       onClick={() => onOpenServer(s)}
-      className="p-3 h-14 bg-[#16161a] border border-white/5 hover:border-primary/50 hover:shadow-[0_8px_20px_rgba(var(--primary),0.1)] rounded-xl transition-all cursor-pointer group flex items-center justify-between"
+      className="relative p-3 h-14 bg-[#16161a] border border-white/5 hover:border-primary/50 hover:shadow-[0_8px_20px_rgba(var(--primary),0.1)] rounded-xl transition-all cursor-pointer group flex items-center justify-between overflow-hidden"
     >
+      {s.color && (
+        <span
+          className="absolute left-0 top-0 bottom-0 w-1 rounded-l-xl"
+          style={{ backgroundColor: s.color }}
+        />
+      )}
       <div className="flex items-center gap-3 min-w-0">
         <div className="w-8 h-8 bg-[#0a0a0c] rounded-lg flex items-center justify-center text-zinc-500 group-hover:text-primary transition-colors shadow-inner border border-white/5 group-hover:border-primary/20 shrink-0">
           <Server size={14} />
@@ -49,13 +99,28 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
         </div>
       </div>
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-        <button 
+        {onSetServerColor && (
+          <ColorPicker
+            current={s.color ?? null}
+            onPick={(c) => onSetServerColor(s.id, c)}
+          />
+        )}
+        {onCloneServer && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onCloneServer(s.id); }}
+            title="Clone"
+            className="p-2 text-zinc-500 hover:text-primary transition-all"
+          >
+            <Copy size={14} />
+          </button>
+        )}
+        <button
           onClick={(e) => { e.stopPropagation(); onEditServer(s); }}
           className="p-2 text-zinc-500 hover:text-white transition-all"
         >
           <Edit2 size={14} />
         </button>
-        <button 
+        <button
           onClick={(e) => { e.stopPropagation(); if(window.confirm('Delete this server?')) onRemoveServer(s.id); }}
           className="p-2 text-zinc-500 hover:text-red-500 transition-all"
         >
@@ -72,10 +137,16 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
       <div
         key={f.id}
         onClick={() => { if (!isRenaming) setActiveFolderId(f.id); }}
-        className="p-3 h-14 bg-[#1c1c21] rounded-xl border border-white/5 hover:border-primary/50 hover:bg-white/5 transition-all cursor-pointer group flex items-center justify-between shadow-inner"
+        className="relative p-3 h-14 bg-[#1c1c21] rounded-xl border border-white/5 hover:border-primary/50 hover:bg-white/5 transition-all cursor-pointer group flex items-center justify-between shadow-inner overflow-hidden"
       >
+        {f.color && (
+          <span
+            className="absolute left-0 top-0 bottom-0 w-1 rounded-l-xl"
+            style={{ backgroundColor: f.color }}
+          />
+        )}
         <div className="flex items-center gap-3 min-w-0 flex-1">
-          <Folder size={18} className="text-primary shrink-0" />
+          <Folder size={18} className="shrink-0" style={{ color: f.color || undefined }} />
           {isRenaming ? (
             <input
               autoFocus
@@ -113,7 +184,10 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
           ) : (
             <>
               <span className="text-[10px] bg-black text-zinc-500 px-1.5 py-0.5 rounded-md font-mono group-hover:opacity-0 transition-opacity">{serverCount}</span>
-              <div className="absolute right-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+              <div className="absolute right-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all bg-[#1c1c21]/95 backdrop-blur-sm rounded">
+                {onSetFolderColor && (
+                  <ColorPicker current={f.color ?? null} onPick={(c) => onSetFolderColor(f.id, c)} />
+                )}
                 <button
                   onClick={(e) => { e.stopPropagation(); setRenaming({ id: f.id, draft: f.name || "" }); }}
                   title="Rename folder"
@@ -140,7 +214,7 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
     <div className="flex-1 flex flex-col h-full p-6 overflow-hidden bg-transparent">
       <div className="relative max-w-sm w-full mx-auto mb-6 shrink-0">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={14} />
-        <input 
+        <input
           type="text"
           placeholder="Search servers…"
           className="w-full h-9 bg-[#1c1c21] border border-white/10 rounded-lg pl-9 pr-4 text-[13px] text-zinc-100 outline-none focus:border-primary/50 focus:bg-[#16161a] transition-all placeholder:text-zinc-600 shadow-inner"
@@ -150,7 +224,7 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 pb-10">
-        
+
         {/* Header navigation if in folder */}
         {!isSearching && activeFolderId !== null && (
           <div className="flex items-center gap-3 mb-6">
@@ -177,7 +251,7 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
 
         {servers?.length === 0 && folders?.length === 0 ? (
           <div className="h-full flex items-center justify-center">
-            <button 
+            <button
               onClick={onAddClick}
               className="flex flex-col items-center gap-4 p-12 rounded-3xl border-2 border-dashed border-zinc-800 hover:border-primary/40 hover:bg-primary/5 transition-all group"
             >
@@ -192,7 +266,7 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
           </div>
         ) : (
           <div className={`grid ${isMobile ? 'grid-cols-1' : 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'} gap-3`}>
-            
+
             {/* Show Add Node + Quick Connect only in Root or when searching */}
             {(!isSearching && activeFolderId === null) && (
               <>
@@ -226,14 +300,14 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
 
             {/* Render Servers */}
             {displayedServers.map((s: any) => <ServerCard key={`server-${s.id}`} s={s} />)}
-            
+
             {/* Empty Folder State */}
             {!isSearching && activeFolderId !== null && displayedServers.length === 0 && (
               <div className="col-span-full py-10 text-center text-zinc-600 text-xs italic">
                 Nothing in this folder yet.
               </div>
             )}
-            
+
             {/* Empty Search State */}
             {isSearching && displayedServers.length === 0 && (
               <div className="col-span-full py-10 text-center text-zinc-600 text-xs italic">

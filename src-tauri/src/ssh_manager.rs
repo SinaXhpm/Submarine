@@ -45,6 +45,10 @@ pub struct SshState {
     /// in `sftp_download_file` / `sftp_upload_file` poll it each iteration
     /// and bail out with a cancelled-status event when it goes true.
     pub transfer_cancels: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    /// Per-session tunnel spec memory. Survives reconnect cycles so that
+    /// `initiate_connection` can re-establish every forward the user had
+    /// open — including ad-hoc ones not in the saved server row.
+    pub session_tunnel_specs: Arc<Mutex<HashMap<String, Vec<crate::tunnel::TunnelSpec>>>>,
 }
 
 impl SshState {
@@ -58,6 +62,7 @@ impl SshState {
             tunnels: Arc::new(Mutex::new(HashMap::new())),
             forwarded_targets: Arc::new(Mutex::new(HashMap::new())),
             transfer_cancels: Arc::new(Mutex::new(HashMap::new())),
+            session_tunnel_specs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

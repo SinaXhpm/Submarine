@@ -51,6 +51,9 @@ function DesktopApp() {
   // fires on its own status change — single source of truth for the dot
   // colour on each tab. Cleared when a session is closed.
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, string>>({});
+  // Right-click menu pinned to a session tab. Closed by any click outside or
+  // by choosing one of the menu items.
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   const handleSessionStatus = useCallback((sessionId: string, status: string) => {
     setSessionStatuses((prev) => (prev[sessionId] === status ? prev : { ...prev, [sessionId]: status }));
   }, []);
@@ -88,6 +91,7 @@ function DesktopApp() {
     tunnels: [] as { local: string, remote: string, type: string }[],
     autostart: false,
     mirrors: [] as { local: string, remote: string, soft_delete: boolean, excludes: string[], conflict_resolution: string }[],
+    color: null as string | null,
   };
 
   // Live width-based "narrow viewport" flag. Replaces a one-shot UA check
@@ -353,6 +357,7 @@ function DesktopApp() {
       mirrors: (() => {
         try { return JSON.parse(server.mirrors || "[]"); } catch { return []; }
       })(),
+      color: server.color ?? null,
     });
     setIsPanelOpen(true);
   };
@@ -392,6 +397,10 @@ function DesktopApp() {
             <div
               key={s.id}
               onClick={() => setActiveView(s.id)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setTabMenu({ x: e.clientX, y: e.clientY, sessionId: s.id });
+              }}
               className={`group no-drag flex items-center h-7 px-4 rounded-full cursor-pointer transition-all min-w-[100px] max-w-[180px] mr-1 ${activeView === s.id ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10' : 'bg-white/[0.06] text-zinc-300 border border-white/10 hover:bg-white/[0.1] hover:border-white/20 hover:text-white'}`}
             >
               <span
@@ -421,6 +430,42 @@ function DesktopApp() {
         <button onClick={() => appWindow.minimize()} className="w-10 h-full flex items-center justify-center hover:bg-white/5 transition-colors"><div className="w-3.5 h-[1.5px] bg-zinc-600" /></button>
         <button onClick={() => appWindow.close()} className="w-10 h-full flex items-center justify-center hover:bg-red-500 group transition-all"><X size={14} className="text-zinc-600 group-hover:text-white" /></button>
       </div>
+      {tabMenu && (
+        <>
+          <div className="fixed inset-0 z-[60]" onClick={() => setTabMenu(null)} onContextMenu={(e) => { e.preventDefault(); setTabMenu(null); }} />
+          <div
+            className="fixed z-[70] bg-[#15151a] border border-white/10 rounded-md shadow-2xl py-1 min-w-[160px] text-[11px] no-drag"
+            style={{ left: Math.min(tabMenu.x, window.innerWidth - 180), top: Math.min(tabMenu.y, window.innerHeight - 110) }}
+          >
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent(`session-reconnect-${tabMenu.sessionId}`));
+                setTabMenu(null);
+              }}
+            >Reconnect</button>
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-zinc-200"
+              onClick={() => {
+                invoke("disconnect_session", { sessionId: tabMenu.sessionId }).catch(console.error);
+                setTabMenu(null);
+              }}
+            >Disconnect</button>
+            <div className="border-t border-white/5 my-1" />
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-rose-500/15 hover:text-rose-300 text-zinc-200"
+              onClick={() => {
+                const sid = tabMenu.sessionId;
+                invoke("disconnect_session", { sessionId: sid }).catch(() => {});
+                setSessions(prev => prev.filter(sess => sess.id !== sid));
+                setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
+                setActiveView(prev => (prev === sid ? "nodes" : prev));
+                setTabMenu(null);
+              }}
+            >Close tab</button>
+          </div>
+        </>
+      )}
     </div>
   );
 
@@ -457,6 +502,18 @@ function DesktopApp() {
                 onRemoveServer={removeServer}
                 onRemoveFolder={removeFolder}
                 onRenameFolder={renameFolder}
+                onCloneServer={async (id: number) => {
+                  try { await invoke("clone_server", { id }); refreshServers(); addLog("Node cloned.", "success"); }
+                  catch (e) { addLog(`CLONE_ERROR: ${e}`, "error"); }
+                }}
+                onSetServerColor={async (id: number, color: string | null) => {
+                  try { await invoke("set_server_color", { id, color }); refreshServers(); }
+                  catch (e) { addLog(`COLOR_ERROR: ${e}`, "error"); }
+                }}
+                onSetFolderColor={async (id: number, color: string | null) => {
+                  try { await invoke("set_folder_color", { id, color }); refreshFolders(); }
+                  catch (e) { addLog(`COLOR_ERROR: ${e}`, "error"); }
+                }}
                 isMobile={isMobile}
               />
             )}
@@ -790,6 +847,7 @@ function DesktopApp() {
               keyId: newNode.authType === "custom_key" && newNode.keyId ? parseInt(newNode.keyId) : null,
               autostart: !!newNode.autostart,
               mirrors: newNode.mirrors || [],
+              color: newNode.color ?? null,
             };
             const action = newNode.id 
               ? invoke("edit_server", { id: newNode.id, ...payload }) 
