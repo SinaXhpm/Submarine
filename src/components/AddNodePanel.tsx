@@ -73,6 +73,33 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               )}
             </div>
 
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-bold text-zinc-400 ml-1">Tag colour</label>
+              <div className="flex items-center gap-2 flex-wrap">
+                {[
+                  { name: "Default", value: null,      cls: "bg-zinc-500" },
+                  { name: "Rose",    value: "#f43f5e", cls: "bg-rose-500" },
+                  { name: "Amber",   value: "#f59e0b", cls: "bg-amber-500" },
+                  { name: "Emerald", value: "#10b981", cls: "bg-emerald-500" },
+                  { name: "Sky",     value: "#0ea5e9", cls: "bg-sky-500" },
+                  { name: "Indigo",  value: "#6366f1", cls: "bg-indigo-500" },
+                  { name: "Fuchsia", value: "#d946ef", cls: "bg-fuchsia-500" },
+                  { name: "Slate",   value: "#64748b", cls: "bg-slate-500" },
+                ].map((p) => {
+                  const selected = (newNode.color ?? null) === p.value;
+                  return (
+                    <button
+                      key={p.name}
+                      type="button"
+                      title={p.name}
+                      onClick={() => setNewNode({ ...newNode, color: p.value })}
+                      className={`w-6 h-6 rounded-full ${p.cls} ring-2 ring-transparent hover:ring-white/30 transition-all ${selected ? "ring-white" : ""}`}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="grid grid-cols-4 gap-4">
               <div className="col-span-3 space-y-1.5">
                 <label className="text-[11px] font-bold text-zinc-400 ml-1">Host</label>

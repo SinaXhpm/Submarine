@@ -155,10 +155,19 @@ export const SessionView = ({ session, onClose, addLog, onStatusChange }: any) =
     // auto-reconnect immediately; the banner shows the countdown.
     const unlistenDisconnected = listen(`session-disconnected-${session.id}`, (event: any) => {
       const reason = event.payload?.reason || "Connection lost";
+      const userInitiated = !!event.payload?.user_initiated;
       setStatus('disconnected');
       setDisconnectReason(reason);
       addLog(`SSH_DISCONNECTED [${session.serverName}]: ${reason}`, "error");
-      scheduleReconnect(1);
+      // User-initiated disconnect (right-click → Disconnect) should NOT
+      // bounce straight into auto-reconnect — the user explicitly asked
+      // for the session to be dead. The "Reconnect" banner button is
+      // still available if they change their mind.
+      if (!userInitiated) {
+        scheduleReconnect(1);
+      } else {
+        cancelReconnect();
+      }
     });
 
     return () => {

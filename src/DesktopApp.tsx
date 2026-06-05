@@ -480,7 +480,7 @@ function DesktopApp() {
         <div className="flex-1 flex overflow-hidden pt-10">
           <Sidebar activeTab={activeView.startsWith('session-') ? 'nodes' : activeView} setActiveTab={setActiveView} isMobile={isMobile} onLogout={handleLogout} />
 
-          <main className="flex-1 flex flex-col min-w-0 bg-transparent">
+          <main className="flex-1 flex flex-col min-w-0 bg-transparent relative">
             {activeView === "nodes" && (
               <NodeGrid
                 servers={servers}
@@ -627,8 +627,16 @@ function DesktopApp() {
               </div>
             )}
 
+            {/* Sessions live in an absolute layer that overlays the rest of
+                `main` — that way each session's xterm stays mounted at its
+                real measured size across tab switches, but doesn't take any
+                layout space when the user navigates to notes / settings /
+                etc. The previous `display:none` toggle caused a 0×0 →
+                real-size reflow on every switch and corrupted the prompt
+                with stacked fragments like `[root@local[root@local`. */}
+            <div className={`absolute inset-0 flex flex-col overflow-hidden ${sessions.length === 0 || !sessions.some(s => s.id === activeView) ? 'opacity-0 pointer-events-none' : ''}`}>
             {sessions.map(sess => (
-              <div key={sess.id} className={`flex-1 flex flex-col overflow-hidden ${activeView === sess.id ? '' : 'hidden'}`}>
+              <div key={sess.id} className={`absolute inset-0 flex flex-col overflow-hidden ${activeView === sess.id ? '' : 'opacity-0 pointer-events-none'}`}>
                 <ErrorBoundary
                   label={sess.serverName}
                   onReset={() => {
@@ -652,6 +660,7 @@ function DesktopApp() {
                 </ErrorBoundary>
               </div>
             ))}
+            </div>
 
             {activeView === "notes" && (() => {
               const q = noteQuery.trim().toLowerCase();

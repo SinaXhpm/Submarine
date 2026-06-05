@@ -1469,15 +1469,26 @@ async fn initiate_connection(
     
     println!("[BACKEND] initiate_connection invoked for session_id: {}, server_id: {}", session_id, server_id);
 
-    // 1. Prevent duplicate connections
+    // Reconnect path: if a previous session under this id is still registered,
+    // tear it down before starting the fresh handshake. Without this, the
+    // duplicate-detection early-return below would silently drop every
+    // reconnect attempt and the UI would just sit on "connecting…" forever.
+    // Tunnels + forwarded_targets get the same treatment further down via the
+    // stop_all_for_session call, so we don't duplicate that here.
     {
-        let connections = state.connections.lock().await;
-        if connections.contains_key(&session_id) {
-            println!("[BACKEND] Connection already active for session: {}", session_id);
-            return Ok(());
+        let mut conns = state.connections.lock().await;
+        if conns.remove(&session_id).is_some() {
+            println!("[BACKEND] Tearing down stale session for reconnect: {}", session_id);
         }
-        
     }
+    state.sftp_sessions.lock().await.remove(&session_id);
+    // Terminal IDs are `${session_id}-term-N` (see SessionView.tsx), so a
+    // substring match on session_id sweeps every PTY task tied to the old
+    // handle. Without this, open_terminal during reconnect would clash with
+    // the dead entry and the user's first keystroke would route into the
+    // ghost channel.
+    state.terminal_txs.lock().await.retain(|k, _| !k.contains(&session_id));
+    state.resize_txs.lock().await.retain(|k, _| !k.contains(&session_id));
 
     println!("[BACKEND] No duplicates found. Registering oneshot channel and spawning connection worker...");
     let (fp_tx, fp_rx) = tokio::sync::oneshot::channel();
@@ -2028,8 +2039,24 @@ async fn initiate_connection(
                         let state_w = Arc::clone(&state_connections);
                         let state_sftp_w = Arc::clone(&state_sftp_sessions);
                         tauri::async_runtime::spawn(async move {
+                            // Two-tier liveness check:
+                            //   - Every 2s: cheap is_closed() poll catches TCP
+                            //     RST / FIN and russh's own internal teardown.
+                            //   - Every ~10s (every 5th tick): active probe —
+                            //     try to open a tiny SSH session channel under
+                            //     a 5s timeout. is_closed() misses the case
+                            //     where the network silently black-holes
+                            //     traffic (NAT timeout, dropped Wi-Fi, mobile
+                            //     hotspot suspend) because the socket stays
+                            //     half-open from the local stack's point of
+                            //     view until the next TCP retransmit window
+                            //     finally gives up — which can take minutes.
+                            //     The probe forces a round-trip so we surface
+                            //     the drop within ~15s of it happening.
+                            let mut tick: u32 = 0;
                             loop {
                                 tokio::time::sleep(Duration::from_secs(2)).await;
+                                tick = tick.wrapping_add(1);
 
                                 let handle_opt = {
                                     let conns = state_w.lock().await;
@@ -2040,18 +2067,42 @@ async fn initiate_connection(
                                     None => break, // explicit disconnect — quiet
                                 };
 
-                                // is_closed() catches everything russh's own
-                                // keepalive_max disconnect tripped, plus any
-                                // TCP RST / FIN from the peer. With the 2s
-                                // poll the UI sees the drop within seconds
-                                // instead of waiting for the next user action
-                                // to fail.
                                 let is_closed = {
                                     let h = handle_arc.lock().await;
                                     h.is_closed()
                                 };
 
-                                if is_closed {
+                                let mut dead = is_closed;
+
+                                if !dead && tick % 5 == 0 {
+                                    // Active probe: hold the handle lock long
+                                    // enough to start AND finish the round
+                                    // trip — concurrent commands wait, but
+                                    // that's fine, they would block on the
+                                    // same lock to open their own channel
+                                    // anyway. A 5s timeout catches a black-
+                                    // holed link without making the UI
+                                    // unresponsive.
+                                    let probe = {
+                                        let h = handle_arc.lock().await;
+                                        tokio::time::timeout(
+                                            Duration::from_secs(5),
+                                            h.channel_open_session(),
+                                        ).await
+                                    };
+                                    match probe {
+                                        Ok(Ok(ch)) => {
+                                            // Close cleanly so the server
+                                            // doesn't log a stuck session.
+                                            let _ = ch.close().await;
+                                        }
+                                        _ => {
+                                            dead = true;
+                                        }
+                                    }
+                                }
+
+                                if dead {
                                     state_sftp_w.lock().await.remove(&sid_w);
                                     state_w.lock().await.remove(&sid_w);
                                     let _ = app_w.emit(
@@ -2268,6 +2319,7 @@ async fn pick_local_directory() -> Result<Option<String>, String> {
 
 #[tauri::command]
 async fn disconnect_session(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
     mirrors: tauri::State<'_, MirrorMap>,
     session_id: String,
@@ -2288,6 +2340,11 @@ async fn disconnect_session(
     // underlying SSH handle.
     state.sftp_sessions.lock().await.remove(&session_id);
     state.connections.lock().await.remove(&session_id);
+    // Drop terminal tx/resize entries so a subsequent reconnect doesn't try
+    // to write into a dead PTY task. Match by substring because terminal ids
+    // are `${session_id}-term-N` (set in SessionView.tsx).
+    state.terminal_txs.lock().await.retain(|k, _| !k.contains(&session_id));
+    state.resize_txs.lock().await.retain(|k, _| !k.contains(&session_id));
     // Wipe any temp files this session left behind (live-edit downloads).
     // Best-effort: failures are usually because an editor still holds a lock
     // on a file, in which case the file persists until the OS cleans temp.
@@ -2295,6 +2352,17 @@ async fn disconnect_session(
     if session_temp_dir.exists() {
         let _ = std::fs::remove_dir_all(&session_temp_dir);
     }
+    // Tell the UI so the tab status dot flips to red. `user_initiated` keeps
+    // SessionView from kicking off an auto-reconnect cycle for an intentional
+    // disconnect — distinct from the watcher path which has no such flag.
+    use tauri::Emitter;
+    let _ = app.emit(
+        &format!("session-disconnected-{}", session_id),
+        serde_json::json!({
+            "reason": "User disconnected",
+            "user_initiated": true,
+        }),
+    );
     Ok(())
 }
 
