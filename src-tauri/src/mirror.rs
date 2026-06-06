@@ -814,7 +814,24 @@ async fn run_mirror(
             let Some(joined) = joined else { break };
             let (entry, res, is_download) = match joined {
                 Ok(t) => t,
-                Err(_) => { continue }
+                Err(je) => {
+                    // A panicked / cancelled worker — log it so the UI
+                    // counters and the user can see that the slot was
+                    // wasted, otherwise the pool would silently chew
+                    // through the worklist with the success bar lying.
+                    // `transfer_done` advances so the progress bar still
+                    // hits 100% when the queue drains.
+                    {
+                        let mut s = status.lock().await;
+                        s.transfer_done = s.transfer_done.saturating_add(1);
+                    }
+                    emit_update(&app, &status.lock().await.clone()).await;
+                    emit_log(&app, &session_id, &mirror_id, "error",
+                             "worker-crash", None,
+                             Some(format!("Mirror worker panicked / was cancelled: {}", je)));
+                    if let Some(e) = iter.next() { spawn_one(&mut set, e); }
+                    continue;
+                }
             };
             match res {
                 Ok(_) => {

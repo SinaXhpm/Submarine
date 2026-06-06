@@ -1028,6 +1028,14 @@ async fn edit_server(
     autostart: Option<bool>,
     mirrors: Option<Vec<serde_json::Value>>,
     color: Option<String>,
+    // Frontend opt-out for password persistence. When the user opens the
+    // edit sheet, we call `reveal_server_password` to populate the form;
+    // if that call ever fails (transient DB error / migration mid-flight)
+    // the form would have a blank password and a naive save would wipe
+    // the stored secret. The frontend sends `preserve_password=true`
+    // whenever the password field wasn't touched, and the SQL below uses
+    // COALESCE(?, password) so the existing column survives.
+    preserve_password: Option<bool>,
 ) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
@@ -1042,10 +1050,22 @@ async fn edit_server(
     );
 
     let autostart_i: i32 = if autostart.unwrap_or(false) { 1 } else { 0 };
-    conn.execute(
-        "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
-        rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
-    ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
+    // Two-flavour UPDATE: with `preserve_password`, the password column is
+    // wrapped in COALESCE(?, password) so a NULL bind keeps the existing
+    // value. Without it, the password column is overwritten the usual way.
+    // The behaviour difference matters only when the auth path is custom_pass
+    // because normalize_server_identity zeros password for the other modes.
+    if preserve_password.unwrap_or(false) && auth_type == "custom_pass" {
+        conn.execute(
+            "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=COALESCE(?5, password), credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
+            rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
+        ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
+    } else {
+        conn.execute(
+            "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
+            rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
+        ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
+    }
 
     drop(conn_guard);
     save_vault_internal(&state)?;
@@ -2733,6 +2753,19 @@ pub async fn get_sftp_session(
         // Another caller raced us; keep the existing one and drop ours.
         return Ok(Arc::clone(existing));
     }
+    // Generation guard: if a reconnect replaced the SSH handle while we
+    // were opening the SFTP subsystem, our `session_arc` now points at a
+    // dead handle and inserting it would poison the cache. Compare by Arc
+    // pointer — same handle = same SSH connection.
+    let still_current = {
+        let connections = state.connections.lock().await;
+        connections.get(session_id)
+            .map(|c| Arc::ptr_eq(c, &session_arc))
+            .unwrap_or(false)
+    };
+    if !still_current {
+        return Err("Session reconnected while opening SFTP — try again".into());
+    }
     cache.insert(session_id.to_string(), Arc::clone(&arc));
     Ok(arc)
 }
@@ -3420,6 +3453,22 @@ async fn sftp_open_remote_file(
                 maybe = tok_rx.recv() => {
                     if maybe.is_none() { break; }
                     if !temp_file_path_clone.exists() { break; }
+                    // Cheap pre-check: if the session is gone we exit the
+                    // watcher entirely instead of looping and spamming
+                    // "Auto-sync failed" toasts on every subsequent save.
+                    {
+                        let connections = connections_clone.lock().await;
+                        if !connections.contains_key(&session_id_clone) {
+                            let _ = app_handle_clone.emit(
+                                &format!("sftp-sync-status-{}", session_id_clone),
+                                serde_json::json!({
+                                    "status": "error",
+                                    "message": format!("Auto-sync stopped — session for {} is gone", filename_clone),
+                                }),
+                            );
+                            break;
+                        }
+                    }
                     let upload_res = async {
                     let session_arc = {
                         let connections = connections_clone.lock().await;

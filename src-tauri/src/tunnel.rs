@@ -521,8 +521,20 @@ async fn run_local_forward(
     let (target_host, target_port) = parse_target(&target)?;
     let active = Arc::new(AtomicU32::new(0));
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
+    // Shared counter for consecutive channel-open failures. Successes reset
+    // it; once it crosses the threshold the listener stops accepting so we
+    // don't spam the tunnel-log with the same SSH-dead error per inbound
+    // connection. See FAIL_THRESHOLD below.
+    let fail_streak = Arc::new(AtomicU32::new(0));
+    const FAIL_THRESHOLD: u32 = 5;
 
     loop {
+        if fail_streak.load(Ordering::Relaxed) >= FAIL_THRESHOLD {
+            emit_log(&app, &session_id, &tunnel_id, "error", "ssh-dead",
+                     Some(target.clone()), None,
+                     Some(format!("Stopped accepting after {} consecutive channel-open failures — SSH handle is gone", FAIL_THRESHOLD)));
+            break;
+        }
         tokio::select! {
             _ = &mut stop_rx => {
                 let _ = shutdown_tx.send(());
@@ -540,6 +552,7 @@ async fn run_local_forward(
                 let active = Arc::clone(&active);
                 let tunnel_id = tunnel_id.clone();
                 let mut shutdown_rx = shutdown_tx.subscribe();
+                let fail_streak = Arc::clone(&fail_streak);
 
                 tauri::async_runtime::spawn(async move {
                     let _guard = ActiveGuard::enter(active, Arc::clone(&status), app.clone()).await;
@@ -554,10 +567,16 @@ async fn run_local_forward(
                         }
                         res = bridge_local_to_channel(handle, sock, peer, target_host, target_port) => {
                             match res {
-                                Ok(()) => emit_log(&app, &session_id, &tunnel_id, "info", "close",
-                                                  Some(target_full), Some(peer.to_string()), None),
-                                Err(e) => emit_log(&app, &session_id, &tunnel_id, "error", "fail",
-                                                  Some(target_full), Some(peer.to_string()), Some(e)),
+                                Ok(()) => {
+                                    fail_streak.store(0, Ordering::Relaxed);
+                                    emit_log(&app, &session_id, &tunnel_id, "info", "close",
+                                             Some(target_full), Some(peer.to_string()), None);
+                                }
+                                Err(e) => {
+                                    fail_streak.fetch_add(1, Ordering::Relaxed);
+                                    emit_log(&app, &session_id, &tunnel_id, "error", "fail",
+                                             Some(target_full), Some(peer.to_string()), Some(e));
+                                }
                             }
                         }
                     }
@@ -607,8 +626,20 @@ async fn run_dynamic_forward(
 
     let active = Arc::new(AtomicU32::new(0));
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
+    // Same SSH-dead backoff as run_local_forward — but here we count any
+    // client error, not just channel-open. Most SOCKS5 / HTTP failures
+    // bubble up as `direct-tcpip … failed` once the SSH handle dies, so
+    // a streak is the right signal.
+    let fail_streak = Arc::new(AtomicU32::new(0));
+    const FAIL_THRESHOLD: u32 = 5;
 
     loop {
+        if fail_streak.load(Ordering::Relaxed) >= FAIL_THRESHOLD {
+            emit_log(&app, &session_id, &tunnel_id, "error", "ssh-dead",
+                     None, None,
+                     Some(format!("Stopped accepting after {} consecutive client failures — SSH handle is gone", FAIL_THRESHOLD)));
+            break;
+        }
         tokio::select! {
             _ = &mut stop_rx => {
                 let _ = shutdown_tx.send(());
@@ -624,6 +655,7 @@ async fn run_dynamic_forward(
                 let active = Arc::clone(&active);
                 let tunnel_id = tunnel_id.clone();
                 let mut shutdown_rx = shutdown_tx.subscribe();
+                let fail_streak = Arc::clone(&fail_streak);
 
                 tauri::async_runtime::spawn(async move {
                     let _guard = ActiveGuard::enter(active, Arc::clone(&status), app.clone()).await;
@@ -634,9 +666,13 @@ async fn run_dynamic_forward(
                                      None, Some(peer.to_string()), Some("Tunnel stopped".into()));
                         }
                         res = handle_dynamic_client(handle, sock, peer, app.clone(), session_id.clone(), tunnel_id.clone()) => {
-                            if let Err(e) = res {
-                                emit_log(&app, &session_id, &tunnel_id, "error", "fail",
-                                         None, Some(peer.to_string()), Some(e));
+                            match res {
+                                Ok(()) => { fail_streak.store(0, Ordering::Relaxed); }
+                                Err(e) => {
+                                    fail_streak.fetch_add(1, Ordering::Relaxed);
+                                    emit_log(&app, &session_id, &tunnel_id, "error", "fail",
+                                             None, Some(peer.to_string()), Some(e));
+                                }
                             }
                         }
                     }
@@ -1224,13 +1260,13 @@ async fn handle_socks5(
             String::from_utf8(name).map_err(|e| format!("non-utf8 host: {}", e))?
         }
         0x04 => {
-            // IPv6
+            // IPv6 — let Ipv6Addr produce the canonical form (`::1`,
+            // `2001:db8::1`, etc.) instead of the verbose
+            // `0:0:0:0:0:0:0:1` shape. russh expects a normalised host
+            // string when opening direct-tcpip channels.
             let mut octets = [0u8; 16];
             sock.read_exact(&mut octets).await.map_err(|e| format!("read v6: {}", e))?;
-            let segments: Vec<String> = (0..8)
-                .map(|i| format!("{:x}", u16::from_be_bytes([octets[i * 2], octets[i * 2 + 1]])))
-                .collect();
-            format!("[{}]", segments.join(":"))
+            format!("[{}]", std::net::Ipv6Addr::from(octets))
         }
         other => {
             let _ = sock.write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;

@@ -123,8 +123,19 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
     });
 
     const unlistenSuccess = listen(`connection-success-${session.id}`, () => {
+      const wasReconnect = reconnectAttemptRef.current > 0 || status === 'disconnected' || status === 'failed';
       setStatus('connected');
       cancelReconnect();
+      // On a successful RECONNECT (not the first connect of this tab) the
+      // old terminal_id is gone from the backend's terminal_txs map — the
+      // user's first keystroke would silently route into a closed channel.
+      // Mint a fresh terminal_id so TerminalView remounts and re-opens a
+      // PTY against the new SSH handle.
+      if (wasReconnect) {
+        const fresh = `${session.id}-term-${Date.now()}`;
+        setTerminals([{ id: fresh, title: '1' }]);
+        setActiveTab(fresh);
+      }
       // The handshake may have inserted a row into `known_hosts` (user just
       // accepted a new fingerprint). Flush the encrypted vault so the entry
       // survives an app restart — otherwise the prompt would reappear every
@@ -200,7 +211,14 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
     if (attempt > RECONNECT_MAX_ATTEMPTS) {
       updateAttempt(0);
       setNextReconnectAt(null);
-      setDisconnectReason(`Auto-reconnect gave up after ${RECONNECT_MAX_ATTEMPTS} tries`);
+      setDisconnectReason(`Auto-reconnect gave up after ${RECONNECT_MAX_ATTEMPTS} tries — click Reconnect to try again.`);
+      // The banner only shows when status==='disconnected' OR
+      // reconnectAttempt>0. Without this nudge the user lands on
+      // status='failed' with attempt=0, the banner vanishes, and the
+      // only retry path is the small inline button in the full-screen
+      // failed view. Flipping to 'disconnected' keeps the slim banner
+      // visible with its Reconnect button.
+      setStatus('disconnected');
       return;
     }
     const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, attempt - 1));

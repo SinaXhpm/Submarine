@@ -634,10 +634,29 @@ pub async fn cloud_download_profile(
     if !resp.status().is_success() {
         return Err(decode_error(resp).await);
     }
+    // Vault blobs are small (compressed sqlite, encrypted). A 100 MiB cap is
+    // ~30x larger than the biggest real profile we've seen and keeps a
+    // compromised or hostile API from OOM'ing the app by streaming a
+    // gigabyte response. Reject before allocating.
+    const MAX_BLOB_BYTES: u64 = 100 * 1024 * 1024;
+    if let Some(declared) = resp.content_length() {
+        if declared > MAX_BLOB_BYTES {
+            return Err(format!(
+                "[CLOUD] BLOB_TOO_LARGE: Content-Length={} bytes exceeds the {}-MiB safety cap",
+                declared, MAX_BLOB_BYTES / (1024 * 1024)
+            ));
+        }
+    }
     let bytes = resp
         .bytes()
         .await
         .map_err(|e| format!("[CLOUD] STREAM: {}", e))?;
+    if bytes.len() as u64 > MAX_BLOB_BYTES {
+        return Err(format!(
+            "[CLOUD] BLOB_TOO_LARGE: received {} bytes exceeds the {}-MiB safety cap",
+            bytes.len(), MAX_BLOB_BYTES / (1024 * 1024)
+        ));
+    }
 
     // Validate vault header before persisting — if the server returned
     // something garbled we don't want to leave a corrupt file behind that

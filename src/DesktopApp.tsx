@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import {
@@ -92,6 +92,12 @@ function DesktopApp() {
     autostart: false,
     mirrors: [] as { local: string, remote: string, soft_delete: boolean, excludes: string[], conflict_resolution: string }[],
     color: null as string | null,
+    // True only after the user typed into the password field on this form
+    // instance. If still false at save time, the backend uses
+    // `preserve_password` to keep the existing DB column. Without this
+    // flag a transient `reveal_server_password` failure would silently
+    // wipe the stored secret.
+    password_dirty: false,
   };
 
   // Live width-based "narrow viewport" flag. Replaces a one-shot UA check
@@ -188,18 +194,21 @@ function DesktopApp() {
     setLogs(prev => [...prev.slice(-99), { id, msg, type, time: new Date().toLocaleTimeString() }]);
   }, []);
 
-  const refreshServers = async () => {
+  // Wrapped in useCallback because these are handed to memoised children
+  // (SessionView, MirrorsPanel, etc.). Without stable identity every parent
+  // render hands a fresh reference and defeats the child's memo gate.
+  const refreshServers = useCallback(async () => {
     try { setServers((await invoke("get_servers")) as any[]); }
     catch (e) { addLog(`SYNC_SERVERS: ${e}`, "error"); }
-  };
-  const refreshCredentials = async () => {
+  }, [addLog]);
+  const refreshCredentials = useCallback(async () => {
     try { setCredentials((await invoke("get_credentials")) as any[]); }
     catch (e) { addLog(`SYNC_CREDENTIALS: ${e}`, "error"); }
-  };
-  const refreshSshKeys = async () => {
+  }, [addLog]);
+  const refreshSshKeys = useCallback(async () => {
     try { setSshKeys((await invoke("get_ssh_keys")) as any[]); }
     catch (e) { addLog(`SYNC_SSH_KEYS: ${e}`, "error"); }
-  };
+  }, [addLog]);
   const refreshFolders = async () => {
     try { setFolders((await invoke("get_folders")) as any[]); }
     catch (e) { addLog(`SYNC_FOLDERS: ${e}`, "error"); }
@@ -394,6 +403,10 @@ function DesktopApp() {
         try { return JSON.parse(server.mirrors || "[]"); } catch { return []; }
       })(),
       color: server.color ?? null,
+      // Starts clean — only flips true if the user types into the password
+      // field. Save handler reads this to decide between `preserve_password`
+      // and a real overwrite.
+      password_dirty: false,
     });
     setIsPanelOpen(true);
   };
@@ -902,6 +915,11 @@ function DesktopApp() {
               autostart: !!newNode.autostart,
               mirrors: newNode.mirrors || [],
               color: newNode.color ?? null,
+              // Edit-mode + untouched password field = ask the backend to
+              // keep the existing column. Otherwise the bind below sends
+              // whatever's in the field (including empty / null) which
+              // would overwrite the DB value.
+              preservePassword: !!newNode.id && !newNode.password_dirty,
             };
             const action = newNode.id 
               ? invoke("edit_server", { id: newNode.id, ...payload }) 

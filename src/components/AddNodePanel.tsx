@@ -160,7 +160,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   <label className="text-[11px] font-bold text-zinc-500 ml-1">Password</label>
                   <PasswordField
                     value={newNode.password || ""}
-                    onChange={(v) => setNewNode({ ...newNode, password: v })}
+                    onChange={(v) => setNewNode({ ...newNode, password: v, password_dirty: true })}
                     className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner"
                     placeholder="••••••"
                   />
