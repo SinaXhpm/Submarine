@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -521,24 +522,36 @@ async fn run_local_forward(
     let (target_host, target_port) = parse_target(&target)?;
     let active = Arc::new(AtomicU32::new(0));
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
-    // Shared counter for consecutive channel-open failures. Successes reset
-    // it; once it crosses the threshold the listener stops accepting so we
-    // don't spam the tunnel-log with the same SSH-dead error per inbound
-    // connection. See FAIL_THRESHOLD below.
-    let fail_streak = Arc::new(AtomicU32::new(0));
-    const FAIL_THRESHOLD: u32 = 5;
+
+    // Periodic SSH-handle health check. The listener only tears down when
+    // the SSH session is actually dead (caller's `handle.is_closed()`
+    // returns true) — NOT when individual bridge attempts fail. A user's
+    // SOCKS client can fail dozens of channel_opens in a row for perfectly
+    // healthy reasons (DNS lookup failed, target host unreachable, port
+    // refused by the remote) and we must NOT interpret those as the SSH
+    // session being broken. The main.rs watcher is the authoritative
+    // SSH-liveness signal; this is just a fast-path backstop.
+    let mut health_check = tokio::time::interval(Duration::from_secs(5));
+    health_check.tick().await; // consume the immediate first tick
 
     loop {
-        if fail_streak.load(Ordering::Relaxed) >= FAIL_THRESHOLD {
-            emit_log(&app, &session_id, &tunnel_id, "error", "ssh-dead",
-                     Some(target.clone()), None,
-                     Some(format!("Stopped accepting after {} consecutive channel-open failures — SSH handle is gone", FAIL_THRESHOLD)));
-            break;
-        }
         tokio::select! {
             _ = &mut stop_rx => {
                 let _ = shutdown_tx.send(());
                 break;
+            }
+            _ = health_check.tick() => {
+                let closed = {
+                    let h = handle.lock().await;
+                    h.is_closed()
+                };
+                if closed {
+                    emit_log(&app, &session_id, &tunnel_id, "error", "ssh-dead",
+                             Some(target.clone()), None,
+                             Some("SSH session closed — local forward shutting down".into()));
+                    let _ = shutdown_tx.send(());
+                    break;
+                }
             }
             accepted = listener.accept() => {
                 let (sock, peer) = accepted.map_err(|e| format!("accept: {}", e))?;
@@ -552,7 +565,6 @@ async fn run_local_forward(
                 let active = Arc::clone(&active);
                 let tunnel_id = tunnel_id.clone();
                 let mut shutdown_rx = shutdown_tx.subscribe();
-                let fail_streak = Arc::clone(&fail_streak);
 
                 tauri::async_runtime::spawn(async move {
                     let _guard = ActiveGuard::enter(active, Arc::clone(&status), app.clone()).await;
@@ -568,12 +580,10 @@ async fn run_local_forward(
                         res = bridge_local_to_channel(handle, sock, peer, target_host, target_port) => {
                             match res {
                                 Ok(()) => {
-                                    fail_streak.store(0, Ordering::Relaxed);
                                     emit_log(&app, &session_id, &tunnel_id, "info", "close",
                                              Some(target_full), Some(peer.to_string()), None);
                                 }
                                 Err(e) => {
-                                    fail_streak.fetch_add(1, Ordering::Relaxed);
                                     emit_log(&app, &session_id, &tunnel_id, "error", "fail",
                                              Some(target_full), Some(peer.to_string()), Some(e));
                                 }
@@ -626,24 +636,38 @@ async fn run_dynamic_forward(
 
     let active = Arc::new(AtomicU32::new(0));
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
-    // Same SSH-dead backoff as run_local_forward — but here we count any
-    // client error, not just channel-open. Most SOCKS5 / HTTP failures
-    // bubble up as `direct-tcpip … failed` once the SSH handle dies, so
-    // a streak is the right signal.
-    let fail_streak = Arc::new(AtomicU32::new(0));
-    const FAIL_THRESHOLD: u32 = 5;
+
+    // Periodic SSH-handle health check. The listener only tears down when
+    // the SSH session is genuinely dead (`handle.is_closed()` returns true),
+    // NOT when individual SOCKS clients fail. A browser typically generates
+    // bursts of failures during normal use (CDN host with no AAAA record,
+    // blocked domain, target port refused) — counting those toward an
+    // "SSH-dead" threshold caused the SOCKS tunnel to tear itself down on
+    // every other browsing session even though the SSH link was healthy.
+    // The main.rs watcher is the authoritative liveness signal; this
+    // 5-second poll is a fast-path backstop that lets us shut down within
+    // ~5s of a clean close instead of waiting on the watcher's 16s probe.
+    let mut health_check = tokio::time::interval(Duration::from_secs(5));
+    health_check.tick().await; // consume the immediate first tick
 
     loop {
-        if fail_streak.load(Ordering::Relaxed) >= FAIL_THRESHOLD {
-            emit_log(&app, &session_id, &tunnel_id, "error", "ssh-dead",
-                     None, None,
-                     Some(format!("Stopped accepting after {} consecutive client failures — SSH handle is gone", FAIL_THRESHOLD)));
-            break;
-        }
         tokio::select! {
             _ = &mut stop_rx => {
                 let _ = shutdown_tx.send(());
                 break;
+            }
+            _ = health_check.tick() => {
+                let closed = {
+                    let h = handle.lock().await;
+                    h.is_closed()
+                };
+                if closed {
+                    emit_log(&app, &session_id, &tunnel_id, "error", "ssh-dead",
+                             None, None,
+                             Some("SSH session closed — dynamic forward shutting down".into()));
+                    let _ = shutdown_tx.send(());
+                    break;
+                }
             }
             accepted = listener.accept() => {
                 let (sock, peer) = accepted.map_err(|e| format!("accept: {}", e))?;
@@ -655,7 +679,6 @@ async fn run_dynamic_forward(
                 let active = Arc::clone(&active);
                 let tunnel_id = tunnel_id.clone();
                 let mut shutdown_rx = shutdown_tx.subscribe();
-                let fail_streak = Arc::clone(&fail_streak);
 
                 tauri::async_runtime::spawn(async move {
                     let _guard = ActiveGuard::enter(active, Arc::clone(&status), app.clone()).await;
@@ -666,13 +689,9 @@ async fn run_dynamic_forward(
                                      None, Some(peer.to_string()), Some("Tunnel stopped".into()));
                         }
                         res = handle_dynamic_client(handle, sock, peer, app.clone(), session_id.clone(), tunnel_id.clone()) => {
-                            match res {
-                                Ok(()) => { fail_streak.store(0, Ordering::Relaxed); }
-                                Err(e) => {
-                                    fail_streak.fetch_add(1, Ordering::Relaxed);
-                                    emit_log(&app, &session_id, &tunnel_id, "error", "fail",
-                                             None, Some(peer.to_string()), Some(e));
-                                }
+                            if let Err(e) = res {
+                                emit_log(&app, &session_id, &tunnel_id, "error", "fail",
+                                         None, Some(peer.to_string()), Some(e));
                             }
                         }
                     }

@@ -72,11 +72,15 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
 
   // ---- Auto-reconnect with exponential backoff -----------------------------
   // After a previously-good session drops, try to reconnect on a 1.5s → 3 → 6
-  // → 12 → 24s cadence (capped). The terminal/SFTP overlay stays in place the
-  // whole time so the user can see what's happening without losing context.
+  // → 12 → 24s → 30s cadence (capped at 30s). Retries are UNBOUNDED — the
+  // user said the SOCKS use-case in particular needs the tunnel to come back
+  // by itself after a long blip (laptop sleep, mobile-hotspot dropout) rather
+  // than silently giving up after 5 attempts and leaving them with no SOCKS
+  // until they notice. Only an auth failure or an explicit Cancel stops the
+  // cycle; the terminal/SFTP overlay stays in place the whole time so the
+  // user can see what's happening without losing context.
   const RECONNECT_BASE_MS = 1500;
-  const RECONNECT_MAX_MS = 24000;
-  const RECONNECT_MAX_ATTEMPTS = 5;
+  const RECONNECT_MAX_MS = 30000;
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [nextReconnectAt, setNextReconnectAt] = useState<number | null>(null);
   const reconnectAttemptRef = useRef(0);
@@ -207,19 +211,6 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
-    }
-    if (attempt > RECONNECT_MAX_ATTEMPTS) {
-      updateAttempt(0);
-      setNextReconnectAt(null);
-      setDisconnectReason(`Auto-reconnect gave up after ${RECONNECT_MAX_ATTEMPTS} tries — click Reconnect to try again.`);
-      // The banner only shows when status==='disconnected' OR
-      // reconnectAttempt>0. Without this nudge the user lands on
-      // status='failed' with attempt=0, the banner vanishes, and the
-      // only retry path is the small inline button in the full-screen
-      // failed view. Flipping to 'disconnected' keeps the slim banner
-      // visible with its Reconnect button.
-      setStatus('disconnected');
-      return;
     }
     const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, attempt - 1));
     updateAttempt(attempt);
@@ -567,8 +558,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
             isWaiting    ? "bg-amber-500/10 border-amber-500/30 text-amber-300" :
                            "bg-red-500/10 border-red-500/30 text-red-400";
           const heading =
-            isAttempting ? `Reconnecting · attempt ${reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS}` :
-            isWaiting    ? `Auto-reconnect in ${countdown}s · attempt ${reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS}` :
+            isAttempting ? `Reconnecting · attempt ${reconnectAttempt}` :
+            isWaiting    ? `Auto-reconnect in ${countdown}s · attempt ${reconnectAttempt}` :
                            "Session disconnected";
           return (
             <div className={`shrink-0 px-4 py-2 border-b flex items-center justify-between gap-3 animate-in fade-in ${tone}`}>
