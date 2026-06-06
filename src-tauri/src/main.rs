@@ -1651,6 +1651,12 @@ async fn initiate_connection(
         }
     };
 
+    // Shared between the handler and the connect driver so we can tell host-
+    // key timeouts apart from real auth errors on the failure path. See
+    // ClientHandler::fp_outcome for the meaning of the values.
+    let fp_outcome = std::sync::Arc::new(std::sync::atomic::AtomicI8::new(-1));
+    let fp_outcome_for_driver = std::sync::Arc::clone(&fp_outcome);
+
     let handler = ssh_manager::ClientHandler {
         app: app.clone(),
         session_id: session_id.clone(),
@@ -1660,6 +1666,7 @@ async fn initiate_connection(
         db: db_conn_shared,
         fp_rx: Some(fp_rx),
         forwarded_targets: Arc::clone(&session_forwarded_targets),
+        fp_outcome: std::sync::Arc::clone(&fp_outcome),
     };
 
     let cleanup_nonce = connect_nonce.clone();
@@ -2117,55 +2124,83 @@ async fn initiate_connection(
                         });
                     },
                     Ok(false) => {
-                        emit_log("Authentication failed (Access Denied).", "error");
-                        let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": "Access Denied", "is_auth_error": true}));
+                        // Server reached the auth phase and explicitly told
+                        // us "no". This is the only branch that maps to a
+                        // real auth failure — everything else gets routed
+                        // through `classify_russh_error` so a network drop
+                        // or host-key timeout never gets relabelled as one.
+                        emit_log("Authentication rejected by server.", "error");
+                        let _ = app.emit(
+                            &format!("connection-failed-{}", session_id_clone),
+                            serde_json::json!({
+                                "reason": "Authentication rejected by server (wrong password, missing key, or account locked).",
+                                "is_auth_error": true,
+                            }),
+                        );
                     },
                     Err(e) => {
-                        // russh bubbles transport errors up through the same
-                        // Result that signals real credential rejection. We
-                        // don't want a transient network blip to look like a
-                        // permanent "wrong password" — that's why connect-
-                        // failed carries `is_auth_error`. Sniff the string
-                        // for the few unambiguous transport markers (io,
-                        // disconnect, eof, reset, broken pipe, timed out)
-                        // and only flag the remainder as real auth errors.
-                        let raw = e.to_string();
-                        let lc = raw.to_lowercase();
-                        let is_network = lc.contains("timed out")
-                            || lc.contains("timeout")
-                            || lc.contains("io error")
-                            || lc.contains("connection reset")
-                            || lc.contains("broken pipe")
-                            || lc.contains("connection aborted")
-                            || lc.contains("connection refused")
-                            || lc.contains("eof")
-                            || lc.contains("disconnected")
-                            || lc.contains("disconnect");
-                        let reason = if is_network {
-                            format!("Connection lost during authentication: {}", raw)
-                        } else {
-                            format!("Authentication error: {}", raw)
-                        };
-                        emit_log(&reason, "error");
+                        let kind = classify_russh_error(&e);
+                        let target = format!("{}:{}", host, port);
+                        let reason = describe_error_kind(kind, &target);
+                        emit_log(&format!("{} (raw: {})", reason, e), "error");
                         let _ = app.emit(
                             &format!("connection-failed-{}", session_id_clone),
                             serde_json::json!({
                                 "reason": reason,
-                                "is_auth_error": !is_network,
+                                "is_auth_error": kind.is_auth(),
                             }),
                         );
                     }
                 }
             },
             Ok(Err(e)) => {
-                let pretty = humanize_network_err(&e.to_string(), &host, port, "SSH handshake");
-                emit_log(&pretty, "error");
-                let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": pretty}));
+                // Connect-stream failed AFTER the TCP socket opened — most
+                // commonly this is the host-key flow ending in either a
+                // declined fingerprint or a timed-out prompt. Read the
+                // outcome the handler stashed and surface a precise reason
+                // instead of letting it ride the generic transport bucket.
+                use std::sync::atomic::Ordering;
+                let fp = fp_outcome_for_driver.load(Ordering::SeqCst);
+                let (reason, kind) = match fp {
+                    2 => (
+                        "Host key prompt timed out — Reconnect and approve the fingerprint within 90 seconds.".to_string(),
+                        ConnectErrorKind::HostKey,
+                    ),
+                    0 => (
+                        "Host key was not approved. Reconnect to see the fingerprint prompt again.".to_string(),
+                        ConnectErrorKind::HostKey,
+                    ),
+                    _ => {
+                        let kind = classify_russh_error(&e);
+                        let target = format!("{}:{}", host, port);
+                        (describe_error_kind(kind, &target), kind)
+                    }
+                };
+                emit_log(&format!("{} (raw: {})", reason, e), "error");
+                let _ = app.emit(
+                    &format!("connection-failed-{}", session_id_clone),
+                    serde_json::json!({
+                        "reason": reason,
+                        "is_auth_error": kind.is_auth(),
+                    }),
+                );
             },
             Err(_) => {
-                let msg = format!("SSH handshake with {}:{} timed out after 15s — host may be filtering SSH or running a non-SSH service on this port", host, port);
+                // 15s wall-clock on connect_stream — the TCP socket is up
+                // but the SSH handshake never completed. Distinct enough
+                // from the auth path to deserve its own message.
+                let msg = format!(
+                    "{}:{} did not finish SSH handshake within 15 seconds — host may be filtering SSH or running a non-SSH service on this port.",
+                    host, port
+                );
                 emit_log(&msg, "error");
-                let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": msg}));
+                let _ = app.emit(
+                    &format!("connection-failed-{}", session_id_clone),
+                    serde_json::json!({
+                        "reason": msg,
+                        "is_auth_error": false,
+                    }),
+                );
             }
         }
 
@@ -2935,6 +2970,128 @@ async fn sftp_cancel_transfer(
         flag.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// Bucket the failure modes that can come out of an SSH connect / auth round.
+/// Drives both the UI's `is_auth_error` flag (so auto-reconnect only stops
+/// on real credential rejection) and the wording of the error message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectErrorKind {
+    /// Server refused the credentials we presented.
+    Auth,
+    /// Couldn't agree on KEX / cipher / MAC / host-key algorithm with the
+    /// peer. Server is reachable, our crypto preference set doesn't overlap.
+    Algorithm,
+    /// Host key issue — mismatched, declined by the user, or the prompt
+    /// timed out. Distinct from auth: credentials never even got tried.
+    HostKey,
+    /// Transport-level drop: TCP reset, EOF, peer disconnect, IO error.
+    Transport,
+    /// Server didn't respond inside our window (handshake / auth / probe).
+    Timeout,
+    /// We couldn't even reach the box: DNS lookup failed, route missing,
+    /// connection refused.
+    Unreachable,
+    /// Anything russh surfaced that we don't have a categorical bucket for.
+    /// Treated as non-auth so the UI keeps trying — a real credential
+    /// rejection has a specific variant for it.
+    Unknown,
+}
+
+impl ConnectErrorKind {
+    fn is_auth(self) -> bool {
+        matches!(self, Self::Auth)
+    }
+}
+
+/// Map a russh error onto a `ConnectErrorKind`. Uses enum variants when the
+/// information is available (russh 0.40 exposes them all), falling back to
+/// a string sniff only for the catch-all `_ =>` branch — so a russh upgrade
+/// that adds new variants degrades gracefully instead of misreporting them
+/// as auth failures.
+fn classify_russh_error(e: &russh::Error) -> ConnectErrorKind {
+    use russh::Error::*;
+    match e {
+        // Real credential rejection — the only path that should set
+        // is_auth_error so the UI stops auto-retrying.
+        NotAuthenticated | NoAuthMethod => ConnectErrorKind::Auth,
+
+        // Algorithm negotiation — server's reachable, we just don't share
+        // the cipher / KEX / etc. it asked for.
+        NoCommonCipher | NoCommonKexAlgo | NoCommonKeyAlgo
+        | NoCommonCompression | NoCommonMac
+        | UnknownAlgo | UnknownKey => ConnectErrorKind::Algorithm,
+
+        // Host-key flow: the server's signature didn't verify. KeyChanged
+        // carries data so it falls through to the catch-all branch which
+        // sniffs the string.
+        WrongServerSig => ConnectErrorKind::HostKey,
+
+        // Transport-level: connection died mid-protocol.
+        IO(_) | HUP | Disconnect | SendError => ConnectErrorKind::Transport,
+
+        // Explicit timeouts from russh.
+        ConnectionTimeout | Elapsed(_) => ConnectErrorKind::Timeout,
+
+        // Protocol disagreements that aren't algorithm- or auth-shaped:
+        // version skew, packet integrity, decryption — surface as transport
+        // so the user is told "connection broke" not "password wrong".
+        // `StrictKeyExchangeViolation` / `ChannelOpenFailure` carry data;
+        // the `_ =>` fallthrough handles those via the string sniff below.
+        Version | Kex | PacketAuth | Inconsistent | IndexOutOfBounds
+        | DecryptionError | KexInit
+        | WrongChannel | Pending => ConnectErrorKind::Transport,
+
+        // Key-file problems (local cert can't be parsed). Tag as Auth-shaped
+        // so the UI doesn't auto-retry a key that will keep failing.
+        CouldNotReadKey | Keys(_) => ConnectErrorKind::Auth,
+
+        // Last-resort string sniff for anything russh adds in future
+        // versions or for io::Error subtypes the explicit arms above
+        // missed. Default to Unknown which the driver treats as non-auth.
+        _ => {
+            let lc = e.to_string().to_lowercase();
+            if lc.contains("connection refused")
+                || lc.contains("no route")
+                || lc.contains("network is unreachable")
+                || lc.contains("dns")
+            {
+                ConnectErrorKind::Unreachable
+            } else if lc.contains("timed out") || lc.contains("timeout") {
+                ConnectErrorKind::Timeout
+            } else if lc.contains("io error") || lc.contains("eof")
+                || lc.contains("disconnect") || lc.contains("reset")
+                || lc.contains("broken pipe") || lc.contains("aborted")
+            {
+                ConnectErrorKind::Transport
+            } else if lc.contains("not authenticated") || lc.contains("auth method") {
+                ConnectErrorKind::Auth
+            } else {
+                ConnectErrorKind::Unknown
+            }
+        }
+    }
+}
+
+/// Human-readable phrase for an error bucket. Combined with `target` to
+/// build the reason string the UI shows next to a failed connection.
+fn describe_error_kind(kind: ConnectErrorKind, target: &str) -> String {
+    match kind {
+        ConnectErrorKind::Auth =>
+            "Authentication rejected by server (wrong password, missing key, or account locked).".into(),
+        ConnectErrorKind::Algorithm =>
+            format!("Negotiation with {} failed: no SSH algorithm in common (this build might be missing legacy ciphers — try the release build).", target),
+        ConnectErrorKind::HostKey =>
+            "Host key was not approved (wrong key, declined, or the fingerprint prompt timed out).".into(),
+        ConnectErrorKind::Transport =>
+            format!("Connection to {} dropped mid-handshake.", target),
+        ConnectErrorKind::Timeout =>
+            format!("{} did not respond in time.", target),
+        ConnectErrorKind::Unreachable =>
+            format!("Could not reach {} (DNS lookup, route, or port refusal).", target),
+        ConnectErrorKind::Unknown =>
+            format!("Connection to {} failed for an unrecognised reason.", target),
+    }
 }
 
 /// Translate raw socket / SSH error messages into something a human can act

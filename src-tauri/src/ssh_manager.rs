@@ -85,6 +85,17 @@ pub struct ClientHandler {
     /// `forwarded-tcpip` channel back, we look the port up here to find the
     /// local target to bridge it to.
     pub forwarded_targets: crate::tunnel::ForwardedTargets,
+    /// Fingerprint-prompt outcome, written by `check_server_key`. The connect
+    /// driver reads this after `connect_stream` returns an Err so it can
+    /// distinguish the three host-key cases from a generic transport drop:
+    ///   -1 = no prompt fired (handshake never reached the check)
+    ///    0 = prompt fired and the user rejected
+    ///    1 = prompt fired and the user accepted (or fingerprint was trusted)
+    ///    2 = prompt fired but timed out with no answer
+    /// Without this the driver only sees russh's downstream error and can't
+    /// tell "user dismissed the prompt" from "network drop", which used to
+    /// surface as "Auth failed" in the UI.
+    pub fp_outcome: std::sync::Arc<std::sync::atomic::AtomicI8>,
 }
 
 #[async_trait]
@@ -153,6 +164,10 @@ impl client::Handler for ClientHandler {
                 "msg": "Host fingerprint found in known_hosts database. Verified.",
                 "type": "success"
             }));
+            // Mark as auto-accepted (no prompt was shown) so the connect
+            // driver knows host-key wasn't the failure mode for any
+            // downstream error.
+            self.fp_outcome.store(1, std::sync::atomic::Ordering::SeqCst);
             return Ok((self, true));
         }
 
@@ -185,7 +200,13 @@ impl client::Handler for ClientHandler {
         }));
 
         if let Some(rx) = self.fp_rx.take() {
-            match tokio::time::timeout(tokio::time::Duration::from_secs(10), rx).await {
+            // 90s is enough for a human to read the prompt, switch windows
+            // to verify the fingerprint out-of-band, and click. The old 10s
+            // window routinely tripped on attentive users and then surfaced
+            // as a confusing "Auth failed" because russh interprets the
+            // returned `false` as "client rejected the host key" and tears
+            // the connection down — same error path as wrong credentials.
+            match tokio::time::timeout(tokio::time::Duration::from_secs(90), rx).await {
                 Ok(Ok(true)) => {
                     // Save to database. If this was a mismatch we must wipe
                     // the stale rows first — otherwise the next connection
@@ -225,6 +246,7 @@ impl client::Handler for ClientHandler {
                         "msg": if mismatch { "New host key accepted. Old entries replaced." } else { "Host key accepted and saved." },
                         "type": "success"
                     }));
+                    self.fp_outcome.store(1, std::sync::atomic::Ordering::SeqCst);
                     Ok((self, true))
                 }
                 Ok(Ok(false)) => {
@@ -233,14 +255,16 @@ impl client::Handler for ClientHandler {
                         "type": "error"
                     }));
                     let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({}));
+                    self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
                     Ok((self, false))
                 }
                 Err(_) => {
                     let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
-                        "msg": "Host key verification timed out (no response from user within 10 seconds).",
+                        "msg": "Host key verification timed out (no response from user within 90 seconds).",
                         "type": "error"
                     }));
                     let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({}));
+                    self.fp_outcome.store(2, std::sync::atomic::Ordering::SeqCst);
                     Ok((self, false))
                 }
                 _ => {
@@ -249,6 +273,7 @@ impl client::Handler for ClientHandler {
                         "type": "error"
                     }));
                     let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({}));
+                    self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
                     Ok((self, false))
                 }
             }
