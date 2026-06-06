@@ -545,7 +545,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
         <div
           ref={logScrollRef}
           onScroll={onLogScroll}
-          className="h-36 overflow-auto px-2 py-1 font-mono text-[10.5px] leading-relaxed space-y-0.5"
+          className="h-36 overflow-auto px-2 py-1 font-mono text-[10.5px] leading-relaxed space-y-0.5 select-text cursor-text"
         >
           {logs.length === 0 ? (
             <div className="text-zinc-600 text-center py-4">No log entries yet.</div>

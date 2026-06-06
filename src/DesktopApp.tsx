@@ -156,14 +156,37 @@ function DesktopApp() {
     init();
   }, []);
 
-  const addLog = (msg: string, type = "info") => {
+  // Stable per-session close handler. Allocated once per (sess.id) pair so
+  // SessionView's memo comparison stays cheap and the prop reference doesn't
+  // change just because some other session re-rendered. The closure reads
+  // setters which are themselves stable via useState.
+  const closeHandlersRef = useRef<Map<string, () => void>>(new Map());
+  const getCloseHandler = useCallback((sessId: string) => {
+    let h = closeHandlersRef.current.get(sessId);
+    if (!h) {
+      h = () => {
+        setSessions(prev => prev.filter(s => s.id !== sessId));
+        setSessionStatuses(prev => { const { [sessId]: _, ...rest } = prev; return rest; });
+        setActiveView(prev => (prev === sessId ? "nodes" : prev));
+        closeHandlersRef.current.delete(sessId);
+      };
+      closeHandlersRef.current.set(sessId, h);
+    }
+    return h;
+  }, []);
+
+  // Stable identity matters: SessionView memoises on prop equality, so a
+  // fresh `addLog` reference on every DesktopApp render would force every
+  // session subtree to re-render when one session's status flips. Same
+  // reasoning as `handleSessionStatus` above.
+  const addLog = useCallback((msg: string, type = "info") => {
     // Each entry gets a stable monotonically-increasing id so React can
     // reconcile rows correctly when the list is rendered reversed. Using
     // `key={index}` on a reverse-then-map list (the previous approach)
     // re-keys every row on every push and busts list reconciliation.
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setLogs(prev => [...prev.slice(-99), { id, msg, type, time: new Date().toLocaleTimeString() }]);
-  };
+  }, []);
 
   const refreshServers = async () => {
     try { setServers((await invoke("get_servers")) as any[]); }
@@ -675,14 +698,7 @@ function DesktopApp() {
                 >
                   <SessionView
                     session={sess}
-                    onClose={() => {
-                      setSessions(prev => prev.filter(s => s.id !== sess.id));
-                      setSessionStatuses(prev => {
-                        const { [sess.id]: _, ...rest } = prev;
-                        return rest;
-                      });
-                      setActiveView(prev => (prev === sess.id ? "nodes" : prev));
-                    }}
+                    onClose={getCloseHandler(sess.id)}
                     addLog={addLog}
                     onStatusChange={handleSessionStatus}
                   />
@@ -816,7 +832,7 @@ function DesktopApp() {
                   </button>
                 </header>
 
-                <div className="flex-1 overflow-y-auto custom-scrollbar bg-black/50 rounded-2xl border border-white/5 p-4 space-y-1 shadow-inner">
+                <div className="flex-1 overflow-y-auto custom-scrollbar bg-black/50 rounded-2xl border border-white/5 p-4 space-y-1 shadow-inner select-text cursor-text">
                   {logs.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-zinc-600 text-[14px] font-mono italic">
                       Nothing yet.

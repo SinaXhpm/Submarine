@@ -274,13 +274,16 @@ const TerminalView = ({
           </span>
         </div>
       )}
-      {/* Disabled overlay: blocks pointer events on top of xterm and dims the
-          output. Keyboard input is gated separately via `disabledRef` because
-          xterm grabs key events at a lower level. */}
+      {/* Disabled badge: NON-blocking. xterm stays interactive for scroll +
+          mouse selection so the user can copy whatever was on screen at the
+          time the session dropped. Keystrokes are still swallowed at the
+          source via `disabledRef` in the onData callback — no input reaches
+          a dead PTY. `pointer-events-none` keeps the badge from eating the
+          select-drag that starts under it. */}
       {disabled && (
-        <div className="absolute inset-0 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono tracking-wider uppercase select-none pointer-events-auto z-10">
-          <span className="px-3 py-1.5 bg-red-500/15 border border-red-500/30 rounded text-red-300">
-            Session disconnected — reconnect to resume
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+          <span className="px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border bg-rose-500/15 border-rose-500/30 text-rose-300 shadow-lg">
+            Disconnected — buffer is read-only
           </span>
         </div>
       )}

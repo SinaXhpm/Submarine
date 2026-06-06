@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
@@ -10,7 +10,7 @@ import MirrorsPanel from "./MirrorsPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
 
-export const SessionView = ({ session, onClose, addLog, onStatusChange }: any) => {
+const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -384,7 +384,7 @@ export const SessionView = ({ session, onClose, addLog, onStatusChange }: any) =
           </div>
 
           {/* Log Window */}
-          <div className="flex-1 bg-[#121214] border border-white/5 rounded-2xl p-4 font-mono text-[11px] overflow-y-auto custom-scrollbar shadow-inner relative">
+          <div className="flex-1 bg-[#121214] border border-white/5 rounded-2xl p-4 font-mono text-[11px] overflow-y-auto custom-scrollbar shadow-inner relative select-text cursor-text">
             {logs.map((l, i) => (
               <div key={i} className={`mb-2 ${l.type === 'error' ? 'text-red-400' : l.type === 'success' ? 'text-primary' : 'text-zinc-400'}`}>
                 <span className="text-zinc-600 opacity-50 mr-3">[{new Date().toLocaleTimeString()}]</span>
@@ -681,3 +681,11 @@ export const SessionView = ({ session, onClose, addLog, onStatusChange }: any) =
   );
 
 };
+
+/// Memoised export so a re-render in DesktopApp (sessionStatuses changing
+/// when ANY session connects/reconnects/drops) doesn't cascade through
+/// every other session subtree. The default shallow comparator is fine
+/// because the parent now hands stable closures (`addLog`, `onClose`,
+/// `onStatusChange`) and `session` only changes identity when the user
+/// adds or edits a row.
+export const SessionView = memo(SessionViewImpl);
