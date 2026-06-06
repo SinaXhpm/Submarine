@@ -1,6 +1,6 @@
 [package]
 name = "submarine"
-version = "0.2.8"
+version = "0.2.9"
 description = "Submarine SSH Client"
 authors = ["Sina"]
 edition = "2021"

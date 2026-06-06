@@ -337,14 +337,27 @@ function DesktopApp() {
     addLog(`Quick connect → ${displayName}`, "info");
   };
 
-  const handleEditNode = (server: any) => {
+  const handleEditNode = async (server: any) => {
+    // Servers come back from get_servers with `has_password` (boolean) but
+    // no plaintext. Reveal the secret only when the user opens the edit
+    // sheet — that way the password never sits in renderer memory during
+    // the normal grid/sidebar lifetime.
+    let revealedPassword = "";
+    if (server.has_password) {
+      try {
+        const v = await invoke<string | null>("reveal_server_password", { id: server.id });
+        revealedPassword = v || "";
+      } catch (e) {
+        addLog(`REVEAL_PASSWORD_FAILED: ${e}`, "error");
+      }
+    }
     setNewNode({
       id: server.id,
       name: server.name || "",
       host: server.host || "",
       port: server.port || 22,
       username: server.username || "",
-      password: server.password || "",
+      password: revealedPassword,
       authType: server.auth_type || (server.credential_id ? "vault" : "custom_pass"),
       credentialId: server.credential_id?.toString() || "",
       folderId: server.folder_id?.toString() || "",
@@ -567,7 +580,17 @@ function DesktopApp() {
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{c.name}</h4>
                               <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity absolute right-3 top-3">
-                                <button onClick={() => { setEditCredData(c); setIsCredPanelOpen(true); }} className="text-zinc-500 hover:text-white"><Edit2 size={14} /></button>
+                                <button onClick={async () => {
+                                  // Credentials list now ships `has_password` instead of plaintext;
+                                  // pull the secret on demand for the edit sheet.
+                                  let pw = "";
+                                  if (c.has_password) {
+                                    try { pw = (await invoke<string | null>("reveal_credential_password", { id: c.id })) || ""; }
+                                    catch (e) { addLog(`REVEAL_CRED_FAILED: ${e}`, "error"); }
+                                  }
+                                  setEditCredData({ ...c, password: pw });
+                                  setIsCredPanelOpen(true);
+                                }} className="text-zinc-500 hover:text-white"><Edit2 size={14} /></button>
                                 <button onClick={() => invoke("delete_credential", { id: c.id }).then(() => refreshCredentials())} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -576,7 +599,7 @@ function DesktopApp() {
                                 <User size={10} /> {c.username}
                               </div>
                               <div className="flex items-center gap-2 text-[11px] text-zinc-500 font-medium">
-                                <Key size={10} /> {c.password ? "••••••••" : "Using SSH key"}
+                                <Key size={10} /> {c.has_password ? "••••••••" : "Using SSH key"}
                               </div>
                             </div>
                           </div>
@@ -598,7 +621,21 @@ function DesktopApp() {
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{k.name}</h4>
                               <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity absolute right-3 top-3">
-                                <button onClick={() => { setEditKeyData(k); setIsKeyPanelOpen(true); }} className="text-zinc-500 hover:text-white"><Edit2 size={14} /></button>
+                                <button onClick={async () => {
+                                  // Same pattern as credentials — pull the private key + passphrase
+                                  // on demand instead of leaking them in the list response.
+                                  let secrets: { private_key?: string|null; passphrase?: string|null } = {};
+                                  if (k.has_private_key || k.has_passphrase) {
+                                    try { secrets = await invoke<any>("reveal_ssh_key", { id: k.id }); }
+                                    catch (e) { addLog(`REVEAL_KEY_FAILED: ${e}`, "error"); }
+                                  }
+                                  setEditKeyData({
+                                    ...k,
+                                    private_key: secrets.private_key || "",
+                                    passphrase: secrets.passphrase || "",
+                                  });
+                                  setIsKeyPanelOpen(true);
+                                }} className="text-zinc-500 hover:text-white"><Edit2 size={14} /></button>
                                 <button onClick={() => invoke("delete_ssh_key", { id: k.id }).then(() => refreshSshKeys())} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
                               </div>
                             </div>

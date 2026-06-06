@@ -49,6 +49,13 @@ pub struct SshState {
     /// `initiate_connection` can re-establish every forward the user had
     /// open — including ad-hoc ones not in the saved server row.
     pub session_tunnel_specs: Arc<Mutex<HashMap<String, Vec<crate::tunnel::TunnelSpec>>>>,
+    /// Monotonic generation counter, bumped on every successful
+    /// `initiate_connection` for a given session_id. The disconnect-watcher
+    /// task captures the value at spawn time and bails out silently if it
+    /// sees a newer generation — that's how we keep a stale watcher from
+    /// double-firing `session-disconnected-{id}` after the user has
+    /// already reconnected.
+    pub session_generation: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl SshState {
@@ -63,6 +70,7 @@ impl SshState {
             forwarded_targets: Arc::new(Mutex::new(HashMap::new())),
             transfer_cancels: Arc::new(Mutex::new(HashMap::new())),
             session_tunnel_specs: Arc::new(Mutex::new(HashMap::new())),
+            session_generation: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

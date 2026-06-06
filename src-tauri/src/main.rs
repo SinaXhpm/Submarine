@@ -232,34 +232,73 @@ fn save_vault_internal(state: &DbState) -> Result<(), String> {
     if let (Some(conn), Some(key), Some(salt), Some(path)) =
         (&*conn_guard, &*key_guard, &*salt_guard, &*path_guard)
     {
-        let serialized = conn.serialize(DatabaseName::Main)
-            .map_err(|e| format!("[DATABASE] SERIALIZE_FAILED: {}", e))?;
-        // Compress-then-encrypt. Order matters: compressing AFTER encryption
-        // is useless because AES-GCM ciphertext is indistinguishable from
-        // random. Doing it before keeps the on-disk file small AND keeps
-        // ciphertext semantically secure.
-        let compressed = Zeroizing::new(vault_compress(&*serialized)?);
-        let (ciphertext, nonce) = encrypt_with_key(&compressed, key)?;
-        let blob = write_vault_blob(salt, &nonce, &ciphertext);
-        // Atomic write: tmp -> fsync -> rename. A crash / power loss in the
-        // middle of a direct fs::write would leave the vault truncated, and
-        // every saved credential would be unrecoverable on next launch.
-        let tmp_path = path.with_extension("submarine.tmp");
-        {
-            use std::io::Write as _;
-            let mut f = fs::File::create(&tmp_path)
-                .map_err(|e| format!("[FILE] VAULT_TMP_CREATE_FAILED at {:?}: {}", tmp_path, e))?;
-            f.write_all(&blob)
-                .map_err(|e| format!("[FILE] VAULT_TMP_WRITE_FAILED at {:?}: {}", tmp_path, e))?;
-            f.sync_all()
-                .map_err(|e| format!("[FILE] VAULT_TMP_SYNC_FAILED at {:?}: {}", tmp_path, e))?;
-        }
-        fs::rename(&tmp_path, path)
-            .map_err(|e| format!("[FILE] VAULT_RENAME_FAILED {:?} -> {:?}: {}", tmp_path, path, e))?;
+        save_vault_blocking(conn, key, salt, path)
     } else {
-        return Err("[STATE] MISSING_REQUIRED_RESOURCES_FOR_SAVE".into());
+        Err("[STATE] MISSING_REQUIRED_RESOURCES_FOR_SAVE".into())
     }
+}
+
+/// Pure-sync vault serialise + encrypt + atomic write. Pulled out of
+/// `save_vault_internal` so the async wrapper below can hand it to
+/// `spawn_blocking` with owned snapshots — keeps the SQLite serialise,
+/// zstd compression, AES-GCM encrypt, and fsync off the tokio worker
+/// pool during hot paths like the post-connect `persist_vault` call.
+fn save_vault_blocking(
+    conn: &Connection,
+    key: &Zeroizing<[u8; 32]>,
+    salt: &[u8; SALT_LEN],
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let serialized = conn.serialize(DatabaseName::Main)
+        .map_err(|e| format!("[DATABASE] SERIALIZE_FAILED: {}", e))?;
+    // Compress-then-encrypt. Order matters: compressing AFTER encryption
+    // is useless because AES-GCM ciphertext is indistinguishable from
+    // random. Doing it before keeps the on-disk file small AND keeps
+    // ciphertext semantically secure.
+    let compressed = Zeroizing::new(vault_compress(&*serialized)?);
+    let (ciphertext, nonce) = encrypt_with_key(&compressed, key)?;
+    let blob = write_vault_blob(salt, &nonce, &ciphertext);
+    // Atomic write: tmp -> fsync -> rename. A crash / power loss in the
+    // middle of a direct fs::write would leave the vault truncated, and
+    // every saved credential would be unrecoverable on next launch.
+    let tmp_path = path.with_extension("submarine.tmp");
+    {
+        use std::io::Write as _;
+        let mut f = fs::File::create(&tmp_path)
+            .map_err(|e| format!("[FILE] VAULT_TMP_CREATE_FAILED at {:?}: {}", tmp_path, e))?;
+        f.write_all(&blob)
+            .map_err(|e| format!("[FILE] VAULT_TMP_WRITE_FAILED at {:?}: {}", tmp_path, e))?;
+        f.sync_all()
+            .map_err(|e| format!("[FILE] VAULT_TMP_SYNC_FAILED at {:?}: {}", tmp_path, e))?;
+    }
+    fs::rename(&tmp_path, path)
+        .map_err(|e| format!("[FILE] VAULT_RENAME_FAILED {:?} -> {:?}: {}", tmp_path, path, e))?;
     Ok(())
+}
+
+/// Async-friendly vault save. Snapshots the key/salt/path under the sync
+/// mutexes, clones the Arc'd connection slot, then hands the whole thing
+/// to `spawn_blocking`. The SQLite serialise + zstd + AES-GCM + fsync
+/// chain runs on a blocking-pool thread so concurrent terminal output
+/// and keystrokes don't stall on the tokio worker pool.
+async fn save_vault_async(state: &DbState) -> Result<(), String> {
+    let conn_arc = std::sync::Arc::clone(&state.conn);
+    let (key, salt, path) = {
+        let kg = state.master_key.lock().map_err(|_| "[STATE] MUTEX_POISON_KEY")?;
+        let sg = state.salt.lock().map_err(|_| "[STATE] MUTEX_POISON_SALT")?;
+        let pg = state.db_path.lock().map_err(|_| "[STATE] MUTEX_POISON_PATH")?;
+        match (kg.as_ref(), sg.as_ref(), pg.as_ref()) {
+            (Some(k), Some(s), Some(p)) => (k.clone(), *s, p.clone()),
+            _ => return Err("[STATE] MISSING_REQUIRED_RESOURCES_FOR_SAVE".into()),
+        }
+    };
+    tokio::task::spawn_blocking(move || {
+        let cg = conn_arc.lock().map_err(|_| "[STATE] MUTEX_POISON_CONN")?;
+        let conn = cg.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        save_vault_blocking(conn, &key, &salt, &path)
+    })
+    .await
+    .map_err(|e| format!("[CRYPTO] VAULT_JOIN: {}", e))?
 }
 
 /// Returns the list of available profile names (sorted, lowercased not enforced).
@@ -618,6 +657,34 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
                 return Err(format!("[DATABASE] MIRRORS_MIGRATION_FAILED: {}", s));
             }
         }
+        // Schema version metadata. A single-row `schema_meta` table records
+        // the highest column-migration the running binary knows about. If a
+        // user opens an older binary against a newer vault, we surface a
+        // clear warning instead of silently swallowing "duplicate column"
+        // errors and risking write-side schema drift. Bump SCHEMA_VERSION
+        // here every time a new ALTER lands in this block.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        ).map_err(|e| format!("[DATABASE] META_TABLE_FAILED: {}", e))?;
+        const SCHEMA_VERSION: i64 = 3;
+        let stored: i64 = conn.query_row(
+            "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        if stored > SCHEMA_VERSION {
+            return Err(format!(
+                "[DATABASE] SCHEMA_AHEAD_OF_BINARY: vault was written by a newer build (schema v{}), this binary only understands v{}. Upgrade the app before opening this profile.",
+                stored, SCHEMA_VERSION,
+            ));
+        }
+        conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![SCHEMA_VERSION.to_string()],
+        ).map_err(|e| format!("[DATABASE] META_WRITE_FAILED: {}", e))?;
+
         // Schema migrations for the per-node and per-folder colour bar. NULL
         // means "use the default ring" — the UI treats absence as the same
         // visual as before this column existed.
@@ -660,7 +727,9 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT);
              CREATE TABLE monitor_configs (node_id INTEGER PRIMARY KEY, enabled_metrics TEXT NOT NULL DEFAULT '[\"cpu\",\"mem\",\"disk\",\"load\"]', custom_metrics TEXT NOT NULL DEFAULT '[]', paused INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE);
-             CREATE TABLE monitor_settings (id INTEGER PRIMARY KEY, json TEXT NOT NULL);"
+             CREATE TABLE monitor_settings (id INTEGER PRIMARY KEY, json TEXT NOT NULL);
+             CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO schema_meta (key, value) VALUES ('schema_version', '3');"
         ).map_err(|e| format!("[DATABASE] SCHEMA_CREATION_FAILED: {}", e))?;
     }
 
@@ -704,7 +773,7 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
 /// see the same fingerprint prompt every time they reconnect.
 #[tauri::command]
 async fn persist_vault(state: tauri::State<'_, DbState>) -> Result<(), String> {
-    save_vault_internal(&state)
+    save_vault_async(&state).await
 }
 
 /// Create a brand-new profile, encrypted with `password`, and select it as
@@ -1033,6 +1102,53 @@ async fn add_mirror_to_server(
     Ok(())
 }
 
+/// Reveal the plaintext password for a single server row. Used by the edit
+/// panel — only the row the user is editing has its secret crossing IPC.
+/// Returns `Ok(None)` if the server uses a vault credential (no inline
+/// password) or the password column is empty.
+#[tauri::command]
+async fn reveal_server_password(state: tauri::State<'_, DbState>, id: i32) -> Result<Option<String>, String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    conn.query_row(
+        "SELECT password FROM servers WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get::<_, Option<String>>(0),
+    ).map_err(|e| format!("[DATABASE] REVEAL_FAILED: {}", e))
+}
+
+/// Reveal the plaintext password for a single saved credential. Same shape
+/// and rationale as `reveal_server_password`.
+#[tauri::command]
+async fn reveal_credential_password(state: tauri::State<'_, DbState>, id: i32) -> Result<Option<String>, String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    conn.query_row(
+        "SELECT password FROM credentials WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get::<_, Option<String>>(0),
+    ).map_err(|e| format!("[DATABASE] REVEAL_FAILED: {}", e))
+}
+
+/// Reveal the stored private key + passphrase for an SSH key entry. Used
+/// by the key editor and by any future "show key" affordance. The list
+/// view never sees these fields.
+#[tauri::command]
+async fn reveal_ssh_key(state: tauri::State<'_, DbState>, id: i32) -> Result<serde_json::Value, String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    conn.query_row(
+        "SELECT private_key, passphrase FROM ssh_keys WHERE id = ?1",
+        rusqlite::params![id],
+        |row| {
+            Ok(json!({
+                "private_key": row.get::<_, Option<String>>(0)?,
+                "passphrase": row.get::<_, Option<String>>(1)?,
+            }))
+        },
+    ).map_err(|e| format!("[DATABASE] REVEAL_FAILED: {}", e))
+}
+
 /// Light-weight colour write — used by the NodeGrid swatch picker so the
 /// caller doesn't have to round-trip the whole edit_server payload just to
 /// change one tag. Pass `None` to clear back to the default ring.
@@ -1103,17 +1219,23 @@ async fn delete_server(state: tauri::State<'_, DbState>, id: i32) -> Result<(), 
 async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json::Value>, String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    // Secrets stay server-side: this listing returns `has_password` instead
+    // of the plaintext column, so the password never crosses the IPC bridge
+    // unless someone explicitly invokes `reveal_server_password`. The edit
+    // panel calls reveal on open, but the cards / sidebar / quick-connect
+    // grid never see the plaintext.
     let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color FROM servers")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
+        let pw: Option<String> = row.get::<_, Option<String>>(5)?;
         Ok(json!({
             "id": row.get::<_, i32>(0)?,
             "name": row.get::<_, String>(1)?,
             "host": row.get::<_, String>(2)?,
             "port": row.get::<_, i32>(3)?,
             "username": row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-            "password": row.get::<_, Option<String>>(5)?,
+            "has_password": pw.as_deref().map(|s| !s.is_empty()).unwrap_or(false),
             "credential_id": row.get::<_, Option<i32>>(6)?,
             "folder_id": row.get::<_, Option<i32>>(7)?,
             "proxy_type": row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "none".to_string()),
@@ -1139,14 +1261,19 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
 async fn get_ssh_keys(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json::Value>, String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    // Private key + passphrase do NOT cross IPC in the listing — only the
+    // public key (which is safe by definition) and presence flags. The edit
+    // sheet calls `reveal_ssh_key` when it needs the secrets to display.
     let mut stmt = conn.prepare("SELECT id, name, public_key, private_key, passphrase FROM ssh_keys").map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |row| {
+        let priv_present: Option<String> = row.get::<_, Option<String>>(3)?;
+        let pp_present: Option<String> = row.get::<_, Option<String>>(4)?;
         Ok(json!({
-            "id": row.get::<_, i32>(0)?, 
-            "name": row.get::<_, String>(1)?, 
+            "id": row.get::<_, i32>(0)?,
+            "name": row.get::<_, String>(1)?,
             "public_key": row.get::<_, String>(2)?,
-            "private_key": row.get::<_, String>(3)?,
-            "passphrase": row.get::<_, Option<String>>(4)?
+            "has_private_key": priv_present.as_deref().map(|s| !s.is_empty()).unwrap_or(false),
+            "has_passphrase": pp_present.as_deref().map(|s| !s.is_empty()).unwrap_or(false),
         }))
     }).map_err(|e| e.to_string())?;
     
@@ -1161,14 +1288,18 @@ async fn get_ssh_keys(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json
 async fn get_credentials(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json::Value>, String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    // Same pattern as get_servers / get_ssh_keys: only `has_password` is
+    // listed. The credential edit panel reveals on open via the dedicated
+    // command.
     let mut stmt = conn.prepare("SELECT id, name, auth_type, username, password, key_id FROM credentials").map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |row| {
+        let pw: Option<String> = row.get::<_, Option<String>>(4)?;
         Ok(json!({
-            "id": row.get::<_, i32>(0)?, 
-            "name": row.get::<_, String>(1)?, 
+            "id": row.get::<_, i32>(0)?,
+            "name": row.get::<_, String>(1)?,
             "auth_type": row.get::<_, String>(2)?,
             "username": row.get::<_, String>(3)?,
-            "password": row.get::<_, Option<String>>(4)?,
+            "has_password": pw.as_deref().map(|s| !s.is_empty()).unwrap_or(false),
             "key_id": row.get::<_, Option<i32>>(5)?
         }))
     }).map_err(|e| e.to_string())?;
@@ -1489,6 +1620,15 @@ async fn initiate_connection(
     // ghost channel.
     state.terminal_txs.lock().await.retain(|k, _| !k.contains(&session_id));
     state.resize_txs.lock().await.retain(|k, _| !k.contains(&session_id));
+    // Bump the generation so any watcher task still alive from the prior
+    // attempt sees a newer value next tick and bails silently instead of
+    // racing the new connect to emit `session-disconnected-{id}`.
+    let connect_generation: u64 = {
+        let mut g = state.session_generation.lock().await;
+        let next = g.get(&session_id).copied().unwrap_or(0).wrapping_add(1);
+        g.insert(session_id.clone(), next);
+        next
+    };
 
     println!("[BACKEND] No duplicates found. Registering oneshot channel and spawning connection worker...");
     let (fp_tx, fp_rx) = tokio::sync::oneshot::channel();
@@ -1508,6 +1648,7 @@ async fn initiate_connection(
     let state_sftp_sessions = Arc::clone(&state.sftp_sessions);
     let state_tunnels = Arc::clone(&state.tunnels);
     let state_session_tunnel_specs = Arc::clone(&state.session_tunnel_specs);
+    let state_session_generation = Arc::clone(&state.session_generation);
     let fp_txs_clone = Arc::clone(&state.fp_txs);
     let db_conn_shared = Arc::clone(&db_state.conn);
 
@@ -2026,10 +2167,21 @@ async fn initiate_connection(
                                     &format!("Tunnel started [{}]: {} {}", id, spec.kind, spec.local),
                                     "info",
                                 ),
-                                Err(e) => emit_log(
-                                    &format!("Tunnel start failed ({} {}): {}", spec.kind, spec.local, e),
-                                    "error",
-                                ),
+                                Err(e) => {
+                                    emit_log(
+                                        &format!("Tunnel start failed ({} {}): {}", spec.kind, spec.local, e),
+                                        "error",
+                                    );
+                                    // A bind conflict or refused tcpip-forward
+                                    // means this spec is poison for the
+                                    // current session — strip it from the
+                                    // replay list so we don't re-trigger the
+                                    // same error on every reconnect.
+                                    let mut map = state_session_tunnel_specs.lock().await;
+                                    if let Some(list) = map.get_mut(&session_id_clone) {
+                                        list.retain(|s| s != spec);
+                                    }
+                                }
                             }
                         }
 
@@ -2045,6 +2197,8 @@ async fn initiate_connection(
                         let sid_w = session_id_clone.clone();
                         let state_w = Arc::clone(&state_connections);
                         let state_sftp_w = Arc::clone(&state_sftp_sessions);
+                        let state_gen_w = Arc::clone(&state_session_generation);
+                        let my_gen = connect_generation;
                         tauri::async_runtime::spawn(async move {
                             // Two-tier liveness check:
                             //   - Every 2s: cheap is_closed() poll catches TCP
@@ -2065,6 +2219,18 @@ async fn initiate_connection(
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 tick = tick.wrapping_add(1);
 
+                                // Generation guard: a reconnect under the same
+                                // session_id bumps the counter. If we observe a
+                                // newer value here, a fresh watcher has already
+                                // taken over — bow out silently so we don't
+                                // double-emit `session-disconnected-{id}`.
+                                {
+                                    let g = state_gen_w.lock().await;
+                                    if g.get(&sid_w).copied().unwrap_or(0) != my_gen {
+                                        break;
+                                    }
+                                }
+
                                 let handle_opt = {
                                     let conns = state_w.lock().await;
                                     conns.get(&sid_w).cloned()
@@ -2081,7 +2247,14 @@ async fn initiate_connection(
 
                                 let mut dead = is_closed;
 
-                                if !dead && tick % 5 == 0 {
+                                // Active probe roughly every 16s (8 * 2s
+                                // poll). Earlier (every 10s) it occasionally
+                                // overlapped a busy keystroke window because
+                                // the probe holds the handle Mutex for up
+                                // to 5s. The new cadence still surfaces a
+                                // black-hole drop within ~20s without
+                                // contending as often with interactive use.
+                                if !dead && tick % 8 == 0 {
                                     // Active probe: hold the handle lock long
                                     // enough to start AND finish the round
                                     // trip — concurrent commands wait, but
@@ -2753,6 +2926,13 @@ async fn sftp_download_file(
     use tokio::io::AsyncReadExt;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    // Validate the destination BEFORE touching the network. A compromised
+    // renderer (or a malicious SFTP server name in the UI) could otherwise
+    // request a download into a system directory like `/etc` or
+    // `C:\Windows\System32\…`. allow_nonexistent=true because the
+    // destination file is being created right now.
+    let _guarded_local = guard_local_path(&local_path, true)?;
+
     let sftp = get_sftp_session(&state, &session_id).await?;
 
     // Stat first so we can report a progress percentage. If the server doesn't
@@ -2862,6 +3042,11 @@ async fn sftp_upload_file(
     use tauri::Emitter;
     use tokio::io::AsyncWriteExt;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    // Source must exist and live in a path the user could plausibly own —
+    // refuses an SFTP push that would exfiltrate /etc/shadow or the SAM
+    // hive if the renderer ever gets coerced.
+    let _guarded_local = guard_local_path(&local_path, false)?;
 
     let sftp = get_sftp_session(&state, &session_id).await?;
 
@@ -3189,27 +3374,53 @@ async fn sftp_open_remote_file(
     let temp_file_path_clone = temp_file_path.clone();
 
     tokio::spawn(async move {
-        let mut last_modified = std::fs::metadata(&temp_file_path_clone)
-            .ok()
-            .and_then(|m| m.modified().ok());
-
-        // Watch for 2 hours, polling every 1.5 seconds
-        for _ in 0..4800 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-
-            if !temp_file_path_clone.exists() {
-                break;
+        // Notify-driven save detection instead of the old 1.5s poll. Wires
+        // the same `notify-debouncer-mini` crate the mirror module uses:
+        //   - std::mpsc::Sender feeds the debouncer (a blocking pool task
+        //     forwards into a tokio mpsc so this async loop can await it)
+        //   - 750ms debounce coalesces an editor's swap-then-rename
+        //     save pattern (vim, vscode) into one upload instead of
+        //     several. The previous polling burned a syscall every
+        //     1.5s for up to 4800 iterations per open file.
+        use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebouncedEventKind};
+        let (raw_tx, raw_rx) = std::sync::mpsc::channel();
+        let (tok_tx, mut tok_rx) = tokio::sync::mpsc::channel::<()>(8);
+        let mut debouncer = match new_debouncer(std::time::Duration::from_millis(750), raw_tx) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("[sftp-live-edit] debouncer init failed: {} — falling back to no autosync", e);
+                let _ = std::fs::remove_file(&temp_file_path_clone);
+                return;
             }
+        };
+        if let Err(e) = debouncer.watcher().watch(&temp_file_path_clone, RecursiveMode::NonRecursive) {
+            eprintln!("[sftp-live-edit] watch failed: {} — falling back to no autosync", e);
+            let _ = std::fs::remove_file(&temp_file_path_clone);
+            return;
+        }
+        // Forward bridge: std::mpsc::recv blocks, so it has to live on the
+        // blocking pool.
+        tokio::task::spawn_blocking(move || {
+            while let Ok(res) = raw_rx.recv() {
+                if let Ok(events) = res {
+                    if events.iter().any(|ev| matches!(ev.kind, DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous)) {
+                        if tok_tx.blocking_send(()).is_err() { break; }
+                    }
+                }
+            }
+        });
 
-            let current_modified = std::fs::metadata(&temp_file_path_clone)
-                .ok()
-                .and_then(|m| m.modified().ok());
-
-            if current_modified != last_modified {
-                last_modified = current_modified;
-
-                // Sync the change back
-                let upload_res = async {
+        // Overall 2-hour ceiling so an editor left open forever doesn't
+        // keep the watcher alive past any reasonable session.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2 * 60 * 60);
+        loop {
+            let wait = tokio::time::sleep_until(deadline);
+            tokio::select! {
+                _ = wait => break,
+                maybe = tok_rx.recv() => {
+                    if maybe.is_none() { break; }
+                    if !temp_file_path_clone.exists() { break; }
+                    let upload_res = async {
                     let session_arc = {
                         let connections = connections_clone.lock().await;
                         connections.get(&session_id_clone).map(|sess| Arc::clone(sess))
@@ -3246,18 +3457,19 @@ async fn sftp_open_remote_file(
                         .await
                         .map_err(|e| format!("Failed to close remote file: {}", e))?;
                     Ok::<(), String>(())
-                }.await;
+                    }.await;
 
-                if let Err(e) = upload_res {
-                    let _ = app_handle_clone.emit(
-                        &format!("sftp-sync-status-{}", session_id_clone),
-                        serde_json::json!({ "status": "error", "message": format!("Auto-sync failed: {}", e) })
-                    );
-                } else {
-                    let _ = app_handle_clone.emit(
-                        &format!("sftp-sync-status-{}", session_id_clone),
-                        serde_json::json!({ "status": "success", "message": format!("Auto-synced {}", filename_clone) })
-                    );
+                    if let Err(e) = upload_res {
+                        let _ = app_handle_clone.emit(
+                            &format!("sftp-sync-status-{}", session_id_clone),
+                            serde_json::json!({ "status": "error", "message": format!("Auto-sync failed: {}", e) })
+                        );
+                    } else {
+                        let _ = app_handle_clone.emit(
+                            &format!("sftp-sync-status-{}", session_id_clone),
+                            serde_json::json!({ "status": "success", "message": format!("Auto-synced {}", filename_clone) })
+                        );
+                    }
                 }
             }
         }
@@ -3266,6 +3478,7 @@ async fn sftp_open_remote_file(
         // in OS temp once editing is done. Errors are intentionally ignored
         // — on Windows the editor may still hold a lock on the file, and the
         // worst case is the file persists until the OS cleans temp.
+        drop(debouncer);
         let _ = std::fs::remove_file(&temp_file_path_clone);
     });
 
@@ -4075,7 +4288,7 @@ fn main() {
             cloud::cloud_force_upload_profile, cloud::cloud_download_profile,
             cloud::cloud_delete_remote_profile,
             cloud::cloud_sync_overview, cloud::cloud_sync_all,
-            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, clone_server,
+            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,
             add_command, edit_command, delete_command, get_commands,
