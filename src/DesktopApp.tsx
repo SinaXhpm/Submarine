@@ -506,14 +506,6 @@ function DesktopApp() {
                   try { await invoke("clone_server", { id }); refreshServers(); addLog("Node cloned.", "success"); }
                   catch (e) { addLog(`CLONE_ERROR: ${e}`, "error"); }
                 }}
-                onSetServerColor={async (id: number, color: string | null) => {
-                  try { await invoke("set_server_color", { id, color }); refreshServers(); }
-                  catch (e) { addLog(`COLOR_ERROR: ${e}`, "error"); }
-                }}
-                onSetFolderColor={async (id: number, color: string | null) => {
-                  try { await invoke("set_folder_color", { id, color }); refreshFolders(); }
-                  catch (e) { addLog(`COLOR_ERROR: ${e}`, "error"); }
-                }}
                 isMobile={isMobile}
               />
             )}

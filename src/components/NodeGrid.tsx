@@ -1,51 +1,7 @@
-import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy, Palette } from "lucide-react";
+import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy } from "lucide-react";
 import { useState } from "react";
 
-const COLOR_PALETTE: { name: string; value: string | null; cls: string }[] = [
-  { name: "Default", value: null,      cls: "bg-zinc-500" },
-  { name: "Rose",    value: "#f43f5e", cls: "bg-rose-500" },
-  { name: "Amber",   value: "#f59e0b", cls: "bg-amber-500" },
-  { name: "Emerald", value: "#10b981", cls: "bg-emerald-500" },
-  { name: "Sky",     value: "#0ea5e9", cls: "bg-sky-500" },
-  { name: "Indigo",  value: "#6366f1", cls: "bg-indigo-500" },
-  { name: "Fuchsia", value: "#d946ef", cls: "bg-fuchsia-500" },
-  { name: "Slate",   value: "#64748b", cls: "bg-slate-500" },
-];
-
-const ColorPicker = ({ current, onPick }: { current?: string | null; onPick: (c: string | null) => void }) => {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
-        title="Change colour"
-        className="p-1.5 text-zinc-500 hover:text-primary transition-all"
-      >
-        <Palette size={14} />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
-          <div
-            className="absolute right-0 top-full mt-1 z-50 p-2 bg-[#15151a] border border-white/10 rounded-md shadow-2xl flex gap-1.5"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {COLOR_PALETTE.map(p => (
-              <button
-                key={p.name}
-                title={p.name}
-                onClick={(e) => { e.stopPropagation(); onPick(p.value); setOpen(false); }}
-                className={`w-5 h-5 rounded-full ${p.cls} ring-2 ring-transparent hover:ring-white/30 transition-all ${(current ?? null) === p.value ? "ring-white" : ""}`}
-              />
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-};
-
-export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, onSetServerColor, onSetFolderColor, isMobile }: any) => {
+export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, isMobile }: any) => {
   const [search, setSearch] = useState("");
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
   // Per-folder inline rename state. Only one folder can be in edit mode at
@@ -99,12 +55,6 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
         </div>
       </div>
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-        {onSetServerColor && (
-          <ColorPicker
-            current={s.color ?? null}
-            onPick={(c) => onSetServerColor(s.id, c)}
-          />
-        )}
         {onCloneServer && (
           <button
             onClick={(e) => { e.stopPropagation(); onCloneServer(s.id); }}
@@ -185,9 +135,6 @@ export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddCl
             <>
               <span className="text-[10px] bg-black text-zinc-500 px-1.5 py-0.5 rounded-md font-mono group-hover:opacity-0 transition-opacity">{serverCount}</span>
               <div className="absolute right-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all bg-[#1c1c21]/95 backdrop-blur-sm rounded">
-                {onSetFolderColor && (
-                  <ColorPicker current={f.color ?? null} onPick={(c) => onSetFolderColor(f.id, c)} />
-                )}
                 <button
                   onClick={(e) => { e.stopPropagation(); setRenaming({ id: f.id, draft: f.name || "" }); }}
                   title="Rename folder"
