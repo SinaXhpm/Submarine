@@ -185,9 +185,16 @@ const TerminalView = ({
       try { text = await navigator.clipboard.readText(); }
       catch { notify('Clipboard read denied', 'err'); return; }
       if (!text) return;
+      // Normalize line endings the way xterm and OpenSSH do: collapse
+      // CRLF / lone LF to a single CR. A Windows-style clipboard pastes
+      // `\r\n` per line — the PTY sees CR (Enter) followed by LF (Enter
+      // again), and the shell runs the previous command twice and inserts
+      // a blank line between every pair. Stripping LF puts paste back on
+      // the standard terminal contract: one Enter per line break.
+      const normalized = text.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
       invoke('write_terminal_data', {
         terminalId,
-        data: Array.from(new TextEncoder().encode(text)),
+        data: Array.from(new TextEncoder().encode(normalized)),
       }).catch(console.error);
       notify('Pasted');
     };
