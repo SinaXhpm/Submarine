@@ -334,18 +334,46 @@ async fn sftp_download_file(
         tokio::fs::create_dir_all(parent).await
             .map_err(|e| format!("local mkdir {:?}: {}", parent, e))?;
     }
+    // Atomic write: stream into `<local>.submarine-tmp` first, then rename
+    // into place. If the process / network / disk dies mid-download, the
+    // user is left with the previous good file (if any) PLUS a stray
+    // .submarine-tmp they can spot and remove — instead of a truncated
+    // copy stamped with the remote's mtime, which the next dry-run would
+    // believe is fully synced. Rename is atomic on the same FS volume on
+    // Windows, Linux, and macOS.
+    let mut tmp = local.as_os_str().to_owned();
+    tmp.push(".submarine-tmp");
+    let tmp_path = std::path::PathBuf::from(tmp);
+
     let mut handle = sftp.open(remote).await
         .map_err(|e| format!("sftp open {}: {}", remote, e))?;
-    let mut f = tokio::fs::File::create(local).await
-        .map_err(|e| format!("local create {:?}: {}", local, e))?;
+    let mut f = tokio::fs::File::create(&tmp_path).await
+        .map_err(|e| format!("local create {:?}: {}", tmp_path, e))?;
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         let n = handle.read(&mut buf).await.map_err(|e| format!("sftp read: {}", e))?;
         if n == 0 { break; }
-        f.write_all(&buf[..n]).await.map_err(|e| format!("local write: {}", e))?;
+        if let Err(e) = f.write_all(&buf[..n]).await {
+            // Best-effort: drop the partial tmp file so it doesn't linger.
+            drop(f);
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(format!("local write: {}", e));
+        }
     }
-    f.flush().await.ok();
+    // Propagate flush errors. Earlier this silently swallowed them with
+    // `.ok()`, which combined with the next-line set_file_mtime call
+    // produced a partial file stamped with the remote mtime — invisible
+    // to dry-run because size matched roughly and mtime matched exactly.
+    if let Err(e) = f.flush().await {
+        drop(f);
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(format!("local flush: {}", e));
+    }
     drop(f);
+    if let Err(e) = tokio::fs::rename(&tmp_path, local).await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(format!("local rename {:?} -> {:?}: {}", tmp_path, local, e));
+    }
     if let Some(secs) = remote_mtime_secs {
         let ft = filetime::FileTime::from_unix_time(secs as i64, 0);
         let _ = filetime::set_file_mtime(local, ft);
@@ -879,11 +907,15 @@ async fn run_mirror(
     debouncer.watcher()
         .watch(&local_root, RecursiveMode::Recursive)
         .map_err(|e| format!("watch {:?}: {}", local_root, e))?;
-    // Forward loop runs on the blocking pool; std::mpsc::recv blocks.
+    // Forward loop runs on the blocking pool; std::mpsc::recv blocks. Keep
+    // the JoinHandle so we can await it on the way out — without this the
+    // task was abandoned, racing with the next mirror's spawn_blocking and
+    // (more importantly) keeping the watcher OS handle alive for the brief
+    // window between debouncer-drop and OS-cleanup.
     let session_for_forward = session_id.clone();
     let mirror_for_forward = mirror_id.clone();
     let app_for_forward = app.clone();
-    tokio::task::spawn_blocking(move || {
+    let forward_join = tokio::task::spawn_blocking(move || {
         while let Ok(res) = raw_rx.recv() {
             match res {
                 Ok(events) => {
@@ -905,11 +937,34 @@ async fn run_mirror(
         }
     });
 
+    // Local helper to tear the watcher + forwarder down deterministically:
+    // dropping `debouncer` closes its raw_tx, which makes `raw_rx.recv()`
+    // return Err in the forwarder, which exits the loop. We then await the
+    // JoinHandle so the blocking task is fully done before we return.
+    async fn shutdown(
+        debouncer: notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>,
+        forward_join: tokio::task::JoinHandle<()>,
+    ) {
+        drop(debouncer);
+        let _ = forward_join.await;
+    }
+
     loop {
         tokio::select! {
-            _ = &mut stop_rx => return Ok(()),
+            _ = &mut stop_rx => {
+                shutdown(debouncer, forward_join).await;
+                return Ok(());
+            }
             maybe = tok_rx.recv() => {
-                let paths = match maybe { Some(p) => p, None => return Ok(()) };
+                let paths = match maybe {
+                    Some(p) => p,
+                    None => {
+                        // Forwarder side hung up (debouncer dropped on its
+                        // own?). Treat the same as stop and tear down.
+                        shutdown(debouncer, forward_join).await;
+                        return Ok(());
+                    }
+                };
                 {
                     let mut s = status.lock().await;
                     s.queue_depth = s.queue_depth.saturating_add(paths.len() as u32);

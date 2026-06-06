@@ -2218,6 +2218,7 @@ async fn initiate_connection(
                         let state_w = Arc::clone(&state_connections);
                         let state_sftp_w = Arc::clone(&state_sftp_sessions);
                         let state_gen_w = Arc::clone(&state_session_generation);
+                        let state_tunnels_w = Arc::clone(&state_tunnels);
                         let my_gen = connect_generation;
                         tauri::async_runtime::spawn(async move {
                             // Two-tier liveness check:
@@ -2305,6 +2306,17 @@ async fn initiate_connection(
                                 if dead {
                                     state_sftp_w.lock().await.remove(&sid_w);
                                     state_w.lock().await.remove(&sid_w);
+                                    // Tear down all tunnels bound to this
+                                    // session so their listeners release the
+                                    // local ports + bridge tasks exit. Without
+                                    // this, the listeners stayed up holding
+                                    // the now-dead Arc<Handle>, and stop_tunnel
+                                    // calls during reconnect raced with the
+                                    // replay logic. This is the single
+                                    // authoritative SSH-death tunnel-teardown
+                                    // path; the listener tasks themselves no
+                                    // longer probe the handle.
+                                    tunnel::stop_all_for_session(&state_tunnels_w, &sid_w).await;
                                     let _ = app_w.emit(
                                         &format!("session-disconnected-{}", sid_w),
                                         serde_json::json!({
@@ -3060,6 +3072,213 @@ async fn sftp_download_file(
     }
     local_file.flush().await.map_err(|e| format!("flush: {}", e))?;
     emit_progress(transferred, "done", None);
+    Ok(())
+}
+
+/// Recursive remote directory download. Walks the remote tree under
+/// `remote_path`, mirrors its structure into `local_path/{basename}`, and
+/// streams every file across with progress events aggregated under a SINGLE
+/// transfer id — so the UI shows one "folder of N files" card instead of one
+/// card per file. Cancellation uses the same `transfer_cancels` map as
+/// single-file downloads, so the user's Cancel button works identically.
+#[tauri::command]
+async fn sftp_download_dir(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    remote_path: String,
+    local_path: String,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // Destination is the PARENT directory. We'll create remote_path's
+    // basename underneath it so the user gets `local/{folder}/...`,
+    // matching scp -r and rsync semantics.
+    let _guarded_local = guard_local_path(&local_path, true)?;
+
+    let sftp = get_sftp_session(&state, &session_id).await?;
+
+    // Compute the folder name from the remote path. Strip trailing slashes
+    // first so `/home/user/data/` still yields `data`, not "".
+    let folder_name = remote_path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("folder")
+        .to_string();
+    let folder_name = if folder_name.is_empty() { "folder".to_string() } else { folder_name };
+
+    let id = transfer_id();
+    let event_name = format!("sftp-transfer-{}", session_id);
+
+    // Register cancel flag early so the user can abort even during the
+    // enumeration phase (which can be slow on a deep tree with many dirs).
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancels_map = Arc::clone(&state.transfer_cancels);
+    cancels_map.lock().await.insert(id.clone(), Arc::clone(&cancel));
+    struct CancelGuard {
+        map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+        id: String,
+    }
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            if let Ok(mut g) = self.map.try_lock() {
+                g.remove(&self.id);
+            }
+        }
+    }
+    let _guard = CancelGuard { map: Arc::clone(&cancels_map), id: id.clone() };
+
+    let id_for_emit = id.clone();
+    let name_for_emit = folder_name.clone();
+    let app_for_emit = app.clone();
+    let event_for_emit = event_name.clone();
+    let emit_progress = move |bytes: u64, total: u64, status: &str, error: Option<String>| {
+        let _ = app_for_emit.emit(
+            &event_for_emit,
+            serde_json::json!({
+                "id": id_for_emit, "name": name_for_emit, "kind": "download",
+                "bytes": bytes, "total": total,
+                "status": status, "error": error,
+            }),
+        );
+    };
+
+    emit_progress(0, 0, "progress", None);
+
+    // Phase 1: enumerate. Collect every file under remote_path along with
+    // its relative path (so we can preserve the tree on the local side) and
+    // its size (so the progress bar has a meaningful total). Tracked
+    // iteratively with an explicit stack so we don't blow the async-recursion
+    // budget on pathological trees.
+    let remote_root = remote_path.trim_end_matches('/').to_string();
+    let mut files: Vec<(String, String, u64)> = Vec::new(); // (remote, rel, size)
+    let mut total_bytes: u64 = 0;
+    let mut stack: Vec<String> = vec![remote_root.clone()];
+
+    while let Some(dir) = stack.pop() {
+        if cancel.load(Ordering::Relaxed) {
+            emit_progress(0, total_bytes, "cancelled", None);
+            return Err("cancelled".into());
+        }
+        let read = match sftp.read_dir(&dir).await {
+            Ok(r) => r,
+            Err(e) => {
+                emit_progress(0, total_bytes, "error", Some(format!("read_dir {}: {}", dir, e)));
+                return Err(format!("read_dir {}: {}", dir, e));
+            }
+        };
+        for entry in read {
+            let name = entry.file_name();
+            if name == "." || name == ".." { continue; }
+            let full = format!("{}/{}", dir.trim_end_matches('/'), name);
+            if entry.file_type().is_dir() {
+                stack.push(full);
+            } else if entry.file_type().is_file() {
+                let size = entry.metadata().size.unwrap_or(0);
+                let rel = full.strip_prefix(&remote_root)
+                    .map(|s| s.trim_start_matches('/').to_string())
+                    .unwrap_or_else(|| name.clone());
+                total_bytes = total_bytes.saturating_add(size);
+                files.push((full, rel, size));
+            }
+            // Symlinks and other types skipped — same conservative policy
+            // as the mirror module.
+        }
+    }
+
+    if files.is_empty() {
+        // Still create the (empty) destination folder so the UI sees the
+        // shape — otherwise the user sees "done" with nothing to show for it.
+        let local_root = std::path::PathBuf::from(&local_path).join(&folder_name);
+        let _ = tokio::fs::create_dir_all(&local_root).await;
+        emit_progress(0, 0, "done", None);
+        return Ok(());
+    }
+
+    // Phase 2: download. The local destination tree is rooted at
+    // {local_path}/{folder_name}/... so multi-level files preserve their
+    // structure. Create each parent directory lazily right before we open
+    // the file.
+    let local_root = std::path::PathBuf::from(&local_path).join(&folder_name);
+    if let Err(e) = tokio::fs::create_dir_all(&local_root).await {
+        emit_progress(0, total_bytes, "error", Some(format!("create {}: {}", local_root.display(), e)));
+        return Err(format!("create root: {}", e));
+    }
+
+    let mut transferred: u64 = 0;
+    let mut last_report = std::time::Instant::now();
+    let mut buf = vec![0u8; 256 * 1024];
+
+    for (remote_file_path, rel, _size) in &files {
+        if cancel.load(Ordering::Relaxed) {
+            emit_progress(transferred, total_bytes, "cancelled", None);
+            return Err("cancelled".into());
+        }
+
+        // Normalise the relative path's separators for the local OS. On
+        // Unix this is a no-op; on Windows we replace `/` so create_dir_all
+        // produces real nested directories instead of one literal name
+        // containing slashes.
+        let rel_local = if cfg!(windows) { rel.replace('/', "\\") } else { rel.clone() };
+        let dest = local_root.join(&rel_local);
+        if let Some(parent) = dest.parent() {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                emit_progress(transferred, total_bytes, "error",
+                    Some(format!("mkdir {}: {}", parent.display(), e)));
+                return Err(format!("mkdir {}: {}", parent.display(), e));
+            }
+        }
+
+        let mut remote_file = match sftp.open(remote_file_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                emit_progress(transferred, total_bytes, "error",
+                    Some(format!("open {}: {}", remote_file_path, e)));
+                return Err(format!("open {}: {}", remote_file_path, e));
+            }
+        };
+        let mut local_file = match tokio::fs::File::create(&dest).await {
+            Ok(f) => f,
+            Err(e) => {
+                emit_progress(transferred, total_bytes, "error",
+                    Some(format!("create {}: {}", dest.display(), e)));
+                return Err(format!("create {}: {}", dest.display(), e));
+            }
+        };
+
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                drop(local_file);
+                let _ = tokio::fs::remove_file(&dest).await;
+                emit_progress(transferred, total_bytes, "cancelled", None);
+                return Err("cancelled".into());
+            }
+            let n = remote_file.read(&mut buf).await
+                .map_err(|e| {
+                    emit_progress(transferred, total_bytes, "error",
+                        Some(format!("read {}: {}", remote_file_path, e)));
+                    format!("read {}: {}", remote_file_path, e)
+                })?;
+            if n == 0 { break; }
+            local_file.write_all(&buf[..n]).await
+                .map_err(|e| {
+                    emit_progress(transferred, total_bytes, "error",
+                        Some(format!("write {}: {}", dest.display(), e)));
+                    format!("write {}: {}", dest.display(), e)
+                })?;
+            transferred = transferred.saturating_add(n as u64);
+            if last_report.elapsed() >= std::time::Duration::from_millis(100) {
+                emit_progress(transferred, total_bytes, "progress", None);
+                last_report = std::time::Instant::now();
+            }
+        }
+        local_file.flush().await.map_err(|e| format!("flush {}: {}", dest.display(), e))?;
+    }
+
+    emit_progress(transferred, total_bytes, "done", None);
     Ok(())
 }
 
@@ -4352,7 +4571,7 @@ fn main() {
             local_home_dir, local_desktop_dir, local_create_dir, local_remove, local_rename,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner,
-            sftp_download_file, sftp_upload_file, sftp_cancel_transfer, sftp_open_remote_file,
+            sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_cancel_transfer, sftp_open_remote_file,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
             monitor_list, monitor_add, monitor_remove, monitor_set_metrics, monitor_set_custom_metrics,
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,

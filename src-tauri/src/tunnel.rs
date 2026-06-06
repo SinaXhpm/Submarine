@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -523,35 +522,21 @@ async fn run_local_forward(
     let active = Arc::new(AtomicU32::new(0));
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
-    // Periodic SSH-handle health check. The listener only tears down when
-    // the SSH session is actually dead (caller's `handle.is_closed()`
-    // returns true) — NOT when individual bridge attempts fail. A user's
-    // SOCKS client can fail dozens of channel_opens in a row for perfectly
-    // healthy reasons (DNS lookup failed, target host unreachable, port
-    // refused by the remote) and we must NOT interpret those as the SSH
-    // session being broken. The main.rs watcher is the authoritative
-    // SSH-liveness signal; this is just a fast-path backstop.
-    let mut health_check = tokio::time::interval(Duration::from_secs(5));
-    health_check.tick().await; // consume the immediate first tick
+    // The listener does ONE thing: accept incoming TCP connections and spawn
+    // a bridge task for each. It does NOT poll the SSH handle's health. The
+    // earlier version did, by lock()-ing the handle inside the select arm,
+    // which could block `stop_rx` from firing whenever a slow bridge task
+    // was already holding the mutex — symptom: clicking Stop did nothing
+    // for several seconds while we waited on a wedged channel_open. The
+    // main.rs watcher is the single authoritative SSH-death signal; it
+    // calls `tunnel::stop_all_for_session` on detection, which signals
+    // stop_tx here. Bridge tasks fail fast on their own when SSH is dead.
 
     loop {
         tokio::select! {
             _ = &mut stop_rx => {
                 let _ = shutdown_tx.send(());
                 break;
-            }
-            _ = health_check.tick() => {
-                let closed = {
-                    let h = handle.lock().await;
-                    h.is_closed()
-                };
-                if closed {
-                    emit_log(&app, &session_id, &tunnel_id, "error", "ssh-dead",
-                             Some(target.clone()), None,
-                             Some("SSH session closed — local forward shutting down".into()));
-                    let _ = shutdown_tx.send(());
-                    break;
-                }
             }
             accepted = listener.accept() => {
                 let (sock, peer) = accepted.map_err(|e| format!("accept: {}", e))?;
@@ -637,37 +622,17 @@ async fn run_dynamic_forward(
     let active = Arc::new(AtomicU32::new(0));
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
-    // Periodic SSH-handle health check. The listener only tears down when
-    // the SSH session is genuinely dead (`handle.is_closed()` returns true),
-    // NOT when individual SOCKS clients fail. A browser typically generates
-    // bursts of failures during normal use (CDN host with no AAAA record,
-    // blocked domain, target port refused) — counting those toward an
-    // "SSH-dead" threshold caused the SOCKS tunnel to tear itself down on
-    // every other browsing session even though the SSH link was healthy.
-    // The main.rs watcher is the authoritative liveness signal; this
-    // 5-second poll is a fast-path backstop that lets us shut down within
-    // ~5s of a clean close instead of waiting on the watcher's 16s probe.
-    let mut health_check = tokio::time::interval(Duration::from_secs(5));
-    health_check.tick().await; // consume the immediate first tick
+    // Single-responsibility listener: accept SOCKS / HTTP requests and spawn
+    // a bridge task. SSH-liveness is NOT polled from here — see the matching
+    // comment in run_local_forward for why. The main.rs watcher detects SSH
+    // death and triggers `tunnel::stop_all_for_session`, which fires our
+    // stop_rx and tears everything down cleanly.
 
     loop {
         tokio::select! {
             _ = &mut stop_rx => {
                 let _ = shutdown_tx.send(());
                 break;
-            }
-            _ = health_check.tick() => {
-                let closed = {
-                    let h = handle.lock().await;
-                    h.is_closed()
-                };
-                if closed {
-                    emit_log(&app, &session_id, &tunnel_id, "error", "ssh-dead",
-                             None, None,
-                             Some("SSH session closed — dynamic forward shutting down".into()));
-                    let _ = shutdown_tx.send(());
-                    break;
-                }
             }
             accepted = listener.accept() => {
                 let (sock, peer) = accepted.map_err(|e| format!("accept: {}", e))?;

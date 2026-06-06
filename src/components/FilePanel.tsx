@@ -496,15 +496,17 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   // ---- contextual actions -----------------------------------------------------
 
-  // Remote → local download. Bulk-aware. Destination is whatever the local
-  // pane is currently showing (`getOppositeDir`) — that's almost always what
-  // the user wants and saves the round-trip through a folder picker every
-  // single time. Only falls back to the native picker if the sibling pane
-  // hasn't reported a directory yet (e.g. it's still loading).
+  // Remote → local download. Bulk-aware, folder-aware. Destination is
+  // whatever the local pane is currently showing (`getOppositeDir`) — that's
+  // almost always what the user wants and saves the round-trip through a
+  // folder picker every single time. Only falls back to the native picker
+  // if the sibling pane hasn't reported a directory yet (e.g. it's still
+  // loading). Folders go through `sftp_download_dir` which walks the tree
+  // and preserves structure; individual files go through the single-file
+  // command. Both paths emit progress on the same `sftp-transfer-{id}`
+  // channel so the user sees uniform cards.
   const downloadItems = async (items: FileEntry[]) => {
-    if (!sessionId) return;
-    const files = items.filter(e => !e.isDir);
-    if (files.length === 0) { notify("Folder download not supported", "error"); return; }
+    if (!sessionId || items.length === 0) return;
     let dest = getOppositeDir?.();
     if (!dest) {
       try { dest = (await invoke<string | null>("select_local_folder")) || undefined; }
@@ -513,20 +515,32 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     }
     const sep = dest.includes("\\") ? "\\" : "/";
     const trimmed = dest.replace(/[\\/]+$/, "");
-    notify(files.length === 1 ? `Downloading ${files[0].name}…` : `Downloading ${files.length} files…`, "info");
+    const fileCount = items.filter(e => !e.isDir).length;
+    const dirCount  = items.filter(e =>  e.isDir).length;
+    const summary =
+      items.length === 1
+        ? `Downloading ${items[0].isDir ? "folder " : ""}${items[0].name}…`
+        : `Downloading ${fileCount} files${dirCount ? ` + ${dirCount} folder${dirCount === 1 ? "" : "s"}` : ""}…`;
+    notify(summary, "info");
     let count = 0;
-    for (const f of files) {
+    for (const e of items) {
       try {
-        await invoke("sftp_download_file", {
-          sessionId, remotePath: f.path, localPath: `${trimmed}${sep}${f.name}`,
-        });
+        if (e.isDir) {
+          await invoke("sftp_download_dir", {
+            sessionId, remotePath: e.path, localPath: trimmed,
+          });
+        } else {
+          await invoke("sftp_download_file", {
+            sessionId, remotePath: e.path, localPath: `${trimmed}${sep}${e.name}`,
+          });
+        }
         count++;
       } catch (err: any) {
-        notify(`Download failed for ${f.name}: ${err}`, "error");
+        notify(`Download failed for ${e.name}: ${err}`, "error");
       }
     }
     if (count > 0) {
-      notify(files.length === 1 ? `Downloaded ${files[0].name}` : `Downloaded ${count} of ${files.length} files`, "success");
+      notify(items.length === 1 ? `Downloaded ${items[0].name}` : `Downloaded ${count} of ${items.length} items`, "success");
     }
   };
 
