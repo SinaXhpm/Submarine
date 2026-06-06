@@ -344,9 +344,28 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     window.addEventListener("mouseup", onUp);
   };
 
-  // (Removed dead listener for `sftp-sync-status-{id}` — the Rust side
-  // never emits that event today, so the listener was just a leak. If
-  // live-edit toasts get re-added, restore both ends together.)
+  // Live-edit toast. `sftp_open_remote_file` downloads the file to a temp
+  // dir, opens it in the system editor, and watches the file's mtime.
+  // Every time the user saves, Rust pushes the change back to the server
+  // and emits `sftp-sync-status-{id}`. Surface the success path as a
+  // notify() so the user sees their save actually landed; errors get the
+  // full text from the backend.
+  useEffect(() => {
+    if (!sessionId) return;
+    let unlisten: (() => void) | null = null;
+    listen<{ status: string; message?: string }>(
+      `sftp-sync-status-${sessionId}`,
+      (event) => {
+        const { status, message } = event.payload || ({} as any);
+        if (status === "success") {
+          notify(message || "Changes uploaded", "success");
+        } else if (status === "error") {
+          notify(message || "Auto-sync failed", "error");
+        }
+      },
+    ).then((u) => { unlisten = u; });
+    return () => { if (unlisten) unlisten(); };
+  }, [sessionId]);
 
   // ---- OS-level drag-drop into this pane --------------------------------------
   // Tauri 2 routes OS file drops through `tauri://drag-drop`; HTML5 drop events
