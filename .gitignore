@@ -63,3 +63,5 @@ desktop.ini
 # Test/coverage output (no test suite yet, but pre-empt the typical paths).
 coverage/
 .nyc_output/
+
+all-logos/

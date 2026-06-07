@@ -299,6 +299,41 @@ function DesktopApp() {
 
   const confirm = useConfirm();
 
+  // Window-close guard. Keep `sessions` mirrored into a ref so the close
+  // handler (which is registered ONCE inside useEffect, capturing snapshot
+  // state) always sees the latest array — without this we'd race against
+  // the user opening/closing tabs and either over- or under-confirm.
+  const sessionsRef = useRef(sessions);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+
+  // Intercept BOTH the in-app X button (which calls appWindow.close()) AND
+  // OS-level closes (Alt+F4, taskbar context-menu close, system shutdown).
+  // Both paths fire `onCloseRequested`. Showing a confirm when at least one
+  // SSH session is connected prevents the most painful misclick: closing
+  // the window mid-deploy / mid-edit and losing the terminal scrollback +
+  // any in-flight SFTP transfers in one go. `appWindow.destroy()` bypasses
+  // the close-requested hook so confirming actually exits — calling
+  // `close()` again here would loop us straight back into the same prompt.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    appWindow.onCloseRequested(async (event) => {
+      const n = sessionsRef.current.length;
+      if (n === 0) return; // nothing to lose — let the close proceed
+      event.preventDefault();
+      const ok = await confirm({
+        title: "Close Submarine?",
+        message: `${n} SSH session${n === 1 ? "" : "s"} ${n === 1 ? "is" : "are"} still connected. Closing now disconnects ${n === 1 ? "it" : "them all"} and aborts any in-flight transfers.`,
+        okLabel: "Close anyway",
+        cancelLabel: "Stay",
+        destructive: true,
+      });
+      if (ok) {
+        await appWindow.destroy();
+      }
+    }).then((fn) => { unlisten = fn; });
+    return () => { if (unlisten) unlisten(); };
+  }, [confirm]);
+
   // Lock the current profile and return to the picker. Confirms first when
   // there are open SSH sessions because they will be torn down — accidental
   // double-clicks on the lock icon shouldn't kill the user's terminal work.
