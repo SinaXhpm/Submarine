@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -590,12 +591,10 @@ async fn bridge_local_to_channel(
     target_host: String,
     target_port: u16,
 ) -> Result<(), String> {
-    let channel = {
-        let h = handle.lock().await;
-        h.channel_open_direct_tcpip(target_host, target_port as u32, peer.ip().to_string(), peer.port() as u32)
-            .await
-            .map_err(|e| format!("channel_open_direct_tcpip: {}", e))?
-    };
+    let channel = open_channel_with_retry(
+        &handle, &target_host, target_port as u32,
+        &peer.ip().to_string(), peer.port() as u32,
+    ).await.map_err(|e| format!("channel_open_direct_tcpip: {}", e))?;
     let mut stream = channel.into_stream();
     let _ = tokio::io::copy_bidirectional(&mut sock, &mut stream).await;
     Ok(())
@@ -762,6 +761,45 @@ pub async fn bridge_forwarded_channel(
     }
 }
 
+/// Open a `direct-tcpip` channel through the SSH session, with ONE quick
+/// retry on transient failure. Modern browsers fire bursts of channel-open
+/// requests (preconnect pools, image sprites, prefetch) and some SSH
+/// servers temporarily refuse new channels under that load with a
+/// transport-shaped error even though the session itself is healthy. A
+/// 120ms backoff + single retry papers over those without holding the
+/// caller noticeably longer. Falls back to the original error on the
+/// second failure.
+async fn open_channel_with_retry(
+    handle: &Mutex<russh::client::Handle<ClientHandler>>,
+    target_host: &str,
+    target_port: u32,
+    peer_ip: &str,
+    peer_port: u32,
+) -> Result<russh::Channel<russh::client::Msg>, russh::Error> {
+    let first = {
+        let h = handle.lock().await;
+        h.channel_open_direct_tcpip(target_host.to_string(), target_port,
+                                     peer_ip.to_string(), peer_port).await
+    };
+    let first_err = match first {
+        Ok(c) => return Ok(c),
+        Err(e) => e,
+    };
+    // Don't retry if the session is gone — wasted round-trip and the
+    // user is about to see the disconnect banner anyway.
+    let still_alive = {
+        let h = handle.lock().await;
+        !h.is_closed()
+    };
+    if !still_alive {
+        return Err(first_err);
+    }
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let h = handle.lock().await;
+    h.channel_open_direct_tcpip(target_host.to_string(), target_port,
+                                 peer_ip.to_string(), peer_port).await
+}
+
 /// Detect the protocol the client is speaking from its first byte and hand
 /// off to the matching handler. The dynamic forward accepts:
 ///
@@ -785,7 +823,24 @@ async fn handle_dynamic_client(
     tunnel_id: String,
 ) -> Result<(), String> {
     let mut ver = [0u8; 1];
-    sock.read_exact(&mut ver).await.map_err(|e| format!("read version: {}", e))?;
+    // Browser preconnect pools (Chrome opens ~6 connections per host
+    // proactively, even before the user types a URL), health probes and
+    // OS-level connection scrubbers regularly open a TCP socket against
+    // our SOCKS listener and close it WITHOUT sending the version byte.
+    // The earlier code surfaced every one of these as `read version:
+    // early eof` in the activity log, even though the SSH side was fine.
+    // Treat both "EOF before any byte arrived" AND "no byte within 30s"
+    // as a silent close — return Ok(()) so the listener doesn't log a
+    // fail line. Anything else (interrupted read, TCP reset mid-byte)
+    // is still surfaced.
+    let read_res = tokio::time::timeout(Duration::from_secs(30),
+                                        sock.read_exact(&mut ver)).await;
+    match read_res {
+        Err(_) => return Ok(()), // 30s and the client said nothing — drop quietly
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+        Ok(Err(e)) => return Err(format!("read version: {}", e)),
+        Ok(Ok(_)) => {}
+    }
     match ver[0] {
         0x05 => handle_socks5(handle, sock, peer, app, session_id, tunnel_id).await,
         0x04 => handle_socks4(handle, sock, peer, app, session_id, tunnel_id).await,
@@ -838,11 +893,10 @@ async fn handle_http_proxy(
                  Some(target_full.clone()), Some(peer.to_string()),
                  Some("via HTTP CONNECT".into()));
 
-        let channel = {
-            let h = handle.lock().await;
-            h.channel_open_direct_tcpip(host.clone(), port as u32,
-                                         peer.ip().to_string(), peer.port() as u32).await
-        };
+        let channel = open_channel_with_retry(
+            &handle, &host, port as u32,
+            &peer.ip().to_string(), peer.port() as u32,
+        ).await;
         let channel = match channel {
             Ok(c) => {
                 sock.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -892,11 +946,10 @@ async fn handle_http_proxy(
         .map_err(|e| format!("http headers: {}", e))?;
     let forwarded_headers = filter_and_rewrite_headers(&headers_raw);
 
-    let channel = {
-        let h = handle.lock().await;
-        h.channel_open_direct_tcpip(host.clone(), port as u32,
-                                     peer.ip().to_string(), peer.port() as u32).await
-    };
+    let channel = open_channel_with_retry(
+        &handle, &host, port as u32,
+        &peer.ip().to_string(), peer.port() as u32,
+    ).await;
     let mut stream = match channel {
         Ok(c) => c.into_stream(),
         Err(e) => {
@@ -1140,11 +1193,10 @@ async fn handle_socks4(
     emit_log(&app, &session_id, &tunnel_id, "info", "connect",
              Some(target_full.clone()), Some(peer.to_string()), Some("via SOCKS4".into()));
 
-    let channel = {
-        let h = handle.lock().await;
-        h.channel_open_direct_tcpip(target_host.clone(), port as u32,
-                                     peer.ip().to_string(), peer.port() as u32).await
-    };
+    let channel = open_channel_with_retry(
+        &handle, &target_host, port as u32,
+        &peer.ip().to_string(), peer.port() as u32,
+    ).await;
 
     let channel = match channel {
         Ok(c) => {
@@ -1272,16 +1324,10 @@ async fn handle_socks5(
              Some(target_full.clone()), Some(peer.to_string()), Some(via.into()));
 
     // --- Open the SSH direct-tcpip channel ---
-    let channel = {
-        let h = handle.lock().await;
-        h.channel_open_direct_tcpip(
-            target_host.clone(),
-            target_port as u32,
-            peer.ip().to_string(),
-            peer.port() as u32,
-        )
-        .await
-    };
+    let channel = open_channel_with_retry(
+        &handle, &target_host, target_port as u32,
+        &peer.ip().to_string(), peer.port() as u32,
+    ).await;
 
     let channel = match channel {
         Ok(c) => {
