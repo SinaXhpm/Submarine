@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-capability.json",
   "identifier": "default",
-  "description": "Minimum permission set the desktop app actually needs. We intentionally omit shell:*, opener:*, fs:*, and webview:* — the app never calls those plugin APIs, and exposing them to the webview just widens the blast radius of any future XSS.",
+  "description": "Minimum permission set the app actually needs across ALL platforms. Desktop-only permissions (window-state plugin) live in capabilities/desktop.json so the Android build doesn't fail validation when that plugin isn't compiled in. We intentionally omit shell:*, opener:*, fs:*, and webview:* — the app never calls those plugin APIs, and exposing them to the webview just widens the blast radius of any future XSS.",
   "windows": ["*"],
   "permissions": [
     "core:default",
@@ -12,7 +12,6 @@
     "core:window:allow-minimize",
     "core:window:allow-close",
     "core:window:allow-maximize",
-    "core:window:allow-set-title",
-    "window-state:default"
+    "core:window:allow-set-title"
   ]
 }

@@ -37,10 +37,15 @@ export async function transferFile(src: TransferSource, dest: TransferTarget): P
 
   // remote → local : SFTP download streams straight to disk.
   if (src.provider.id === "remote" && dest.provider.id === "local") {
+    // Cross-pane drag historically overwrote silently — keep that behaviour
+    // for the drag/move workflow (the user dragged INTO the destination
+    // pane, so they already chose where it goes). The new EXISTS prompt is
+    // wired only into the bulk Download / Upload paths in FilePanel.
     await invoke("sftp_download_file", {
       sessionId: (src.provider as RemoteFileProvider).sessionId,
       remotePath: src.path,
       localPath: destPath,
+      overwrite: true,
     });
     return;
   }
@@ -51,6 +56,7 @@ export async function transferFile(src: TransferSource, dest: TransferTarget): P
       sessionId: (dest.provider as RemoteFileProvider).sessionId,
       localPath: src.path,
       remotePath: destPath,
+      overwrite: true,
     });
     return;
   }

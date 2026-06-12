@@ -1,12 +1,12 @@
 <div align="center">
   <img src="src/assets/logo.png" alt="Submarine logo" width="120" />
   <h1>Submarine — Modern SSH &amp; SFTP Client</h1>
-  <p><strong>A fast, secure, cross-platform SSH and SFTP desktop client for Windows, macOS, and Linux.</strong></p>
-  <p>Manage servers, edit remote files, forward ports, and sync folders — all from one native window. Built with Rust and Tauri.</p>
+  <p><strong>A fast, secure SSH and SFTP client for Windows, macOS, Linux — and now Android.</strong></p>
+  <p>Manage servers, edit remote files, forward ports, and sync folders from one native window. Built with Rust and Tauri.</p>
   <p>
     <a href="https://github.com/sinaxhpm/submarine/releases"><img alt="release" src="https://img.shields.io/github/v/release/sinaxhpm/submarine?include_prereleases" /></a>
     <a href="https://github.com/sinaxhpm/submarine/actions"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/sinaxhpm/submarine/release.yml" /></a>
-    <img alt="platforms" src="https://img.shields.io/badge/platform-windows%20%7C%20macos%20%7C%20linux-blue" />
+    <img alt="platforms" src="https://img.shields.io/badge/platform-windows%20%7C%20macos%20%7C%20linux%20%7C%20android-blue" />
     <img alt="license" src="https://img.shields.io/badge/license-MIT-green" />
   </p>
 </div>
@@ -35,7 +35,8 @@ Most SSH clients feel like they were built a decade ago and never updated. Subma
 ### SFTP File Browser
 
 - Dual-pane (local on top, remote on bottom) with drag-and-drop between them
-- **Multi-select with Ctrl/Shift-click** for bulk download, move, or delete
+- **Multi-select with Ctrl/Shift-click** plus **Select-All button and Ctrl+A** for bulk download, move, or delete
+- **Overwrite confirmation** before clobbering an existing file, with "apply to all" for batches
 - **Live edit** — double-click any remote file to open it in your default editor; saves auto-upload back to the server
 - **Direct download** to the local folder you already have open — no folder picker every time
 - Permissions editor with a checkbox grid (chmod / chown)
@@ -64,7 +65,8 @@ Pick a local folder, pick a remote folder, and Submarine keeps them in sync.
 
 ### Productivity
 
-- **Quick commands & notes**: per-server snippet library, surfaced inside any open session
+- **Quick commands**: per-server snippet library, surfaced inside any open session
+- **Per-node notes**: a dedicated description / runbook / contacts field on every server, scoped only to that server
 - **Autostart**: flag a server and it opens and connects when the app launches
 - **Resource monitor**: live CPU, RAM, disk, and network sparklines per host
 - **Quick connect**: one-off sessions without saving
@@ -82,8 +84,21 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | Fedora / RHEL / openSUSE | `.rpm` — `sudo dnf install ./submarine-*.rpm` |
 | Arch / Manjaro / EndeavourOS | `.pkg.tar.zst` — `sudo pacman -U submarine-*.pkg.tar.zst` |
 | Any Linux | `.AppImage` — `chmod +x` and double-click |
+| Android 8.0+ | `.apk` — sideload, no Play Store required |
 
-> Builds are currently **unsigned**. Windows SmartScreen will prompt — click "More info → Run anyway". On macOS you may need `xattr -d com.apple.quarantine /Applications/Submarine.app`.
+> Builds are currently **unsigned**. Windows SmartScreen will prompt — click "More info → Run anyway". On macOS you may need `xattr -d com.apple.quarantine /Applications/Submarine.app`. Android sideloading needs "Install unknown apps" enabled for the installer source.
+
+### Android
+
+Submarine on Android is a true native build of the same Rust core — same SSH stack, same encrypted vault, same profile sync. Reach a server from your phone with the same credentials you saved on your desktop.
+
+- **Same encrypted vault.** Cloud sync drops your profiles onto the phone exactly as they were on desktop. Nothing re-typed.
+- **Tabbed terminal optimised for touch.** Soft keyboard with Esc / Tab / Ctrl combos, pinch-to-zoom font.
+- **SFTP file browser** with multi-select, upload from the phone's storage, download into Downloads.
+- **Port forwarding (SOCKS / local / remote)** runs as long as the app is open — handy for tunnelling a mobile browser through your home box.
+- **Folder mirror is desktop-only for now** — Android's filesystem permissions don't map cleanly onto our watcher model.
+
+Tested on Android 8.0+ (API 26+). Phones, tablets, and Android-on-ChromeOS.
 
 ## Security
 
@@ -148,6 +163,19 @@ npm install
 npm run tauri dev          # run in development
 npm run tauri build        # build release bundle
 ```
+
+### Android build
+
+Extra requirements: Android SDK + Platform-Tools, NDK 27, and JDK 17. `scripts/android-env.ps1` sets `JAVA_HOME`, `ANDROID_HOME`, and `NDK_HOME` for the current PowerShell session.
+
+```powershell
+. .\scripts\android-env.ps1
+npm run android:init       # one-time per checkout
+npm run android:dev        # build + install on the connected device
+npm run android:build      # produce a signed-with-debug-key APK
+```
+
+Device must be plugged in over USB with debugging enabled. If WebView shows "failed request", run `adb reverse tcp:1420 tcp:1420` so the dev server binds via loopback.
 
 ## Tech Stack
 

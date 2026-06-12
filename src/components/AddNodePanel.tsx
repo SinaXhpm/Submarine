@@ -390,6 +390,26 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 />
               </button>
             </div>
+
+            {/* Per-node notes — free-form, plain text. Lives on the server
+                row (servers.notes column) and never crosses the network. The
+                primary use case is small runbooks: which user owns root,
+                where the deploy script lives, contact for the box, etc. */}
+            <div className="space-y-1.5 pt-1">
+              <label className="text-[11px] font-bold text-zinc-400 ml-1 flex items-center gap-2">
+                <span>Notes</span>
+                <span className="text-[10px] text-zinc-600 font-normal normal-case tracking-normal">
+                  Description, runbook, contacts — only for this server.
+                </span>
+              </label>
+              <textarea
+                value={newNode.notes || ""}
+                onChange={(e) => setNewNode({ ...newNode, notes: e.target.value })}
+                placeholder="e.g. Prod web. Reboot windows Sun 04:00 UTC. Deploy via `make ship`. Pager: @ops"
+                rows={6}
+                className="w-full bg-[#1a1a1e] rounded-lg p-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner font-mono leading-relaxed resize-y"
+              />
+            </div>
           </div>
         </div>
 

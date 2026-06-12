@@ -153,6 +153,14 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     if !(lowered.starts_with("https://") || lowered.starts_with("http://")) {
         return Err("[OPEN] only http(s) urls are allowed".into());
     }
-    open::that(&url).map_err(|e| format!("[OPEN] {}", e))?;
-    Ok(())
+    #[cfg(target_os = "android")]
+    {
+        let _ = url;
+        return Err("[OPEN] external URLs not wired on Android yet".into());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        open::that(&url).map_err(|e| format!("[OPEN] {}", e))?;
+        Ok(())
+    }
 }

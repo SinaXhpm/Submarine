@@ -16,7 +16,15 @@ export default defineConfig(async () => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
+    // Bind to ALL interfaces so:
+    //   - desktop dev still works on 127.0.0.1
+    //   - Tauri Android dev can reach Vite over the LAN IP Tauri picks
+    //     (it injects TAURI_DEV_HOST and rewrites the WebView's devUrl)
+    //   - `adb reverse tcp:1420 tcp:1420` (USB-tethered phones with no
+    //     Wi-Fi reachability) lands on Vite's localhost binding too
+    // When TAURI_DEV_HOST is set explicitly, honour it — that's what Tauri
+    // uses to keep the WebView and Vite on the same host string.
+    host: host || "0.0.0.0",
     hmr: host
       ? {
           protocol: "ws",

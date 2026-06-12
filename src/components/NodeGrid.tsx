@@ -1,9 +1,18 @@
 import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy } from "lucide-react";
 import { useState } from "react";
 
-export const NodeGrid = ({ servers, folders, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, isMobile }: any) => {
+export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, isMobile }: any) => {
   const [search, setSearch] = useState("");
-  const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
+  // Folder navigation is controlled when the parent passes both props, so the
+  // selection survives NodeGrid unmount/remount (the parent sticks it onto
+  // its own state). Falls back to local state for older callers that don't
+  // lift the value — same behaviour as before, just optional.
+  const [localFolderId, setLocalFolderId] = useState<number | null>(null);
+  const activeFolderId: number | null = onActiveFolderChange ? (activeFolderIdProp ?? null) : localFolderId;
+  const setActiveFolderId = (next: number | null) => {
+    if (onActiveFolderChange) onActiveFolderChange(next);
+    else setLocalFolderId(next);
+  };
   // Per-folder inline rename state. Only one folder can be in edit mode at
   // a time, so a single { id, draft } slot is enough.
   const [renaming, setRenaming] = useState<{ id: number; draft: string } | null>(null);

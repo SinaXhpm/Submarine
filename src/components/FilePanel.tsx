@@ -5,10 +5,50 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Folder, File, ArrowUp, RefreshCw, Trash2, Edit3, Shield,
   X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch,
-  Download, ExternalLink, Move
+  Download, ExternalLink, Move, CheckSquare, Square
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
-import { useConfirm } from "../ui/confirm";
+import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
+
+// Batch overwrite state shared across items in a single download/upload run.
+// Once the user picks "Overwrite all" or "Skip all" the kind is sticky and we
+// stop prompting; "ask" means we prompt on each individual conflict. Mutated
+// in place inside the helper so the loop sees updates immediately.
+type OverwriteBatchKind = "ask" | "overwrite-all" | "skip-all";
+interface OverwriteBatch { kind: OverwriteBatchKind; }
+
+// Run a single transfer that may trip the backend's `EXISTS:<path>` sentinel.
+// First attempt is always with overwrite=false unless the batch state already
+// says "overwrite all". On EXISTS: consult batch state, prompt the user if
+// needed, then either retry with overwrite=true or skip.
+async function transferWithOverwriteCheck(
+  invokeFn: (overwrite: boolean) => Promise<void>,
+  name: string,
+  direction: "download" | "upload",
+  batchSize: number,
+  batch: OverwriteBatch,
+  overwritePrompt: (opts: { name: string; direction: "download" | "upload"; batchSize: number }) => Promise<OverwriteChoice>,
+): Promise<"done" | "skipped" | "cancelled"> {
+  if (batch.kind === "overwrite-all") {
+    await invokeFn(true);
+    return "done";
+  }
+  try {
+    await invokeFn(false);
+    return "done";
+  } catch (err: any) {
+    const msg = String(err);
+    if (!msg.startsWith("EXISTS:")) throw err;
+    if (batch.kind === "skip-all") return "skipped";
+    const choice = await overwritePrompt({ name, direction, batchSize });
+    if (choice === "cancel") return "cancelled";
+    if (choice === "skip") return "skipped";
+    if (choice === "skip-all") { batch.kind = "skip-all"; return "skipped"; }
+    if (choice === "overwrite-all") batch.kind = "overwrite-all";
+    await invokeFn(true);
+    return "done";
+  }
+}
 
 // Generic two-mode file panel. Drives all I/O through a `FileProvider` so
 // the same component renders either the local filesystem or the remote SFTP
@@ -384,16 +424,20 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (!hit || !dropTargetRef.current.contains(hit)) return;
         setDragOver(false);
         const dir = currentPathRef.current;
+        const batch: OverwriteBatch = { kind: "ask" };
+        let cancelled = false;
         for (const p of paths) {
+          if (cancelled) break;
           const name = p.split(/[\\/]/).pop() || "file";
           notify(`Uploading ${name}...`, "info");
           try {
-            await invoke("sftp_upload_file", {
-              sessionId,
-              localPath: p,
-              remotePath: dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`,
-            });
-            notify(`Uploaded ${name}`, "success");
+            const remote = dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
+            const res = await transferWithOverwriteCheck(
+              (ow) => invoke("sftp_upload_file", { sessionId, localPath: p, remotePath: remote, overwrite: ow }),
+              name, "upload", paths.length, batch, overwritePrompt
+            );
+            if (res === "done") notify(`Uploaded ${name}`, "success");
+            if (res === "cancelled") { cancelled = true; notify("Upload batch cancelled", "info"); }
           } catch (err: any) {
             notify(`Upload failed: ${err}`, "error");
           }
@@ -463,6 +507,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // ---- removal ----------------------------------------------------------------
 
   const confirmDialog = useConfirm();
+  const overwritePrompt = useOverwritePrompt();
 
   // Bulk-aware delete. Pops a single confirm dialog regardless of count, then
   // applies provider.remove to each item in turn — best-effort: per-item
@@ -522,25 +567,28 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         ? `Downloading ${items[0].isDir ? "folder " : ""}${items[0].name}…`
         : `Downloading ${fileCount} files${dirCount ? ` + ${dirCount} folder${dirCount === 1 ? "" : "s"}` : ""}…`;
     notify(summary, "info");
+    const batch: OverwriteBatch = { kind: "ask" };
     let count = 0;
+    let cancelled = false;
     for (const e of items) {
+      if (cancelled) break;
       try {
-        if (e.isDir) {
-          await invoke("sftp_download_dir", {
-            sessionId, remotePath: e.path, localPath: trimmed,
-          });
-        } else {
-          await invoke("sftp_download_file", {
-            sessionId, remotePath: e.path, localPath: `${trimmed}${sep}${e.name}`,
-          });
-        }
-        count++;
+        const dest = e.isDir ? trimmed : `${trimmed}${sep}${e.name}`;
+        const cmd = e.isDir ? "sftp_download_dir" : "sftp_download_file";
+        const res = await transferWithOverwriteCheck(
+          (ow) => invoke(cmd, { sessionId, remotePath: e.path, localPath: dest, overwrite: ow }),
+          e.name, "download", items.length, batch, overwritePrompt
+        );
+        if (res === "done") count++;
+        if (res === "cancelled") { cancelled = true; }
       } catch (err: any) {
         notify(`Download failed for ${e.name}: ${err}`, "error");
       }
     }
     if (count > 0) {
       notify(items.length === 1 ? `Downloaded ${items[0].name}` : `Downloaded ${count} of ${items.length} items`, "success");
+    } else if (cancelled) {
+      notify("Download batch cancelled", "info");
     }
   };
 
@@ -592,6 +640,40 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       return 0;
     });
   })();
+
+  // ---- select-all -------------------------------------------------------------
+  // Toggles the entire visible (sorted) list. Computed AFTER `sortedEntries`
+  // so the const TDZ doesn't fire on first render. Cmd/Ctrl+A is the keyboard
+  // counterpart; we let the browser handle Ctrl+A in text inputs by bailing
+  // out when the focused element is editable.
+  const selectAllVisible = () => {
+    if (sortedEntries.length === 0) return;
+    setSelected(new Set(sortedEntries.map(e => e.path)));
+    lastSelectedPathRef.current = sortedEntries[sortedEntries.length - 1].path;
+  };
+  const clearSelection = () => {
+    setSelected(new Set());
+    lastSelectedPathRef.current = null;
+  };
+  const allSelected = sortedEntries.length > 0 && selected.size === sortedEntries.length;
+  const toggleSelectAll = () => { allSelected ? clearSelection() : selectAllVisible(); };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "a") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      // Only fire when this panel owns the focus, so two side-by-side
+      // FilePanel instances don't both select all on the same press.
+      const root = dropTargetRef.current;
+      if (root && document.activeElement && !root.contains(document.activeElement)) return;
+      e.preventDefault();
+      toggleSelectAll();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortedEntries.length, allSelected]);
 
   const toggleSort = (col: SortColumn) =>
     setSort((p) => ({ column: col, asc: p.column === col ? !p.asc : true }));
@@ -722,6 +804,18 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           <button onClick={() => setModal({ type: "mkdir", v1: "" })} title="New Folder"
             className="p-1 rounded bg-white/[0.04] border border-white/10 text-indigo-300 hover:bg-white/10">
             <Folder size={11} />
+          </button>
+          <button
+            onClick={toggleSelectAll}
+            disabled={sortedEntries.length === 0}
+            title={allSelected ? "Deselect all (Ctrl+A)" : "Select all (Ctrl+A)"}
+            className={`p-1 rounded border border-white/10 hover:bg-white/10 disabled:opacity-30 ${
+              allSelected
+                ? "bg-indigo-500/20 text-indigo-200"
+                : "bg-white/[0.04] text-zinc-300"
+            }`}
+          >
+            {allSelected ? <CheckSquare size={11} /> : <Square size={11} />}
           </button>
         </div>
       </div>

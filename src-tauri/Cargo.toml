@@ -1,10 +1,19 @@
 [package]
 name = "submarine"
-version = "0.2.14"
+version = "0.2.15"
 description = "Submarine SSH Client"
 authors = ["Sina"]
 edition = "2021"
 rust-version = "1.70"
+
+# Library + binary dual target. The Tauri Builder, command registry, and
+# state setup live in `src/lib.rs::run()`. The bin entry point (`src/main.rs`)
+# is a one-liner that calls `submarine_lib::run()` on desktop; on Android
+# Tauri's `#[mobile_entry_point]` attr on `run()` generates the JNI glue and
+# the bin is never built. `cdylib` is what Gradle dlopens from the APK.
+[lib]
+name = "submarine_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
@@ -51,10 +60,6 @@ full-ssh-algos = ["russh/openssl", "russh-keys/openssl", "dep:openssl-sys"]
 
 [dependencies]
 tauri = { version = "2.1", features = [] }
-# Persists window size + position to a JSON file in app_data_dir so the
-# user's last window geometry survives restarts. Plain-text settings —
-# no secrets touch this file, so it stays outside the encrypted vault.
-tauri-plugin-window-state = "2"
 hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -76,8 +81,6 @@ tokio-socks = "0.5"
 async-http-proxy = { version = "1.2", features = ["runtime-tokio"] }
 async-trait = "0.1.89"
 russh-sftp = "2.1.2"
-rfd = "0.14"
-open = "5.1"
 notify = "6.1.1"
 # Debounces filesystem events so we don't try to upload a file mid-write.
 # Mirror watcher uses this — events for the same path within 500ms collapse
@@ -116,3 +119,17 @@ zstd = { version = "0.13", default-features = false }
 # String/Vec passed as args to argon2/aes-gcm are zeroized internally by
 # those crates.
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
+
+# ---------------------------------------------------------------------------
+# Desktop-only deps. These crates either don't compile on Android at all
+# (rfd — native file dialog) or have no meaningful mobile equivalent
+# (tauri-plugin-window-state — mobile windows aren't resizable/movable;
+# open — opening a file in the user's "default desktop app" doesn't map to
+# Android's intent system). Their call sites in `lib.rs` and `about.rs` are
+# wrapped in `#[cfg(not(target_os = "android"))]`, so the Android build
+# doesn't need any of these to compile.
+# ---------------------------------------------------------------------------
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tauri-plugin-window-state = "2"
+rfd = "0.14"
+open = "5.1"

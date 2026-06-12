@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Submarine</title>
+    <!-- Paint the dark theme BEFORE the bundle parses + React mounts.
+         Without this the WebView shows the default white background for
+         the 200-700ms it takes JS to execute on first launch (very visible
+         on Android cold-start). Matches --background in App.css so the
+         transition is invisible. -->
+    <style>
+      html, body { margin: 0; background: #0a0a0c; color-scheme: dark; }
+      #root { min-height: 100vh; background: #0a0a0c; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

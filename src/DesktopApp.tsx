@@ -4,7 +4,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
-  StickyNote, Search
+  StickyNote, Search, Square, Copy
 } from "lucide-react";
 
 import ProfileSelectPage from "./components/ProfileSelectPage";
@@ -57,6 +57,32 @@ function DesktopApp() {
   const handleSessionStatus = useCallback((sessionId: string, status: string) => {
     setSessionStatuses((prev) => (prev[sessionId] === status ? prev : { ...prev, [sessionId]: status }));
   }, []);
+
+  // Maximize state mirrored from the OS window so the title-bar button can
+  // swap its icon (single square = maximize, overlapping squares = restore)
+  // and so the double-click drag-region handler always knows the correct
+  // direction to toggle. Tauri's onResized event fires for every maximize /
+  // restore / OS-driven snap, so it's the authoritative signal.
+  const [isMaximized, setIsMaximized] = useState(false);
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    appWindow.isMaximized().then(setIsMaximized).catch(() => {});
+    appWindow.onResized(() => {
+      appWindow.isMaximized().then(setIsMaximized).catch(() => {});
+    }).then((fn) => { unlisten = fn; }).catch(() => {});
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+  const toggleMaximize = useCallback(() => {
+    appWindow.toggleMaximize().catch(console.error);
+  }, []);
+
+  // Persist the user's current folder across NodeGrid unmount/remount cycles.
+  // NodeGrid is conditionally rendered (`activeView === "nodes" && ...`), so
+  // its local state used to vanish the moment the user opened a session tab
+  // — and they'd come back to the root folder view instead of the folder
+  // they were browsing. Lifting the state here keeps the position sticky
+  // for the whole profile session.
+  const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [isQuickConnectOpen, setIsQuickConnectOpen] = useState(false);
   const [servers, setServers] = useState<any[]>([]);
@@ -92,6 +118,10 @@ function DesktopApp() {
     autostart: false,
     mirrors: [] as { local: string, remote: string, soft_delete: boolean, excludes: string[], conflict_resolution: string }[],
     color: null as string | null,
+    // Free-form per-node description / runbook text. Lives on the server row
+    // in the encrypted vault. Empty string by default — the textarea in the
+    // panel renders a placeholder when blank.
+    notes: "" as string,
     // True only after the user typed into the password field on this form
     // instance. If still false at save time, the backend uses
     // `preserve_password` to keep the existing DB column. Without this
@@ -438,6 +468,7 @@ function DesktopApp() {
         try { return JSON.parse(server.mirrors || "[]"); } catch { return []; }
       })(),
       color: server.color ?? null,
+      notes: server.notes || "",
       // Starts clean — only flips true if the user types into the password
       // field. Save handler reads this to decide between `preserve_password`
       // and a real overwrite.
@@ -447,9 +478,22 @@ function DesktopApp() {
   };
 
   const TitleBar = () => (
-    <div data-tauri-drag-region className="h-10 bg-[#0d0d10] border-b border-white/5 flex items-center justify-between px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0">
+    <div
+      data-tauri-drag-region
+      onDoubleClick={(e) => {
+        // Native double-click-to-maximize on the drag region matches OS
+        // expectations on Windows/macOS/KDE. Tauri's drag region itself
+        // doesn't dispatch this for us, so we wire it explicitly. Skip
+        // when the click landed on an interactive child (tabs, buttons)
+        // since those mark themselves with `no-drag`.
+        const target = e.target as HTMLElement;
+        if (target.closest('.no-drag')) return;
+        toggleMaximize();
+      }}
+      className="h-10 bg-[#0d0d10] border-b border-white/5 flex items-center justify-between px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0"
+    >
       <div className="flex items-center gap-2 pr-4 pl-[75px] md:pl-2" data-tauri-drag-region>
-        <img src={logoUrl} alt="" draggable={false} className="w-6 h-6 select-none" />
+        <img src={logoUrl} alt="" draggable={false} className="h-6 w-auto max-w-[24px] object-contain select-none" />
         <span className="text-[12px] font-bold text-white tracking-tight">Submarine</span>
       </div>
       
@@ -511,7 +555,20 @@ function DesktopApp() {
         })}
       </div>
       <div className="flex items-center h-full gap-1 no-drag">
-        <button onClick={() => appWindow.minimize()} className="w-10 h-full flex items-center justify-center hover:bg-white/5 transition-colors"><div className="w-3.5 h-[1.5px] bg-zinc-600" /></button>
+        <button
+          onClick={() => appWindow.minimize()}
+          title="Minimize"
+          className="w-10 h-full flex items-center justify-center hover:bg-white/5 transition-colors"
+        ><div className="w-3.5 h-[1.5px] bg-zinc-600" /></button>
+        <button
+          onClick={toggleMaximize}
+          title={isMaximized ? "Restore" : "Maximize"}
+          className="w-10 h-full flex items-center justify-center hover:bg-white/5 transition-colors group"
+        >
+          {isMaximized
+            ? <Copy size={12} className="text-zinc-600 group-hover:text-zinc-300 scale-x-[-1]" />
+            : <Square size={11} className="text-zinc-600 group-hover:text-zinc-300" />}
+        </button>
         <button onClick={() => appWindow.close()} className="w-10 h-full flex items-center justify-center hover:bg-red-500 group transition-all"><X size={14} className="text-zinc-600 group-hover:text-white" /></button>
       </div>
       {tabMenu && (
@@ -569,6 +626,8 @@ function DesktopApp() {
               <NodeGrid
                 servers={servers}
                 folders={folders}
+                activeFolderId={activeFolderId}
+                onActiveFolderChange={setActiveFolderId}
                 onOpenServer={openServer}
                 onEditServer={handleEditNode}
                 onAddClick={(folderId?: number | null) => {
@@ -956,11 +1015,20 @@ function DesktopApp() {
               // would overwrite the DB value.
               preservePassword: !!newNode.id && !newNode.password_dirty,
             };
-            const action = newNode.id 
-              ? invoke("edit_server", { id: newNode.id, ...payload }) 
-              : invoke("add_server", payload);
-              
-            await action;
+            const action = newNode.id
+              ? invoke<void>("edit_server", { id: newNode.id, ...payload }).then(() => newNode.id!)
+              : invoke<number>("add_server", payload);
+
+            const savedId = await action;
+            // Notes live on the server row but go through their own command
+            // (set_server_notes) so we don't have to thread a long-text field
+            // through every add/edit_server signature. Empty string is valid
+            // — clears any previous note.
+            try {
+              await invoke("set_server_notes", { id: savedId, notes: newNode.notes || "" });
+            } catch (e) {
+              addLog(`SAVE_NOTES_FAILED: ${e}`, "error");
+            }
             setIsPanelOpen(false);
             setFormError("");
             refreshServers();

@@ -1,0 +1,17 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "Submarine",
+        "decorations": true,
+        "transparent": false,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {
+    "android": {
+      "minSdkVersion": 24
+    }
+  }
+}

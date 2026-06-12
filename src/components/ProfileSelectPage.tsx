@@ -235,7 +235,12 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
             src={logoUrl}
             alt=""
             draggable={false}
-            className="w-28 h-28 mb-4 drop-shadow-[0_0_32px_rgba(var(--primary),0.22)]"
+            // h-28 + object-contain + width:auto so a non-square source
+            // (the current app-logo.png is 1822×1770, slight taller-than-
+            // wide) fits the brand area without being cropped or stretched
+            // — earlier the forced w-28 h-28 squashed it into a square
+            // and clipped the edges.
+            className="h-28 w-auto max-w-full object-contain mb-4 drop-shadow-[0_0_32px_rgba(var(--primary),0.22)]"
           />
           <h1 className="text-[22px] font-semibold text-white tracking-tight leading-none">Submarine</h1>
           <p className="text-[10px] text-primary/80 mt-1.5 tracking-[0.22em] uppercase font-semibold">
