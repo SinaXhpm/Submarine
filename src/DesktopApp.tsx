@@ -490,15 +490,7 @@ function DesktopApp() {
         if (target.closest('.no-drag')) return;
         toggleMaximize();
       }}
-      style={{
-        // Offset the title row by the system status-bar height on Android
-        // (and the notch on iOS). 0 on desktop because env(...) resolves
-        // to 0 when there's no inset. Padding rather than top:env(...) so
-        // the dark background extends behind the status bar.
-        paddingTop: 'env(safe-area-inset-top, 0px)',
-        height: 'calc(2.5rem + env(safe-area-inset-top, 0px))',
-      }}
-      className="bg-[#0d0d10] border-b border-white/5 flex items-center justify-between px-2 sm:px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0"
+      className="h-10 bg-[#0d0d10] border-b border-white/5 flex items-center justify-between px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0"
     >
       {/* Logo + product name: hidden on phones to give the tab strip the
           whole row. Desktop keeps the original 75 px left padding for
@@ -635,14 +627,7 @@ function DesktopApp() {
       {!isUnlocked ? (
         <ProfileSelectPage onUnlocked={handleProfileUnlocked} />
       ) : (
-        <div
-          className="flex-1 flex overflow-hidden"
-          style={{
-            // Match the titlebar's effective height (h-10 + status-bar inset)
-            // so the page content starts right below it on Android too.
-            paddingTop: 'calc(2.5rem + env(safe-area-inset-top, 0px))',
-          }}
-        >
+        <div className="flex-1 flex overflow-hidden pt-10">
           <Sidebar activeTab={activeView.startsWith('session-') ? 'nodes' : activeView} setActiveTab={setActiveView} isMobile={isMobile} onLogout={handleLogout} />
 
           <main className="flex-1 flex flex-col min-w-0 bg-transparent relative">
