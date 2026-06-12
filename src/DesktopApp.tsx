@@ -542,14 +542,14 @@ function DesktopApp() {
                 e.preventDefault();
                 setTabMenu({ x: e.clientX, y: e.clientY, sessionId: s.id });
               }}
-              className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all min-w-[80px] sm:min-w-[100px] max-w-[140px] sm:max-w-[180px] mr-1 ${activeView === s.id ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10' : 'bg-white/[0.06] text-zinc-300 border border-white/10 hover:bg-white/[0.1] hover:border-white/20 hover:text-white'}`}
+              className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all min-w-[110px] sm:min-w-[100px] max-w-[160px] sm:max-w-[180px] mr-1 ${activeView === s.id ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10' : 'bg-white/[0.06] text-zinc-300 border border-white/10 hover:bg-white/[0.1] hover:border-white/20 hover:text-white'}`}
             >
               <span
                 title={dotTitle}
                 className={`w-2 h-2 rounded-full mr-2 shrink-0 ${dotTone}`}
                 aria-label={dotTitle}
               />
-              <span className="text-[10px] font-bold truncate flex-1 uppercase tracking-tight">{s.serverName}</span>
+              <span className="text-[11px] sm:text-[10px] font-bold truncate flex-1 uppercase tracking-tight normal-case sm:uppercase">{s.serverName}</span>
               <X
                 size={10}
                 className="ml-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:text-red-500 shrink-0"

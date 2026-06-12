@@ -477,27 +477,27 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
   return (
     <div className="flex-1 flex flex-col bg-background overflow-hidden animate-in fade-in">
       {/* Nested Tab Bar */}
-      <div className="h-12 border-b border-white/5 bg-[#121214]/50 flex items-center px-4 shrink-0 justify-between">
-        <div 
-          className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 mr-4 mask-fade-right"
+      <div className="h-12 border-b border-white/5 bg-[#121214]/50 flex items-center px-2 sm:px-4 shrink-0 justify-between gap-1">
+        <div
+          className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 mr-1 sm:mr-4 mask-fade-right"
           onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY; }}
         >
         {terminals.map(t => (
           <div key={t.id} className="group relative flex items-center">
-            <button 
+            <button
               onClick={() => setActiveTab(t.id)}
-              className={`h-8 px-4 pr-6 rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTab === t.id ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+              className={`h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-6' : ''} rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTab === t.id ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
             >
               <TerminalSquare size={14} /> {t.title}
             </button>
             {terminals.length > 1 && (
-              <button 
+              <button
                 onClick={(e) => {
                   e.stopPropagation();
                   setTerminals(prev => prev.filter(x => x.id !== t.id));
                   if (activeTab === t.id) setActiveTab(terminals[0].id);
                 }}
-                className="absolute right-1 w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:text-red-500 text-zinc-500 transition-opacity"
+                className="absolute right-1 w-5 h-5 flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:text-red-500 text-zinc-500 transition-opacity"
               >
                 <X size={12} />
               </button>
@@ -521,30 +521,39 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
           </button>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0 border-l border-white/5 pl-4">
-          <button 
+        {/* Tool toggles: on desktop each shows a label next to the icon; on
+            phone we drop the label and the left separator so all four still
+            fit comfortably in the same h-12 row as the terminal tabs. Each
+            button keeps its 32-px hit target (h-8 w-8) which is well above
+            the 24-dp recommended touch minimum. */}
+        <div className="flex items-center gap-1 shrink-0 sm:border-l border-white/5 sm:pl-4 pl-1">
+          <button
             onClick={() => setActiveTool(activeTool === 'sftp' ? null : 'sftp')}
-            className={`h-8 px-4 rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'sftp' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+            title="SFTP"
+            className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'sftp' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
           >
-            <Folder size={14} /> SFTP
+            <Folder size={14} /> <span className="hidden sm:inline">SFTP</span>
           </button>
-          <button 
+          <button
             onClick={() => setActiveTool(activeTool === 'tunnels' ? null : 'tunnels')}
-            className={`h-8 px-4 rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'tunnels' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+            title="Ports"
+            className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'tunnels' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
           >
-            <Network size={14} /> Ports
+            <Network size={14} /> <span className="hidden sm:inline">Ports</span>
           </button>
           <button
             onClick={() => setActiveTool(activeTool === 'mirrors' ? null : 'mirrors')}
-            className={`h-8 px-4 rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'mirrors' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+            title="Mirror"
+            className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'mirrors' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
           >
-            <FolderUp size={14} /> Mirror
+            <FolderUp size={14} /> <span className="hidden sm:inline">Mirror</span>
           </button>
           <button
             onClick={() => setActiveTool(activeTool === 'cmds' ? null : 'cmds')}
-            className={`h-8 px-4 rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'cmds' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+            title="Commands"
+            className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'cmds' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
           >
-            <Terminal size={14} /> CMDS
+            <Terminal size={14} /> <span className="hidden sm:inline">CMDS</span>
           </button>
         </div>
       </div>
