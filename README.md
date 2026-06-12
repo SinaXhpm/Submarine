@@ -13,7 +13,47 @@
 
 ---
 
+<div align="center">
+  <img src="docs/screenshots/hero.png" alt="Submarine main window — terminal session with dual-pane SFTP browser open on the right" width="900" />
+</div>
+
 > **TL;DR** — Submarine is a fast, free, open-source SSH and SFTP client for Windows, macOS, Linux, and Android. It replaces the typical PuTTY + WinSCP + tunnel-manager stack with one tabbed window per server: terminal, SFTP, port forwarding (SOCKS / HTTP / local / remote), folder mirror, and end-to-end encrypted profile sync. Built with Rust + Tauri. MIT licensed.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/tunnels.png"><img src="docs/screenshots/tunnels.png" alt="Port forwarding panel: local, remote, and dynamic SOCKS tunnels with live connection counters" /></a>
+      <br/><sub><b>Port forwarding</b> — local / remote / dynamic SOCKS tunnels, live active-connection counters, autostart with the app</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/mirror.png"><img src="docs/screenshots/mirror.png" alt="Folder Mirror setup with local/remote paths, excludes, and conflict resolution" /></a>
+      <br/><sub><b>Folder mirror</b> — two-way sync, excludes, per-mirror conflict resolution, soft delete to <code>.submarine-trash/</code></sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/commands.png"><img src="docs/screenshots/commands.png" alt="Per-server command library with Run / Paste / Edit on each snippet, plus a Notes tab" /></a>
+      <br/><sub><b>Quick commands &amp; notes</b> — per-server snippet library and a Notes tab for runbook / contacts</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/logins.png"><img src="docs/screenshots/logins.png" alt="Logins panel: saved passwords and SSH keys with Add Password / Add Key / Generate Key" /></a>
+      <br/><sub><b>Logins</b> — saved passwords and SSH keys, with built-in key generation; all credentials encrypted in the vault</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/monitoring.png"><img src="docs/screenshots/monitoring.png" alt="Live monitoring grid: per-server CPU, memory, network-in and network-out sparklines" /></a>
+      <br/><sub><b>Monitoring</b> — per-node SSH polling for CPU, RAM, and live network in/out with sparklines</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/server-edit.png"><img src="docs/screenshots/server-edit.png" alt="Server details form: folder, tag colour, host/port, login method, proxy, tunnels, mirrors, autostart" /></a>
+      <br/><sub><b>Server details</b> — folder, tag colour, host, auth, proxy, tunnels, mirrors, and autostart in one form</sub>
+    </td>
+  </tr>
+</table>
+
 
 ## Looking for an alternative to…
 
