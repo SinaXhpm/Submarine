@@ -1,0 +1,45 @@
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Submarine",
+  "alternateName": ["Submarine SSH Client", "Submarine SFTP Client"],
+  "applicationCategory": "DeveloperApplication",
+  "applicationSubCategory": "SSH Client",
+  "operatingSystem": "Windows, macOS, Linux, Android",
+  "description": "Fast, secure, cross-platform SSH and SFTP desktop and mobile client. Tabbed terminal, dual-pane SFTP file browser, local/remote/dynamic port forwarding (SOCKS4/5, HTTP CONNECT), two-way folder mirror with conflict resolution, and end-to-end encrypted profile sync across devices.",
+  "url": "https://sinaxhpm.com/submarine",
+  "downloadUrl": "https://github.com/sinaxhpm/submarine/releases",
+  "license": "https://opensource.org/licenses/MIT",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": {
+    "@type": "Person",
+    "name": "Sina",
+    "url": "https://sinaxhpm.com"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "sinaxhpm",
+    "url": "https://sinaxhpm.com"
+  },
+  "featureList": [
+    "Tabbed SSH terminal (xterm.js)",
+    "Dual-pane SFTP file browser with multi-select, Select-All, and Ctrl+A",
+    "Overwrite confirmation with apply-to-all for bulk transfers",
+    "Live edit: double-click remote file, auto-upload on save",
+    "Local, remote, and dynamic port forwarding",
+    "SOCKS4 / SOCKS4a / SOCKS5 / SOCKS5h / HTTP CONNECT / HTTP proxy",
+    "Two-way folder mirror with size+SHA-256 compare and live watcher",
+    "Per-node notes / runbook field, encrypted in vault",
+    "Per-server quick command snippets",
+    "End-to-end encrypted profile sync (zero-knowledge cloud)",
+    "Vault encrypted on disk with Argon2id + AES-256-GCM",
+    "TOFU host-key pinning",
+    "Autostart for selected servers",
+    "Resource monitor with CPU / RAM / disk / network sparklines",
+    "Native window: no Electron, sub-second startup, ~80 MB RAM"
+  ],
+  "keywords": "ssh client, sftp client, terminal, port forwarding, socks proxy, folder sync, rust, tauri, putty alternative, winscp alternative, mobaxterm alternative, termius alternative, android ssh client",
+  "sameAs": [
+    "https://github.com/sinaxhpm/submarine"
+  ]
+}

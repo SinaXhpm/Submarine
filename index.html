@@ -3,7 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Submarine</title>
+    <title>Submarine — Modern SSH &amp; SFTP Client for Windows, macOS, Linux, Android</title>
+
+    <meta name="description" content="Submarine is a fast, secure, cross-platform SSH and SFTP client. Manage servers, edit remote files, forward ports (SOCKS/HTTP/local/remote), and sync folders from one native window. Built with Rust + Tauri. Free and open source (MIT). Available on Windows, macOS, Linux, and Android." />
+    <meta name="keywords" content="ssh client, sftp client, terminal, port forwarding, socks proxy, folder mirror, rsync alternative, putty alternative, winscp alternative, mobaxterm alternative, bitvise alternative, termius alternative, rust ssh client, tauri ssh client, android ssh client, encrypted profile sync, open source ssh, sinaxhpm, submarine" />
+    <meta name="author" content="Sina" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href="https://sinaxhpm.com/submarine" />
+
+    <!-- Open Graph (Facebook, LinkedIn, Discord, Slack previews + many AI crawlers) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Submarine" />
+    <meta property="og:title" content="Submarine — Modern SSH &amp; SFTP Client" />
+    <meta property="og:description" content="Fast, secure, cross-platform SSH and SFTP client for Windows, macOS, Linux, and Android. Terminal + SFTP + tunnels + folder mirror in one native window. Open source (MIT)." />
+    <meta property="og:url" content="https://sinaxhpm.com/submarine" />
+    <meta property="og:image" content="https://sinaxhpm.com/submarine/og-cover.png" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter / X card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Submarine — Modern SSH &amp; SFTP Client" />
+    <meta name="twitter:description" content="Fast, secure SSH + SFTP client for Windows, macOS, Linux, Android. Terminal, SFTP, tunnels, folder mirror. Built with Rust + Tauri. MIT licensed." />
+    <meta name="twitter:image" content="https://sinaxhpm.com/submarine/og-cover.png" />
+
+    <!-- Theme color so Android Chrome / installable PWAs match the dark shell -->
+    <meta name="theme-color" content="#0a0a0c" />
+
+    <!-- NOTE: Schema.org / JSON-LD SoftwareApplication + FAQPage blocks live
+         in docs/seo/ — the Tauri WebView CSP (`script-src 'self'`) blocks
+         inline <script> tags, and AI crawlers don't see this shell anyway
+         (desktop app, not a hosted page). The structured-data templates
+         are meant for whoever deploys sinaxhpm.com/submarine to paste into
+         the landing page where crawlers actually reach them. -->
+
     <!-- Paint the dark theme BEFORE the bundle parses + React mounts.
          Without this the WebView shows the default white background for
          the 200-700ms it takes JS to execute on first launch (very visible

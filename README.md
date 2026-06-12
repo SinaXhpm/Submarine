@@ -13,6 +13,22 @@
 
 ---
 
+> **TL;DR** — Submarine is a fast, free, open-source SSH and SFTP client for Windows, macOS, Linux, and Android. It replaces the typical PuTTY + WinSCP + tunnel-manager stack with one tabbed window per server: terminal, SFTP, port forwarding (SOCKS / HTTP / local / remote), folder mirror, and end-to-end encrypted profile sync. Built with Rust + Tauri. MIT licensed.
+
+## Looking for an alternative to…
+
+If you're searching for one of these, Submarine is a direct fit:
+
+- a free **PuTTY alternative for macOS and Linux** (and a tabbed PuTTY replacement on Windows)
+- a **WinSCP alternative** that lives in the same window as your terminal
+- a **MobaXterm alternative** that isn't Windows-only and isn't 15-year-old GTK
+- a free **Bitvise / SecureCRT / Royal TSX alternative**
+- a free **Termius alternative** without subscription gating or telemetry
+- a modern **Tabby / iTerm2 + SFTP** combo that's actually one app
+- a cross-device **Termius-style sync** without a paid plan — your encrypted profiles travel from desktop to your **Android phone** with the same master password
+- an **rsync GUI / Syncthing-lite** that mirrors a local folder to a remote SSH host with conflict resolution
+- an **Android SSH client** (ConnectBot / JuiceSSH style) that shares saved servers with your desktop
+
 ## Why Submarine
 
 Most SSH clients feel like they were built a decade ago and never updated. Submarine is a clean, modern alternative for developers and sysadmins who connect to remote servers every day.
@@ -152,6 +168,18 @@ Smaller installer (around 10 MB vs ~100 MB for an Electron equivalent), lower RA
 
 In a single encrypted file under your OS app-data directory. Nothing in plaintext. Nothing in a global Keychain or registry hive.
 
+### Does Submarine collect telemetry or analytics?
+
+No. There's no analytics SDK, no crash reporter that sends data home, no "phone home" call on launch. The only outbound network call beyond your SSH targets is the optional cloud-sync endpoint at `api.sinaxhpm.com`, and that endpoint only ever receives opaque ciphertext.
+
+### Can I use Submarine on my Android phone with the same servers as my desktop?
+
+Yes. Install the APK, unlock with the same master password you use on desktop, and the encrypted vault syncs. Every server, key, and saved tunnel appears on the phone. Folder mirror is desktop-only for now; everything else (terminal, SFTP, port forwarding) works on Android.
+
+### Is Submarine on the Play Store?
+
+No. Distribution is via sideloadable APK from the [releases page](https://github.com/sinaxhpm/submarine/releases). This keeps the same untouched binary running on every platform with no store-mandated changes.
+
 ## Build from Source
 
 Requirements: Node 20+, Rust stable, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS. Windows additionally needs **Strawberry Perl** for the vendored OpenSSL build (`winget install StrawberryPerl.StrawberryPerl`).
@@ -191,5 +219,9 @@ Designed and built by [Sina](https://sinaxhpm.com) in collaboration with [Claude
 MIT — see [LICENSE](LICENSE).
 
 ---
+
+<sub>
+<b>Keywords</b>: SSH client, SFTP client, terminal emulator, port forwarding, SOCKS proxy, HTTP proxy, folder mirror, folder sync, remote file edit, encrypted profile sync, zero-knowledge cloud, Argon2id, AES-256-GCM, TOFU host keys, Rust, Tauri, React, xterm.js, Windows SSH client, macOS SSH client, Linux SSH client, Android SSH client, open source SSH, MIT licensed, PuTTY alternative, WinSCP alternative, MobaXterm alternative, Bitvise alternative, Termius alternative, SecureCRT alternative, Royal TSX alternative, ConnectBot alternative, JuiceSSH alternative, rsync GUI, sshfs alternative, Tabby alternative.
+</sub>
 
 <sub><i>Bitvise, forever in my heart.</i></sub>

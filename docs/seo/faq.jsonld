@@ -1,0 +1,62 @@
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Is Submarine free?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Submarine is MIT-licensed open source. Personal use, commercial use, fork and redistribute — all allowed."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Which platforms does Submarine support?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Windows 10 and 11, macOS (Apple Silicon and Intel via Rosetta), all major Linux distributions (.deb, .rpm, Arch package, AppImage), and Android 8.0+ as a sideloadable APK."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is Submarine different from PuTTY, WinSCP, or MobaXterm?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "PuTTY and WinSCP are two separate apps you alt-tab between. MobaXterm bundles them but is Windows-only and feels dated. Submarine combines terminal, SFTP, tunnels, and folder mirror in one modern tabbed window per server, and runs natively on Windows, macOS, Linux, and Android."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is profile sync end-to-end encrypted?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Your master password derives the vault key on your device with Argon2id. Profiles are encrypted with AES-256-GCM before upload. The sync server only ever stores opaque ciphertext — there is no recovery email, no server-side password, no way to decrypt without your master password."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Submarine support port forwarding and SOCKS proxies?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes — local (-L), remote (-R), and dynamic (-D) tunnels. Dynamic tunnels speak SOCKS4, SOCKS4a, SOCKS5, SOCKS5h, HTTP CONNECT, and plain HTTP proxy. Tunnels reconnect automatically and can be started at app launch."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use the same servers on desktop and on my Android phone?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The encrypted vault is platform-portable. Enable cloud sync on desktop, unlock the mobile app with the same master password, and every saved server, key, and tunnel appears on the phone."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Submarine collect telemetry or analytics?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. There is no analytics SDK, no crash reporter that sends data home, and no telemetry. The only outbound network call beyond your SSH targets is to the optional cloud-sync endpoint at api.sinaxhpm.com, and that endpoint only ever sees opaque ciphertext."
+      }
+    }
+  ]
+}
