@@ -13,7 +13,57 @@
 
 ---
 
+<div align="center">
+  <img src="docs/screenshots/hero.png" alt="Submarine main window — node grid with terminal and SFTP tabs" width="900" />
+</div>
+
 > **TL;DR** — Submarine is a fast, free, open-source SSH and SFTP client for Windows, macOS, Linux, and Android. It replaces the typical PuTTY + WinSCP + tunnel-manager stack with one tabbed window per server: terminal, SFTP, port forwarding (SOCKS / HTTP / local / remote), folder mirror, and end-to-end encrypted profile sync. Built with Rust + Tauri. MIT licensed.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/nodes.png"><img src="docs/screenshots/nodes.png" alt="Node grid: saved servers organised in colour-coded folders" /></a>
+      <br/><sub><b>Node grid</b> — saved servers in colour-coded folders, one-click connect</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/terminal.png"><img src="docs/screenshots/terminal.png" alt="Tabbed xterm.js terminal with true colour and mouse support" /></a>
+      <br/><sub><b>Tabbed terminal</b> — xterm.js, true colour, select-to-copy, multi-shell per session</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/sftp.png"><img src="docs/screenshots/sftp.png" alt="Dual-pane SFTP browser with multi-select and Select-All" /></a>
+      <br/><sub><b>SFTP</b> — dual-pane, drag &amp; drop, multi-select, Ctrl+A, overwrite-with-apply-to-all</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/tunnels.png"><img src="docs/screenshots/tunnels.png" alt="Port forwarding panel: local, remote, dynamic SOCKS tunnels" /></a>
+      <br/><sub><b>Port forwarding</b> — local / remote / dynamic SOCKS4-5 + HTTP CONNECT, autostart</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/mirror.png"><img src="docs/screenshots/mirror.png" alt="Folder mirror with conflict resolution and live watcher" /></a>
+      <br/><sub><b>Folder mirror</b> — two-way sync, SHA-256 compare, conflict resolution, soft-delete</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/notes.png"><img src="docs/screenshots/notes.png" alt="Per-node notes and quick-commands panel" /></a>
+      <br/><sub><b>Notes &amp; quick commands</b> — runbook and snippet library scoped to each server</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/sync.png"><img src="docs/screenshots/sync.png" alt="Encrypted profile sync — same servers on every device" /></a>
+      <br/><sub><b>E2E-encrypted sync</b> — same servers on every device, zero-knowledge server</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <a href="docs/screenshots/android.png"><img src="docs/screenshots/android.png" alt="Submarine running on Android: tabbed terminal on a phone" /></a>
+      <br/><sub><b>Android</b> — same vault, same servers, native Rust core on your phone</sub>
+    </td>
+  </tr>
+</table>
+
 
 ## Looking for an alternative to…
 
