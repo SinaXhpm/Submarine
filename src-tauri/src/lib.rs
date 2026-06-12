@@ -4680,6 +4680,8 @@ pub fn run() {
             export_profile, import_profile_pick, import_profile_save,
             cloud::cloud_status, cloud::cloud_signup, cloud::cloud_consume_verify_link,
             cloud::cloud_set_password, cloud::cloud_login, cloud::cloud_logout,
+            cloud::cloud_request_password_reset, cloud::cloud_reset_password,
+            cloud::cloud_request_login_link, cloud::cloud_login_with_link,
             cloud::cloud_list_remote, cloud::cloud_upload_profile,
             cloud::cloud_force_upload_profile, cloud::cloud_download_profile,
             cloud::cloud_delete_remote_profile,

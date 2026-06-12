@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   X, AlertTriangle, CheckCircle2, Cloud, ArrowRight, ArrowLeft, Upload, Download,
-  Trash2, RefreshCw, LogOut, Mail, KeyRound, UserPlus, LogIn,
+  Trash2, RefreshCw, LogOut, Mail, KeyRound, UserPlus, LogIn, Wand2,
 } from "lucide-react";
 
 // Cloud sync panel. Owns its own auth + sync state — the parent just
@@ -54,6 +54,10 @@ type Stage =
   | "sign-up-email"
   | "sign-up-verify"
   | "sign-up-password"
+  | "forgot-email"
+  | "forgot-reset"
+  | "link-email"
+  | "link-verify"
   | "signed-in";
 
 const fmtBytes = (n: number | null | undefined): string => {
@@ -70,6 +74,8 @@ const CloudPanel = ({ isOpen, onClose, localProfiles, onLocalProfilesChanged }: 
   const [confirmPw, setConfirmPw] = useState("");
   const [verifyToken, setVerifyToken] = useState("");
   const [claimToken, setClaimToken] = useState<string | null>(null);
+  const [resetToken, setResetToken] = useState("");
+  const [loginLinkToken, setLoginLinkToken] = useState("");
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null);
 
   const [entries, setEntries] = useState<SyncEntry[]>([]);
@@ -83,6 +89,7 @@ const CloudPanel = ({ isOpen, onClose, localProfiles, onLocalProfilesChanged }: 
   const resetForms = () => {
     setEmail(""); setPassword(""); setConfirmPw("");
     setVerifyToken(""); setClaimToken(null);
+    setResetToken(""); setLoginLinkToken("");
     setError(null); setInfo(null);
   };
 
@@ -186,6 +193,79 @@ const CloudPanel = ({ isOpen, onClose, localProfiles, onLocalProfilesChanged }: 
         setSignedInEmail(s.email);
         setStage("signed-in");
         setInfo("Account created and signed in.");
+        resetForms();
+      }
+    } catch (e: any) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRequestReset = async () => {
+    setError(null); setInfo(null);
+    if (!email.trim()) { setError("Enter your email"); return; }
+    setBusy(true);
+    try {
+      await invoke("cloud_request_password_reset", { email: email.trim() });
+      setInfo("If that email is registered, a reset link is on its way. Paste the token below.");
+      setStage("forgot-reset");
+    } catch (e: any) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    setError(null);
+    if (!resetToken.trim()) { setError("Paste the reset token from your email"); return; }
+    if (password.length < 8) { setError("Password must be at least 8 characters"); return; }
+    if (password !== confirmPw) { setError("Passwords don't match"); return; }
+    setBusy(true);
+    try {
+      const s = await invoke<CloudStatus>("cloud_reset_password", {
+        resetToken: resetToken.trim(), password,
+      });
+      if (s.signed_in) {
+        setSignedInEmail(s.email);
+        setStage("signed-in");
+        setInfo("Password updated and signed in. Other devices have been signed out.");
+        resetForms();
+      }
+    } catch (e: any) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRequestLoginLink = async () => {
+    setError(null); setInfo(null);
+    if (!email.trim()) { setError("Enter your email"); return; }
+    setBusy(true);
+    try {
+      await invoke("cloud_request_login_link", { email: email.trim() });
+      setInfo("If that email is registered, a sign-in link is on its way. Paste the token below.");
+      setStage("link-verify");
+    } catch (e: any) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleLoginWithLink = async () => {
+    setError(null);
+    if (!loginLinkToken.trim()) { setError("Paste the sign-in token from your email"); return; }
+    setBusy(true);
+    try {
+      const s = await invoke<CloudStatus>("cloud_login_with_link", {
+        loginToken: loginLinkToken.trim(),
+      });
+      if (s.signed_in) {
+        setSignedInEmail(s.email);
+        setStage("signed-in");
         resetForms();
       }
     } catch (e: any) {
@@ -428,6 +508,163 @@ const CloudPanel = ({ isOpen, onClose, localProfiles, onLocalProfilesChanged }: 
                 className="w-full h-10 rounded-lg bg-primary text-black text-[13px] font-bold disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {busy ? "…" : (<>Sign in <ArrowRight size={14} /></>)}
+              </button>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={() => { setError(null); setInfo(null); setPassword(""); setStage("link-email"); }}
+                  className="flex-1 h-9 rounded text-[11.5px] text-zinc-300 hover:text-primary hover:bg-white/5 border border-white/10 flex items-center justify-center gap-1.5"
+                >
+                  <Wand2 size={12} /> Email me a sign-in link
+                </button>
+                <button
+                  onClick={() => { setError(null); setInfo(null); setPassword(""); setStage("forgot-email"); }}
+                  className="flex-1 h-9 rounded text-[11.5px] text-zinc-300 hover:text-primary hover:bg-white/5 border border-white/10"
+                >
+                  Forgot password?
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ----- Forgot password: email ----- */}
+          {stage === "forgot-email" && (
+            <div className="max-w-sm mx-auto py-4 space-y-3">
+              <div className="flex items-center gap-2 pb-1">
+                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">Reset password</span>
+              </div>
+              <p className="text-[11.5px] text-zinc-500 leading-relaxed">
+                Enter the email you signed up with. If it's registered, we'll send a reset token.
+                Your local vault and saved servers are not affected — only the cloud-sync password.
+              </p>
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleRequestReset()}
+                placeholder="you@example.com"
+                className={inputBase}
+                autoFocus
+              />
+              <button
+                onClick={handleRequestReset}
+                disabled={busy}
+                className="w-full h-10 rounded-lg bg-primary text-black text-[13px] font-bold disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {busy ? "…" : (<><Mail size={13} /> Send reset email</>)}
+              </button>
+              <button
+                onClick={() => { setError(null); setInfo(null); setStage("forgot-reset"); }}
+                className="w-full h-9 text-[12px] text-zinc-500 hover:text-primary"
+              >
+                Already have a reset token? Continue →
+              </button>
+            </div>
+          )}
+
+          {/* ----- Forgot password: paste token + new password ----- */}
+          {stage === "forgot-reset" && (
+            <div className="max-w-sm mx-auto py-4 space-y-3">
+              <div className="flex items-center gap-2 pb-1">
+                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">New password</span>
+              </div>
+              <p className="text-[12px] text-zinc-300">
+                Paste the reset token from your email, then set a new password.
+              </p>
+              <input
+                value={resetToken}
+                onChange={(e) => setResetToken(e.target.value)}
+                placeholder="reset token"
+                className={inputBase + " font-mono"}
+                autoFocus
+              />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="New password (min 8 chars)"
+                className={inputBase}
+              />
+              <input
+                type="password"
+                value={confirmPw}
+                onChange={(e) => setConfirmPw(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleResetPassword()}
+                placeholder="Confirm new password"
+                className={inputBase}
+              />
+              <button
+                onClick={handleResetPassword}
+                disabled={busy}
+                className="w-full h-10 rounded-lg bg-primary text-black text-[13px] font-bold disabled:opacity-50"
+              >
+                {busy ? "…" : "Set new password & sign in"}
+              </button>
+              <p className="text-[11px] text-zinc-500 leading-relaxed pt-1">
+                Heads up: changing the password signs out any other devices currently signed in to this account.
+              </p>
+            </div>
+          )}
+
+          {/* ----- Magic link: request ----- */}
+          {stage === "link-email" && (
+            <div className="max-w-sm mx-auto py-4 space-y-3">
+              <div className="flex items-center gap-2 pb-1">
+                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">Sign in by email</span>
+              </div>
+              <p className="text-[11.5px] text-zinc-500 leading-relaxed">
+                We'll email you a one-time sign-in code. No password needed this time —
+                your existing password stays as it is.
+              </p>
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleRequestLoginLink()}
+                placeholder="you@example.com"
+                className={inputBase}
+                autoFocus
+              />
+              <button
+                onClick={handleRequestLoginLink}
+                disabled={busy}
+                className="w-full h-10 rounded-lg bg-primary text-black text-[13px] font-bold disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {busy ? "…" : (<><Wand2 size={13} /> Send sign-in link</>)}
+              </button>
+              <button
+                onClick={() => { setError(null); setInfo(null); setStage("link-verify"); }}
+                className="w-full h-9 text-[12px] text-zinc-500 hover:text-primary"
+              >
+                Already have a sign-in token? Continue →
+              </button>
+            </div>
+          )}
+
+          {/* ----- Magic link: consume ----- */}
+          {stage === "link-verify" && (
+            <div className="max-w-sm mx-auto py-4 space-y-3">
+              <div className="flex items-center gap-2 pb-1">
+                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">Sign in by email</span>
+              </div>
+              <p className="text-[12px] text-zinc-300">
+                Paste the sign-in token from the email.
+              </p>
+              <input
+                value={loginLinkToken}
+                onChange={(e) => setLoginLinkToken(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleLoginWithLink()}
+                placeholder="sign-in token"
+                className={inputBase + " font-mono"}
+                autoFocus
+              />
+              <button
+                onClick={handleLoginWithLink}
+                disabled={busy}
+                className="w-full h-10 rounded-lg bg-primary text-black text-[13px] font-bold disabled:opacity-50"
+              >
+                {busy ? "…" : "Sign in"}
               </button>
             </div>
           )}

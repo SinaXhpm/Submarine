@@ -70,6 +70,22 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EmailOnlyRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResetWithTokenRequest {
+    pub reset_token: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LoginWithLinkRequest {
+    pub login_token: String,
+}
+
 /// Returned by both /auth/set-password and /auth/login. The `token` is
 /// the long-lived bearer credential we persist.
 #[derive(Debug, Clone, Deserialize)]
@@ -447,6 +463,123 @@ pub async fn cloud_logout(
     }
     state.clear_token(&app).await;
     Ok(())
+}
+
+/// Request a password-reset email. We treat 200 from the server as
+/// success regardless of whether the email is actually registered —
+/// the server's anti-enumeration response is intentionally identical
+/// in both cases. Don't reveal more to the UI than the server does.
+#[tauri::command]
+pub async fn cloud_request_password_reset(
+    state: tauri::State<'_, Arc<CloudState>>,
+    email: String,
+) -> Result<(), String> {
+    let email = email.trim().to_string();
+    if email.is_empty() || !email.contains('@') {
+        return Err("[CLOUD] INVALID_EMAIL".into());
+    }
+    let resp = state
+        .http()
+        .post(url("/auth/request-reset"))
+        .json(&EmailOnlyRequest { email })
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(decode_error(resp).await);
+    }
+    Ok(())
+}
+
+/// Exchange a reset token + new password for a fresh bearer token. The
+/// server also wipes every prior auth_token for this user, so any other
+/// signed-in device gets logged out — the standard expectation after a
+/// password change.
+#[tauri::command]
+pub async fn cloud_reset_password(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<CloudState>>,
+    reset_token: String,
+    password: String,
+) -> Result<CloudStatus, String> {
+    if password.len() < 8 {
+        return Err("[CLOUD] WEAK_PASSWORD (min 8 chars)".into());
+    }
+    let resp = state
+        .http()
+        .post(url("/auth/reset-with-token"))
+        .json(&ResetWithTokenRequest {
+            reset_token,
+            password,
+        })
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(decode_error(resp).await);
+    }
+    let body: AuthTokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    state.set_token(&app, body.token, body.email).await?;
+    Ok(state.status().await)
+}
+
+/// Request a magic-link sign-in email. Same anti-enumeration response
+/// shape as request-reset — the UI shows a generic "if registered, check
+/// your inbox" regardless.
+#[tauri::command]
+pub async fn cloud_request_login_link(
+    state: tauri::State<'_, Arc<CloudState>>,
+    email: String,
+) -> Result<(), String> {
+    let email = email.trim().to_string();
+    if email.is_empty() || !email.contains('@') {
+        return Err("[CLOUD] INVALID_EMAIL".into());
+    }
+    let resp = state
+        .http()
+        .post(url("/auth/request-login"))
+        .json(&EmailOnlyRequest { email })
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(decode_error(resp).await);
+    }
+    Ok(())
+}
+
+/// Exchange a magic-link token for a bearer token. No password involved —
+/// the email itself was the authentication factor (possession of inbox
+/// proves identity). Token is single-use server-side.
+#[tauri::command]
+pub async fn cloud_login_with_link(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<CloudState>>,
+    login_token: String,
+) -> Result<CloudStatus, String> {
+    let login_token = login_token.trim().to_string();
+    if login_token.is_empty() {
+        return Err("[CLOUD] EMPTY_TOKEN".into());
+    }
+    let resp = state
+        .http()
+        .post(url("/auth/login-with-link"))
+        .json(&LoginWithLinkRequest { login_token })
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(decode_error(resp).await);
+    }
+    let body: AuthTokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    state.set_token(&app, body.token, body.email).await?;
+    Ok(state.status().await)
 }
 
 // ---------------------------------------------------------------------------
