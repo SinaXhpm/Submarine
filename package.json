@@ -8,7 +8,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "android:init": "tauri android init",
-    "android:dev": "tauri android dev",
+    "android:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/android-dev.ps1",
+    "android:dev:raw": "tauri android dev",
     "android:build": "tauri android build --apk"
   },
   "dependencies": {

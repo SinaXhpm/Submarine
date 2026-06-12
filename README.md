@@ -242,7 +242,15 @@ npm run android:dev        # build + install on the connected device
 npm run android:build      # produce a signed-with-debug-key APK
 ```
 
-Device must be plugged in over USB with debugging enabled. If WebView shows "failed request", run `adb reverse tcp:1420 tcp:1420` so the dev server binds via loopback.
+Device must be plugged in over USB with debugging enabled.
+
+`npm run android:dev` runs `scripts/android-dev.ps1`, which:
+
+1. Verifies `adb` is on PATH and at least one device is listed.
+2. Applies `adb reverse tcp:1420 tcp:1420` and `tcp:1421 tcp:1421` (Vite dev + HMR) so the WebView reaches the host via USB loopback.
+3. Runs `tauri android dev --host 127.0.0.1` so the WebView's `devUrl` bakes in `127.0.0.1`, matching what `adb reverse` exposes.
+
+This path works whether Wi-Fi is on or off — only USB matters. If you still see `failed request for http://127.0.0.1:1420` while debugging, USB has dropped or the reverse mapping was cleared (re-plug, reboot, or `adb kill-server` all clear it). Re-run `npm run android:dev` and it'll re-apply the mapping. To bypass the helper, use `npm run android:dev:raw` (calls `tauri android dev` directly — Tauri then picks the host's LAN IP).
 
 ## Tech Stack
 
