@@ -490,15 +490,28 @@ function DesktopApp() {
         if (target.closest('.no-drag')) return;
         toggleMaximize();
       }}
-      className="h-10 bg-[#0d0d10] border-b border-white/5 flex items-center justify-between px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0"
+      style={{
+        // Offset the title row by the system status-bar height on Android
+        // (and the notch on iOS). 0 on desktop because env(...) resolves
+        // to 0 when there's no inset. Padding rather than top:env(...) so
+        // the dark background extends behind the status bar.
+        paddingTop: 'env(safe-area-inset-top, 0px)',
+        height: 'calc(2.5rem + env(safe-area-inset-top, 0px))',
+      }}
+      className="bg-[#0d0d10] border-b border-white/5 flex items-center justify-between px-2 sm:px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0"
     >
-      <div className="flex items-center gap-2 pr-4 pl-[75px] md:pl-2" data-tauri-drag-region>
+      {/* Logo + product name: hidden on phones to give the tab strip the
+          whole row. Desktop keeps the original 75 px left padding for
+          macOS traffic lights, plus the icon and brand. */}
+      <div className="hidden sm:flex items-center gap-2 pr-4 pl-[75px] md:pl-2" data-tauri-drag-region>
         <img src={logoUrl} alt="" draggable={false} className="h-6 w-auto max-w-[24px] object-contain select-none" />
         <span className="text-[12px] font-bold text-white tracking-tight">Submarine</span>
       </div>
-      
+
       {/* Tab strip is a drag region; tabs themselves opt out via no-drag so
-          clicking a tab selects it instead of dragging the window. */}
+          clicking a tab selects it instead of dragging the window. On phone
+          the strip owns the entire title row (no logo / titlebar buttons),
+          so each pill can stay readable instead of being squeezed to zero. */}
       <div
         data-tauri-drag-region
         className="flex-1 flex gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1"
@@ -529,7 +542,7 @@ function DesktopApp() {
                 e.preventDefault();
                 setTabMenu({ x: e.clientX, y: e.clientY, sessionId: s.id });
               }}
-              className={`group no-drag flex items-center h-7 px-4 rounded-full cursor-pointer transition-all min-w-[100px] max-w-[180px] mr-1 ${activeView === s.id ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10' : 'bg-white/[0.06] text-zinc-300 border border-white/10 hover:bg-white/[0.1] hover:border-white/20 hover:text-white'}`}
+              className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all min-w-[80px] sm:min-w-[100px] max-w-[140px] sm:max-w-[180px] mr-1 ${activeView === s.id ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10' : 'bg-white/[0.06] text-zinc-300 border border-white/10 hover:bg-white/[0.1] hover:border-white/20 hover:text-white'}`}
             >
               <span
                 title={dotTitle}
@@ -539,7 +552,7 @@ function DesktopApp() {
               <span className="text-[10px] font-bold truncate flex-1 uppercase tracking-tight">{s.serverName}</span>
               <X
                 size={10}
-                className="ml-2 opacity-0 group-hover:opacity-100 hover:text-red-500"
+                className="ml-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:text-red-500 shrink-0"
                 onClick={(e) => {
                   e.stopPropagation();
                   setSessions(prev => prev.filter(sess => sess.id !== s.id));
@@ -554,7 +567,11 @@ function DesktopApp() {
           );
         })}
       </div>
-      <div className="flex items-center h-full gap-1 no-drag">
+      {/* Window controls: desktop only. Android has its own gesture nav /
+          system back button, and the WebView window has no minimise or
+          maximise affordance to surface — so we hide the whole cluster on
+          phone and reclaim ~120 px of titlebar for the tab strip. */}
+      <div className="hidden sm:flex items-center h-full gap-1 no-drag">
         <button
           onClick={() => appWindow.minimize()}
           title="Minimize"
@@ -618,7 +635,14 @@ function DesktopApp() {
       {!isUnlocked ? (
         <ProfileSelectPage onUnlocked={handleProfileUnlocked} />
       ) : (
-        <div className="flex-1 flex overflow-hidden pt-10">
+        <div
+          className="flex-1 flex overflow-hidden"
+          style={{
+            // Match the titlebar's effective height (h-10 + status-bar inset)
+            // so the page content starts right below it on Android too.
+            paddingTop: 'calc(2.5rem + env(safe-area-inset-top, 0px))',
+          }}
+        >
           <Sidebar activeTab={activeView.startsWith('session-') ? 'nodes' : activeView} setActiveTab={setActiveView} isMobile={isMobile} onLogout={handleLogout} />
 
           <main className="flex-1 flex flex-col min-w-0 bg-transparent relative">

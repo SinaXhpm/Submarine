@@ -359,22 +359,29 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
   // state stay visible behind a slim banner.
   if (reconnectAttempt === 0 && (status === 'connecting' || status === 'failed')) {
     return (
-      <div className="flex-1 flex flex-col p-8 bg-[#0a0a0c] text-white overflow-hidden">
+      <div className="flex-1 flex flex-col p-4 sm:p-8 bg-[#0a0a0c] text-white overflow-hidden">
         <div className="max-w-2xl w-full mx-auto flex-1 flex flex-col">
-          <div className="flex items-center justify-between mb-6">
+          {/* Header: on desktop, title row keeps title + actions side-by-side.
+              On phone, wide letter-spacing on the title wraps "0-1 AMIR" onto
+              three lines and the Reconnect / Close buttons get pushed past
+              the viewport. We stack vertically and trim the typography so
+              the whole header fits in two compact rows at any width. */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4 sm:mb-6">
             <div>
-              <h2 className="text-xl font-black uppercase tracking-[0.2em]">{session.serverName}</h2>
+              <h2 className="text-base sm:text-xl font-black uppercase tracking-wider sm:tracking-[0.2em] break-words">
+                {session.serverName}
+              </h2>
               <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mt-1">
                 {status === 'connecting' ? 'Establishing Connection...' : 'Connection Failed'}
               </p>
             </div>
             {status === 'failed' && (
-              <div className="flex gap-2 items-center">
+              <div className="flex flex-wrap gap-2 items-center">
                 {isAuthError && (
-                  <input 
-                    type="password" 
-                    placeholder="Password..." 
-                    className="h-8 bg-[#1a1a1e] rounded-lg px-3 text-xs text-white border border-white/10 outline-none focus:border-primary/50"
+                  <input
+                    type="password"
+                    placeholder="Password..."
+                    className="h-8 flex-1 min-w-0 sm:flex-none bg-[#1a1a1e] rounded-lg px-3 text-xs text-white border border-white/10 outline-none focus:border-primary/50"
                     value={customPassword}
                     onChange={e => setCustomPassword(e.target.value)}
                     onKeyDown={e => {
@@ -382,10 +389,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
                     }}
                   />
                 )}
-                <button onClick={reconnect} className="px-4 py-2 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors">
+                <button onClick={reconnect} className="flex-1 sm:flex-none px-4 py-2 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors">
                   Reconnect
                 </button>
-                <button onClick={onClose} className="px-4 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors">
+                <button onClick={onClose} className="flex-1 sm:flex-none px-4 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors">
                   Close Session
                 </button>
               </div>

@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover lets us read `env(safe-area-inset-*)` for the
+         Android system status bar / iOS notch / gesture bar, which we use
+         on the title row so tabs don't render under the clock. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Submarine — Modern SSH &amp; SFTP Client for Windows, macOS, Linux, Android</title>
 
     <meta name="description" content="Submarine is a fast, secure, cross-platform SSH and SFTP client. Manage servers, edit remote files, forward ports (SOCKS/HTTP/local/remote), and sync folders from one native window. Built with Rust + Tauri. Free and open source (MIT). Available on Windows, macOS, Linux, and Android." />
