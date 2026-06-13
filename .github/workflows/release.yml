@@ -326,9 +326,12 @@ jobs:
           packages: "platforms;android-36 build-tools;36.0.0 ndk;27.1.12297006"
 
       - name: Install Rust with Android targets
+        # Only the two ABIs that ship in real Android phones — aarch64
+        # (modern arm64) and armv7 (older 32-bit arm). x86 / x86_64 are
+        # emulator-only and we explicitly drop them to keep APKs lean.
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi
 
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2

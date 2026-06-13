@@ -1,6 +1,6 @@
 {
   "name": "submarine",
-  "version": "0.2.17",
+  "version": "0.2.18",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,7 @@
     "android:init": "tauri android init",
     "android:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/android-dev.ps1",
     "android:dev:raw": "tauri android dev",
-    "android:build": "tauri android build --apk"
+    "android:build": "tauri android build --apk --split-per-abi --target aarch64 armv7"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
