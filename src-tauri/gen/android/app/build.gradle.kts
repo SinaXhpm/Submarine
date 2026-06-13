@@ -13,6 +13,34 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release-signing config — resolved in this order:
+//   1. keystore.properties next to this build.gradle (local dev)
+//   2. SUBMARINE_KEYSTORE_* env vars (CI: GitHub Actions secrets)
+// If neither is present, release builds fall back to unsigned. The
+// keystore file itself is .gitignored and lives outside the repo.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+val resolvedKeystorePath: String? =
+    keystoreProperties.getProperty("storeFile")
+        ?: System.getenv("SUBMARINE_KEYSTORE_PATH")
+val resolvedStorePassword: String? =
+    keystoreProperties.getProperty("storePassword")
+        ?: System.getenv("SUBMARINE_KEYSTORE_PASSWORD")
+val resolvedKeyAlias: String? =
+    keystoreProperties.getProperty("keyAlias")
+        ?: System.getenv("SUBMARINE_KEY_ALIAS")
+val resolvedKeyPassword: String? =
+    keystoreProperties.getProperty("keyPassword")
+        ?: System.getenv("SUBMARINE_KEY_PASSWORD")
+val hasReleaseSigning: Boolean =
+    resolvedKeystorePath != null && resolvedStorePassword != null
+        && resolvedKeyAlias != null && resolvedKeyPassword != null
+        && file(resolvedKeystorePath!!).exists()
+
 android {
     compileSdk = 36
     namespace = "com.submarine.app"
@@ -23,6 +51,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(resolvedKeystorePath!!)
+                storePassword = resolvedStorePassword
+                keyAlias = resolvedKeyAlias
+                keyPassword = resolvedKeyPassword
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -43,6 +81,9 @@ android {
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))
                     .toList().toTypedArray()
             )
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     kotlinOptions {

@@ -267,10 +267,133 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
 
+  # Android: separate job because the setup (JDK 17 + Android SDK/NDK +
+  # cargo-ndk + Android Rust targets) is wholly different from the
+  # desktop matrix. Produces a signed universal release APK plus per-ABI
+  # APKs when Tauri splits them.
+  #
+  # Signing: the release keystore is base64-encoded in the
+  # SUBMARINE_KEYSTORE_B64 secret. We decode it into a workspace-local
+  # file and pass its path + passwords to Gradle via the
+  # SUBMARINE_KEYSTORE_* env vars that build.gradle.kts reads. If any
+  # secret is missing, the build still runs but Gradle will produce an
+  # unsigned release APK — the keystore secrets are gating, not blocking.
+  android:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW="${{ github.event.inputs.version }}"
+          else
+            RAW="${{ github.ref_name }}"
+          fi
+          VERSION="${RAW#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Stamp version into manifests
+        shell: bash
+        run: |
+          node -e "
+            const fs=require('fs');
+            const v=process.env.VERSION;
+            const cargo=fs.readFileSync('src-tauri/Cargo.toml','utf8');
+            const next=cargo.replace(/^version *= *\".*\"/m, 'version = \"'+v+'\"');
+            fs.writeFileSync('src-tauri/Cargo.toml', next);
+            const conf=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));
+            conf.version=v;
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2)+'\n');
+          "
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-36 build-tools;36.0.0 ndk;27.1.12297006"
+
+      - name: Install Rust with Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Install npm deps
+        run: npm ci
+
+      # Decode the base64-encoded keystore secret into a real .jks on disk
+      # and write the matching SUBMARINE_KEYSTORE_PATH env var so Gradle's
+      # signingConfig picks it up. If the secret is empty/missing (forks,
+      # PRs), the path stays unset and Gradle falls back to unsigned.
+      - name: Materialize release keystore
+        shell: bash
+        env:
+          SUBMARINE_KEYSTORE_B64: ${{ secrets.SUBMARINE_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$SUBMARINE_KEYSTORE_B64" ]; then
+            mkdir -p "$RUNNER_TEMP/signing"
+            echo "$SUBMARINE_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/signing/release.jks"
+            echo "SUBMARINE_KEYSTORE_PATH=$RUNNER_TEMP/signing/release.jks" >> "$GITHUB_ENV"
+            echo "Release keystore materialized."
+          else
+            echo "SUBMARINE_KEYSTORE_B64 not set — release APK will be unsigned."
+          fi
+
+      - name: Build Android APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
+          SUBMARINE_KEYSTORE_PASSWORD: ${{ secrets.SUBMARINE_KEYSTORE_PASSWORD }}
+          SUBMARINE_KEY_ALIAS: ${{ secrets.SUBMARINE_KEY_ALIAS }}
+          SUBMARINE_KEY_PASSWORD: ${{ secrets.SUBMARINE_KEY_PASSWORD }}
+        run: npm run android:build
+
+      - name: Stage Android artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          # Tauri lays APKs under src-tauri/gen/android/app/build/outputs/apk/
+          # (universal/release/, arm64/release/, etc.). Collect every signed
+          # release APK and rename to include the version so the release
+          # asset name is human-readable.
+          find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-release*.apk" | while read apk; do
+            base="$(basename "$apk" .apk)"
+            cp "$apk" "artifacts/Submarine-${{ github.ref_name }}-${base}.apk"
+          done
+          ls -la artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: submarine-android
+          path: artifacts/*
+          if-no-files-found: error
+
   # Gather every platform's artifacts and attach them to a GitHub Release.
   # Skips when triggered via workflow_dispatch unless `publish_release=true`.
   release:
-    needs: build
+    needs: [build, android]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish_release == 'true'
     steps:
@@ -287,6 +410,7 @@ jobs:
             -o -name "*.dmg" -o -name "*.app.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \
             -o -name "*.pkg.tar.zst" \
+            -o -name "*.apk" \
             \) -exec cp {} release-files/ \;
           ls -la release-files/
 
