@@ -363,13 +363,15 @@ jobs:
             echo "SUBMARINE_KEYSTORE_B64 not set — release APK will be unsigned."
           fi
 
-      # Two outputs:
-      #   1. Split APKs (arm64 + armv7) — slim files for direct sideload
-      #      from GitHub: each phone downloads only the .so for its ABI.
-      #   2. Universal AAB — single .aab bundling both ABIs for Play
-      #      Store upload (Play Store re-splits it per device).
-      # Done as two consecutive tauri invocations because --split-per-abi
-      # would split AABs too; for Play we want a single bundle.
+      # Two outputs, both universal (both ABIs in one file):
+      #   1. Universal APK — single .apk users sideload from GitHub.
+      #      Split APKs were tried in v0.2.18/v0.2.19 but Android rejects
+      #      them as "invalid package" when installed standalone because
+      #      split APKs need their matching base.apk installed at the same
+      #      time (the Play Store mechanism). For direct sideload only a
+      #      universal APK works.
+      #   2. Universal AAB — single .aab for Play Store upload (Play
+      #      re-splits it per device server-side).
       - name: Build Android APK + AAB
         env:
           NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
