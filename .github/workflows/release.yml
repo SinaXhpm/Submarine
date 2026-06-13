@@ -352,6 +352,35 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y perl make build-essential
 
+      # openssl-src's Makefile invokes binutils via the legacy
+      # `<target>-ranlib` / `<target>-ar` / `<target>-strip` names. NDK 27
+      # ships only the unprefixed `llvm-ranlib` / `llvm-ar` (the prefixed
+      # symlinks were dropped around NDK 23). Without these, the OpenSSL
+      # cross-build for aarch64 / armv7 fails at the install step with
+      # "aarch64-linux-android-ranlib: not found" and make exits 127.
+      #
+      # Create the missing prefixed symlinks inside the NDK's bin dir, then
+      # add that dir to $GITHUB_PATH so openssl-src and any sibling
+      # cc-rs-driven build can spawn them by name. Both Rust targets
+      # (aarch64-linux-android, armv7-linux-androideabi) get their full set.
+      - name: Symlink legacy binutils names for NDK cross-compile
+        run: |
+          NDK_BIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          if [ ! -d "$NDK_BIN" ]; then
+            echo "::error::NDK bin dir not found at $NDK_BIN"
+            exit 1
+          fi
+          for target in aarch64-linux-android armv7a-linux-androideabi arm-linux-androideabi; do
+            for tool in ranlib ar strip nm objcopy objdump readelf; do
+              link="$NDK_BIN/${target}-${tool}"
+              if [ ! -e "$link" ]; then
+                ln -sf "$NDK_BIN/llvm-${tool}" "$link"
+              fi
+            done
+          done
+          echo "$NDK_BIN" >> "$GITHUB_PATH"
+          ls -la "$NDK_BIN" | grep -E '(ranlib|ar|strip)$' | head -20
+
       - name: Install npm deps
         run: npm ci
 
