@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, ChevronDown, ChevronRight, Pencil, Check } from "lucide-react";
+import { Play, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, ChevronDown, ChevronRight, Pencil, Check, Server } from "lucide-react";
 
 // Side panel that opens from a terminal session and surfaces *both* the
 // user's saved Quick Commands and their Notes. Two patterns for editing:
@@ -22,7 +22,7 @@ import { Play, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, Chevro
 
 interface CommandItem { id: number; title: string; content: string; }
 interface NoteItem { id: number; title: string; body: string; }
-type Tab = "commands" | "notes";
+type Tab = "commands" | "notes" | "node";
 
 // Single shared "what's being edited right now" slot. Only one row can be
 // editing at a time (notes expand-to-edit, commands toggle-to-edit), so a
@@ -31,12 +31,25 @@ type EditTarget =
   | { kind: "command"; id: number; title: string; body: string }
   | { kind: "note"; id: number; title: string; body: string };
 
-export const CmdsPanel = ({ activeTab, onClose }: { activeTab: string; onClose: () => void }) => {
+export const CmdsPanel = ({ activeTab, onClose, serverId, serverName }: { activeTab: string; onClose: () => void; serverId?: number; serverName?: string }) => {
   const [tab, setTab] = useState<Tab>("commands");
   const [commands, setCommands] = useState<CommandItem[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Node notes — the per-server free-form notes from AddNodePanel, surfaced
+  // here so the user can read/edit them next to commands + notes without
+  // bouncing back to the server editor. Source of truth is the same SQLite
+  // column (servers.notes) — we fetch via get_servers and save via
+  // set_server_notes. `nodeOriginal` mirrors the persisted copy so Save lights
+  // up only when the draft diverges (same dirty-check pattern as commands/notes).
+  const hasNode = typeof serverId === "number" && serverId > 0;
+  const [nodeDraft, setNodeDraft] = useState<string>("");
+  const [nodeOriginal, setNodeOriginal] = useState<string>("");
+  const [nodeSaving, setNodeSaving] = useState(false);
+  const nodeDraftRef = useRef<string>("");
+  useEffect(() => { nodeDraftRef.current = nodeDraft; }, [nodeDraft]);
 
   const [edit, setEdit] = useState<EditTarget | null>(null);
   const [saving, setSaving] = useState(false);
@@ -68,20 +81,46 @@ export const CmdsPanel = ({ activeTab, onClose }: { activeTab: string; onClose: 
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [cmds, ns] = await Promise.all([
+      const tasks: Promise<any>[] = [
         invoke<CommandItem[]>("get_commands"),
         invoke<NoteItem[]>("get_notes"),
-      ]);
-      setCommands(cmds || []);
-      setNotes(ns || []);
+      ];
+      // Pull node notes from get_servers when this Library is scoped to a
+      // session. The backend exposes only the bulk list — cheap enough
+      // (handful of rows) and avoids a new single-server command.
+      if (hasNode) tasks.push(invoke<any[]>("get_servers"));
+      const out = await Promise.all(tasks);
+      setCommands((out[0] as CommandItem[]) || []);
+      setNotes((out[1] as NoteItem[]) || []);
+      if (hasNode) {
+        const servers = (out[2] as any[]) || [];
+        const server = servers.find((s) => s.id === serverId);
+        const text: string = server?.notes ?? "";
+        setNodeOriginal(text);
+        setNodeDraft(text);
+      }
     } catch (e) {
-      console.error("Failed to fetch CMDS panel data:", e);
+      console.error("Failed to fetch Library data:", e);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => { fetchAll(); }, [serverId]);
+
+  const isNodeDirty = nodeDraft !== nodeOriginal;
+  const saveNodeNotes = async () => {
+    if (!hasNode || nodeSaving || !isNodeDirty) return;
+    setNodeSaving(true);
+    try {
+      await invoke("set_server_notes", { id: serverId, notes: nodeDraft });
+      setNodeOriginal(nodeDraft);
+    } catch (e) {
+      console.error("Failed to save node notes:", e);
+    } finally {
+      setNodeSaving(false);
+    }
+  };
 
   // Save the currently editing row (if dirty), without touching the edit
   // state itself — the caller decides whether to collapse afterwards. We
@@ -105,12 +144,17 @@ export const CmdsPanel = ({ activeTab, onClose }: { activeTab: string; onClose: 
   };
 
   // Tab switch: persist whatever's open in the current tab before clearing
-  // the editor and search so the next tab starts clean.
+  // the editor and search so the next tab starts clean. Also auto-saves
+  // pending node-notes draft when leaving the Node tab so the user can't
+  // lose work by switching tabs.
   useEffect(() => {
     const snapshot = editRef.current;
     setSearchQuery("");
     setEdit(null);
     flushIfDirty(snapshot);
+    if (hasNode && nodeDraftRef.current !== nodeOriginal) {
+      void saveNodeNotes();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -182,15 +226,18 @@ export const CmdsPanel = ({ activeTab, onClose }: { activeTab: string; onClose: 
     (n) => (n.title || "").toLowerCase().includes(q) || (n.body || "").toLowerCase().includes(q)
   );
 
-  const tabLabel = tab === "commands" ? "Commands" : "Notes";
+  const tabLabel = tab === "commands" ? "Commands" : tab === "notes" ? "Notes" : "Node";
+  const TabIcon = tab === "commands" ? Terminal : tab === "notes" ? StickyNote : Server;
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#09090b]">
       {/* Title Bar */}
       <div className="h-12 px-4 shrink-0 flex items-center justify-between border-b border-white/5 bg-white/5">
         <div className="flex items-center gap-2 min-w-0">
-          {tab === "commands" ? <Terminal size={14} className="text-primary shrink-0" /> : <StickyNote size={14} className="text-primary shrink-0" />}
-          <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-300 truncate">Library · {tabLabel}</span>
+          <TabIcon size={14} className="text-primary shrink-0" />
+          <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-300 truncate">
+            Library · {tabLabel}{tab === "node" && serverName ? ` · ${serverName}` : ""}
+          </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button
@@ -211,8 +258,10 @@ export const CmdsPanel = ({ activeTab, onClose }: { activeTab: string; onClose: 
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="grid grid-cols-2 shrink-0 border-b border-white/5 bg-black/20">
+      {/* Tabs — three when a server is in scope (Commands / Notes / Node),
+          two otherwise (the Library is reachable from any context, not just
+          a connected session, so the Node tab is gated on the prop). */}
+      <div className={`grid ${hasNode ? "grid-cols-3" : "grid-cols-2"} shrink-0 border-b border-white/5 bg-black/20`}>
         <button
           onClick={() => setTab("commands")}
           className={`h-9 flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider transition-all ${
@@ -235,21 +284,37 @@ export const CmdsPanel = ({ activeTab, onClose }: { activeTab: string; onClose: 
           <StickyNote size={12} /> Notes
           <span className="text-[9px] opacity-60">{notes.length}</span>
         </button>
+        {hasNode && (
+          <button
+            onClick={() => setTab("node")}
+            className={`h-9 flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider transition-all ${
+              tab === "node"
+                ? "text-primary bg-primary/5 border-b border-primary"
+                : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
+            }`}
+          >
+            <Server size={12} /> Node
+            {isNodeDirty && <span className="text-[9px] text-amber-400">●</span>}
+          </button>
+        )}
       </div>
 
-      {/* Search Input */}
-      <div className="p-3 shrink-0 border-b border-white/5 bg-black/20">
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
-          <input
-            type="text"
-            placeholder={tab === "commands" ? "Search commands (title + body)..." : "Search notes (title + body)..."}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full h-8 pl-9 pr-3 bg-white/5 border border-white/5 rounded-lg text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-primary/50 focus:bg-white/10 transition-all"
-          />
+      {/* Search Input — only on list-shaped tabs; the Node tab is a single
+          editor so search would have nothing to filter. */}
+      {tab !== "node" && (
+        <div className="p-3 shrink-0 border-b border-white/5 bg-black/20">
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <input
+              type="text"
+              placeholder={tab === "commands" ? "Search commands (title + body)..." : "Search notes (title + body)..."}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full h-8 pl-9 pr-3 bg-white/5 border border-white/5 rounded-lg text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-primary/50 focus:bg-white/10 transition-all"
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* List */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2 no-scrollbar">
@@ -257,6 +322,50 @@ export const CmdsPanel = ({ activeTab, onClose }: { activeTab: string; onClose: 
           <div className="flex flex-col items-center justify-center py-12 text-zinc-500 gap-2">
             <RefreshCw size={24} className="animate-spin text-primary opacity-60" />
             <span className="text-[11px]">Loading {tabLabel.toLowerCase()}...</span>
+          </div>
+        ) : tab === "node" ? (
+          <div className="flex flex-col h-full gap-2">
+            <div className="flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <Server size={12} className="text-primary shrink-0" />
+                <span className="text-[11px] font-bold text-zinc-200 truncate">{serverName || `Node #${serverId}`}</span>
+              </div>
+              <button
+                onClick={() => copyToClipboard(nodeDraft || "")}
+                disabled={!nodeDraft}
+                className="h-7 px-2 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Copy current draft to clipboard"
+              >
+                <ClipboardCopy size={11} /> Copy
+              </button>
+            </div>
+            <textarea
+              value={nodeDraft}
+              onChange={(e) => setNodeDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); void saveNodeNotes(); }
+              }}
+              placeholder={`Notes for this node — paths, credentials hints, runbook steps…\nSaved on tab switch or Ctrl+Enter.`}
+              className="flex-1 w-full p-3 bg-black/40 border border-white/10 rounded-lg font-sans text-[12px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-none focus:outline-none focus:border-primary/50 custom-scrollbar"
+            />
+            <div className="flex gap-1.5 shrink-0">
+              <button
+                onClick={() => setNodeDraft(nodeOriginal)}
+                disabled={nodeSaving || !isNodeDirty}
+                className="flex-1 h-8 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Revert to last saved version"
+              >
+                <X size={11} /> Revert
+              </button>
+              <button
+                onClick={() => void saveNodeNotes()}
+                disabled={nodeSaving || !isNodeDirty}
+                className="flex-1 h-8 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Save (Ctrl+Enter, auto-saves on tab switch)"
+              >
+                {nodeSaving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} Save
+              </button>
+            </div>
           </div>
         ) : tab === "commands" ? (
           filteredCommands.length > 0 ? (

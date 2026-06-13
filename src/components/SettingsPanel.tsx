@@ -1,6 +1,6 @@
-import { Settings, Palette, RefreshCw, Pipette } from "lucide-react";
+import { Settings, Palette, RefreshCw, Pipette, List } from "lucide-react";
 
-const SettingsPanel = ({ settings, setSettings }: any) => {
+const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
   const accentColors = [
     { name: 'Light Blue', value: '#60a5fa' },
     { name: 'Sky', value: '#38bdf8' },
@@ -131,17 +131,41 @@ const SettingsPanel = ({ settings, setSettings }: any) => {
           </div>
         </section>
 
+        {/* Activity Section — moved out of the sidebar so the top-level
+            navigation stays focused on primary workflows. Logs are diagnostic
+            only; keeping them one click deep here cleans up the sidebar on
+            mobile (six icons → five) without burying the data. */}
+        {onOpenLogs && (
+          <section className="space-y-6">
+            <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs mb-4">
+              <List size={14} /> Activity Log
+            </div>
+
+            <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
+              <p className="text-sm text-zinc-400 leading-relaxed">
+                Diagnostic timeline of what the app has been doing this session. Useful for confirming a connection actually failed or watching a transfer's progress in retrospect.
+              </p>
+              <button
+                onClick={onOpenLogs}
+                className="px-4 h-9 bg-primary/10 border border-primary/30 text-primary rounded-xl text-xs font-bold uppercase hover:bg-primary hover:text-zinc-950 transition-all w-full flex items-center justify-center gap-2"
+              >
+                <List size={14} /> View Activity Log
+              </button>
+            </div>
+          </section>
+        )}
+
         {/* Maintenance Section */}
         <section className="space-y-6">
           <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs mb-4">
             <RefreshCw size={14} /> Maintenance
           </div>
-          
+
           <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
             <p className="text-sm text-zinc-400 leading-relaxed">
               These preferences are persisted in your local environment. Resetting will revert all UI aesthetics to factory defaults.
             </p>
-            <button 
+            <button
               onClick={() => {
                 if(window.confirm('Reset all UI customizations?')) {
                   setSettings({ primaryColor: '#60a5fa', backgroundColor: '#0a0a0c', terminalFontSize: 14 });

@@ -342,6 +342,16 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
+      # openssl-sys's `vendored` feature pulls in openssl-src which builds
+      # OpenSSL from C source. For native Linux/macOS/Windows that's fully
+      # automatic, but cross-compiling to Android needs Perl + make + the
+      # NDK's clang/ar reachable via $PATH. Ubuntu runners ship Perl + make
+      # already; this step just makes sure (apt-get is a no-op if installed).
+      - name: Install OpenSSL build deps for Android cross-compile
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y perl make build-essential
+
       - name: Install npm deps
         run: npm ci
 

@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Folder, File, ArrowUp, RefreshCw, Trash2, Edit3, Shield,
   X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch,
-  Download, ExternalLink, Move, CheckSquare, Square
+  Download, Upload, ExternalLink, Move, CheckSquare, Square
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
@@ -592,6 +592,49 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     }
   };
 
+  // Local → remote upload. Mirror of downloadItems for the local pane: the
+  // destination is whatever directory the opposite (remote) pane is showing
+  // — same one-click bulk UX, just in the other direction. Folders are
+  // skipped with a notice because we don't have an sftp_upload_dir command
+  // yet (matches FilePanel's other folder-aware-but-files-only paths).
+  const uploadItems = async (items: FileEntry[]) => {
+    if (!sessionId || items.length === 0) return;
+    const dest = getOppositeDir?.();
+    if (!dest) { notify("Open a directory in the remote pane first.", "error"); return; }
+    const sep = dest.includes("\\") ? "\\" : "/";
+    const trimmed = dest.replace(/[\\/]+$/, "");
+    const files = items.filter((e) => !e.isDir);
+    const skippedDirs = items.length - files.length;
+    if (files.length === 0) { notify("Folder upload not yet supported — pick files.", "error"); return; }
+    if (skippedDirs > 0) {
+      notify(`Uploading ${files.length} file${files.length === 1 ? "" : "s"} — skipping ${skippedDirs} folder${skippedDirs === 1 ? "" : "s"}.`, "info");
+    } else {
+      notify(files.length === 1 ? `Uploading ${files[0].name}…` : `Uploading ${files.length} files…`, "info");
+    }
+    const batch: OverwriteBatch = { kind: "ask" };
+    let count = 0;
+    let cancelled = false;
+    for (const e of files) {
+      if (cancelled) break;
+      try {
+        const remotePath = `${trimmed}${sep}${e.name}`;
+        const res = await transferWithOverwriteCheck(
+          (ow) => invoke("sftp_upload_file", { sessionId, localPath: e.path, remotePath, overwrite: ow }),
+          e.name, "upload", files.length, batch, overwritePrompt
+        );
+        if (res === "done") count++;
+        if (res === "cancelled") { cancelled = true; }
+      } catch (err: any) {
+        notify(`Upload failed for ${e.name}: ${err}`, "error");
+      }
+    }
+    if (count > 0) {
+      notify(files.length === 1 ? `Uploaded ${files[0].name}` : `Uploaded ${count} of ${files.length} files`, "success");
+    } else if (cancelled) {
+      notify("Upload batch cancelled", "info");
+    }
+  };
+
   // Remote: open in OS default editor with a save-watcher that re-uploads on
   // every change. Backed by the existing `sftp_open_remote_file` command.
   const liveEditEntry = async (entry: FileEntry) => {
@@ -838,6 +881,18 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 flex items-center gap-1"
             >
               <Download size={10} /> Download
+            </button>
+          )}
+          {!isRemote && (
+            <button
+              onClick={() => uploadItems(sortedEntries.filter(e => selected.has(e.path)))}
+              title={getOppositeDir?.()
+                ? `Upload to ${getOppositeDir!()}`
+                : "Open a remote directory first…"}
+              disabled={!getOppositeDir?.()}
+              className="px-2 py-0.5 rounded bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Upload size={10} /> Upload
             </button>
           )}
           <button

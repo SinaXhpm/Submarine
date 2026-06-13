@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, Play, Terminal, FolderUp } from "lucide-react";
+import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, Play, FolderUp, Library } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
@@ -550,10 +550,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
           </button>
           <button
             onClick={() => setActiveTool(activeTool === 'cmds' ? null : 'cmds')}
-            title="Commands"
+            title="Library — commands, notes, this node's notes"
             className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'cmds' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
           >
-            <Terminal size={14} /> <span className="hidden sm:inline">CMDS</span>
+            <Library size={14} /> <span className="hidden sm:inline">Library</span>
           </button>
         </div>
       </div>
@@ -698,7 +698,12 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
           </div>
 
           {activeTool === 'cmds' && (
-            <CmdsPanel activeTab={activeTab} onClose={() => setActiveTool(null)} />
+            <CmdsPanel
+              activeTab={activeTab}
+              onClose={() => setActiveTool(null)}
+              serverId={session.serverId}
+              serverName={session.serverName}
+            />
           )}
         </div>
       </div>
