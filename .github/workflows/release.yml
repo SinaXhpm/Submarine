@@ -363,7 +363,14 @@ jobs:
             echo "SUBMARINE_KEYSTORE_B64 not set — release APK will be unsigned."
           fi
 
-      - name: Build Android APK
+      # Two outputs:
+      #   1. Split APKs (arm64 + armv7) — slim files for direct sideload
+      #      from GitHub: each phone downloads only the .so for its ABI.
+      #   2. Universal AAB — single .aab bundling both ABIs for Play
+      #      Store upload (Play Store re-splits it per device).
+      # Done as two consecutive tauri invocations because --split-per-abi
+      # would split AABs too; for Play we want a single bundle.
+      - name: Build Android APK + AAB
         env:
           NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
@@ -376,13 +383,16 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          # Tauri lays APKs under src-tauri/gen/android/app/build/outputs/apk/
-          # (universal/release/, arm64/release/, etc.). Collect every signed
-          # release APK and rename to include the version so the release
-          # asset name is human-readable.
+          # APKs land under app/build/outputs/apk/<abi>/release/*.apk
+          # AABs land under app/build/outputs/bundle/<flavor>Release/*.aab
+          # Rename to include the version so release asset names are readable.
           find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-release*.apk" | while read apk; do
             base="$(basename "$apk" .apk)"
             cp "$apk" "artifacts/Submarine-${{ github.ref_name }}-${base}.apk"
+          done
+          find src-tauri/gen/android/app/build/outputs/bundle -type f -name "*-release*.aab" | while read aab; do
+            base="$(basename "$aab" .aab)"
+            cp "$aab" "artifacts/Submarine-${{ github.ref_name }}-${base}.aab"
           done
           ls -la artifacts/
 
@@ -413,7 +423,7 @@ jobs:
             -o -name "*.dmg" -o -name "*.app.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \
             -o -name "*.pkg.tar.zst" \
-            -o -name "*.apk" \
+            -o -name "*.apk" -o -name "*.aab" \
             \) -exec cp {} release-files/ \;
           ls -la release-files/
 

@@ -1,6 +1,6 @@
 {
   "productName": "Submarine",
-  "version": "0.2.18",
+  "version": "0.2.19",
   "identifier": "com.submarine.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -22,7 +22,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: https://ipc.localhost https://api.sinaxhpm.com; frame-src 'none'; object-src 'none'; base-uri 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: https://ipc.localhost https://api.sinaxhpm.com; frame-src 'none'; object-src 'none'; base-uri 'self'",
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {
