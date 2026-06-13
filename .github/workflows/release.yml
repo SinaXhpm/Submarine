@@ -347,21 +347,41 @@ jobs:
 
       # Decode the base64-encoded keystore secret into a real .jks on disk
       # and write the matching SUBMARINE_KEYSTORE_PATH env var so Gradle's
-      # signingConfig picks it up. If the secret is empty/missing (forks,
-      # PRs), the path stays unset and Gradle falls back to unsigned.
+      # signingConfig picks it up. Fail the build loudly if any of the four
+      # signing secrets are missing — silent fallback to an unsigned APK
+      # ("Submarine-vX.Y.Z-app-universal-release-unsigned.apk") produces a
+      # file Android rejects at install with "package appears to be invalid".
+      # The four required secrets:
+      #   SUBMARINE_KEYSTORE_B64        — base64 of the .jks
+      #   SUBMARINE_KEYSTORE_PASSWORD   — keystore password
+      #   SUBMARINE_KEY_ALIAS           — alias inside the keystore
+      #   SUBMARINE_KEY_PASSWORD        — key password
       - name: Materialize release keystore
         shell: bash
         env:
           SUBMARINE_KEYSTORE_B64: ${{ secrets.SUBMARINE_KEYSTORE_B64 }}
+          SUBMARINE_KEYSTORE_PASSWORD: ${{ secrets.SUBMARINE_KEYSTORE_PASSWORD }}
+          SUBMARINE_KEY_ALIAS: ${{ secrets.SUBMARINE_KEY_ALIAS }}
+          SUBMARINE_KEY_PASSWORD: ${{ secrets.SUBMARINE_KEY_PASSWORD }}
         run: |
-          if [ -n "$SUBMARINE_KEYSTORE_B64" ]; then
-            mkdir -p "$RUNNER_TEMP/signing"
-            echo "$SUBMARINE_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/signing/release.jks"
-            echo "SUBMARINE_KEYSTORE_PATH=$RUNNER_TEMP/signing/release.jks" >> "$GITHUB_ENV"
-            echo "Release keystore materialized."
-          else
-            echo "SUBMARINE_KEYSTORE_B64 not set — release APK will be unsigned."
+          missing=()
+          [ -z "$SUBMARINE_KEYSTORE_B64" ]      && missing+=("SUBMARINE_KEYSTORE_B64")
+          [ -z "$SUBMARINE_KEYSTORE_PASSWORD" ] && missing+=("SUBMARINE_KEYSTORE_PASSWORD")
+          [ -z "$SUBMARINE_KEY_ALIAS" ]         && missing+=("SUBMARINE_KEY_ALIAS")
+          [ -z "$SUBMARINE_KEY_PASSWORD" ]      && missing+=("SUBMARINE_KEY_PASSWORD")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing GitHub Secrets required for signing: ${missing[*]}"
+            echo "::error::Add them at https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
           fi
+          mkdir -p "$RUNNER_TEMP/signing"
+          echo "$SUBMARINE_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/signing/release.jks"
+          if [ ! -s "$RUNNER_TEMP/signing/release.jks" ]; then
+            echo "::error::SUBMARINE_KEYSTORE_B64 decoded to an empty file — verify the secret is valid base64."
+            exit 1
+          fi
+          echo "SUBMARINE_KEYSTORE_PATH=$RUNNER_TEMP/signing/release.jks" >> "$GITHUB_ENV"
+          echo "Release keystore materialized ($(wc -c < "$RUNNER_TEMP/signing/release.jks") bytes)."
 
       # Two outputs, both universal (both ABIs in one file):
       #   1. Universal APK — single .apk users sideload from GitHub.
@@ -388,13 +408,30 @@ jobs:
           # APKs land under app/build/outputs/apk/<abi>/release/*.apk
           # AABs land under app/build/outputs/bundle/<flavor>Release/*.aab
           # Rename to include the version so release asset names are readable.
-          find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-release*.apk" | while read apk; do
+          # `-name "*-unsigned.apk"` is the unsigned variant Gradle produces
+          # when signingConfig is absent — explicitly excluded so a
+          # mis-wired keystore cannot leak an uninstallable APK to a release.
+          shopt -s nullglob
+          found=0
+          for apk in $(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-release*.apk" ! -name "*-unsigned.apk"); do
             base="$(basename "$apk" .apk)"
             cp "$apk" "artifacts/Submarine-${{ github.ref_name }}-${base}.apk"
+            found=$((found + 1))
           done
-          find src-tauri/gen/android/app/build/outputs/bundle -type f -name "*-release*.aab" | while read aab; do
+          for aab in $(find src-tauri/gen/android/app/build/outputs/bundle -type f -name "*-release*.aab"); do
             base="$(basename "$aab" .aab)"
             cp "$aab" "artifacts/Submarine-${{ github.ref_name }}-${base}.aab"
+            found=$((found + 1))
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No signed APK or AAB produced — Gradle likely ran without signingConfig."
+            exit 1
+          fi
+          # Verify each APK is actually signed before we ship it.
+          apksigner="$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          for apk in artifacts/*.apk; do
+            echo "--- apksigner verify $apk ---"
+            "$apksigner" verify --verbose "$apk"
           done
           ls -la artifacts/
 

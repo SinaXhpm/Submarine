@@ -59,6 +59,16 @@ android {
                 storePassword = resolvedStorePassword
                 keyAlias = resolvedKeyAlias
                 keyPassword = resolvedKeyPassword
+                // Sign with v1 + v2 + v3 so the APK installs on every minSdk
+                // 24+ device. Some Android variants reject v2-only APKs at
+                // install time ("Package appears to be invalid"); shipping
+                // the full triad removes that ambiguity. v4 is intentionally
+                // off — it needs a side-band .apk.idsig file Play uses for
+                // incremental install but standalone sideload doesn't.
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = false
             }
         }
     }
