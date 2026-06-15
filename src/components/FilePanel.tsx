@@ -977,19 +977,27 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         onDrop={onDrop}
         className={`flex-1 border rounded-lg bg-[#121214] flex flex-col overflow-auto transition-all duration-200 border-indigo-500/30 shadow-2xl shadow-indigo-950/10 ${dragOver ? "border-indigo-400 bg-indigo-950/10" : ""}`}
       >
-        <div className={`min-w-full grid ${showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]"} gap-1.5 px-2.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 select-none font-bold shrink-0 sticky top-0 z-10 shadow-md`}>
-          {/* Master select-all checkbox. Hidden until the user has either
-              selected at least one row OR the list area is being hovered —
-              keeps the chrome clean by default but stays discoverable. */}
-          <div
-            className={`bg-[#161619] flex items-center justify-center py-1.5 cursor-pointer transition-opacity ${
-              selected.size > 0 ? "opacity-100 hover:text-white" : "opacity-0 group-hover/list:opacity-60 hover:opacity-100"
-            }`}
-            onClick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
-            title={allSelected ? "Deselect all" : "Select all"}
-          >
-            {allSelected ? <CheckSquare size={12} className="text-indigo-300" /> : <Square size={12} className="text-zinc-500" />}
-          </div>
+        {/* The select column is conditionally injected — only present when
+            there's at least one selected row. With nothing selected the row
+            content reclaims the 22px and the list reads cleanly. Discovery
+            paths into multi-select that work without the column visible:
+            row click (single select), Ctrl/Shift-click (extend), Ctrl+A
+            (select all), right-click → context menu, and the header bar's
+            select-all toggle to the right of the address bar. */}
+        <div className={`min-w-full grid ${
+          selected.size > 0
+            ? (showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]")
+            : (showPerms ? "grid-cols-[minmax(180px,1fr)_65px_115px_85px]"      : "grid-cols-[minmax(180px,1fr)_75px_125px]")
+        } gap-1.5 px-2.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 select-none font-bold shrink-0 sticky top-0 z-10 shadow-md`}>
+          {selected.size > 0 && (
+            <div
+              className="bg-[#161619] flex items-center justify-center py-1.5 cursor-pointer hover:text-white"
+              onClick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
+              title={allSelected ? "Deselect all" : "Select all"}
+            >
+              {allSelected ? <CheckSquare size={12} className="text-indigo-300" /> : <Square size={12} className="text-zinc-500" />}
+            </div>
+          )}
           <div className="bg-[#161619] cursor-pointer hover:text-white py-1.5" onClick={() => toggleSort("name")}>
             NAME {sortIcon("name")}
           </div>
@@ -1006,7 +1014,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           )}
         </div>
 
-        <div className="min-w-full p-1 font-mono text-[11px] group/list"
+        <div className="min-w-full p-1 font-mono text-[11px]"
              onClick={(e) => {
                // Click landed on the bare list background (not on a row, since
                // rows stopPropagation via their own onClick chain implicitly
@@ -1039,40 +1047,39 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 }}
                 data-fs-row-path={entry.path}
                 data-fs-row-isdir={entry.isDir ? "1" : "0"}
-                className={`group/row grid ${showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]"} gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
+                className={`grid ${
+                  selected.size > 0
+                    ? (showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]")
+                    : (showPerms ? "grid-cols-[minmax(180px,1fr)_65px_115px_85px]"      : "grid-cols-[minmax(180px,1fr)_75px_125px]")
+                } gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
                   isSel
                     ? "bg-indigo-950/40 border-indigo-400 text-indigo-100 font-bold"
                     : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
                 }`}
               >
-                {/* Checkbox visibility rule: hidden by default, ghosts in on
-                    row hover (so users discover the gesture), fully visible
-                    once any row in this list is selected. Always visible for
-                    the selected row itself so the state stays unambiguous. */}
-                <div
-                  className={`flex items-center justify-center transition-opacity ${
-                    isSel || selected.size > 0
-                      ? "opacity-100"
-                      : "opacity-0 group-hover/row:opacity-70"
-                  }`}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    // Pure toggle for this row — doesn't replace the selection
-                    // the way a bare row click does. Keeps existing selection
-                    // intact and just flips this entry in/out.
-                    e.stopPropagation();
-                    const next = new Set(selected);
-                    if (next.has(entry.path)) next.delete(entry.path);
-                    else next.add(entry.path);
-                    setSelected(next);
-                    lastSelectedPathRef.current = entry.path;
-                  }}
-                  title={isSel ? "Deselect" : "Select"}
-                >
-                  {isSel
-                    ? <CheckSquare size={12} className="text-indigo-300" />
-                    : <Square size={12} className="text-zinc-500 hover:text-zinc-300" />}
-                </div>
+                {selected.size > 0 && (
+                  <div
+                    className="flex items-center justify-center"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      // Pure toggle for this row — doesn't replace the
+                      // selection the way a bare row click does. Keeps
+                      // existing selection intact and just flips this entry
+                      // in/out.
+                      e.stopPropagation();
+                      const next = new Set(selected);
+                      if (next.has(entry.path)) next.delete(entry.path);
+                      else next.add(entry.path);
+                      setSelected(next);
+                      lastSelectedPathRef.current = entry.path;
+                    }}
+                    title={isSel ? "Deselect" : "Select"}
+                  >
+                    {isSel
+                      ? <CheckSquare size={12} className="text-indigo-300" />
+                      : <Square size={12} className="text-zinc-500 hover:text-zinc-300" />}
+                  </div>
+                )}
                 <div className="flex items-center gap-2 truncate pr-1">
                   {entry.isDir
                     ? <Folder size={12} className="text-indigo-300 shrink-0" />
