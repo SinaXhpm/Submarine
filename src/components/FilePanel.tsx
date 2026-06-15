@@ -978,8 +978,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         className={`flex-1 border rounded-lg bg-[#121214] flex flex-col overflow-auto transition-all duration-200 border-indigo-500/30 shadow-2xl shadow-indigo-950/10 ${dragOver ? "border-indigo-400 bg-indigo-950/10" : ""}`}
       >
         <div className={`min-w-full grid ${showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]"} gap-1.5 px-2.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 select-none font-bold shrink-0 sticky top-0 z-10 shadow-md`}>
+          {/* Master select-all checkbox. Hidden until the user has either
+              selected at least one row OR the list area is being hovered —
+              keeps the chrome clean by default but stays discoverable. */}
           <div
-            className="bg-[#161619] flex items-center justify-center py-1.5 cursor-pointer hover:text-white"
+            className={`bg-[#161619] flex items-center justify-center py-1.5 cursor-pointer transition-opacity ${
+              selected.size > 0 ? "opacity-100 hover:text-white" : "opacity-0 group-hover/list:opacity-60 hover:opacity-100"
+            }`}
             onClick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
             title={allSelected ? "Deselect all" : "Select all"}
           >
@@ -1001,7 +1006,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           )}
         </div>
 
-        <div className="min-w-full p-1 font-mono text-[11px]"
+        <div className="min-w-full p-1 font-mono text-[11px] group/list"
              onClick={(e) => {
                // Click landed on the bare list background (not on a row, since
                // rows stopPropagation via their own onClick chain implicitly
@@ -1034,14 +1039,22 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 }}
                 data-fs-row-path={entry.path}
                 data-fs-row-isdir={entry.isDir ? "1" : "0"}
-                className={`grid ${showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]"} gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
+                className={`group/row grid ${showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]"} gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
                   isSel
                     ? "bg-indigo-950/40 border-indigo-400 text-indigo-100 font-bold"
                     : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
                 }`}
               >
+                {/* Checkbox visibility rule: hidden by default, ghosts in on
+                    row hover (so users discover the gesture), fully visible
+                    once any row in this list is selected. Always visible for
+                    the selected row itself so the state stays unambiguous. */}
                 <div
-                  className="flex items-center justify-center"
+                  className={`flex items-center justify-center transition-opacity ${
+                    isSel || selected.size > 0
+                      ? "opacity-100"
+                      : "opacity-0 group-hover/row:opacity-70"
+                  }`}
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     // Pure toggle for this row — doesn't replace the selection

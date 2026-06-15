@@ -178,6 +178,11 @@ const SftpWorkspace = ({ sessionId, disabled = false }: SftpWorkspaceProps) => {
         <FilePanel
           ref={localRef}
           provider={localProvider}
+          // The local pane also needs sessionId so its bulk-upload button can
+          // invoke sftp_upload_file / sftp_upload_dir on the right session.
+          // Without this the Upload button silently no-ops on the first
+          // guard (`if (!sessionId) return`).
+          sessionId={sessionId}
           disabled={disabled}
           onDragMove={handleDragMove}
           initialPath={savedDirsRef.current.local}
