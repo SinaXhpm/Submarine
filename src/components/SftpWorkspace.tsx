@@ -131,7 +131,17 @@ const SftpWorkspace = ({ sessionId, disabled = false }: SftpWorkspaceProps) => {
       if (!pane) return;
       const targetPaneId = pane.getAttribute("data-fs-pane");
       if (!targetPaneId || targetPaneId === active.paneId) return;
-      const targetDir = pane.getAttribute("data-fs-current-path") || "";
+
+      // Row-aware drop: if the cursor is on a folder row inside the
+      // destination pane, drop INTO that folder (its path) instead of
+      // the pane's current directory. Falling on a file row, an empty
+      // area, or the header still falls back to the pane's currentPath.
+      // This makes the natural "drag onto folder" gesture work, matching
+      // how users expect Finder/Explorer drag-drop to behave.
+      const row = (hit as HTMLElement).closest("[data-fs-row-isdir]") as HTMLElement | null;
+      const rowIsDir = row?.getAttribute("data-fs-row-isdir") === "1";
+      const rowPath = rowIsDir ? row?.getAttribute("data-fs-row-path") : null;
+      const targetDir = rowPath || pane.getAttribute("data-fs-current-path") || "";
       if (!targetDir) return;
 
       const srcProv = active.paneId === "local" ? localProvider : remoteProvider;

@@ -3476,6 +3476,229 @@ async fn sftp_upload_file(
     Ok(())
 }
 
+/// Recursive directory upload — mirror of sftp_download_dir. Walks the local
+/// tree, mkdirs each subdirectory on the remote, then streams every file
+/// through the same flags+chunk logic as sftp_upload_file. Cancel flag and
+/// EXISTS sentinel match the download path so the UI can reuse its prompt /
+/// progress / abort hooks unchanged.
+#[tauri::command]
+async fn sftp_upload_dir(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    local_path: String,
+    remote_path: String,
+    overwrite: Option<bool>,
+) -> Result<(), String> {
+    use russh_sftp::protocol::OpenFlags;
+    use tauri::Emitter;
+    use tokio::io::AsyncWriteExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // remote_path is the PARENT directory; we hang the basename of
+    // local_path underneath it. Matches scp -r / sftp_download_dir.
+    let _guarded_local = guard_local_path(&local_path, false)?;
+
+    let local_root = std::path::PathBuf::from(&local_path);
+    let folder_name = local_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("folder")
+        .to_string();
+    let folder_name = if folder_name.is_empty() { "folder".to_string() } else { folder_name };
+
+    let sftp = get_sftp_session(&state, &session_id).await?;
+
+    // Overwrite gate on the destination folder. Refuse unless the caller
+    // explicitly opted in — symmetric with sftp_download_dir.
+    let remote_root = format!("{}/{}",
+        remote_path.trim_end_matches('/'),
+        folder_name);
+    if overwrite != Some(true) {
+        if sftp.metadata(&remote_root).await.is_ok() {
+            return Err(format!("EXISTS:{}", remote_root));
+        }
+    }
+
+    let id = transfer_id();
+    let event_name = format!("sftp-transfer-{}", session_id);
+
+    // Cancel flag registered before the slow enumeration so the user can
+    // abort even while we're walking a deep tree.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancels_map = Arc::clone(&state.transfer_cancels);
+    cancels_map.lock().await.insert(id.clone(), Arc::clone(&cancel));
+    struct CancelGuard {
+        map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+        id: String,
+    }
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            if let Ok(mut g) = self.map.try_lock() {
+                g.remove(&self.id);
+            }
+        }
+    }
+    let _guard = CancelGuard { map: Arc::clone(&cancels_map), id: id.clone() };
+
+    let id_for_emit = id.clone();
+    let name_for_emit = folder_name.clone();
+    let app_for_emit = app.clone();
+    let event_for_emit = event_name.clone();
+    let emit_progress = move |bytes: u64, total: u64, status: &str, error: Option<String>| {
+        let _ = app_for_emit.emit(
+            &event_for_emit,
+            serde_json::json!({
+                "id": id_for_emit, "name": name_for_emit, "kind": "upload",
+                "bytes": bytes, "total": total,
+                "status": status, "error": error,
+            }),
+        );
+    };
+
+    emit_progress(0, 0, "progress", None);
+
+    // Phase 1: enumerate. Collect every local file under local_root along
+    // with its relative path (POSIX-style for the remote side) and size.
+    // Iterative walk with an explicit stack so we never overflow async
+    // recursion on pathological trees.
+    let mut files: Vec<(std::path::PathBuf, String, u64)> = Vec::new();
+    let mut dirs: Vec<String> = Vec::new(); // relative dir paths (POSIX) to mkdir on remote
+    let mut total_bytes: u64 = 0;
+    let mut stack: Vec<std::path::PathBuf> = vec![local_root.clone()];
+
+    while let Some(dir) = stack.pop() {
+        if cancel.load(Ordering::Relaxed) {
+            emit_progress(0, total_bytes, "cancelled", None);
+            return Err("cancelled".into());
+        }
+        let read = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(e) => {
+                emit_progress(0, total_bytes, "error", Some(format!("read_dir {:?}: {}", dir, e)));
+                return Err(format!("read_dir {:?}: {}", dir, e));
+            }
+        };
+        for entry in read {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            let rel = path
+                .strip_prefix(&local_root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if ft.is_dir() {
+                dirs.push(rel);
+                stack.push(path);
+            } else if ft.is_file() {
+                let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+                total_bytes = total_bytes.saturating_add(size);
+                files.push((path, rel, size));
+            }
+            // Symlinks and other types skipped — same as sftp_download_dir.
+        }
+    }
+
+    // Phase 2: mkdir the destination folder, then each enumerated subdir.
+    // SFTP's mkdir is per-level; we already collected them in pre-order from
+    // the stack walk but order isn't guaranteed shallow-first, so re-sort
+    // by path depth to make sure parents are created before children.
+    let _ = sftp.create_dir(&remote_root).await;
+    dirs.sort_by_key(|d| d.matches('/').count());
+    for rel in &dirs {
+        if cancel.load(Ordering::Relaxed) {
+            emit_progress(0, total_bytes, "cancelled", None);
+            return Err("cancelled".into());
+        }
+        let full = format!("{}/{}", remote_root.trim_end_matches('/'), rel);
+        // Tolerate already-exists — a parallel mkdir or an earlier partial
+        // run shouldn't abort the whole upload.
+        if sftp.metadata(&full).await.is_err() {
+            if let Err(e) = sftp.create_dir(&full).await {
+                emit_progress(0, total_bytes, "error", Some(format!("mkdir {}: {}", full, e)));
+                return Err(format!("mkdir {}: {}", full, e));
+            }
+        }
+    }
+
+    if files.is_empty() {
+        emit_progress(0, 0, "done", None);
+        return Ok(());
+    }
+
+    // Phase 3: stream each file up. Same chunked loop as sftp_upload_file,
+    // looped over the file list with a shared progress counter.
+    let mut transferred: u64 = 0;
+    let mut last_report = std::time::Instant::now();
+    let mut buf = vec![0u8; 256 * 1024];
+    use tokio::io::AsyncReadExt;
+
+    for (local_file_path, rel, _size) in &files {
+        if cancel.load(Ordering::Relaxed) {
+            emit_progress(transferred, total_bytes, "cancelled", None);
+            return Err("cancelled".into());
+        }
+        let remote_full = format!("{}/{}", remote_root.trim_end_matches('/'), rel);
+
+        let mut local_file = match tokio::fs::File::open(local_file_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                emit_progress(transferred, total_bytes, "error",
+                    Some(format!("open {:?}: {}", local_file_path, e)));
+                return Err(format!("open {:?}: {}", local_file_path, e));
+            }
+        };
+        let mut remote_file = match sftp.open_with_flags(
+            remote_full.clone(),
+            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+        ).await {
+            Ok(f) => f,
+            Err(e) => {
+                emit_progress(transferred, total_bytes, "error",
+                    Some(format!("open remote {}: {}", remote_full, e)));
+                return Err(format!("open remote {}: {}", remote_full, e));
+            }
+        };
+
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = remote_file.shutdown().await;
+                emit_progress(transferred, total_bytes, "cancelled", None);
+                return Err("cancelled".into());
+            }
+            let n = local_file.read(&mut buf).await
+                .map_err(|e| {
+                    emit_progress(transferred, total_bytes, "error",
+                        Some(format!("read {:?}: {}", local_file_path, e)));
+                    format!("read {:?}: {}", local_file_path, e)
+                })?;
+            if n == 0 { break; }
+            remote_file.write_all(&buf[..n]).await
+                .map_err(|e| {
+                    emit_progress(transferred, total_bytes, "error",
+                        Some(format!("write {}: {}", remote_full, e)));
+                    format!("write {}: {}", remote_full, e)
+                })?;
+            transferred = transferred.saturating_add(n as u64);
+            if last_report.elapsed() >= std::time::Duration::from_millis(100) {
+                emit_progress(transferred, total_bytes, "progress", None);
+                last_report = std::time::Instant::now();
+            }
+        }
+        remote_file.shutdown().await
+            .map_err(|e| format!("shutdown {}: {}", remote_full, e))?;
+    }
+
+    emit_progress(transferred, total_bytes, "done", None);
+    Ok(())
+}
+
 /// Flip the cancel flag for an in-flight SFTP transfer. The download / upload
 /// loop polls the flag every chunk (every ~256 KiB) and exits with a
 /// "cancelled" status event as soon as it sees true. Unknown ids are a no-op
@@ -4701,7 +4924,7 @@ pub fn run() {
             local_home_dir, local_desktop_dir, local_create_dir, local_remove, local_rename,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner,
-            sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_cancel_transfer, sftp_open_remote_file,
+            sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
             monitor_list, monitor_add, monitor_remove, monitor_set_metrics, monitor_set_custom_metrics,
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,

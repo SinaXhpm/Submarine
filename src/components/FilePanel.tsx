@@ -105,6 +105,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   getOppositeDir,
 }, ref) => {
   const [currentPath, setCurrentPath] = useState("");
+  // Last five distinct directories visited in this panel, MRU first. Lives
+  // in component state (cleared per session) — persistence didn't seem
+  // worth the complexity given users usually want recents from this work
+  // session, not whatever they were doing last week. Updated from `fetch`
+  // when navigation succeeds.
+  const [recentDirs, setRecentDirs] = useState<string[]>([]);
+  const [recentOpen, setRecentOpen] = useState(false);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   // Multi-selection lives as a Set of paths. Single-click replaces, Ctrl/⌘-
@@ -161,6 +168,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   // ---- listing / navigation ---------------------------------------------------
 
+  const pushRecent = (path: string) => {
+    if (!path) return;
+    setRecentDirs((prev) => {
+      const next = [path, ...prev.filter((p) => p !== path)];
+      return next.slice(0, 5);
+    });
+  };
+
   const fetch = async (path: string) => {
     setLoading(true);
     try {
@@ -171,6 +186,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       setSelected(new Set());
       lastSelectedPathRef.current = null;
       onPathChange?.(result.currentPath);
+      pushRecent(result.currentPath);
     } catch (err: any) {
       notify(`List failed: ${err}`, "error");
     } finally {
@@ -192,6 +208,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         setSelected(new Set());
       lastSelectedPathRef.current = null;
         onPathChange?.(result.currentPath);
+        pushRecent(result.currentPath);
       };
       setLoading(true);
       try {
@@ -461,9 +478,15 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         await provider.rename(entry.path, dest);
         notify(`Renamed to ${v1}`, "success");
       } else if (type === "move" && entry && v1) {
-        // v1 is the absolute destination path the user typed.
-        await provider.rename(entry.path, v1);
-        notify(`Moved to ${v1}`, "success");
+        // v1 is the destination *directory* the user typed (matches the
+        // bulk-move semantics so users have a single mental model). We
+        // append the entry's own name so the item keeps its filename. To
+        // change the filename, the user picks "Rename" instead.
+        const destDir = v1.replace(/[\\/]+$/, "");
+        const dest = provider.joinPath(destDir, entry.name);
+        if (dest === entry.path) throw new Error("Destination is the current location — nothing to move.");
+        await provider.rename(entry.path, dest);
+        notify(`Moved ${entry.name} → ${destDir}`, "success");
       } else if (type === "move-bulk" && v1) {
         // v1 is the destination *directory*; each selected item keeps its
         // own name under it.
@@ -592,35 +615,36 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     }
   };
 
-  // Local → remote upload. Mirror of downloadItems for the local pane: the
-  // destination is whatever directory the opposite (remote) pane is showing
-  // — same one-click bulk UX, just in the other direction. Folders are
-  // skipped with a notice because we don't have an sftp_upload_dir command
-  // yet (matches FilePanel's other folder-aware-but-files-only paths).
+  // Local → remote upload. Mirror of downloadItems — handles both files
+  // (sftp_upload_file) and directories (sftp_upload_dir recursive walk).
+  // Destination is whatever directory the remote pane is showing; if the
+  // remote pane hasn't reported one yet (still loading), we bail with a
+  // clear error rather than guessing the home dir.
   const uploadItems = async (items: FileEntry[]) => {
     if (!sessionId || items.length === 0) return;
     const dest = getOppositeDir?.();
     if (!dest) { notify("Open a directory in the remote pane first.", "error"); return; }
-    const sep = dest.includes("\\") ? "\\" : "/";
     const trimmed = dest.replace(/[\\/]+$/, "");
-    const files = items.filter((e) => !e.isDir);
-    const skippedDirs = items.length - files.length;
-    if (files.length === 0) { notify("Folder upload not yet supported — pick files.", "error"); return; }
-    if (skippedDirs > 0) {
-      notify(`Uploading ${files.length} file${files.length === 1 ? "" : "s"} — skipping ${skippedDirs} folder${skippedDirs === 1 ? "" : "s"}.`, "info");
-    } else {
-      notify(files.length === 1 ? `Uploading ${files[0].name}…` : `Uploading ${files.length} files…`, "info");
-    }
+    const fileCount = items.filter((e) => !e.isDir).length;
+    const dirCount = items.filter((e) => e.isDir).length;
+    const summary = items.length === 1
+      ? `Uploading ${items[0].isDir ? "folder " : ""}${items[0].name}…`
+      : `Uploading ${fileCount} file${fileCount === 1 ? "" : "s"}${dirCount ? ` + ${dirCount} folder${dirCount === 1 ? "" : "s"}` : ""}…`;
+    notify(summary, "info");
     const batch: OverwriteBatch = { kind: "ask" };
     let count = 0;
     let cancelled = false;
-    for (const e of files) {
+    for (const e of items) {
       if (cancelled) break;
       try {
-        const remotePath = `${trimmed}${sep}${e.name}`;
+        // For files we pass the remote target as a full file path; for dirs
+        // we pass the remote PARENT and sftp_upload_dir hangs the source
+        // basename underneath it (same convention as sftp_download_dir).
+        const remotePath = e.isDir ? trimmed : `${trimmed}/${e.name}`;
+        const cmd = e.isDir ? "sftp_upload_dir" : "sftp_upload_file";
         const res = await transferWithOverwriteCheck(
-          (ow) => invoke("sftp_upload_file", { sessionId, localPath: e.path, remotePath, overwrite: ow }),
-          e.name, "upload", files.length, batch, overwritePrompt
+          (ow) => invoke(cmd, { sessionId, localPath: e.path, remotePath, overwrite: ow }),
+          e.name, "upload", items.length, batch, overwritePrompt
         );
         if (res === "done") count++;
         if (res === "cancelled") { cancelled = true; }
@@ -629,7 +653,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       }
     }
     if (count > 0) {
-      notify(files.length === 1 ? `Uploaded ${files[0].name}` : `Uploaded ${count} of ${files.length} files`, "success");
+      notify(items.length === 1 ? `Uploaded ${items[0].name}` : `Uploaded ${count} of ${items.length} items`, "success");
     } else if (cancelled) {
       notify("Upload batch cancelled", "info");
     }
@@ -772,6 +796,35 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           <button onClick={goUp} title="Up" className="p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 shrink-0">
             <ArrowUp size={11} />
           </button>
+          <div className="relative shrink-0">
+            <button
+              onClick={() => setRecentOpen((p) => !p)}
+              onBlur={() => setTimeout(() => setRecentOpen(false), 200)}
+              disabled={recentDirs.filter((p) => p !== currentPath).length === 0}
+              title="Recent directories"
+              className="p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed flex items-center"
+            >
+              <ChevronDown size={11} />
+            </button>
+            {recentOpen && (
+              <div className="absolute top-[28px] left-0 z-50 min-w-[220px] max-h-[220px] overflow-y-auto bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
+                <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">Recent</div>
+                {recentDirs
+                  .filter((p) => p !== currentPath)
+                  .map((p) => (
+                    <button
+                      key={p}
+                      onMouseDown={(e) => { e.preventDefault(); setRecentOpen(false); fetch(p); }}
+                      className="w-full flex items-center gap-2 p-1.5 rounded text-left hover:bg-white/10 hover:text-white truncate"
+                      title={p}
+                    >
+                      <Folder size={11} className="text-indigo-300 shrink-0" />
+                      <span className="truncate">{p}</span>
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
           <div className="flex-1 relative">
             <input
               type="text"
@@ -924,7 +977,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         onDrop={onDrop}
         className={`flex-1 border rounded-lg bg-[#121214] flex flex-col overflow-auto transition-all duration-200 border-indigo-500/30 shadow-2xl shadow-indigo-950/10 ${dragOver ? "border-indigo-400 bg-indigo-950/10" : ""}`}
       >
-        <div className={`min-w-full grid ${showPerms ? "grid-cols-[minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[minmax(180px,1fr)_75px_125px]"} gap-1.5 px-2.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 select-none font-bold shrink-0 sticky top-0 z-10 shadow-md`}>
+        <div className={`min-w-full grid ${showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]"} gap-1.5 px-2.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 select-none font-bold shrink-0 sticky top-0 z-10 shadow-md`}>
+          <div
+            className="bg-[#161619] flex items-center justify-center py-1.5 cursor-pointer hover:text-white"
+            onClick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
+            title={allSelected ? "Deselect all" : "Select all"}
+          >
+            {allSelected ? <CheckSquare size={12} className="text-indigo-300" /> : <Square size={12} className="text-zinc-500" />}
+          </div>
           <div className="bg-[#161619] cursor-pointer hover:text-white py-1.5" onClick={() => toggleSort("name")}>
             NAME {sortIcon("name")}
           </div>
@@ -957,7 +1017,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           ) : sortedEntries.length === 0 ? (
             <div className="text-center py-14 text-zinc-500">Empty</div>
           ) : (
-            sortedEntries.map((entry) => (
+            sortedEntries.map((entry) => {
+              const isSel = selected.has(entry.path);
+              return (
               <div
                 key={entry.path}
                 onMouseDown={(e) => handleRowMouseDown(e, entry)}
@@ -970,12 +1032,34 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                   if (isRemote) liveEditEntry(entry);
                   else openLocalEntry(entry);
                 }}
-                className={`grid ${showPerms ? "grid-cols-[minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[minmax(180px,1fr)_75px_125px]"} gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
-                  selected.has(entry.path)
+                data-fs-row-path={entry.path}
+                data-fs-row-isdir={entry.isDir ? "1" : "0"}
+                className={`grid ${showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]"} gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
+                  isSel
                     ? "bg-indigo-950/40 border-indigo-400 text-indigo-100 font-bold"
                     : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
                 }`}
               >
+                <div
+                  className="flex items-center justify-center"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    // Pure toggle for this row — doesn't replace the selection
+                    // the way a bare row click does. Keeps existing selection
+                    // intact and just flips this entry in/out.
+                    e.stopPropagation();
+                    const next = new Set(selected);
+                    if (next.has(entry.path)) next.delete(entry.path);
+                    else next.add(entry.path);
+                    setSelected(next);
+                    lastSelectedPathRef.current = entry.path;
+                  }}
+                  title={isSel ? "Deselect" : "Select"}
+                >
+                  {isSel
+                    ? <CheckSquare size={12} className="text-indigo-300" />
+                    : <Square size={12} className="text-zinc-500 hover:text-zinc-300" />}
+                </div>
                 <div className="flex items-center gap-2 truncate pr-1">
                   {entry.isDir
                     ? <Folder size={12} className="text-indigo-300 shrink-0" />
@@ -998,7 +1082,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                   </div>
                 )}
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>
@@ -1068,8 +1153,12 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           )}
           <button onClick={() => {
               setContextMenu(null);
+              // Both single and bulk move ask for a destination *directory*
+              // (we auto-append the original name). Defaulting v1 to the
+              // current path means the user only edits the directory part —
+              // no chance to fat-finger the filename and rename by accident.
               if (multi) setModal({ type: "move-bulk", v1: currentPath });
-              else setModal({ type: "move", entry: contextMenu.entry, v1: contextMenu.entry.path });
+              else setModal({ type: "move", entry: contextMenu.entry, v1: currentPath });
             }}
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
             <Move size={11} /><span>{multi ? `Move (${acting.length}) to…` : "Move to…"}</span>
@@ -1187,8 +1276,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               ) : (
                 <div>
                   <label className="text-[10px] text-zinc-400 block mb-1">
-                    {modal.type === "move" ? "Destination path" :
-                     modal.type === "move-bulk" ? "Destination directory" : "Name"}
+                    {modal.type === "move" || modal.type === "move-bulk"
+                      ? "Destination directory"
+                      : "Name"}
                   </label>
                   <input type="text" autoFocus value={modal.v1 || ""}
                     onChange={(e) => setModal({ ...modal, v1: e.target.value })}
