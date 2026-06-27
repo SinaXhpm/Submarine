@@ -25,7 +25,11 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
         <h2 className="text-2xl font-bold text-white tracking-tight flex items-center gap-3">
           <Settings size={24} className="text-primary" /> Settings
         </h2>
-        <p className="text-[13px] text-zinc-400 mt-2">Tweak how Submarine looks and feels.</p>
+        <p className="text-[13px] text-zinc-400 mt-2">
+          Tweak how Submarine looks and feels.
+          {' '}
+          <span className="text-zinc-500 italic">Per-device — preferences live in this machine's local storage and don't sync with your cloud profile.</span>
+        </p>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">

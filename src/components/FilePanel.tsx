@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Folder, File, ArrowUp, RefreshCw, Trash2, Edit3, Shield,
   X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch,
-  Download, Upload, ExternalLink, Move, CheckSquare, Square
+  Download, Upload, ExternalLink, Move, CheckSquare, Square, Search,
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
@@ -124,6 +124,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const [tempInput, setTempInput] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  // Name filter applied AFTER sort — substring, case-insensitive. Kept
+  // separate from the path bar so the user can leave a filter active while
+  // typing into the path. Sticky across `cd` so a quick filter session can
+  // span sibling dirs; the X button or Escape on the input clears it.
+  const [nameFilter, setNameFilter] = useState("");
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
   const [modal, setModal] = useState<{ type: "rename" | "mkdir" | "properties" | "move" | "move-bulk"; entry?: FileEntry; v1?: string; v2?: string } | null>(null);
@@ -693,7 +698,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // ---- sorting ----------------------------------------------------------------
 
   const sortedEntries = (() => {
-    return [...entries].sort((a, b) => {
+    const sorted = [...entries].sort((a, b) => {
       if (a.isDir !== b.isDir) return b.isDir ? 1 : -1;
       let va: any, vb: any;
       switch (sort.column) {
@@ -706,7 +711,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       if (va > vb) return sort.asc ? 1 : -1;
       return 0;
     });
+    const needle = nameFilter.trim().toLowerCase();
+    if (!needle) return sorted;
+    return sorted.filter(e => e.name.toLowerCase().includes(needle));
   })();
+  const filteredOut = nameFilter.trim() ? entries.length - sortedEntries.length : 0;
 
   // ---- select-all -------------------------------------------------------------
   // Toggles the entire visible (sorted) list. Computed AFTER `sortedEntries`
@@ -916,10 +925,42 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         </div>
       </div>
 
-      {/* Bulk action bar — only when ≥2 rows are selected. Single-selection
-          users get the same actions via right-click; the bar exists so
-          multi-select doesn't force a right-click round-trip. */}
-      {selected.size > 1 && (
+      {/* Filter row — always visible, narrow (24 px). Lets the user trim
+          the rendered list by name without touching sort or the path bar.
+          Sticky across cd so they can hunt the same name across sibling
+          dirs; the X clears, Esc on the input clears too. */}
+      <div className="shrink-0 flex items-center gap-1 px-2 py-1 bg-[#0e0e10] border border-white/5 rounded text-[10.5px] font-mono">
+        <Search size={11} className="text-zinc-500 shrink-0" />
+        <input
+          type="text"
+          value={nameFilter}
+          onChange={(e) => setNameFilter(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Escape") { setNameFilter(""); (e.currentTarget as HTMLInputElement).blur(); } }}
+          placeholder="Filter by name…"
+          className="flex-1 min-w-0 h-5 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
+        />
+        {nameFilter && (
+          <>
+            <span className="text-[9.5px] text-zinc-500 shrink-0">
+              {sortedEntries.length}/{entries.length}
+            </span>
+            <button
+              onClick={() => setNameFilter("")}
+              title="Clear filter"
+              className="shrink-0 p-0.5 rounded text-zinc-400 hover:text-white hover:bg-white/10"
+            >
+              <X size={10} />
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* Bulk action bar — shows for any non-empty selection so the user
+          can send / move / delete with one click without right-clicking.
+          Below the threshold of 1 the bar still appears (was previously
+          ≥2) because in tabs mode the user can't drag-drop between sides
+          and needs a discoverable "Send to other side" target. */}
+      {selected.size > 0 && (
         <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 bg-indigo-950/40 border border-indigo-500/30 rounded text-[10.5px] text-indigo-100 font-mono">
           <span className="font-bold uppercase tracking-wider text-[9.5px] text-indigo-300 shrink-0">
             {selected.size} selected

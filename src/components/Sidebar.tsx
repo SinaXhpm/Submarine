@@ -1,5 +1,11 @@
 import { Server, KeyRound, TerminalSquare, StickyNote, Activity, Settings, LogOut } from "lucide-react";
 
+// Vertical rail on desktop, horizontal bottom dock on mobile. Layout swap is
+// driven by `isMobile` so the terminal/session views can use the full screen
+// width on phones — vertical sidebars eat ~50px of width that's expensive on
+// a 360px-wide viewport. The parent in DesktopApp uses `flex-col-reverse` on
+// mobile so this component visually lands at the bottom while staying first
+// in DOM order (keyboard tab-order stays intuitive).
 export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout }: any) => {
   const items = [
     { id: 'nodes', icon: Server, label: 'Servers' },
@@ -9,16 +15,67 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout }: any) =>
     { id: 'monitor', icon: Activity, label: 'Monitor' },
   ];
 
+  if (isMobile) {
+    return (
+      <aside className="w-full h-14 shrink-0 bg-background border-t border-white/5 flex items-center px-2 relative z-10 shadow-2xl brightness-95">
+        <nav className="flex-1 flex flex-row items-center justify-around gap-1">
+          {items.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setActiveTab(item.id)}
+              className={`p-2.5 rounded-xl transition-all duration-300 relative group flex items-center justify-center ${
+                activeTab === item.id
+                  ? 'text-primary bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.15)]'
+                  : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'
+              }`}
+              title={item.label}
+            >
+              <item.icon size={20} className={activeTab === item.id ? "drop-shadow-[0_0_8px_rgba(var(--primary),0.5)]" : ""} />
+              {/* Bottom indicator stripe instead of left rail in mobile mode. */}
+              {activeTab === item.id && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 h-0.5 w-1/2 bg-primary rounded-t-full shadow-[0_0_10px_rgba(var(--primary),1)]" />}
+            </button>
+          ))}
+        </nav>
+
+        {/* Trailing cluster (logout + settings) — kept at the right edge of
+            the horizontal bar so the muscle-memory mapping "settings is the
+            last icon" still holds, just now read left-to-right. */}
+        <div className="flex items-center gap-1 pl-2 ml-1 border-l border-white/5">
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-amber-300 hover:bg-amber-500/10"
+              title="Lock & switch profile"
+            >
+              <LogOut size={18} />
+            </button>
+          )}
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`p-2.5 rounded-xl transition-all flex items-center justify-center ${
+              activeTab === 'settings'
+                ? 'text-primary bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.15)]'
+                : 'text-zinc-600 hover:text-zinc-200 hover:bg-white/5'
+            }`}
+            title="Settings"
+          >
+            <Settings size={20} className={activeTab === 'settings' ? "drop-shadow-[0_0_8px_rgba(var(--primary),0.5)]" : ""} />
+          </button>
+        </div>
+      </aside>
+    );
+  }
+
   return (
-    <aside className={`${isMobile ? 'w-12' : 'w-14'} h-full bg-background border-r border-white/5 flex flex-col items-center py-6 shrink-0 relative z-10 shadow-2xl brightness-95 transition-all`}>
+    <aside className="w-14 h-full bg-background border-r border-white/5 flex flex-col items-center py-6 shrink-0 relative z-10 shadow-2xl brightness-95 transition-all">
       <nav className="flex flex-col gap-3 w-full px-2">
         {items.map((item) => (
           <button
             key={item.id}
             onClick={() => setActiveTab(item.id)}
             className={`p-2.5 rounded-xl transition-all duration-300 relative group flex items-center justify-center ${
-              activeTab === item.id 
-                ? 'text-primary bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.15)]' 
+              activeTab === item.id
+                ? 'text-primary bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.15)]'
                 : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'
             }`}
             title={item.label}

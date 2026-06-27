@@ -25,7 +25,16 @@ export interface TransferTarget {
   dir: string;
 }
 
-export async function transferFile(src: TransferSource, dest: TransferTarget): Promise<void> {
+// `overwrite=false` (default) makes the backend reject pre-existing
+// destinations with the `EXISTS:<path>` sentinel — callers should catch
+// that, surface the overwrite prompt, and re-call with `overwrite=true`.
+// Drag-drop used to clobber silently; that's no longer the default
+// because users couldn't tell when they'd just overwritten work.
+export async function transferFile(
+  src: TransferSource,
+  dest: TransferTarget,
+  overwrite: boolean = false,
+): Promise<void> {
   if (src.isDir) {
     // Recursive transfer between providers is non-trivial — we surface a clear
     // error rather than silently doing the wrong thing. A future iteration can
@@ -37,15 +46,11 @@ export async function transferFile(src: TransferSource, dest: TransferTarget): P
 
   // remote → local : SFTP download streams straight to disk.
   if (src.provider.id === "remote" && dest.provider.id === "local") {
-    // Cross-pane drag historically overwrote silently — keep that behaviour
-    // for the drag/move workflow (the user dragged INTO the destination
-    // pane, so they already chose where it goes). The new EXISTS prompt is
-    // wired only into the bulk Download / Upload paths in FilePanel.
     await invoke("sftp_download_file", {
       sessionId: (src.provider as RemoteFileProvider).sessionId,
       remotePath: src.path,
       localPath: destPath,
-      overwrite: true,
+      overwrite,
     });
     return;
   }
@@ -56,7 +61,7 @@ export async function transferFile(src: TransferSource, dest: TransferTarget): P
       sessionId: (dest.provider as RemoteFileProvider).sessionId,
       localPath: src.path,
       remotePath: destPath,
-      overwrite: true,
+      overwrite,
     });
     return;
   }

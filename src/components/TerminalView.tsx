@@ -10,6 +10,8 @@ const TerminalView = ({
   terminalId,
   disabled = false,
   isActive = true,
+  containerExec,
+  connectionEpoch = 0,
 }: {
   sessionId: string;
   terminalId: string;
@@ -20,6 +22,18 @@ const TerminalView = ({
   /// the parent's display/opacity change and the prompt appears garbled
   /// until the user types something.
   isActive?: boolean;
+  /// When set, this terminal runs `docker exec -it <container> <shell>`
+  /// on the SSH host instead of the user's login shell. Used by the
+  /// Docker tab in InfoPanel to open an interactive session inside a
+  /// specific container without leaving the app.
+  containerExec?: { container: string; useSudo: boolean };
+  /// Bumped by the parent SessionView on every successful reconnect.
+  /// When the value changes we re-open a fresh PTY against the new SSH
+  /// handle WITHOUT disposing xterm — the user keeps their scroll-back
+  /// from before the drop and can copy/paste anything they did pre-drop.
+  /// Initial mount is opened by the main effect, so we only act on
+  /// value CHANGES after that.
+  connectionEpoch?: number;
 }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -41,6 +55,54 @@ const TerminalView = ({
   useEffect(() => {
     isActiveRef.current = isActive;
   }, [isActive]);
+  // Mirror of containerExec for the reconnect effect — same reason as
+  // isActiveRef. The reconnect effect is keyed on `connectionEpoch`
+  // alone (the parent re-creates the containerExec object every render
+  // so including it in deps would re-fire every paint).
+  const containerExecRef = useRef(containerExec);
+  useEffect(() => { containerExecRef.current = containerExec; }, [containerExec]);
+  // Last connectionEpoch we acted on. Initial mount's PTY is opened by
+  // the main effect, so we should NOT re-open on the first run of the
+  // reconnect effect — only on subsequent value changes.
+  const lastEpochRef = useRef(connectionEpoch);
+
+  // Reconnect handler: when the parent bumps connectionEpoch we re-open
+  // the PTY against the new SSH handle and write a divider line into the
+  // existing xterm so the user can scroll up to see everything they did
+  // before the disconnect. The backend's `terminal_txs` HashMap.insert
+  // overwrites the dead entry transparently, so write_terminal_data
+  // routes to the new task without changing the terminal_id.
+  useEffect(() => {
+    if (connectionEpoch === lastEpochRef.current) return;
+    lastEpochRef.current = connectionEpoch;
+    const term = xtermRef.current;
+    if (!term) return;
+    // Visible separator. \x1b[33m = yellow, \x1b[0m = reset.
+    term.write('\r\n\x1b[33m── reconnected ──\x1b[0m\r\n');
+    const ce = containerExecRef.current;
+    if (ce) {
+      invoke('open_container_terminal', {
+        sessionId,
+        terminalId,
+        container: ce.container,
+        cols: term.cols || 80,
+        rows: term.rows || 24,
+        useSudo: ce.useSudo,
+      }).catch(e => {
+        term.writeln(`\x1b[31mReconnect into container failed: ${e}\x1b[0m`);
+      });
+    } else {
+      invoke('open_terminal', {
+        sessionId,
+        terminalId,
+        cols: term.cols || 80,
+        rows: term.rows || 24,
+      }).catch(e => {
+        term.writeln(`\x1b[31mReconnect failed: ${e}\x1b[0m`);
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionEpoch]);
 
   // Repaint when this terminal becomes the active one. The parent uses
   // opacity (within a session) or display:none (across sessions/tabs) to
@@ -99,14 +161,32 @@ const TerminalView = ({
       // Start PTY Session with correct dimensions only ONCE
       if (!openedRef.current) {
         openedRef.current = true;
-        invoke('open_terminal', { 
-          sessionId, 
-          terminalId,
-          cols: term.cols || 80,
-          rows: term.rows || 24
-        }).catch(e => {
-          term.writeln(`\x1b[31mFailed to open terminal: ${e}\x1b[0m`);
-        });
+        // Branch: a `containerExec` prop means we want a docker-exec
+        // session into a specific container, not the regular login
+        // shell. Same xterm wiring, different backend command — the
+        // PTY/data/resize event topology is identical so xterm doesn't
+        // notice the difference.
+        if (containerExec) {
+          invoke('open_container_terminal', {
+            sessionId,
+            terminalId,
+            container: containerExec.container,
+            cols: term.cols || 80,
+            rows: term.rows || 24,
+            useSudo: containerExec.useSudo,
+          }).catch(e => {
+            term.writeln(`\x1b[31mFailed to attach to container: ${e}\x1b[0m`);
+          });
+        } else {
+          invoke('open_terminal', {
+            sessionId,
+            terminalId,
+            cols: term.cols || 80,
+            rows: term.rows || 24
+          }).catch(e => {
+            term.writeln(`\x1b[31mFailed to open terminal: ${e}\x1b[0m`);
+          });
+        }
       }
     }, 50);
 

@@ -2,11 +2,11 @@ import { useState, useEffect, useRef, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, Play, FolderUp, Library } from "lucide-react";
+import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, Play, Library, Info, Container } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
-import MirrorsPanel from "./MirrorsPanel";
+import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
 
@@ -47,12 +47,32 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
   // and any collision means two tabs end up reading from the same PTY.
   // Scoping the id by `session.id` ensures Server A's "term-0" never clashes
   // with Server B's "term-0".
-  const [terminals, setTerminals] = useState<{id: string, title: string}[]>(() => {
+  // A terminal slot is either a regular login shell (the default) or a
+  // docker-exec session into a specific container (spawned from the Info
+  // panel). Container slots stay otherwise identical — same xterm, same
+  // events — they just point the backend at `open_container_terminal`.
+  const [terminals, setTerminals] = useState<{id: string, title: string, container?: { name: string; useSudo: boolean }}[]>(() => {
     return [{ id: `${session.id}-term-0`, title: '1' }];
   });
+  // Bumped on every successful reconnect. TerminalView watches this prop
+  // and re-opens its PTY on change WITHOUT disposing its xterm instance,
+  // so the user keeps the scroll-back from before the drop. Without this
+  // we used to mint a brand-new terminal_id and remount TerminalView,
+  // which dropped the entire visual buffer of their previous session.
+  const [connectionEpoch, setConnectionEpoch] = useState(0);
+  const openContainerTerminal = (containerName: string, useSudo: boolean) => {
+    const newId = `${session.id}-term-${Date.now()}`;
+    setTerminals(prev => [...prev, {
+      id: newId,
+      title: containerName.length > 10 ? `${containerName.slice(0, 9)}…` : containerName,
+      container: { name: containerName, useSudo },
+    }]);
+    setActiveTab(newId);
+    setActiveTool(null);
+  };
 
   const [activeTab, setActiveTab] = useState<string>(`${session.id}-term-0`);
-  const [activeTool, setActiveTool] = useState<'sftp' | 'tunnels' | 'mirrors' | 'cmds' | null>(null);
+  const [activeTool, setActiveTool] = useState<'sftp' | 'tunnels' | 'mirrors' | 'cmds' | 'info' | null>(null);
   // On narrow viewports the side-by-side terminal+tool layout doesn't fit.
   // We collapse to a stacked single-pane view: when a tool is open, the
   // tool takes full width and the terminal is hidden behind a back-chip.
@@ -130,15 +150,16 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
       const wasReconnect = reconnectAttemptRef.current > 0 || status === 'disconnected' || status === 'failed';
       setStatus('connected');
       cancelReconnect();
-      // On a successful RECONNECT (not the first connect of this tab) the
-      // old terminal_id is gone from the backend's terminal_txs map — the
-      // user's first keystroke would silently route into a closed channel.
-      // Mint a fresh terminal_id so TerminalView remounts and re-opens a
-      // PTY against the new SSH handle.
+      // On a successful RECONNECT we bump connectionEpoch instead of
+      // replacing the terminals array. The terminal_id stays the same
+      // (so the existing event listener keeps catching output), the
+      // xterm instance is preserved (so the user's scroll-back survives
+      // the drop), and TerminalView's per-epoch effect re-invokes
+      // open_terminal — backend's terminal_txs HashMap.insert replaces
+      // the dead entry transparently so the user's next keystroke
+      // routes into the fresh PTY.
       if (wasReconnect) {
-        const fresh = `${session.id}-term-${Date.now()}`;
-        setTerminals([{ id: fresh, title: '1' }]);
-        setActiveTab(fresh);
+        setConnectionEpoch(e => e + 1);
       }
       // The handshake may have inserted a row into `known_hosts` (user just
       // accepted a new fingerprint). Flush the encrypted vault so the entry
@@ -486,9 +507,13 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
           <div key={t.id} className="group relative flex items-center">
             <button
               onClick={() => setActiveTab(t.id)}
-              className={`h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-6' : ''} rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTab === t.id ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+              title={t.container ? `Container: ${t.container.name}` : undefined}
+              className={`h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-6' : ''} rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTab === t.id ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'} ${t.container ? 'ring-1 ring-sky-400/30' : ''}`}
             >
-              <TerminalSquare size={14} /> {t.title}
+              {t.container
+                ? <Container size={14} className="text-sky-300" />
+                : <TerminalSquare size={14} />}
+              {t.title}
             </button>
             {terminals.length > 1 && (
               <button
@@ -542,18 +567,18 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
             <Network size={14} /> <span className="hidden sm:inline">Ports</span>
           </button>
           <button
-            onClick={() => setActiveTool(activeTool === 'mirrors' ? null : 'mirrors')}
-            title="Mirror"
-            className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'mirrors' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
-          >
-            <FolderUp size={14} /> <span className="hidden sm:inline">Mirror</span>
-          </button>
-          <button
             onClick={() => setActiveTool(activeTool === 'cmds' ? null : 'cmds')}
             title="Library — commands, notes, this node's notes"
             className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'cmds' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
           >
             <Library size={14} /> <span className="hidden sm:inline">Library</span>
+          </button>
+          <button
+            onClick={() => setActiveTool(activeTool === 'info' ? null : 'info')}
+            title="Info — server overview, network, services, docker"
+            className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'info' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+          >
+            <Info size={14} /> <span className="hidden sm:inline">Info</span>
           </button>
         </div>
       </div>
@@ -623,6 +648,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
                 terminalId={t.id}
                 disabled={status !== 'connected'}
                 isActive={activeTab === t.id && !(activeTool && isCompact)}
+                containerExec={t.container ? { container: t.container.name, useSudo: t.container.useSudo } : undefined}
+                connectionEpoch={connectionEpoch}
               />
             </div>
           ))}
@@ -656,7 +683,14 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
                 </button>
               </div>
               <div className="flex-1 overflow-hidden relative">
-                <SftpWorkspace sessionId={session.id} disabled={status !== 'connected'} />
+                <SftpWorkspace
+                  sessionId={session.id}
+                  disabled={status !== 'connected'}
+                  serverId={session.serverId}
+                  mirrorsConfig={(() => {
+                    try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
+                  })()}
+                />
               </div>
             </div>
           )}
@@ -675,28 +709,6 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
             </div>
           )}
 
-          {/* Mirror sub-pane: keep MOUNTED (CSS hidden) when another tool
-              is active so the live worker's logs and counters stay on
-              screen the next time the user opens it. */}
-          <div className={`${activeTool === 'mirrors' ? 'flex-1 flex flex-col overflow-hidden' : 'hidden'}`}>
-            <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Folder mirror</span>
-              <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
-                <X size={14} />
-              </button>
-            </div>
-            <div className="flex-1 overflow-hidden relative">
-              <MirrorsPanel
-                sessionId={session.id}
-                serverId={session.serverId}
-                configuredMirrors={(() => {
-                  try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
-                })()}
-                disabled={status !== 'connected'}
-              />
-            </div>
-          </div>
-
           {activeTool === 'cmds' && (
             <CmdsPanel
               activeTab={activeTab}
@@ -705,6 +717,24 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
               serverName={session.serverName}
             />
           )}
+
+          {/* InfoPanel stays mounted across tool switches so its cached
+              probe result survives a SFTP-and-back trip — the user
+              explicitly asked for "cache while session is alive", and a
+              fresh remount would re-fire the probe every tab swap. */}
+          <div className={`flex-1 flex flex-col overflow-hidden ${activeTool === 'info' ? '' : 'hidden'}`}>
+            <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Server Info</span>
+              <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
+                <X size={14} />
+              </button>
+            </div>
+            <InfoPanel
+              sessionId={session.id}
+              disabled={status !== 'connected'}
+              onOpenContainerTerminal={openContainerTerminal}
+            />
+          </div>
         </div>
       </div>
     </div>

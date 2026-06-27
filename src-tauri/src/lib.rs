@@ -19,6 +19,7 @@ mod monitor;
 mod cloud;
 mod about;
 mod mirror;
+mod docker;
 use ssh_manager::SshState;
 use monitor::{MonitorMap, SharedSettings};
 use mirror::MirrorMap;
@@ -2764,6 +2765,284 @@ async fn close_terminal(state: tauri::State<'_, SshState>, terminal_id: String) 
     Ok(())
 }
 
+// Read-only Info-panel probes. Each tab fetches its own section on first
+// click — the user explicitly wanted lazy per-tab fetch instead of one
+// upfront mega-probe. Splitting the scripts keeps each round-trip small
+// (≤200 ms typical) and lets a failing section never block the others.
+const INFO_SCRIPT_OVERVIEW: &str = r#"echo __SUB_INFO_OV_SEP__
+hostname 2>/dev/null
+echo __SUB_INFO_OV_SEP__
+( . /etc/os-release 2>/dev/null && printf "%s" "$PRETTY_NAME" ) || cat /etc/issue 2>/dev/null
+printf "\n"
+echo __SUB_INFO_OV_SEP__
+uname -srm 2>/dev/null
+echo __SUB_INFO_OV_SEP__
+uptime 2>/dev/null
+echo __SUB_INFO_OV_SEP__
+free -b 2>/dev/null
+echo __SUB_INFO_OV_SEP__
+df -PT 2>/dev/null
+echo __SUB_INFO_OV_SEP__
+nproc 2>/dev/null
+echo __SUB_INFO_OV_SEP__
+cat /proc/loadavg 2>/dev/null
+echo __SUB_INFO_OV_SEP__
+"#;
+
+const INFO_SCRIPT_NETWORK: &str = r#"echo __SUB_INFO_NET_SEP__
+ip -j addr 2>/dev/null
+echo __SUB_INFO_NET_SEP__
+ip -j route 2>/dev/null
+echo __SUB_INFO_NET_SEP__
+"#;
+
+// Ports: ss is preferred (parseable, modern). Falls back to netstat. The -p
+// flag returns process info for sockets the user owns; non-root users see
+// blank process columns for foreign sockets — that's a permission limit, not
+// an error. We surface it gracefully on the UI.
+const INFO_SCRIPT_PORTS: &str = r#"if command -v ss >/dev/null 2>&1; then
+  printf 'ENGINE:ss\n'
+  ss -tulnpH 2>/dev/null
+else
+  printf 'ENGINE:netstat\n'
+  netstat -tulnp 2>/dev/null
+fi
+"#;
+
+const INFO_SCRIPT_SERVICES: &str = r#"if command -v systemctl >/dev/null 2>&1; then
+  printf 'ENGINE:systemd\n'
+  systemctl list-units --type=service --no-legend --plain --no-pager --all 2>/dev/null
+else
+  printf 'ENGINE:none\n'
+fi
+"#;
+
+const INFO_SCRIPT_DOCKER: &str = r#"if ! command -v docker >/dev/null 2>&1; then
+  printf 'DOCKER:missing\n'
+  exit 0
+fi
+if ! docker info >/dev/null 2>&1; then
+  printf 'DOCKER:denied\n'
+  exit 0
+fi
+printf 'DOCKER:ok\n'
+echo __SUB_INFO_DOCK_SEP__
+docker ps -a --format '{{json .}}' 2>/dev/null
+echo __SUB_INFO_DOCK_SEP__
+docker volume ls --format '{{json .}}' 2>/dev/null
+echo __SUB_INFO_DOCK_SEP__
+docker images --format '{{json .}}' 2>/dev/null
+echo __SUB_INFO_DOCK_SEP__
+docker system df 2>/dev/null
+"#;
+
+#[derive(serde::Serialize, Default)]
+struct InfoSectionResult {
+    data: String,
+    truncated: bool,
+    exec_ms: u64,
+}
+
+// Run a script through a fresh exec channel on the live SSH session and
+// return everything it printed (up to a 1 MB cap). Stays read-only — the
+// callers in this module only invoke shell built-ins and inspection tools.
+async fn run_info_script(
+    state: &SshState,
+    session_id: &str,
+    script: &str,
+    timeout_secs: u64,
+) -> Result<InfoSectionResult, String> {
+    use tokio::io::AsyncReadExt;
+    use std::sync::Arc;
+
+    let session_arc = {
+        let connections = state.connections.lock().await;
+        connections.get(session_id).map(Arc::clone)
+            .ok_or_else(|| "Session not connected".to_string())?
+    };
+
+    let start = std::time::Instant::now();
+    let channel = {
+        let session = session_arc.lock().await;
+        session.channel_open_session().await.map_err(|e| e.to_string())?
+    };
+    channel.exec(true, script.as_bytes()).await.map_err(|e| e.to_string())?;
+    let mut stream = channel.into_stream();
+
+    // 1 MB cap — defends the UI against pathological output (e.g. a server
+    // with thousands of veth interfaces or hundreds of stopped containers).
+    const MAX_BYTES: usize = 1024 * 1024;
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    let mut truncated = false;
+    let read_fut = async {
+        let mut tmp = [0u8; 8192];
+        loop {
+            match stream.read(&mut tmp).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if buf.len() + n > MAX_BYTES {
+                        let remaining = MAX_BYTES.saturating_sub(buf.len());
+                        if remaining > 0 {
+                            buf.extend_from_slice(&tmp[..remaining]);
+                        }
+                        truncated = true;
+                        let mut sink = [0u8; 8192];
+                        while stream.read(&mut sink).await.unwrap_or(0) > 0 {}
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+                Err(_) => break,
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), read_fut)
+        .await
+        .map_err(|_| format!("probe timed out after {}s", timeout_secs))?;
+
+    Ok(InfoSectionResult {
+        data: String::from_utf8_lossy(&buf).into_owned(),
+        truncated,
+        exec_ms: start.elapsed().as_millis() as u64,
+    })
+}
+
+#[tauri::command]
+async fn ssh_info_probe_section(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    section: String,
+) -> Result<InfoSectionResult, String> {
+    let (script, timeout) = match section.as_str() {
+        "overview" => (INFO_SCRIPT_OVERVIEW, 10u64),
+        "network"  => (INFO_SCRIPT_NETWORK, 10u64),
+        "ports"    => (INFO_SCRIPT_PORTS, 10u64),
+        "services" => (INFO_SCRIPT_SERVICES, 15u64),
+        "docker"   => (INFO_SCRIPT_DOCKER, 20u64),
+        other => return Err(format!("unknown info section: {}", other)),
+    };
+    run_info_script(&state, &session_id, script, timeout).await
+}
+
+#[derive(serde::Serialize)]
+struct SystemctlActionResult {
+    success: bool,
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+    used_sudo: bool,
+}
+
+async fn run_exec_capture(
+    state: &SshState,
+    session_id: &str,
+    cmd: &str,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    use tokio::io::AsyncReadExt;
+    use std::sync::Arc;
+
+    let session_arc = {
+        let connections = state.connections.lock().await;
+        connections.get(session_id).map(Arc::clone)
+            .ok_or_else(|| "Session not connected".to_string())?
+    };
+    let channel = {
+        let session = session_arc.lock().await;
+        session.channel_open_session().await.map_err(|e| e.to_string())?
+    };
+    channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
+    let mut stream = channel.into_stream();
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    let read_fut = async {
+        let mut tmp = [0u8; 4096];
+        loop {
+            match stream.read(&mut tmp).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if buf.len() + n > 64 * 1024 { break; }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), read_fut)
+        .await
+        .map_err(|_| format!("exec timed out after {}s", timeout_secs))?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn parse_exit_marker(raw: &str) -> (i32, String) {
+    if let Some(idx) = raw.rfind("__SUB_EXITCODE:") {
+        let after = &raw[idx + "__SUB_EXITCODE:".len()..];
+        let code = after.trim().split_whitespace().next().unwrap_or("1").parse().unwrap_or(1);
+        let out = raw[..idx].trim_end_matches('\n').to_string();
+        (code, out)
+    } else {
+        (1, raw.trim_end_matches('\n').to_string())
+    }
+}
+
+#[tauri::command]
+async fn ssh_systemctl_action(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    unit: String,
+    action: String,
+) -> Result<SystemctlActionResult, String> {
+    // Locked allow-list. Anything not in this list is rejected outright
+    // — we never want to dispatch arbitrary subcommands from the UI.
+    let valid_action = matches!(action.as_str(), "start" | "stop" | "restart" | "reload" | "status");
+    if !valid_action {
+        return Err(format!("invalid action: {}", action));
+    }
+    // Reject hostile unit names. systemd unit names are restricted to
+    // `[A-Za-z0-9:_.\\@-]+\.<suffix>` — adding any shell metachar here would
+    // otherwise let the caller smuggle in a command.
+    if unit.is_empty()
+        || unit.len() > 256
+        || !unit.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | ':' | '\\'))
+    {
+        return Err("invalid unit name".to_string());
+    }
+
+    // Try plain systemctl first (works if user is root or has polkit rules).
+    // If that fails with permission-denied semantics, retry with `sudo -n` —
+    // works on hosts that gave this user NOPASSWD sudo. The `-n` ensures we
+    // never block on a tty password prompt that nobody can answer.
+    let plain_cmd = format!("systemctl {} {} 2>&1; echo __SUB_EXITCODE:$?", action, unit);
+    let raw1 = run_exec_capture(&state, &session_id, &plain_cmd, 30).await?;
+    let (code1, out1) = parse_exit_marker(&raw1);
+    let needs_sudo = code1 != 0 && (
+        out1.contains("Interactive authentication required")
+        || out1.contains("not authorized")
+        || out1.contains("polkit")
+        || out1.to_lowercase().contains("permission denied")
+        || out1.to_lowercase().contains("access denied")
+    );
+
+    if code1 == 0 || !needs_sudo {
+        return Ok(SystemctlActionResult {
+            success: code1 == 0,
+            exit_code: code1,
+            stdout: out1,
+            stderr: String::new(),
+            used_sudo: false,
+        });
+    }
+
+    let sudo_cmd = format!("sudo -n systemctl {} {} 2>&1; echo __SUB_EXITCODE:$?", action, unit);
+    let raw2 = run_exec_capture(&state, &session_id, &sudo_cmd, 30).await?;
+    let (code2, out2) = parse_exit_marker(&raw2);
+    Ok(SystemctlActionResult {
+        success: code2 == 0,
+        exit_code: code2,
+        stdout: out2,
+        stderr: String::new(),
+        used_sudo: true,
+    })
+}
+
 #[derive(serde::Serialize)]
 struct SftpFileEntry {
     name: String,
@@ -4876,6 +5155,9 @@ pub fn run() {
     builder
         .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None) })
         .manage(SshState::new())
+        // Docker live-log stream registry — keyed by frontend-issued stream id,
+        // values are tokio AbortHandles so the user can stop tailing on demand.
+        .manage(docker::DockerStreams::new())
         // Monitoring state is its own root-level Tauri-managed value, separate
         // from SshState — monitors and interactive sessions own different SSH
         // handles per node and don't share lifecycle.
@@ -4920,6 +5202,24 @@ pub fn run() {
             initiate_connection, verify_fingerprint_response, disconnect_session,
             start_tunnel, stop_tunnel, list_tunnels,
             open_terminal, write_terminal_data, resize_terminal, close_terminal,
+            ssh_info_probe_section, ssh_systemctl_action,
+            docker::ssh_docker_container_action,
+            docker::ssh_docker_inspect,
+            docker::ssh_docker_stats,
+            docker::ssh_docker_logs,
+            docker::ssh_docker_logs_start,
+            docker::ssh_docker_logs_stop,
+            docker::ssh_docker_networks,
+            docker::ssh_docker_containers,
+            docker::ssh_docker_images_list,
+            docker::ssh_docker_volumes_list,
+            docker::ssh_docker_compose_list,
+            docker::ssh_docker_compose_per_container,
+            docker::ssh_docker_compose_services,
+            docker::ssh_docker_compose_action,
+            docker::ssh_docker_compose_view,
+            docker::ssh_docker_prune,
+            docker::open_container_terminal,
             select_local_folder, local_list_dir,
             local_home_dir, local_desktop_dir, local_create_dir, local_remove, local_rename,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,

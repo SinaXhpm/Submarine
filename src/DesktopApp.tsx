@@ -28,7 +28,7 @@ const appWindow = getCurrentWindow();
 // connect (one-shot, `serverId === 0` and `quickAuth` populated). SessionView
 // forwards `quickAuth` to `initiate_connection` which uses it instead of
 // looking up the DB row.
-type Session = { id: string; serverId: number; serverName: string; quickAuth?: QuickAuth | null };
+type Session = { id: string; serverId: number; serverName: string; mirrors?: string; quickAuth?: QuickAuth | null };
 
 const hexToRgb = (hex: string) => {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -627,7 +627,12 @@ function DesktopApp() {
       {!isUnlocked ? (
         <ProfileSelectPage onUnlocked={handleProfileUnlocked} />
       ) : (
-        <div className="flex-1 flex overflow-hidden pt-10">
+        // Layout swap: on desktop the sidebar is a left rail (row).
+        // On mobile we flip to flex-col-reverse so the sidebar component
+        // renders at the bottom while staying first in DOM order — keyboard
+        // tab-order stays intuitive and <main> grabs the full screen width
+        // (terminal gains the ~50px the vertical rail used to eat).
+        <div className={`flex-1 flex ${isMobile ? 'flex-col-reverse' : ''} overflow-hidden pt-10`}>
           <Sidebar activeTab={activeView.startsWith('session-') ? 'nodes' : activeView} setActiveTab={setActiveView} isMobile={isMobile} onLogout={handleLogout} />
 
           <main className="flex-1 flex flex-col min-w-0 bg-transparent relative">
