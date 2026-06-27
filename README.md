@@ -86,12 +86,16 @@ Most SSH clients feel like they were built a decade ago and never updated. Subma
 - **Select to copy** — release the mouse over your selection and it's in the clipboard
 - Right-click to paste
 - Wrapped lines copy as a single line (no phantom blank rows)
+- **Reconnect-safe scroll-back** — when a session drops and auto-reconnects, your previous output stays in the buffer to read and copy (a yellow `── reconnected ──` divider marks the boundary)
+- **Container shells** — one click from the Docker tab opens a `docker exec` shell into any container, with `bash → sh → ash` auto-fallback so distroless / Alpine / Ubuntu all just work
 
 ### SFTP File Browser
 
 - Dual-pane (local on top, remote on bottom) with drag-and-drop between them
+- **Tabs or Split layout** — toggle between stacked tabs (one pane visible, more screen real-estate) and the classic split, persisted per device
+- **Per-pane filter input** — type to filter the listing live with an N/M counter, Esc to clear
 - **Multi-select with Ctrl/Shift-click** plus **Select-All button and Ctrl+A** for bulk download, move, or delete
-- **Overwrite confirmation** before clobbering an existing file, with "apply to all" for batches
+- **Overwrite confirmation** before clobbering an existing file (both uploads AND downloads — no more silent drag-drop clobber), with "apply to all" for batches
 - **Live edit** — double-click any remote file to open it in your default editor; saves auto-upload back to the server
 - **Direct download** to the local folder you already have open — no folder picker every time
 - Permissions editor with a checkbox grid (chmod / chown)
@@ -105,6 +109,31 @@ Pick a local folder, pick a remote folder, and Submarine keeps them in sync.
 - **Live watcher.** Every save, create, rename, or delete on your local folder pushes to the server in real time.
 - **Conflict resolution per mirror.** Pick what wins when a file differs on both sides: **Local wins** (default, like rsync), **Remote wins**, or **Newer wins**.
 - **Soft delete.** Removed files move to `.submarine-trash/` on the server — a fat-fingered `rm` won't wipe out remote work.
+- **Overwrite-risk advisory.** Before each Start, the dry-run preview calls out which files would be overwritten locally and warns that edits made during the sync window can be silently lost — so you know to save / close editors first.
+
+### Server Info Panel
+
+A read-only inspection pane for the active session — no terminal commands required.
+
+- **Overview** — hostname, OS, kernel, uptime, load average, CPU count, RAM / swap meters, disk usage per mount
+- **Network** — NICs (UP-first, with IPv4/IPv6 addresses and MAC), routing table, and **firewall rules** (`iptables` chains rendered per-chain with colored ACCEPT/DROP/REJECT badges; `nftables` raw view)
+- **Ports** — listening sockets via `ss -tulnp` (or `netstat` fallback) with PID and process name, protocol + state filters
+- **Services** — `systemctl` units with **Start / Stop / Restart** buttons (auto-retries with `sudo -n` on permission denied)
+- All tabs **lazy-load on click** so opening Info doesn't fire five probes at once
+- Sudo permission errors surface a clear, actionable banner instead of a raw stderr dump
+
+### Docker Manager
+
+Manage Docker on any session host without typing a single `docker` command.
+
+- **Containers** — list, **Start / Stop / Restart / Pause / Kill** inline, click a name for details
+- **Logs** with adjustable tail (500 → 50 000) and a **Live stream** toggle that follows new output, smart auto-scroll
+- **Stats** (CPU %, mem, net I/O, block I/O), **Inspect** (raw JSON with copy), parsed **Env / Mounts / Ports**
+- **Resources** sub-tab for Images, Volumes, and Networks (lazy per-kind)
+- **Compose viewer per container** — reads the compose file path from container labels and shows the YAML inline
+- **Safe Prune** scopes only (containers / images / networks / builder / system) — never `--volumes`, never `-a` so nothing important gets eaten
+- **Container terminal** — open an interactive `docker exec` shell as a new session tab
+- Cross-platform (Linux / macOS / Windows hosts) — tries `docker` first, falls back to `sudo -n docker` on permission errors
 
 ### Port Forwarding
 
@@ -148,9 +177,11 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 Submarine on Android is a true native build of the same Rust core — same SSH stack, same encrypted vault, same profile sync. Reach a server from your phone with the same credentials you saved on your desktop.
 
 - **Same encrypted vault.** Cloud sync drops your profiles onto the phone exactly as they were on desktop. Nothing re-typed.
-- **Tabbed terminal optimised for touch.** Soft keyboard with Esc / Tab / Ctrl combos, pinch-to-zoom font.
+- **Tabbed terminal optimised for touch.** Mobile soft keyboards don't have Ctrl / Alt / Shift / Esc / Tab — Submarine ships an inline **soft-key bar** between xterm and the OS keyboard with Termux-style sticky modifiers (tap to arm, double-tap to lock). Ctrl+letter, Alt+letter, and Shift+Tab all work as expected.
+- **Auto-scroll on focus.** Tap the terminal and the prompt scrolls into view; the same fires when the OS keyboard opens so the cursor row never sits hidden behind the keyboard.
 - **SFTP file browser** with multi-select, upload from the phone's storage, download into Downloads.
 - **Port forwarding (SOCKS / local / remote)** runs as long as the app is open — handy for tunnelling a mobile browser through your home box.
+- **Touch-friendly Info / Docker tabs.** Same server inspection and container manager as desktop, with ≥32 px touch targets and full-bleed modals.
 - **Folder mirror is desktop-only for now** — Android's filesystem permissions don't map cleanly onto our watcher model.
 
 Tested on Android 8.0+ (API 26+). Phones, tablets, and Android-on-ChromeOS.
