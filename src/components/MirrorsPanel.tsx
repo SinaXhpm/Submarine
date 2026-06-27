@@ -397,7 +397,17 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       )}
 
       {/* Dry-run confirmation */}
-      {pending && (
+      {pending && (() => {
+        // Count download-modified actions — those are the risky ones. A
+        // "download-new" only writes a fresh path locally so it can't clobber
+        // existing work; "download-modified" overwrites a local file whose
+        // content the user might be in the middle of editing. We use this
+        // count to decide whether to escalate the warning copy.
+        const downloadModified = pending.report.entries.filter(
+          e => e.action === "download-modified"
+        ).length;
+        const conflictMode = pending.spec.conflict_resolution || "local";
+        return (
         <div className="shrink-0 p-3 border-b border-white/5 bg-[#0f0f12] space-y-2">
           <div className="flex items-start gap-2 text-[11px] text-zinc-300">
             <FolderUp size={13} className="text-primary mt-0.5 shrink-0" />
@@ -408,6 +418,37 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               </div>
             </div>
           </div>
+
+          {/* Overwrite-risk advisory. Always shown when there's any work to
+              do, escalated to amber when the plan includes download-modified
+              entries — those overwrite a local file the user might still be
+              editing, and the engine has no re-compare guard between scan and
+              transfer. The user explicitly opted for a warning-only approach
+              over re-engineering the reconciliation flow, so this is the
+              single point of consent for the data-loss window. */}
+          {pending.report.entries.length > 0 && (
+            <div className={`flex items-start gap-2 text-[10.5px] px-2.5 py-1.5 rounded border ${
+              downloadModified > 0
+                ? "bg-amber-500/10 border-amber-500/30 text-amber-200"
+                : "bg-sky-500/5 border-sky-500/20 text-sky-200"
+            }`}>
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+              <div className="min-w-0 leading-relaxed">
+                <span className="font-bold uppercase tracking-wider mr-1">Heads up</span>
+                {downloadModified > 0 ? (
+                  <>
+                    {downloadModified} file{downloadModified === 1 ? "" : "s"} marked <span className="font-mono">↓ mod</span> will be <b>overwritten locally</b> with the remote copy.
+                    {" "}If you edit any of these during the sync, your changes can be lost silently — there's no re-compare between scan and transfer. Save / close editors first, or change conflict mode (currently <span className="font-mono">{conflictMode}</span>).
+                  </>
+                ) : (
+                  <>
+                    Initial sync is one decision per file based on this scan. If you edit a file locally <b>before the transfer phase finishes</b>, the change may be silently overwritten by the remote copy. Best to pause edits until the live watcher kicks in.
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="text-[11px] text-zinc-300 bg-black/40 border border-white/5 rounded p-2 max-h-40 overflow-auto custom-scrollbar font-mono">
             {pending.report.entries.length === 0 ? (
               <div className="text-zinc-500 italic">Already in sync — nothing to move in either direction.</div>
@@ -453,7 +494,8 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Configured + running list */}
       <div className="flex-1 overflow-auto p-2 space-y-1.5">

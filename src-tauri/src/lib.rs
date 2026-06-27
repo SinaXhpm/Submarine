@@ -2789,11 +2789,44 @@ cat /proc/loadavg 2>/dev/null
 echo __SUB_INFO_OV_SEP__
 "#;
 
+// Network probe layout (sections delimited by SEP):
+//   [0] empty (printed before first SEP)
+//   [1] `ip -j addr`           — JSON NIC list
+//   [2] `ip -j route`          — JSON route table
+//   [3] firewall:
+//         line 1: 'FW:<engine>' where engine is one of
+//                 iptables | iptables-sudo | iptables-denied |
+//                 nft      | nft-sudo      | nft-denied      | none
+//         lines 2..N: rules text (empty when denied/none)
+// The firewall block tries the user's own credentials first, falls back to
+// non-interactive sudo (`sudo -n`) so we never hang waiting for a password,
+// and prefers iptables over nft because iptables-nft on modern Debian-family
+// systems still reports both — picking iptables gives a consistent first
+// hit even on hybrid hosts.
 const INFO_SCRIPT_NETWORK: &str = r#"echo __SUB_INFO_NET_SEP__
 ip -j addr 2>/dev/null
 echo __SUB_INFO_NET_SEP__
 ip -j route 2>/dev/null
 echo __SUB_INFO_NET_SEP__
+if command -v iptables >/dev/null 2>&1; then
+  if OUT=$(iptables -L -n -v --line-numbers 2>/dev/null) && [ -n "$OUT" ]; then
+    printf 'FW:iptables\n%s\n' "$OUT"
+  elif OUT=$(sudo -n iptables -L -n -v --line-numbers 2>/dev/null) && [ -n "$OUT" ]; then
+    printf 'FW:iptables-sudo\n%s\n' "$OUT"
+  else
+    printf 'FW:iptables-denied\n'
+  fi
+elif command -v nft >/dev/null 2>&1; then
+  if OUT=$(nft list ruleset 2>/dev/null) && [ -n "$OUT" ]; then
+    printf 'FW:nft\n%s\n' "$OUT"
+  elif OUT=$(sudo -n nft list ruleset 2>/dev/null) && [ -n "$OUT" ]; then
+    printf 'FW:nft-sudo\n%s\n' "$OUT"
+  else
+    printf 'FW:nft-denied\n'
+  fi
+else
+  printf 'FW:none\n'
+fi
 "#;
 
 // Ports: ss is preferred (parseable, modern). Falls back to netstat. The -p

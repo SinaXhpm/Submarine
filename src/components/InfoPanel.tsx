@@ -4,8 +4,10 @@ import {
   RefreshCw, AlertTriangle, Loader2, Server, Network as NetIcon,
   Cog, Cpu, MemoryStick, HardDrive, Clock, Activity, Wifi,
   AlertCircle, Search, ShieldAlert, Plug, Play, Square, RotateCw, Box,
+  Shield,
 } from "lucide-react";
 import DockerTab from "./DockerTab";
+import { ScrollableTabs } from "./ScrollableTabs";
 
 interface InfoPanelProps {
   sessionId: string;
@@ -188,10 +190,44 @@ function parseRoutes(raw: string): RouteRow[] {
   } catch { return []; }
 }
 
-interface NetworkData { nics: Nic[]; routes: RouteRow[]; }
+// Firewall section. Engine prefix tells us which tool produced the rules and
+// whether sudo was needed; `available=false` means we couldn't read the
+// table at all (no tool installed, or both direct + sudo -n failed).
+type FwEngine = "iptables" | "nft" | "none";
+interface FirewallData {
+  engine: FwEngine;
+  usedSudo: boolean;
+  available: boolean;
+  denied: boolean;        // engine present but ruleset unreadable (perm denied)
+  raw: string;            // raw rules text, empty when denied/none
+}
+function parseFirewall(section: string): FirewallData {
+  const trimmed = section.trim();
+  if (!trimmed) return { engine: "none", usedSudo: false, available: false, denied: false, raw: "" };
+  const nl = trimmed.indexOf("\n");
+  const header = nl >= 0 ? trimmed.slice(0, nl).trim() : trimmed;
+  const body = nl >= 0 ? trimmed.slice(nl + 1) : "";
+  const m = header.match(/^FW:(.+)$/);
+  if (!m) return { engine: "none", usedSudo: false, available: false, denied: false, raw: "" };
+  const tag = m[1];
+  if (tag === "none") return { engine: "none", usedSudo: false, available: false, denied: false, raw: "" };
+  if (tag.endsWith("-denied")) {
+    const eng = tag.startsWith("iptables") ? "iptables" : "nft";
+    return { engine: eng, usedSudo: false, available: false, denied: true, raw: "" };
+  }
+  const usedSudo = tag.endsWith("-sudo");
+  const eng: FwEngine = tag.startsWith("iptables") ? "iptables" : "nft";
+  return { engine: eng, usedSudo, available: true, denied: false, raw: body };
+}
+
+interface NetworkData { nics: Nic[]; routes: RouteRow[]; firewall: FirewallData; }
 function parseNetwork(raw: string): NetworkData {
   const parts = raw.split("__SUB_INFO_NET_SEP__").map(s => s.trim());
-  return { nics: parseNics(parts[1] ?? ""), routes: parseRoutes(parts[2] ?? "") };
+  return {
+    nics: parseNics(parts[1] ?? ""),
+    routes: parseRoutes(parts[2] ?? ""),
+    firewall: parseFirewall(parts[3] ?? ""),
+  };
 }
 
 // ---------- PORTS ----------
@@ -435,15 +471,19 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, disabled, sessionId]);
 
-  // ---------- Tab strip (horizontal scroll on phone) ----------
+  // ---------- Tab strip ----------
+  // Wrapped in ScrollableTabs so narrow widths (split panes, embedded phone
+  // layouts, etc.) still let the user reach every tab — chevron buttons fade
+  // in when overflow is detected, and the active tab auto-scrolls into view.
   const SubTabStrip = (
     <div className="shrink-0 border-b border-white/5 bg-white/[0.02] px-3 py-2">
-      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 snap-x">
+      <ScrollableTabs>
         {TABS.map(t => {
           const Icon = t.icon;
           return (
             <button
               key={t.id}
+              data-active={tab === t.id}
               onClick={() => setTab(t.id)}
               className={`${subTabBase} ${tab === t.id ? subTabActive : subTabIdle} snap-start`}
             >
@@ -451,7 +491,7 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
             </button>
           );
         })}
-      </div>
+      </ScrollableTabs>
     </div>
   );
 
@@ -527,48 +567,69 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
 
 // ============== Sub-tabs ==============
 
-const OverviewTab = ({ data }: { data: OverviewData }) => (
-  <div className="grid grid-cols-1 [@media(min-width:560px)]:grid-cols-2 gap-3">
-    <InfoCard title="Identity" icon={<Server size={12} />}>
-      <KV label="Hostname" value={data.hostname || "—"} />
-      <KV label="OS" value={data.os || "—"} />
-      <KV label="Kernel" value={data.uname || "—"} />
-    </InfoCard>
+// Overview lays its cards strictly 2-per-row on any width ≥560px (1-per-row
+// below) — the user explicitly asked for "pair, pair" instead of the previous
+// 3-up grid that felt cramped. The bottom row pairs Memory with Disks; both
+// use `items-stretch` so they share a track height (looks balanced even
+// when Memory has fewer rows than Disks) and the Disks card's body scrolls
+// internally past a few entries so it doesn't shove Memory off-screen on
+// short windows.
+const OverviewTab = ({ data }: { data: OverviewData }) => {
+  const cpuTxt = data.cpuCount ? `${data.cpuCount} core${data.cpuCount === 1 ? "" : "s"}` : "—";
+  return (
+    <div className="min-h-full flex flex-col gap-4">
+      {/* Row 1: Identity | Runtime */}
+      <div className="grid gap-4 grid-cols-1 [@media(min-width:560px)]:grid-cols-2 items-stretch">
+        <InfoCard title="Identity" icon={<Server size={12} />} className="h-full" bodyClassName="!p-4 space-y-1">
+          <KV label="Hostname" value={data.hostname || "—"} />
+          <KV label="OS" value={data.os || "—"} />
+          <KV label="Kernel" value={data.uname || "—"} />
+        </InfoCard>
 
-    <InfoCard title="Runtime" icon={<Clock size={12} />}>
-      <KV label="Uptime" value={data.uptime} icon={<Clock size={11} />} />
-      {data.load && (
-        <KV label="Load avg" value={`${data.load.l1.toFixed(2)}  ${data.load.l5.toFixed(2)}  ${data.load.l15.toFixed(2)}`} icon={<Activity size={11} />} />
-      )}
-      <KV label="CPU cores" value={data.cpuCount ? `${data.cpuCount}` : "—"} icon={<Cpu size={11} />} />
-    </InfoCard>
+        <InfoCard title="Runtime" icon={<Clock size={12} />} className="h-full" bodyClassName="!p-4 space-y-1">
+          <KV label="Uptime" value={data.uptime} icon={<Clock size={11} />} />
+          {data.load && (
+            <KV label="Load avg" value={`${data.load.l1.toFixed(2)}  ${data.load.l5.toFixed(2)}  ${data.load.l15.toFixed(2)}`} icon={<Activity size={11} />} />
+          )}
+          <KV label="CPU" value={cpuTxt} icon={<Cpu size={11} />} />
+        </InfoCard>
+      </div>
 
-    {data.mem && (
-      <InfoCard title="Memory" icon={<MemoryStick size={12} />}>
-        <Meter label="RAM" used={data.mem.usedMem} total={data.mem.totalMem} />
-        {data.mem.totalSwap > 0 && (
-          <Meter label="Swap" used={data.mem.usedSwap} total={data.mem.totalSwap} />
-        )}
-      </InfoCard>
-    )}
+      {/* Row 2: Memory | Disks (paired). Disks grows to take remaining
+          vertical space via flex-1 on this wrapper, and its body scrolls
+          internally so Memory isn't squashed when there are many disks. */}
+      <div className="grid gap-4 grid-cols-1 [@media(min-width:560px)]:grid-cols-2 items-stretch flex-1 min-h-0">
+        {data.mem ? (
+          <InfoCard title="Memory" icon={<MemoryStick size={12} />} className="h-full" bodyClassName="!p-4 space-y-3">
+            <Meter label="RAM" used={data.mem.usedMem} total={data.mem.totalMem} />
+            {data.mem.totalSwap > 0 && (
+              <Meter label="Swap" used={data.mem.usedSwap} total={data.mem.totalSwap} />
+            )}
+          </InfoCard>
+        ) : <div />}
 
-    {data.disks.length > 0 && (
-      <InfoCard title="Disks" icon={<HardDrive size={12} />}>
-        <div className="space-y-3">
-          {data.disks.map((d, i) => (
-            <div key={i}>
-              <div className="flex items-baseline justify-between text-[11px] mb-1 gap-2">
-                <span className="text-zinc-200 font-mono truncate min-w-0">{d.mount}</span>
-                <span className="text-zinc-500 shrink-0 text-[10px]">{d.fsType} · {d.device}</span>
+        {data.disks.length > 0 ? (
+          <InfoCard
+            title={`Disks · ${data.disks.length}`}
+            icon={<HardDrive size={12} />}
+            className="h-full flex flex-col min-h-0"
+            bodyClassName="!p-4 flex-1 min-h-0 overflow-y-auto custom-scrollbar space-y-3"
+          >
+            {data.disks.map((d, i) => (
+              <div key={i}>
+                <div className="flex items-baseline justify-between text-[11px] mb-1 gap-2">
+                  <span className="text-zinc-200 font-mono truncate min-w-0">{d.mount}</span>
+                  <span className="text-zinc-500 shrink-0 text-[10px]">{d.fsType} · {d.device}</span>
+                </div>
+                <Meter label="" used={d.used} total={d.size} compact />
               </div>
-              <Meter label="" used={d.used} total={d.size} compact />
-            </div>
-          ))}
-        </div>
-      </InfoCard>
-    )}
-  </div>
-);
+            ))}
+          </InfoCard>
+        ) : <div />}
+      </div>
+    </div>
+  );
+};
 
 const NetworkTab = ({ data }: { data: NetworkData }) => {
   const [showAllNics, setShowAllNics] = useState(false);
@@ -651,9 +712,170 @@ const NetworkTab = ({ data }: { data: NetworkData }) => {
           </div>
         </InfoCard>
       )}
+
+      <FirewallCard fw={data.firewall} />
     </div>
   );
 };
+
+// ---------- FIREWALL ----------
+// Engine-aware renderer. iptables output is structured per-chain so we parse
+// the `Chain NAME (policy X)` headers and let the user collapse the noisy
+// ones; nft's output is a nested config-file syntax that's not worth parsing
+// for a viewer, so we render it as preformatted text.
+interface FwChain { name: string; policy: string; counters: string; rules: string[]; }
+function parseIptablesChains(raw: string): FwChain[] {
+  const chains: FwChain[] = [];
+  let cur: FwChain | null = null;
+  for (const line of raw.split(/\r?\n/)) {
+    const m = line.match(/^Chain\s+(\S+)\s*(?:\((.*?)\))?\s*$/);
+    if (m) {
+      if (cur) chains.push(cur);
+      const meta = (m[2] || "").trim();
+      const polMatch = meta.match(/^policy\s+(\S+)\s*(.*)$/);
+      cur = {
+        name: m[1],
+        policy: polMatch ? polMatch[1] : "",
+        counters: polMatch ? polMatch[2].trim() : meta,
+        rules: [],
+      };
+      continue;
+    }
+    if (!cur) continue;
+    // Skip column-header line so we just keep actual rules.
+    if (/^\s*num\s+pkts\s+bytes\s+target/.test(line)) continue;
+    if (!line.trim()) continue;
+    cur.rules.push(line.trimEnd());
+  }
+  if (cur) chains.push(cur);
+  return chains;
+}
+
+const FirewallCard = ({ fw }: { fw: FirewallData }) => {
+  const [openChains, setOpenChains] = useState<Record<string, boolean>>({});
+  const [filter, setFilter] = useState("");
+
+  if (fw.engine === "none") {
+    return (
+      <InfoCard title="Firewall" icon={<Shield size={12} />}>
+        <BannerIcon tone="zinc" icon={<AlertCircle size={14} />}>
+          Neither <code className="font-mono px-1">iptables</code> nor <code className="font-mono px-1">nft</code> is installed on this host.
+        </BannerIcon>
+      </InfoCard>
+    );
+  }
+  if (fw.denied) {
+    return (
+      <InfoCard
+        title={`Firewall · ${fw.engine}`}
+        icon={<Shield size={12} />}
+        actions={<StatusBadge tone="amber">denied</StatusBadge>}
+      >
+        <BannerIcon tone="amber" icon={<ShieldAlert size={14} />}>
+          Couldn't read <code className="font-mono px-1">{fw.engine}</code> rules — needs root and passwordless sudo isn't configured. Reconnect as root or grant <code className="font-mono px-1">NOPASSWD</code> sudo for this command.
+        </BannerIcon>
+      </InfoCard>
+    );
+  }
+
+  // nft engine: just dump the ruleset. Parsing nested nft syntax is overkill
+  // for a viewer — admins reading these rules read them in their native form.
+  if (fw.engine === "nft") {
+    const filtered = filter.trim()
+      ? fw.raw.split(/\r?\n/).filter(l => l.toLowerCase().includes(filter.toLowerCase())).join("\n")
+      : fw.raw;
+    return (
+      <InfoCard
+        title="Firewall · nftables"
+        icon={<Shield size={12} />}
+        actions={
+          <div className="flex items-center gap-1.5">
+            {fw.usedSudo && <StatusBadge tone="zinc">sudo</StatusBadge>}
+            <FilterInput value={filter} onChange={setFilter} placeholder="Filter lines" />
+          </div>
+        }
+      >
+        <pre className="text-[10.5px] font-mono text-zinc-300 bg-black/30 border border-white/5 rounded p-2 max-h-[60vh] overflow-auto custom-scrollbar select-text whitespace-pre">
+{filtered || <span className="text-zinc-600 italic">No matching lines.</span>}
+        </pre>
+      </InfoCard>
+    );
+  }
+
+  // iptables engine: split per-chain so users can collapse the noisy ones.
+  const chains = parseIptablesChains(fw.raw);
+  const totalRules = chains.reduce((n, c) => n + c.rules.length, 0);
+  const needle = filter.trim().toLowerCase();
+  return (
+    <InfoCard
+      title={`Firewall · iptables · ${chains.length} chains · ${totalRules} rules`}
+      icon={<Shield size={12} />}
+      actions={
+        <div className="flex items-center gap-1.5">
+          {fw.usedSudo && <StatusBadge tone="zinc">sudo</StatusBadge>}
+          <FilterInput value={filter} onChange={setFilter} placeholder="Filter rules" />
+        </div>
+      }
+    >
+      {chains.length === 0 ? (
+        <Empty>No chains reported.</Empty>
+      ) : (
+        <div className="space-y-1.5">
+          {chains.map((c) => {
+            const matchingRules = needle
+              ? c.rules.filter(r => r.toLowerCase().includes(needle))
+              : c.rules;
+            // When filtering, hide chains with no matches so the user isn't
+            // scrolling past 20 collapsed empty chains looking for the hit.
+            if (needle && matchingRules.length === 0 && !c.name.toLowerCase().includes(needle)) return null;
+            // Default-open the small ones AND any chain whose default state is
+            // DROP/REJECT — those are the ones the user most likely cares
+            // about because they're actively blocking traffic.
+            const isInteresting = c.policy === "DROP" || c.policy === "REJECT";
+            const explicitlyOpen = openChains[c.name];
+            const open = explicitlyOpen !== undefined
+              ? explicitlyOpen
+              : (matchingRules.length <= 8 || isInteresting || !!needle);
+            const polTone = c.policy === "DROP" || c.policy === "REJECT" ? "red"
+              : c.policy === "ACCEPT" ? "green" : "zinc";
+            return (
+              <div key={c.name} className="bg-black/30 border border-white/5 rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setOpenChains(prev => ({ ...prev, [c.name]: !open }))}
+                  className="w-full px-2.5 py-1.5 flex items-center gap-2 text-left hover:bg-white/[0.03] transition-all"
+                >
+                  <ChevronRightIcon open={open} />
+                  <span className="text-[11px] font-mono font-bold text-white truncate">{c.name}</span>
+                  {c.policy && <StatusBadge tone={polTone as any}>{c.policy}</StatusBadge>}
+                  <span className="text-[9.5px] text-zinc-500 ml-auto shrink-0">
+                    {matchingRules.length}{needle && matchingRules.length !== c.rules.length ? `/${c.rules.length}` : ""} rule{matchingRules.length === 1 ? "" : "s"}
+                  </span>
+                </button>
+                {open && (matchingRules.length === 0 ? (
+                  <div className="px-3 py-2 text-[10px] text-zinc-600 italic border-t border-white/5">empty</div>
+                ) : (
+                  <div className="border-t border-white/5 max-h-[40vh] overflow-auto custom-scrollbar">
+                    <pre className="text-[10.5px] font-mono text-zinc-300 px-2.5 py-1.5 select-text whitespace-pre">{matchingRules.join("\n")}</pre>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </InfoCard>
+  );
+};
+
+// Inline chevron used by the firewall chain disclosure. Kept local because
+// the rotation is the only behavior — pulling in a button-with-chevron from
+// somewhere else would be heavier than this 6-line component.
+const ChevronRightIcon = ({ open }: { open: boolean }) => (
+  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2.5" className={`text-zinc-500 transition-transform shrink-0 ${open ? "rotate-90" : ""}`}>
+    <polyline points="9 18 15 12 9 6" />
+  </svg>
+);
 
 const PortsTab = ({ data }: { data: PortsData }) => {
   const [filter, setFilter] = useState("");
@@ -890,15 +1112,22 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
 
 // ============== Reusable bits ==============
 
-interface InfoCardProps { title: string; icon?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode; }
-const InfoCard = ({ title, icon, actions, children }: InfoCardProps) => (
-  <section className="bg-[#121215] border border-white/5 rounded-xl overflow-hidden">
+interface InfoCardProps {
+  title: string; icon?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode;
+  // Hooks for cards that need to participate in a flex layout (e.g. the Disks
+  // card on the Overview tab grows to fill the remaining vertical space and
+  // scrolls its body internally so the page never grows a global scrollbar).
+  className?: string;
+  bodyClassName?: string;
+}
+const InfoCard = ({ title, icon, actions, children, className = "", bodyClassName = "" }: InfoCardProps) => (
+  <section className={`bg-[#121215] border border-white/5 rounded-xl overflow-hidden ${className}`}>
     <div className="px-3 py-2 border-b border-white/5 bg-white/[0.02] flex items-center gap-2 flex-wrap">
       <span className="text-zinc-500">{icon}</span>
       <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 select-text">{title}</span>
       {actions && <div className="ml-auto">{actions}</div>}
     </div>
-    <div className="p-3 select-text">{children}</div>
+    <div className={`p-3 select-text ${bodyClassName}`}>{children}</div>
   </section>
 );
 

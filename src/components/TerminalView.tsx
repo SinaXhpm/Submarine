@@ -4,6 +4,13 @@ import { FitAddon } from 'xterm-addon-fit';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import 'xterm/css/xterm.css';
+import { useIsNarrow } from '../hooks/useViewport';
+import { MobileKeyBar, ModifiersState, ModKey } from './MobileKeyBar';
+
+// State machine for the modifier stickies on the mobile key bar.
+// off → armed → locked → off (cycled by repeated taps).
+const cycleMod = (s: "off" | "armed" | "locked"): "off" | "armed" | "locked" =>
+  s === "off" ? "armed" : s === "armed" ? "locked" : "off";
 
 const TerminalView = ({
   sessionId,
@@ -65,6 +72,56 @@ const TerminalView = ({
   // the main effect, so we should NOT re-open on the first run of the
   // reconnect effect — only on subsequent value changes.
   const lastEpochRef = useRef(connectionEpoch);
+
+  // Mobile-only sticky modifiers (Ctrl / Alt / Shift) for the on-screen
+  // key bar. State doubles as render input (highlighting) and is mirrored
+  // into a ref so the long-lived `term.onData` callback can read it without
+  // re-binding every state change. Armed modifiers consume themselves on
+  // the next typed char; locked modifiers persist until the user taps the
+  // chip a third time.
+  const isMobile = useIsNarrow();
+  const [modifiers, setModifiers] = useState<ModifiersState>({ ctrl: "off", alt: "off", shift: "off" });
+  const modifiersRef = useRef<ModifiersState>(modifiers);
+  useEffect(() => { modifiersRef.current = modifiers; }, [modifiers]);
+
+  const toggleModifier = (m: ModKey) => {
+    setModifiers(prev => ({ ...prev, [m]: cycleMod(prev[m]) }));
+  };
+  // Called after a transformed char is sent so armed modifiers reset back
+  // to "off" while locked ones survive (matches Termux's behavior). Skipped
+  // when nothing was actually armed — avoids a useless setState ping.
+  const consumeArmedModifiers = () => {
+    setModifiers(prev => {
+      if (prev.ctrl !== "armed" && prev.alt !== "armed" && prev.shift !== "armed") return prev;
+      return {
+        ctrl:  prev.ctrl  === "armed" ? "off" : prev.ctrl,
+        alt:   prev.alt   === "armed" ? "off" : prev.alt,
+        shift: prev.shift === "armed" ? "off" : prev.shift,
+      };
+    });
+  };
+
+  // Esc / Tab from the bar bypass the onData modifier pipeline (those keys
+  // produce escape sequences directly, not printable chars), but Shift+Tab
+  // still has a meaningful encoding so we honor it here.
+  const sendSpecialKey = (key: "esc" | "tab") => {
+    if (disabledRef.current) return;
+    let bytes: number[];
+    let consumes = false;
+    if (key === "esc") {
+      bytes = [0x1b];
+    } else {
+      if (modifiersRef.current.shift !== "off") {
+        // ESC [ Z = CSI Z = back-tab (the standard Shift+Tab sequence).
+        bytes = [0x1b, 0x5b, 0x5a];
+        consumes = true;
+      } else {
+        bytes = [0x09];
+      }
+    }
+    invoke('write_terminal_data', { terminalId, data: bytes }).catch(console.error);
+    if (consumes) consumeArmedModifiers();
+  };
 
   // Reconnect handler: when the parent bumps connectionEpoch we re-open
   // the PTY against the new SSH handle and write a divider line into the
@@ -193,12 +250,41 @@ const TerminalView = ({
     xtermRef.current = term;
 
     // Handle Input — swallow keystrokes once the session is disconnected so
-    // they don't pile up against a dead backend channel.
+    // they don't pile up against a dead backend channel. When a mobile-key-bar
+    // modifier is armed/locked we transform single printable characters into
+    // the matching control sequence before sending (Ctrl+letter → 0x01-0x1a,
+    // Alt+char → ESC-prefix). Multi-char inputs (paste, IME composition) are
+    // forwarded verbatim because we can't sensibly "Ctrl" a phrase.
     const onDataDisposable = term.onData((data) => {
       if (disabledRef.current) return;
+      const mods = modifiersRef.current;
+      const hasMod = mods.ctrl !== "off" || mods.alt !== "off";
+      let bytes: number[];
+      if (hasMod && data.length === 1) {
+        const code = data.charCodeAt(0);
+        let ch = code;
+        if (mods.ctrl !== "off") {
+          if ((code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a)) {
+            // Letters → C0 control (Ctrl+A = 0x01 … Ctrl+Z = 0x1a). `code & 0x1f`
+            // does the right thing for both upper- and lower-case letters.
+            ch = code & 0x1f;
+          }
+          // Non-letters under Ctrl are left as-is — Android's soft keyboard
+          // rarely lets the user type the ones with defined C0 mappings
+          // (Ctrl+@, Ctrl+[, Ctrl+\, Ctrl+] etc.) anyway, and silently
+          // mangling normal punctuation while a Ctrl chip is lit would
+          // confuse more than help.
+        }
+        bytes = [];
+        if (mods.alt !== "off") bytes.push(0x1b); // ESC prefix → Meta
+        bytes.push(ch);
+        consumeArmedModifiers();
+      } else {
+        bytes = Array.from(new TextEncoder().encode(data));
+      }
       invoke('write_terminal_data', {
         terminalId,
-        data: Array.from(new TextEncoder().encode(data))
+        data: bytes,
       }).catch(console.error);
     });
 
@@ -323,7 +409,50 @@ const TerminalView = ({
     };
     window.addEventListener('submarine-settings-changed', handleSettingsChange);
 
+    // ── Mobile QoL ───────────────────────────────────────────────────────────
+    // Capture the container ref here so the listener add/remove calls and the
+    // cleanup closure all reference the same element — the live ref can flip
+    // to null between mount and cleanup if React tears the subtree down out
+    // of order, and we'd leak event handlers in that case.
     const container = terminalRef.current;
+    // 1. Auto-scroll the viewport to the bottom whenever the user
+    //    taps/clicks anywhere on the terminal. On phones the user reaches
+    //    for the input and expects the prompt to be the thing they see —
+    //    without this, every focus that pops the soft keyboard leaves the
+    //    cursor row hidden behind the kb until they manually drag.
+    // 2. Same on `visualViewport.resize` shrinks (= keyboard appeared) —
+    //    we refit so the row count matches the now-shorter visible area
+    //    and scroll to bottom so the prompt sits just above the kb.
+    // Both are no-ops on desktop because:
+    //   - touch / tap on a desktop screen is rare and a single
+    //     scrollToBottom() is harmless
+    //   - visualViewport.resize doesn't fire from chrome resizes (only
+    //     virtual-keyboard / pinch-zoom), so desktop sessions never see it.
+    const scrollPromptIntoView = () => {
+      // rAF lets layout settle after the focus / resize event has
+      // propagated so fit() measures the real post-keyboard dimensions.
+      requestAnimationFrame(() => {
+        try { fitAddon.fit(); } catch { /* terminal not ready */ }
+        term.scrollToBottom();
+      });
+    };
+    const onTerminalTouch = () => scrollPromptIntoView();
+    container?.addEventListener('touchstart', onTerminalTouch, { passive: true });
+    container?.addEventListener('mousedown', onTerminalTouch);
+
+    let lastVvHeight = window.visualViewport?.height ?? window.innerHeight;
+    const onVvResize = () => {
+      const h = window.visualViewport?.height ?? window.innerHeight;
+      if (h < lastVvHeight - 80) {
+        // Drop ≥80px almost always means the soft keyboard opened (not a
+        // small browser-UI reflow). 80px is comfortably above the URL-bar
+        // collapse delta on Chrome/Android.
+        scrollPromptIntoView();
+      }
+      lastVvHeight = h;
+    };
+    window.visualViewport?.addEventListener('resize', onVvResize);
+
     return () => {
       window.removeEventListener('submarine-settings-changed', handleSettingsChange);
       resizeObserver.disconnect();
@@ -332,7 +461,10 @@ const TerminalView = ({
       if (container) {
         container.removeEventListener('mouseup', onMouseUp);
         container.removeEventListener('contextmenu', onContextMenu);
+        container.removeEventListener('touchstart', onTerminalTouch);
+        container.removeEventListener('mousedown', onTerminalTouch);
       }
+      window.visualViewport?.removeEventListener('resize', onVvResize);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
       unlistenPromise.then(unlisten => unlisten());
       term.dispose();
@@ -341,11 +473,22 @@ const TerminalView = ({
   }, [sessionId, terminalId]);
 
   return (
-    <div className="h-full w-full bg-[#09090b] p-2 pr-2 pb-0 relative">
+    // flex-col so the MobileKeyBar can pin to the bottom of the terminal
+    // pane (between xterm and the system soft keyboard). On desktop the bar
+    // isn't rendered at all, so the xterm child claims the full height as
+    // before.
+    <div className="h-full w-full bg-[#09090b] p-2 pr-2 pb-0 relative flex flex-col">
       <div
         ref={terminalRef}
-        className="h-full w-full overflow-hidden select-text"
+        className="flex-1 min-h-0 w-full overflow-hidden select-text"
       />
+      {isMobile && !disabled && (
+        <MobileKeyBar
+          modifiers={modifiers}
+          onToggleModifier={toggleModifier}
+          onSpecialKey={sendSpecialKey}
+        />
+      )}
       {/* Clipboard toast — bottom-right of the terminal pane. Pointer-events
           off so a stray hover never blocks selection / right-click. */}
       {toast && (

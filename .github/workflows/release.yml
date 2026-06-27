@@ -422,16 +422,18 @@ jobs:
           echo "SUBMARINE_KEYSTORE_PATH=$RUNNER_TEMP/signing/release.jks" >> "$GITHUB_ENV"
           echo "Release keystore materialized ($(wc -c < "$RUNNER_TEMP/signing/release.jks") bytes)."
 
-      # Two outputs, both universal (both ABIs in one file):
-      #   1. Universal APK — single .apk users sideload from GitHub.
-      #      Split APKs were tried in v0.2.18/v0.2.19 but Android rejects
-      #      them as "invalid package" when installed standalone because
-      #      split APKs need their matching base.apk installed at the same
-      #      time (the Play Store mechanism). For direct sideload only a
-      #      universal APK works.
-      #   2. Universal AAB — single .aab for Play Store upload (Play
-      #      re-splits it per device server-side).
-      - name: Build Android APK + AAB
+      # Universal APK — single .apk users sideload from GitHub. Split APKs
+      # were tried in v0.2.18/v0.2.19 but Android rejects them as "invalid
+      # package" when installed standalone because split APKs need their
+      # matching base.apk installed at the same time (the Play Store
+      # mechanism). For direct sideload only a universal APK works.
+      #
+      # AAB was dropped in v0.2.30 — we don't ship through Google Play, so
+      # the .aab artifact was dead weight (users can't sideload it) and
+      # doubled the Android build time on CI. If Play Store distribution
+      # becomes a goal later, re-add `android:build:aab` to package.json
+      # and the matching find/copy loop here.
+      - name: Build Android APK
         env:
           NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
@@ -445,7 +447,6 @@ jobs:
         run: |
           mkdir -p artifacts
           # APKs land under app/build/outputs/apk/<abi>/release/*.apk
-          # AABs land under app/build/outputs/bundle/<flavor>Release/*.aab
           # Rename to include the version so release asset names are readable.
           # `-name "*-unsigned.apk"` is the unsigned variant Gradle produces
           # when signingConfig is absent — explicitly excluded so a
@@ -457,13 +458,8 @@ jobs:
             cp "$apk" "artifacts/Submarine-${{ github.ref_name }}-${base}.apk"
             found=$((found + 1))
           done
-          for aab in $(find src-tauri/gen/android/app/build/outputs/bundle -type f -name "*-release*.aab"); do
-            base="$(basename "$aab" .aab)"
-            cp "$aab" "artifacts/Submarine-${{ github.ref_name }}-${base}.aab"
-            found=$((found + 1))
-          done
           if [ "$found" -eq 0 ]; then
-            echo "::error::No signed APK or AAB produced — Gradle likely ran without signingConfig."
+            echo "::error::No signed APK produced — Gradle likely ran without signingConfig."
             exit 1
           fi
           # Verify each APK is actually signed before we ship it.
@@ -501,7 +497,7 @@ jobs:
             -o -name "*.dmg" -o -name "*.app.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \
             -o -name "*.pkg.tar.zst" \
-            -o -name "*.apk" -o -name "*.aab" \
+            -o -name "*.apk" \
             \) -exec cp {} release-files/ \;
           ls -la release-files/
 

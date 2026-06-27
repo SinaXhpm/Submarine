@@ -7,6 +7,7 @@ import {
   FileText, Trash2, AlertTriangle, AlertCircle, ShieldAlert, Terminal,
   Eye, Box, Activity, Search, Copy, Check,
 } from "lucide-react";
+import { ScrollableTabs } from "./ScrollableTabs";
 
 interface DockerTabProps {
   sessionId: string;
@@ -266,23 +267,22 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 snap-x">
+      <ScrollableTabs
+        trailing={tab !== "prune" ? (
+          <button
+            onClick={refreshActive}
+            title="Refresh this tab"
+            className="h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white flex items-center gap-1.5 transition-all"
+          >
+            <RefreshCw size={11} /> Refresh
+          </button>
+        ) : undefined}
+      >
         <SubBtn active={tab === "containers"} onClick={() => setTab("containers")} icon={<ContainerIcon size={11} />}>Containers</SubBtn>
         <SubBtn active={tab === "resources"}  onClick={() => setTab("resources")}  icon={<Database size={11} />}>Resources</SubBtn>
         <SubBtn active={tab === "compose"}    onClick={() => setTab("compose")}    icon={<FileText size={11} />}>Compose</SubBtn>
         <SubBtn active={tab === "prune"}      onClick={() => setTab("prune")}      icon={<Trash2 size={11} />}>Prune</SubBtn>
-        <div className="ml-auto">
-          {tab !== "prune" && (
-            <button
-              onClick={refreshActive}
-              title="Refresh this tab"
-              className="h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white flex items-center gap-1.5 transition-all"
-            >
-              <RefreshCw size={11} /> Refresh
-            </button>
-          )}
-        </div>
-      </div>
+      </ScrollableTabs>
 
       {tab === "containers" && (
         <ContainersView
@@ -965,11 +965,13 @@ const ContainerDetailsModal = ({
         <Terminal size={11} /> Open Terminal
       </button>
     }>
-      <div className="flex items-center gap-1.5 px-3 pt-2 pb-1 bg-black/20 border-b border-white/5 shrink-0 overflow-x-auto no-scrollbar">
-        <SubBtn active={tab === "logs"}    onClick={() => setTab("logs")}    icon={<FileText size={11} />}>Logs</SubBtn>
-        <SubBtn active={tab === "stats"}   onClick={() => setTab("stats")}   icon={<Activity size={11} />}>Stats</SubBtn>
-        <SubBtn active={tab === "config"}  onClick={() => setTab("config")}  icon={<Box size={11} />}>Env · Mounts · Ports</SubBtn>
-        <SubBtn active={tab === "inspect"} onClick={() => setTab("inspect")} icon={<Eye size={11} />}>Inspect</SubBtn>
+      <div className="px-3 pt-2 pb-1 bg-black/20 border-b border-white/5 shrink-0">
+        <ScrollableTabs>
+          <SubBtn active={tab === "logs"}    onClick={() => setTab("logs")}    icon={<FileText size={11} />}>Logs</SubBtn>
+          <SubBtn active={tab === "stats"}   onClick={() => setTab("stats")}   icon={<Activity size={11} />}>Stats</SubBtn>
+          <SubBtn active={tab === "config"}  onClick={() => setTab("config")}  icon={<Box size={11} />}>Env · Mounts · Ports</SubBtn>
+          <SubBtn active={tab === "inspect"} onClick={() => setTab("inspect")} icon={<Eye size={11} />}>Inspect</SubBtn>
+        </ScrollableTabs>
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-3 select-text">
@@ -1254,7 +1256,8 @@ const ComposeViewerModal = ({
 // ============== Reusable bits ==============
 
 const SubBtn = ({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon?: React.ReactNode; children: React.ReactNode }) => (
-  <button onClick={onClick} className={`${subTabBase} ${active ? subTabActive : subTabIdle} snap-start`}>
+  // data-active hooks into ScrollableTabs' "scroll active into view" pass.
+  <button data-active={active} onClick={onClick} className={`${subTabBase} ${active ? subTabActive : subTabIdle} snap-start`}>
     {icon} {children}
   </button>
 );
