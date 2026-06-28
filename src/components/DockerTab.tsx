@@ -1256,8 +1256,7 @@ const ComposeViewerModal = ({
 // ============== Reusable bits ==============
 
 const SubBtn = ({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon?: React.ReactNode; children: React.ReactNode }) => (
-  // data-active hooks into ScrollableTabs' "scroll active into view" pass.
-  <button data-active={active} onClick={onClick} className={`${subTabBase} ${active ? subTabActive : subTabIdle} snap-start`}>
+  <button onClick={onClick} className={`${subTabBase} ${active ? subTabActive : subTabIdle}`}>
     {icon} {children}
   </button>
 );

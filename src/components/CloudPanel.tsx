@@ -4,6 +4,7 @@ import {
   X, AlertTriangle, CheckCircle2, Cloud, ArrowRight, ArrowLeft, Upload, Download,
   Trash2, RefreshCw, LogOut, Mail, KeyRound, UserPlus, LogIn, Wand2,
 } from "lucide-react";
+import { useConfirm } from "../ui/confirm";
 
 // Cloud sync panel. Owns its own auth + sync state — the parent just
 // mounts/unmounts. The signed-out experience is split into two clearly
@@ -68,6 +69,7 @@ const fmtBytes = (n: number | null | undefined): string => {
 };
 
 const CloudPanel = ({ isOpen, onClose, localProfiles, onLocalProfilesChanged }: Props) => {
+  const confirm = useConfirm();
   const [stage, setStage] = useState<Stage>("chooser");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -338,19 +340,39 @@ const CloudPanel = ({ isOpen, onClose, localProfiles, onLocalProfilesChanged }: 
 
   const doDownload = async (entry: SyncEntry) => {
     if (!entry.remote) return;
-    setBusy(true); setError(null); setInfo(null);
     let saveAs = entry.name;
+    let overwrite = false;
     if (entry.status === "both") {
-      const next = window.prompt(
-        `Local profile "${entry.name}" already exists. Save the cloud copy as:`,
-        `${entry.name}-cloud`,
-      );
-      if (!next || !next.trim()) { setBusy(false); return; }
-      saveAs = next.trim();
+      // The user explicitly clicked download on a profile that already
+      // exists locally — they're saying "pull the cloud copy". The Android
+      // use case for this is the dominant one: the phone's local vault is
+      // months behind the desktop and they want the fresh version. So we
+      // default to OVERWRITE rather than the old rename-with-suffix flow,
+      // which was confusing on small screens (you'd end up with `node-cloud`
+      // as a phantom second profile and have to manually clean it up).
+      const ok = await confirm({
+        title: "Replace local profile?",
+        message:
+          `This will replace your local "${entry.name}" with the cloud copy (v${entry.remote.version}). ` +
+          `Any changes you made locally since the cloud version was uploaded will be lost.\n\n` +
+          `If your local copy is stale and you want the cloud version, this is what you want.`,
+        okLabel: "Replace local",
+        cancelLabel: "Cancel",
+        destructive: true,
+      });
+      if (!ok) return;
+      overwrite = true;
     }
+    setBusy(true); setError(null); setInfo(null);
     try {
-      await invoke("cloud_download_profile", { remoteId: entry.remote.id, saveAs });
-      setInfo(`Downloaded "${entry.name}" → "${saveAs}"`);
+      await invoke("cloud_download_profile", {
+        remoteId: entry.remote.id,
+        saveAs,
+        overwrite,
+      });
+      setInfo(overwrite
+        ? `Replaced "${entry.name}" with cloud copy.`
+        : `Downloaded "${entry.name}" → "${saveAs}"`);
       onLocalProfilesChanged();
       await refreshOverview();
     } catch (e: any) {

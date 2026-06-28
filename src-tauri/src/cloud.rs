@@ -734,25 +734,32 @@ pub async fn cloud_force_upload_profile(
 }
 
 /// Download a remote profile and save it as a local `.submarine` file
-/// under `save_as`. Refuses to overwrite an existing local profile —
-/// the UI should prompt the user to delete or pick a different name.
+/// under `save_as`. When `overwrite=false` (default) refuses to clobber
+/// an existing local profile — the UI is expected to surface a confirm
+/// prompt and re-call with `overwrite=true` only after the user has
+/// agreed to lose the local copy. Overwrite is the only way to refresh
+/// a stale local profile from the cloud version without renaming, and
+/// is essential on devices that have diverged (e.g. an Android phone
+/// whose vault is months behind the desktop).
 #[tauri::command]
 pub async fn cloud_download_profile(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<CloudState>>,
     remote_id: i64,
     save_as: String,
+    overwrite: Option<bool>,
 ) -> Result<(), String> {
     crate::validate_profile_name(&save_as)?;
     let token = require_token(&state).await?;
+    let overwrite = overwrite.unwrap_or(false);
 
     let dir = crate::profiles_dir(&app)?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("[CLOUD] MKDIR: {}", e))?;
     let dst = crate::profile_path(&app, &save_as)?;
-    if dst.exists() {
+    if dst.exists() && !overwrite {
         return Err(format!(
-            "Profile '{}' already exists locally — pick a different name",
+            "Profile '{}' already exists locally — pick a different name or pass overwrite=true",
             save_as
         ));
     }
@@ -977,6 +984,7 @@ pub async fn cloud_sync_all(
                     state.clone(),
                     remote.id,
                     entry.name.clone(),
+                    None,
                 )
                 .await
                 {

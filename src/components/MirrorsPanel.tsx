@@ -326,17 +326,28 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       {adding && !pending && (
         <div className="shrink-0 p-3 border-b border-white/5 bg-[#0f0f12] space-y-2">
           <div className="flex items-center gap-2">
-            <button
-              onClick={pickLocal}
-              className="h-7 px-2 rounded bg-white/[0.04] border border-white/10 hover:bg-white/10 text-zinc-300 text-[11px] flex items-center gap-1.5 shrink-0"
-              title="Pick a local directory"
-            >
-              <FolderOpen size={12} /> Browse
-            </button>
+            {/* Android has no rfd-equivalent so the backend's
+                `pick_local_directory` command isn't registered there. Hide
+                the Browse button on Android and lean on the text input —
+                users sideload SSH keys / pick paths by typing in the mobile
+                use case anyway. Detect via UA because the desktop `useIsNarrow`
+                hook would also trigger on a small desktop window where the
+                picker DOES work. */}
+            {!/Android/i.test(navigator.userAgent) && (
+              <button
+                onClick={pickLocal}
+                className="h-7 px-2 rounded bg-white/[0.04] border border-white/10 hover:bg-white/10 text-zinc-300 text-[11px] flex items-center gap-1.5 shrink-0"
+                title="Pick a local directory"
+              >
+                <FolderOpen size={12} /> Browse
+              </button>
+            )}
             <input
               value={draft.local}
               onChange={(e) => setDraft({ ...draft, local: e.target.value })}
-              placeholder="/local/path (or browse)"
+              placeholder={/Android/i.test(navigator.userAgent)
+                ? "/storage/emulated/0/… (type path)"
+                : "/local/path (or browse)"}
               className="flex-1 min-w-0 h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono text-zinc-200"
             />
           </div>

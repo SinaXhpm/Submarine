@@ -1,6 +1,6 @@
 [package]
 name = "submarine"
-version = "0.2.30"
+version = "0.2.31"
 description = "Submarine SSH Client"
 authors = ["Sina"]
 edition = "2021"
@@ -60,6 +60,15 @@ full-ssh-algos = ["russh/openssl", "russh-keys/openssl", "dep:openssl-sys"]
 
 [dependencies]
 tauri = { version = "2.1", features = [] }
+# tauri-plugin-opener replaces the `open` crate for URL opening — the latter
+# is excluded on Android (no equivalent crate), so before this plugin the
+# About-panel "open repo / website" buttons returned a literal "external
+# URLs not wired on Android yet" error. The plugin bridges to ACTION_VIEW
+# on Android and to xdg-open / open / start on desktop, so the same Rust
+# call works everywhere. We keep `open` for file/folder open-with calls
+# (Live Edit, Open in Explorer) which are desktop-only by design and
+# already cfg-gated.
+tauri-plugin-opener = "2"
 hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

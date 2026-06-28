@@ -145,22 +145,19 @@ fn semver_greater(a: &str, b: &str) -> bool {
 
 /// Open a URL in the user's default browser. URL must be http(s) — we
 /// refuse file://, javascript:, and anything else to avoid being a
-/// privileged drop-tool for the webview. The `open` crate dispatches
-/// to xdg-open / open / cmd /c start under the hood.
+/// privileged drop-tool for the webview. tauri-plugin-opener dispatches
+/// to ACTION_VIEW on Android and to xdg-open / open / start on desktop,
+/// so the same call works on every platform we ship (the `open` crate
+/// has no Android backend, which is why we used to return "not wired on
+/// Android yet" — now fixed).
 #[tauri::command]
-pub fn open_external_url(url: String) -> Result<(), String> {
+pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
     let lowered = url.to_ascii_lowercase();
     if !(lowered.starts_with("https://") || lowered.starts_with("http://")) {
         return Err("[OPEN] only http(s) urls are allowed".into());
     }
-    #[cfg(target_os = "android")]
-    {
-        let _ = url;
-        return Err("[OPEN] external URLs not wired on Android yet".into());
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        open::that(&url).map_err(|e| format!("[OPEN] {}", e))?;
-        Ok(())
-    }
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| format!("[OPEN] {}", e))
 }

@@ -5185,6 +5185,11 @@ pub fn run() {
     // not us, and the plugin's crate isn't compiled into the Android target.
     #[cfg(not(target_os = "android"))]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
+    // Cross-platform URL opener — Android (Intent.ACTION_VIEW), Windows
+    // (start), macOS (open), Linux (xdg-open). about.rs's open_external_url
+    // dispatches through this so the same code path works in the desktop
+    // installer AND the Android APK. Capability is granted in default.json.
+    let builder = builder.plugin(tauri_plugin_opener::init());
     builder
         .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None) })
         .manage(SshState::new())

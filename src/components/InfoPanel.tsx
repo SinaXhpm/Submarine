@@ -472,9 +472,10 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
   }, [tab, disabled, sessionId]);
 
   // ---------- Tab strip ----------
-  // Wrapped in ScrollableTabs so narrow widths (split panes, embedded phone
-  // layouts, etc.) still let the user reach every tab — chevron buttons fade
-  // in when overflow is detected, and the active tab auto-scrolls into view.
+  // ScrollableTabs wraps overflow onto a second row instead of hiding tabs
+  // behind a scroll. On narrow widths (split panes, phone) this means a tab
+  // strip can take two rows — preferable to the previous chevron-scroll
+  // pattern which hid tabs behind interaction the user couldn't discover.
   const SubTabStrip = (
     <div className="shrink-0 border-b border-white/5 bg-white/[0.02] px-3 py-2">
       <ScrollableTabs>
@@ -483,9 +484,8 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
           return (
             <button
               key={t.id}
-              data-active={tab === t.id}
               onClick={() => setTab(t.id)}
-              className={`${subTabBase} ${tab === t.id ? subTabActive : subTabIdle} snap-start`}
+              className={`${subTabBase} ${tab === t.id ? subTabActive : subTabIdle}`}
             >
               <Icon size={12} /> {t.label}
             </button>

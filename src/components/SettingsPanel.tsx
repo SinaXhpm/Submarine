@@ -20,9 +20,9 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
   ];
 
   return (
-    <div className="flex-1 p-10 overflow-y-auto custom-scrollbar animate-in">
-      <header className="mb-10">
-        <h2 className="text-2xl font-bold text-white tracking-tight flex items-center gap-3">
+    <div className="flex-1 p-4 sm:p-10 overflow-y-auto custom-scrollbar animate-in">
+      <header className="mb-6 sm:mb-10">
+        <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight flex items-center gap-3">
           <Settings size={24} className="text-primary" /> Settings
         </h2>
         <p className="text-[13px] text-zinc-400 mt-2">
@@ -32,7 +32,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
         </p>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8">
         {/* Appearance Section */}
         <section className="space-y-6">
           <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs mb-4">

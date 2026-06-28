@@ -2,7 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- `interactive-widget=resizes-content` tells Chromium/Android to actually
+         shrink the LAYOUT viewport when the soft keyboard appears (the
+         default `resizes-visual` only shrinks the visual viewport, leaving
+         our flex-col bottom-pinned children — terminal mobile key bar, the
+         sidebar dock — sitting below the visible area and unreachable). With
+         this hint the layout reflows and our `flex-1 min-h-0` chain naturally
+         puts the keyboard's space back into the layout calculation. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <title>Submarine — Modern SSH &amp; SFTP Client for Windows, macOS, Linux, Android</title>
 
     <meta name="description" content="Submarine is a fast, secure, cross-platform SSH and SFTP client. Manage servers, edit remote files, forward ports (SOCKS/HTTP/local/remote), and sync folders from one native window. Built with Rust + Tauri. Free and open source (MIT). Available on Windows, macOS, Linux, and Android." />
