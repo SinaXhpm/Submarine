@@ -11,7 +11,7 @@ import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
 
-const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
+const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -543,7 +543,13 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
   // Connected State with Nested Tabs
   return (
     <div className="flex-1 flex flex-col bg-background overflow-hidden animate-in fade-in">
-      {/* Nested Tab Bar */}
+      {/* Nested Tab Bar — hidden in `chromeless` mode. Chromeless is
+          used by the App-level Split-view tiling: merged (non-focused)
+          panes show only the active terminal, no per-session tab strip
+          + tool rail. Otherwise every merged tile would carry its own
+          full chrome and 2-3 sessions side-by-side would fight for
+          vertical space with duplicate toolbars. */}
+      {!chromeless && (
       <div className="h-12 border-b border-white/5 bg-[#121214]/50 flex items-center px-2 sm:px-4 shrink-0 justify-between gap-1">
         <div
           className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 mr-1 sm:mr-4 mask-fade-right"
@@ -689,6 +695,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
           })}
         </div>
       </div>
+      )}
 
       {/* "+" secondary menu — right-click / long-press on the plus
           button. Kept intentionally short: same-server "split with new

@@ -1339,30 +1339,39 @@ function DesktopApp() {
                               : ''
                           }`}
                         >
-                          {/* Merged-pane header — only shown when tiled,
-                              gives users a way to unmerge a specific pane
-                              without hunting the tab context menu. */}
-                          {isVisible && isTiled && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (isFocused) {
-                                  // Focused pane's X: pop the next
-                                  // merged pane up as the new active
-                                  // view (or fall back to "nodes" if
-                                  // there is nothing to promote).
-                                  const promoted = mergedSessionIds.find(id => id !== sess.id && sessions.some(s => s.id === id));
-                                  setMergedSessionIds(prev => prev.filter(id => id !== promoted));
-                                  setActiveView(promoted ?? "nodes");
-                                } else {
+                          {/* Merged (non-focused) tile header. Only the
+                              focused pane keeps its full tab strip + tool
+                              rail (via SessionView's default chrome);
+                              merged panes get a slim 28-px header with
+                              server name + a click-to-focus hint + a
+                              detach X. Everything below that header is a
+                              chromeless SessionView so it renders ONLY
+                              the currently-active terminal without
+                              stacking a second toolbar next to the
+                              focused one. Vertical space wasted per
+                              merged tile drops from ~48 px (full chrome)
+                              to ~28 px (slim header). */}
+                          {isVisible && isTiled && !isFocused && (
+                            <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-[#111114] text-[10.5px]">
+                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                (sessionStatuses[sess.id] ?? 'connecting') === 'connected' ? 'bg-emerald-400' :
+                                (sessionStatuses[sess.id] ?? 'connecting') === 'connecting' ? 'bg-amber-400' :
+                                'bg-rose-500'
+                              }`} />
+                              <span className="font-bold text-zinc-200 uppercase tracking-wider truncate flex-1">
+                                {sess.serverName}
+                              </span>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   setMergedSessionIds(prev => prev.filter(id => id !== sess.id));
-                                }
-                              }}
-                              title="Remove this pane from the split view"
-                              className="absolute top-1 right-1 z-30 h-5 w-5 rounded flex items-center justify-center bg-black/60 border border-white/10 text-zinc-400 hover:text-white hover:bg-black/80 opacity-70 hover:opacity-100 transition-opacity"
-                            >
-                              <X size={11} />
-                            </button>
+                                }}
+                                title="Remove this pane from the split view"
+                                className="h-5 w-5 rounded flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-white/[0.05] transition-all"
+                              >
+                                <X size={11} />
+                              </button>
+                            </div>
                           )}
                           <ErrorBoundary
                             label={sess.serverName}
@@ -1376,6 +1385,7 @@ function DesktopApp() {
                               onClose={getCloseHandler(sess.id)}
                               addLog={addLog}
                               onStatusChange={handleSessionStatus}
+                              chromeless={isVisible && isTiled && !isFocused}
                             />
                           </ErrorBoundary>
                         </div>
