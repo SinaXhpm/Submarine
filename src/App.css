@@ -103,29 +103,6 @@ select optgroup {
   }
 }
 
-/* Animated wave layer under the submarine logo on ProfileSelectPage.
-   Two SVGs at the same keyframe but different durations give a
-   parallax feel — the top layer scrolls faster and reads as the
-   surface, the bottom layer scrolls slower and reads as the deeper
-   swell. Each SVG is 200% of the visible container width, and
-   translate3d(-50%,0,0) is exactly one wavelength, so the loop
-   seams cleanly with no jump. `will-change: transform` keeps the
-   animation on the compositor so it doesn't jank the login form
-   during entry. */
-@keyframes submarine-wave-scroll {
-  from { transform: translate3d(0, 0, 0); }
-  to { transform: translate3d(-50%, 0, 0); }
-}
-
-/* Very gentle vertical drift on the submarine body itself so the
-   whole thing feels like it's riding the wave rather than sitting
-   frozen on top of it. 2 px is deliberately small — anything more
-   reads as bobbing/broken. */
-@keyframes submarine-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
-}
-
 /* ==========================================================================
    BULLETPROOF THEMED SCROLLBAR OVERRIDES
    ========================================================================== */
