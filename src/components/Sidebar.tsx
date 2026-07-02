@@ -17,7 +17,15 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout }: any) =>
 
   if (isMobile) {
     return (
-      <aside className="w-full h-14 shrink-0 bg-background border-t border-white/5 flex items-center px-2 relative z-10 shadow-2xl brightness-95">
+      // `pb-[env(safe-area-inset-bottom)]` clears the Android gesture-nav pill
+      // and iPhone home-indicator so the tab icons don't sit under system UI.
+      // Height stays 56px minimum (h-14) via `min-h-14` — the extra padding
+      // expands the aside downward into safe-area space, not upward into the
+      // content area, so the terminal above doesn't lose vertical room.
+      <aside
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+        className="w-full min-h-14 shrink-0 bg-background border-t border-white/5 flex items-center px-2 relative z-10 shadow-2xl brightness-95"
+      >
         <nav className="flex-1 flex flex-row items-center justify-around gap-1">
           {items.map((item) => (
             <button

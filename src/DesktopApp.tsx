@@ -11,7 +11,7 @@ import ProfileSelectPage from "./components/ProfileSelectPage";
 import logoUrl from "./assets/logo.png";
 import PasswordField from "./components/PasswordField";
 import QuickConnectModal, { QuickAuth } from "./components/QuickConnectModal";
-import { useConfirm } from "./ui/confirm";
+import { useConfirm, useTextPrompt } from "./ui/confirm";
 import { useIsNarrow } from "./hooks/useViewport";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
@@ -328,6 +328,7 @@ function DesktopApp() {
   };
 
   const confirm = useConfirm();
+  const textPrompt = useTextPrompt();
 
   // Window-close guard. Keep `sessions` mirrored into a ref so the close
   // handler (which is registered ONCE inside useEffect, capturing snapshot
@@ -628,10 +629,14 @@ function DesktopApp() {
     </div>
   );
 
-  if (loading) return <div className="h-screen bg-black flex items-center justify-center font-mono text-xs text-primary animate-pulse">Loading…</div>;
+  // h-full (not h-screen) so the layout tracks --vv-h from main.tsx —
+  // when the Android soft keyboard opens the visualViewport shrinks and the
+  // whole flex chain cascades above the keyboard instead of anchoring to
+  // the un-shrunken layout viewport.
+  if (loading) return <div className="h-full bg-black flex items-center justify-center font-mono text-xs text-primary animate-pulse">Loading…</div>;
 
   return (
-    <div className="h-screen w-full bg-background flex flex-col overflow-hidden text-zinc-200 select-none">
+    <div className="h-full w-full bg-background flex flex-col overflow-hidden text-zinc-200 select-none">
       <TitleBar />
       {!isUnlocked ? (
         <ProfileSelectPage onUnlocked={handleProfileUnlocked} />
@@ -708,8 +713,16 @@ function DesktopApp() {
                       <Plus size={14} /> <span className="hidden sm:inline">Add Key</span><span className="sm:hidden">Key</span>
                     </button>
                     <button
-                      onClick={() => {
-                        const name = window.prompt("Enter a name for the new SSH key:");
+                      onClick={async () => {
+                        // Native window.prompt is a no-op in Tauri's Android
+                        // WebView — themed useTextPrompt works everywhere.
+                        const name = await textPrompt({
+                          title: "Generate SSH key",
+                          message: "Give this key a name — it's just for your reference here in Submarine.",
+                          placeholder: "e.g. laptop-2026",
+                          okLabel: "Generate",
+                          validate: (v) => v.length === 0 ? "Name is required" : null,
+                        });
                         if (name) invoke("generate_ssh_key", { name }).then(() => refreshSshKeys());
                       }}
                       title="Generate Key"
@@ -733,7 +746,7 @@ function DesktopApp() {
                           <div key={c.id} className="bg-[#16161a] border border-white/5 rounded-xl p-3 group relative hover:border-primary/30 transition-all">
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{c.name}</h4>
-                              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity absolute right-3 top-3">
+                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity absolute right-3 top-3">
                                 <button onClick={async () => {
                                   // Credentials list now ships `has_password` instead of plaintext;
                                   // pull the secret on demand for the edit sheet.
@@ -774,7 +787,7 @@ function DesktopApp() {
                           <div key={k.id} className="bg-[#16161a] border border-white/5 rounded-xl p-3 group relative hover:border-primary/30 transition-all">
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{k.name}</h4>
-                              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity absolute right-3 top-3">
+                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity absolute right-3 top-3">
                                 <button onClick={async () => {
                                   // Same pattern as credentials — pull the private key + passphrase
                                   // on demand instead of leaking them in the list response.
@@ -883,7 +896,7 @@ function DesktopApp() {
                         <div key={n.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[170px]">
                           <div className="flex justify-between items-start mb-2 gap-2">
                             <h3 className="text-[15px] font-bold text-primary tracking-tight truncate flex-1">{n.title || "Untitled"}</h3>
-                            <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                            <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0">
                               <button onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
                               <button onClick={() => invoke("delete_note", { id: n.id }).then(() => refreshNotes())} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                             </div>
@@ -926,7 +939,7 @@ function DesktopApp() {
                       <div key={cmd.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[150px]">
                         <div className="flex justify-between items-start mb-2">
                           <h3 className="text-[16px] font-bold text-primary tracking-tight">{cmd.title}</h3>
-                          <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                             <button onClick={() => { setEditCommandData(cmd); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
                             <button onClick={() => invoke("delete_command", { id: cmd.id }).then(() => refreshCommands())} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                           </div>

@@ -10,11 +10,28 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.submarine"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
+        <!--
+            windowSoftInputMode="adjustResize|stateHidden"
+              adjustResize: THE load-bearing keyboard fix. Without this the Android
+              WebView stays at the pre-keyboard height and the on-screen kb draws
+              over the terminal + MobileKeyBar. CSS (100dvh / var(--vv-h)) alone is
+              unreliable on WebView versions before Chromium M139 (mid-2025)
+              because visualViewport.height there equals layoutViewport.height
+              per MDN — so JS can't detect the kb either. adjustResize shrinks
+              the whole Activity window so 100vh / flex-1 / etc. do the right
+              thing automatically on every Android version we support.
+              stateHidden: the kb should NOT auto-open on resume/rotate.
+            NOTE: this file lives under gen/android/ and IS regenerated when
+            someone runs `tauri android init`. If that happens, re-apply this
+            attribute; Tauri 2 has no way to declare softInputMode in
+            tauri.conf.json today.
+        -->
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"
             android:label="@string/main_activity_title"
             android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize|stateHidden"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

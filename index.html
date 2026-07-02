@@ -2,14 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- `interactive-widget=resizes-content` tells Chromium/Android to actually
-         shrink the LAYOUT viewport when the soft keyboard appears (the
-         default `resizes-visual` only shrinks the visual viewport, leaving
-         our flex-col bottom-pinned children — terminal mobile key bar, the
-         sidebar dock — sitting below the visible area and unreachable). With
-         this hint the layout reflows and our `flex-1 min-h-0` chain naturally
-         puts the keyboard's space back into the layout calculation. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+    <!-- `interactive-widget=resizes-content` tells modern Chromium (M108+) to
+         shrink the layout viewport when the soft keyboard appears. This is
+         layer 2 of our keyboard-handling stack; the real load-bearing fix
+         is `windowSoftInputMode="adjustResize"` on the Android Activity
+         (AndroidManifest.xml). Kept because on M139+ Android WebView and on
+         desktop Chrome mobile it's a proper belt-and-braces.
+         `viewport-fit=cover` lets `env(safe-area-inset-*)` resolve to real
+         values on notch / gesture-nav devices — used by MobileKeyBar and
+         the mobile Sidebar dock to sit above the system pill. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content, viewport-fit=cover" />
     <title>Submarine — Modern SSH &amp; SFTP Client for Windows, macOS, Linux, Android</title>
 
     <meta name="description" content="Submarine is a fast, secure, cross-platform SSH and SFTP client. Manage servers, edit remote files, forward ports (SOCKS/HTTP/local/remote), and sync folders from one native window. Built with Rust + Tauri. Free and open source (MIT). Available on Windows, macOS, Linux, and Android." />
@@ -49,8 +51,14 @@
          on Android cold-start). Matches --background in App.css so the
          transition is invisible. -->
     <style>
-      html, body { margin: 0; background: #0a0a0c; color-scheme: dark; }
-      #root { min-height: 100vh; background: #0a0a0c; }
+      html, body { margin: 0; height: 100%; background: #0a0a0c; color-scheme: dark; }
+      /* #root height is driven by the --vv-h custom property that main.tsx
+         keeps in sync with window.visualViewport.height. On desktop the
+         value equals innerHeight and never changes; on Android when the
+         soft keyboard opens the visualViewport shrinks and the whole app
+         tree (which uses h-full / flex-1 / min-h-0) cascades correctly
+         above the keyboard. Falls back to 100vh for the pre-JS paint. */
+      #root { height: var(--vv-h, 100vh); background: #0a0a0c; }
     </style>
   </head>
   <body>

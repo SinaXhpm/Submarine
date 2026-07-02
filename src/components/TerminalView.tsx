@@ -415,30 +415,27 @@ const TerminalView = ({
     // to null between mount and cleanup if React tears the subtree down out
     // of order, and we'd leak event handlers in that case.
     const container = terminalRef.current;
-    // 1. Auto-scroll the viewport to the bottom whenever the user
-    //    taps/clicks anywhere on the terminal. On phones the user reaches
-    //    for the input and expects the prompt to be the thing they see —
-    //    without this, every focus that pops the soft keyboard leaves the
-    //    cursor row hidden behind the kb until they manually drag.
-    // 2. Same on `visualViewport.resize` shrinks (= keyboard appeared) —
-    //    we refit so the row count matches the now-shorter visible area
-    //    and scroll to bottom so the prompt sits just above the kb.
-    // Both are no-ops on desktop because:
-    //   - touch / tap on a desktop screen is rare and a single
-    //     scrollToBottom() is harmless
-    //   - visualViewport.resize doesn't fire from chrome resizes (only
-    //     virtual-keyboard / pinch-zoom), so desktop sessions never see it.
+    // On soft-keyboard open (`visualViewport.resize` shrinks) refit so xterm's
+    // row count matches the now-shorter visible area and scroll to the
+    // prompt so the cursor row sits just above the kb.
+    //
+    // We deliberately do NOT hook mousedown / touchstart here. Those fire at
+    // the START of a selection drag, and a scrollToBottom() there yanks the
+    // viewport out from under the user's finger and destroys the selection
+    // anchor (v0.2.30-v0.2.31 regression). xterm already scrolls on user
+    // keystrokes via `scrollOnUserInput` (default true) and on PTY writes,
+    // so tapping to focus + typing already reveals the prompt without our
+    // help. This handler is what actually implements "keyboard opens →
+    // prompt in view" and is the only trigger we want.
+    //
+    // No-op on desktop: visualViewport.resize doesn't fire from window resizes,
+    // only virtual-keyboard / pinch-zoom.
     const scrollPromptIntoView = () => {
-      // rAF lets layout settle after the focus / resize event has
-      // propagated so fit() measures the real post-keyboard dimensions.
       requestAnimationFrame(() => {
         try { fitAddon.fit(); } catch { /* terminal not ready */ }
         term.scrollToBottom();
       });
     };
-    const onTerminalTouch = () => scrollPromptIntoView();
-    container?.addEventListener('touchstart', onTerminalTouch, { passive: true });
-    container?.addEventListener('mousedown', onTerminalTouch);
 
     let lastVvHeight = window.visualViewport?.height ?? window.innerHeight;
     const onVvResize = () => {
@@ -461,8 +458,6 @@ const TerminalView = ({
       if (container) {
         container.removeEventListener('mouseup', onMouseUp);
         container.removeEventListener('contextmenu', onContextMenu);
-        container.removeEventListener('touchstart', onTerminalTouch);
-        container.removeEventListener('mousedown', onTerminalTouch);
       }
       window.visualViewport?.removeEventListener('resize', onVvResize);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);

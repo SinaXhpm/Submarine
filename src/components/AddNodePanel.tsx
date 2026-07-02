@@ -261,7 +261,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       </>
                     )}
 
-                    <button onClick={() => setNewNode({ ...newNode, tunnels: newNode.tunnels.filter((_: any, i: number) => i !== idx) })} className="opacity-0 group-hover:opacity-100 w-6 h-6 flex items-center justify-center text-red-500 hover:bg-red-500/10 rounded transition-all shrink-0">
+                    <button onClick={() => setNewNode({ ...newNode, tunnels: newNode.tunnels.filter((_: any, i: number) => i !== idx) })} className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 w-6 h-6 flex items-center justify-center text-red-500 hover:bg-red-500/10 rounded transition-all shrink-0">
                       <X size={12} />
                     </button>
                   </div>
@@ -313,7 +313,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       <button
                         type="button"
                         onClick={() => setNewNode({ ...newNode, mirrors: newNode.mirrors.filter((_: any, i: number) => i !== idx) })}
-                        className="opacity-0 group-hover:opacity-100 w-6 h-6 flex items-center justify-center text-red-500 hover:bg-red-500/10 rounded transition-all shrink-0"
+                        className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 w-6 h-6 flex items-center justify-center text-red-500 hover:bg-red-500/10 rounded transition-all shrink-0"
                       >
                         <X size={12} />
                       </button>

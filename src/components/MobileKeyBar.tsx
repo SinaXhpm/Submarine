@@ -68,7 +68,13 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
       // (which on Android would hide the soft keyboard).
       onMouseDown={(e) => e.preventDefault()}
       onTouchStart={(e) => e.preventDefault()}
-      className="shrink-0 flex items-center gap-1.5 px-2 py-1.5 bg-[#0c0c0e] border-t border-white/10 overflow-x-auto no-scrollbar"
+      // pb-[env(safe-area-inset-bottom)] clears the Android gesture-nav pill
+      // (and iPhone home indicator) so the bottom row of Ctrl/Alt/Shift chips
+      // doesn't sit under the system UI. Resolves to 0 on devices with no
+      // safe area (older Android, desktop) and on browsers that don't
+      // support env() — no visible effect there.
+      style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 6px)' }}
+      className="shrink-0 flex items-center gap-1.5 px-2 pt-1.5 bg-[#0c0c0e] border-t border-white/10 overflow-x-auto no-scrollbar"
     >
       <ModBtn m="ctrl"  label="Ctrl"  />
       <ModBtn m="alt"   label="Alt"   />

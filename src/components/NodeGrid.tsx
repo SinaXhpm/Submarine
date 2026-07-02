@@ -63,7 +63,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           </div>
         </div>
       </div>
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+      <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all">
         {onCloneServer && (
           <button
             onClick={(e) => { e.stopPropagation(); onCloneServer(s.id); }}
@@ -143,7 +143,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           ) : (
             <>
               <span className="text-[10px] bg-black text-zinc-500 px-1.5 py-0.5 rounded-md font-mono group-hover:opacity-0 transition-opacity">{serverCount}</span>
-              <div className="absolute right-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all bg-[#1c1c21]/95 backdrop-blur-sm rounded">
+              <div className="absolute right-0 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all bg-[#1c1c21]/95 backdrop-blur-sm rounded">
                 <button
                   onClick={(e) => { e.stopPropagation(); setRenaming({ id: f.id, draft: f.name || "" }); }}
                   title="Rename folder"

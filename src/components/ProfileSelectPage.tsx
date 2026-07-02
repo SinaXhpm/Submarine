@@ -321,7 +321,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                 onClick={exportSelected}
                 disabled={!selected || busy}
                 title="Export profile (encrypted file)"
-                className="absolute right-9 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md text-zinc-500 hover:text-primary hover:bg-primary/10 disabled:opacity-30 flex items-center justify-center transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
+                className="absolute right-9 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md text-zinc-500 hover:text-primary hover:bg-primary/10 disabled:opacity-30 flex items-center justify-center transition-all opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
               >
                 <Download size={13} />
               </button>
@@ -329,7 +329,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                 onClick={() => setConfirmDelete(selected)}
                 disabled={!selected || busy}
                 title="Delete profile"
-                className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md text-zinc-500 hover:text-rose-300 hover:bg-rose-500/10 disabled:opacity-30 flex items-center justify-center transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md text-zinc-500 hover:text-rose-300 hover:bg-rose-500/10 disabled:opacity-30 flex items-center justify-center transition-all opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
               >
                 <Trash2 size={13} />
               </button>
