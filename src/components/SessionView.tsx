@@ -538,7 +538,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
                   setTerminals(prev => prev.filter(x => x.id !== t.id));
                   if (activeTab === t.id) setActiveTab(terminals[0].id);
                 }}
-                className="absolute right-1 w-5 h-5 flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:text-red-500 text-zinc-500 transition-opacity"
+                aria-label="Close terminal"
+                className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-white/5 hover:text-red-400 text-zinc-500 transition-all"
               >
                 <X size={12} />
               </button>

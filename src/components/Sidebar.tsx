@@ -1,4 +1,4 @@
-import { Server, KeyRound, TerminalSquare, StickyNote, Activity, Settings, LogOut } from "lucide-react";
+import { Server, KeyRound, Library, Activity, Settings, LogOut } from "lucide-react";
 
 // Vertical rail on desktop, horizontal bottom dock on mobile. Layout swap is
 // driven by `isMobile` so the terminal/session views can use the full screen
@@ -7,11 +7,15 @@ import { Server, KeyRound, TerminalSquare, StickyNote, Activity, Settings, LogOu
 // mobile so this component visually lands at the bottom while staying first
 // in DOM order (keyboard tab-order stays intuitive).
 export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout }: any) => {
+  // Commands + Notes used to be separate rails. Both are per-profile lists
+  // of small text blobs stored under the vault; the only real distinction
+  // was "runnable snippet vs freeform prose". A single Library rail with
+  // an internal segmented control uses one sidebar slot instead of two —
+  // room the user asked us to give back on narrow viewports.
   const items = [
     { id: 'nodes', icon: Server, label: 'Servers' },
     { id: 'vault', icon: KeyRound, label: 'Logins' },
-    { id: 'commands', icon: TerminalSquare, label: 'Commands' },
-    { id: 'notes', icon: StickyNote, label: 'Notes' },
+    { id: 'library', icon: Library, label: 'Library' },
     { id: 'monitor', icon: Activity, label: 'Monitor' },
   ];
 

@@ -103,7 +103,11 @@ function DesktopApp() {
   const [notes, setNotes] = useState<any[]>([]);
   const [isNotePanelOpen, setIsNotePanelOpen] = useState(false);
   const [editNoteData, setEditNoteData] = useState<{ id: number | null, title: string, body: string }>({ id: null, title: "", body: "" });
-  const [noteQuery, setNoteQuery] = useState("");
+  // Shared query across Library sub-tabs. Persisting the string across a
+  // Commands↔Notes switch lets the user narrow both lists with the same
+  // typing — filter is applied against whichever array is active.
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [libraryTab, setLibraryTab] = useState<"commands" | "notes">("commands");
 
   const [isCredPanelOpen, setIsCredPanelOpen] = useState(false);
   const [editCredData, setEditCredData] = useState<any>({ id: null, name: "", auth_type: "password", username: "", password: "", key_id: null });
@@ -574,26 +578,31 @@ function DesktopApp() {
                 />
               )}
               <span className="text-[11px] sm:text-[10px] font-bold whitespace-nowrap uppercase tracking-tight normal-case sm:uppercase">{s.serverName}</span>
-              {/* Mobile-only actions trigger. Right-click doesn't exist on
-                  touch, so surface the same tabMenu via a MoreVertical
-                  button; positioned to the button's bounding rect so the
-                  popover aligns with the pill instead of the tap point. */}
+              {/* Mobile-only actions trigger. On phone we surface the same
+                  tabMenu (Reconnect / Disconnect / Close) here since there
+                  is no right-click on touch — a single kebab is a cleaner
+                  affordance than a naked X plus a hidden long-press menu.
+                  The X below is desktop-only so we don't stack both. */}
               <button
                 type="button"
                 aria-label="Session actions"
-                className="sm:hidden ml-1 h-7 w-5 -my-1 flex items-center justify-center rounded hover:bg-white/5 shrink-0"
+                className="sm:hidden ml-1 h-5 w-5 flex items-center justify-center rounded hover:bg-white/5 shrink-0 text-zinc-400"
                 onClick={(e) => {
                   e.stopPropagation();
                   const rect = e.currentTarget.getBoundingClientRect();
                   setTabMenu({ x: rect.left, y: rect.bottom, sessionId: s.id });
                 }}
               >
-                <MoreVertical size={14} />
+                <MoreVertical size={13} />
               </button>
+              {/* Desktop-only inline close. Hidden until hover so the tab
+                  reads clean at rest; sizing (w-5 h-5, 12 px icon) matches
+                  the terminal-tab close inside SessionView so both tab
+                  strips look like siblings. */}
               <button
                 type="button"
                 aria-label="Close session"
-                className={`ml-0 sm:ml-1 h-7 w-7 -my-1 -mr-1 flex items-center justify-center rounded hover:bg-white/5 shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100`}
+                className="hidden sm:flex ml-1 h-5 w-5 items-center justify-center rounded hover:bg-white/5 shrink-0 opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-red-400 transition-opacity"
                 onClick={async (e) => {
                   e.stopPropagation();
                   // Only confirm when there's an actual live connection to
@@ -617,7 +626,7 @@ function DesktopApp() {
                   setActiveView(prev => (prev === s.id ? "nodes" : prev));
                 }}
               >
-                <X size={10} className="hover:text-red-500" />
+                <X size={12} />
               </button>
             </div>
           );
@@ -1034,116 +1043,168 @@ function DesktopApp() {
             ))}
             </div>
 
-            {activeView === "notes" && (() => {
-              const q = noteQuery.trim().toLowerCase();
-              const visible = q
+            {/* Library = Commands + Notes merged.
+                Commands and Notes used to be two distinct rails; both are
+                per-profile lists of small text blobs stored inside the
+                encrypted vault, and the only real difference is
+                "runnable snippet vs freeform text". A single tab with an
+                internal segmented control gives us the sidebar slot back
+                on narrow viewports and puts both lists under one search
+                box. The sub-tab state (`libraryTab`) is kept at the parent
+                so it survives navigation elsewhere and back. */}
+            {activeView === "library" && (() => {
+              const q = libraryQuery.trim().toLowerCase();
+              const filteredCommands = q
+                ? commands.filter(c =>
+                    (c.title || "").toLowerCase().includes(q) ||
+                    (c.content || "").toLowerCase().includes(q))
+                : commands;
+              const filteredNotes = q
                 ? notes.filter(n =>
                     (n.title || "").toLowerCase().includes(q) ||
                     (n.body || "").toLowerCase().includes(q))
                 : notes;
+              const onCommandsTab = libraryTab === "commands";
+              const addLabel = onCommandsTab ? "Add Command" : "Add Note";
+              const openAdd = () => {
+                if (onCommandsTab) {
+                  setEditCommandData({ id: null, title: "", content: "" });
+                  setIsCommandPanelOpen(true);
+                } else {
+                  setEditNoteData({ id: null, title: "", body: "" });
+                  setIsNotePanelOpen(true);
+                }
+              };
               return (
                 <div className="flex-1 flex flex-col p-4 sm:p-8 space-y-5 sm:space-y-6 animate-in overflow-y-auto custom-scrollbar">
-                  <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 border-b border-zinc-700 pb-5 sm:pb-6 shrink-0">
-                    <div className="min-w-0">
-                      <h2 className="text-[18px] sm:text-[22px] font-bold text-white tracking-tight">Notes</h2>
-                      <p className="hidden sm:block text-[13px] text-zinc-400">Anything you want to remember, stored with this profile.</p>
-                    </div>
-                    <div className="flex gap-2 items-center">
-                      <div className="relative">
-                        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
-                        <input
-                          type="text"
-                          value={noteQuery}
-                          onChange={(e) => setNoteQuery(e.target.value)}
-                          placeholder="Search title or content…"
-                          className="h-9 pl-7 pr-3 w-44 sm:w-56 bg-black/40 border border-white/10 rounded-xl text-[12px] text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-primary/40"
-                        />
+                  <header className="flex flex-col gap-3 border-b border-zinc-700 pb-5 sm:pb-6 shrink-0">
+                    <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+                      <div className="min-w-0">
+                        <h2 className="text-[18px] sm:text-[22px] font-bold text-white tracking-tight flex items-center gap-2">
+                          Library
+                          <span
+                            title="All entries are AES-256-GCM encrypted inside the current profile vault."
+                            className="inline-flex items-center gap-1 h-5 px-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[9px] font-bold uppercase tracking-wider text-emerald-300"
+                          >
+                            <Shield size={9} /> Vault-locked
+                          </span>
+                        </h2>
+                        <p className="hidden sm:block text-[13px] text-zinc-400">
+                          Reusable snippets and freeform notes — encrypted with your profile key.
+                        </p>
                       </div>
+                      <div className="flex gap-2 items-center">
+                        <div className="relative">
+                          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                          <input
+                            type="text"
+                            value={libraryQuery}
+                            onChange={(e) => setLibraryQuery(e.target.value)}
+                            placeholder="Search title or content…"
+                            className="h-9 pl-7 pr-3 w-44 sm:w-56 bg-black/40 border border-white/10 rounded-xl text-[12px] text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-primary/40"
+                          />
+                        </div>
+                        <button
+                          onClick={openAdd}
+                          title={addLabel}
+                          className="h-9 px-3 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5 transition-all hover:brightness-110 self-start sm:self-auto"
+                        >
+                          <Plus size={14} /> {addLabel}
+                        </button>
+                      </div>
+                    </div>
+                    {/* Segmented control — Commands vs Notes. Counts sit
+                        inside each pill so switching contexts is a single
+                        glance. */}
+                    <div className="flex items-center gap-1 self-start bg-black/30 border border-white/5 rounded-xl p-0.5">
                       <button
-                        onClick={() => { setEditNoteData({ id: null, title: "", body: "" }); setIsNotePanelOpen(true); }}
-                        title="Add Note"
-                        className="h-9 px-3 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5 transition-all hover:brightness-110 self-start sm:self-auto"
+                        onClick={() => setLibraryTab("commands")}
+                        className={`h-8 px-3 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                          onCommandsTab
+                            ? "bg-primary/15 text-primary shadow-inner"
+                            : "text-zinc-400 hover:text-zinc-100"
+                        }`}
                       >
-                        <Plus size={14} /> Add Note
+                        <TerminalSquare size={12} /> Commands
+                        <span className={`text-[9px] font-bold ${onCommandsTab ? "text-primary/70" : "text-zinc-600"}`}>
+                          {filteredCommands.length}
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => setLibraryTab("notes")}
+                        className={`h-8 px-3 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                          !onCommandsTab
+                            ? "bg-primary/15 text-primary shadow-inner"
+                            : "text-zinc-400 hover:text-zinc-100"
+                        }`}
+                      >
+                        <StickyNote size={12} /> Notes
+                        <span className={`text-[9px] font-bold ${!onCommandsTab ? "text-primary/70" : "text-zinc-600"}`}>
+                          {filteredNotes.length}
+                        </span>
                       </button>
                     </div>
                   </header>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-10">
-                    {visible.length === 0 ? (
-                      <div className="col-span-full py-12 text-center text-zinc-500 text-[14px] italic border border-dashed border-white/10 rounded-2xl">
-                        {q ? `No notes match "${noteQuery}".` : "No notes yet."}
-                      </div>
-                    ) : (
-                      visible.map(n => (
-                        <div key={n.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[170px]">
-                          <div className="flex justify-between items-start mb-2 gap-2">
-                            <h3 className="text-[15px] font-bold text-primary tracking-tight truncate flex-1">{n.title || "Untitled"}</h3>
-                            <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0">
-                              <button onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
-                              <button onClick={async () => {
-                                const ok = await confirm({ title: "Delete note?", message: `“${n.title || "Untitled"}” will be removed.`, destructive: true });
-                                if (!ok) return;
-                                invoke("delete_note", { id: n.id }).then(() => refreshNotes());
-                              }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
+                  {onCommandsTab ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-10">
+                      {filteredCommands.length === 0 ? (
+                        <div className="col-span-full py-12 text-center text-zinc-500 text-[14px] italic border border-dashed border-white/10 rounded-2xl">
+                          {q ? `No commands match "${libraryQuery}".` : "No commands yet."}
+                        </div>
+                      ) : (
+                        filteredCommands.map(cmd => (
+                          <div key={cmd.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[150px]">
+                            <div className="flex justify-between items-start mb-2">
+                              <h3 className="text-[16px] font-bold text-primary tracking-tight truncate flex-1">{cmd.title}</h3>
+                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                                <button onClick={() => { setEditCommandData(cmd); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
+                                <button onClick={async () => {
+                                  const ok = await confirm({ title: "Delete command?", message: `“${cmd.title}” will be removed.`, destructive: true });
+                                  if (!ok) return;
+                                  invoke("delete_command", { id: cmd.id }).then(() => refreshCommands());
+                                }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
+                              </div>
+                            </div>
+                            <div className="bg-black/30 rounded-xl p-3 border border-white/5 flex-1 relative group-hover:border-primary/20 transition-colors overflow-hidden">
+                              <pre className="text-[12px] text-zinc-400 font-mono whitespace-pre-wrap leading-relaxed line-clamp-3">{cmd.content}</pre>
                             </div>
                           </div>
-                          <div className="bg-black/30 rounded-xl p-3 border border-white/5 flex-1 relative group-hover:border-primary/20 transition-colors overflow-hidden cursor-pointer"
-                               onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }}>
-                            <pre className="text-[12px] text-zinc-400 whitespace-pre-wrap leading-relaxed line-clamp-4 font-sans">{n.body}</pre>
-                          </div>
+                        ))
+                      )}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-10">
+                      {filteredNotes.length === 0 ? (
+                        <div className="col-span-full py-12 text-center text-zinc-500 text-[14px] italic border border-dashed border-white/10 rounded-2xl">
+                          {q ? `No notes match "${libraryQuery}".` : "No notes yet."}
                         </div>
-                      ))
-                    )}
-                  </div>
+                      ) : (
+                        filteredNotes.map(n => (
+                          <div key={n.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[170px]">
+                            <div className="flex justify-between items-start mb-2 gap-2">
+                              <h3 className="text-[15px] font-bold text-primary tracking-tight truncate flex-1">{n.title || "Untitled"}</h3>
+                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0">
+                                <button onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
+                                <button onClick={async () => {
+                                  const ok = await confirm({ title: "Delete note?", message: `“${n.title || "Untitled"}” will be removed.`, destructive: true });
+                                  if (!ok) return;
+                                  invoke("delete_note", { id: n.id }).then(() => refreshNotes());
+                                }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
+                              </div>
+                            </div>
+                            <div className="bg-black/30 rounded-xl p-3 border border-white/5 flex-1 relative group-hover:border-primary/20 transition-colors overflow-hidden cursor-pointer"
+                                 onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }}>
+                              <pre className="text-[12px] text-zinc-400 whitespace-pre-wrap leading-relaxed line-clamp-4 font-sans">{n.body}</pre>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })()}
-
-            {activeView === "commands" && (
-              <div className="flex-1 flex flex-col p-4 sm:p-8 space-y-5 sm:space-y-6 animate-in overflow-y-auto custom-scrollbar">
-                <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 border-b border-zinc-700 pb-5 sm:pb-6 shrink-0">
-                  <div className="min-w-0">
-                    <h2 className="text-[18px] sm:text-[22px] font-bold text-white tracking-tight">Commands</h2>
-                    <p className="hidden sm:block text-[13px] text-zinc-400">Snippets you can paste into a terminal.</p>
-                  </div>
-                  <button
-                    onClick={() => { setEditCommandData({ id: null, title: "", content: "" }); setIsCommandPanelOpen(true); }}
-                    title="Add Command"
-                    className="h-9 px-3 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5 transition-all hover:brightness-110 self-start sm:self-auto"
-                  >
-                    <Plus size={14} /> Add Command
-                  </button>
-                </header>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-10">
-                  {commands.length === 0 ? (
-                    <div className="col-span-full py-12 text-center text-zinc-500 text-[14px] italic border border-dashed border-white/10 rounded-2xl">
-                      No commands yet.
-                    </div>
-                  ) : (
-                    commands.map(cmd => (
-                      <div key={cmd.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[150px]">
-                        <div className="flex justify-between items-start mb-2">
-                          <h3 className="text-[16px] font-bold text-primary tracking-tight">{cmd.title}</h3>
-                          <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => { setEditCommandData(cmd); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
-                            <button onClick={async () => {
-                              const ok = await confirm({ title: "Delete command?", message: `“${cmd.title}” will be removed.`, destructive: true });
-                              if (!ok) return;
-                              invoke("delete_command", { id: cmd.id }).then(() => refreshCommands());
-                            }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
-                          </div>
-                        </div>
-                        <div className="bg-black/30 rounded-xl p-3 border border-white/5 flex-1 relative group-hover:border-primary/20 transition-colors overflow-hidden">
-                          <pre className="text-[12px] text-zinc-400 font-mono whitespace-pre-wrap leading-relaxed line-clamp-3">{cmd.content}</pre>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            )}
 
             {/* Monitor is mounted permanently and just CSS-hidden when not
                 active. Unmounting would tear down the sample/history ring
