@@ -1,8 +1,14 @@
 import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy } from "lucide-react";
 import { useState } from "react";
+import { useConfirm } from "../ui/confirm";
 
 export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, isMobile }: any) => {
   const [search, setSearch] = useState("");
+  // Native window.confirm() is a silent no-op inside Tauri's Android WebView
+  // (same shim gap useTextPrompt was added for), so the delete buttons here
+  // silently did nothing on Android after v0.2.32 made the action cluster
+  // always-visible on mobile. Route through the themed useConfirm hook.
+  const confirm = useConfirm();
   // Folder navigation is controlled when the parent passes both props, so the
   // selection survives NodeGrid unmount/remount (the parent sticks it onto
   // its own state). Falls back to local state for older callers that don't
@@ -80,7 +86,12 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           <Edit2 size={14} />
         </button>
         <button
-          onClick={(e) => { e.stopPropagation(); if(window.confirm('Delete this server?')) onRemoveServer(s.id); }}
+          onClick={async (e) => {
+            e.stopPropagation();
+            if (await confirm({ title: 'Delete server?', message: `“${s.name}” will be removed from this profile.`, destructive: true })) {
+              onRemoveServer(s.id);
+            }
+          }}
           className="p-2 text-zinc-500 hover:text-red-500 transition-all"
         >
           <Trash2 size={14} />
@@ -152,7 +163,12 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                   <Edit2 size={14} />
                 </button>
                 <button
-                  onClick={(e) => { e.stopPropagation(); if(window.confirm('Delete this folder and everything inside?')) onRemoveFolder(f.id); }}
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if (await confirm({ title: 'Delete folder?', message: `“${f.name}” and every server inside it will be removed.`, destructive: true })) {
+                      onRemoveFolder(f.id);
+                    }
+                  }}
                   title="Delete folder"
                   className="p-1.5 text-zinc-500 hover:text-red-500 transition-all"
                 >

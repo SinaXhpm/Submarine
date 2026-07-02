@@ -55,7 +55,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout }: any) =>
               className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-amber-300 hover:bg-amber-500/10"
               title="Lock & switch profile"
             >
-              <LogOut size={18} />
+              <LogOut size={20} />
             </button>
           )}
           <button
@@ -63,7 +63,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout }: any) =>
             className={`p-2.5 rounded-xl transition-all flex items-center justify-center ${
               activeTab === 'settings'
                 ? 'text-primary bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.15)]'
-                : 'text-zinc-600 hover:text-zinc-200 hover:bg-white/5'
+                : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'
             }`}
             title="Settings"
           >
@@ -105,7 +105,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout }: any) =>
             className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-amber-300 hover:bg-amber-500/10"
             title="Lock & switch profile"
           >
-            <LogOut size={18} />
+            <LogOut size={20} />
           </button>
         )}
         <button
@@ -113,7 +113,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout }: any) =>
           className={`p-2.5 rounded-xl transition-all flex items-center justify-center ${
             activeTab === 'settings'
               ? 'text-primary bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.15)]'
-              : 'text-zinc-600 hover:text-zinc-200 hover:bg-white/5'
+              : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'
           }`}
           title="Settings"
         >

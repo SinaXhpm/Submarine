@@ -292,6 +292,13 @@ async fn local_mtime(path: &Path) -> Option<u64> {
 /// after upload — some SFTP servers truncated the file on a round-tripped
 /// SETSTAT. Subsequent dry-runs fall back to hash compare, which catches
 /// real changes correctly.
+///
+/// Atomic write: we stream into `<remote>.submarine-tmp`, then rename onto
+/// the real destination on success. Without this a mid-write SSH channel
+/// drop (VPN handoff, laptop sleep, TCP RST) would leave the destination
+/// truncated because TRUNCATE zeroed it at open time, and any consumer on
+/// the server would read a partial file until the next watcher event
+/// corrects it. The sibling `sftp_download_file` uses the same pattern.
 async fn sftp_upload_file(sftp: &SftpSession, local: &Path, remote: &str) -> Result<(), String> {
     if let Some(parent) = std::path::Path::new(remote).parent() {
         let pstr = parent.to_string_lossy().replace('\\', "/");
@@ -299,22 +306,40 @@ async fn sftp_upload_file(sftp: &SftpSession, local: &Path, remote: &str) -> Res
             sftp_mkdir_p(sftp, &pstr).await?;
         }
     }
+    let tmp = format!("{}.submarine-tmp", remote);
     let mut f = tokio::fs::File::open(local).await
         .map_err(|e| format!("local open {:?}: {}", local, e))?;
-    let mut handle = sftp.open_with_flags(
-        remote,
-        OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
-    ).await.map_err(|e| format!("sftp open {}: {}", remote, e))?;
+    let write_result: Result<(), String> = async {
+        let mut handle = sftp.open_with_flags(
+            &tmp,
+            OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
+        ).await.map_err(|e| format!("sftp open {}: {}", tmp, e))?;
 
-    let mut buf = vec![0u8; 64 * 1024];
-    loop {
-        let n = f.read(&mut buf).await.map_err(|e| format!("local read: {}", e))?;
-        if n == 0 { break; }
-        handle.write_all(&buf[..n]).await.map_err(|e| format!("sftp write: {}", e))?;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = f.read(&mut buf).await.map_err(|e| format!("local read: {}", e))?;
+            if n == 0 { break; }
+            handle.write_all(&buf[..n]).await.map_err(|e| format!("sftp write: {}", e))?;
+        }
+        // Flush + close errors are real (bytes may not have landed) — propagate.
+        handle.flush().await.map_err(|e| format!("sftp flush {}: {}", tmp, e))?;
+        handle.shutdown().await.map_err(|e| format!("sftp close {}: {}", tmp, e))?;
+        Ok(())
+    }.await;
+    if let Err(e) = write_result {
+        // Best-effort cleanup of the partial tmp before returning the error
+        // so we don't leave `<name>.submarine-tmp` littering the remote root.
+        let _ = sftp.remove_file(&tmp).await;
+        return Err(e);
     }
-    // Flush + close errors are real (bytes may not have landed) — propagate.
-    handle.flush().await.map_err(|e| format!("sftp flush {}: {}", remote, e))?;
-    handle.shutdown().await.map_err(|e| format!("sftp close {}: {}", remote, e))?;
+    // Rename over the destination. On POSIX SFTP servers `sftp.rename` errors
+    // if the destination already exists, so we unlink the previous copy first.
+    // The lost-atomicity window here (destination missing between remove and
+    // rename) is microseconds and only affects readers that catch us mid-swap;
+    // partial-write corruption we just prevented is a far worse failure mode.
+    let _ = sftp.remove_file(remote).await;
+    sftp.rename(&tmp, remote).await
+        .map_err(|e| format!("sftp rename {} -> {}: {}", tmp, remote, e))?;
     Ok(())
 }
 
@@ -1012,11 +1037,19 @@ async fn process_event(
             }
         }
         Ok(meta) if meta.is_file() => {
-            // Skip if local is older than what's already on remote (e.g. an
-            // editor "touch" that didn't actually change content).
-            let lm = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
-            let rm = sftp_remote_mtime(sftp, &remote).await;
-            if let Some(rmt) = rm { if lm > 0 && lm <= rmt { return; } }
+            // The debounced FS event tells us the user JUST touched this file.
+            // Any prior mtime guard here silently dropped edits under two very
+            // common conditions:
+            //   1. Client clock behind the server: local mtime <= remote mtime
+            //      for content the user actually just changed, so the upload
+            //      was skipped with no log entry and no counter bump — the
+            //      user sees state=watching and thinks it's synced.
+            //   2. Editors that preserve mtime (cp -p, IDE refactor tools):
+            //      body changes but mtime stays equal, tripping the `<=`
+            //      branch again.
+            // Trust the watcher's event and just upload — sftp_upload_file
+            // itself is a no-op on the byte level (TRUNCATE + write) so this
+            // is cheap when the file truly didn't change.
             match sftp_upload_file(sftp, path, &remote).await {
                 Ok(_) => {
                     {
@@ -1032,8 +1065,15 @@ async fn process_event(
             }
         }
         Ok(_) => { /* symlink/special — skip */ }
-        Err(_) => {
-            // Local path is gone → remove on remote (or soft-delete).
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Local path is gone → remove on remote (or soft-delete). ONLY
+            // NotFound counts as "deleted"; every other io::ErrorKind is a
+            // transient / environmental failure (Windows Defender share-lock
+            // during atomic-save, OneDrive/Dropbox placeholder briefly
+            // unhydrated, network-drive blip, EACCES from a rootful docker
+            // remapping ownership) and would trigger a real remote delete
+            // if we lumped them together — an unrecoverable hard-rm when
+            // spec.soft_delete=false.
             let res = if spec.soft_delete {
                 sftp_soft_delete(sftp, &spec.remote, &remote).await
             } else {
@@ -1053,6 +1093,14 @@ async fn process_event(
                 Err(e) => emit_log(app, session_id, mirror_id, "warn", "delete-fail",
                                    Some(rel), Some(e)),
             }
+        }
+        Err(e) => {
+            // Non-NotFound metadata error — log and skip. The next watcher
+            // event (retry after the AV lock releases, placeholder hydrates,
+            // network mount recovers) will re-attempt without turning a
+            // transient failure into a destructive remote delete.
+            emit_log(app, session_id, mirror_id, "warn", "stat-fail",
+                     Some(rel), Some(e.to_string()));
         }
     }
 }

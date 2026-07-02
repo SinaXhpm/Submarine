@@ -1648,6 +1648,7 @@ async fn initiate_connection(
     app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
     db_state: tauri::State<'_, DbState>,
+    mirrors: tauri::State<'_, MirrorMap>,
     session_id: String,
     server_id: i32,
     custom_password: Option<String>,
@@ -1674,13 +1675,15 @@ async fn initiate_connection(
         }
     }
     state.sftp_sessions.lock().await.remove(&session_id);
-    // Terminal IDs are `${session_id}-term-N` (see SessionView.tsx), so a
-    // substring match on session_id sweeps every PTY task tied to the old
-    // handle. Without this, open_terminal during reconnect would clash with
-    // the dead entry and the user's first keystroke would route into the
-    // ghost channel.
-    state.terminal_txs.lock().await.retain(|k, _| !k.contains(&session_id));
-    state.resize_txs.lock().await.retain(|k, _| !k.contains(&session_id));
+    // Terminal IDs are `${session_id}-term-N` (see SessionView.tsx), so we
+    // sweep every PTY task tied to the old handle. Match by the exact
+    // `${session_id}-term-` prefix so id `session-1` doesn't sweep the
+    // terminals of `session-10`, `session-11`, ... — a `contains`-based
+    // match here silently tore down unrelated live sessions once server
+    // IDs (which are SQLite autoincrement ints) crossed 10.
+    let term_prefix = format!("{}-term-", session_id);
+    state.terminal_txs.lock().await.retain(|k, _| !k.starts_with(&term_prefix));
+    state.resize_txs.lock().await.retain(|k, _| !k.starts_with(&term_prefix));
     // Bump the generation so any watcher task still alive from the prior
     // attempt sees a newer value next tick and bails silently instead of
     // racing the new connect to emit `session-disconnected-{id}`.
@@ -1720,6 +1723,12 @@ async fn initiate_connection(
     // First-connect is a no-op (no entries to remove).
     tunnel::stop_all_for_session(&state.tunnels, &session_id).await;
     state.forwarded_targets.lock().await.remove(&session_id);
+    // Same story for mirrors — a reconnect must not inherit a mirror worker
+    // that still holds an Arc<SftpSession> pointing at the DEAD handle from
+    // the previous attempt. Without this the reconnected session appears
+    // fine but the mirror keeps writing upload-fail logs against the old
+    // socket forever, and manual Stop is the only way to clear it.
+    mirror::stop_all_for_session(&mirrors, &session_id).await;
 
     // Per-session map for R-tunnel target lookups. Created here so the same
     // Arc can be handed to both the ClientHandler (consulted on incoming
@@ -1872,6 +1881,10 @@ async fn initiate_connection(
     };
 
     let cleanup_nonce = connect_nonce.clone();
+    // Own an Arc into MirrorMap so the outer spawn (which requires 'static)
+    // doesn't try to borrow the caller's `mirrors: State<'_, MirrorMap>`.
+    // The Arc is 'static; the State reference is not.
+    let mirrors_owned: MirrorMap = mirrors.inner().clone();
 
     tauri::async_runtime::spawn(async move {
         println!("[BACKEND WORKER] Started connection worker thread for session: {}", session_id_clone);
@@ -2260,6 +2273,7 @@ async fn initiate_connection(
                         let state_sftp_w = Arc::clone(&state_sftp_sessions);
                         let state_gen_w = Arc::clone(&state_session_generation);
                         let state_tunnels_w = Arc::clone(&state_tunnels);
+                        let state_mirrors_w: MirrorMap = mirrors_owned.clone();
                         let my_gen = connect_generation;
                         tauri::async_runtime::spawn(async move {
                             // Two-tier liveness check:
@@ -2358,6 +2372,11 @@ async fn initiate_connection(
                                     // path; the listener tasks themselves no
                                     // longer probe the handle.
                                     tunnel::stop_all_for_session(&state_tunnels_w, &sid_w).await;
+                                    // Stop any mirrors bound to this session too — otherwise the
+                                    // mirror worker keeps its own Arc<SftpSession> pointing at
+                                    // this dead handle and hammers upload-fail on every future
+                                    // FS event until the app is quit.
+                                    mirror::stop_all_for_session(&state_mirrors_w, &sid_w).await;
                                     let _ = app_w.emit(
                                         &format!("session-disconnected-{}", sid_w),
                                         serde_json::json!({
@@ -2629,10 +2648,12 @@ async fn disconnect_session(
     state.sftp_sessions.lock().await.remove(&session_id);
     state.connections.lock().await.remove(&session_id);
     // Drop terminal tx/resize entries so a subsequent reconnect doesn't try
-    // to write into a dead PTY task. Match by substring because terminal ids
-    // are `${session_id}-term-N` (set in SessionView.tsx).
-    state.terminal_txs.lock().await.retain(|k, _| !k.contains(&session_id));
-    state.resize_txs.lock().await.retain(|k, _| !k.contains(&session_id));
+    // to write into a dead PTY task. Match by the exact `${session_id}-term-`
+    // prefix — a `contains` here silently tears down session-10's terminals
+    // when the user disconnects session-1.
+    let term_prefix = format!("{}-term-", session_id);
+    state.terminal_txs.lock().await.retain(|k, _| !k.starts_with(&term_prefix));
+    state.resize_txs.lock().await.retain(|k, _| !k.starts_with(&term_prefix));
     // Wipe any temp files this session left behind (live-edit downloads).
     // Best-effort: failures are usually because an editor still holds a lock
     // on a file, in which case the file persists until the OS cleans temp.
@@ -2742,7 +2763,14 @@ async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>,
 #[tauri::command]
 async fn write_terminal_data(state: tauri::State<'_, SshState>, terminal_id: String, data: Vec<u8>) -> Result<(), String> {
     use crate::ssh_manager::TerminalCommand;
-    if let Some(tx) = state.terminal_txs.lock().await.get(&terminal_id) {
+    // Clone the Sender OUT of the map, then release the map lock before we
+    // await on send(). If we held the guard across the send, a saturated
+    // 32-slot mpsc on a slow SSH link would block every other terminal's
+    // write path — one slow terminal freezes the entire app-wide typing
+    // experience because the shared map guard is a global gate.
+    // mpsc::Sender is cheap to clone.
+    let tx = state.terminal_txs.lock().await.get(&terminal_id).cloned();
+    if let Some(tx) = tx {
         let _ = tx.send(TerminalCommand::Data(data)).await;
     }
     Ok(())
@@ -4329,10 +4357,19 @@ async fn sftp_open_remote_file(
                         None => return Err("SSH session disconnected".to_string()),
                     };
 
-                    let session = session_arc.lock().await;
-                    let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
-                    channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
-                    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream()).await.map_err(|e| e.to_string())?;
+                    // Open the SFTP subsystem, then IMMEDIATELY drop the
+                    // session mutex. Holding it across the whole write serialises
+                    // every open_terminal / cold-cache SFTP-bootstrap request on
+                    // the same session behind this one save — visible as a UI
+                    // freeze whenever the user Ctrl-S's a large remote file.
+                    let sftp = {
+                        let session = session_arc.lock().await;
+                        let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
+                        channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
+                        let s = russh_sftp::client::SftpSession::new(channel.into_stream()).await.map_err(|e| e.to_string())?;
+                        drop(session);
+                        s
+                    };
 
                     use russh_sftp::protocol::OpenFlags;
                     use tokio::io::AsyncWriteExt;
@@ -4522,7 +4559,22 @@ fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::Pa
         return Err(format!("Refusing to operate on filesystem root: {}", canonical.display()));
     }
 
-    let canon_norm = canonical.to_string_lossy().to_lowercase().replace('\\', "/");
+    let mut canon_norm = canonical.to_string_lossy().to_lowercase().replace('\\', "/");
+    // On Windows, std::fs::canonicalize returns a `\\?\`-prefixed *verbatim*
+    // path, e.g. `\\?\C:\Windows\System32`. After the `\` -> `/` normalization
+    // above that becomes `//?/c:/windows/system32`, which never matches the
+    // blocklist entries `c:/windows`, `c:/program files`, etc. — silently
+    // defeating this guard for every Windows system directory. Strip the
+    // verbatim prefix (and its `\\?\UNC\` variant for UNC paths) so the
+    // subsequent prefix match sees a normal drive-letter path. Also strip the
+    // NT-device `\\.\` prefix on the off chance a caller hands us one.
+    if let Some(rest) = canon_norm.strip_prefix("//?/unc/") {
+        canon_norm = format!("//{}", rest);
+    } else if let Some(rest) = canon_norm.strip_prefix("//?/") {
+        canon_norm = rest.to_string();
+    } else if let Some(rest) = canon_norm.strip_prefix("//./") {
+        canon_norm = rest.to_string();
+    }
     // Trim trailing slash for clean prefix matches.
     let canon_norm = canon_norm.trim_end_matches('/').to_string();
 

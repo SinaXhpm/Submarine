@@ -1,6 +1,59 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, X } from "lucide-react";
+
+// Focus trap for our modal portals. When `isOpen` flips true, remember the
+// element that had focus, then move focus into the panel (unless React's
+// autoFocus already did — we check panel.contains(activeElement) first).
+// While open, intercept Tab / Shift+Tab so focus wraps inside the panel
+// instead of tabbing into the underlying app (which is inert to sighted
+// users but reachable via keyboard/AT without this). On close, restore
+// focus to the previously-focused element so keyboard users don't lose
+// their place. Scoped to this file — no callers touch it.
+const useFocusTrap = (isOpen: boolean, panelRef: React.RefObject<HTMLDivElement | null>) => {
+  useEffect(() => {
+    if (!isOpen) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const getFocusable = () =>
+      Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'button, input, textarea, [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter((el) => !el.hasAttribute("disabled"));
+    // Only override focus if React's autoFocus didn't already land inside.
+    if (!panel.contains(document.activeElement)) {
+      getFocusable()[0]?.focus();
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const items = getFocusable();
+      if (items.length === 0) { e.preventDefault(); return; }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (active === first || !panel.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (active === last || !panel.contains(active)) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      if (previouslyFocused && previouslyFocused !== document.body) {
+        previouslyFocused.focus?.();
+      }
+    };
+  }, [isOpen, panelRef]);
+};
 
 // Themed replacement for the browser-native `confirm()` dialog. Anywhere in
 // the tree, `useConfirm()` returns a function that opens the modal and
@@ -62,6 +115,15 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   const [tpState, setTpState] = useState<{ opts: TextPromptOptions; resolve: (v: string | null) => void } | null>(null);
   const [tpValue, setTpValue] = useState("");
   const [tpError, setTpError] = useState<string | null>(null);
+
+  // Refs to each modal's panel — the focus trap needs a DOM anchor to
+  // determine "inside vs outside" for the Tab-cycle logic.
+  const owPanelRef = useRef<HTMLDivElement | null>(null);
+  const confirmPanelRef = useRef<HTMLDivElement | null>(null);
+  const tpPanelRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(owState !== null, owPanelRef);
+  useFocusTrap(state !== null, confirmPanelRef);
+  useFocusTrap(tpState !== null, tpPanelRef);
 
   const confirm = useCallback((opts: ConfirmOptions | string) => {
     return new Promise<boolean>((resolve) => {
@@ -151,12 +213,16 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
       {owState && createPortal(
         <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
              onClick={() => closeOverwrite("cancel")}>
-          <div onClick={(e) => e.stopPropagation()}
+          <div ref={owPanelRef}
+               role="dialog"
+               aria-modal="true"
+               aria-labelledby="overwrite-modal-title"
+               onClick={(e) => e.stopPropagation()}
                className="w-full max-w-[420px] bg-[#121214] border border-white/10 rounded-xl shadow-2xl p-4 font-mono text-[12px] animate-in zoom-in-95 fade-in duration-150">
             <div className="flex items-start justify-between gap-3 mb-3">
               <div className="flex items-center gap-2">
                 <AlertTriangle size={14} className="text-amber-400" />
-                <span className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
+                <span id="overwrite-modal-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
                   {owState.opts.direction === "download" ? "Local file exists" : "Remote file exists"}
                 </span>
               </div>
@@ -207,12 +273,16 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
       {state && createPortal(
         <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
              onClick={() => close(false)}>
-          <div onClick={(e) => e.stopPropagation()}
+          <div ref={confirmPanelRef}
+               role="dialog"
+               aria-modal="true"
+               aria-labelledby="confirm-modal-title"
+               onClick={(e) => e.stopPropagation()}
                className="w-full max-w-[380px] bg-[#121214] border border-white/10 rounded-xl shadow-2xl p-4 font-mono text-[12px] animate-in zoom-in-95 fade-in duration-150">
             <div className="flex items-start justify-between gap-3 mb-3">
               <div className="flex items-center gap-2">
                 <AlertTriangle size={14} className={state.opts.destructive ? "text-rose-400" : "text-amber-400"} />
-                <span className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
+                <span id="confirm-modal-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
                   {state.opts.title || (state.opts.destructive ? "Confirm action" : "Are you sure?")}
                 </span>
               </div>
@@ -244,10 +314,14 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
       {tpState && createPortal(
         <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
              onClick={() => closeTextPrompt(null)}>
-          <div onClick={(e) => e.stopPropagation()}
+          <div ref={tpPanelRef}
+               role="dialog"
+               aria-modal="true"
+               aria-labelledby="text-prompt-modal-title"
+               onClick={(e) => e.stopPropagation()}
                className="w-full max-w-[400px] bg-[#121214] border border-white/10 rounded-xl shadow-2xl p-4 font-mono text-[12px] animate-in zoom-in-95 fade-in duration-150">
             <div className="flex items-start justify-between gap-3 mb-3">
-              <span className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
+              <span id="text-prompt-modal-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
                 {tpState.opts.title || "Enter value"}
               </span>
               <button onClick={() => closeTextPrompt(null)} className="text-zinc-500 hover:text-white shrink-0">

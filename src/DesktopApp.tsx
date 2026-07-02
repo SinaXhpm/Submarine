@@ -4,7 +4,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
-  StickyNote, Search, Square, Copy, ChevronLeft
+  StickyNote, Search, Square, Copy, ChevronLeft, MoreVertical
 } from "lucide-react";
 
 import ProfileSelectPage from "./components/ProfileSelectPage";
@@ -552,11 +552,40 @@ function DesktopApp() {
                 aria-label={dotTitle}
               />
               <span className="text-[11px] sm:text-[10px] font-bold whitespace-nowrap uppercase tracking-tight normal-case sm:uppercase">{s.serverName}</span>
-              <X
-                size={10}
-                className="ml-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:text-red-500 shrink-0"
+              {/* Mobile-only actions trigger. Right-click doesn't exist on
+                  touch, so surface the same tabMenu via a MoreVertical
+                  button; positioned to the button's bounding rect so the
+                  popover aligns with the pill instead of the tap point. */}
+              <button
+                type="button"
+                aria-label="Session actions"
+                className="sm:hidden ml-1 h-7 w-7 -my-1 flex items-center justify-center rounded hover:bg-white/5 shrink-0"
                 onClick={(e) => {
                   e.stopPropagation();
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setTabMenu({ x: rect.left, y: rect.bottom, sessionId: s.id });
+                }}
+              >
+                <MoreVertical size={14} />
+              </button>
+              <button
+                type="button"
+                aria-label="Close session"
+                className="ml-1 h-7 w-7 -my-1 -mr-1 flex items-center justify-center rounded hover:bg-white/5 shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  // Only confirm when there's an actual live connection to
+                  // drop — connecting/failed/disconnected close instantly.
+                  // Status source of truth is the same sessionStatuses map
+                  // that drives the coloured dot above.
+                  if (sessionStatuses[s.id] === "connected") {
+                    const ok = await confirm({
+                      title: "Close this session?",
+                      message: "The SSH connection will be dropped.",
+                      destructive: true,
+                    });
+                    if (!ok) return;
+                  }
                   setSessions(prev => prev.filter(sess => sess.id !== s.id));
                   setSessionStatuses(prev => {
                     const { [s.id]: _, ...rest } = prev;
@@ -564,7 +593,9 @@ function DesktopApp() {
                   });
                   setActiveView(prev => (prev === s.id ? "nodes" : prev));
                 }}
-              />
+              >
+                <X size={10} className="hover:text-red-500" />
+              </button>
             </div>
           );
         })}
@@ -758,7 +789,11 @@ function DesktopApp() {
                                   setEditCredData({ ...c, password: pw });
                                   setIsCredPanelOpen(true);
                                 }} className="text-zinc-500 hover:text-white"><Edit2 size={14} /></button>
-                                <button onClick={() => invoke("delete_credential", { id: c.id }).then(() => refreshCredentials())} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
+                                <button onClick={async () => {
+                                  const ok = await confirm({ title: "Delete saved password?", message: `“${c.name}” will be removed. Servers using this login will lose it.`, destructive: true });
+                                  if (!ok) return;
+                                  invoke("delete_credential", { id: c.id }).then(() => refreshCredentials());
+                                }} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
                               </div>
                             </div>
                             <div className="flex flex-col gap-0.5">
@@ -803,7 +838,11 @@ function DesktopApp() {
                                   });
                                   setIsKeyPanelOpen(true);
                                 }} className="text-zinc-500 hover:text-white"><Edit2 size={14} /></button>
-                                <button onClick={() => invoke("delete_ssh_key", { id: k.id }).then(() => refreshSshKeys())} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
+                                <button onClick={async () => {
+                                  const ok = await confirm({ title: "Delete SSH key?", message: `“${k.name}” will be removed. This key cannot be recovered.`, destructive: true });
+                                  if (!ok) return;
+                                  invoke("delete_ssh_key", { id: k.id }).then(() => refreshSshKeys());
+                                }} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
                               </div>
                             </div>
                             <div className="flex flex-col gap-0.5">
@@ -879,7 +918,7 @@ function DesktopApp() {
                       <button
                         onClick={() => { setEditNoteData({ id: null, title: "", body: "" }); setIsNotePanelOpen(true); }}
                         title="Add Note"
-                        className="h-9 px-3 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5 transition-all hover:bg-primary self-start sm:self-auto"
+                        className="h-9 px-3 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5 transition-all hover:brightness-110 self-start sm:self-auto"
                       >
                         <Plus size={14} /> Add Note
                       </button>
@@ -898,7 +937,11 @@ function DesktopApp() {
                             <h3 className="text-[15px] font-bold text-primary tracking-tight truncate flex-1">{n.title || "Untitled"}</h3>
                             <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0">
                               <button onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
-                              <button onClick={() => invoke("delete_note", { id: n.id }).then(() => refreshNotes())} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
+                              <button onClick={async () => {
+                                const ok = await confirm({ title: "Delete note?", message: `“${n.title || "Untitled"}” will be removed.`, destructive: true });
+                                if (!ok) return;
+                                invoke("delete_note", { id: n.id }).then(() => refreshNotes());
+                              }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                             </div>
                           </div>
                           <div className="bg-black/30 rounded-xl p-3 border border-white/5 flex-1 relative group-hover:border-primary/20 transition-colors overflow-hidden cursor-pointer"
@@ -923,7 +966,7 @@ function DesktopApp() {
                   <button
                     onClick={() => { setEditCommandData({ id: null, title: "", content: "" }); setIsCommandPanelOpen(true); }}
                     title="Add Command"
-                    className="h-9 px-3 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5 transition-all hover:bg-primary self-start sm:self-auto"
+                    className="h-9 px-3 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5 transition-all hover:brightness-110 self-start sm:self-auto"
                   >
                     <Plus size={14} /> Add Command
                   </button>
@@ -941,7 +984,11 @@ function DesktopApp() {
                           <h3 className="text-[16px] font-bold text-primary tracking-tight">{cmd.title}</h3>
                           <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                             <button onClick={() => { setEditCommandData(cmd); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
-                            <button onClick={() => invoke("delete_command", { id: cmd.id }).then(() => refreshCommands())} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
+                            <button onClick={async () => {
+                              const ok = await confirm({ title: "Delete command?", message: `“${cmd.title}” will be removed.`, destructive: true });
+                              if (!ok) return;
+                              invoke("delete_command", { id: cmd.id }).then(() => refreshCommands());
+                            }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                           </div>
                         </div>
                         <div className="bg-black/30 rounded-xl p-3 border border-white/5 flex-1 relative group-hover:border-primary/20 transition-colors overflow-hidden">
@@ -987,7 +1034,11 @@ function DesktopApp() {
                     >
                       <ChevronLeft size={14} /> Settings
                     </button>
-                    <button onClick={() => setLogs([])} className="h-8 sm:h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[11px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-red-500/20 hover:text-red-400 hover:border-primary/50 transition-all flex items-center gap-1.5">
+                    <button onClick={async () => {
+                      const ok = await confirm({ title: "Clear activity log?", message: "All entries will be discarded.", destructive: true });
+                      if (!ok) return;
+                      setLogs([]);
+                    }} className="h-8 sm:h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[11px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-red-500/20 hover:text-red-400 hover:border-primary/50 transition-all flex items-center gap-1.5">
                       <Trash2 size={13} /> Clear
                     </button>
                   </div>
@@ -1006,7 +1057,7 @@ function DesktopApp() {
                       >
                         <div className="flex items-baseline gap-2 sm:gap-3 sm:shrink-0">
                           <span className="text-zinc-600 sm:w-20 shrink-0">{log.time}</span>
-                          <span className={`sm:w-24 shrink-0 font-bold uppercase ${log.type === 'error' ? 'text-red-500' : log.type === 'success' ? 'text-primary' : log.type === 'warn' ? 'text-amber-500' : 'text-blue-500'}`}>
+                          <span className={`sm:w-24 shrink-0 font-bold uppercase ${log.type === 'error' ? 'text-red-500' : log.type === 'success' ? 'text-primary' : log.type === 'warn' ? 'text-amber-500' : 'text-sky-300'}`}>
                             [{log.type}]
                           </span>
                         </div>
@@ -1151,7 +1202,7 @@ function DesktopApp() {
                   addLog(`COMMAND_SAVE_ERROR: ${e}`, "error");
                 }
               }} 
-              className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:bg-primary transition-all active:scale-[0.98] shadow-[0_0_15px_rgba(var(--primary),0.2)] flex items-center justify-center gap-2"
+              className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] shadow-[0_0_15px_rgba(var(--primary),0.2)] flex items-center justify-center gap-2"
             >
               Save
             </button>
@@ -1201,7 +1252,7 @@ function DesktopApp() {
                   addLog(`NOTE_SAVE_ERROR: ${e}`, "error");
                 }
               }}
-              className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:bg-primary transition-all active:scale-[0.98] shadow-[0_0_15px_rgba(var(--primary),0.2)] flex items-center justify-center gap-2"
+              className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] shadow-[0_0_15px_rgba(var(--primary),0.2)] flex items-center justify-center gap-2"
             >
               Save
             </button>
@@ -1301,7 +1352,7 @@ function DesktopApp() {
                   addLog(`CRED_SAVE_ERROR: ${e}`, "error");
                 }
               }} 
-              className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:bg-primary transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+              className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
             >
               Save
             </button>
@@ -1324,22 +1375,22 @@ function DesktopApp() {
             {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Name</label>
-              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary-500/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. My laptop key" value={editKeyData.name} onChange={e => setEditKeyData({ ...editKeyData, name: e.target.value })} />
+              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. My laptop key" value={editKeyData.name} onChange={e => setEditKeyData({ ...editKeyData, name: e.target.value })} />
             </div>
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Public key</label>
-              <textarea className="w-full h-24 bg-black rounded-lg p-3 text-[13px] text-zinc-400 font-mono border border-white/10 outline-none focus:border-primary-500/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none" placeholder="ssh-ed25519 ..." value={editKeyData.public_key} onChange={e => setEditKeyData({ ...editKeyData, public_key: e.target.value })} />
+              <textarea className="w-full h-24 bg-black rounded-lg p-3 text-[13px] text-zinc-400 font-mono border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none" placeholder="ssh-ed25519 ..." value={editKeyData.public_key} onChange={e => setEditKeyData({ ...editKeyData, public_key: e.target.value })} />
             </div>
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Private key</label>
-              <textarea className="w-full h-32 bg-black rounded-lg p-3 text-[13px] text-zinc-400 font-mono border border-white/10 outline-none focus:border-primary-500/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={editKeyData.private_key} onChange={e => setEditKeyData({ ...editKeyData, private_key: e.target.value })} />
+              <textarea className="w-full h-32 bg-black rounded-lg p-3 text-[13px] text-zinc-400 font-mono border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={editKeyData.private_key} onChange={e => setEditKeyData({ ...editKeyData, private_key: e.target.value })} />
             </div>
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Passphrase (if any)</label>
               <PasswordField
                 value={editKeyData.passphrase || ""}
                 onChange={(v) => setEditKeyData({ ...editKeyData, passphrase: v })}
-                className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary-500/50 focus:bg-zinc-900/50 transition-all shadow-inner"
+                className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner"
               />
             </div>
           </div>
@@ -1369,7 +1420,7 @@ function DesktopApp() {
                   addLog(`KEY_SAVE_ERROR: ${e}`, "error");
                 }
               }} 
-              className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:bg-primary transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+              className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
             >
               Save
             </button>

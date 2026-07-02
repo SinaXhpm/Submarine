@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, Play, Library, Info, Container } from "lucide-react";
+import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, Play, Library, Info, Container, Plus } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
@@ -23,15 +23,17 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
     }
   }, [status, session?.id, onStatusChange]);
   const [disconnectReason, setDisconnectReason] = useState<string>("");
-  const [logs, setLogs] = useState<{ msg: string, type: string }[]>([]);
+  const [logs, setLogs] = useState<{ msg: string, type: string, time?: string }[]>([]);
   // Cap to keep a chatty session (monitors, mirrors, MOTD spam) from
   // ballooning React state — each render copies the whole array, so an
   // unbounded log makes the UI quadratically slower over time.
   const LOG_CAP = 500;
-  const pushLog = (entry: { msg: string, type: string }) =>
+  const pushLog = (entry: { msg: string, type: string }) => {
+    const stamped = { ...entry, time: new Date().toLocaleTimeString() };
     setLogs(prev => prev.length >= LOG_CAP
-      ? [...prev.slice(prev.length - LOG_CAP + 1), entry]
-      : [...prev, entry]);
+      ? [...prev.slice(prev.length - LOG_CAP + 1), stamped]
+      : [...prev, stamped]);
+  };
   const [fingerprintPrompt, setFingerprintPrompt] = useState<any>(null);
   const [isAuthError, setIsAuthError] = useState(false);
   const [customPassword, setCustomPassword] = useState("");
@@ -41,6 +43,17 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
   // auth-error retry input — so we mirror it into a ref.
   const customPasswordRef = useRef("");
   useEffect(() => { customPasswordRef.current = customPassword; }, [customPassword]);
+
+  // Mirror `status` into a ref so the one-shot effect below (which registers
+  // the `connection-success` listener from its INITIAL closure) can see the
+  // latest value. Without this ref, `wasReconnect` was computed against a
+  // status snapshot captured at effect-run time (always `'connecting'`), so
+  // a manual reconnect via the banner — which zeroes reconnectAttemptRef —
+  // failed to bump `connectionEpoch`. TerminalView's per-epoch effect then
+  // never re-called open_terminal against the new SSH handle, and the
+  // reconnected terminal appeared frozen while SFTP/tunnels worked fine.
+  const statusRef = useRef(status);
+  useEffect(() => { statusRef.current = status; }, [status]);
 
   // Terminal IDs MUST be unique across every open session, not just within
   // this one — the backend dispatches `terminal-output-<id>` events globally
@@ -147,7 +160,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
     });
 
     const unlistenSuccess = listen(`connection-success-${session.id}`, () => {
-      const wasReconnect = reconnectAttemptRef.current > 0 || status === 'disconnected' || status === 'failed';
+      // statusRef.current is authoritative here — the plain `status` we
+      // could reach through closure is frozen at effect-run time.
+      const prevStatus = statusRef.current;
+      const wasReconnect = reconnectAttemptRef.current > 0 || prevStatus === 'disconnected' || prevStatus === 'failed';
       setStatus('connected');
       cancelReconnect();
       // On a successful RECONNECT we bump connectionEpoch instead of
@@ -424,7 +440,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
           <div className="flex-1 bg-[#121214] border border-white/5 rounded-2xl p-4 font-mono text-[11px] overflow-y-auto custom-scrollbar shadow-inner relative select-text cursor-text">
             {logs.map((l, i) => (
               <div key={i} className={`mb-2 ${l.type === 'error' ? 'text-red-400' : l.type === 'success' ? 'text-primary' : 'text-zinc-400'}`}>
-                <span className="text-zinc-600 opacity-50 mr-3">[{new Date().toLocaleTimeString()}]</span>
+                <span className="text-zinc-600 opacity-50 mr-3">[{l.time}]</span>
                 {l.msg}
               </div>
             ))}
@@ -539,10 +555,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
               setTerminals(prev => [...prev, { id: newId, title: `${prev.length + 1}` }]);
               setActiveTab(newId);
             }}
-            className="h-8 w-8 ml-1 shrink-0 rounded-lg flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all border border-dashed border-white/10"
+            className="h-10 w-10 sm:h-8 sm:w-8 ml-1 shrink-0 rounded-lg flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all border border-dashed border-white/10"
             title="New Terminal"
           >
-            <div className="text-[14px] font-bold">+</div>
+            <Plus size={14} />
           </button>
         </div>
 
@@ -555,28 +571,28 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
           <button
             onClick={() => setActiveTool(activeTool === 'sftp' ? null : 'sftp')}
             title="SFTP"
-            className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'sftp' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+            className={`h-10 w-10 sm:h-8 sm:w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'sftp' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
           >
             <Folder size={14} /> <span className="hidden sm:inline">SFTP</span>
           </button>
           <button
             onClick={() => setActiveTool(activeTool === 'tunnels' ? null : 'tunnels')}
             title="Ports"
-            className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'tunnels' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+            className={`h-10 w-10 sm:h-8 sm:w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'tunnels' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
           >
             <Network size={14} /> <span className="hidden sm:inline">Ports</span>
           </button>
           <button
             onClick={() => setActiveTool(activeTool === 'cmds' ? null : 'cmds')}
             title="Library — commands, notes, this node's notes"
-            className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'cmds' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+            className={`h-10 w-10 sm:h-8 sm:w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'cmds' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
           >
             <Library size={14} /> <span className="hidden sm:inline">Library</span>
           </button>
           <button
             onClick={() => setActiveTool(activeTool === 'info' ? null : 'info')}
             title="Info — server overview, network, services, docker"
-            className={`h-8 w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'info' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
+            className={`h-10 w-10 sm:h-8 sm:w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'info' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
           >
             <Info size={14} /> <span className="hidden sm:inline">Info</span>
           </button>
@@ -613,14 +629,14 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
               </div>
               <div className="flex items-center gap-2">
                 {isWaiting && (
-                  <button onClick={cancelReconnect} className="px-3 py-1 bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors">
+                  <button onClick={cancelReconnect} className="px-3 py-1.5 sm:py-1 min-h-8 sm:min-h-6 bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors">
                     Cancel
                   </button>
                 )}
-                <button onClick={reconnect} className="px-3 py-1 bg-primary/10 text-primary hover:bg-primary/20 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center gap-1.5">
+                <button onClick={reconnect} className="px-3 py-1.5 sm:py-1 min-h-8 sm:min-h-6 bg-primary/10 text-primary hover:bg-primary/20 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center gap-1.5">
                   <Play size={12} /> {isWaiting ? "Now" : "Reconnect"}
                 </button>
-                <button onClick={onClose} className="px-3 py-1 bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors">
+                <button onClick={onClose} className="px-3 py-1.5 sm:py-1 min-h-8 sm:min-h-6 bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors">
                   Close
                 </button>
               </div>

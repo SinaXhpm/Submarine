@@ -2,13 +2,42 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+        Foreground service permissions — required so SSH/SFTP sessions stay
+        connected when the app is backgrounded. Without a foreground service,
+        Android may kill the process on memory pressure and the user finds
+        their terminal dropped when they switch back to the app.
+        FOREGROUND_SERVICE is the base permission (Android 9+).
+        FOREGROUND_SERVICE_DATA_SYNC narrows the reason we hold the wake-lock:
+        SSH is a data-sync workload. Required at RUNTIME grant on Android 14+.
+        POST_NOTIFICATIONS is opt-in on Android 13+. If the user declines, the
+        service still runs; only the persistent notification is hidden.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
+    <!--
+        allowBackup="false" + dataExtractionRules disables Android's Auto Backup
+        (Android 6+) and Device-to-Device transfer / cloud restore (Android 12+).
+        Without this, /data/data/com.submarine.app/{files,databases,shared_prefs}
+        (which holds the encrypted vault, the cloud OAuth bearer token, and any
+        cached SSH state) rides Google's automatic backup to the user's Drive
+        and to any device they sign in to. For an SSH client that's a silent
+        credential leak — an SSH client vault export is exactly what an
+        attacker who compromised the Google account would want. Better to make
+        the user re-configure than to let secrets ride the OS backup pipe.
+    -->
     <application
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.submarine"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
         <!--
             windowSoftInputMode="adjustResize|stateHidden"
@@ -51,5 +80,20 @@
             android:name="android.support.FILE_PROVIDER_PATHS"
             android:resource="@xml/file_paths" />
         </provider>
+
+        <!--
+            ConnectionKeeperService: started from MainActivity.onCreate and
+            calls startForeground() with a persistent status-bar notification
+            so Android will not kill our process while the user is switched
+            to another app. All SSH/SFTP state lives in the Rust backend
+            running inside this process; keeping the process alive keeps
+            the connections alive. Stops when the user swipes the app away
+            from Recents (Android tears the process down) — that is the
+            expected exit path.
+        -->
+        <service
+            android:name=".ConnectionKeeperService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

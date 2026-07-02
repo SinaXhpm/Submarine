@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 12+ backup / transfer rules. Two independent channels:
+    - cloud-backup: what Google Drive Auto Backup pulls
+    - device-transfer: what the Android Setup Wizard's D2D transfer copies
+    We disable both by excluding every domain. android:allowBackup=false alone
+    doesn't cover device-transfer on Android 12+; this file is the authoritative
+    switch for both paths.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1027,8 +1027,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             select-all toggle to the right of the address bar. */}
         <div className={`min-w-full grid ${
           selected.size > 0
-            ? (showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]")
-            : (showPerms ? "grid-cols-[minmax(180px,1fr)_65px_115px_85px]"      : "grid-cols-[minmax(180px,1fr)_75px_125px]")
+            ? (showPerms ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_75px_125px]")
+            : (showPerms ? "grid-cols-1 sm:grid-cols-[minmax(180px,1fr)_65px_115px_85px]"                : "grid-cols-1 sm:grid-cols-[minmax(180px,1fr)_75px_125px]")
         } gap-1.5 px-2.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 select-none font-bold shrink-0 sticky top-0 z-10 shadow-md`}>
           {selected.size > 0 && (
             <div
@@ -1042,14 +1042,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           <div className="bg-[#161619] cursor-pointer hover:text-white py-1.5" onClick={() => toggleSort("name")}>
             NAME {sortIcon("name")}
           </div>
-          <div className="bg-[#161619] cursor-pointer hover:text-white text-right py-1.5" onClick={() => toggleSort("size")}>
+          <div className="hidden sm:block bg-[#161619] cursor-pointer hover:text-white text-right py-1.5" onClick={() => toggleSort("size")}>
             SIZE {sortIcon("size")}
           </div>
-          <div className="bg-[#161619] cursor-pointer hover:text-white text-right py-1.5" onClick={() => toggleSort("modified")}>
+          <div className="hidden sm:block bg-[#161619] cursor-pointer hover:text-white text-right py-1.5" onClick={() => toggleSort("modified")}>
             CHANGED {sortIcon("modified")}
           </div>
           {showPerms && (
-            <div className="bg-[#161619] cursor-pointer hover:text-white text-right py-1.5" onClick={() => toggleSort("permissions")}>
+            <div className="hidden sm:block bg-[#161619] cursor-pointer hover:text-white text-right py-1.5" onClick={() => toggleSort("permissions")}>
               RIGHTS {sortIcon("permissions")}
             </div>
           )}
@@ -1090,8 +1090,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 data-fs-row-isdir={entry.isDir ? "1" : "0"}
                 className={`grid ${
                   selected.size > 0
-                    ? (showPerms ? "grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_minmax(180px,1fr)_75px_125px]")
-                    : (showPerms ? "grid-cols-[minmax(180px,1fr)_65px_115px_85px]"      : "grid-cols-[minmax(180px,1fr)_75px_125px]")
+                    ? (showPerms ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_75px_125px]")
+                    : (showPerms ? "grid-cols-1 sm:grid-cols-[minmax(180px,1fr)_65px_115px_85px]"                : "grid-cols-1 sm:grid-cols-[minmax(180px,1fr)_75px_125px]")
                 } gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
                   isSel
                     ? "bg-indigo-950/40 border-indigo-400 text-indigo-100 font-bold"
@@ -1121,20 +1121,33 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                       : <Square size={12} className="text-zinc-500 hover:text-zinc-300" />}
                   </div>
                 )}
-                <div className="flex items-center gap-2 truncate pr-1">
+                <div className="flex items-center gap-2 min-w-0 pr-1">
                   {entry.isDir
                     ? <Folder size={12} className="text-indigo-300 shrink-0" />
                     : <File size={12} className="text-zinc-500 shrink-0" />}
-                  <span className="truncate text-zinc-100 text-[11px]">{entry.name}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-zinc-100 text-[11px]">{entry.name}</div>
+                    {/* Narrow-viewport subline: on < sm the SIZE / CHANGED /
+                        RIGHTS cells are display:none (so they don't force
+                        horizontal scroll), and their info collapses into
+                        this muted second line under the filename. */}
+                    <div className="sm:hidden truncate text-[10px] text-zinc-500 font-mono">
+                      {[
+                        entry.isDir ? null : formatSize(entry.size),
+                        formatTime(entry.modified),
+                        showPerms ? formatRights(entry.isDir, entry.permissions) : null,
+                      ].filter(Boolean).join(" · ")}
+                    </div>
+                  </div>
                 </div>
-                <div className="text-right text-[10.5px] text-zinc-300 font-sans">
+                <div className="hidden sm:block text-right text-[10.5px] text-zinc-300 font-sans">
                   {entry.isDir ? "" : formatSize(entry.size)}
                 </div>
-                <div className="text-right text-[9.5px] text-zinc-400 truncate">
+                <div className="hidden sm:block text-right text-[9.5px] text-zinc-400 truncate">
                   {formatTime(entry.modified)}
                 </div>
                 {showPerms && (
-                  <div className="text-right text-[10.5px] text-zinc-300 font-mono opacity-90 flex items-center justify-end gap-1">
+                  <div className="hidden sm:flex text-right text-[10.5px] text-zinc-300 font-mono opacity-90 items-center justify-end gap-1">
                     <span className="truncate">{formatRights(entry.isDir, entry.permissions)}</span>
                     <button onClick={(e) => openMenu(e, entry)} title="Options"
                       className="opacity-60 hover:opacity-100 p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-white shrink-0">

@@ -1,8 +1,10 @@
 package com.submarine.app
 
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.view.View
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
@@ -31,6 +33,15 @@ class MainActivity : TauriActivity() {
   // backgrounds with #0d0d10 so the OS chrome blends into our titlebar.
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+
+    // Keep the OS from killing our process while the user is in another
+    // app. All SSH state lives in the Rust backend in this same process,
+    // so a foreground service with a persistent notification is the only
+    // sanctioned way to keep sockets open across a background trip.
+    // ContextCompat handles the pre-O / O+ startForegroundService split.
+    val svc = Intent(this, ConnectionKeeperService::class.java)
+    ContextCompat.startForegroundService(this, svc)
+
     window.statusBarColor = Color.parseColor("#0d0d10")
     window.navigationBarColor = Color.parseColor("#0d0d10")
     val content = findViewById<View>(android.R.id.content)
@@ -48,5 +59,15 @@ class MainActivity : TauriActivity() {
       )
       WindowInsetsCompat.CONSUMED
     }
+  }
+
+  // Explicitly stop the keeper when the Activity finishes. Android will
+  // also tear the service down when the process dies (e.g. user swipes
+  // the app away), but stopping it on the ordinary destroy path removes
+  // the persistent notification promptly instead of waiting for the next
+  // system sweep.
+  override fun onDestroy() {
+    stopService(Intent(this, ConnectionKeeperService::class.java))
+    super.onDestroy()
   }
 }

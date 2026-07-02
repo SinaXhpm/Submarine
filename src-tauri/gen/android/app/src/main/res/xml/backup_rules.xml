@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Legacy Auto Backup rules (Android 6 - 11). Even with android:allowBackup
+    set to false above, this file is required to satisfy the manifest's
+    android:fullBackupContent reference; we exclude everything as belt-and-
+    braces so nothing under our data dir can ever be included in an Auto
+    Backup, regardless of future Play Console policy or default flips.
+-->
+<full-backup-content>
+    <exclude domain="root" />
+    <exclude domain="file" />
+    <exclude domain="database" />
+    <exclude domain="sharedpref" />
+    <exclude domain="external" />
+</full-backup-content>

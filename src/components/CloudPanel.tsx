@@ -384,10 +384,13 @@ const CloudPanel = ({ isOpen, onClose, localProfiles, onLocalProfilesChanged }: 
 
   const doDeleteRemote = async (entry: SyncEntry) => {
     if (!entry.remote) return;
-    if (!window.confirm(
-      `Delete "${entry.name}" from cloud? ` +
-      (entry.status === "both" ? "Local copy stays untouched." : "This cannot be undone."),
-    )) return;
+    if (!(await confirm({
+      title: "Delete cloud profile?",
+      message:
+        `Delete "${entry.name}" from cloud? ` +
+        (entry.status === "both" ? "Local copy stays untouched." : "This cannot be undone."),
+      destructive: true,
+    }))) return;
     setBusy(true); setError(null);
     try {
       await invoke("cloud_delete_remote_profile", { remoteId: entry.remote.id });

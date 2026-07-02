@@ -132,7 +132,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               return (
                 <div className="space-y-3 animate-in fade-in slide-in-from-top-1">
                   <div className="space-y-1.5">
-                    <label className="text-[11px] font-bold text-zinc-500 ml-1">Saved login</label>
+                    <label className="text-[11px] font-bold text-zinc-400 ml-1">Saved login</label>
                     <select className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" value={newNode.credentialId} onChange={e => setNewNode({ ...newNode, credentialId: e.target.value })}>
                       <option value="" className="bg-[#1a1a1e] text-zinc-500">-- Pick one --</option>
                       {credentials?.map((c: any) => <option key={c.id} value={c.id.toString()} className="bg-[#1a1a1e] text-zinc-300">{c.name} ({c.username})</option>)}
@@ -153,11 +153,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             {newNode.authType === 'custom_pass' && (
               <div className="space-y-3 animate-in fade-in">
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-500 ml-1">Username</label>
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">Username</label>
                   <input type="text" placeholder="root" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-500 ml-1">Password</label>
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">Password</label>
                   <PasswordField
                     value={newNode.password || ""}
                     onChange={(v) => setNewNode({ ...newNode, password: v, password_dirty: true })}
@@ -171,11 +171,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             {newNode.authType === 'custom_key' && (
               <div className="space-y-3 animate-in fade-in">
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-500 ml-1">Username</label>
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">Username</label>
                   <input type="text" placeholder="root" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-500 ml-1">SSH key</label>
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">SSH key</label>
                   <select className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" value={newNode.keyId} onChange={e => setNewNode({ ...newNode, keyId: e.target.value })}>
                     <option value="" className="bg-[#1a1a1e] text-zinc-500">-- Pick a key --</option>
                     {sshKeys?.map((k: any) => <option key={k.id} value={k.id.toString()} className="bg-[#1a1a1e] text-zinc-300">{k.name}</option>)}

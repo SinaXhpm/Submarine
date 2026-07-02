@@ -228,7 +228,7 @@ jobs:
           # The .app folder is named after productName ("Submarine").
           # Wrap it in a versioned zip for the release asset name.
           ARCH="${{ matrix.os_name }}"
-          ZIP_NAME="Submarine-${{ github.ref_name }}-${ARCH}.app.zip"
+          ZIP_NAME="Submarine-v${{ env.VERSION }}-${ARCH}.app.zip"
           ditto -c -k --sequesterRsrc --keepParent "Submarine.app" "$ZIP_NAME"
           echo "MAC_ZIP=$APP_DIR/$ZIP_NAME" >> $GITHUB_ENV
 
@@ -455,7 +455,7 @@ jobs:
           found=0
           for apk in $(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-release*.apk" ! -name "*-unsigned.apk"); do
             base="$(basename "$apk" .apk)"
-            cp "$apk" "artifacts/Submarine-${{ github.ref_name }}-${base}.apk"
+            cp "$apk" "artifacts/Submarine-v${{ env.VERSION }}-${base}.apk"
             found=$((found + 1))
           done
           if [ "$found" -eq 0 ]; then
@@ -484,6 +484,26 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish_release == 'true'
     steps:
+      # Resolve the tag string used for the GitHub Release. For tag pushes
+      # this is github.ref_name (already "vX.Y.Z"). For workflow_dispatch,
+      # github.ref_name resolves to the BRANCH ("main"), which would
+      # produce a "Submarine main" release and move the `main` tag — so
+      # fall back to the user-supplied version input. Normalize to a
+      # leading `v` so the tag/name is uniform regardless of what the
+      # user typed.
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW="${{ github.event.inputs.version }}"
+          else
+            RAW="${{ github.ref_name }}"
+          fi
+          case "$RAW" in v*) TAG="$RAW";; *) TAG="v$RAW";; esac
+          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $TAG"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -504,8 +524,8 @@ jobs:
       - name: Create / update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Submarine ${{ github.ref_name }}
+          tag_name: ${{ steps.tag.outputs.TAG }}
+          name: Submarine ${{ steps.tag.outputs.TAG }}
           draft: true
           generate_release_notes: true
           files: release-files/*

@@ -6,6 +6,7 @@ import {
   RefreshCw, Settings2, FileCode2, Settings as SettingsIcon, Bell, BellOff, Volume2,
 } from "lucide-react";
 import Sparkline from "./Sparkline";
+import { useConfirm } from "../ui/confirm";
 
 // ---------- shared types ------------------------------------------------------
 
@@ -199,6 +200,7 @@ interface Props {
 }
 
 const MonitoringPanel = ({ servers, addLog }: Props) => {
+  const confirm = useConfirm();
   const [rows, setRows] = useState<MonitorRow[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   const [configFor, setConfigFor] = useState<number | null>(null);
@@ -267,11 +269,26 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
   useEffect(() => {
+    // Async cleanup guard: listen() returns its unlisten via a Promise. If
+    // the dep key changes (rows shape shifts) while some listen() promises
+    // are still pending, the effect's cleanup runs against a still-partial
+    // unlistens array and the late-arriving unlisten fns end up in an
+    // abandoned array — silently leaking Tauri event handlers, so every
+    // sample fires setLatest/setHistory/reload twice, four times, N times
+    // over the app's lifetime. `cancelled` catches the race: if the effect
+    // was torn down before a listen() promise resolved, we unlist it right
+    // away instead of pushing it into a dead array.
+    let cancelled = false;
     const unlistens: Array<() => void> = [];
+    const track = (p: Promise<() => void>) => {
+      p.then((fn) => {
+        if (cancelled) fn();
+        else unlistens.push(fn);
+      });
+    };
     rows.forEach((r) => {
-      listen<MonitorRow>(`monitor-status-${r.node_id}`, () => reload())
-        .then((fn) => unlistens.push(fn));
-      listen<Sample>(`monitor-sample-${r.node_id}`, (event) => {
+      track(listen<MonitorRow>(`monitor-status-${r.node_id}`, () => reload()));
+      track(listen<Sample>(`monitor-sample-${r.node_id}`, (event) => {
         const s = event.payload;
         if (!s) return;
         setLatest((prev) => ({ ...prev, [s.node_id]: s }));
@@ -293,11 +310,11 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
             ? { ...r, last_sample_ts: s.ts, connected: true }
             : r
         ));
-      }).then((fn) => unlistens.push(fn));
+      }));
       // Outage + recovery events: always log; toast only if notify=true;
       // beep is gated by the local cooldown so multiple simultaneous
       // outages collapse into a single audible alert.
-      listen<OutageEvent>(`monitor-outage-${r.node_id}`, (event) => {
+      track(listen<OutageEvent>(`monitor-outage-${r.node_id}`, (event) => {
         const o = event.payload;
         if (!o) return;
         const msg = `[Monitor] ${o.node_name} is OFFLINE — ${o.last_error}`;
@@ -306,17 +323,20 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
         if (o.beep) tryBeep();
         // Status reload so the card re-renders with the outage badge.
         reload();
-      }).then((fn) => unlistens.push(fn));
-      listen<RecoveredEvent>(`monitor-recovered-${r.node_id}`, (event) => {
+      }));
+      track(listen<RecoveredEvent>(`monitor-recovered-${r.node_id}`, (event) => {
         const o = event.payload;
         if (!o) return;
         const msg = `[Monitor] ${o.node_name} recovered after ${formatDuration(o.duration_ms)}`;
         addLog?.(msg, "success");
         if (o.notify) showToast(`${o.node_name} back online · was down ${formatDuration(o.duration_ms)}`, "ok");
         reload();
-      }).then((fn) => unlistens.push(fn));
+      }));
     });
-    return () => unlistens.forEach((u) => u());
+    return () => {
+      cancelled = true;
+      unlistens.forEach((u) => u());
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows.map((r) => r.node_id).join(",")]);
 
@@ -441,7 +461,10 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
                 onPause={() => pauseNode(r.node_id)}
                 onResume={() => resumeNode(r.node_id)}
                 onConfig={() => setConfigFor(r.node_id)}
-                onRemove={() => removeNode(r.node_id)}
+                onRemove={async () => {
+                  if (!(await confirm({ title: "Stop monitoring this node?", message: "Custom metrics on this node will be lost.", destructive: true }))) return;
+                  removeNode(r.node_id);
+                }}
               />
             ))}
           </div>

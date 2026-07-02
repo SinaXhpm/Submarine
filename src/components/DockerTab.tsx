@@ -8,6 +8,7 @@ import {
   Eye, Box, Activity, Search, Copy, Check,
 } from "lucide-react";
 import { ScrollableTabs } from "./ScrollableTabs";
+import { useConfirm } from "../ui/confirm";
 
 interface DockerTabProps {
   sessionId: string;
@@ -349,6 +350,7 @@ const ContainersView = ({
   const [stateFilter, setStateFilter] = useState<"all" | "running" | "stopped">("running");
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [lastResult, setLastResult] = useState<Record<string, { ok: boolean; msg: string; sudo: boolean } | undefined>>({});
+  const confirm = useConfirm();
 
   if (state.loading && !state.data) return <Spinner label="Loading containers…" />;
   if (state.error) return <ErrorBanner err={state.error} />;
@@ -371,7 +373,7 @@ const ContainersView = ({
   };
 
   const doAction = async (c: Container, action: string, needsConfirm = false) => {
-    if (needsConfirm && !window.confirm(`${action.toUpperCase()} ${c.names}?`)) return;
+    if (needsConfirm && !(await confirm({ message: `${action.toUpperCase()} ${c.names}?`, destructive: true }))) return;
     setBusy(b => ({ ...b, [c.id]: action }));
     setLastResult(r => ({ ...r, [c.id]: undefined }));
     try {
@@ -738,6 +740,7 @@ const KindPill = ({
 const PruneView = ({ sessionId }: { sessionId: string }) => {
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<Record<string, { ok: boolean; msg: string; sudo: boolean }>>({});
+  const confirm = useConfirm();
 
   const scopes: { key: string; label: string; description: string; warning?: string }[] = [
     { key: "containers", label: "Stopped Containers", description: "Removes containers that are not running. Safe — restartable containers are unaffected." },
@@ -748,7 +751,7 @@ const PruneView = ({ sessionId }: { sessionId: string }) => {
   ];
 
   const run = async (scope: string, label: string) => {
-    if (!window.confirm(`Run prune for ${label}?\n\nThis is irreversible.`)) return;
+    if (!(await confirm({ title: `Run prune for ${label}?`, message: "This is irreversible.", destructive: true }))) return;
     setBusy(scope);
     setResult(r => ({ ...r, [scope]: undefined as any }));
     try {
