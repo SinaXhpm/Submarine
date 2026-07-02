@@ -852,7 +852,14 @@ function DesktopApp() {
               {isMergedTab && (
                 <Columns size={9} className="text-primary/70 mr-1 shrink-0" />
               )}
-              <span className="text-[11px] sm:text-[10px] font-bold whitespace-nowrap uppercase tracking-tight normal-case sm:uppercase">{s.serverName}</span>
+              {/* Node name display. Was 10 px + uppercase on desktop — that
+                  combination gave the smallest, hardest-to-read name in the
+                  whole title bar even though it's the ID users need most.
+                  Bumping to 12 px and dropping the uppercase transform gives
+                  the same tab pill roughly 30% more legible characters per
+                  pixel (uppercase is wider per glyph) without changing the
+                  strip height, which stays h-7. */}
+              <span className="text-[12px] font-semibold whitespace-nowrap tracking-tight">{s.serverName}</span>
               {/* Mobile-only actions trigger. On phone we surface the same
                   tabMenu (Reconnect / Disconnect / Close) here since there
                   is no right-click on touch — a single kebab is a cleaner

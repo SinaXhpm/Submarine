@@ -57,19 +57,29 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           style={{ backgroundColor: s.color }}
         />
       )}
-      <div className="flex items-center gap-3 min-w-0">
+      {/* Left cluster gets flex-1 + min-w-0 so long server names use
+          every pixel not spent on the icon or the (mobile-only) action
+          buttons. On desktop the actions overlay the tile from the
+          right edge — they're absolute + hover-revealed — so the name
+          gets the FULL row width to truncate against. */}
+      <div className="flex items-center gap-3 min-w-0 flex-1">
         <div className="w-8 h-8 bg-[#0a0a0c] rounded-lg flex items-center justify-center text-zinc-500 group-hover:text-primary transition-colors shadow-inner border border-white/5 group-hover:border-primary/20 shrink-0">
           <Server size={14} />
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="font-bold text-zinc-200 text-[13px] truncate tracking-tight">{s.name}</h3>
+          <h3 className="font-bold text-zinc-100 text-[14px] truncate tracking-tight">{s.name}</h3>
           <div className="flex items-center gap-1 mt-0.5">
             <Globe size={10} className="text-zinc-500 shrink-0" />
-            <span className="text-[10px] text-zinc-500 font-mono truncate group-hover:text-zinc-400 transition-colors">{s.host}</span>
+            <span className="text-[10.5px] text-zinc-500 font-mono truncate group-hover:text-zinc-400 transition-colors">{s.host}</span>
           </div>
         </div>
       </div>
-      <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all">
+      {/* Action cluster: absolute-positioned on desktop (so it doesn't
+          claim layout width even when hidden) with a soft gradient
+          behind on hover so hover-revealed buttons don't visually
+          clash with whatever text they overlap. On mobile the buttons
+          stay inline as a fallback since there's no hover to reveal. */}
+      <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:absolute sm:right-2 sm:top-1/2 sm:-translate-y-1/2 sm:pl-8 sm:bg-gradient-to-l sm:from-[#16161a] sm:via-[#16161a] sm:to-transparent transition-all">
         {onCloneServer && (
           <button
             onClick={(e) => { e.stopPropagation(); onCloneServer(s.id); }}
