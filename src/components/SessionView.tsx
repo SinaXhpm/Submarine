@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, memo } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
@@ -109,6 +110,12 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, onOpenCompa
   // panes redistributes those two panes' share and leaves the rest
   // alone. Reset (double-click a divider) flattens back to all-equal.
   const [splitRatios, setSplitRatios] = useState<number[]>([]);
+  // "+" button's secondary menu — surfaced via right-click / long-press
+  // so the primary click stays a fast "new tab" without stealing the
+  // advanced flows (split view, compare across servers). Coordinates are
+  // window-space, matching the pattern used by the session tab menu at
+  // App level.
+  const [plusMenu, setPlusMenu] = useState<{ x: number; y: number } | null>(null);
   // On narrow viewports the side-by-side terminal+tool layout doesn't fit.
   // We collapse to a stacked single-pane view: when a tool is open, the
   // tool takes full width and the terminal is hidden behind a back-chip.
@@ -613,135 +620,152 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, onOpenCompa
           );
         })}
 
+          {/* Single "+" affordance for all terminal-creation flavours.
+              Click adds a plain tab (the 90% case). The right-click menu
+              — also reachable via long-press on touch — surfaces the
+              advanced modes: split-with-new-pane and un-split. That
+              keeps the tab strip visually calm (one small button, no
+              badges, no orientation glyphs stealing attention) while
+              still exposing the power features via a discoverable
+              secondary gesture. */}
           <button
             onClick={() => {
-              // Scope to this session's id (see note on the initial terminal
-              // above) so even if the user mashes "+" on two sessions in the
-              // same millisecond, the ids can never collide.
               const newId = `${session.id}-term-${Date.now()}`;
               setTerminals(prev => [...prev, { id: newId, title: `${prev.length + 1}` }]);
               setActiveTab(newId);
             }}
-            className="h-10 w-10 sm:h-8 sm:w-8 ml-1 shrink-0 rounded-lg flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all border border-dashed border-white/10"
-            title="New Terminal"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              const rect = e.currentTarget.getBoundingClientRect();
+              setPlusMenu({ x: rect.left, y: rect.bottom + 4 });
+            }}
+            className="h-10 w-10 sm:h-8 sm:w-8 ml-1 shrink-0 rounded-lg flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all border border-dashed border-white/10 relative"
+            title="New terminal · right-click for split view"
           >
             <Plus size={14} />
+            {splitTerminals.length >= 2 && (
+              <span
+                className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-[9px] font-bold text-black flex items-center justify-center leading-none"
+                aria-hidden="true"
+                title={`Split active (${splitTerminals.length} panes)`}
+              >
+                {splitTerminals.length}
+              </span>
+            )}
           </button>
-          {/* Split trigger — tiles multiple terminals inside the same
-              tab. First press with no split active: spawns a fresh PTY
-              and starts a 2-pane split with the current tab + the new
-              one. Subsequent presses while split is active: spawn ANOTHER
-              PTY and append it as an extra pane, so users can build up
-              N-terminal grids without leaving keyboard focus. Alt/Shift
-              click while split is active: collapse the split entirely
-              (leaves the terminals as regular tabs). Long-press on the
-              button also flips h/v orientation via right-click. Hidden
-              on compact viewports where multiple panes would each be too
-              narrow to be usable. */}
-          {!isCompact && (
-            <button
-              onClick={(e) => {
-                // Modifier-click while split is active exits the split
-                // without spawning a new pane. Handy escape hatch when
-                // the user already has "enough" splits and just wants to
-                // go back to a single-pane tab.
-                if ((e.altKey || e.shiftKey) && splitTerminals.length >= 2) {
-                  setSplitTerminals([]);
-                  setSplitRatios([]);
-                  return;
-                }
-                const newId = `${session.id}-term-${Date.now()}`;
-                setTerminals(prev => [...prev, { id: newId, title: `${prev.length + 1}` }]);
-                if (splitTerminals.length >= 2) {
-                  // Append to existing split.
-                  setSplitTerminals(prev => [...prev, newId]);
-                  setSplitRatios(prev => [...prev, 1]);
-                } else {
-                  // Start a new split pairing the active tab with the
-                  // fresh terminal. Equal shares by default.
-                  setSplitTerminals([activeTab, newId]);
-                  setSplitRatios([1, 1]);
-                }
-                setActiveTab(newId);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setSplitOrientation(o => o === "h" ? "v" : "h");
-              }}
-              className={`h-8 w-8 ml-1 shrink-0 rounded-lg flex items-center justify-center transition-all border relative ${
-                splitTerminals.length >= 2
-                  ? "text-primary bg-primary/10 border-primary/30"
-                  : "text-zinc-500 border-dashed border-white/10 hover:bg-white/10 hover:text-white"
-              }`}
-              title={splitTerminals.length >= 2
-                ? `Add another pane to the ${splitTerminals.length}-way split · Alt+click to exit split · right-click to flip orientation`
-                : "Split — tile another terminal beside this one · right-click to flip orientation"}
-              aria-pressed={splitTerminals.length >= 2}
-            >
-              {splitOrientation === "h" ? <Columns size={14} /> : <Rows size={14} />}
-              {splitTerminals.length >= 2 && (
-                <span
-                  className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-[9px] font-bold text-black flex items-center justify-center leading-none"
-                  aria-hidden="true"
-                >
-                  {splitTerminals.length}
-                </span>
-              )}
-            </button>
-          )}
-          {/* Cross-session Compare — hands off to the global Compare
-              workspace, pre-selecting THIS session. In-session split
-              only tiles this session's terminals; Compare tiles any
-              number of DIFFERENT sessions. Kept as a distinct affordance
-              so the two concepts don't collide inside one button. */}
-          {!isCompact && onOpenCompare && (
-            <button
-              onClick={() => onOpenCompare(session.id)}
-              onContextMenu={(e) => e.preventDefault()}
-              title="Compare — tile this server next to other open servers"
-              className="h-8 w-8 ml-1 shrink-0 rounded-lg flex items-center justify-center transition-all border text-zinc-500 border-dashed border-white/10 hover:bg-white/10 hover:text-primary"
-            >
-              <LayoutGrid size={13} />
-            </button>
-          )}
         </div>
 
-        {/* Tool toggles: on desktop each shows a label next to the icon; on
-            phone we drop the label and the left separator so all four still
-            fit comfortably in the same h-12 row as the terminal tabs. Each
-            button keeps its 32-px hit target (h-8 w-8) which is well above
-            the 24-dp recommended touch minimum. */}
-        <div className="flex items-center gap-1 shrink-0 sm:border-l border-white/5 sm:pl-4 pl-1">
-          <button
-            onClick={() => setActiveTool(activeTool === 'sftp' ? null : 'sftp')}
-            title="SFTP"
-            className={`h-10 w-10 sm:h-8 sm:w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'sftp' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
-          >
-            <Folder size={14} /> <span className="hidden sm:inline">SFTP</span>
-          </button>
-          <button
-            onClick={() => setActiveTool(activeTool === 'tunnels' ? null : 'tunnels')}
-            title="Ports"
-            className={`h-10 w-10 sm:h-8 sm:w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'tunnels' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
-          >
-            <Network size={14} /> <span className="hidden sm:inline">Ports</span>
-          </button>
-          <button
-            onClick={() => setActiveTool(activeTool === 'cmds' ? null : 'cmds')}
-            title="Library — commands, notes, this node's notes"
-            className={`h-10 w-10 sm:h-8 sm:w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'cmds' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
-          >
-            <Library size={14} /> <span className="hidden sm:inline">Library</span>
-          </button>
-          <button
-            onClick={() => setActiveTool(activeTool === 'info' ? null : 'info')}
-            title="Info — server overview, network, services, docker"
-            className={`h-10 w-10 sm:h-8 sm:w-8 sm:w-auto sm:px-4 rounded-lg flex items-center justify-center sm:gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${activeTool === 'info' ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner' : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'}`}
-          >
-            <Info size={14} /> <span className="hidden sm:inline">Info</span>
-          </button>
+        {/* Tool rail: icon-only across every viewport so the terminal
+            tab strip owns the horizontal real estate. Labels moved to
+            tooltips (native title + aria-label). This clawed back ~200
+            px on desktop that was previously spent on repeated bold-
+            uppercase "SFTP / PORTS / LIBRARY / INFO" text — the icons
+            plus the always-visible active-state tint already convey
+            which tool is open. */}
+        <div className="flex items-center gap-1 shrink-0 sm:border-l border-white/5 sm:pl-3 pl-1">
+          {([
+            { id: 'sftp',    icon: Folder,  label: 'SFTP — file browser' },
+            { id: 'tunnels', icon: Network, label: 'Ports — port forwarding' },
+            { id: 'cmds',    icon: Library, label: 'Library — commands & notes' },
+            { id: 'info',    icon: Info,    label: 'Info — server overview' },
+          ] as const).map(({ id, icon: Icon, label }) => {
+            const on = activeTool === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setActiveTool(on ? null : id)}
+                title={label}
+                aria-label={label}
+                aria-pressed={on}
+                className={`h-10 w-10 sm:h-8 sm:w-8 rounded-lg flex items-center justify-center transition-all ${
+                  on
+                    ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner'
+                    : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'
+                }`}
+              >
+                <Icon size={14} />
+              </button>
+            );
+          })}
         </div>
       </div>
+
+      {/* "+" secondary menu — right-click / long-press on the plus
+          button. Kept intentionally short: three items covering "same
+          server + tile" (split), the h/v orientation flip, and "cross-
+          server tile" (opens the Compare workspace pre-selected with
+          this session). Everything else is one primary click on "+". */}
+      {plusMenu && createPortal(
+        <>
+          <div
+            className="fixed inset-0 z-[9998]"
+            onClick={() => setPlusMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setPlusMenu(null); }}
+          />
+          <div
+            style={{ left: Math.min(plusMenu.x, window.innerWidth - 260), top: Math.min(plusMenu.y, window.innerHeight - 220) }}
+            className="fixed z-[9999] w-[240px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
+          >
+            {!isCompact && (
+              <>
+                <button
+                  onClick={() => {
+                    setPlusMenu(null);
+                    const newId = `${session.id}-term-${Date.now()}`;
+                    setTerminals(prev => [...prev, { id: newId, title: `${prev.length + 1}` }]);
+                    if (splitTerminals.length >= 2) {
+                      setSplitTerminals(prev => [...prev, newId]);
+                      setSplitRatios(prev => [...prev, 1]);
+                    } else {
+                      setSplitTerminals([activeTab, newId]);
+                      setSplitRatios([1, 1]);
+                    }
+                    setActiveTab(newId);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
+                >
+                  {splitOrientation === "h" ? <Columns size={13} className="text-primary/70" /> : <Rows size={13} className="text-primary/70" />}
+                  <span className="flex-1">{splitTerminals.length >= 2 ? `Add pane (${splitTerminals.length + 1}-way split)` : "Split with new pane"}</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setSplitOrientation(o => o === "h" ? "v" : "h");
+                    setPlusMenu(null);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-300 hover:text-white text-left"
+                >
+                  {splitOrientation === "h" ? <Rows size={13} className="text-zinc-500" /> : <Columns size={13} className="text-zinc-500" />}
+                  <span className="flex-1">Flip orientation ({splitOrientation === "h" ? "→ vertical" : "→ horizontal"})</span>
+                </button>
+                {splitTerminals.length >= 2 && (
+                  <button
+                    onClick={() => {
+                      setSplitTerminals([]);
+                      setSplitRatios([]);
+                      setPlusMenu(null);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-300 hover:text-white text-left"
+                  >
+                    <X size={13} className="text-zinc-500" />
+                    <span className="flex-1">Exit split (keep terminals)</span>
+                  </button>
+                )}
+                <div className="h-px bg-white/5 my-1" />
+              </>
+            )}
+            {onOpenCompare && (
+              <button
+                onClick={() => { onOpenCompare(session.id); setPlusMenu(null); }}
+                className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-300 hover:text-white text-left"
+              >
+                <LayoutGrid size={13} className="text-primary/70" />
+                <span className="flex-1">Compare with other servers…</span>
+              </button>
+            )}
+          </div>
+        </>,
+        document.body
+      )}
 
       {/* Disconnection / auto-reconnect banner. Pinned to the top so it's
           visible whether the terminal or SFTP is in focus. The disabled
