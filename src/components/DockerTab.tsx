@@ -828,7 +828,7 @@ const ContainerDetailsModal = ({
 
   // ----- Logs state (one-shot + live) -----
   const [logs, setLogs] = useState<string>("");
-  const [logsTail, setLogsTail] = useState(500);
+  const [logsTail, setLogsTail] = useState(100);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
@@ -928,13 +928,20 @@ const ContainerDetailsModal = ({
   const fetchOneStats = async () => {
     setOneStats(s => ({ ...s, loading: true, error: null }));
     try {
-      const r = await invoke<DockerTextResult>("ssh_docker_stats", { sessionId });
+      // Pass the container name so the backend runs `docker stats <name>`
+      // instead of the full-list stats. On a busy daemon this drops the
+      // round-trip from seconds → ~80 ms and shrinks the wire response
+      // to a single JSON line — a meaningful win on low-bandwidth SSH.
+      const r = await invoke<DockerTextResult>("ssh_docker_stats", { sessionId, container: name });
       const rows = parseJsonl<ContainerStats>(r.data, o => ({
         id: o.ID || "", name: o.Name || "",
         cpuPerc: o.CPUPerc || "", memUsage: o.MemUsage || "", memPerc: o.MemPerc || "",
         netIO: o.NetIO || "", blockIO: o.BlockIO || "", pids: o.PIDs || "",
       }));
-      const found = rows.find(s => s.name === name);
+      // Backend already scoped the query to this container; take the first
+      // row if present. Fall back to a name match to stay resilient if the
+      // server ever returns extras (older docker daemons occasionally do).
+      const found = rows.find(s => s.name === name) || rows[0];
       setOneStats({ loading: false, error: null, data: found || null });
     } catch (e: any) {
       setOneStats({ loading: false, error: typeof e === "string" ? e : (e?.message || "stats failed"), data: null });
@@ -942,10 +949,10 @@ const ContainerDetailsModal = ({
   };
 
   useEffect(() => {
-    if (tab === "logs" && logs === "" && !logsLoading) fetchLogs(logsTail);
-    if (tab === "inspect" && !inspect.data && !inspect.loading) fetchInspect();
-    if (tab === "stats" && !oneStats.data && !oneStats.loading) fetchOneStats();
-    if (tab === "config" && !inspect.data && !inspect.loading) fetchInspect(); // config view reads from inspect
+    if (tab === "logs" && logs === "" && !logsLoading && !logsError) fetchLogs(logsTail);
+    if (tab === "inspect" && !inspect.data && !inspect.loading && !inspect.error) fetchInspect();
+    if (tab === "stats" && !oneStats.data && !oneStats.loading && !oneStats.error) fetchOneStats();
+    if (tab === "config" && !inspect.data && !inspect.loading && !inspect.error) fetchInspect(); // config view reads from inspect
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -986,6 +993,7 @@ const ContainerDetailsModal = ({
                 onChange={(e) => setLogsTail(parseInt(e.target.value, 10))}
                 className="h-7 px-2 bg-black/40 border border-white/10 rounded text-[10px] text-zinc-200 font-mono focus:border-primary/50 outline-none"
               >
+                <option value={100}>Tail 100</option>
                 <option value={500}>Tail 500</option>
                 <option value={2000}>Tail 2 000</option>
                 <option value={5000}>Tail 5 000</option>
@@ -1013,7 +1021,7 @@ const ContainerDetailsModal = ({
                 <Copy size={11} /> Copy
               </button>
             </div>
-            {logsError && <ErrorBanner err={logsError} />}
+            {logsError && <ErrorBanner err={logsError} onRetry={() => { setLogsError(null); fetchLogs(logsTail); }} />}
             <pre
               ref={logsBoxRef}
               onScroll={onLogsScroll}
@@ -1053,7 +1061,7 @@ const ContainerDetailsModal = ({
         {tab === "config" && (
           <div className="space-y-3">
             {inspect.loading && <Spinner label="Reading config…" />}
-            {inspect.error && <ErrorBanner err={inspect.error} />}
+            {inspect.error && <ErrorBanner err={inspect.error} onRetry={() => { setInspect(s => ({ ...s, error: null })); fetchInspect(); }} />}
             {inspect.data && <ConfigView data={inspect.data} />}
           </div>
         )}
@@ -1075,7 +1083,7 @@ const ContainerDetailsModal = ({
                 <Copy size={11} /> Copy JSON
               </button>
             </div>
-            {inspect.error && <ErrorBanner err={inspect.error} />}
+            {inspect.error && <ErrorBanner err={inspect.error} onRetry={() => { setInspect(s => ({ ...s, error: null })); fetchInspect(); }} />}
             <pre className="flex-1 min-h-[300px] bg-black/50 border border-white/5 rounded-lg p-2 text-[10.5px] font-mono text-zinc-200 whitespace-pre overflow-auto select-text">
               {inspect.data ? JSON.stringify(inspect.data, null, 2) : (inspect.loading ? "Loading…" : "(no data)")}
             </pre>
@@ -1353,16 +1361,24 @@ const Spinner = ({ label }: { label: string }) => (
   </div>
 );
 
-const ErrorBanner = ({ err }: { err: string }) => {
+const ErrorBanner = ({ err, onRetry }: { err: string; onRetry?: () => void }) => {
   const e = describeError(err);
   return (
     <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/20 text-red-300 text-[11px]">
       <AlertCircle size={14} className="mt-0.5 shrink-0" />
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <div className="font-bold uppercase tracking-wider">{e.title}</div>
         {e.hint && <div className="text-red-200/80 mt-0.5">{e.hint}</div>}
         <div className="opacity-70 mt-0.5 font-mono break-all">{err}</div>
       </div>
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          className="shrink-0 h-6 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-red-200 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 flex items-center gap-1"
+        >
+          <RefreshCw size={10} /> Retry
+        </button>
+      )}
     </div>
   );
 };

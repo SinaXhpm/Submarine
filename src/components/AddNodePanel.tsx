@@ -1,11 +1,131 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus } from "lucide-react";
+import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square } from "lucide-react";
 import PasswordField from "./PasswordField";
 
-const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, folders, refreshFolders, isEditMode, formError, isMobile }: any) => {
+// Shape returned by the `parse_ssh_config` backend command. One entry per
+// non-wildcard alias resolved from the user's OpenSSH config.
+type ImportedHost = {
+  host_alias: string;
+  hostname: string;
+  port: number;
+  user: string;
+  identity_file: string | null;
+  proxy_jump: string | null;
+};
+
+const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, folders, refreshFolders, refreshServers, isEditMode, formError, isMobile }: any) => {
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+
+  // SSH-config import modal state. Lives here so it's colocated with the
+  // "Add server" flow — the button that triggers it sits in this panel's
+  // header. `hosts` is the raw list returned by parse_ssh_config; `selected`
+  // is the subset of aliases the user ticked; `busy` blocks the import
+  // button while add_server calls are inflight so the user can't double-fire.
+  const [importOpen, setImportOpen] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importHosts, setImportHosts] = useState<ImportedHost[]>([]);
+  const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
+
+  // Open the picker: fetch fresh from ~/.ssh/config every time so users who
+  // edit the file between imports see current contents. We keep the modal
+  // open on empty results so the user gets an explicit "nothing to import"
+  // message rather than a silent no-op.
+  const openImportModal = async () => {
+    setImportOpen(true);
+    setImportLoading(true);
+    setImportError(null);
+    setImportHosts([]);
+    setImportSelected(new Set());
+    try {
+      const hosts = await invoke<ImportedHost[]>("parse_ssh_config", { path: null });
+      setImportHosts(hosts);
+    } catch (e: any) {
+      setImportError(typeof e === "string" ? e : (e?.message || String(e)));
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
+  const closeImportModal = () => {
+    if (importBusy) return;
+    setImportOpen(false);
+    setImportError(null);
+    setImportHosts([]);
+    setImportSelected(new Set());
+  };
+
+  const toggleSelectAll = () => {
+    if (importSelected.size === importHosts.length) {
+      setImportSelected(new Set());
+    } else {
+      setImportSelected(new Set(importHosts.map((h) => h.host_alias)));
+    }
+  };
+
+  const toggleOne = (alias: string) => {
+    setImportSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(alias)) next.delete(alias);
+      else next.add(alias);
+      return next;
+    });
+  };
+
+  // Fire one `add_server` per selected host. We use auth_type "custom_pass"
+  // with empty password so the row is valid but non-connecting until the
+  // user edits it — matches the spec that key/password stay unset. Errors
+  // per-host are surfaced but don't abort the batch; the modal shows how
+  // many landed and how many failed.
+  const importSelectedHosts = async () => {
+    if (importSelected.size === 0 || importBusy) return;
+    setImportBusy(true);
+    setImportError(null);
+    let ok = 0;
+    let failed = 0;
+    let lastErr: string | null = null;
+    for (const host of importHosts) {
+      if (!importSelected.has(host.host_alias)) continue;
+      try {
+        await invoke<number>("add_server", {
+          name: host.host_alias,
+          host: host.hostname || host.host_alias,
+          port: host.port || 22,
+          username: (host.user && host.user.trim()) ? host.user.trim() : "root",
+          password: null,
+          credentialId: null,
+          folderId: null,
+          proxyType: "none",
+          proxyHost: "",
+          proxyPort: 1080,
+          tunnels: [],
+          authType: "custom_pass",
+          keyId: null,
+          autostart: false,
+          mirrors: [],
+          color: null,
+        });
+        ok++;
+      } catch (e: any) {
+        failed++;
+        lastErr = typeof e === "string" ? e : (e?.message || String(e));
+      }
+    }
+    setImportBusy(false);
+    if (failed > 0) {
+      setImportError(`${ok} imported, ${failed} failed${lastErr ? `: ${lastErr}` : ""}`);
+    }
+    if (refreshServers) {
+      try { await refreshServers(); } catch { /* refresh failure isn't fatal */ }
+    }
+    if (failed === 0) {
+      closeImportModal();
+    }
+  };
 
   const handleCreateFolder = async () => {
     if (!newFolderName.trim()) return;
@@ -37,9 +157,24 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             </div>
             <h2 className="text-[14px] font-bold text-white tracking-tight">Server details</h2>
           </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-xl transition-all shadow-inner">
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Import only makes sense when creating a fresh row — editing an
+                existing server is a rename/reconfigure flow, not an import. */}
+            {!isEditMode && (
+              <button
+                onClick={openImportModal}
+                title="Import from ~/.ssh/config"
+                className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 rounded-xl transition-all"
+              >
+                <Download size={12} />
+                <span className="hidden sm:inline">Import from ~/.ssh/config</span>
+                <span className="sm:hidden">Import</span>
+              </button>
+            )}
+            <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-xl transition-all shadow-inner">
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
         {/* Scrollable Content */}
@@ -420,6 +555,145 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
           </button>
         </div>
       </div>
+
+      {/* SSH-config import modal. Portaled to <body> so it overlays the
+          Add Server panel cleanly and isn't clipped by the panel's flex
+          layout. Click-outside on the backdrop dismisses; the panel itself
+          stops propagation so clicks inside don't close it. */}
+      {importOpen && createPortal(
+        <div
+          className="fixed inset-0 z-[10000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={closeImportModal}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ssh-import-title"
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-[520px] max-h-[80vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl animate-in zoom-in-95 fade-in duration-150"
+          >
+            {/* Modal header */}
+            <div className="flex items-center justify-between p-4 border-b border-white/5 shrink-0">
+              <div className="flex items-center gap-2">
+                <Download size={14} className="text-primary" />
+                <h3 id="ssh-import-title" className="text-[12px] font-black uppercase tracking-widest text-zinc-100">
+                  Import SSH hosts
+                </h3>
+              </div>
+              <button
+                onClick={closeImportModal}
+                disabled={importBusy}
+                className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-white/[0.04] border border-white/10 hover:bg-white/10 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <X size={12} />
+              </button>
+            </div>
+
+            {/* Body — one of loading / error / empty / list. */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-3">
+              {importLoading && (
+                <div className="p-6 text-center text-[12px] text-zinc-400">Reading ~/.ssh/config…</div>
+              )}
+
+              {!importLoading && importError && importHosts.length === 0 && (
+                <div className="m-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-[12px] font-mono whitespace-pre-wrap break-words">
+                  {importError}
+                </div>
+              )}
+
+              {!importLoading && !importError && importHosts.length === 0 && (
+                <div className="p-6 text-center text-[12px] text-zinc-500">
+                  No importable hosts found in ~/.ssh/config.
+                </div>
+              )}
+
+              {!importLoading && importHosts.length > 0 && (
+                <>
+                  {/* Sticky select-all row so users can bulk-toggle a long
+                      list without scrolling back up. */}
+                  <div className="sticky top-0 z-10 -mx-3 -mt-3 mb-2 px-4 py-2 bg-[#121214] border-b border-white/5 flex items-center justify-between">
+                    <button
+                      onClick={toggleSelectAll}
+                      className="flex items-center gap-2 text-[11px] font-bold text-zinc-300 hover:text-white transition-colors"
+                    >
+                      {importSelected.size === importHosts.length
+                        ? <CheckSquare size={13} className="text-primary" />
+                        : <Square size={13} className="text-zinc-500" />}
+                      <span>Select all ({importHosts.length})</span>
+                    </button>
+                    <span className="text-[11px] text-zinc-500 font-mono">
+                      {importSelected.size} selected
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    {importHosts.map((h) => {
+                      const isSel = importSelected.has(h.host_alias);
+                      return (
+                        <label
+                          key={h.host_alias}
+                          className={`flex items-start gap-3 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                            isSel
+                              ? "bg-primary/10 border-primary/40"
+                              : "bg-[#1a1a1e] border-white/5 hover:border-white/20"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSel}
+                            onChange={() => toggleOne(h.host_alias)}
+                            className="mt-0.5 accent-primary shrink-0"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[12.5px] font-bold text-white truncate">
+                              {h.host_alias}
+                            </div>
+                            <div className="text-[11px] font-mono text-zinc-400 truncate">
+                              {h.user ? `${h.user}@` : ""}{h.hostname}:{h.port}
+                            </div>
+                            {(h.identity_file || h.proxy_jump) && (
+                              <div className="mt-0.5 text-[10.5px] text-zinc-600 truncate">
+                                {h.identity_file && <span className="mr-2">key: {h.identity_file}</span>}
+                                {h.proxy_jump && <span>jump: {h.proxy_jump}</span>}
+                              </div>
+                            )}
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  {importError && importHosts.length > 0 && (
+                    <div className="mt-3 p-2 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-[11px] font-mono">
+                      {importError}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Modal footer */}
+            <div className="p-3 border-t border-white/5 shrink-0 flex items-center justify-end gap-2">
+              <button
+                onClick={closeImportModal}
+                disabled={importBusy}
+                className="px-3 h-8 rounded-lg text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={importSelectedHosts}
+                disabled={importBusy || importSelected.size === 0 || importLoading}
+                className="px-3 h-8 rounded-lg text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+              >
+                <Download size={11} />
+                {importBusy ? "Importing…" : `Import ${importSelected.size} selected`}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 };

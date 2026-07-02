@@ -1,11 +1,34 @@
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
+import { SearchAddon, ISearchOptions } from 'xterm-addon-search';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import 'xterm/css/xterm.css';
 import { useIsNarrow } from '../hooks/useViewport';
 import { MobileKeyBar, ModifiersState, ModKey } from './MobileKeyBar';
+import { useBroadcast } from '../ui/broadcast';
+import HistorySearchOverlay from './HistorySearchOverlay';
+
+// Shared search options — highlight all matches in yellow, the active
+// match in orange. `decorations` uses the marker overlay so the highlight
+// survives scrollback and repaints (the addon's built-in selection-based
+// mode would clobber the user's own selection every keystroke). The
+// overview-ruler fields are typed as required in xterm-addon-search 0.13
+// but we don't render an overview ruler (no `overviewRulerLane` on the
+// terminal), so their values are cosmetic — mirror the match colors so
+// they'd still read sensibly if a ruler were ever enabled.
+const SEARCH_OPTIONS: ISearchOptions = {
+  caseSensitive: false,
+  decorations: {
+    matchBackground: '#facc15',
+    matchBorder: '#facc15',
+    matchOverviewRuler: '#facc15',
+    activeMatchBackground: '#f97316',
+    activeMatchBorder: '#f97316',
+    activeMatchColorOverviewRuler: '#f97316',
+  },
+};
 
 // State machine for the modifier stickies on the mobile key bar.
 // off → armed → locked → off (cycled by repeated taps).
@@ -19,6 +42,8 @@ const TerminalView = ({
   isActive = true,
   containerExec,
   connectionEpoch = 0,
+  serverId = 0,
+  serverName = "",
 }: {
   sessionId: string;
   terminalId: string;
@@ -41,10 +66,19 @@ const TerminalView = ({
   /// Initial mount is opened by the main effect, so we only act on
   /// value CHANGES after that.
   connectionEpoch?: number;
+  /// Server id + name are used to stamp command-history rows so the
+  /// Ctrl+R overlay can show which server the command was run against.
+  /// Quick-connect sessions have serverId=0 and just record the display
+  /// name — that's fine for search, since the row is orphaned from any
+  /// saved node anyway.
+  serverId?: number;
+  serverName?: string;
 }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const openedRef = useRef(false);
   // The xterm `onData` callback is bound once and persists for the life of the
   // component. We read this ref inside the callback so the latest `disabled`
@@ -83,6 +117,49 @@ const TerminalView = ({
   const [modifiers, setModifiers] = useState<ModifiersState>({ ctrl: "off", alt: "off", shift: "off" });
   const modifiersRef = useRef<ModifiersState>(modifiers);
   useEffect(() => { modifiersRef.current = modifiers; }, [modifiers]);
+
+  // In-terminal search (Ctrl+F / Cmd+F). Query state is component-scoped so
+  // reopening the chip pre-fills the last search — matches VS Code / Chrome
+  // muscle memory. showSearch drives the floating chip's mount so xterm
+  // isn't burdened with a hidden overlay when the user isn't searching.
+  const [showSearch, setShowSearch] = useState(false);
+  const [query, setQuery] = useState('');
+
+  // Command-history overlay (Ctrl+R / Cmd+R). Same document-level keydown
+  // gate as search: only pop it when the user is focused inside this
+  // terminal's DOM subtree, so multi-tab windows don't fire N overlays.
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Broadcast context. `stateRef` gives us live access from inside the
+  // xterm.onData closure without re-binding on every state change.
+  // Callback identities on `broadcast` are stable (useCallback) so the
+  // register effect below can depend on those directly without churn.
+  const broadcast = useBroadcast();
+  const broadcastRef = broadcast.stateRef;
+  const registerActiveTerminal = broadcast.registerActiveTerminal;
+  const unregisterActiveTerminal = broadcast.unregisterActiveTerminal;
+
+  // Register this terminal as the "active" one for its session whenever
+  // isActive flips true. Broadcast fan-out reads from sessionTerminalMap
+  // to know which of a session's tabs is currently visible / receiving
+  // input; a stale mapping to a background terminal would silently swallow
+  // the mirrored keystrokes. Unregister only if we still hold the slot —
+  // avoids racing with the newly-active terminal during a tab swap.
+  useEffect(() => {
+    if (!isActive) return;
+    registerActiveTerminal(sessionId, terminalId);
+    return () => {
+      unregisterActiveTerminal(sessionId, terminalId);
+    };
+  }, [isActive, sessionId, terminalId, registerActiveTerminal, unregisterActiveTerminal]);
+
+  // Buffer keystrokes locally so we can log "the command line the user
+  // typed" on each Enter press. Best-effort: pastes, arrow-key edits,
+  // multi-line entries will produce noisy or wrong rows — we accept that
+  // rather than reimplement a shell parser in the browser. `commandBufRef`
+  // is mutated inside the long-lived onData closure so a ref (not state)
+  // is the right container.
+  const commandBufRef = useRef<string>("");
 
   const toggleModifier = (m: ModKey) => {
     setModifiers(prev => ({ ...prev, [m]: cycleMod(prev[m]) }));
@@ -180,6 +257,60 @@ const TerminalView = ({
     return () => cancelAnimationFrame(id);
   }, [isActive]);
 
+  // Ctrl+F / Cmd+F opens the search chip — but only when the user is
+  // focused inside this terminal's DOM subtree. Document-level listener is
+  // needed because xterm's textarea steals keyboard focus, so the wrapper
+  // never sees the keydown via bubbling within React's synthetic tree.
+  // Gate on `document.activeElement` so multiple terminals in tabs / split
+  // panes don't all pop their search chip on a single Ctrl+F.
+  //
+  // The same gate is reused for Ctrl+R / Cmd+R which opens the command
+  // history overlay. Browsers normally reload the page on Ctrl+R; inside
+  // the Tauri webview a document-level preventDefault stops that dead.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const wrapper = terminalRef.current;
+      if (!wrapper) return;
+      const active = document.activeElement;
+      if (!(active instanceof Node) || !wrapper.contains(active)) return;
+      if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        setShowSearch(true);
+        // If already open, refocus the input so a second Ctrl+F selects the
+        // existing query for a quick overwrite.
+        requestAnimationFrame(() => {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        });
+      } else if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        setShowHistory(true);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // Close + clear search decorations. Refocuses xterm so the user's next
+  // keystroke goes to the shell, not to nowhere.
+  const closeSearch = () => {
+    const addon = searchAddonRef.current;
+    // clearDecorations arrived in xterm-addon-search 0.13; guard for older
+    // typings even though our lockfile pins 0.13.0.
+    addon?.clearDecorations?.();
+    setShowSearch(false);
+    // Return focus to xterm so keystrokes resume typing at the prompt.
+    xtermRef.current?.focus();
+  };
+
+  const runFind = (direction: 'next' | 'prev') => {
+    const addon = searchAddonRef.current;
+    if (!addon || !query) return;
+    if (direction === 'next') addon.findNext(query, SEARCH_OPTIONS);
+    else addon.findPrevious(query, SEARCH_OPTIONS);
+  };
+
   // Tiny inline toast for clipboard feedback (copy / paste / errors). Pattern
   // matches the per-component notify() used in SftpWorkspace / FilePanel —
   // keeps the component self-contained without a global toast provider.
@@ -210,6 +341,9 @@ const TerminalView = ({
     const fitAddon = new FitAddon();
     fitAddonRef.current = fitAddon;
     term.loadAddon(fitAddon);
+    const searchAddon = new SearchAddon();
+    searchAddonRef.current = searchAddon;
+    term.loadAddon(searchAddon);
     term.open(terminalRef.current);
     
     setTimeout(() => {
@@ -286,6 +420,80 @@ const TerminalView = ({
         terminalId,
         data: bytes,
       }).catch(console.error);
+
+      // ── Broadcast fan-out ────────────────────────────────────────────────
+      // Broadcast writes AFTER the local write so if the fan-out throws
+      // synchronously it doesn't drop the source shell's own byte. We only
+      // fan out when there are 2+ selected targets — a single target would
+      // let the user broadcast to a single foreign session, which is
+      // technically fine but almost always a footgun ("wait, why did that
+      // command run there instead of here?"). 2+ makes the intent explicit.
+      const bcast = broadcastRef.current;
+      if (bcast.enabled && bcast.targetSessionIds.size >= 2) {
+        for (const targetSid of bcast.targetSessionIds) {
+          if (targetSid === sessionId) continue; // skip source; already written
+          const targetTid = bcast.sessionTerminalMap[targetSid];
+          if (!targetTid) continue; // target has no live terminal — silently skip
+          invoke('write_terminal_data', {
+            terminalId: targetTid,
+            data: bytes,
+          }).catch(() => {
+            // Dead target — do NOT surface. The user asked for fire-and-forget
+            // fan-out; failures here would spam their console every keystroke.
+          });
+        }
+      }
+
+      // ── Command history capture (best-effort) ────────────────────────────
+      // Bufffer up bytes until we see a CR (Enter), then log the accumulated
+      // line if it looks like a real command. Purely local heuristic — we do
+      // not parse the shell's echo, so pastes / arrow-key edits will
+      // over-count or mis-count. Skip anything under 3 chars to weed out
+      // "y\r" prompts and stray Enters.
+      for (let i = 0; i < data.length; i++) {
+        const ch = data.charCodeAt(i);
+        if (ch === 0x0d /* CR */ || ch === 0x0a /* LF */) {
+          const line = commandBufRef.current.trim();
+          commandBufRef.current = "";
+          if (line.length >= 3) {
+            invoke('cmd_history_add', {
+              serverId: serverId > 0 ? serverId : null,
+              serverName: serverName || "",
+              command: line,
+            }).catch(() => { /* silent — history logging is best-effort */ });
+          }
+        } else if (ch === 0x7f /* DEL */ || ch === 0x08 /* BS */) {
+          commandBufRef.current = commandBufRef.current.slice(0, -1);
+        } else if (ch === 0x03 /* Ctrl+C */ || ch === 0x15 /* Ctrl+U */) {
+          // Reset the buffer — the shell just cleared the line.
+          commandBufRef.current = "";
+        } else if (ch === 0x1b /* ESC — arrow keys etc. */) {
+          // Skip the whole ESC sequence rather than treating the following
+          // bytes as literal characters. Simple heuristic:
+          //   ESC [ ... <final>   → CSI, final byte is 0x40-0x7e
+          //   ESC O <char>         → SS3 (function keys); consume one byte
+          //   ESC <char>           → any other simple sequence; consume one
+          const nxt = i + 1 < data.length ? data.charCodeAt(i + 1) : -1;
+          if (nxt === 0x5b /* [ */) {
+            i += 1; // consume '['
+            while (i + 1 < data.length) {
+              const fin = data.charCodeAt(i + 1);
+              i++;
+              if (fin >= 0x40 && fin <= 0x7e) break;
+            }
+          } else if (nxt !== -1) {
+            i += 1; // consume the byte after ESC
+          }
+        } else if (ch >= 0x20 && ch <= 0x7e) {
+          commandBufRef.current += data[i];
+          if (commandBufRef.current.length > 4096) {
+            // Cap to keep pathological pastes from ballooning memory.
+            commandBufRef.current = commandBufRef.current.slice(-4096);
+          }
+        }
+        // Other control chars are ignored on the assumption they don't
+        // contribute to the user's visible command line.
+      }
     });
 
     // ---- Copy on select / paste on right-click --------------------------------
@@ -462,6 +670,8 @@ const TerminalView = ({
       window.visualViewport?.removeEventListener('resize', onVvResize);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
       unlistenPromise.then(unlisten => unlisten());
+      searchAddon.dispose();
+      searchAddonRef.current = null;
       term.dispose();
       invoke('close_terminal', { terminalId }).catch(console.error);
     };
@@ -477,6 +687,65 @@ const TerminalView = ({
         ref={terminalRef}
         className="flex-1 min-h-0 w-full overflow-hidden select-text"
       />
+      {/* Search chip — floats above xterm; positioned inside the outer
+          flex column so it never displaces the terminal grid. Absolute
+          top-2 right-2 keeps it clear of the disconnected badge (which
+          centers) and the clipboard toast (bottom-right). */}
+      {showSearch && (
+        <div className="absolute top-2 right-2 z-20 flex items-center gap-1 rounded-md bg-zinc-800 border border-white/10 px-1.5 py-1 shadow-lg">
+          <input
+            ref={searchInputRef}
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Stop keys from leaking to the document listener (Ctrl+F
+              // reopen loop) and to xterm's textarea (which would type
+              // into the shell).
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                setQuery('');
+                closeSearch();
+              } else if (e.key === 'Enter') {
+                e.preventDefault();
+                runFind(e.shiftKey ? 'prev' : 'next');
+              } else if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+                // Swallow so the outer document handler doesn't re-fire
+                // (which would just refocus us — harmless but noisy).
+                e.preventDefault();
+                (e.currentTarget as HTMLInputElement).select();
+              }
+              e.stopPropagation();
+            }}
+            placeholder="Find"
+            className="bg-transparent outline-none text-[12px] text-zinc-100 placeholder:text-zinc-500 w-40 px-1"
+          />
+          <button
+            type="button"
+            onClick={() => runFind('prev')}
+            title="Previous match (Shift+Enter)"
+            className="px-1.5 py-0.5 text-[11px] text-zinc-300 hover:text-white hover:bg-white/5 rounded"
+          >
+            {'↑'}
+          </button>
+          <button
+            type="button"
+            onClick={() => runFind('next')}
+            title="Next match (Enter)"
+            className="px-1.5 py-0.5 text-[11px] text-zinc-300 hover:text-white hover:bg-white/5 rounded"
+          >
+            {'↓'}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setQuery(''); closeSearch(); }}
+            title="Close (Esc)"
+            className="px-1.5 py-0.5 text-[11px] text-zinc-400 hover:text-white hover:bg-white/5 rounded"
+          >
+            {'✕'}
+          </button>
+        </div>
+      )}
       {isMobile && !disabled && (
         <MobileKeyBar
           modifiers={modifiers}
@@ -499,6 +768,25 @@ const TerminalView = ({
           </span>
         </div>
       )}
+      <HistorySearchOverlay
+        isOpen={showHistory}
+        onClose={() => {
+          setShowHistory(false);
+          // Return focus to xterm so the user can keep typing at the prompt
+          // instead of losing keystrokes into the void.
+          xtermRef.current?.focus();
+        }}
+        filterServerId={serverId > 0 ? serverId : null}
+        onInsert={(command, execute) => {
+          if (disabledRef.current) return;
+          const payload = execute ? command + "\r" : command;
+          const bytes = Array.from(new TextEncoder().encode(payload));
+          invoke('write_terminal_data', { terminalId, data: bytes }).catch(console.error);
+          // Mirror the inserted command into the local buffer so the next
+          // Enter (if the user typed one manually) still logs correctly.
+          if (!execute) commandBufRef.current = command;
+        }}
+      />
       {/* Disabled badge: NON-blocking. xterm stays interactive for scroll +
           mouse selection so the user can copy whatever was on screen at the
           time the session dropped. Keystrokes are still swallowed at the

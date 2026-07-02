@@ -1,10 +1,13 @@
 import DesktopApp from "./DesktopApp";
 import { ConfirmProvider } from "./ui/confirm";
+import { BroadcastProvider } from "./ui/broadcast";
 
 function App() {
   return (
     <ConfirmProvider>
-      <DesktopApp />
+      <BroadcastProvider>
+        <DesktopApp />
+      </BroadcastProvider>
     </ConfirmProvider>
   );
 }

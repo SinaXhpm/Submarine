@@ -4,8 +4,9 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
-  StickyNote, Search, Square, Copy, ChevronLeft, MoreVertical
+  StickyNote, Search, Square, Copy, ChevronLeft, MoreVertical, Radio
 } from "lucide-react";
+import { useBroadcast } from "./ui/broadcast";
 
 import ProfileSelectPage from "./components/ProfileSelectPage";
 import logoUrl from "./assets/logo.png";
@@ -40,6 +41,11 @@ const hexToRgb = (hex: string) => {
 function DesktopApp() {
   const [loading, setLoading] = useState(true);
   const [isUnlocked, setIsUnlocked] = useState(false);
+  // Multi-exec broadcast state lives in a shared provider (see App.tsx) so
+  // TerminalView instances across every tab can read `enabled` + `targets`
+  // without prop-drilling. The pill in the tab strip is the toggle + picker.
+  const broadcast = useBroadcast();
+  const [broadcastMenuOpen, setBroadcastMenuOpen] = useState(false);
   // `activeProfile` is the name the user picked + unlocked. Stays null
   // until ProfileSelectPage's onUnlocked fires, at which point the app
   // flips straight into the main view — no intermediate state.
@@ -204,12 +210,16 @@ function DesktopApp() {
         setSessions(prev => prev.filter(s => s.id !== sessId));
         setSessionStatuses(prev => { const { [sessId]: _, ...rest } = prev; return rest; });
         setActiveView(prev => (prev === sessId ? "nodes" : prev));
+        // Purge the closing session from broadcast state so a stale id doesn't
+        // linger in the target set (would let a user re-enable broadcast and
+        // silently exclude a phantom target from the count).
+        broadcast.removeSession(sessId);
         closeHandlersRef.current.delete(sessId);
       };
       closeHandlersRef.current.set(sessId, h);
     }
     return h;
-  }, []);
+  }, [broadcast]);
 
   // Stable identity matters: SessionView memoises on prop equality, so a
   // fresh `addLog` reference on every DesktopApp render would force every
@@ -527,6 +537,11 @@ function DesktopApp() {
             st === "failed"       ? "Connection failed" :
             st === "disconnected" ? "Disconnected" :
                                     st;
+          // Broadcast indicator: small orange dot next to the status dot when
+          // this session is in the target set AND broadcast is armed. Kept
+          // separate from the status dot so the user can still tell "is it
+          // connected?" and "is it broadcasting?" at a glance.
+          const isBroadcastTarget = broadcast.enabled && broadcast.targetSessionIds.has(s.id);
           return (
             <div
               key={s.id}
@@ -551,6 +566,13 @@ function DesktopApp() {
                 className={`w-2 h-2 rounded-full mr-2 shrink-0 ${dotTone}`}
                 aria-label={dotTitle}
               />
+              {isBroadcastTarget && (
+                <span
+                  title="Broadcast target"
+                  aria-label="Broadcast target"
+                  className="w-1.5 h-1.5 rounded-full mr-1.5 shrink-0 bg-orange-400 shadow-[0_0_6px_rgba(251,146,60,0.7)]"
+                />
+              )}
               <span className="text-[11px] sm:text-[10px] font-bold whitespace-nowrap uppercase tracking-tight normal-case sm:uppercase">{s.serverName}</span>
               {/* Mobile-only actions trigger. Right-click doesn't exist on
                   touch, so surface the same tabMenu via a MoreVertical
@@ -559,7 +581,7 @@ function DesktopApp() {
               <button
                 type="button"
                 aria-label="Session actions"
-                className="sm:hidden ml-1 h-7 w-7 -my-1 flex items-center justify-center rounded hover:bg-white/5 shrink-0"
+                className="sm:hidden ml-1 h-7 w-5 -my-1 flex items-center justify-center rounded hover:bg-white/5 shrink-0"
                 onClick={(e) => {
                   e.stopPropagation();
                   const rect = e.currentTarget.getBoundingClientRect();
@@ -571,7 +593,7 @@ function DesktopApp() {
               <button
                 type="button"
                 aria-label="Close session"
-                className="ml-1 h-7 w-7 -my-1 -mr-1 flex items-center justify-center rounded hover:bg-white/5 shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                className={`ml-0 sm:ml-1 h-7 w-7 -my-1 -mr-1 flex items-center justify-center rounded hover:bg-white/5 shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100`}
                 onClick={async (e) => {
                   e.stopPropagation();
                   // Only confirm when there's an actual live connection to
@@ -591,6 +613,7 @@ function DesktopApp() {
                     const { [s.id]: _, ...rest } = prev;
                     return rest;
                   });
+                  broadcast.removeSession(s.id);
                   setActiveView(prev => (prev === s.id ? "nodes" : prev));
                 }}
               >
@@ -599,6 +622,118 @@ function DesktopApp() {
             </div>
           );
         })}
+        {/* Broadcast pill — session-scoped multi-exec toggle. Sits at the
+            end of the session tab strip so it doesn't push individual tabs
+            out of view. Hidden until there are 2+ sessions since a single
+            session has no one to broadcast to. */}
+        {sessions.length >= 2 && (
+          <div className="relative no-drag ml-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setBroadcastMenuOpen(v => !v)}
+              title={broadcast.enabled
+                ? `Broadcasting to ${broadcast.targetSessionIds.size} session${broadcast.targetSessionIds.size === 1 ? "" : "s"}`
+                : "Broadcast input to multiple sessions"}
+              className={`flex items-center gap-1.5 h-7 px-2.5 rounded-full transition-all ${
+                broadcast.enabled
+                  ? "bg-orange-500/15 border border-orange-400/40 text-orange-300 shadow-inner shadow-orange-400/10"
+                  : "bg-white/[0.06] border border-white/10 text-zinc-400 hover:bg-white/[0.1] hover:text-white"
+              }`}
+            >
+              <Radio size={12} className={broadcast.enabled ? "animate-pulse" : ""} />
+              <span className="text-[10px] font-bold uppercase tracking-tight hidden sm:inline">
+                {broadcast.enabled
+                  ? `${broadcast.targetSessionIds.size}`
+                  : "Broadcast"}
+              </span>
+            </button>
+            {broadcastMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-[60]"
+                  onClick={() => setBroadcastMenuOpen(false)}
+                />
+                <div className="absolute z-[70] top-full mt-1 right-0 w-[280px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl p-2 text-[11px]">
+                  <div className="flex items-center justify-between mb-2 px-1">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        className="accent-orange-400"
+                        checked={broadcast.enabled}
+                        onChange={broadcast.toggleEnabled}
+                      />
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-200">
+                        Broadcast input
+                      </span>
+                    </label>
+                    <button
+                      onClick={() => setBroadcastMenuOpen(false)}
+                      className="text-zinc-500 hover:text-white p-0.5"
+                      aria-label="Close"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1.5 px-1 pb-2 border-b border-white/5">
+                    <button
+                      onClick={() => broadcast.selectAll(sessions.map(s => s.id))}
+                      className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                    >
+                      All
+                    </button>
+                    <button
+                      onClick={() => broadcast.selectNone()}
+                      className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                    >
+                      None
+                    </button>
+                    <div className="flex-1" />
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${
+                      broadcast.enabled && broadcast.targetSessionIds.size >= 2
+                        ? "text-orange-300"
+                        : "text-zinc-500"
+                    }`}>
+                      {broadcast.enabled
+                        ? (broadcast.targetSessionIds.size >= 2
+                            ? `Live · ${broadcast.targetSessionIds.size}`
+                            : "Pick 2+")
+                        : "Off"}
+                    </span>
+                  </div>
+                  <div className="max-h-[240px] overflow-y-auto custom-scrollbar mt-2 space-y-0.5">
+                    {sessions.map(s => {
+                      const checked = broadcast.targetSessionIds.has(s.id);
+                      const st = sessionStatuses[s.id] ?? "connecting";
+                      return (
+                        <label
+                          key={s.id}
+                          className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer ${
+                            checked ? "bg-orange-500/10" : "hover:bg-white/[0.04]"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="accent-orange-400 shrink-0"
+                            checked={checked}
+                            onChange={() => broadcast.toggleTarget(s.id)}
+                          />
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                            st === "connected" ? "bg-emerald-400" :
+                            st === "connecting" ? "bg-amber-400" :
+                            "bg-rose-500"
+                          }`} />
+                          <span className="truncate text-[11px] font-medium text-zinc-200 flex-1">
+                            {s.serverName}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
       {/* Window controls: desktop only. Android has its own gesture nav /
           system back button, and the WebView window has no minimise or
@@ -650,6 +785,7 @@ function DesktopApp() {
                 invoke("disconnect_session", { sessionId: sid }).catch(() => {});
                 setSessions(prev => prev.filter(sess => sess.id !== sid));
                 setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
+                broadcast.removeSession(sid);
                 setActiveView(prev => (prev === sid ? "nodes" : prev));
                 setTabMenu(null);
               }}
@@ -1150,6 +1286,7 @@ function DesktopApp() {
         }}
         formError={formError}
         credentials={credentials} sshKeys={sshKeys} folders={folders} refreshFolders={refreshFolders}
+        refreshServers={refreshServers}
         isMobile={isMobile}
       />
 

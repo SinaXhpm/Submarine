@@ -222,9 +222,26 @@ pub async fn ssh_docker_inspect(
 pub async fn ssh_docker_stats(
     state: tauri::State<'_, SshState>,
     session_id: String,
+    // Optional container filter. When Some, we ask docker for just that
+    // one container's stats — an ~80 ms probe on a quiet daemon and a
+    // few hundred bytes on the wire. When None, keep the full-list
+    // behaviour so callers that render a resource panel across all
+    // containers still work unchanged.
+    container: Option<String>,
 ) -> Result<DockerTextResult, String> {
-    let cmd = "docker stats --no-stream --format '{{json .}}'";
-    let (success, data, used_sudo) = run_docker_smart(&state, &session_id, cmd, 20).await?;
+    let cmd = match container.as_deref() {
+        Some(name) => {
+            if !is_safe_name(name) {
+                return Err("invalid container name".into());
+            }
+            format!(
+                "docker stats --no-stream --format '{{{{json .}}}}' {}",
+                shq(name)
+            )
+        }
+        None => "docker stats --no-stream --format '{{json .}}'".to_string(),
+    };
+    let (success, data, used_sudo) = run_docker_smart(&state, &session_id, &cmd, 20).await?;
     Ok(DockerTextResult {
         success,
         data,

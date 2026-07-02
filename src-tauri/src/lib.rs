@@ -356,6 +356,14 @@ async fn close_profile(
     ssh: tauri::State<'_, SshState>,
     monitor_map: tauri::State<'_, MonitorMap>,
 ) -> Result<(), String> {
+    // 0. Persist any accumulated in-memory changes (chief among them:
+    // cmd_history rows written by TerminalView's Enter-key handler, which
+    // deliberately skip a per-keystroke fsync). Best-effort: if the vault
+    // isn't in a saveable state (partial init, crypto error) just log via
+    // the returned Err and continue teardown — losing recent history is
+    // preferable to leaking session state.
+    let _ = save_vault_async(&state).await;
+
     // 1. Stop monitor pollers. Flip `paused` first so the next loop iteration
     // releases the SSH handle, then drop the map so the Arc strong_count
     // falls to 1 and the poller exits.
@@ -686,7 +694,25 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
             "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
             [],
         ).map_err(|e| format!("[DATABASE] META_TABLE_FAILED: {}", e))?;
-        const SCHEMA_VERSION: i64 = 4;
+        // v5 — command history table for the Ctrl+R overlay. Best-effort
+        // captured per-Enter by TerminalView; unencrypted-within-vault since
+        // it's not a secret (the vault itself is encrypted at rest).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cmd_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id INTEGER,
+                server_name TEXT,
+                command TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                exit_code INTEGER
+            )",
+            [],
+        ).map_err(|e| format!("[DATABASE] CMD_HISTORY_TABLE_FAILED: {}", e))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cmd_history_ts ON cmd_history(ts DESC)",
+            [],
+        ).map_err(|e| format!("[DATABASE] CMD_HISTORY_INDEX_FAILED: {}", e))?;
+        const SCHEMA_VERSION: i64 = 5;
         let stored: i64 = conn.query_row(
             "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'schema_version'",
             [],
@@ -752,7 +778,9 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
              CREATE TABLE monitor_configs (node_id INTEGER PRIMARY KEY, enabled_metrics TEXT NOT NULL DEFAULT '[\"cpu\",\"mem\",\"disk\",\"load\"]', custom_metrics TEXT NOT NULL DEFAULT '[]', paused INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE);
              CREATE TABLE monitor_settings (id INTEGER PRIMARY KEY, json TEXT NOT NULL);
              CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             INSERT INTO schema_meta (key, value) VALUES ('schema_version', '4');"
+             CREATE TABLE cmd_history (id INTEGER PRIMARY KEY AUTOINCREMENT, server_id INTEGER, server_name TEXT, command TEXT NOT NULL, ts INTEGER NOT NULL, exit_code INTEGER);
+             CREATE INDEX idx_cmd_history_ts ON cmd_history(ts DESC);
+             INSERT INTO schema_meta (key, value) VALUES ('schema_version', '5');"
         ).map_err(|e| format!("[DATABASE] SCHEMA_CREATION_FAILED: {}", e))?;
     }
 
@@ -1552,6 +1580,156 @@ async fn get_commands(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json
     Ok(list)
 }
 
+// ───────────────────────── Command History ─────────────────────────
+// Ctrl+R-style rolling log of commands the user typed into any terminal.
+// Populated best-effort by TerminalView (buffered keystrokes → Enter →
+// insert). Read by HistorySearchOverlay through the three commands below.
+// Capped at 1000 rows — dropping the oldest — so a chatty user can't blow
+// the vault size up over months of use.
+
+const CMD_HISTORY_CAP: i64 = 1000;
+
+#[tauri::command]
+async fn cmd_history_add(
+    state: tauri::State<'_, DbState>,
+    server_id: Option<i32>,
+    server_name: String,
+    command: String,
+) -> Result<i64, String> {
+    let trimmed = command.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("[HISTORY] EMPTY_COMMAND".into());
+    }
+    let ts: i64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+
+    // De-dupe against the immediately-previous row for the same server so a
+    // user re-running `ls` five times in a row doesn't fill five slots. Match
+    // by (server_id, command); leave older reruns alone so search still finds
+    // "ran this yesterday morning too".
+    let last: Option<(i64, String, Option<i32>)> = conn.query_row(
+        "SELECT id, command, server_id FROM cmd_history ORDER BY ts DESC LIMIT 1",
+        [],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i32>>(2)?)),
+    ).ok();
+    if let Some((id, prev_cmd, prev_sid)) = last {
+        if prev_cmd == trimmed && prev_sid == server_id {
+            // Refresh the timestamp on the existing row instead of writing a
+            // duplicate — keeps the "most recent first" ordering honest.
+            let _ = conn.execute(
+                "UPDATE cmd_history SET ts = ?1 WHERE id = ?2",
+                rusqlite::params![ts, id],
+            );
+            return Ok(id);
+        }
+    }
+
+    conn.execute(
+        "INSERT INTO cmd_history (server_id, server_name, command, ts) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![server_id, server_name, trimmed, ts],
+    ).map_err(|e| format!("[DATABASE] CMD_HISTORY_INSERT_FAILED: {}", e))?;
+
+    let new_id = conn.last_insert_rowid();
+
+    // Prune the tail so the table stays bounded. LIMIT/OFFSET in a subquery
+    // gives us "keep the newest N, drop everything older".
+    let _ = conn.execute(
+        "DELETE FROM cmd_history WHERE id IN (
+            SELECT id FROM cmd_history ORDER BY ts DESC LIMIT -1 OFFSET ?1
+        )",
+        rusqlite::params![CMD_HISTORY_CAP],
+    );
+
+    // History isn't secret but the encrypted vault is the only place it can
+    // land; we DO NOT call save_vault_internal on every keystroke — that'd
+    // fsync per command and thrash disk. The next save_vault_* call (any
+    // node edit, key add, etc., or profile-close teardown) picks it up.
+    Ok(new_id)
+}
+
+#[tauri::command]
+async fn cmd_history_list(
+    state: tauri::State<'_, DbState>,
+    query: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+
+    let lim = limit.unwrap_or(200).min(1000) as i64;
+    let q = query.unwrap_or_default();
+    let q_trimmed = q.trim();
+
+    let rows: Vec<serde_json::Value> = if q_trimmed.is_empty() {
+        let mut stmt = conn.prepare(
+            "SELECT id, server_id, server_name, command, ts, exit_code
+             FROM cmd_history
+             ORDER BY ts DESC LIMIT ?1"
+        ).map_err(|e| format!("[DATABASE] CMD_HISTORY_PREP_FAILED: {}", e))?;
+        let mapped = stmt.query_map(rusqlite::params![lim], |row| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "server_id": row.get::<_, Option<i32>>(1)?,
+                "server_name": row.get::<_, Option<String>>(2)?,
+                "command": row.get::<_, String>(3)?,
+                "ts": row.get::<_, i64>(4)?,
+                "exit_code": row.get::<_, Option<i32>>(5)?,
+            }))
+        }).map_err(|e| format!("[DATABASE] CMD_HISTORY_QUERY_FAILED: {}", e))?;
+        let mut out = Vec::new();
+        for r in mapped {
+            out.push(r.map_err(|e| format!("[DATABASE] CMD_HISTORY_ROW_FAILED: {}", e))?);
+        }
+        out
+    } else {
+        // Escape LIKE metacharacters (%, _, backslash) so the user's raw
+        // input matches literally. Uses `\` as the escape character.
+        let escaped = q_trimmed
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let like = format!("%{}%", escaped);
+        let mut stmt = conn.prepare(
+            "SELECT id, server_id, server_name, command, ts, exit_code
+             FROM cmd_history
+             WHERE command LIKE ?1 ESCAPE '\\'
+             ORDER BY ts DESC LIMIT ?2"
+        ).map_err(|e| format!("[DATABASE] CMD_HISTORY_PREP_FAILED: {}", e))?;
+        let mapped = stmt.query_map(rusqlite::params![like, lim], |row| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "server_id": row.get::<_, Option<i32>>(1)?,
+                "server_name": row.get::<_, Option<String>>(2)?,
+                "command": row.get::<_, String>(3)?,
+                "ts": row.get::<_, i64>(4)?,
+                "exit_code": row.get::<_, Option<i32>>(5)?,
+            }))
+        }).map_err(|e| format!("[DATABASE] CMD_HISTORY_QUERY_FAILED: {}", e))?;
+        let mut out = Vec::new();
+        for r in mapped {
+            out.push(r.map_err(|e| format!("[DATABASE] CMD_HISTORY_ROW_FAILED: {}", e))?);
+        }
+        out
+    };
+    Ok(rows)
+}
+
+#[tauri::command]
+async fn cmd_history_clear(state: tauri::State<'_, DbState>) -> Result<(), String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    conn.execute("DELETE FROM cmd_history", [])
+        .map_err(|e| format!("[DATABASE] CMD_HISTORY_CLEAR_FAILED: {}", e))?;
+    drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(())
+}
+
 // ───────────────────────── Notes ─────────────────────────
 // Free-form text notes stored alongside the rest of the profile. Mirrors the
 // commands CRUD shape exactly — title + body, no FK, no timestamps. Search
@@ -2141,7 +2319,7 @@ async fn initiate_connection(
                     russh::mac::HMAC_SHA1_ETM,
                     russh::mac::HMAC_SHA1,
                 ],
-                compression: &["none", "zlib", "zlib@openssh.com"],
+                compression: &["zlib@openssh.com", "zlib", "none"],
             };
         }
         let config = Arc::new(config);
@@ -2821,11 +2999,17 @@ echo __SUB_INFO_OV_SEP__
 //   [0] empty (printed before first SEP)
 //   [1] `ip -j addr`           — JSON NIC list
 //   [2] `ip -j route`          — JSON route table
-//   [3] firewall:
+//   [3] firewall summary:
 //         line 1: 'FW:<engine>' where engine is one of
 //                 iptables | iptables-sudo | iptables-denied |
 //                 nft      | nft-sudo      | nft-denied      | none
-//         lines 2..N: rules text (empty when denied/none)
+//         lines 2..N: per-chain summary rows, not the full ruleset —
+//                 iptables: 'table|chain|policy|count'
+//                 nft:      'family|table|chain|type|count'
+//         The full ruleset for a specific chain is fetched lazily on
+//         expand via ssh_iptables_chain / ssh_nft_chain — the wire cost
+//         of first paint drops from ~50-500 KB to ~1-2 KB, which is the
+//         single biggest bandwidth win for low-bandwidth SSH users.
 // The firewall block tries the user's own credentials first, falls back to
 // non-interactive sudo (`sudo -n`) so we never hang waiting for a password,
 // and prefers iptables over nft because iptables-nft on modern Debian-family
@@ -2837,20 +3021,59 @@ echo __SUB_INFO_NET_SEP__
 ip -j route 2>/dev/null
 echo __SUB_INFO_NET_SEP__
 if command -v iptables >/dev/null 2>&1; then
-  if OUT=$(iptables -L -n -v --line-numbers 2>/dev/null) && [ -n "$OUT" ]; then
-    printf 'FW:iptables\n%s\n' "$OUT"
-  elif OUT=$(sudo -n iptables -L -n -v --line-numbers 2>/dev/null) && [ -n "$OUT" ]; then
-    printf 'FW:iptables-sudo\n%s\n' "$OUT"
+  IPT=""
+  if iptables -t filter -n -L >/dev/null 2>&1; then
+    IPT="iptables"; printf 'FW:iptables\n'
+  elif sudo -n iptables -t filter -n -L >/dev/null 2>&1; then
+    IPT="sudo -n iptables"; printf 'FW:iptables-sudo\n'
   else
     printf 'FW:iptables-denied\n'
   fi
+  if [ -n "$IPT" ]; then
+    for T in filter nat mangle raw; do
+      $IPT -t $T -n -L --line-numbers 2>/dev/null | awk -v t="$T" '
+        /^Chain / {
+          if (chain != "") print t "|" chain "|" policy "|" count
+          chain=$2; count=0; policy="-"
+          if ($3 == "(policy") policy=$4
+          next
+        }
+        /^num/ { next }
+        /^$/ {
+          if (chain != "") { print t "|" chain "|" policy "|" count; chain="" }
+          next
+        }
+        chain != "" && NF > 0 { count++ }
+        END { if (chain != "") print t "|" chain "|" policy "|" count }
+      '
+    done
+  fi
 elif command -v nft >/dev/null 2>&1; then
-  if OUT=$(nft list ruleset 2>/dev/null) && [ -n "$OUT" ]; then
-    printf 'FW:nft\n%s\n' "$OUT"
-  elif OUT=$(sudo -n nft list ruleset 2>/dev/null) && [ -n "$OUT" ]; then
-    printf 'FW:nft-sudo\n%s\n' "$OUT"
+  NFT=""
+  if nft list ruleset >/dev/null 2>&1; then
+    NFT="nft"; printf 'FW:nft\n'
+  elif sudo -n nft list ruleset >/dev/null 2>&1; then
+    NFT="sudo -n nft"; printf 'FW:nft-sudo\n'
   else
     printf 'FW:nft-denied\n'
+  fi
+  if [ -n "$NFT" ]; then
+    $NFT list ruleset 2>/dev/null | awk '
+      /^table / { fam=$2; tbl=$3; chain=""; next }
+      /^\tchain / { chain=$2; type=""; count=0; next }
+      /^\tset / || /^\tmap / || /^\tflowtable / || /^\tct / {
+        if (chain != "") { print fam "|" tbl "|" chain "|" type "|" count; chain="" }
+        chain=""; next
+      }
+      /^\t}/ {
+        if (chain != "") { print fam "|" tbl "|" chain "|" type "|" count; chain="" }
+        next
+      }
+      chain == "" { next }
+      $1 == "type" { type=$2; next }
+      $1 == "hook" || $1 == "policy" || $1 == "priority" || $1 == "flags" || $1 == "device" { next }
+      NF > 0 { count++ }
+    '
   fi
 else
   printf 'FW:none\n'
@@ -2872,7 +3095,7 @@ fi
 
 const INFO_SCRIPT_SERVICES: &str = r#"if command -v systemctl >/dev/null 2>&1; then
   printf 'ENGINE:systemd\n'
-  systemctl list-units --type=service --no-legend --plain --no-pager --all 2>/dev/null
+  systemctl list-units --type=service --no-legend --plain --no-pager --state=running,failed,activating 2>/dev/null
 else
   printf 'ENGINE:none\n'
 fi
@@ -2983,6 +3206,71 @@ async fn ssh_info_probe_section(
         other => return Err(format!("unknown info section: {}", other)),
     };
     run_info_script(&state, &session_id, script, timeout).await
+}
+
+// Validate an iptables/nft table/chain identifier — strict allow-list.
+// Chain names on real hosts are alphanumeric plus `-` `_` `.` and occasional
+// `@`; anything else would risk shell injection when we splice into the
+// command string. This function is the *only* thing keeping the below
+// commands from executing arbitrary shell.
+fn is_safe_fw_ident(s: &str) -> bool {
+    if s.is_empty() || s.len() > 128 { return false; }
+    s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@'))
+}
+
+// Two-stage firewall probe (lazy detail fetch). The network section returns
+// a per-chain summary only; this command pulls the raw rules for one chain
+// on user expand. Wire cost stays proportional to what the user actually
+// looks at, not the size of the whole ruleset.
+#[tauri::command]
+async fn ssh_iptables_chain(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    table: String,
+    chain: String,
+) -> Result<String, String> {
+    // Locked table allow-list; anything not here is rejected. Matches what
+    // the probe script iterates over, plus `security` which some hardened
+    // distros expose.
+    if !matches!(table.as_str(), "filter" | "nat" | "mangle" | "raw" | "security") {
+        return Err("invalid table".to_string());
+    }
+    if !is_safe_fw_ident(&chain) {
+        return Err("invalid chain name".to_string());
+    }
+    // Retry with `sudo -n` when the direct call comes back empty — mirrors
+    // the semantics of the summary probe so the expand behaves consistently
+    // on hosts where only root can read the ruleset.
+    let cmd = format!(
+        "OUT=$(iptables -t {t} -n -L {c} --line-numbers 2>/dev/null); \
+if [ -z \"$OUT\" ]; then OUT=$(sudo -n iptables -t {t} -n -L {c} --line-numbers 2>/dev/null); fi; \
+printf '%s' \"$OUT\"",
+        t = table, c = chain
+    );
+    run_exec_capture(&state, &session_id, &cmd, 15).await
+}
+
+#[tauri::command]
+async fn ssh_nft_chain(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    family: String,
+    table: String,
+    chain: String,
+) -> Result<String, String> {
+    if !matches!(family.as_str(), "ip" | "ip6" | "inet" | "arp" | "bridge" | "netdev") {
+        return Err("invalid family".to_string());
+    }
+    if !is_safe_fw_ident(&table) || !is_safe_fw_ident(&chain) {
+        return Err("invalid table or chain name".to_string());
+    }
+    let cmd = format!(
+        "OUT=$(nft list chain {f} {t} {c} 2>/dev/null); \
+if [ -z \"$OUT\" ]; then OUT=$(sudo -n nft list chain {f} {t} {c} 2>/dev/null); fi; \
+printf '%s' \"$OUT\"",
+        f = family, t = table, c = chain
+    );
+    run_exec_capture(&state, &session_id, &cmd, 15).await
 }
 
 #[derive(serde::Serialize)]
@@ -4528,6 +4816,182 @@ async fn local_desktop_dir() -> Result<String, String> {
     Err("Could not resolve Desktop directory".into())
 }
 
+/// One resolved entry from an OpenSSH client config `Host` block. The
+/// frontend picks a subset of these and turns each into a fresh server row
+/// via the existing `add_server` command — password/key are left blank so
+/// the user configures those after import.
+#[derive(serde::Serialize)]
+struct ImportedHost {
+    /// The alias the user actually types (`ssh <alias>`) — becomes the
+    /// server's display name after import.
+    host_alias: String,
+    /// Resolved `HostName`, or the alias itself if the block didn't set one
+    /// (matches OpenSSH's own behaviour when HostName is omitted).
+    hostname: String,
+    /// Resolved `Port`, defaulting to the standard SSH port.
+    port: u16,
+    /// Resolved `User`. Empty string when unset — the frontend can fall
+    /// back to whatever it uses elsewhere.
+    user: String,
+    /// Resolved `IdentityFile`. Purely informational for now — the import
+    /// flow doesn't auto-attach keys because we'd need to also read and
+    /// register them in the vault, which is a separate feature.
+    identity_file: Option<String>,
+    /// Resolved `ProxyJump`. Informational only; live proxy config still
+    /// happens in the Server details panel.
+    proxy_jump: Option<String>,
+}
+
+/// Read the user's OpenSSH client config (default `~/.ssh/config`) and
+/// return one `ImportedHost` per non-wildcard alias so the UI can offer a
+/// checkbox picker. We deliberately keep the parser dumb: no macro
+/// expansion, no `Include` recursion, no token substitution (`%h`/`%u`),
+/// no `Match` blocks. Anything we don't understand is skipped silently
+/// rather than surfaced as an error — a user's config often has many
+/// directives (ForwardAgent, LogLevel, etc.) that are irrelevant to
+/// picking a host to import.
+///
+/// Desktop-only. Android has no meaningful `~/.ssh/config` path and its
+/// import story goes through profile export/import instead — we return a
+/// clear message rather than pretending to look somewhere.
+#[tauri::command]
+fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = path;
+        Err("Not available on Android — use export/import instead".into())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        // One in-progress Host block. We accumulate resolved fields as we
+        // walk the file and emit one ImportedHost per alias when the block
+        // ends (either the next `Host` line or EOF).
+        struct Block {
+            aliases: Vec<String>,
+            hostname: Option<String>,
+            port: Option<u16>,
+            user: Option<String>,
+            identity_file: Option<String>,
+            proxy_jump: Option<String>,
+        }
+
+        // Split `Directive value...` into (directive, rest). OpenSSH treats
+        // `=` and whitespace as equivalent separators between the directive
+        // name and its argument, so both `Port 2222` and `Port=2222` parse
+        // the same way.
+        fn split_directive(line: &str) -> (&str, &str) {
+            match line.find(|c: char| c.is_whitespace() || c == '=') {
+                Some(i) => {
+                    let key = &line[..i];
+                    let rest = line[i..]
+                        .trim_start_matches(|c: char| c.is_whitespace() || c == '=');
+                    (key, rest)
+                }
+                None => (line, ""),
+            }
+        }
+
+        // Emit one ImportedHost per non-wildcard alias in the block. Wildcard
+        // (`*` / `?`) and negation (`!prefix`) aliases are OpenSSH's template
+        // mechanism — they don't correspond to a single server the user
+        // would want as a row, so we skip them silently.
+        fn flush_block(b: &Block, out: &mut Vec<ImportedHost>) {
+            for alias in &b.aliases {
+                if alias.contains('*') || alias.contains('?') || alias.starts_with('!') {
+                    continue;
+                }
+                out.push(ImportedHost {
+                    host_alias: alias.clone(),
+                    hostname: b.hostname.clone().unwrap_or_else(|| alias.clone()),
+                    port: b.port.unwrap_or(22),
+                    user: b.user.clone().unwrap_or_default(),
+                    identity_file: b.identity_file.clone(),
+                    proxy_jump: b.proxy_jump.clone(),
+                });
+            }
+        }
+
+        let config_path: PathBuf = match path {
+            Some(p) if !p.trim().is_empty() => PathBuf::from(p),
+            _ => directories::UserDirs::new()
+                .map(|u| u.home_dir().join(".ssh").join("config"))
+                .ok_or_else(|| "Could not resolve home directory".to_string())?,
+        };
+
+        if !config_path.exists() {
+            return Err(format!(
+                "SSH config file not found at {}",
+                config_path.display()
+            ));
+        }
+
+        let contents = fs::read_to_string(&config_path).map_err(|e| {
+            format!("Failed to read {}: {}", config_path.display(), e)
+        })?;
+
+        let mut out: Vec<ImportedHost> = Vec::new();
+        let mut cur: Option<Block> = None;
+
+        for raw_line in contents.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (key, rest) = split_directive(line);
+            let key_lc = key.to_ascii_lowercase();
+            match key_lc.as_str() {
+                "host" => {
+                    // Close out the previous block before starting a new one.
+                    if let Some(prev) = cur.take() {
+                        flush_block(&prev, &mut out);
+                    }
+                    let mut b = Block {
+                        aliases: Vec::new(),
+                        hostname: None,
+                        port: None,
+                        user: None,
+                        identity_file: None,
+                        proxy_jump: None,
+                    };
+                    for a in rest.split_whitespace() {
+                        b.aliases.push(a.trim_matches('"').to_string());
+                    }
+                    cur = Some(b);
+                }
+                "hostname" | "port" | "user" | "identityfile" | "proxyjump" => {
+                    if let Some(b) = cur.as_mut() {
+                        let val = rest.trim().trim_matches('"');
+                        if val.is_empty() {
+                            continue;
+                        }
+                        match key_lc.as_str() {
+                            "hostname" => b.hostname = Some(val.to_string()),
+                            "port" => {
+                                if let Ok(p) = val.parse::<u16>() {
+                                    b.port = Some(p);
+                                }
+                            }
+                            "user" => b.user = Some(val.to_string()),
+                            "identityfile" => b.identity_file = Some(val.to_string()),
+                            "proxyjump" => b.proxy_jump = Some(val.to_string()),
+                            _ => {}
+                        }
+                    }
+                }
+                // Include chains, Match blocks, and every other directive
+                // are v1-out-of-scope. Ignoring them keeps the parser
+                // predictable for the "flat list of hosts" use case.
+                _ => {}
+            }
+        }
+        if let Some(last) = cur.take() {
+            flush_block(&last, &mut out);
+        }
+
+        Ok(out)
+    }
+}
+
 /// Defense-in-depth guard for the local-FS commands the frontend can invoke.
 /// We can't lock everything down to a sandbox (the local file browser
 /// legitimately needs to roam the user's disk to pick uploads), but we CAN
@@ -5285,6 +5749,7 @@ pub fn run() {
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,
             add_command, edit_command, delete_command, get_commands,
+            cmd_history_add, cmd_history_list, cmd_history_clear,
             add_note, edit_note, delete_note, get_notes,
             mirror_dry_run, start_mirror, stop_mirror, list_mirrors, pick_local_directory,
             add_credential, edit_credential, delete_credential,
@@ -5293,6 +5758,7 @@ pub fn run() {
             start_tunnel, stop_tunnel, list_tunnels,
             open_terminal, write_terminal_data, resize_terminal, close_terminal,
             ssh_info_probe_section, ssh_systemctl_action,
+            ssh_iptables_chain, ssh_nft_chain,
             docker::ssh_docker_container_action,
             docker::ssh_docker_inspect,
             docker::ssh_docker_stats,
@@ -5312,6 +5778,7 @@ pub fn run() {
             docker::open_container_terminal,
             select_local_folder, local_list_dir,
             local_home_dir, local_desktop_dir, local_create_dir, local_remove, local_rename,
+            parse_ssh_config,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,

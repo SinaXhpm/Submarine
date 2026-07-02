@@ -666,6 +666,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
                 isActive={activeTab === t.id && !(activeTool && isCompact)}
                 containerExec={t.container ? { container: t.container.name, useSudo: t.container.useSudo } : undefined}
                 connectionEpoch={connectionEpoch}
+                serverId={session.serverId}
+                serverName={session.serverName}
               />
             </div>
           ))}

@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import DockerTab from "./DockerTab";
 import { ScrollableTabs } from "./ScrollableTabs";
+import { useConfirm } from "../ui/confirm";
+import CopyValue from "./CopyValue";
 
 interface InfoPanelProps {
   sessionId: string;
@@ -193,31 +195,71 @@ function parseRoutes(raw: string): RouteRow[] {
 // Firewall section. Engine prefix tells us which tool produced the rules and
 // whether sudo was needed; `available=false` means we couldn't read the
 // table at all (no tool installed, or both direct + sudo -n failed).
+//
+// The backend now emits a per-chain summary (not the full ruleset) so first
+// paint stays under 2 KB even on hosts with thousands of rules. The full
+// rules for a specific chain are pulled lazily via `ssh_iptables_chain` /
+// `ssh_nft_chain` when the user expands one.
 type FwEngine = "iptables" | "nft" | "none";
+interface FwChainSummary {
+  // Common
+  name: string;
+  count: number;
+  // iptables: `table` is the netfilter table name (filter/nat/mangle/raw);
+  //           `family` is unused (empty string); `policy` is ACCEPT/DROP/-.
+  // nft:      `family` is ip/ip6/inet/…; `table` is the nft table name;
+  //           `policy` holds the chain type (filter/nat/route) — reused so
+  //           the FirewallCard render stays type-uniform.
+  table: string;
+  family: string;
+  policy: string;
+}
 interface FirewallData {
   engine: FwEngine;
   usedSudo: boolean;
   available: boolean;
   denied: boolean;        // engine present but ruleset unreadable (perm denied)
-  raw: string;            // raw rules text, empty when denied/none
+  chains: FwChainSummary[];
 }
 function parseFirewall(section: string): FirewallData {
+  const empty = (): FirewallData => ({ engine: "none", usedSudo: false, available: false, denied: false, chains: [] });
   const trimmed = section.trim();
-  if (!trimmed) return { engine: "none", usedSudo: false, available: false, denied: false, raw: "" };
+  if (!trimmed) return empty();
   const nl = trimmed.indexOf("\n");
   const header = nl >= 0 ? trimmed.slice(0, nl).trim() : trimmed;
   const body = nl >= 0 ? trimmed.slice(nl + 1) : "";
   const m = header.match(/^FW:(.+)$/);
-  if (!m) return { engine: "none", usedSudo: false, available: false, denied: false, raw: "" };
+  if (!m) return empty();
   const tag = m[1];
-  if (tag === "none") return { engine: "none", usedSudo: false, available: false, denied: false, raw: "" };
+  if (tag === "none") return empty();
   if (tag.endsWith("-denied")) {
     const eng = tag.startsWith("iptables") ? "iptables" : "nft";
-    return { engine: eng, usedSudo: false, available: false, denied: true, raw: "" };
+    return { engine: eng, usedSudo: false, available: false, denied: true, chains: [] };
   }
   const usedSudo = tag.endsWith("-sudo");
   const eng: FwEngine = tag.startsWith("iptables") ? "iptables" : "nft";
-  return { engine: eng, usedSudo, available: true, denied: false, raw: body };
+  const chains: FwChainSummary[] = [];
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const parts = line.split("|");
+    if (eng === "iptables") {
+      // table|chain|policy|count
+      if (parts.length < 4) continue;
+      const [table, name, policy, countStr] = parts;
+      const count = parseInt(countStr, 10);
+      if (!name || !Number.isFinite(count)) continue;
+      chains.push({ name, count, table, family: "", policy });
+    } else {
+      // family|table|chain|type|count
+      if (parts.length < 5) continue;
+      const [family, table, name, type, countStr] = parts;
+      const count = parseInt(countStr, 10);
+      if (!name || !Number.isFinite(count)) continue;
+      chains.push({ name, count, table, family, policy: type });
+    }
+  }
+  return { engine: eng, usedSudo, available: true, denied: false, chains };
 }
 
 interface NetworkData { nics: Nic[]; routes: RouteRow[]; firewall: FirewallData; }
@@ -431,13 +473,26 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
   const dockerSentinel: TabState<null> = { loaded: true, loading: false, error: null, data: null, meta: null };
   const activeState: TabState<any> = tab === "docker" ? dockerSentinel : stateMap[tab as ProbeSubTab][0];
 
+  // Per-section token counter. We can't cancel an SSH exec channel from
+  // the frontend (that would need a backend-side abort handle, out of
+  // scope here), but we CAN discard the result when a stale probe returns.
+  // Bumping the token on tab-switch means an in-flight probe for the old
+  // tab won't stomp on the current tab's state, and won't leave the old
+  // tab stuck in loading=true if the user switches back before it
+  // resolves. Net effect: no visible bandwidth waste from stale updates.
+  const tokenRef = useRef<Record<ProbeSubTab, number>>({
+    overview: 0, network: 0, ports: 0, services: 0,
+  });
+
   const fetchSection = async (which: SubTab) => {
     if (disabled) return;
     if (which === "docker") return; // handled inside DockerTab
     const setter = stateMap[which as ProbeSubTab][1] as (s: any) => void;
+    const myToken = ++tokenRef.current[which as ProbeSubTab];
     setter((prev: TabState<any>) => ({ ...prev, loading: true, error: null }));
     try {
       const r = await invoke<SectionResult>("ssh_info_probe_section", { sessionId, section: which });
+      if (tokenRef.current[which as ProbeSubTab] !== myToken) return;
       let parsed: any;
       switch (which) {
         case "overview": parsed = parseOverview(r.data); break;
@@ -451,6 +506,7 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
         meta: { exec_ms: r.exec_ms, truncated: r.truncated },
       });
     } catch (e: any) {
+      if (tokenRef.current[which as ProbeSubTab] !== myToken) return;
       const msg = typeof e === "string" ? e : (e?.message || "Probe failed");
       setter((prev: TabState<any>) => ({ ...prev, loading: false, error: msg }));
     }
@@ -470,6 +526,19 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, disabled, sessionId]);
+
+  // On tab switch, invalidate in-flight probes for the tab we're leaving
+  // by bumping every section's token in the cleanup. Placed in cleanup
+  // (not the effect body) so we invalidate BEFORE the next lazy-fetch
+  // effect runs and stakes a fresh token — otherwise we'd cancel the
+  // just-started probe on the tab the user just landed on.
+  useEffect(() => {
+    return () => {
+      for (const k of Object.keys(tokenRef.current) as ProbeSubTab[]) {
+        tokenRef.current[k]++;
+      }
+    };
+  }, [tab]);
 
   // ---------- Tab strip ----------
   // ScrollableTabs wraps overflow onto a second row instead of hiding tabs
@@ -503,15 +572,17 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="shrink-0 h-9 px-3 flex items-center justify-between border-b border-white/5 bg-white/[0.02] gap-2">
         <span className="text-[10px] text-zinc-500 truncate select-text">{fmtMeta}</span>
-        <button
-          onClick={() => fetchSection(tab)}
-          disabled={activeState.loading || disabled}
-          title="Refresh this tab"
-          className="h-9 sm:h-7 px-3 sm:px-2.5 rounded-md flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-        >
-          {activeState.loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-          <span>Refresh</span>
-        </button>
+        {tab !== "docker" && (
+          <button
+            onClick={() => fetchSection(tab)}
+            disabled={activeState.loading || disabled}
+            title="Refresh this tab"
+            className="h-9 sm:h-7 px-3 sm:px-2.5 rounded-md flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+          >
+            {activeState.loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            <span>Refresh</span>
+          </button>
+        )}
       </div>
 
       {SubTabStrip}
@@ -544,7 +615,7 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
         )}
 
         {tab === "overview" && overview.data && <OverviewTab data={overview.data} />}
-        {tab === "network"  && network.data  && <NetworkTab data={network.data} />}
+        {tab === "network"  && network.data  && <NetworkTab sessionId={sessionId} data={network.data} />}
         {tab === "ports"    && ports.data    && <PortsTab data={ports.data} />}
         {tab === "services" && services.data && (
           <ServicesTab
@@ -581,9 +652,9 @@ const OverviewTab = ({ data }: { data: OverviewData }) => {
       {/* Row 1: Identity | Runtime */}
       <div className="grid gap-4 grid-cols-1 [@media(min-width:560px)]:grid-cols-2 items-stretch">
         <InfoCard title="Identity" icon={<Server size={12} />} className="h-full" bodyClassName="!p-4 space-y-1">
-          <KV label="Hostname" value={data.hostname || "—"} />
-          <KV label="OS" value={data.os || "—"} />
-          <KV label="Kernel" value={data.uname || "—"} />
+          <KV label="Hostname" value={data.hostname || "—"} copyable />
+          <KV label="OS" value={data.os || "—"} copyable />
+          <KV label="Kernel" value={data.uname || "—"} copyable />
         </InfoCard>
 
         <InfoCard title="Runtime" icon={<Clock size={12} />} className="h-full" bodyClassName="!p-4 space-y-1">
@@ -631,7 +702,7 @@ const OverviewTab = ({ data }: { data: OverviewData }) => {
   );
 };
 
-const NetworkTab = ({ data }: { data: NetworkData }) => {
+const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData }) => {
   const [showAllNics, setShowAllNics] = useState(false);
   const [filter, setFilter] = useState("");
   const filtered = useMemo(() => {
@@ -665,8 +736,9 @@ const NetworkTab = ({ data }: { data: NetworkData }) => {
                   <span className="text-[12px] font-mono font-bold text-white truncate">{n.name}</span>
                   <StatusBadge tone={n.state === "UP" ? "green" : "zinc"}>{n.state}</StatusBadge>
                 </div>
-                <div className="text-[10px] text-zinc-500 font-mono mb-1 truncate">
-                  {n.mac || "—"} · MTU {n.mtu || "—"}
+                <div className="text-[10px] text-zinc-500 font-mono mb-1 truncate flex items-center gap-1">
+                  {n.mac ? <CopyValue value={n.mac}>{n.mac}</CopyValue> : "—"}
+                  <span>· MTU {n.mtu || "—"}</span>
                 </div>
                 {n.addrs.length === 0 ? (
                   <div className="text-[10px] text-zinc-600 italic">no addresses</div>
@@ -677,7 +749,11 @@ const NetworkTab = ({ data }: { data: NetworkData }) => {
                         <span className="text-[9px] uppercase text-zinc-500 w-6 shrink-0">
                           {a.family === "inet" ? "v4" : a.family === "inet6" ? "v6" : a.family}
                         </span>
-                        <span className="truncate">{a.local}<span className="text-zinc-500">/{a.prefixlen}</span></span>
+                        <span className="truncate min-w-0">
+                          <CopyValue value={a.local}>
+                            <span>{a.local}<span className="text-zinc-500">/{a.prefixlen}</span></span>
+                          </CopyValue>
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -713,46 +789,23 @@ const NetworkTab = ({ data }: { data: NetworkData }) => {
         </InfoCard>
       )}
 
-      <FirewallCard fw={data.firewall} />
+      <FirewallCard sessionId={sessionId} fw={data.firewall} />
     </div>
   );
 };
 
 // ---------- FIREWALL ----------
-// Engine-aware renderer. iptables output is structured per-chain so we parse
-// the `Chain NAME (policy X)` headers and let the user collapse the noisy
-// ones; nft's output is a nested config-file syntax that's not worth parsing
-// for a viewer, so we render it as preformatted text.
-interface FwChain { name: string; policy: string; counters: string; rules: string[]; }
-function parseIptablesChains(raw: string): FwChain[] {
-  const chains: FwChain[] = [];
-  let cur: FwChain | null = null;
-  for (const line of raw.split(/\r?\n/)) {
-    const m = line.match(/^Chain\s+(\S+)\s*(?:\((.*?)\))?\s*$/);
-    if (m) {
-      if (cur) chains.push(cur);
-      const meta = (m[2] || "").trim();
-      const polMatch = meta.match(/^policy\s+(\S+)\s*(.*)$/);
-      cur = {
-        name: m[1],
-        policy: polMatch ? polMatch[1] : "",
-        counters: polMatch ? polMatch[2].trim() : meta,
-        rules: [],
-      };
-      continue;
-    }
-    if (!cur) continue;
-    // Skip column-header line so we just keep actual rules.
-    if (/^\s*num\s+pkts\s+bytes\s+target/.test(line)) continue;
-    if (!line.trim()) continue;
-    cur.rules.push(line.trimEnd());
-  }
-  if (cur) chains.push(cur);
-  return chains;
-}
+// Two-stage render: the network probe returns per-chain summaries (chain
+// name + rule count + policy/type). Rendering starts collapsed so we send
+// ~1-2 KB on first paint instead of the 50-500 KB the raw ruleset would
+// cost. Expanding a chain triggers a single-chain fetch via the dedicated
+// ssh_iptables_chain / ssh_nft_chain commands; the response is cached in
+// component state so re-collapsing / re-expanding is free.
 
-const FirewallCard = ({ fw }: { fw: FirewallData }) => {
+interface FirewallCardProps { sessionId: string; fw: FirewallData; }
+const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
   const [openChains, setOpenChains] = useState<Record<string, boolean>>({});
+  const [chainRules, setChainRules] = useState<Record<string, { loading: boolean; error: string | null; text: string | null }>>({});
   const [filter, setFilter] = useState("");
 
   if (fw.engine === "none") {
@@ -778,86 +831,111 @@ const FirewallCard = ({ fw }: { fw: FirewallData }) => {
     );
   }
 
-  // nft engine: just dump the ruleset. Parsing nested nft syntax is overkill
-  // for a viewer — admins reading these rules read them in their native form.
-  if (fw.engine === "nft") {
-    const filtered = filter.trim()
-      ? fw.raw.split(/\r?\n/).filter(l => l.toLowerCase().includes(filter.toLowerCase())).join("\n")
-      : fw.raw;
-    return (
-      <InfoCard
-        title="Firewall · nftables"
-        icon={<Shield size={12} />}
-        actions={
-          <div className="flex items-center gap-1.5">
-            {fw.usedSudo && <StatusBadge tone="zinc">sudo</StatusBadge>}
-            <FilterInput value={filter} onChange={setFilter} placeholder="Filter lines" />
-          </div>
-        }
-      >
-        <pre className="text-[10.5px] font-mono text-zinc-300 bg-black/30 border border-white/5 rounded p-2 max-h-[60vh] overflow-auto custom-scrollbar select-text whitespace-pre">
-{filtered || <span className="text-zinc-600 italic">No matching lines.</span>}
-        </pre>
-      </InfoCard>
-    );
-  }
+  // Composite key: chain names aren't globally unique across tables/families
+  // (e.g. FORWARD exists in both `filter` and `mangle`), so key by
+  // engine + fully-qualified location + name so expanded state doesn't
+  // spill between chains that share a display name.
+  const keyOf = (c: FwChainSummary) =>
+    fw.engine === "iptables" ? `ipt:${c.table}:${c.name}` : `nft:${c.family}:${c.table}:${c.name}`;
 
-  // iptables engine: split per-chain so users can collapse the noisy ones.
-  const chains = parseIptablesChains(fw.raw);
-  const totalRules = chains.reduce((n, c) => n + c.rules.length, 0);
+  const fetchChain = async (c: FwChainSummary) => {
+    const k = keyOf(c);
+    const existing = chainRules[k];
+    if (existing && (existing.loading || existing.text !== null)) return;
+    setChainRules(prev => ({ ...prev, [k]: { loading: true, error: null, text: null } }));
+    try {
+      const text = fw.engine === "iptables"
+        ? await invoke<string>("ssh_iptables_chain", { sessionId, table: c.table, chain: c.name })
+        : await invoke<string>("ssh_nft_chain", { sessionId, family: c.family, table: c.table, chain: c.name });
+      setChainRules(prev => ({ ...prev, [k]: { loading: false, error: null, text } }));
+    } catch (e: any) {
+      const msg = typeof e === "string" ? e : (e?.message || "chain fetch failed");
+      setChainRules(prev => ({ ...prev, [k]: { loading: false, error: msg, text: null } }));
+    }
+  };
+
+  const chains = fw.chains;
+  const totalRules = chains.reduce((n, c) => n + c.count, 0);
   const needle = filter.trim().toLowerCase();
+  const label = fw.engine === "iptables" ? "iptables" : "nftables";
+
+  // Filtering — chain-name / table / family only. We don't have rule text on
+  // first paint, so a text-body filter would need to bulk-fetch every chain
+  // (defeating the whole optimization). Keep it lightweight: match against
+  // the metadata we already have.
+  const visibleChains = needle
+    ? chains.filter(c =>
+        c.name.toLowerCase().includes(needle) ||
+        c.table.toLowerCase().includes(needle) ||
+        (c.family && c.family.toLowerCase().includes(needle)) ||
+        (c.policy && c.policy.toLowerCase().includes(needle))
+      )
+    : chains;
+
   return (
     <InfoCard
-      title={`Firewall · iptables · ${chains.length} chains · ${totalRules} rules`}
+      title={`Firewall · ${label} · ${chains.length} chains · ${totalRules} rules`}
       icon={<Shield size={12} />}
       actions={
         <div className="flex items-center gap-1.5">
           {fw.usedSudo && <StatusBadge tone="zinc">sudo</StatusBadge>}
-          <FilterInput value={filter} onChange={setFilter} placeholder="Filter rules" />
+          <FilterInput value={filter} onChange={setFilter} placeholder="Filter chains" />
         </div>
       }
     >
-      {chains.length === 0 ? (
-        <Empty>No chains reported.</Empty>
+      {visibleChains.length === 0 ? (
+        <Empty>{chains.length === 0 ? "No chains reported." : "No chains match."}</Empty>
       ) : (
         <div className="space-y-1.5">
-          {chains.map((c) => {
-            const matchingRules = needle
-              ? c.rules.filter(r => r.toLowerCase().includes(needle))
-              : c.rules;
-            // When filtering, hide chains with no matches so the user isn't
-            // scrolling past 20 collapsed empty chains looking for the hit.
-            if (needle && matchingRules.length === 0 && !c.name.toLowerCase().includes(needle)) return null;
-            // Default-open the small ones AND any chain whose default state is
-            // DROP/REJECT — those are the ones the user most likely cares
-            // about because they're actively blocking traffic.
+          {visibleChains.map((c) => {
+            const k = keyOf(c);
+            const explicitlyOpen = openChains[k];
+            // Only DROP/REJECT chains auto-expand — those are actively
+            // blocking traffic so the operator likely wants to see rules
+            // immediately. Everything else stays collapsed to preserve the
+            // bandwidth win: no chain fetch until the user clicks.
             const isInteresting = c.policy === "DROP" || c.policy === "REJECT";
-            const explicitlyOpen = openChains[c.name];
-            const open = explicitlyOpen !== undefined
-              ? explicitlyOpen
-              : (matchingRules.length <= 8 || isInteresting || !!needle);
+            const open = explicitlyOpen !== undefined ? explicitlyOpen : (isInteresting && c.count > 0);
             const polTone = c.policy === "DROP" || c.policy === "REJECT" ? "red"
               : c.policy === "ACCEPT" ? "green" : "zinc";
+            const detail = chainRules[k];
+            // Location suffix: for iptables it's `[table]`, for nft it's `[family/table]`.
+            const loc = fw.engine === "iptables" ? c.table : `${c.family}/${c.table}`;
             return (
-              <div key={c.name} className="bg-black/30 border border-white/5 rounded-lg overflow-hidden">
+              <div key={k} className="bg-black/30 border border-white/5 rounded-lg overflow-hidden">
                 <button
-                  onClick={() => setOpenChains(prev => ({ ...prev, [c.name]: !open }))}
+                  onClick={() => {
+                    const next = !open;
+                    setOpenChains(prev => ({ ...prev, [k]: next }));
+                    if (next && c.count > 0) fetchChain(c);
+                  }}
                   className="w-full px-2.5 py-1.5 flex items-center gap-2 text-left hover:bg-white/[0.03] transition-all"
                 >
                   <ChevronRightIcon open={open} />
                   <span className="text-[11px] font-mono font-bold text-white truncate">{c.name}</span>
-                  {c.policy && <StatusBadge tone={polTone as any}>{c.policy}</StatusBadge>}
+                  <span className="text-[9.5px] text-zinc-500 shrink-0 font-mono">{loc}</span>
+                  {c.policy && c.policy !== "-" && <StatusBadge tone={polTone as any}>{c.policy}</StatusBadge>}
                   <span className="text-[9.5px] text-zinc-500 ml-auto shrink-0">
-                    {matchingRules.length}{needle && matchingRules.length !== c.rules.length ? `/${c.rules.length}` : ""} rule{matchingRules.length === 1 ? "" : "s"}
+                    {c.count} rule{c.count === 1 ? "" : "s"}
                   </span>
                 </button>
-                {open && (matchingRules.length === 0 ? (
-                  <div className="px-3 py-2 text-[10px] text-zinc-600 italic border-t border-white/5">empty</div>
-                ) : (
-                  <div className="border-t border-white/5 max-h-[40vh] overflow-auto custom-scrollbar">
-                    <pre className="text-[10.5px] font-mono text-zinc-300 px-2.5 py-1.5 select-text whitespace-pre">{matchingRules.join("\n")}</pre>
-                  </div>
-                ))}
+                {open && (
+                  c.count === 0 ? (
+                    <div className="px-3 py-2 text-[10px] text-zinc-600 italic border-t border-white/5">empty</div>
+                  ) : detail?.loading ? (
+                    <div className="px-3 py-2 text-[10px] text-zinc-500 border-t border-white/5 flex items-center gap-2">
+                      <Loader2 size={11} className="animate-spin" /> Loading…
+                    </div>
+                  ) : detail?.error ? (
+                    <div className="px-3 py-2 text-[10px] text-red-300 border-t border-white/5 font-mono">{detail.error}</div>
+                  ) : detail?.text != null ? (
+                    <div className="border-t border-white/5 max-h-[40vh] overflow-auto custom-scrollbar">
+                      <pre className="text-[10.5px] font-mono text-zinc-300 px-2.5 py-1.5 select-text whitespace-pre">
+                        {detail.text.trim() || <span className="text-zinc-600 italic">empty</span>}
+                      </pre>
+                    </div>
+                  ) : null
+                )}
               </div>
             );
           })}
@@ -949,12 +1027,18 @@ const PortsTab = ({ data }: { data: PortsData }) => {
                     <td className="py-1 pr-2">
                       <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${r.proto === "tcp" ? "bg-sky-500/15 text-sky-300 border border-sky-500/30" : "bg-amber-500/15 text-amber-300 border border-amber-500/30"}`}>{r.proto}</span>
                     </td>
-                    <td className="py-1 pr-2 text-right text-white font-bold">{r.localPort || "—"}</td>
-                    <td className="py-1 pr-2 text-zinc-300 truncate max-w-[120px]">{r.localAddr || "—"}</td>
-                    <td className="py-1 pr-2 text-zinc-200 truncate max-w-[140px]">
-                      {r.process || <span className="text-zinc-600 italic">hidden</span>}
+                    <td className="py-1 pr-2 text-right text-white font-bold">
+                      {r.localPort ? <CopyValue value={r.localPort}>{r.localPort}</CopyValue> : "—"}
                     </td>
-                    <td className="py-1 pr-2 text-right text-zinc-500">{r.pid || "—"}</td>
+                    <td className="py-1 pr-2 text-zinc-300 truncate" title={r.localAddr}>
+                      {r.localAddr ? <CopyValue value={r.localAddr}>{r.localAddr}</CopyValue> : "—"}
+                    </td>
+                    <td className="py-1 pr-2 text-zinc-200 truncate" title={r.process}>
+                      {r.process ? <CopyValue value={r.process}>{r.process}</CopyValue> : <span className="text-zinc-600 italic">hidden</span>}
+                    </td>
+                    <td className="py-1 pr-2 text-right text-zinc-500">
+                      {r.pid ? <CopyValue value={r.pid}>{r.pid}</CopyValue> : "—"}
+                    </td>
                     <td className="py-1 text-zinc-500 text-[10px]">{r.state || "—"}</td>
                   </tr>
                 ))}
@@ -972,6 +1056,10 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
   const [stateFilter, setStateFilter] = useState<"all" | "active" | "inactive" | "failed">("active");
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [lastResult, setLastResult] = useState<Record<string, { ok: boolean; msg: string; sudo: boolean } | undefined>>({});
+  const confirm = useConfirm();
+  // First-arrival latch: once we've seen the first data payload we stop
+  // clobbering the user's manual filter selection.
+  const didSetInitialRef = useRef(false);
 
   const filtered = useMemo(() => {
     let rows = data.rows;
@@ -980,9 +1068,12 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
       const f = filter.toLowerCase();
       rows = rows.filter(r => r.unit.toLowerCase().includes(f) || r.desc.toLowerCase().includes(f));
     }
-    // Active first when "all" is on, then alphabetical.
+    // When filter is "all", surface failed units at the top so operators
+    // spot problems first; otherwise use the standard active-first order.
     rows = [...rows].sort((a, b) => {
-      const pri = (s: string) => s === "active" ? 0 : s === "activating" ? 1 : s === "failed" ? 2 : 3;
+      const pri = stateFilter === "all"
+        ? (s: string) => s === "failed" ? 0 : s === "active" ? 1 : s === "activating" ? 2 : 3
+        : (s: string) => s === "active" ? 0 : s === "activating" ? 1 : s === "failed" ? 2 : 3;
       const d = pri(a.active) - pri(b.active);
       return d !== 0 ? d : a.unit.localeCompare(b.unit);
     });
@@ -1008,7 +1099,28 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
     return c;
   }, [data.rows]);
 
+  // On first data arrival, jump straight to "failed" if any failed units
+  // exist so operators see problems immediately; otherwise default to "all".
+  // We only run this once (didSetInitialRef) so subsequent refreshes don't
+  // clobber the user's manual pill selection.
+  useEffect(() => {
+    if (didSetInitialRef.current) return;
+    if (!data.rows.length) return;
+    didSetInitialRef.current = true;
+    if (counts.failed > 0) setStateFilter("failed");
+    else setStateFilter("all");
+  }, [data.rows, counts.failed]);
+
   const performAction = async (unit: string, action: "start" | "stop" | "restart") => {
+    if (action === "stop" || action === "restart") {
+      const ok = await confirm({
+        title: action === "stop" ? `Stop ${unit}?` : `Restart ${unit}?`,
+        message: "This will disconnect anyone currently connected.",
+        destructive: true,
+        okLabel: action === "stop" ? "Stop" : "Restart",
+      });
+      if (!ok) return;
+    }
     setBusy(b => ({ ...b, [unit]: true }));
     setLastResult(r => ({ ...r, [unit]: undefined }));
     try {
@@ -1063,7 +1175,9 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-mono font-bold text-white truncate">{s.unit}</span>
+                        <span className="text-[11px] font-mono font-bold text-white truncate min-w-0">
+                          <CopyValue value={s.unit}>{s.unit}</CopyValue>
+                        </span>
                         <StatusBadge tone={
                           s.active === "active" ? "green"
                           : s.active === "failed" ? "red"
@@ -1074,7 +1188,7 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
                           <span className="text-[9px] text-zinc-500 uppercase">{s.sub}</span>
                         )}
                       </div>
-                      {s.desc && <div className="text-[10px] text-zinc-500 mt-0.5 truncate">{s.desc}</div>}
+                      {s.desc && <div className="text-[10px] text-zinc-500 mt-0.5 truncate" title={s.desc}>{s.desc}</div>}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       {!isActive && (
@@ -1083,11 +1197,11 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
                         </ActionBtn>
                       )}
                       {isActive && (
-                        <ActionBtn title="Stop" disabled={isBusy} tone="amber" onClick={() => performAction(s.unit, "stop")}>
+                        <ActionBtn title="Stop" disabled={isBusy} tone="rose" onClick={() => performAction(s.unit, "stop")}>
                           <Square size={11} />
                         </ActionBtn>
                       )}
-                      <ActionBtn title="Restart" disabled={isBusy} tone="primary" onClick={() => performAction(s.unit, "restart")}>
+                      <ActionBtn title="Restart" disabled={isBusy} tone="amber" onClick={() => performAction(s.unit, "restart")}>
                         {isBusy ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
                       </ActionBtn>
                     </div>
@@ -1131,13 +1245,19 @@ const InfoCard = ({ title, icon, actions, children, className = "", bodyClassNam
   </section>
 );
 
-interface KVProps { label: string; value: string; icon?: React.ReactNode; }
-const KV = ({ label, value, icon }: KVProps) => (
+interface KVProps { label: string; value: string; icon?: React.ReactNode; copyable?: boolean; }
+const KV = ({ label, value, icon, copyable }: KVProps) => (
   <div className="flex items-baseline justify-between gap-3 py-1 first:pt-0 last:pb-0 border-b border-white/[0.03] last:border-0">
     <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 shrink-0 flex items-center gap-1">
       {icon}{label}
     </span>
-    <span className="text-[11px] font-mono text-zinc-200 text-right truncate select-text">{value}</span>
+    {copyable && value && value !== "—" ? (
+      <span className="text-[11px] font-mono text-zinc-200 text-right truncate select-text min-w-0">
+        <CopyValue value={value}>{value}</CopyValue>
+      </span>
+    ) : (
+      <span className="text-[11px] font-mono text-zinc-200 text-right truncate select-text">{value}</span>
+    )}
   </div>
 );
 
@@ -1213,9 +1333,10 @@ const CountPill = ({ active, onClick, tone, count, children }: { active: boolean
   );
 };
 
-const ActionBtn = ({ onClick, disabled, title, tone, children }: { onClick: () => void; disabled?: boolean; title: string; tone?: "amber" | "primary"; children: React.ReactNode }) => {
+const ActionBtn = ({ onClick, disabled, title, tone, children }: { onClick: () => void; disabled?: boolean; title: string; tone?: "amber" | "primary" | "rose"; children: React.ReactNode }) => {
   const cls = tone === "amber" ? "text-amber-300 hover:bg-amber-500/10 border-amber-500/20"
     : tone === "primary" ? "text-primary hover:bg-primary/10 border-primary/20"
+    : tone === "rose" ? "text-rose-300 bg-rose-500/15 hover:bg-rose-500/25 border-rose-500/30"
     : "text-emerald-300 hover:bg-emerald-500/10 border-emerald-500/20";
   return (
     <button
