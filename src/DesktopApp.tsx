@@ -907,42 +907,49 @@ function DesktopApp() {
             </div>
           );
         })}
-        {/* Wall tab — permanent slot at the end of the session tab strip.
-            Free-form pinboard: user drags in the sessions they want to
-            keep watching side-by-side without paying the cost of a tab
-            switch. Rendered only when there's at least one open session
-            (otherwise the tab is a dead link to an empty canvas).
-            The count badge mirrors the merged-tab pattern so the two
-            "multi-view" affordances read as siblings. */}
-        {sessions.length >= 1 && (
-          <div
+      </div>
+      {/* Wall trigger — moved OUT of the scrollable tab strip and next
+          to the Broadcast pill so both multi-session affordances live
+          in the same "utility cluster" at the right edge of the title
+          bar. Icon-only on every viewport (mobile inherits from
+          Broadcast's compact pattern), badge for pin count so state is
+          legible without text. Visible whenever there's at least one
+          open session — the Wall itself only becomes useful with pins
+          but the button is the discoverability entry point. */}
+      {sessions.length >= 1 && (
+        <div className="relative no-drag shrink-0 mx-1">
+          <button
+            type="button"
             onClick={() => {
-              // Plain click on Wall exits any active session-split — the
+              // Plain click on Wall exits any active session-split —
               // split-view and Wall are two different multi-view modes
-              // and switching between them shouldn't leave stale merged
-              // state behind.
+              // and switching between them shouldn't leave stale
+              // merged state behind.
               setMergedSessionIds([]);
               setActiveView("wall");
             }}
             title={wallItems.length > 0
-              ? `Wall · ${wallItems.length} pinned session${wallItems.length === 1 ? '' : 's'}`
-              : "Wall — a pinboard for open sessions"}
-            className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all shrink-0 mr-1 ${
+              ? `Wall · ${wallItems.length} pinned terminal${wallItems.length === 1 ? '' : 's'}`
+              : "Wall — pinboard for terminals across servers"}
+            aria-label="Wall pinboard"
+            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all ${
               activeView === "wall"
-                ? "bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10"
-                : "bg-white/[0.04] text-zinc-400 border border-white/10 hover:bg-white/[0.08] hover:text-white"
+                ? "bg-primary/15 border border-primary/40 text-primary shadow-inner shadow-primary/10"
+                : "bg-white/[0.06] border border-white/10 text-zinc-400 hover:bg-white/[0.1] hover:text-white"
             }`}
           >
-            <LayoutGrid size={11} className="mr-1.5 shrink-0" />
-            <span className="text-[10px] font-bold whitespace-nowrap uppercase tracking-wider">Wall</span>
+            <LayoutGrid size={12} />
             {wallItems.length > 0 && (
-              <span className="ml-1.5 shrink-0 h-4 min-w-4 px-1 rounded-full bg-primary/25 text-primary text-[9px] font-bold flex items-center justify-center">
+              <span
+                className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-[9px] font-bold text-black flex items-center justify-center leading-none"
+                aria-hidden="true"
+              >
                 {wallItems.length}
               </span>
             )}
-          </div>
-        )}
-      </div>
+          </button>
+        </div>
+      )}
       {/* Broadcast trigger — session-scoped multi-exec. Lives OUTSIDE the
           scrollable tab strip so it stays anchored at the right edge no
           matter how many tabs are open. Compact icon-only button (no
