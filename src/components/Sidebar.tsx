@@ -1,4 +1,4 @@
-import { Server, KeyRound, Library, Activity, Settings, LogOut, LayoutGrid } from "lucide-react";
+import { Server, KeyRound, Library, Activity, Settings, LogOut } from "lucide-react";
 
 // Vertical rail on desktop, horizontal bottom dock on mobile. Layout swap is
 // driven by `isMobile` so the terminal/session views can use the full screen
@@ -12,15 +12,15 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout }: any) =>
   // was "runnable snippet vs freeform prose". A single Library rail with
   // an internal segmented control uses one sidebar slot instead of two —
   // room the user asked us to give back on narrow viewports.
+  // "Tile two sessions together" moved out of a dedicated Compare rail
+  // and into a per-session-tab "Merge into current view" action — the
+  // sidebar stays focused on the persistent-content activities (Servers,
+  // Logins, Library, Monitor) so it isn't padded with a workflow that
+  // only makes sense while sessions are open.
   const items = [
     { id: 'nodes', icon: Server, label: 'Servers' },
     { id: 'vault', icon: KeyRound, label: 'Logins' },
     { id: 'library', icon: Library, label: 'Library' },
-    // Compare = tile any number of open sessions' terminals in a single
-    // canvas. Kept in the rail (not hidden behind Servers) because
-    // "watch three hosts at once" is a top-level workflow, not a per-
-    // session tool.
-    { id: 'compare', icon: LayoutGrid, label: 'Compare' },
     { id: 'monitor', icon: Activity, label: 'Monitor' },
   ];
 

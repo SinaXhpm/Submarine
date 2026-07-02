@@ -5,7 +5,7 @@ import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
   StickyNote, Search, Square, Copy, ChevronLeft, MoreVertical, Radio,
-  LayoutGrid
+  ChevronDown, Columns
 } from "lucide-react";
 import { useBroadcast } from "./ui/broadcast";
 
@@ -47,14 +47,6 @@ function DesktopApp() {
   // without prop-drilling. The pill in the tab strip is the toggle + picker.
   const broadcast = useBroadcast();
   const [broadcastMenuOpen, setBroadcastMenuOpen] = useState(false);
-  // Compare view — session ids the user has tiled together. Lives in App
-  // state (not per-SessionView) because a tile can span sessions and a
-  // SessionView only owns its own terminals. Read by the compare panel;
-  // pruned when a session tab closes so a dead id can't linger. Also
-  // uses BroadcastContext.sessionTerminalMap to look up "which of the
-  // target session's tabs is the visible one" so each tile mirrors what
-  // the user actually sees in that session.
-  const [comparePicked, setComparePicked] = useState<Set<string>>(() => new Set());
   // `activeProfile` is the name the user picked + unlocked. Stays null
   // until ProfileSelectPage's onUnlocked fires, at which point the app
   // flips straight into the main view — no intermediate state.
@@ -69,6 +61,17 @@ function DesktopApp() {
   // Right-click menu pinned to a session tab. Closed by any click outside or
   // by choosing one of the menu items.
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
+  // Sessions merged into the current session-view canvas. When a session
+  // tab is being viewed and this set is non-empty, its SessionView renders
+  // side-by-side with each merged partner instead of full-width. Used by
+  // the "Merge with…" context action on session tabs so users don't need
+  // a separate Compare page to see two servers together.
+  const [mergedSessionIds, setMergedSessionIds] = useState<string[]>([]);
+  // Mobile-only session picker toggle. Horizontally-scrolling tabs eat
+  // the whole title row on a 400 px phone; replacing them with a compact
+  // dropdown gives the tab strip predictable width and matches iOS/
+  // Android convention of "current context on top, tap to switch".
+  const [mobileSessionPickerOpen, setMobileSessionPickerOpen] = useState(false);
   const handleSessionStatus = useCallback((sessionId: string, status: string) => {
     setSessionStatuses((prev) => (prev[sessionId] === status ? prev : { ...prev, [sessionId]: status }));
   }, []);
@@ -227,16 +230,10 @@ function DesktopApp() {
         // linger in the target set (would let a user re-enable broadcast and
         // silently exclude a phantom target from the count).
         broadcast.removeSession(sessId);
-        // Same cleanup for the Compare workspace — otherwise the tile
-        // would try to render a terminal from a session that no longer
-        // exists and TerminalView would sit there listening for events
-        // that will never fire.
-        setComparePicked(prev => {
-          if (!prev.has(sessId)) return prev;
-          const next = new Set(prev);
-          next.delete(sessId);
-          return next;
-        });
+        // If the closing session was merged as a side pane in another
+        // session's canvas, drop it — otherwise the tile would render
+        // an empty <SessionView>.
+        setMergedSessionIds(prev => prev.filter(id => id !== sessId));
         closeHandlersRef.current.delete(sessId);
       };
       closeHandlersRef.current.set(sessId, h);
@@ -534,13 +531,141 @@ function DesktopApp() {
         <span className="text-[12px] font-bold text-white tracking-tight">Submarine</span>
       </div>
 
+      {/* Mobile session picker — replaces the horizontal tab strip on
+          narrow viewports so a phone doesn't spend its whole title row
+          on 3-character truncated tabs. A single pill shows the current
+          session (or a "Servers" placeholder when nothing is open); tap
+          opens a dropdown listing every session with status + close +
+          merge affordances. Desktop still gets the full scrolling tab
+          strip below. */}
+      {isMobile && sessions.length > 0 && (
+        <div className="flex-1 flex items-end justify-start pb-1 no-drag pl-2 pr-1 min-w-0">
+          <div className="relative w-full">
+            <button
+              type="button"
+              onClick={() => setMobileSessionPickerOpen(v => !v)}
+              className={`w-full h-7 px-3 rounded-full flex items-center gap-2 border transition-all ${
+                activeView.startsWith('session-')
+                  ? 'bg-primary/15 text-primary border-primary/40 shadow-inner'
+                  : 'bg-white/[0.06] text-zinc-300 border-white/10'
+              }`}
+              aria-haspopup="listbox"
+              aria-expanded={mobileSessionPickerOpen}
+            >
+              {(() => {
+                const cur = sessions.find(s => s.id === activeView);
+                const st = cur ? (sessionStatuses[cur.id] ?? 'connecting') : null;
+                const dotTone =
+                  st === 'connected'    ? 'bg-emerald-400' :
+                  st === 'connecting'   ? 'bg-amber-400 animate-pulse' :
+                  st === 'failed'       ? 'bg-rose-500' :
+                  st === 'disconnected' ? 'bg-rose-500' :
+                                          'bg-zinc-500';
+                return (
+                  <>
+                    {cur && <span className={`w-2 h-2 rounded-full shrink-0 ${dotTone}`} />}
+                    <span className="truncate flex-1 text-left text-[11px] font-bold">
+                      {cur ? cur.serverName : `${sessions.length} open session${sessions.length === 1 ? '' : 's'}`}
+                    </span>
+                    {mergedSessionIds.length > 0 && (
+                      <span className="shrink-0 h-4 px-1 rounded-full bg-primary/25 text-primary text-[9px] font-bold flex items-center gap-0.5">
+                        <Columns size={8} /> +{mergedSessionIds.length}
+                      </span>
+                    )}
+                    <ChevronDown size={12} className={`shrink-0 transition-transform ${mobileSessionPickerOpen ? 'rotate-180' : ''}`} />
+                  </>
+                );
+              })()}
+            </button>
+            {mobileSessionPickerOpen && (
+              <>
+                <div className="fixed inset-0 z-[60]" onClick={() => setMobileSessionPickerOpen(false)} />
+                <div
+                  role="listbox"
+                  className="absolute z-[70] top-8 left-0 right-0 bg-[#15151a] border border-white/10 rounded-xl shadow-2xl p-1.5 max-h-[60vh] overflow-y-auto custom-scrollbar"
+                >
+                  {sessions.map(s => {
+                    const st = sessionStatuses[s.id] ?? 'connecting';
+                    const dot =
+                      st === 'connected'    ? 'bg-emerald-400' :
+                      st === 'connecting'   ? 'bg-amber-400 animate-pulse' :
+                      'bg-rose-500';
+                    const isActive = activeView === s.id;
+                    const isMerged = mergedSessionIds.includes(s.id);
+                    return (
+                      <div key={s.id} className="flex items-center gap-1">
+                        <button
+                          role="option"
+                          aria-selected={isActive}
+                          onClick={() => { setActiveView(s.id); setMobileSessionPickerOpen(false); }}
+                          className={`flex-1 flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-all ${
+                            isActive
+                              ? 'bg-primary/15 text-primary'
+                              : isMerged
+                                ? 'bg-primary/[0.05] text-primary/80'
+                                : 'text-zinc-200 hover:bg-white/[0.06]'
+                          }`}
+                        >
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
+                          <span className="text-[12px] font-semibold truncate flex-1">{s.serverName}</span>
+                          {isMerged && !isActive && (
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-primary/60">Merged</span>
+                          )}
+                        </button>
+                        {/* Merge/unmerge toggle — mobile equivalent of
+                            the desktop tab context menu. Only offered
+                            when the current view is another session AND
+                            this row isn't the one on screen. */}
+                        {activeView.startsWith('session-') && activeView !== s.id && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isMerged) setMergedSessionIds(prev => prev.filter(id => id !== s.id));
+                              else setMergedSessionIds(prev => [...prev, s.id]);
+                            }}
+                            title={isMerged ? 'Unmerge from current view' : 'Merge into current view'}
+                            className={`h-8 w-8 shrink-0 rounded-lg flex items-center justify-center border transition-all ${
+                              isMerged
+                                ? 'bg-primary/15 text-primary border-primary/40'
+                                : 'text-zinc-400 border-white/10 hover:bg-white/[0.06]'
+                            }`}
+                          >
+                            <Columns size={13} />
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const sid = s.id;
+                            invoke('disconnect_session', { sessionId: sid }).catch(() => {});
+                            setSessions(prev => prev.filter(x => x.id !== sid));
+                            setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
+                            broadcast.removeSession(sid);
+                            setMergedSessionIds(prev => prev.filter(id => id !== sid));
+                            setActiveView(prev => (prev === sid ? 'nodes' : prev));
+                          }}
+                          title="Close session"
+                          className="h-8 w-8 shrink-0 rounded-lg flex items-center justify-center text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] transition-all"
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Tab strip is a drag region; tabs themselves opt out via no-drag so
           clicking a tab selects it instead of dragging the window. On phone
-          the strip owns the entire title row (no logo / titlebar buttons),
-          so each pill can stay readable instead of being squeezed to zero. */}
+          the horizontal scroll is replaced by the dropdown above; the
+          strip below is hidden on mobile. */}
       <div
         data-tauri-drag-region
-        className="flex-1 flex gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1"
+        className={`${isMobile ? 'hidden' : 'flex'} flex-1 gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1`}
         onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY; }}
       >
         {sessions.map(s => {
@@ -565,10 +690,21 @@ function DesktopApp() {
           // separate from the status dot so the user can still tell "is it
           // connected?" and "is it broadcasting?" at a glance.
           const isBroadcastTarget = broadcast.enabled && broadcast.targetSessionIds.has(s.id);
+          const isMergedTab = mergedSessionIds.includes(s.id);
           return (
             <div
               key={s.id}
-              onClick={() => setActiveView(s.id)}
+              onClick={(e) => {
+                // Ctrl/⌘-click toggles this tab in the merged panes of
+                // the currently-active session view — a quick keyboard-
+                // free way to tile two servers together without going
+                // through the right-click menu.
+                if ((e.ctrlKey || e.metaKey) && activeView.startsWith('session-') && activeView !== s.id) {
+                  setMergedSessionIds(prev => prev.includes(s.id) ? prev.filter(id => id !== s.id) : [...prev, s.id]);
+                  return;
+                }
+                setActiveView(s.id);
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setTabMenu({ x: e.clientX, y: e.clientY, sessionId: s.id });
@@ -581,8 +717,14 @@ function DesktopApp() {
               // `whitespace-nowrap` keeps long names on a single line; without
               // it a tab with a 30-char hostname would wrap into a two-line
               // pill and break the row's height.
-              title={s.serverName}
-              className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all shrink-0 mr-1 ${activeView === s.id ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10' : 'bg-white/[0.06] text-zinc-300 border border-white/10 hover:bg-white/[0.1] hover:border-white/20 hover:text-white'}`}
+              title={isMergedTab ? `${s.serverName} · merged into current view (Ctrl-click to unmerge)` : s.serverName}
+              className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all shrink-0 mr-1 ${
+                activeView === s.id
+                  ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10'
+                  : isMergedTab
+                    ? 'bg-primary/[0.05] text-primary/80 border border-primary/25 hover:bg-primary/10'
+                    : 'bg-white/[0.06] text-zinc-300 border border-white/10 hover:bg-white/[0.1] hover:border-white/20 hover:text-white'
+              }`}
             >
               <span
                 title={dotTitle}
@@ -595,6 +737,9 @@ function DesktopApp() {
                   aria-label="Broadcast target"
                   className="w-1.5 h-1.5 rounded-full mr-1.5 shrink-0 bg-orange-400 shadow-[0_0_6px_rgba(251,146,60,0.7)]"
                 />
+              )}
+              {isMergedTab && (
+                <Columns size={9} className="text-primary/70 mr-1 shrink-0" />
               )}
               <span className="text-[11px] sm:text-[10px] font-bold whitespace-nowrap uppercase tracking-tight normal-case sm:uppercase">{s.serverName}</span>
               {/* Mobile-only actions trigger. On phone we surface the same
@@ -792,43 +937,94 @@ function DesktopApp() {
         </button>
         <button onClick={() => appWindow.close()} className="w-10 h-full flex items-center justify-center hover:bg-red-500 group transition-all"><X size={14} className="text-zinc-600 group-hover:text-white" /></button>
       </div>
-      {tabMenu && (
+      {tabMenu && (() => {
+        const targetId = tabMenu.sessionId;
+        const isActiveView = activeView === targetId;
+        const isMerged = mergedSessionIds.includes(targetId);
+        // "Merge into current" only makes sense when the current view
+        // is a DIFFERENT session (not nodes/vault/library) and this tab
+        // isn't already merged in.
+        const canMerge = activeView.startsWith("session-")
+          && activeView !== targetId
+          && !isMerged;
+        return (
         <>
           <div className="fixed inset-0 z-[60]" onClick={() => setTabMenu(null)} onContextMenu={(e) => { e.preventDefault(); setTabMenu(null); }} />
           <div
-            className="fixed z-[70] bg-[#15151a] border border-white/10 rounded-md shadow-2xl py-1 min-w-[160px] text-[11px] no-drag"
-            style={{ left: Math.min(tabMenu.x, window.innerWidth - 180), top: Math.min(tabMenu.y, window.innerHeight - 110) }}
+            className="fixed z-[70] bg-[#15151a] border border-white/10 rounded-md shadow-2xl py-1 min-w-[200px] text-[11px] no-drag"
+            style={{ left: Math.min(tabMenu.x, window.innerWidth - 220), top: Math.min(tabMenu.y, window.innerHeight - 220) }}
           >
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
               onClick={() => {
-                window.dispatchEvent(new CustomEvent(`session-reconnect-${tabMenu.sessionId}`));
+                window.dispatchEvent(new CustomEvent(`session-reconnect-${targetId}`));
                 setTabMenu(null);
               }}
             >Reconnect</button>
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-zinc-200"
               onClick={() => {
-                invoke("disconnect_session", { sessionId: tabMenu.sessionId }).catch(console.error);
+                invoke("disconnect_session", { sessionId: targetId }).catch(console.error);
                 setTabMenu(null);
               }}
             >Disconnect</button>
+            {/* Merge / unmerge actions — the point of this session's
+                request. Merging tiles this tab beside whichever session
+                is currently on screen so users don't have to pop over
+                to a separate Compare page. */}
+            {(canMerge || isMerged || (isActiveView && mergedSessionIds.length > 0)) && (
+              <>
+                <div className="border-t border-white/5 my-1" />
+                {canMerge && (
+                  <button
+                    className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
+                    onClick={() => {
+                      setMergedSessionIds(prev => prev.includes(targetId) ? prev : [...prev, targetId]);
+                      setTabMenu(null);
+                    }}
+                  >
+                    Merge into current view
+                  </button>
+                )}
+                {isMerged && (
+                  <button
+                    className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-zinc-200"
+                    onClick={() => {
+                      setMergedSessionIds(prev => prev.filter(id => id !== targetId));
+                      setTabMenu(null);
+                    }}
+                  >
+                    Unmerge — restore as own tab
+                  </button>
+                )}
+                {isActiveView && mergedSessionIds.length > 0 && (
+                  <button
+                    className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-zinc-200"
+                    onClick={() => { setMergedSessionIds([]); setTabMenu(null); }}
+                  >
+                    Clear merged panes
+                  </button>
+                )}
+              </>
+            )}
             <div className="border-t border-white/5 my-1" />
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-rose-500/15 hover:text-rose-300 text-zinc-200"
               onClick={() => {
-                const sid = tabMenu.sessionId;
+                const sid = targetId;
                 invoke("disconnect_session", { sessionId: sid }).catch(() => {});
                 setSessions(prev => prev.filter(sess => sess.id !== sid));
                 setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
                 broadcast.removeSession(sid);
+                setMergedSessionIds(prev => prev.filter(id => id !== sid));
                 setActiveView(prev => (prev === sid ? "nodes" : prev));
                 setTabMenu(null);
               }}
             >Close tab</button>
           </div>
         </>
-      )}
+        );
+      })()}
     </div>
   );
 
@@ -1041,34 +1237,121 @@ function DesktopApp() {
                 etc. The previous `display:none` toggle caused a 0×0 →
                 real-size reflow on every switch and corrupted the prompt
                 with stacked fragments like `[root@local[root@local`. */}
-            <div className={`absolute inset-0 flex flex-col overflow-hidden ${sessions.length === 0 || !sessions.some(s => s.id === activeView) ? 'opacity-0 pointer-events-none' : ''}`}>
-            {sessions.map(sess => (
-              <div key={sess.id} className={`absolute inset-0 flex flex-col overflow-hidden ${activeView === sess.id ? '' : 'opacity-0 pointer-events-none'}`}>
-                <ErrorBoundary
-                  label={sess.serverName}
-                  onReset={() => {
-                    setSessions(prev => prev.filter(s => s.id !== sess.id));
-                    if (activeView === sess.id) setActiveView("nodes");
-                  }}
-                >
-                  <SessionView
-                    session={sess}
-                    onClose={getCloseHandler(sess.id)}
-                    addLog={addLog}
-                    onStatusChange={handleSessionStatus}
-                    onOpenCompare={(preselect: string) => {
-                      setComparePicked(prev => {
-                        const next = new Set(prev);
-                        next.add(preselect);
-                        return next;
-                      });
-                      setActiveView("compare");
-                    }}
-                  />
-                </ErrorBoundary>
-              </div>
-            ))}
-            </div>
+            {(() => {
+              // When the current view is a session and mergedSessionIds has
+              // entries, tile the focused session and its merged partners
+              // side-by-side inside the same canvas — the user's "put two
+              // main tabs together as panes" request. Hidden sessions stay
+              // mounted (absolute-positioned, opacity 0) so scrollback and
+              // PTY state survive; visible ones are explicitly positioned
+              // via left/width so the tile widths match the visible count
+              // without triggering a display-mode flip that could reset
+              // xterm layout.
+              const viewIsSession = activeView.startsWith("session-") && sessions.some(s => s.id === activeView);
+              const visibleIds = viewIsSession
+                ? [activeView, ...mergedSessionIds.filter(id => id !== activeView && sessions.some(s => s.id === id))]
+                : [];
+              const isTiled = visibleIds.length > 1;
+              return (
+                <div className={`absolute inset-0 flex flex-col overflow-hidden ${!viewIsSession ? 'opacity-0 pointer-events-none' : ''}`}>
+                  <div className="flex-1 relative bg-black/40">
+                    {sessions.map(sess => {
+                      const idx = visibleIds.indexOf(sess.id);
+                      const isVisible = idx >= 0;
+                      const isFocused = activeView === sess.id;
+                      const style: React.CSSProperties = isVisible
+                        ? {
+                            position: 'absolute',
+                            top: 0,
+                            bottom: 0,
+                            left: `${(idx * 100) / visibleIds.length}%`,
+                            width: `${100 / visibleIds.length}%`,
+                          }
+                        : {
+                            position: 'absolute',
+                            inset: 0,
+                            opacity: 0,
+                            pointerEvents: 'none',
+                          };
+                      return (
+                        <div
+                          key={sess.id}
+                          style={style}
+                          onMouseDownCapture={() => {
+                            // Clicking a merged (non-focused) pane
+                            // shifts focus to it so its terminal starts
+                            // receiving keystrokes. The old focused
+                            // session slides into the merged set so
+                            // the tile order is preserved.
+                            if (isTiled && !isFocused && isVisible) {
+                              setMergedSessionIds(prev => {
+                                const withoutTarget = prev.filter(id => id !== sess.id);
+                                const withOldActive = withoutTarget.includes(activeView) || !viewIsSession
+                                  ? withoutTarget
+                                  : [activeView, ...withoutTarget];
+                                return withOldActive;
+                              });
+                              setActiveView(sess.id);
+                            }
+                          }}
+                          className={`overflow-hidden ${
+                            isVisible && isTiled
+                              ? `border ${isFocused ? 'border-primary/40 shadow-[inset_0_0_0_1px_rgba(var(--primary),0.15)]' : 'border-white/[0.05]'}`
+                              : ''
+                          }`}
+                        >
+                          {/* Merged-pane header — only shown when tiled,
+                              gives users a way to unmerge a specific pane
+                              without hunting the tab context menu. */}
+                          {isVisible && isTiled && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (isFocused) {
+                                  // Focused pane's X: pop the next
+                                  // merged pane up as the new active
+                                  // view (or fall back to "nodes" if
+                                  // there is nothing to promote).
+                                  const promoted = mergedSessionIds.find(id => id !== sess.id && sessions.some(s => s.id === id));
+                                  setMergedSessionIds(prev => prev.filter(id => id !== promoted));
+                                  setActiveView(promoted ?? "nodes");
+                                } else {
+                                  setMergedSessionIds(prev => prev.filter(id => id !== sess.id));
+                                }
+                              }}
+                              title="Un-merge this pane"
+                              className="absolute top-1 right-1 z-30 h-5 w-5 rounded flex items-center justify-center bg-black/60 border border-white/10 text-zinc-400 hover:text-white hover:bg-black/80 opacity-70 hover:opacity-100 transition-opacity"
+                            >
+                              <X size={11} />
+                            </button>
+                          )}
+                          <ErrorBoundary
+                            label={sess.serverName}
+                            onReset={() => {
+                              setSessions(prev => prev.filter(s => s.id !== sess.id));
+                              if (activeView === sess.id) setActiveView("nodes");
+                            }}
+                          >
+                            <SessionView
+                              session={sess}
+                              onClose={getCloseHandler(sess.id)}
+                              addLog={addLog}
+                              onStatusChange={handleSessionStatus}
+                              onOpenCompare={(preselect: string) => {
+                                // Kept as a dead-simple "merge into the
+                                // current view" shim now that Compare has
+                                // been folded into the session tab strip.
+                                setMergedSessionIds(prev => prev.includes(preselect) ? prev : [...prev, preselect]);
+                              }}
+                            />
+                          </ErrorBoundary>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Library = Commands + Notes merged.
                 Commands and Notes used to be two distinct rails; both are
@@ -1259,171 +1542,6 @@ function DesktopApp() {
                 doesn't have to fiddle with dividers to compare row
                 lengths — the whole point of compare mode is uniform
                 side-by-side. */}
-            {activeView === "compare" && (() => {
-              const eligible = sessions;
-              const picks = eligible.filter(s => comparePicked.has(s.id));
-              const n = picks.length;
-              const gridClass = n <= 1
-                ? "grid-cols-1"
-                : n === 2
-                  ? "grid-cols-1 md:grid-cols-2"
-                  : n <= 4
-                    ? "grid-cols-1 sm:grid-cols-2"
-                    : n <= 9
-                      ? "grid-cols-2 md:grid-cols-3"
-                      : "grid-cols-2 md:grid-cols-3 lg:grid-cols-4";
-              return (
-                <div className="flex-1 flex flex-col overflow-hidden animate-in fade-in">
-                  <header className="h-12 shrink-0 border-b border-white/5 bg-[#121214]/50 flex items-center px-4 gap-3">
-                    <LayoutGrid size={14} className="text-primary" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-bold text-white tracking-tight leading-none">Compare</div>
-                      <div className="text-[10px] text-zinc-500 leading-none mt-0.5">
-                        Tile any number of open sessions in one canvas. Broadcast fans keystrokes to every tile at once.
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => setComparePicked(new Set(eligible.map(s => s.id)))}
-                        disabled={eligible.length === 0}
-                        className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 transition-all"
-                      >
-                        Pick all
-                      </button>
-                      <button
-                        onClick={() => setComparePicked(new Set())}
-                        disabled={comparePicked.size === 0}
-                        className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 transition-all"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                  </header>
-
-                  {eligible.length === 0 ? (
-                    <div className="flex-1 flex items-center justify-center px-6">
-                      <div className="max-w-md text-center space-y-3">
-                        <LayoutGrid size={32} className="mx-auto text-zinc-700" />
-                        <div className="text-[13px] font-semibold text-zinc-300">No open sessions yet</div>
-                        <div className="text-[12px] text-zinc-500">
-                          Open two or more servers, then come back here to tile them side-by-side.
-                        </div>
-                        <button
-                          onClick={() => setActiveView("nodes")}
-                          className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase tracking-wider bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-all"
-                        >
-                          Go to Servers
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex-1 flex overflow-hidden">
-                      {/* Picker rail. Every open session is a checkbox
-                          row — the same shape as the Broadcast dropdown so
-                          the muscle memory transfers. */}
-                      <aside className="w-52 shrink-0 border-r border-white/5 bg-[#0e0e10] overflow-y-auto custom-scrollbar p-2 space-y-0.5">
-                        <div className="text-[9px] font-bold uppercase tracking-wider text-zinc-600 px-2 pb-1.5">
-                          Open sessions ({eligible.length})
-                        </div>
-                        {eligible.map(s => {
-                          const st = sessionStatuses[s.id] ?? "connecting";
-                          const checked = comparePicked.has(s.id);
-                          return (
-                            <label
-                              key={s.id}
-                              className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-[11.5px] ${
-                                checked ? "bg-primary/10 text-white" : "text-zinc-300 hover:bg-white/[0.03]"
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                className="accent-primary shrink-0"
-                                checked={checked}
-                                onChange={() => setComparePicked(prev => {
-                                  const next = new Set(prev);
-                                  if (next.has(s.id)) next.delete(s.id);
-                                  else next.add(s.id);
-                                  return next;
-                                })}
-                              />
-                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                st === "connected" ? "bg-emerald-400" :
-                                st === "connecting" ? "bg-amber-400" :
-                                "bg-rose-500"
-                              }`} />
-                              <span className="truncate flex-1 font-medium">{s.serverName}</span>
-                            </label>
-                          );
-                        })}
-                      </aside>
-                      {/* Tile canvas. */}
-                      <div className="flex-1 min-w-0 overflow-auto bg-black/40 p-2">
-                        {n === 0 ? (
-                          <div className="h-full flex items-center justify-center text-zinc-600 text-[12.5px] italic">
-                            Pick a session on the left to add it as a tile.
-                          </div>
-                        ) : (
-                          <div className={`h-full grid ${gridClass} gap-2 auto-rows-fr`}>
-                            {picks.map(sess => {
-                              const st = sessionStatuses[sess.id] ?? "connecting";
-                              const termId = broadcast.sessionTerminalMap[sess.id];
-                              return (
-                                <div key={sess.id} className="relative flex flex-col min-w-0 min-h-0 border border-white/10 rounded-lg bg-[#0a0a0c] overflow-hidden">
-                                  <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-[#111114]">
-                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                      st === "connected" ? "bg-emerald-400" :
-                                      st === "connecting" ? "bg-amber-400" :
-                                      "bg-rose-500"
-                                    }`} />
-                                    <span className="text-[10.5px] font-bold text-zinc-200 uppercase tracking-wider truncate flex-1">{sess.serverName}</span>
-                                    <button
-                                      onClick={() => setActiveView(sess.id)}
-                                      title="Jump to this session's full view"
-                                      className="text-[9px] font-bold uppercase tracking-wider text-zinc-500 hover:text-white transition-colors"
-                                    >
-                                      Open →
-                                    </button>
-                                    <button
-                                      onClick={() => setComparePicked(prev => {
-                                        const next = new Set(prev);
-                                        next.delete(sess.id);
-                                        return next;
-                                      })}
-                                      title="Remove this tile"
-                                      className="text-zinc-500 hover:text-red-400 transition-colors"
-                                    >
-                                      <X size={12} />
-                                    </button>
-                                  </div>
-                                  <div className="flex-1 min-h-0 relative">
-                                    {termId ? (
-                                      <TerminalView
-                                        sessionId={sess.id}
-                                        terminalId={termId}
-                                        disabled={st !== "connected"}
-                                        isActive={activeView === "compare"}
-                                        connectionEpoch={0}
-                                        serverId={sess.serverId}
-                                        serverName={sess.serverName}
-                                      />
-                                    ) : (
-                                      <div className="h-full flex items-center justify-center text-zinc-600 text-[11px] italic px-3 text-center">
-                                        No terminal registered for this session yet — open the session tab once so it can attach.
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
             {activeView === "logs" && (
               <div className="flex-1 flex flex-col p-3 sm:p-8 space-y-3 sm:space-y-6 animate-in overflow-hidden">
                 <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-3 border-b border-zinc-700 pb-3 sm:pb-6 shrink-0">
