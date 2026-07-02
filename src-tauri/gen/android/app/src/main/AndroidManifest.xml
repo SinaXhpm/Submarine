@@ -14,8 +14,9 @@
             windowSoftInputMode="adjustResize|stateHidden"
               adjustResize: THE load-bearing keyboard fix. Without this the Android
               WebView stays at the pre-keyboard height and the on-screen kb draws
-              over the terminal + MobileKeyBar. CSS (100dvh / var(--vv-h)) alone is
-              unreliable on WebView versions before Chromium M139 (mid-2025)
+              over the terminal + MobileKeyBar. CSS alone (100dvh, or a
+              JS-synced viewport-height custom prop) is unreliable on WebView
+              versions before Chromium M139 (mid-2025)
               because visualViewport.height there equals layoutViewport.height
               per MDN — so JS can't detect the kb either. adjustResize shrinks
               the whole Activity window so 100vh / flex-1 / etc. do the right

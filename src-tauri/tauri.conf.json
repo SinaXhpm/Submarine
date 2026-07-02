@@ -1,6 +1,6 @@
 {
   "productName": "Submarine",
-  "version": "0.2.32",
+  "version": "0.2.33",
   "identifier": "com.submarine.app",
   "build": {
     "beforeDevCommand": "npm run dev",
