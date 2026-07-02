@@ -232,17 +232,91 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       <div className="w-full max-w-[340px] flex flex-col">
         {/* Brand */}
         <div className="flex flex-col items-center mb-8 select-none">
-          <img
-            src={logoUrl}
-            alt=""
-            draggable={false}
-            // h-28 + object-contain + width:auto so a non-square source
-            // (the current app-logo.png is 1822×1770, slight taller-than-
-            // wide) fits the brand area without being cropped or stretched
-            // — earlier the forced w-28 h-28 squashed it into a square
-            // and clipped the edges.
-            className="h-28 w-auto max-w-full object-contain mb-4 drop-shadow-[0_0_32px_rgba(var(--primary),0.22)]"
-          />
+          {/* Logo + animated waves. The PNG's built-in wave is masked
+              out with a linear-gradient fade in the bottom third of
+              the image, then replaced by two live SVG wave layers
+              scrolling at different speeds for a parallax sea.
+              Wrapper is inline-block so its width follows the img's
+              rendered width — the wave overlay then lines up with
+              the (masked-out) hull bottom regardless of the current
+              logo aspect ratio. */}
+          <div className="relative inline-block mb-4 drop-shadow-[0_0_32px_rgba(var(--primary),0.22)]">
+            <img
+              src={logoUrl}
+              alt=""
+              draggable={false}
+              // h-28 + object-contain + width:auto so a non-square source
+              // (the current app-logo.png is 1822×1770, slight taller-than-
+              // wide) fits the brand area without being cropped or stretched
+              // — earlier the forced w-28 h-28 squashed it into a square
+              // and clipped the edges.
+              className="h-28 w-auto max-w-full object-contain block"
+              style={{
+                // Mask fades to transparent over the bottom ~35 % of
+                // the image, hiding the static PNG waves so the
+                // animated SVG below stands in for them cleanly.
+                maskImage: 'linear-gradient(to bottom, black 62%, transparent 82%)',
+                WebkitMaskImage: 'linear-gradient(to bottom, black 62%, transparent 82%)',
+                animation: 'submarine-float 4.5s ease-in-out infinite',
+                willChange: 'transform',
+              }}
+            />
+            <div className="absolute left-0 right-0 bottom-0 h-[38%] overflow-hidden pointer-events-none">
+              {/* Layer A — surface wave: brighter, faster, on top. */}
+              <svg
+                viewBox="0 0 240 40"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+                className="absolute inset-y-0 left-0 h-full"
+                style={{
+                  width: '200%',
+                  animation: 'submarine-wave-scroll 5s linear infinite',
+                  willChange: 'transform',
+                }}
+              >
+                <defs>
+                  <linearGradient id="submarine-wave-a" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stopColor="#22d3ee" />
+                    <stop offset="50%" stopColor="#818cf8" />
+                    <stop offset="100%" stopColor="#c084fc" />
+                  </linearGradient>
+                </defs>
+                <path
+                  d="M0,20 Q15,5 30,20 Q45,35 60,20 Q75,5 90,20 Q105,35 120,20 Q135,5 150,20 Q165,35 180,20 Q195,5 210,20 Q225,35 240,20 L240,40 L0,40 Z"
+                  fill="url(#submarine-wave-a)"
+                  opacity="0.9"
+                />
+              </svg>
+              {/* Layer B — swell: dimmer, slower, behind A. Source
+                  order below A so it stays visually below without an
+                  explicit z-index. Offset vertically by 4 px so the
+                  crests don't line up with layer A's. */}
+              <svg
+                viewBox="0 0 240 40"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+                className="absolute inset-y-0 left-0 h-full"
+                style={{
+                  width: '200%',
+                  animation: 'submarine-wave-scroll 8s linear infinite',
+                  willChange: 'transform',
+                  marginTop: '4px',
+                }}
+              >
+                <defs>
+                  <linearGradient id="submarine-wave-b" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stopColor="#0ea5e9" />
+                    <stop offset="100%" stopColor="#a855f7" />
+                  </linearGradient>
+                </defs>
+                <path
+                  d="M0,22 Q20,10 40,22 Q60,34 80,22 Q100,10 120,22 Q140,34 160,22 Q180,10 200,22 Q220,34 240,22 L240,40 L0,40 Z"
+                  fill="url(#submarine-wave-b)"
+                  opacity="0.55"
+                />
+              </svg>
+            </div>
+          </div>
           <h1 className="text-[22px] font-semibold text-white tracking-tight leading-none">Submarine</h1>
           <p className="text-[10px] text-primary/80 mt-1.5 tracking-[0.22em] uppercase font-semibold">
             Run Silent, Run Deep
