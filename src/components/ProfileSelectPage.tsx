@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Plus, Trash2, X, AlertTriangle, ArrowRight, Download, Upload, CheckCircle2, Cloud, RefreshCw } from "lucide-react";
+import { Plus, Trash2, X, AlertTriangle, ArrowRight, Download, Upload, CheckCircle2, Cloud, RefreshCw, Shield } from "lucide-react";
 import CloudPanel from "./CloudPanel";
 import AboutPanel from "./AboutPanel";
 import logoUrl from "../assets/logo.png";
@@ -247,6 +247,17 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
           <p className="text-[10px] text-primary/80 mt-1.5 tracking-[0.22em] uppercase font-semibold">
             Run Silent, Run Deep
           </p>
+          {/* Security shorthand right under the brand: users landing on
+              the unlock screen see immediately what protects their data
+              without having to open About. Argon2 for the KDF (so a weak
+              password buys real time) + AES-256-GCM for the vault blob
+              (so an offline attacker with the file still has to guess). */}
+          <div
+            title="Password → Argon2 → AES-256-GCM. Servers, keys, notes, commands — nothing decryptable without your password."
+            className="mt-3 inline-flex items-center gap-1.5 h-6 px-2 rounded-full bg-emerald-500/8 border border-emerald-500/25 text-[9.5px] font-semibold uppercase tracking-[0.18em] text-emerald-300"
+          >
+            <Shield size={10} /> Argon2 · AES-256-GCM
+          </div>
           <p className="text-[12.5px] text-zinc-500 mt-2">
             {loading
               ? " "
