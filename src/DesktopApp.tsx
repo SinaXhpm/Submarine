@@ -5,7 +5,7 @@ import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
   StickyNote, Search, Square, Copy, ChevronLeft, MoreVertical, Radio,
-  ChevronDown, Columns
+  ChevronDown, Columns, LayoutGrid, GripVertical, Pin, PinOff
 } from "lucide-react";
 import { useBroadcast } from "./ui/broadcast";
 
@@ -67,6 +67,101 @@ function DesktopApp() {
   // the "Merge with…" context action on session tabs so users don't need
   // a separate Compare page to see two servers together.
   const [mergedSessionIds, setMergedSessionIds] = useState<string[]>([]);
+  // "Wall" workspace — a permanent view slot at the end of the session
+  // tab strip that hosts free-form floating tiles, one per pinned
+  // session. Each tile shows that session's active terminal chromeless
+  // (no tab strip, no tool rail) so the user can watch/type on many
+  // servers at once without switching tabs. Pins are (sessionId, x, y,
+  // w, h, z) percentages of the Wall canvas — resolution-independent,
+  // survives window resize. Positions are geometry only; the actual
+  // SessionView instance stays in the same fiber location for state
+  // preservation, we just position it differently when the Wall is the
+  // active view. v1 is session-level (one pin per session, shows the
+  // session's current active terminal); terminal-level pinning is a
+  // planned follow-up.
+  type WallItem = { id: string; sessionId: string; x: number; y: number; w: number; h: number; z: number };
+  const [wallItems, setWallItems] = useState<WallItem[]>([]);
+  const [wallPickerOpen, setWallPickerOpen] = useState(false);
+  const wallCanvasRef = useRef<HTMLDivElement | null>(null);
+  // Drag state for tile move/resize. Kept in a ref so pointermove
+  // updates don't chase React re-renders; wallItems is updated once per
+  // pointer event which is fine for a handful of tiles.
+  const wallDragRef = useRef<{
+    itemId: string;
+    mode: 'move' | 'resize';
+    startX: number;
+    startY: number;
+    startItem: WallItem;
+    canvasW: number;
+    canvasH: number;
+  } | null>(null);
+  const wallNextZ = () => wallItems.reduce((m, i) => Math.max(m, i.z), 0) + 1;
+  const wallHasSession = (sid: string) => wallItems.some(i => i.sessionId === sid);
+  const pinSessionToWall = (sid: string) => {
+    if (wallHasSession(sid)) return;
+    // Auto-place: 2-column grid, offset by pin count. Keeps first few
+    // tiles from stacking exactly on top of each other. User can then
+    // drag/resize freely.
+    setWallItems(prev => {
+      const idx = prev.length;
+      const col = idx % 2;
+      const row = Math.floor(idx / 2);
+      const w = 46, h = 44;
+      const x = 3 + col * (w + 3);
+      const y = 3 + row * (h + 3);
+      const z = prev.reduce((m, i) => Math.max(m, i.z), 0) + 1;
+      return [...prev, { id: `wall-${sid}-${idx}`, sessionId: sid, x, y, w, h, z }];
+    });
+  };
+  const unpinSessionFromWall = (sid: string) => {
+    setWallItems(prev => prev.filter(i => i.sessionId !== sid));
+  };
+  const bringWallTileToFront = (itemId: string) => {
+    setWallItems(prev => {
+      const top = prev.reduce((m, i) => Math.max(m, i.z), 0);
+      const target = prev.find(i => i.id === itemId);
+      if (!target || target.z === top) return prev;
+      return prev.map(i => i.id === itemId ? { ...i, z: top + 1 } : i);
+    });
+  };
+  const startWallDrag = (e: React.PointerEvent, itemId: string, mode: 'move' | 'resize') => {
+    const item = wallItems.find(i => i.id === itemId);
+    const canvas = wallCanvasRef.current;
+    if (!item || !canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    e.preventDefault();
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    wallDragRef.current = {
+      itemId, mode,
+      startX: e.clientX, startY: e.clientY,
+      startItem: item,
+      canvasW: rect.width, canvasH: rect.height,
+    };
+    bringWallTileToFront(itemId);
+  };
+  const onWallPointerMove = (e: React.PointerEvent) => {
+    const s = wallDragRef.current;
+    if (!s) return;
+    const dxPct = ((e.clientX - s.startX) / s.canvasW) * 100;
+    const dyPct = ((e.clientY - s.startY) / s.canvasH) * 100;
+    setWallItems(prev => prev.map(i => {
+      if (i.id !== s.itemId) return i;
+      if (s.mode === 'move') {
+        return {
+          ...i,
+          x: Math.max(0, Math.min(100 - i.w, s.startItem.x + dxPct)),
+          y: Math.max(0, Math.min(100 - i.h, s.startItem.y + dyPct)),
+        };
+      }
+      return {
+        ...i,
+        w: Math.max(18, Math.min(100 - i.x, s.startItem.w + dxPct)),
+        h: Math.max(18, Math.min(100 - i.y, s.startItem.h + dyPct)),
+      };
+    }));
+  };
+  const endWallDrag = () => { wallDragRef.current = null; };
   // Mobile-only session picker toggle. Horizontally-scrolling tabs eat
   // the whole title row on a 400 px phone; replacing them with a compact
   // dropdown gives the tab strip predictable width and matches iOS/
@@ -238,6 +333,9 @@ function DesktopApp() {
           const next = prev.filter(id => id !== sessId);
           return next.length < 2 ? [] : next;
         });
+        // Purge the closing session from the Wall pinboard too — a stale
+        // tile with no backing SessionView would render blank.
+        setWallItems(prev => prev.filter(i => i.sessionId !== sessId));
         closeHandlersRef.current.delete(sessId);
       };
       closeHandlersRef.current.set(sessId, h);
@@ -549,7 +647,7 @@ function DesktopApp() {
               type="button"
               onClick={() => setMobileSessionPickerOpen(v => !v)}
               className={`w-full h-7 px-3 rounded-full flex items-center gap-2 border transition-all ${
-                activeView.startsWith('session-')
+                activeView.startsWith('session-') || activeView === 'wall'
                   ? 'bg-primary/15 text-primary border-primary/40 shadow-inner'
                   : 'bg-white/[0.06] text-zinc-300 border-white/10'
               }`}
@@ -557,6 +655,7 @@ function DesktopApp() {
               aria-expanded={mobileSessionPickerOpen}
             >
               {(() => {
+                const isWall = activeView === 'wall';
                 const cur = sessions.find(s => s.id === activeView);
                 const st = cur ? (sessionStatuses[cur.id] ?? 'connecting') : null;
                 const dotTone =
@@ -567,9 +666,13 @@ function DesktopApp() {
                                           'bg-zinc-500';
                 return (
                   <>
-                    {cur && <span className={`w-2 h-2 rounded-full shrink-0 ${dotTone}`} />}
+                    {isWall
+                      ? <LayoutGrid size={12} className="shrink-0 text-primary" />
+                      : (cur && <span className={`w-2 h-2 rounded-full shrink-0 ${dotTone}`} />)}
                     <span className="truncate flex-1 text-left text-[11px] font-bold">
-                      {cur ? cur.serverName : `${sessions.length} open session${sessions.length === 1 ? '' : 's'}`}
+                      {isWall
+                        ? `Wall${wallItems.length > 0 ? ` · ${wallItems.length} pinned` : ''}`
+                        : cur ? cur.serverName : `${sessions.length} open session${sessions.length === 1 ? '' : 's'}`}
                     </span>
                     {mergedSessionIds.length > 0 && (
                       <span className="shrink-0 h-4 px-1 rounded-full bg-primary/25 text-primary text-[9px] font-bold flex items-center gap-0.5">
@@ -657,6 +760,7 @@ function DesktopApp() {
                               const next = prev.filter(id => id !== sid);
                               return next.length < 2 ? [] : next;
                             });
+                            unpinSessionFromWall(sid);
                             setActiveView(prev => (prev === sid ? 'nodes' : prev));
                           }}
                           title="Close session"
@@ -667,6 +771,31 @@ function DesktopApp() {
                       </div>
                     );
                   })}
+                  {/* Wall entry — mobile equivalent of the desktop Wall
+                      tab. Same pinboard, same state; just a different
+                      entry point since the horizontal tab strip is
+                      replaced by this dropdown on phone. */}
+                  <div className="border-t border-white/5 my-1" />
+                  <button
+                    onClick={() => {
+                      setMergedSessionIds([]);
+                      setActiveView('wall');
+                      setMobileSessionPickerOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-all ${
+                      activeView === 'wall'
+                        ? 'bg-primary/15 text-primary'
+                        : 'text-zinc-200 hover:bg-white/[0.06]'
+                    }`}
+                  >
+                    <LayoutGrid size={13} className="shrink-0" />
+                    <span className="text-[12px] font-semibold flex-1">Wall</span>
+                    {wallItems.length > 0 && (
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-primary/70">
+                        {wallItems.length} pinned
+                      </span>
+                    )}
+                  </button>
                 </div>
               </>
             )}
@@ -816,6 +945,7 @@ function DesktopApp() {
                     return rest;
                   });
                   broadcast.removeSession(s.id);
+                  unpinSessionFromWall(s.id);
                   setActiveView(prev => (prev === s.id ? "nodes" : prev));
                 }}
               >
@@ -824,6 +954,41 @@ function DesktopApp() {
             </div>
           );
         })}
+        {/* Wall tab — permanent slot at the end of the session tab strip.
+            Free-form pinboard: user drags in the sessions they want to
+            keep watching side-by-side without paying the cost of a tab
+            switch. Rendered only when there's at least one open session
+            (otherwise the tab is a dead link to an empty canvas).
+            The count badge mirrors the merged-tab pattern so the two
+            "multi-view" affordances read as siblings. */}
+        {sessions.length >= 1 && (
+          <div
+            onClick={() => {
+              // Plain click on Wall exits any active session-split — the
+              // split-view and Wall are two different multi-view modes
+              // and switching between them shouldn't leave stale merged
+              // state behind.
+              setMergedSessionIds([]);
+              setActiveView("wall");
+            }}
+            title={wallItems.length > 0
+              ? `Wall · ${wallItems.length} pinned session${wallItems.length === 1 ? '' : 's'}`
+              : "Wall — a pinboard for open sessions"}
+            className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all shrink-0 mr-1 ${
+              activeView === "wall"
+                ? "bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10"
+                : "bg-white/[0.04] text-zinc-400 border border-white/10 hover:bg-white/[0.08] hover:text-white"
+            }`}
+          >
+            <LayoutGrid size={11} className="mr-1.5 shrink-0" />
+            <span className="text-[10px] font-bold whitespace-nowrap uppercase tracking-wider">Wall</span>
+            {wallItems.length > 0 && (
+              <span className="ml-1.5 shrink-0 h-4 min-w-4 px-1 rounded-full bg-primary/25 text-primary text-[9px] font-bold flex items-center justify-center">
+                {wallItems.length}
+              </span>
+            )}
+          </div>
+        )}
       </div>
       {/* Broadcast trigger — session-scoped multi-exec. Lives OUTSIDE the
           scrollable tab strip so it stays anchored at the right edge no
@@ -1000,6 +1165,23 @@ function DesktopApp() {
               }}
             >Disconnect</button>
 
+            {/* Pin/Unpin from Wall — Wall is a free-form pinboard that
+                lets the user watch multiple sessions at once. Toggling
+                from the tab menu keeps this discoverable without
+                stealing space in the top-level tab strip. */}
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
+              onClick={() => {
+                if (wallHasSession(targetId)) unpinSessionFromWall(targetId);
+                else pinSessionToWall(targetId);
+                setTabMenu(null);
+              }}
+            >
+              {wallHasSession(targetId)
+                ? (<><PinOff size={12} className="text-zinc-500" /> Unpin from Wall</>)
+                : (<><Pin size={12} className="text-zinc-500" /> Pin to Wall</>)}
+            </button>
+
             {/* Split view picker — the user's requested UX. Right-click
                 any tab, tick which OTHER tabs you want tiled beside it.
                 The right-clicked tab becomes the focused pane; ticked
@@ -1086,6 +1268,7 @@ function DesktopApp() {
                   const next = prev.filter(id => id !== sid);
                   return next.length < 2 ? [] : next;
                 });
+                unpinSessionFromWall(sid);
                 setActiveView(prev => (prev === sid ? "nodes" : prev));
                 setTabMenu(null);
               }}
@@ -1317,6 +1500,7 @@ function DesktopApp() {
               // without triggering a display-mode flip that could reset
               // xterm layout.
               const viewIsSession = activeView.startsWith("session-") && sessions.some(s => s.id === activeView);
+              const isWall = activeView === "wall";
               // mergedSessionIds semantics: when non-empty it lists ALL
               // tiled panes (including the currently focused one) in
               // visual order. Visual order is deliberately independent
@@ -1327,40 +1511,84 @@ function DesktopApp() {
               const isTiled = viewIsSession
                 && mergedSessionIds.length >= 2
                 && mergedSessionIds.includes(activeView);
-              const visibleIds = isTiled
-                ? mergedSessionIds.filter(id => sessions.some(s => s.id === id))
-                : (viewIsSession ? [activeView] : []);
+              // Wall mode: only pinned sessions are visible. Order in
+              // visibleIds is irrelevant because tiles are positioned by
+              // their own (x,y,w,h) — but we need SOME order to feed the
+              // React map. wallItems' array order is the natural pick.
+              const activeWallItems = isWall
+                ? wallItems.filter(w => sessions.some(s => s.id === w.sessionId))
+                : [];
+              const visibleIds = isWall
+                ? activeWallItems.map(w => w.sessionId)
+                : (isTiled
+                  ? mergedSessionIds.filter(id => sessions.some(s => s.id === id))
+                  : (viewIsSession ? [activeView] : []));
+              const wallItemBySession = new Map(activeWallItems.map(w => [w.sessionId, w]));
+              // Topmost z on the Wall = focused tile. Used purely as a
+              // visual cue (primary border); actual xterm focus is
+              // native (user clicks the terminal they want).
+              const wallTopZ = isWall
+                ? activeWallItems.reduce((m, i) => Math.max(m, i.z), 0)
+                : 0;
               return (
-                <div className={`absolute inset-0 flex flex-col overflow-hidden ${!viewIsSession ? 'opacity-0 pointer-events-none' : ''}`}>
-                  <div className="flex-1 relative bg-black/40">
+                <div className={`absolute inset-0 flex flex-col overflow-hidden ${!(viewIsSession || isWall) ? 'opacity-0 pointer-events-none' : ''}`}>
+                  <div
+                    ref={wallCanvasRef}
+                    onPointerMove={onWallPointerMove}
+                    onPointerUp={endWallDrag}
+                    onPointerCancel={endWallDrag}
+                    className="flex-1 relative bg-black/40"
+                  >
                     {sessions.map(sess => {
                       const idx = visibleIds.indexOf(sess.id);
                       const isVisible = idx >= 0;
-                      const isFocused = activeView === sess.id;
+                      const isFocused = isWall
+                        ? (wallItemBySession.get(sess.id)?.z === wallTopZ && wallTopZ > 0)
+                        : activeView === sess.id;
+                      const wallItem = wallItemBySession.get(sess.id);
                       const style: React.CSSProperties = isVisible
-                        ? {
-                            position: 'absolute',
-                            top: 0,
-                            bottom: 0,
-                            left: `${(idx * 100) / visibleIds.length}%`,
-                            width: `${100 / visibleIds.length}%`,
-                          }
+                        ? (isWall && wallItem
+                          ? {
+                              position: 'absolute',
+                              left: `${wallItem.x}%`,
+                              top: `${wallItem.y}%`,
+                              width: `${wallItem.w}%`,
+                              height: `${wallItem.h}%`,
+                              zIndex: wallItem.z,
+                            }
+                          : {
+                              position: 'absolute',
+                              top: 0,
+                              bottom: 0,
+                              left: `${(idx * 100) / visibleIds.length}%`,
+                              width: `${100 / visibleIds.length}%`,
+                            })
                         : {
                             position: 'absolute',
                             inset: 0,
                             opacity: 0,
                             pointerEvents: 'none',
                           };
+                      // Chromeless in two cases: merged non-focused tile,
+                      // or ANY Wall tile (Wall tiles are meant to be
+                      // terminal-only). Chromeless SessionViews hide the
+                      // per-session tab strip + tool rail so multiple
+                      // tiles don't stack duplicate chrome next to each
+                      // other on a small canvas.
+                      const chromeless = isVisible && (isWall || (isTiled && !isFocused));
                       return (
                         <div
                           key={sess.id}
                           style={style}
                           onMouseDownCapture={() => {
-                            // Focus shift ONLY — tile positions live in
-                            // mergedSessionIds and must stay stable across
-                            // focus changes. Reordering here was the cause
-                            // of the reported "left tile jumps to the other
-                            // server when I click the right one" bug.
+                            // Split-view: focus shift only, no reorder (see comment above).
+                            // Wall: clicking a tile just brings it to front — z-order is
+                            // updated by startWallDrag as well, but a plain click without
+                            // dragging should also raise the tile.
+                            if (isWall && wallItem) {
+                              bringWallTileToFront(wallItem.id);
+                              return;
+                            }
                             if (isTiled && !isFocused && isVisible) {
                               setActiveView(sess.id);
                             }
@@ -1372,11 +1600,59 @@ function DesktopApp() {
                           // layout collapses to 0 height and the terminal
                           // + tool panels never draw.
                           className={`flex flex-col overflow-hidden ${
-                            isVisible && isTiled
-                              ? `border ${isFocused ? 'border-primary/40 shadow-[inset_0_0_0_1px_rgba(var(--primary),0.15)]' : 'border-white/[0.05]'}`
+                            isVisible && (isTiled || isWall)
+                              ? `border rounded-md ${isFocused ? 'border-primary/50 shadow-[0_6px_24px_rgba(0,0,0,0.5)]' : 'border-white/[0.08] shadow-[0_2px_10px_rgba(0,0,0,0.4)]'}`
                               : ''
                           }`}
                         >
+                          {/* Wall tile header — combines drag handle,
+                              server name and unpin action. Header itself
+                              is the drag surface; the rest of the tile is
+                              hands-off so xterm keystrokes aren't stolen
+                              by pointerdown. */}
+                          {isVisible && isWall && wallItem && (
+                            <div
+                              onPointerDown={(e) => startWallDrag(e, wallItem.id, 'move')}
+                              className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-[#141418] text-[10.5px] cursor-move select-none"
+                            >
+                              <GripVertical size={11} className="text-zinc-500 shrink-0" />
+                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                (sessionStatuses[sess.id] ?? 'connecting') === 'connected' ? 'bg-emerald-400' :
+                                (sessionStatuses[sess.id] ?? 'connecting') === 'connecting' ? 'bg-amber-400' :
+                                'bg-rose-500'
+                              }`} />
+                              <span className="font-bold text-zinc-200 uppercase tracking-wider truncate flex-1">
+                                {sess.serverName}
+                              </span>
+                              <button
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  // Session IDs already carry the "session-"
+                                  // prefix (see initiate flow) so activeView
+                                  // takes the raw id. Wall stays pinned in
+                                  // the tab strip; Wall itself just isn't
+                                  // the active view any more.
+                                  setActiveView(sess.id);
+                                }}
+                                title="Open this session in its own tab"
+                                className="h-5 w-5 rounded flex items-center justify-center text-zinc-500 hover:text-primary hover:bg-white/[0.05] transition-all"
+                              >
+                                <TerminalSquare size={11} />
+                              </button>
+                              <button
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  unpinSessionFromWall(sess.id);
+                                }}
+                                title="Unpin from Wall"
+                                className="h-5 w-5 rounded flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-white/[0.05] transition-all"
+                              >
+                                <PinOff size={11} />
+                              </button>
+                            </div>
+                          )}
                           {/* Merged (non-focused) tile header. Only the
                               focused pane keeps its full tab strip + tool
                               rail (via SessionView's default chrome);
@@ -1389,7 +1665,7 @@ function DesktopApp() {
                               focused one. Vertical space wasted per
                               merged tile drops from ~48 px (full chrome)
                               to ~28 px (slim header). */}
-                          {isVisible && isTiled && !isFocused && (
+                          {isVisible && isTiled && !isFocused && !isWall && (
                             <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-[#111114] text-[10.5px]">
                               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                                 (sessionStatuses[sess.id] ?? 'connecting') === 'connected' ? 'bg-emerald-400' :
@@ -1427,12 +1703,127 @@ function DesktopApp() {
                               onClose={getCloseHandler(sess.id)}
                               addLog={addLog}
                               onStatusChange={handleSessionStatus}
-                              chromeless={isVisible && isTiled && !isFocused}
+                              chromeless={chromeless}
                             />
                           </ErrorBoundary>
+                          {/* Wall-tile resize handle. Bottom-right
+                              corner grip; pointerdown starts a resize
+                              drag that adjusts w/h from the initial
+                              pointer origin. */}
+                          {isVisible && isWall && wallItem && (
+                            <div
+                              onPointerDown={(e) => startWallDrag(e, wallItem.id, 'resize')}
+                              title="Drag to resize"
+                              className="absolute bottom-0 right-0 h-4 w-4 cursor-se-resize flex items-end justify-end pr-0.5 pb-0.5 text-zinc-500 hover:text-primary z-10"
+                            >
+                              <div className="w-2 h-2 border-b-2 border-r-2 border-current rounded-br-sm" />
+                            </div>
+                          )}
                         </div>
                       );
                     })}
+                    {/* Wall empty state — surfaces the two pinning entry
+                        points so a first-time user isn't stuck staring at
+                        a blank canvas. */}
+                    {isWall && activeWallItems.length === 0 && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-center px-6 pointer-events-none">
+                        <LayoutGrid size={40} className="text-zinc-600" />
+                        <div className="text-zinc-400 text-[13px] max-w-md leading-relaxed">
+                          The Wall is a pinboard for watching multiple sessions at once.<br/>
+                          Right-click any session tab and pick <span className="text-primary font-semibold">Pin to Wall</span>, or use the button below.
+                        </div>
+                        <button
+                          onClick={() => setWallPickerOpen(true)}
+                          className="pointer-events-auto mt-1 px-4 py-2 bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all flex items-center gap-2"
+                        >
+                          <Plus size={13} /> Pin a session
+                        </button>
+                      </div>
+                    )}
+                    {/* Floating "Add tile" button — always available
+                        while the Wall is active so users can grow the
+                        pinboard without leaving the view. Opens the
+                        checkbox picker of all open sessions. */}
+                    {isWall && (
+                      <div className="absolute top-3 right-3 z-40 flex items-center gap-2">
+                        <button
+                          onClick={() => setWallPickerOpen(v => !v)}
+                          title="Pick sessions to pin"
+                          className="px-3 py-1.5 bg-[#1a1a20] hover:bg-[#22222a] border border-white/10 rounded-lg text-[10px] font-bold uppercase tracking-wider text-zinc-200 flex items-center gap-1.5 shadow-lg"
+                        >
+                          <Plus size={11} /> Add
+                        </button>
+                        {activeWallItems.length > 0 && (
+                          <button
+                            onClick={() => setWallItems([])}
+                            title="Unpin everything (sessions stay open)"
+                            className="px-3 py-1.5 bg-[#1a1a20] hover:bg-rose-500/15 hover:text-rose-300 border border-white/10 rounded-lg text-[10px] font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5 shadow-lg"
+                          >
+                            <X size={11} /> Clear
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {/* Wall picker popover — checkbox list of every open
+                        session. Ticking pins; unticking unpins. Auto-
+                        places new pins in a 2-column grid; user can then
+                        drag/resize freely. */}
+                    {isWall && wallPickerOpen && (
+                      <>
+                        <div className="fixed inset-0 z-[65]" onClick={() => setWallPickerOpen(false)} />
+                        <div className="absolute top-14 right-3 z-[66] w-72 bg-[#15151a] border border-white/10 rounded-xl shadow-2xl p-2">
+                          <div className="px-2 pb-2 flex items-center justify-between">
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                              Pin sessions
+                            </span>
+                            <button
+                              onClick={() => setWallPickerOpen(false)}
+                              className="h-5 w-5 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/[0.05]"
+                            >
+                              <X size={11} />
+                            </button>
+                          </div>
+                          {sessions.length === 0 ? (
+                            <div className="px-2 py-6 text-center text-zinc-500 text-[11px]">
+                              No open sessions yet.
+                            </div>
+                          ) : (
+                            <div className="max-h-[280px] overflow-y-auto custom-scrollbar space-y-0.5">
+                              {sessions.map(s => {
+                                const st = sessionStatuses[s.id] ?? "connecting";
+                                const checked = wallHasSession(s.id);
+                                return (
+                                  <label
+                                    key={s.id}
+                                    className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer ${
+                                      checked ? "bg-primary/10" : "hover:bg-white/[0.04]"
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="accent-primary shrink-0"
+                                      checked={checked}
+                                      onChange={() => {
+                                        if (checked) unpinSessionFromWall(s.id);
+                                        else pinSessionToWall(s.id);
+                                      }}
+                                    />
+                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                      st === "connected" ? "bg-emerald-400" :
+                                      st === "connecting" ? "bg-amber-400" :
+                                      "bg-rose-500"
+                                    }`} />
+                                    <span className="truncate text-[11px] font-medium text-zinc-200 flex-1">
+                                      {s.serverName}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               );
