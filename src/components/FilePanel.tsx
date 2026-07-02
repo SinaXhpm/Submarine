@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
+import { IS_ANDROID } from "../util/platform";
 
 // Batch overwrite state shared across items in a single download/upload run.
 // Once the user picks "Overwrite all" or "Skip all" the kind is sticky and we
@@ -139,6 +140,15 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const currentPathRef = useRef(currentPath);
   useEffect(() => { currentPathRef.current = currentPath; }, [currentPath]);
+
+  // Android quick-picker state. There is no OS-level folder picker that
+  // returns a real filesystem path on Android (SAF returns content URIs
+  // that Rust's std::fs can't open), so we replace the desktop rfd call
+  // with a small popover of writable paths returned by the backend. Loaded
+  // lazily the first time the user opens the popover so we don't burn a
+  // touch-probe per directory on every panel mount.
+  const [androidPickerOpen, setAndroidPickerOpen] = useState(false);
+  const [androidQuickDirs, setAndroidQuickDirs] = useState<{ label: string; path: string }[] | null>(null);
 
   // ---- helpers ----------------------------------------------------------------
 
@@ -582,8 +592,17 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     if (!sessionId || items.length === 0) return;
     let dest = getOppositeDir?.();
     if (!dest) {
-      try { dest = (await invoke<string | null>("select_local_folder")) || undefined; }
-      catch (err: any) { notify(`Pick folder failed: ${err}`, "error"); return; }
+      // Fallback destination when the sibling pane hasn't reported a dir
+      // yet. Desktop opens the rfd folder picker; Android has no picker
+      // that returns a real filesystem path we can hand to Rust, so we
+      // land in the app-visible default (Downloads or, if scoped storage
+      // blocks it, app-scoped external files). Users can navigate from
+      // there if they want a different subfolder.
+      try {
+        dest = IS_ANDROID
+          ? ((await invoke<string>("android_default_local_dir")) || undefined)
+          : ((await invoke<string | null>("select_local_folder")) || undefined);
+      } catch (err: any) { notify(`Pick folder failed: ${err}`, "error"); return; }
       if (!dest) return;
     }
     const sep = dest.includes("\\") ? "\\" : "/";
@@ -889,10 +908,26 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           </button>
         </div>
         <div className="h-5 w-px bg-white/10 shrink-0" />
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1 shrink-0 relative">
           {provider.id === "local" && (
             <button
               onClick={async () => {
+                if (IS_ANDROID) {
+                  // First open pulls the quick-dir list; subsequent opens
+                  // reuse the cached list so scoped-storage probes don't
+                  // rerun on every click.
+                  if (!androidQuickDirs) {
+                    try {
+                      const dirs = await invoke<{ label: string; path: string }[]>("android_quick_dirs");
+                      setAndroidQuickDirs(dirs);
+                    } catch (err: any) {
+                      notify(`Browse failed: ${err}`, "error");
+                      return;
+                    }
+                  }
+                  setAndroidPickerOpen((v) => !v);
+                  return;
+                }
                 try {
                   const picked = await invoke<string | null>("select_local_folder");
                   if (picked) await fetch(picked);
@@ -905,6 +940,29 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             >
               <FolderSearch size={11} />
             </button>
+          )}
+          {IS_ANDROID && androidPickerOpen && androidQuickDirs && (
+            <div className="absolute top-[24px] right-0 z-50 min-w-[180px] bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px]">
+              {androidQuickDirs.length === 0 ? (
+                <div className="p-2 text-zinc-400 text-[10.5px]">
+                  No writable locations found. On Android 11+ shared storage
+                  requires SAF — the app can only read/write its own scoped
+                  storage directly.
+                </div>
+              ) : androidQuickDirs.map((d) => (
+                <button
+                  key={d.path}
+                  onClick={() => { setAndroidPickerOpen(false); fetch(d.path); }}
+                  className="w-full flex items-center gap-2 p-1.5 rounded text-left text-zinc-200 hover:bg-white/10 hover:text-white"
+                >
+                  <Folder size={11} className="text-indigo-300 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="truncate">{d.label}</div>
+                    <div className="truncate text-[9.5px] text-zinc-500">{d.path}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
           )}
           <button onClick={() => setModal({ type: "mkdir", v1: "" })} title="New Folder"
             className="p-1 rounded bg-white/[0.04] border border-white/10 text-indigo-300 hover:bg-white/10">
@@ -1083,6 +1141,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                   if (entry.isDir) { fetch(entry.path); return; }
                   // For files: remote → live-edit (download + open editor +
                   // auto-upload on save); local → open in the OS default app.
+                  // Both are desktop-only — on Android a double-tap on a file
+                  // is a no-op (there's no OS default editor to hand off to).
+                  if (IS_ANDROID) return;
                   if (isRemote) liveEditEntry(entry);
                   else openLocalEntry(entry);
                 }}
@@ -1190,7 +1251,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 <Download size={11} className="text-emerald-400" />
                 <span>Download{multi ? ` (${selectedFileCount})` : "…"}</span>
               </button>
-              {!multi && !contextMenu.entry.isDir && (
+              {/* Live-edit needs a local temp file + a native OS editor + a
+                  filesystem watcher. Android has none of those in a form we
+                  can bridge, so the backend command returns an error there
+                  — hide the menu item entirely rather than surface it. */}
+              {!multi && !contextMenu.entry.isDir && !IS_ANDROID && (
                 <button onClick={() => { setContextMenu(null); liveEditEntry(contextMenu.entry); }}
                   className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
                   <ExternalLink size={11} className="text-indigo-400" /><span>Edit (auto-upload)</span>
@@ -1198,7 +1263,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               )}
             </>
           ) : (
-            !multi && !contextMenu.entry.isDir && (
+            !multi && !contextMenu.entry.isDir && !IS_ANDROID && (
               <button onClick={() => { setContextMenu(null); openLocalEntry(contextMenu.entry); }}
                 className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
                 <ExternalLink size={11} className="text-indigo-400" /><span>Open</span>
@@ -1206,7 +1271,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             )
           )}
 
-          {!isRemote && !multi && (
+          {!isRemote && !multi && !IS_ANDROID && (
             <button onClick={() => { setContextMenu(null); revealLocalEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <FolderSearch size={11} className="text-emerald-300" /><span>Reveal in Explorer</span>

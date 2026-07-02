@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square } from "lucide-react";
 import PasswordField from "./PasswordField";
+import { IS_ANDROID } from "../util/platform";
 
 // Shape returned by the `parse_ssh_config` backend command. One entry per
 // non-wildcard alias resolved from the user's OpenSSH config.
@@ -159,8 +160,10 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
           </div>
           <div className="flex items-center gap-2">
             {/* Import only makes sense when creating a fresh row — editing an
-                existing server is a rename/reconfigure flow, not an import. */}
-            {!isEditMode && (
+                existing server is a rename/reconfigure flow, not an import.
+                Also skipped on Android: there is no ~/.ssh/config on-device
+                and the backend command returns a "not available" error. */}
+            {!isEditMode && !IS_ANDROID && (
               <button
                 onClick={openImportModal}
                 title="Import from ~/.ssh/config"

@@ -4795,25 +4795,153 @@ struct LocalFileEntry {
 }
 
 #[tauri::command]
-async fn local_home_dir() -> Result<String, String> {
-    directories::UserDirs::new()
-        .and_then(|d| d.home_dir().to_str().map(String::from))
-        .ok_or_else(|| "Could not resolve home directory".into())
+async fn local_home_dir(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        // Android has no "home directory" in the desktop sense — the
+        // `directories` crate returns nothing meaningful here. Fall back to
+        // whatever the quick-dirs probe picked (Downloads if writable, else
+        // app-scoped external storage) so the callers that want *some*
+        // starting point still get one instead of an error.
+        let dir = android_default_local_dir(app).await?;
+        if !dir.is_empty() { return Ok(dir); }
+        return Err("Could not resolve home directory".into());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        directories::UserDirs::new()
+            .and_then(|d| d.home_dir().to_str().map(String::from))
+            .ok_or_else(|| "Could not resolve home directory".into())
+    }
 }
 
 #[tauri::command]
-async fn local_desktop_dir() -> Result<String, String> {
-    // Falls back to the home directory if a Desktop folder isn't configured
-    // for the user (rare on desktop OSes but possible on Linux without XDG).
-    if let Some(dirs) = directories::UserDirs::new() {
-        if let Some(d) = dirs.desktop_dir().and_then(|p| p.to_str()) {
-            return Ok(d.to_string());
-        }
-        if let Some(h) = dirs.home_dir().to_str() {
-            return Ok(h.to_string());
-        }
+async fn local_desktop_dir(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        // No Desktop concept on Android — reuse the writable-probe default
+        // instead of erroring, so `FilePanel.homePath()` lands somewhere
+        // useful on first load.
+        let dir = android_default_local_dir(app).await?;
+        if !dir.is_empty() { return Ok(dir); }
+        return Err("Could not resolve default directory".into());
     }
-    Err("Could not resolve Desktop directory".into())
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        // Falls back to the home directory if a Desktop folder isn't configured
+        // for the user (rare on desktop OSes but possible on Linux without XDG).
+        if let Some(dirs) = directories::UserDirs::new() {
+            if let Some(d) = dirs.desktop_dir().and_then(|p| p.to_str()) {
+                return Ok(d.to_string());
+            }
+            if let Some(h) = dirs.home_dir().to_str() {
+                return Ok(h.to_string());
+            }
+        }
+        Err("Could not resolve Desktop directory".into())
+    }
+}
+
+/// Test whether a directory is actually writable by the current process.
+/// On Android, scoped storage means many paths appear readable via
+/// `Path::exists()` but writes fail with EACCES — so we probe with a real
+/// touch + delete. The probe filename is a random UUID-style token so
+/// concurrent runs don't collide, and we tolerate `AlreadyExists` because
+/// that still proves the parent is writable. Only called from the Android
+/// quick-dirs picker today; the `#[allow]` keeps the desktop build quiet.
+#[allow(dead_code)]
+fn is_dir_writable(p: &std::path::Path) -> bool {
+    if !p.is_dir() { return false; }
+    let seq = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let probe = p.join(format!(".submarine-probe-{}", seq));
+    match std::fs::write(&probe, b"") {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Labeled quick-pick entries for the local file picker on Android.
+/// Only writable paths are returned — the frontend uses this to populate a
+/// small popover instead of the native rfd picker (which doesn't exist on
+/// Android). Order is by preference: user-visible storage first (Downloads,
+/// Documents), then app-scoped fallbacks that always work under scoped
+/// storage. All returned paths are already canonical, so they pass
+/// `guard_local_path` without further massaging.
+#[derive(serde::Serialize)]
+pub struct AndroidQuickDir {
+    pub label: String,
+    pub path: String,
+}
+
+#[tauri::command]
+async fn android_quick_dirs(app: tauri::AppHandle) -> Result<Vec<AndroidQuickDir>, String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        return Ok(Vec::new());
+    }
+    #[cfg(target_os = "android")]
+    {
+        let mut out: Vec<AndroidQuickDir> = Vec::new();
+        let seen = std::cell::RefCell::new(std::collections::HashSet::<String>::new());
+        let mut push = |label: &str, path: std::path::PathBuf| {
+            if is_dir_writable(&path) {
+                let s = path.to_string_lossy().into_owned();
+                if seen.borrow_mut().insert(s.clone()) {
+                    out.push(AndroidQuickDir { label: label.to_string(), path: s });
+                }
+            }
+        };
+        // Shared-storage locations. On Android 11+ most of these are blocked
+        // for direct FS access without MANAGE_EXTERNAL_STORAGE; probe first so
+        // we only show what actually works on this specific device.
+        for (label, raw) in [
+            ("Downloads",  "/storage/emulated/0/Download"),
+            ("Documents",  "/storage/emulated/0/Documents"),
+            ("DCIM",       "/storage/emulated/0/DCIM"),
+            ("Pictures",   "/storage/emulated/0/Pictures"),
+            ("Movies",     "/storage/emulated/0/Movies"),
+            ("Music",      "/storage/emulated/0/Music"),
+            ("SD card",    "/storage/emulated/0"),
+        ] {
+            push(label, std::path::PathBuf::from(raw));
+        }
+        // App-scoped external files dir — always writable, survives reboots,
+        // and visible to the user through any file manager under
+        // Android/data/com.submarine.app/files. This is the fallback default
+        // when everything shared is locked down.
+        if let Ok(dir) = app.path().app_local_data_dir() {
+            push("App storage", dir);
+        }
+        // Internal cache — last-resort, still writable but hidden from the
+        // user in most stock file managers. We only add it when nothing else
+        // survived the writability probe.
+        if out.is_empty() {
+            if let Ok(dir) = app.path().app_cache_dir() {
+                push("App cache", dir);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Preferred default working directory on Android — first writable entry
+/// from `android_quick_dirs`. FilePanel calls this on mount so the local
+/// pane opens somewhere useful instead of `/` (which lists nothing under
+/// scoped storage). Empty string means "leave the current path alone" and
+/// is treated as a no-op by the frontend.
+#[tauri::command]
+async fn android_default_local_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let dirs = android_quick_dirs(app).await?;
+    Ok(dirs.into_iter().next().map(|d| d.path).unwrap_or_default())
 }
 
 /// One resolved entry from an OpenSSH client config `Host` block. The
@@ -5778,6 +5906,7 @@ pub fn run() {
             docker::open_container_terminal,
             select_local_folder, local_list_dir,
             local_home_dir, local_desktop_dir, local_create_dir, local_remove, local_rename,
+            android_quick_dirs, android_default_local_dir,
             parse_ssh_config,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner,

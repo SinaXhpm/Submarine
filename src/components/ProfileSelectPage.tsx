@@ -4,6 +4,7 @@ import { Plus, Trash2, X, AlertTriangle, ArrowRight, Download, Upload, CheckCirc
 import CloudPanel from "./CloudPanel";
 import AboutPanel from "./AboutPanel";
 import logoUrl from "../assets/logo.png";
+import { IS_ANDROID } from "../util/platform";
 
 interface CloudStatus { signed_in: boolean; email: string | null; }
 type SyncStatusKind = "both" | "local_only" | "remote_only";
@@ -317,14 +318,21 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                   </option>
                 ))}
               </select>
-              <button
-                onClick={exportSelected}
-                disabled={!selected || busy}
-                title="Export profile (encrypted file)"
-                className="absolute right-9 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md text-zinc-500 hover:text-primary hover:bg-primary/10 disabled:opacity-30 flex items-center justify-center transition-all opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
-              >
-                <Download size={13} />
-              </button>
+              {/* Export/Import Profile use rfd's native save/pick dialogs
+                  on the desktop; Android has no equivalent and the backend
+                  returns an error. Hide the buttons on Android so users
+                  don't hit a raw error toast — sync + Cloud Backup is the
+                  cross-device transport there. */}
+              {!IS_ANDROID && (
+                <button
+                  onClick={exportSelected}
+                  disabled={!selected || busy}
+                  title="Export profile (encrypted file)"
+                  className="absolute right-9 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md text-zinc-500 hover:text-primary hover:bg-primary/10 disabled:opacity-30 flex items-center justify-center transition-all opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
+                >
+                  <Download size={13} />
+                </button>
+              )}
               <button
                 onClick={() => setConfirmDelete(selected)}
                 disabled={!selected || busy}
@@ -376,14 +384,16 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
               >
                 <Plus size={12} /> New profile
               </button>
-              <button
-                onClick={startImport}
-                disabled={busy}
-                title="Import an exported .submarine file"
-                className="flex-1 h-9 rounded-lg bg-white/[0.02] border border-white/5 hover:bg-white/5 hover:border-white/10 text-zinc-400 hover:text-zinc-100 text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
-              >
-                <Upload size={12} /> Import
-              </button>
+              {!IS_ANDROID && (
+                <button
+                  onClick={startImport}
+                  disabled={busy}
+                  title="Import an exported .submarine file"
+                  className="flex-1 h-9 rounded-lg bg-white/[0.02] border border-white/5 hover:bg-white/5 hover:border-white/10 text-zinc-400 hover:text-zinc-100 text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  <Upload size={12} /> Import
+                </button>
+              )}
             </div>
           </div>
         ) : (
@@ -427,14 +437,16 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                   <X size={12} /> Cancel
                 </button>
               )}
-              <button
-                onClick={startImport}
-                disabled={busy}
-                title="Import an exported .submarine file"
-                className="flex-1 h-9 rounded-lg bg-white/[0.02] border border-white/5 hover:bg-white/5 hover:border-white/10 text-zinc-400 hover:text-zinc-100 text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
-              >
-                <Upload size={12} /> Import
-              </button>
+              {!IS_ANDROID && (
+                <button
+                  onClick={startImport}
+                  disabled={busy}
+                  title="Import an exported .submarine file"
+                  className="flex-1 h-9 rounded-lg bg-white/[0.02] border border-white/5 hover:bg-white/5 hover:border-white/10 text-zinc-400 hover:text-zinc-100 text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  <Upload size={12} /> Import
+                </button>
+              )}
             </div>
 
             <p className="text-[11.5px] text-zinc-500 leading-relaxed text-center px-2 pt-1">

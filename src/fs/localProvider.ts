@@ -36,9 +36,23 @@ export function createLocalProvider(): LocalFileProvider {
     },
 
     async homePath() {
-      // Default to Desktop — that's where most users keep transient work and
-      // is the natural landing zone for drag-out from the remote pane. The
-      // Rust side falls back to the home dir if Desktop is unset.
+      // On Android there is no Desktop and, under scoped storage, most
+      // shared paths (Downloads, DCIM, ...) aren't guaranteed to be
+      // writable from a direct filesystem call. `android_default_local_dir`
+      // returns the first entry from `android_quick_dirs` that passed a
+      // touch-probe, falling back to the app-scoped internal storage. If
+      // even that fails, we let it error and the panel just stays empty.
+      if (/Android/i.test(navigator.userAgent)) {
+        const dir = await invoke<string>("android_default_local_dir");
+        if (dir) {
+          inferSep(dir);
+          return dir;
+        }
+      }
+      // Desktop: default to Desktop — that's where most users keep
+      // transient work and is the natural landing zone for drag-out from
+      // the remote pane. The Rust side falls back to the home dir if
+      // Desktop is unset.
       const dir = await invoke<string>("local_desktop_dir");
       inferSep(dir);
       return dir;
