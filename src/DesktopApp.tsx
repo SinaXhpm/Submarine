@@ -609,7 +609,7 @@ function DesktopApp() {
                           <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
                           <span className="text-[12px] font-semibold truncate flex-1">{s.serverName}</span>
                           {isMerged && !isActive && (
-                            <span className="text-[9px] font-bold uppercase tracking-wider text-primary/60">Merged</span>
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-primary/60">Split-in</span>
                           )}
                         </button>
                         {/* Merge/unmerge toggle — mobile equivalent of
@@ -623,7 +623,7 @@ function DesktopApp() {
                               if (isMerged) setMergedSessionIds(prev => prev.filter(id => id !== s.id));
                               else setMergedSessionIds(prev => [...prev, s.id]);
                             }}
-                            title={isMerged ? 'Unmerge from current view' : 'Merge into current view'}
+                            title={isMerged ? 'Remove from split view' : 'Split with current view'}
                             className={`h-8 w-8 shrink-0 rounded-lg flex items-center justify-center border transition-all ${
                               isMerged
                                 ? 'bg-primary/15 text-primary border-primary/40'
@@ -717,7 +717,7 @@ function DesktopApp() {
               // `whitespace-nowrap` keeps long names on a single line; without
               // it a tab with a 30-char hostname would wrap into a two-line
               // pill and break the row's height.
-              title={isMergedTab ? `${s.serverName} · merged into current view (Ctrl-click to unmerge)` : s.serverName}
+              title={isMergedTab ? `${s.serverName} · split beside current view (Ctrl-click to unpair)` : s.serverName}
               className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all shrink-0 mr-1 ${
                 activeView === s.id
                   ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10'
@@ -939,20 +939,22 @@ function DesktopApp() {
       </div>
       {tabMenu && (() => {
         const targetId = tabMenu.sessionId;
-        const isActiveView = activeView === targetId;
-        const isMerged = mergedSessionIds.includes(targetId);
-        // "Merge into current" only makes sense when the current view
-        // is a DIFFERENT session (not nodes/vault/library) and this tab
-        // isn't already merged in.
-        const canMerge = activeView.startsWith("session-")
-          && activeView !== targetId
-          && !isMerged;
+        // Build the "Split view with" picker: every OTHER open session is
+        // a candidate. When the target tab is the active view, ticked
+        // entries are the current mergedSessionIds. When the target is
+        // a different tab, we haven't switched to it yet — ticking a row
+        // both switches focus to the target AND initializes the merged
+        // set with the picked partner(s), so users don't need a "click
+        // to focus, right-click to split" two-step.
+        const targetIsActive = activeView === targetId;
+        const currentMerges = targetIsActive ? mergedSessionIds : [];
+        const others = sessions.filter(s => s.id !== targetId);
         return (
         <>
           <div className="fixed inset-0 z-[60]" onClick={() => setTabMenu(null)} onContextMenu={(e) => { e.preventDefault(); setTabMenu(null); }} />
           <div
-            className="fixed z-[70] bg-[#15151a] border border-white/10 rounded-md shadow-2xl py-1 min-w-[200px] text-[11px] no-drag"
-            style={{ left: Math.min(tabMenu.x, window.innerWidth - 220), top: Math.min(tabMenu.y, window.innerHeight - 220) }}
+            className="fixed z-[70] bg-[#15151a] border border-white/10 rounded-md shadow-2xl py-1 min-w-[240px] text-[11px] no-drag"
+            style={{ left: Math.min(tabMenu.x, window.innerWidth - 260), top: Math.min(tabMenu.y, window.innerHeight - 380) }}
           >
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
@@ -968,45 +970,76 @@ function DesktopApp() {
                 setTabMenu(null);
               }}
             >Disconnect</button>
-            {/* Merge / unmerge actions — the point of this session's
-                request. Merging tiles this tab beside whichever session
-                is currently on screen so users don't have to pop over
-                to a separate Compare page. */}
-            {(canMerge || isMerged || (isActiveView && mergedSessionIds.length > 0)) && (
+
+            {/* Split view picker — the user's requested UX. Right-click
+                any tab, tick which OTHER tabs you want tiled beside it.
+                The right-clicked tab becomes the focused pane; ticked
+                rows become side panes. Ticking auto-applies so there's
+                no "Apply" button to hunt. Hidden entirely when there's
+                only one open session (nothing to pair with). */}
+            {others.length > 0 && (
               <>
                 <div className="border-t border-white/5 my-1" />
-                {canMerge && (
-                  <button
-                    className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
-                    onClick={() => {
-                      setMergedSessionIds(prev => prev.includes(targetId) ? prev : [...prev, targetId]);
-                      setTabMenu(null);
-                    }}
-                  >
-                    Merge into current view
-                  </button>
-                )}
-                {isMerged && (
-                  <button
-                    className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-zinc-200"
-                    onClick={() => {
-                      setMergedSessionIds(prev => prev.filter(id => id !== targetId));
-                      setTabMenu(null);
-                    }}
-                  >
-                    Unmerge — restore as own tab
-                  </button>
-                )}
-                {isActiveView && mergedSessionIds.length > 0 && (
-                  <button
-                    className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-zinc-200"
-                    onClick={() => { setMergedSessionIds([]); setTabMenu(null); }}
-                  >
-                    Clear merged panes
-                  </button>
-                )}
+                <div className="px-3 pt-1 pb-1.5 flex items-center justify-between">
+                  <span className="text-[9.5px] font-bold uppercase tracking-widest text-zinc-500">
+                    Split view with
+                  </span>
+                  {targetIsActive && currentMerges.length > 0 && (
+                    <button
+                      onClick={() => { setMergedSessionIds([]); setTabMenu(null); }}
+                      className="text-[9.5px] font-bold uppercase tracking-wider text-zinc-500 hover:text-white"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <div className="max-h-[200px] overflow-y-auto custom-scrollbar px-1 pb-1">
+                  {others.map(s => {
+                    const st = sessionStatuses[s.id] ?? "connecting";
+                    const checked = currentMerges.includes(s.id);
+                    return (
+                      <label
+                        key={s.id}
+                        className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer ${
+                          checked ? "bg-primary/10" : "hover:bg-white/[0.04]"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="accent-primary shrink-0"
+                          checked={checked}
+                          onChange={() => {
+                            // Ticking: switch focus to the right-clicked
+                            // tab (if not already) and add the picked
+                            // partner. Unticking: just drop the partner
+                            // from the merged set.
+                            if (checked) {
+                              setMergedSessionIds(prev => prev.filter(id => id !== s.id));
+                            } else {
+                              if (!targetIsActive) {
+                                setActiveView(targetId);
+                                setMergedSessionIds([s.id]);
+                              } else {
+                                setMergedSessionIds(prev => prev.includes(s.id) ? prev : [...prev, s.id]);
+                              }
+                            }
+                          }}
+                        />
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                          st === "connected" ? "bg-emerald-400" :
+                          st === "connecting" ? "bg-amber-400" :
+                          "bg-rose-500"
+                        }`} />
+                        <span className="truncate text-[11px] font-medium text-zinc-200 flex-1">
+                          {s.serverName}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
               </>
             )}
+
             <div className="border-t border-white/5 my-1" />
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-rose-500/15 hover:text-rose-300 text-zinc-200"
@@ -1325,7 +1358,7 @@ function DesktopApp() {
                                   setMergedSessionIds(prev => prev.filter(id => id !== sess.id));
                                 }
                               }}
-                              title="Un-merge this pane"
+                              title="Remove this pane from the split view"
                               className="absolute top-1 right-1 z-30 h-5 w-5 rounded flex items-center justify-center bg-black/60 border border-white/10 text-zinc-400 hover:text-white hover:bg-black/80 opacity-70 hover:opacity-100 transition-opacity"
                             >
                               <X size={11} />
@@ -1343,12 +1376,6 @@ function DesktopApp() {
                               onClose={getCloseHandler(sess.id)}
                               addLog={addLog}
                               onStatusChange={handleSessionStatus}
-                              onOpenCompare={(preselect: string) => {
-                                // Kept as a dead-simple "merge into the
-                                // current view" shim now that Compare has
-                                // been folded into the session tab strip.
-                                setMergedSessionIds(prev => prev.includes(preselect) ? prev : [...prev, preselect]);
-                              }}
                             />
                           </ErrorBoundary>
                         </div>

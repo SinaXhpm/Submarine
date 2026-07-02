@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, LayoutGrid } from "lucide-react";
+import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
@@ -11,7 +11,7 @@ import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
 
-const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, onOpenCompare }: any) => {
+const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -691,10 +691,11 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, onOpenCompa
       </div>
 
       {/* "+" secondary menu — right-click / long-press on the plus
-          button. Kept intentionally short: three items covering "same
-          server + tile" (split), the h/v orientation flip, and "cross-
-          server tile" (opens the Compare workspace pre-selected with
-          this session). Everything else is one primary click on "+". */}
+          button. Kept intentionally short: same-server "split with new
+          pane", the h/v orientation flip, and un-split. Cross-server
+          split lives on the session tab strip (right-click any tab
+          → the picker); one entry point per concept keeps the menu
+          scannable. Everything else is one primary click on "+". */}
       {plusMenu && createPortal(
         <>
           <div
@@ -750,18 +751,13 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, onOpenCompa
                     <span className="flex-1">Exit split (keep terminals)</span>
                   </button>
                 )}
-                <div className="h-px bg-white/5 my-1" />
               </>
             )}
-            {onOpenCompare && (
-              <button
-                onClick={() => { onOpenCompare(session.id); setPlusMenu(null); }}
-                className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-300 hover:text-white text-left"
-              >
-                <LayoutGrid size={13} className="text-primary/70" />
-                <span className="flex-1">Compare with other servers…</span>
-              </button>
-            )}
+            {/* Splitting THIS session's view with another server's tab
+                lives on the session tab strip (right-click the tab).
+                That way the picker is anchored to the tab it operates
+                on and users don't have to know two entry points for the
+                same feature. */}
           </div>
         </>,
         document.body
