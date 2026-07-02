@@ -1294,7 +1294,13 @@ function DesktopApp() {
                               setActiveView(sess.id);
                             }
                           }}
-                          className={`overflow-hidden ${
+                          // flex flex-col so SessionView's root `flex-1`
+                          // actually fills the tile. Without this the tile
+                          // has explicit position:absolute + top/bottom
+                          // dimensions but SessionView's internal flex
+                          // layout collapses to 0 height and the terminal
+                          // + tool panels never draw.
+                          className={`flex flex-col overflow-hidden ${
                             isVisible && isTiled
                               ? `border ${isFocused ? 'border-primary/40 shadow-[inset_0_0_0_1px_rgba(var(--primary),0.15)]' : 'border-white/[0.05]'}`
                               : ''
