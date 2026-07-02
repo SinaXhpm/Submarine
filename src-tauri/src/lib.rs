@@ -4890,43 +4890,45 @@ async fn android_quick_dirs(app: tauri::AppHandle) -> Result<Vec<AndroidQuickDir
     }
     #[cfg(target_os = "android")]
     {
-        let mut out: Vec<AndroidQuickDir> = Vec::new();
-        let seen = std::cell::RefCell::new(std::collections::HashSet::<String>::new());
-        let mut push = |label: &str, path: std::path::PathBuf| {
-            if is_dir_writable(&path) {
-                let s = path.to_string_lossy().into_owned();
-                if seen.borrow_mut().insert(s.clone()) {
-                    out.push(AndroidQuickDir { label: label.to_string(), path: s });
-                }
-            }
-        };
-        // Shared-storage locations. On Android 11+ most of these are blocked
-        // for direct FS access without MANAGE_EXTERNAL_STORAGE; probe first so
-        // we only show what actually works on this specific device.
-        for (label, raw) in [
-            ("Downloads",  "/storage/emulated/0/Download"),
-            ("Documents",  "/storage/emulated/0/Documents"),
-            ("DCIM",       "/storage/emulated/0/DCIM"),
-            ("Pictures",   "/storage/emulated/0/Pictures"),
-            ("Movies",     "/storage/emulated/0/Movies"),
-            ("Music",      "/storage/emulated/0/Music"),
-            ("SD card",    "/storage/emulated/0"),
-        ] {
-            push(label, std::path::PathBuf::from(raw));
-        }
+        // Build the candidate list up front (label + path pairs), then run
+        // the writability probe + dedupe in a plain loop. The earlier
+        // closure-based version couldn't coexist with the later
+        // `out.is_empty()` re-borrow because the closure held a mutable
+        // borrow of `out` for the whole function scope.
+        let mut candidates: Vec<(String, std::path::PathBuf)> = vec![
+            ("Downloads".into(),  std::path::PathBuf::from("/storage/emulated/0/Download")),
+            ("Documents".into(),  std::path::PathBuf::from("/storage/emulated/0/Documents")),
+            ("DCIM".into(),       std::path::PathBuf::from("/storage/emulated/0/DCIM")),
+            ("Pictures".into(),   std::path::PathBuf::from("/storage/emulated/0/Pictures")),
+            ("Movies".into(),     std::path::PathBuf::from("/storage/emulated/0/Movies")),
+            ("Music".into(),      std::path::PathBuf::from("/storage/emulated/0/Music")),
+            ("SD card".into(),    std::path::PathBuf::from("/storage/emulated/0")),
+        ];
         // App-scoped external files dir — always writable, survives reboots,
         // and visible to the user through any file manager under
         // Android/data/com.submarine.app/files. This is the fallback default
         // when everything shared is locked down.
         if let Ok(dir) = app.path().app_local_data_dir() {
-            push("App storage", dir);
+            candidates.push(("App storage".into(), dir));
+        }
+        let mut out: Vec<AndroidQuickDir> = Vec::new();
+        let mut seen = std::collections::HashSet::<String>::new();
+        for (label, path) in candidates {
+            if !is_dir_writable(&path) { continue; }
+            let s = path.to_string_lossy().into_owned();
+            if seen.insert(s.clone()) {
+                out.push(AndroidQuickDir { label, path: s });
+            }
         }
         // Internal cache — last-resort, still writable but hidden from the
         // user in most stock file managers. We only add it when nothing else
-        // survived the writability probe.
+        // survived the writability probe above.
         if out.is_empty() {
             if let Ok(dir) = app.path().app_cache_dir() {
-                push("App cache", dir);
+                if is_dir_writable(&dir) {
+                    let s = dir.to_string_lossy().into_owned();
+                    out.push(AndroidQuickDir { label: "App cache".into(), path: s });
+                }
             }
         }
         Ok(out)
