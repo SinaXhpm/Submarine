@@ -232,8 +232,12 @@ function DesktopApp() {
         broadcast.removeSession(sessId);
         // If the closing session was merged as a side pane in another
         // session's canvas, drop it — otherwise the tile would render
-        // an empty <SessionView>.
-        setMergedSessionIds(prev => prev.filter(id => id !== sessId));
+        // an empty <SessionView>. Collapse the whole split when it
+        // falls below the 2-pane minimum.
+        setMergedSessionIds(prev => {
+          const next = prev.filter(id => id !== sessId);
+          return next.length < 2 ? [] : next;
+        });
         closeHandlersRef.current.delete(sessId);
       };
       closeHandlersRef.current.set(sessId, h);
@@ -620,8 +624,16 @@ function DesktopApp() {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (isMerged) setMergedSessionIds(prev => prev.filter(id => id !== s.id));
-                              else setMergedSessionIds(prev => [...prev, s.id]);
+                              if (isMerged) {
+                                const next = mergedSessionIds.filter(id => id !== s.id);
+                                // Below 2 members is a single view, not a split.
+                                setMergedSessionIds(next.length < 2 ? [] : next);
+                              } else {
+                                // Fresh split: seed with the anchor so it
+                                // holds visual position 0.
+                                if (mergedSessionIds.length === 0) setMergedSessionIds([activeView, s.id]);
+                                else setMergedSessionIds(prev => [...prev, s.id]);
+                              }
                             }}
                             title={isMerged ? 'Remove from split view' : 'Split with current view'}
                             className={`h-8 w-8 shrink-0 rounded-lg flex items-center justify-center border transition-all ${
@@ -641,7 +653,10 @@ function DesktopApp() {
                             setSessions(prev => prev.filter(x => x.id !== sid));
                             setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
                             broadcast.removeSession(sid);
-                            setMergedSessionIds(prev => prev.filter(id => id !== sid));
+                            setMergedSessionIds(prev => {
+                              const next = prev.filter(id => id !== sid);
+                              return next.length < 2 ? [] : next;
+                            });
                             setActiveView(prev => (prev === sid ? 'nodes' : prev));
                           }}
                           title="Close session"
@@ -695,14 +710,28 @@ function DesktopApp() {
             <div
               key={s.id}
               onClick={(e) => {
-                // Ctrl/⌘-click toggles this tab in the merged panes of
-                // the currently-active session view — a quick keyboard-
-                // free way to tile two servers together without going
-                // through the right-click menu.
+                // Ctrl/⌘-click toggles this tab in the split beside the
+                // currently-active session view — a quick keyboard-free
+                // way to tile two servers together without going through
+                // the right-click menu.
                 if ((e.ctrlKey || e.metaKey) && activeView.startsWith('session-') && activeView !== s.id) {
-                  setMergedSessionIds(prev => prev.includes(s.id) ? prev.filter(id => id !== s.id) : [...prev, s.id]);
+                  setMergedSessionIds(prev => {
+                    // Fresh split: seed with the anchor first so it holds
+                    // position 0 for the rest of the split's lifetime.
+                    if (prev.length === 0) return [activeView, s.id];
+                    if (prev.includes(s.id)) {
+                      const next = prev.filter(id => id !== s.id);
+                      return next.length < 2 ? [] : next;
+                    }
+                    return [...prev, s.id];
+                  });
                   return;
                 }
+                // Plain click on a tab that isn't part of the current
+                // split exits the split — the user is asking for a
+                // single-tab view of s.id, not "tile s.id next to the
+                // sessions I had merged".
+                if (!mergedSessionIds.includes(s.id)) setMergedSessionIds([]);
                 setActiveView(s.id);
               }}
               onContextMenu={(e) => {
@@ -1011,14 +1040,18 @@ function DesktopApp() {
                           onChange={() => {
                             // Ticking: switch focus to the right-clicked
                             // tab (if not already) and add the picked
-                            // partner. Unticking: just drop the partner
-                            // from the merged set.
+                            // partner. Unticking: drop the partner from
+                            // the split — and collapse the split entirely
+                            // when it would fall below the 2-pane minimum.
                             if (checked) {
-                              setMergedSessionIds(prev => prev.filter(id => id !== s.id));
+                              const next = mergedSessionIds.filter(id => id !== s.id);
+                              setMergedSessionIds(next.length < 2 ? [] : next);
                             } else {
                               if (!targetIsActive) {
                                 setActiveView(targetId);
-                                setMergedSessionIds([s.id]);
+                                setMergedSessionIds([targetId, s.id]);
+                              } else if (mergedSessionIds.length === 0) {
+                                setMergedSessionIds([targetId, s.id]);
                               } else {
                                 setMergedSessionIds(prev => prev.includes(s.id) ? prev : [...prev, s.id]);
                               }
@@ -1049,7 +1082,10 @@ function DesktopApp() {
                 setSessions(prev => prev.filter(sess => sess.id !== sid));
                 setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
                 broadcast.removeSession(sid);
-                setMergedSessionIds(prev => prev.filter(id => id !== sid));
+                setMergedSessionIds(prev => {
+                  const next = prev.filter(id => id !== sid);
+                  return next.length < 2 ? [] : next;
+                });
                 setActiveView(prev => (prev === sid ? "nodes" : prev));
                 setTabMenu(null);
               }}
@@ -1281,10 +1317,19 @@ function DesktopApp() {
               // without triggering a display-mode flip that could reset
               // xterm layout.
               const viewIsSession = activeView.startsWith("session-") && sessions.some(s => s.id === activeView);
-              const visibleIds = viewIsSession
-                ? [activeView, ...mergedSessionIds.filter(id => id !== activeView && sessions.some(s => s.id === id))]
-                : [];
-              const isTiled = visibleIds.length > 1;
+              // mergedSessionIds semantics: when non-empty it lists ALL
+              // tiled panes (including the currently focused one) in
+              // visual order. Visual order is deliberately independent
+              // of activeView so that clicking a tile to focus it does
+              // NOT slide the tile to position 0 — the user reported
+              // the left pane "jumping to the other server" on focus
+              // change and that reorder was the cause.
+              const isTiled = viewIsSession
+                && mergedSessionIds.length >= 2
+                && mergedSessionIds.includes(activeView);
+              const visibleIds = isTiled
+                ? mergedSessionIds.filter(id => sessions.some(s => s.id === id))
+                : (viewIsSession ? [activeView] : []);
               return (
                 <div className={`absolute inset-0 flex flex-col overflow-hidden ${!viewIsSession ? 'opacity-0 pointer-events-none' : ''}`}>
                   <div className="flex-1 relative bg-black/40">
@@ -1311,19 +1356,12 @@ function DesktopApp() {
                           key={sess.id}
                           style={style}
                           onMouseDownCapture={() => {
-                            // Clicking a merged (non-focused) pane
-                            // shifts focus to it so its terminal starts
-                            // receiving keystrokes. The old focused
-                            // session slides into the merged set so
-                            // the tile order is preserved.
+                            // Focus shift ONLY — tile positions live in
+                            // mergedSessionIds and must stay stable across
+                            // focus changes. Reordering here was the cause
+                            // of the reported "left tile jumps to the other
+                            // server when I click the right one" bug.
                             if (isTiled && !isFocused && isVisible) {
-                              setMergedSessionIds(prev => {
-                                const withoutTarget = prev.filter(id => id !== sess.id);
-                                const withOldActive = withoutTarget.includes(activeView) || !viewIsSession
-                                  ? withoutTarget
-                                  : [activeView, ...withoutTarget];
-                                return withOldActive;
-                              });
                               setActiveView(sess.id);
                             }
                           }}
@@ -1364,7 +1402,11 @@ function DesktopApp() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setMergedSessionIds(prev => prev.filter(id => id !== sess.id));
+                                  const next = mergedSessionIds.filter(id => id !== sess.id);
+                                  // Under 2 members isn't a split any more —
+                                  // clear the list so the remaining pane
+                                  // reverts to plain full-width single view.
+                                  setMergedSessionIds(next.length < 2 ? [] : next);
                                 }}
                                 title="Remove this pane from the split view"
                                 className="h-5 w-5 rounded flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-white/[0.05] transition-all"
