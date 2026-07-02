@@ -859,7 +859,7 @@ function DesktopApp() {
                   the same tab pill roughly 30% more legible characters per
                   pixel (uppercase is wider per glyph) without changing the
                   strip height, which stays h-7. */}
-              <span className="text-[12px] font-semibold whitespace-nowrap tracking-tight">{s.serverName}</span>
+              <span className="text-[11px] font-semibold whitespace-nowrap tracking-tight">{s.serverName}</span>
               {/* Mobile-only actions trigger. On phone we surface the same
                   tabMenu (Reconnect / Disconnect / Close) here since there
                   is no right-click on touch — a single kebab is a cleaner

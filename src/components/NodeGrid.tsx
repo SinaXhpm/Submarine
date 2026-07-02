@@ -67,7 +67,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           <Server size={14} />
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="font-bold text-zinc-100 text-[14px] truncate tracking-tight">{s.name}</h3>
+          <h3 className="font-bold text-zinc-100 text-[13px] truncate tracking-tight">{s.name}</h3>
           <div className="flex items-center gap-1 mt-0.5">
             <Globe size={10} className="text-zinc-500 shrink-0" />
             <span className="text-[10.5px] text-zinc-500 font-mono truncate group-hover:text-zinc-400 transition-colors">{s.host}</span>
