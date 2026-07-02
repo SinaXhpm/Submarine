@@ -44,10 +44,19 @@ const TerminalView = ({
   connectionEpoch = 0,
   serverId = 0,
   serverName = "",
+  attachOnly = false,
 }: {
   sessionId: string;
   terminalId: string;
   disabled?: boolean;
+  /// Attach-only mode: the PTY behind this terminal is owned by
+  /// another TerminalView instance (typically the one inside the
+  /// session tab). This instance ONLY listens to output events and
+  /// forwards input — it doesn't call open_terminal on mount,
+  /// close_terminal on unmount, or fight over resize_terminal. Used
+  /// by the Wall pinboard so pinning a terminal doesn't duplicate the
+  /// PTY or tear it down when Wall is closed.
+  attachOnly?: boolean;
   /// Tells us when this terminal is the visible one in its parent. Used to
   /// trigger a refit + refresh whenever we become visible — without this,
   /// xterm's internal canvas can be left holding stale glyphs from before
@@ -213,6 +222,11 @@ const TerminalView = ({
     if (!term) return;
     // Visible separator. \x1b[33m = yellow, \x1b[0m = reset.
     term.write('\r\n\x1b[33m── reconnected ──\x1b[0m\r\n');
+    // Attach-only viewers piggyback on someone else's PTY, so they
+    // must not re-open the PTY on reconnect either — the owner
+    // already did it and this instance just needs to keep reading
+    // events off the same terminal_id.
+    if (attachOnly) return;
     const ce = containerExecRef.current;
     if (ce) {
       invoke('open_container_terminal', {
@@ -349,8 +363,11 @@ const TerminalView = ({
     setTimeout(() => {
       fitAddon.fit();
       
-      // Start PTY Session with correct dimensions only ONCE
-      if (!openedRef.current) {
+      // Start PTY Session with correct dimensions only ONCE. Attach-only
+      // instances skip this entirely — they hitch onto an existing PTY
+      // opened by the primary instance and would collide with it if they
+      // tried to open the same terminal_id a second time.
+      if (!openedRef.current && !attachOnly) {
         openedRef.current = true;
         // Branch: a `containerExec` prop means we want a docker-exec
         // session into a specific container, not the regular login
@@ -673,7 +690,12 @@ const TerminalView = ({
       searchAddon.dispose();
       searchAddonRef.current = null;
       term.dispose();
-      invoke('close_terminal', { terminalId }).catch(console.error);
+      // Only the PTY owner tears the backend PTY down on unmount.
+      // Attach-only viewers unmount without closing so the primary
+      // xterm (in the session tab) keeps working.
+      if (!attachOnly) {
+        invoke('close_terminal', { terminalId }).catch(console.error);
+      }
     };
   }, [sessionId, terminalId]);
 

@@ -11,7 +11,7 @@ import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
 
-const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false }: any) => {
+const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -86,6 +86,16 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   };
 
   const [activeTab, setActiveTab] = useState<string>(`${session.id}-term-0`);
+  // Bubble our terminals + active-tab up to the parent (App) whenever
+  // they change so the Wall pinboard and any other App-level consumers
+  // don't have to duplicate the per-session terminal book-keeping.
+  // Attach-only Wall tiles use these to know which (sessionId, terminalId)
+  // pairs exist and which one is currently the session's own primary.
+  useEffect(() => {
+    if (typeof onTerminalsChange === "function") {
+      onTerminalsChange(session.id, terminals, activeTab);
+    }
+  }, [session?.id, terminals, activeTab, onTerminalsChange]);
   const [activeTool, setActiveTool] = useState<'sftp' | 'tunnels' | 'mirrors' | 'cmds' | 'info' | null>(null);
   // Split-pane state — an ORDERED array of terminal IDs that currently
   // share the main pane. `[]` or a single-id array means "no split, use
