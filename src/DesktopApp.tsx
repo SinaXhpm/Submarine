@@ -622,119 +622,127 @@ function DesktopApp() {
             </div>
           );
         })}
-        {/* Broadcast pill — session-scoped multi-exec toggle. Sits at the
-            end of the session tab strip so it doesn't push individual tabs
-            out of view. Hidden until there are 2+ sessions since a single
-            session has no one to broadcast to. */}
-        {sessions.length >= 2 && (
-          <div className="relative no-drag ml-1 shrink-0">
-            <button
-              type="button"
-              onClick={() => setBroadcastMenuOpen(v => !v)}
-              title={broadcast.enabled
-                ? `Broadcasting to ${broadcast.targetSessionIds.size} session${broadcast.targetSessionIds.size === 1 ? "" : "s"}`
-                : "Broadcast input to multiple sessions"}
-              className={`flex items-center gap-1.5 h-7 px-2.5 rounded-full transition-all ${
-                broadcast.enabled
-                  ? "bg-orange-500/15 border border-orange-400/40 text-orange-300 shadow-inner shadow-orange-400/10"
-                  : "bg-white/[0.06] border border-white/10 text-zinc-400 hover:bg-white/[0.1] hover:text-white"
-              }`}
-            >
-              <Radio size={12} className={broadcast.enabled ? "animate-pulse" : ""} />
-              <span className="text-[10px] font-bold uppercase tracking-tight hidden sm:inline">
-                {broadcast.enabled
-                  ? `${broadcast.targetSessionIds.size}`
-                  : "Broadcast"}
-              </span>
-            </button>
-            {broadcastMenuOpen && (
-              <>
-                <div
-                  className="fixed inset-0 z-[60]"
-                  onClick={() => setBroadcastMenuOpen(false)}
-                />
-                <div className="absolute z-[70] top-full mt-1 right-0 w-[280px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl p-2 text-[11px]">
-                  <div className="flex items-center justify-between mb-2 px-1">
-                    <label className="flex items-center gap-2 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        className="accent-orange-400"
-                        checked={broadcast.enabled}
-                        onChange={broadcast.toggleEnabled}
-                      />
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-200">
-                        Broadcast input
-                      </span>
-                    </label>
-                    <button
-                      onClick={() => setBroadcastMenuOpen(false)}
-                      className="text-zinc-500 hover:text-white p-0.5"
-                      aria-label="Close"
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-1.5 px-1 pb-2 border-b border-white/5">
-                    <button
-                      onClick={() => broadcast.selectAll(sessions.map(s => s.id))}
-                      className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
-                    >
-                      All
-                    </button>
-                    <button
-                      onClick={() => broadcast.selectNone()}
-                      className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
-                    >
-                      None
-                    </button>
-                    <div className="flex-1" />
-                    <span className={`text-[10px] font-bold uppercase tracking-wider ${
-                      broadcast.enabled && broadcast.targetSessionIds.size >= 2
-                        ? "text-orange-300"
-                        : "text-zinc-500"
-                    }`}>
-                      {broadcast.enabled
-                        ? (broadcast.targetSessionIds.size >= 2
-                            ? `Live · ${broadcast.targetSessionIds.size}`
-                            : "Pick 2+")
-                        : "Off"}
-                    </span>
-                  </div>
-                  <div className="max-h-[240px] overflow-y-auto custom-scrollbar mt-2 space-y-0.5">
-                    {sessions.map(s => {
-                      const checked = broadcast.targetSessionIds.has(s.id);
-                      const st = sessionStatuses[s.id] ?? "connecting";
-                      return (
-                        <label
-                          key={s.id}
-                          className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer ${
-                            checked ? "bg-orange-500/10" : "hover:bg-white/[0.04]"
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            className="accent-orange-400 shrink-0"
-                            checked={checked}
-                            onChange={() => broadcast.toggleTarget(s.id)}
-                          />
-                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                            st === "connected" ? "bg-emerald-400" :
-                            st === "connecting" ? "bg-amber-400" :
-                            "bg-rose-500"
-                          }`} />
-                          <span className="truncate text-[11px] font-medium text-zinc-200 flex-1">
-                            {s.serverName}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        )}
       </div>
+      {/* Broadcast trigger — session-scoped multi-exec. Lives OUTSIDE the
+          scrollable tab strip so it stays anchored at the right edge no
+          matter how many tabs are open. Compact icon-only button (no
+          "Broadcast" text) to reclaim titlebar space; the dropdown reveals
+          the full checkbox picker. When armed, a small orange count badge
+          hangs off the corner so the state is legible at a glance without
+          words. Hidden until there are 2+ sessions since a single session
+          has no one to broadcast to. */}
+      {sessions.length >= 2 && (
+        <div className="relative no-drag shrink-0 mx-1">
+          <button
+            type="button"
+            onClick={() => setBroadcastMenuOpen(v => !v)}
+            title={broadcast.enabled
+              ? `Broadcasting to ${broadcast.targetSessionIds.size} session${broadcast.targetSessionIds.size === 1 ? "" : "s"}`
+              : "Broadcast input to multiple sessions"}
+            aria-label="Broadcast input"
+            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all ${
+              broadcast.enabled
+                ? "bg-orange-500/15 border border-orange-400/40 text-orange-300 shadow-inner shadow-orange-400/10"
+                : "bg-white/[0.06] border border-white/10 text-zinc-400 hover:bg-white/[0.1] hover:text-white"
+            }`}
+          >
+            <Radio size={12} className={broadcast.enabled ? "animate-pulse" : ""} />
+            {broadcast.enabled && broadcast.targetSessionIds.size > 0 && (
+              <span
+                className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-orange-500 text-[9px] font-bold text-black flex items-center justify-center leading-none"
+                aria-hidden="true"
+              >
+                {broadcast.targetSessionIds.size}
+              </span>
+            )}
+          </button>
+          {broadcastMenuOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-[60]"
+                onClick={() => setBroadcastMenuOpen(false)}
+              />
+              <div className="absolute z-[70] top-full mt-1 right-0 w-[280px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl p-2 text-[11px]">
+                <div className="flex items-center justify-between mb-2 px-1">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      className="accent-orange-400"
+                      checked={broadcast.enabled}
+                      onChange={broadcast.toggleEnabled}
+                    />
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-200">
+                      Broadcast input
+                    </span>
+                  </label>
+                  <button
+                    onClick={() => setBroadcastMenuOpen(false)}
+                    className="text-zinc-500 hover:text-white p-0.5"
+                    aria-label="Close"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5 px-1 pb-2 border-b border-white/5">
+                  <button
+                    onClick={() => broadcast.selectAll(sessions.map(s => s.id))}
+                    className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                  >
+                    All
+                  </button>
+                  <button
+                    onClick={() => broadcast.selectNone()}
+                    className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                  >
+                    None
+                  </button>
+                  <div className="flex-1" />
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${
+                    broadcast.enabled && broadcast.targetSessionIds.size >= 2
+                      ? "text-orange-300"
+                      : "text-zinc-500"
+                  }`}>
+                    {broadcast.enabled
+                      ? (broadcast.targetSessionIds.size >= 2
+                          ? `Live · ${broadcast.targetSessionIds.size}`
+                          : "Pick 2+")
+                      : "Off"}
+                  </span>
+                </div>
+                <div className="max-h-[240px] overflow-y-auto custom-scrollbar mt-2 space-y-0.5">
+                  {sessions.map(s => {
+                    const checked = broadcast.targetSessionIds.has(s.id);
+                    const st = sessionStatuses[s.id] ?? "connecting";
+                    return (
+                      <label
+                        key={s.id}
+                        className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer ${
+                          checked ? "bg-orange-500/10" : "hover:bg-white/[0.04]"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="accent-orange-400 shrink-0"
+                          checked={checked}
+                          onChange={() => broadcast.toggleTarget(s.id)}
+                        />
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                          st === "connected" ? "bg-emerald-400" :
+                          st === "connecting" ? "bg-amber-400" :
+                          "bg-rose-500"
+                        }`} />
+                        <span className="truncate text-[11px] font-medium text-zinc-200 flex-1">
+                          {s.serverName}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       {/* Window controls: desktop only. Android has its own gesture nav /
           system back button, and the WebView window has no minimise or
           maximise affordance to surface — so we hide the whole cluster on
