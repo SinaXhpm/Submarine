@@ -4,7 +4,8 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
-  StickyNote, Search, Square, Copy, ChevronLeft, MoreVertical, Radio
+  StickyNote, Search, Square, Copy, ChevronLeft, MoreVertical, Radio,
+  LayoutGrid
 } from "lucide-react";
 import { useBroadcast } from "./ui/broadcast";
 
@@ -46,6 +47,14 @@ function DesktopApp() {
   // without prop-drilling. The pill in the tab strip is the toggle + picker.
   const broadcast = useBroadcast();
   const [broadcastMenuOpen, setBroadcastMenuOpen] = useState(false);
+  // Compare view — session ids the user has tiled together. Lives in App
+  // state (not per-SessionView) because a tile can span sessions and a
+  // SessionView only owns its own terminals. Read by the compare panel;
+  // pruned when a session tab closes so a dead id can't linger. Also
+  // uses BroadcastContext.sessionTerminalMap to look up "which of the
+  // target session's tabs is the visible one" so each tile mirrors what
+  // the user actually sees in that session.
+  const [comparePicked, setComparePicked] = useState<Set<string>>(() => new Set());
   // `activeProfile` is the name the user picked + unlocked. Stays null
   // until ProfileSelectPage's onUnlocked fires, at which point the app
   // flips straight into the main view — no intermediate state.
@@ -218,6 +227,16 @@ function DesktopApp() {
         // linger in the target set (would let a user re-enable broadcast and
         // silently exclude a phantom target from the count).
         broadcast.removeSession(sessId);
+        // Same cleanup for the Compare workspace — otherwise the tile
+        // would try to render a terminal from a session that no longer
+        // exists and TerminalView would sit there listening for events
+        // that will never fire.
+        setComparePicked(prev => {
+          if (!prev.has(sessId)) return prev;
+          const next = new Set(prev);
+          next.delete(sessId);
+          return next;
+        });
         closeHandlersRef.current.delete(sessId);
       };
       closeHandlersRef.current.set(sessId, h);
@@ -1037,6 +1056,14 @@ function DesktopApp() {
                     onClose={getCloseHandler(sess.id)}
                     addLog={addLog}
                     onStatusChange={handleSessionStatus}
+                    onOpenCompare={(preselect: string) => {
+                      setComparePicked(prev => {
+                        const next = new Set(prev);
+                        next.add(preselect);
+                        return next;
+                      });
+                      setActiveView("compare");
+                    }}
                   />
                 </ErrorBoundary>
               </div>
@@ -1215,6 +1242,187 @@ function DesktopApp() {
             <div className={`flex-1 flex flex-col overflow-hidden ${activeView === "monitor" ? "" : "hidden"}`}>
               <MonitoringPanel servers={servers} refreshServers={refreshServers} addLog={addLog} />
             </div>
+
+            {/* Compare workspace — pick any subset of open sessions and
+                tile their currently-visible terminals in one canvas.
+                Uses BroadcastContext.sessionTerminalMap to look up which
+                of each session's tabs is the "current" one; a tile just
+                re-mounts a TerminalView pointing at that (sessionId,
+                terminalId) pair. Since the source SessionView also stays
+                mounted, both instances stay in sync via the shared
+                `terminal-output-<id>` events — closing a tile doesn't
+                tear the terminal down, it just detaches this view.
+
+                Layout: `grid-cols-N` for up to 4 tiles (1/2/2/2), then
+                `grid-cols-3` for 5-9, then `grid-cols-4` for 10+. Rows
+                fill down; each tile stretches equally so the user
+                doesn't have to fiddle with dividers to compare row
+                lengths — the whole point of compare mode is uniform
+                side-by-side. */}
+            {activeView === "compare" && (() => {
+              const eligible = sessions;
+              const picks = eligible.filter(s => comparePicked.has(s.id));
+              const n = picks.length;
+              const gridClass = n <= 1
+                ? "grid-cols-1"
+                : n === 2
+                  ? "grid-cols-1 md:grid-cols-2"
+                  : n <= 4
+                    ? "grid-cols-1 sm:grid-cols-2"
+                    : n <= 9
+                      ? "grid-cols-2 md:grid-cols-3"
+                      : "grid-cols-2 md:grid-cols-3 lg:grid-cols-4";
+              return (
+                <div className="flex-1 flex flex-col overflow-hidden animate-in fade-in">
+                  <header className="h-12 shrink-0 border-b border-white/5 bg-[#121214]/50 flex items-center px-4 gap-3">
+                    <LayoutGrid size={14} className="text-primary" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-bold text-white tracking-tight leading-none">Compare</div>
+                      <div className="text-[10px] text-zinc-500 leading-none mt-0.5">
+                        Tile any number of open sessions in one canvas. Broadcast fans keystrokes to every tile at once.
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setComparePicked(new Set(eligible.map(s => s.id)))}
+                        disabled={eligible.length === 0}
+                        className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 transition-all"
+                      >
+                        Pick all
+                      </button>
+                      <button
+                        onClick={() => setComparePicked(new Set())}
+                        disabled={comparePicked.size === 0}
+                        className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 transition-all"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </header>
+
+                  {eligible.length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center px-6">
+                      <div className="max-w-md text-center space-y-3">
+                        <LayoutGrid size={32} className="mx-auto text-zinc-700" />
+                        <div className="text-[13px] font-semibold text-zinc-300">No open sessions yet</div>
+                        <div className="text-[12px] text-zinc-500">
+                          Open two or more servers, then come back here to tile them side-by-side.
+                        </div>
+                        <button
+                          onClick={() => setActiveView("nodes")}
+                          className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase tracking-wider bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-all"
+                        >
+                          Go to Servers
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex overflow-hidden">
+                      {/* Picker rail. Every open session is a checkbox
+                          row — the same shape as the Broadcast dropdown so
+                          the muscle memory transfers. */}
+                      <aside className="w-52 shrink-0 border-r border-white/5 bg-[#0e0e10] overflow-y-auto custom-scrollbar p-2 space-y-0.5">
+                        <div className="text-[9px] font-bold uppercase tracking-wider text-zinc-600 px-2 pb-1.5">
+                          Open sessions ({eligible.length})
+                        </div>
+                        {eligible.map(s => {
+                          const st = sessionStatuses[s.id] ?? "connecting";
+                          const checked = comparePicked.has(s.id);
+                          return (
+                            <label
+                              key={s.id}
+                              className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-[11.5px] ${
+                                checked ? "bg-primary/10 text-white" : "text-zinc-300 hover:bg-white/[0.03]"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                className="accent-primary shrink-0"
+                                checked={checked}
+                                onChange={() => setComparePicked(prev => {
+                                  const next = new Set(prev);
+                                  if (next.has(s.id)) next.delete(s.id);
+                                  else next.add(s.id);
+                                  return next;
+                                })}
+                              />
+                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                st === "connected" ? "bg-emerald-400" :
+                                st === "connecting" ? "bg-amber-400" :
+                                "bg-rose-500"
+                              }`} />
+                              <span className="truncate flex-1 font-medium">{s.serverName}</span>
+                            </label>
+                          );
+                        })}
+                      </aside>
+                      {/* Tile canvas. */}
+                      <div className="flex-1 min-w-0 overflow-auto bg-black/40 p-2">
+                        {n === 0 ? (
+                          <div className="h-full flex items-center justify-center text-zinc-600 text-[12.5px] italic">
+                            Pick a session on the left to add it as a tile.
+                          </div>
+                        ) : (
+                          <div className={`h-full grid ${gridClass} gap-2 auto-rows-fr`}>
+                            {picks.map(sess => {
+                              const st = sessionStatuses[sess.id] ?? "connecting";
+                              const termId = broadcast.sessionTerminalMap[sess.id];
+                              return (
+                                <div key={sess.id} className="relative flex flex-col min-w-0 min-h-0 border border-white/10 rounded-lg bg-[#0a0a0c] overflow-hidden">
+                                  <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-[#111114]">
+                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                      st === "connected" ? "bg-emerald-400" :
+                                      st === "connecting" ? "bg-amber-400" :
+                                      "bg-rose-500"
+                                    }`} />
+                                    <span className="text-[10.5px] font-bold text-zinc-200 uppercase tracking-wider truncate flex-1">{sess.serverName}</span>
+                                    <button
+                                      onClick={() => setActiveView(sess.id)}
+                                      title="Jump to this session's full view"
+                                      className="text-[9px] font-bold uppercase tracking-wider text-zinc-500 hover:text-white transition-colors"
+                                    >
+                                      Open →
+                                    </button>
+                                    <button
+                                      onClick={() => setComparePicked(prev => {
+                                        const next = new Set(prev);
+                                        next.delete(sess.id);
+                                        return next;
+                                      })}
+                                      title="Remove this tile"
+                                      className="text-zinc-500 hover:text-red-400 transition-colors"
+                                    >
+                                      <X size={12} />
+                                    </button>
+                                  </div>
+                                  <div className="flex-1 min-h-0 relative">
+                                    {termId ? (
+                                      <TerminalView
+                                        sessionId={sess.id}
+                                        terminalId={termId}
+                                        disabled={st !== "connected"}
+                                        isActive={activeView === "compare"}
+                                        connectionEpoch={0}
+                                        serverId={sess.serverId}
+                                        serverName={sess.serverName}
+                                      />
+                                    ) : (
+                                      <div className="h-full flex items-center justify-center text-zinc-600 text-[11px] italic px-3 text-center">
+                                        No terminal registered for this session yet — open the session tab once so it can attach.
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {activeView === "logs" && (
               <div className="flex-1 flex flex-col p-3 sm:p-8 space-y-3 sm:space-y-6 animate-in overflow-hidden">

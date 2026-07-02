@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows } from "lucide-react";
+import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, LayoutGrid } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
@@ -10,7 +10,7 @@ import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
 
-const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
+const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, onOpenCompare }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -687,6 +687,21 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange }: any) => {
                   {splitTerminals.length}
                 </span>
               )}
+            </button>
+          )}
+          {/* Cross-session Compare — hands off to the global Compare
+              workspace, pre-selecting THIS session. In-session split
+              only tiles this session's terminals; Compare tiles any
+              number of DIFFERENT sessions. Kept as a distinct affordance
+              so the two concepts don't collide inside one button. */}
+          {!isCompact && onOpenCompare && (
+            <button
+              onClick={() => onOpenCompare(session.id)}
+              onContextMenu={(e) => e.preventDefault()}
+              title="Compare — tile this server next to other open servers"
+              className="h-8 w-8 ml-1 shrink-0 rounded-lg flex items-center justify-center transition-all border text-zinc-500 border-dashed border-white/10 hover:bg-white/10 hover:text-primary"
+            >
+              <LayoutGrid size={13} />
             </button>
           )}
         </div>

@@ -5122,6 +5122,270 @@ fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, String> {
     }
 }
 
+/// Parse a blob of text pasted from another SSH client's export and return
+/// the same `ImportedHost` shape as `parse_ssh_config`. Auto-detects the
+/// format so the frontend only needs one "Paste your export" text area
+/// instead of a picker-per-format:
+///
+///   • Windows Regedit `.reg` export of PuTTY sessions
+///     (`HKEY_CURRENT_USER\Software\SimonTatham\PuTTY\Sessions\...`) —
+///     detected by the file's `Windows Registry Editor` header. Each
+///     `[HKEY_...\Sessions\<name>]` block becomes one host; HostName,
+///     PortNumber, and UserName are decoded from the `"key"=dword:` /
+///     `"key"="value"` entries. Percent-decoded so aliases with spaces
+///     ("My Prod Box") round-trip.
+///
+///   • JSON array — either
+///     `[{"name":"foo","host":"1.2.3.4","port":22,"user":"root"}, …]`
+///     or the Termius-style
+///     `[{"label":"foo","address":"1.2.3.4","port":22,"username":"root"}, …]`.
+///     Any missing field defaults to the OpenSSH convention.
+///
+///   • MobaXterm `.mxtsessions` INI (partial) — sessions live under
+///     `[Bookmarks_<n>]` with `SessionName=…` and comma-separated fields
+///     `HostName,Port,UserName,…`. Best-effort — MobaXterm's schema has
+///     drifted across releases so we only trust the first four fields.
+///
+/// Anything the parser can't recognise is a soft-fail: the returned
+/// `Vec` is what we DID find, the message describes what got skipped.
+/// The command is desktop+Android — no filesystem access, just text.
+#[tauri::command]
+fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("Paste an exported session block first.".into());
+    }
+
+    // ── JSON array — the most permissive path, so try it first. Two
+    //    supported field-name variants (see doc comment). We accept a
+    //    generic `serde_json::Value` array rather than a strict struct
+    //    so a stray extra field doesn't kill the whole import.
+    if trimmed.starts_with('[') {
+        let arr: Vec<serde_json::Value> = serde_json::from_str(trimmed)
+            .map_err(|e| format!("JSON parse failed: {}", e))?;
+        let mut out = Vec::with_capacity(arr.len());
+        for (i, v) in arr.iter().enumerate() {
+            let obj = v.as_object().ok_or_else(|| {
+                format!("Entry #{} is not an object", i + 1)
+            })?;
+            let get_str = |keys: &[&str]| -> Option<String> {
+                for k in keys {
+                    if let Some(s) = obj.get(*k).and_then(|x| x.as_str()) {
+                        if !s.is_empty() { return Some(s.to_string()); }
+                    }
+                }
+                None
+            };
+            let get_u16 = |keys: &[&str]| -> Option<u16> {
+                for k in keys {
+                    if let Some(n) = obj.get(*k).and_then(|x| x.as_u64()) {
+                        return u16::try_from(n).ok();
+                    }
+                    if let Some(s) = obj.get(*k).and_then(|x| x.as_str()) {
+                        if let Ok(p) = s.parse::<u16>() { return Some(p); }
+                    }
+                }
+                None
+            };
+            let alias = get_str(&["name", "label", "title", "alias", "host_alias"])
+                .or_else(|| get_str(&["host", "hostname", "address"]))
+                .unwrap_or_else(|| format!("imported-{}", i + 1));
+            let hostname = get_str(&["host", "hostname", "address"]).unwrap_or_else(|| alias.clone());
+            let port = get_u16(&["port"]).unwrap_or(22);
+            let user = get_str(&["user", "username"]).unwrap_or_default();
+            let identity_file = get_str(&["identity_file", "identityFile", "key", "privateKey"]);
+            let proxy_jump = get_str(&["proxy_jump", "proxyJump", "jump"]);
+            out.push(ImportedHost {
+                host_alias: alias,
+                hostname,
+                port,
+                user,
+                identity_file,
+                proxy_jump,
+            });
+        }
+        if out.is_empty() {
+            return Err("JSON array was valid but contained no entries.".into());
+        }
+        return Ok(out);
+    }
+
+    // ── PuTTY .reg export
+    if trimmed.to_ascii_lowercase().contains("windows registry editor")
+        || trimmed.contains("[HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions")
+        || trimmed.contains("[HKEY_USERS\\") && trimmed.contains("SimonTatham\\PuTTY\\Sessions")
+    {
+        return parse_putty_reg(trimmed);
+    }
+
+    // ── MobaXterm .mxtsessions
+    if trimmed.contains("[Bookmarks") || trimmed.contains(";SessionName") {
+        return parse_mobaxterm_sessions(trimmed);
+    }
+
+    Err("Unrecognised format — paste a JSON array, a PuTTY .reg export, or a MobaXterm .mxtsessions block.".into())
+}
+
+/// Parse `regedit /e` output of PuTTY's session key. The format is
+/// deterministic (one `[...]` header line per session, then `"key"=type:val`
+/// lines) so a line-oriented walk covers it. We only pull the three fields
+/// that translate to a Submarine row: HostName, PortNumber, UserName.
+/// Session-name percent-escapes (%20 for space, etc.) are undone so the
+/// alias reads naturally.
+fn parse_putty_reg(text: &str) -> Result<Vec<ImportedHost>, String> {
+    let mut out: Vec<ImportedHost> = Vec::new();
+    let mut current: Option<(String, String, u16, String)> = None; // (alias, host, port, user)
+    let close = |cur: &mut Option<(String, String, u16, String)>, out: &mut Vec<ImportedHost>| {
+        if let Some((alias, host, port, user)) = cur.take() {
+            if !host.is_empty() || !alias.is_empty() {
+                out.push(ImportedHost {
+                    host_alias: alias.clone(),
+                    hostname: if host.is_empty() { alias } else { host },
+                    port: if port == 0 { 22 } else { port },
+                    user,
+                    identity_file: None,
+                    proxy_jump: None,
+                });
+            }
+        }
+    };
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() { continue; }
+        if line.starts_with('[') && line.ends_with(']') {
+            close(&mut current, &mut out);
+            // Only sessions — skip other PuTTY keys (SshHostKeys, Jumplist).
+            let inner = &line[1..line.len() - 1];
+            let Some(idx) = inner.rfind("\\Sessions\\") else { continue; };
+            let name_raw = &inner[idx + "\\Sessions\\".len()..];
+            let name = putty_unescape(name_raw);
+            if name.is_empty() { continue; }
+            current = Some((name, String::new(), 0, String::new()));
+            continue;
+        }
+        let Some((key, val_raw)) = line.split_once('=') else { continue; };
+        let Some(cur) = current.as_mut() else { continue; };
+        let key = key.trim().trim_matches('"');
+        let val = val_raw.trim();
+        match key {
+            "HostName" => {
+                if let Some(v) = strip_reg_string(val) { cur.1 = v; }
+            }
+            "PortNumber" => {
+                if let Some(n) = strip_reg_dword(val) {
+                    if let Ok(p) = u16::try_from(n) { cur.2 = p; }
+                }
+            }
+            "UserName" => {
+                if let Some(v) = strip_reg_string(val) { cur.3 = v; }
+            }
+            _ => {}
+        }
+    }
+    close(&mut current, &mut out);
+    if out.is_empty() {
+        return Err("No PuTTY sessions found in the pasted text.".into());
+    }
+    Ok(out)
+}
+
+/// PuTTY registry keys with special characters (space, backslash, non-
+/// ASCII) are percent-escaped in the exported name. `%20` → space,
+/// `%25` → `%`. Anything else is passed through as-is. Not a full URL
+/// decoder — PuTTY's escape table is narrower.
+fn putty_unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = &s[i + 1..i + 3];
+            if let Ok(n) = u8::from_str_radix(hex, 16) {
+                out.push(n as char);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// `.reg` string entries look like `"HostName"="1.2.3.4"`. Strip the
+/// surrounding quotes and unescape the two sequences .reg uses (`\\` and
+/// `\"`). Returns None if the value isn't a quoted string.
+fn strip_reg_string(val: &str) -> Option<String> {
+    let s = val.trim();
+    if !s.starts_with('"') || !s.ends_with('"') || s.len() < 2 { return None; }
+    let inner = &s[1..s.len() - 1];
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() { out.push(next); }
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out)
+}
+
+/// `.reg` DWORD entries look like `"PortNumber"=dword:00000016`. The
+/// `dword:` prefix is followed by exactly 8 hex chars. Anything else
+/// (missing prefix, non-hex, wrong length) returns None so the caller
+/// can leave the field at its default rather than propagating an error.
+fn strip_reg_dword(val: &str) -> Option<u32> {
+    let s = val.trim();
+    let stripped = s.strip_prefix("dword:")?;
+    u32::from_str_radix(stripped, 16).ok()
+}
+
+/// Parse a MobaXterm `.mxtsessions` INI-ish blob. MobaXterm stores each
+/// session as one line under a `[Bookmarks_N]` group, formatted roughly
+/// `<Title>=#109#0%<hostname>%<port>%<username>%…` with a variable trail
+/// of feature flags. We only decode the first three fields — anything
+/// past that is version-specific and not worth the complexity for an
+/// import flow that leaves password/key blank anyway.
+fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
+    let mut out: Vec<ImportedHost> = Vec::new();
+    let mut in_bookmarks = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with(';') { continue; }
+        if line.starts_with('[') {
+            in_bookmarks = line.starts_with("[Bookmarks");
+            continue;
+        }
+        if !in_bookmarks { continue; }
+        let Some((title, val)) = line.split_once('=') else { continue; };
+        // MobaXterm SSH sessions start with `#109#`. Non-SSH bookmark
+        // types (telnet, RDP, sftp-only) use different numbers — we
+        // don't want to blindly import those as SSH rows.
+        if !val.starts_with("#109#") { continue; }
+        // Skip the `#109#<N>%` framing and split the payload on `%`.
+        let payload = val.split_once('%').map(|(_, rest)| rest).unwrap_or(val);
+        let parts: Vec<&str> = payload.split('%').collect();
+        if parts.len() < 3 { continue; }
+        let hostname = parts[0].trim();
+        let port = parts[1].trim().parse::<u16>().unwrap_or(22);
+        let user = parts[2].trim().to_string();
+        if hostname.is_empty() { continue; }
+        out.push(ImportedHost {
+            host_alias: title.trim().to_string(),
+            hostname: hostname.to_string(),
+            port,
+            user,
+            identity_file: None,
+            proxy_jump: None,
+        });
+    }
+    if out.is_empty() {
+        return Err("No MobaXterm sessions found in the pasted text.".into());
+    }
+    Ok(out)
+}
+
 /// Defense-in-depth guard for the local-FS commands the frontend can invoke.
 /// We can't lock everything down to a sandbox (the local file browser
 /// legitimately needs to roam the user's disk to pick uploads), but we CAN
@@ -5910,6 +6174,7 @@ pub fn run() {
             local_home_dir, local_desktop_dir, local_create_dir, local_remove, local_rename,
             android_quick_dirs, android_default_local_dir,
             parse_ssh_config,
+            parse_client_import,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,

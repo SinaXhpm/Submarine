@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square } from "lucide-react";
 import PasswordField from "./PasswordField";
-import { IS_ANDROID } from "../util/platform";
 
 // Shape returned by the `parse_ssh_config` backend command. One entry per
 // non-wildcard alias resolved from the user's OpenSSH config.
@@ -31,17 +30,29 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
   const [importError, setImportError] = useState<string | null>(null);
   const [importHosts, setImportHosts] = useState<ImportedHost[]>([]);
   const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
+  // Source selector for the import modal. `ssh` = the on-disk OpenSSH
+  // config (desktop only); `paste` = a text blob pasted from PuTTY /
+  // MobaXterm / a JSON export — parsed by the auto-detecting Rust
+  // command so the user doesn't have to say which client it came from.
+  const [importSource, setImportSource] = useState<"ssh" | "paste">("ssh");
+  const [importPasteText, setImportPasteText] = useState("");
 
   // Open the picker: fetch fresh from ~/.ssh/config every time so users who
   // edit the file between imports see current contents. We keep the modal
   // open on empty results so the user gets an explicit "nothing to import"
   // message rather than a silent no-op.
+  // Open the modal and immediately try the SSH-config path — that's the
+  // most common source on desktop. If it errors (Android, no config file,
+  // permissions), the user just switches to the "Paste" tab and drops in
+  // their PuTTY/MobaXterm/JSON export instead.
   const openImportModal = async () => {
     setImportOpen(true);
-    setImportLoading(true);
+    setImportSource("ssh");
+    setImportPasteText("");
     setImportError(null);
     setImportHosts([]);
     setImportSelected(new Set());
+    setImportLoading(true);
     try {
       const hosts = await invoke<ImportedHost[]>("parse_ssh_config", { path: null });
       setImportHosts(hosts);
@@ -52,12 +63,49 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     }
   };
 
+  // Parse whatever's in the textarea. Rust auto-detects the format so we
+  // don't need three separate importers here.
+  const parsePastedImport = async () => {
+    setImportLoading(true);
+    setImportError(null);
+    setImportHosts([]);
+    setImportSelected(new Set());
+    try {
+      const hosts = await invoke<ImportedHost[]>("parse_client_import", { text: importPasteText });
+      setImportHosts(hosts);
+    } catch (e: any) {
+      setImportError(typeof e === "string" ? e : (e?.message || String(e)));
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
+  const switchImportSource = async (next: "ssh" | "paste") => {
+    if (importBusy || importSource === next) return;
+    setImportSource(next);
+    setImportError(null);
+    setImportHosts([]);
+    setImportSelected(new Set());
+    if (next === "ssh") {
+      setImportLoading(true);
+      try {
+        const hosts = await invoke<ImportedHost[]>("parse_ssh_config", { path: null });
+        setImportHosts(hosts);
+      } catch (e: any) {
+        setImportError(typeof e === "string" ? e : (e?.message || String(e)));
+      } finally {
+        setImportLoading(false);
+      }
+    }
+  };
+
   const closeImportModal = () => {
     if (importBusy) return;
     setImportOpen(false);
     setImportError(null);
     setImportHosts([]);
     setImportSelected(new Set());
+    setImportPasteText("");
   };
 
   const toggleSelectAll = () => {
@@ -161,9 +209,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
           <div className="flex items-center gap-2">
             {/* Import only makes sense when creating a fresh row — editing an
                 existing server is a rename/reconfigure flow, not an import.
-                Also skipped on Android: there is no ~/.ssh/config on-device
-                and the backend command returns a "not available" error. */}
-            {!isEditMode && !IS_ANDROID && (
+                Available on Android now that the modal supports a "Paste
+                PuTTY / MobaXterm / JSON" source that doesn't need a local
+                ~/.ssh/config. The SSH-config tab still errors gracefully
+                there — the user just picks the paste tab. */}
+            {!isEditMode && (
               <button
                 onClick={openImportModal}
                 title="Import from ~/.ssh/config"
@@ -592,10 +642,72 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               </button>
             </div>
 
+            {/* Source selector — two ways to feed hosts in:
+                    ssh    → parse the local OpenSSH config (desktop only)
+                    paste  → drop text from PuTTY, MobaXterm, or a JSON
+                             export; Rust auto-detects the format so the
+                             user doesn't need to say which client it came
+                             from. */}
+            <div className="px-4 py-2 border-b border-white/5 flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => switchImportSource("ssh")}
+                disabled={importBusy}
+                className={`h-7 px-3 rounded-lg text-[10.5px] font-bold uppercase tracking-wider transition-all ${
+                  importSource === "ssh"
+                    ? "bg-primary/10 text-primary border border-primary/30"
+                    : "text-zinc-400 border border-white/5 hover:text-white hover:bg-white/[0.04]"
+                }`}
+              >
+                From ~/.ssh/config
+              </button>
+              <button
+                onClick={() => switchImportSource("paste")}
+                disabled={importBusy}
+                className={`h-7 px-3 rounded-lg text-[10.5px] font-bold uppercase tracking-wider transition-all ${
+                  importSource === "paste"
+                    ? "bg-primary/10 text-primary border border-primary/30"
+                    : "text-zinc-400 border border-white/5 hover:text-white hover:bg-white/[0.04]"
+                }`}
+              >
+                Paste PuTTY / MobaXterm / JSON
+              </button>
+            </div>
+
             {/* Body — one of loading / error / empty / list. */}
             <div className="flex-1 overflow-y-auto custom-scrollbar p-3">
+              {importSource === "paste" && importHosts.length === 0 && !importLoading && (
+                <div className="space-y-2 mb-2">
+                  <div className="text-[11px] text-zinc-400 leading-relaxed px-1">
+                    Paste an export from another SSH client. Recognised sources:
+                    <ul className="mt-1.5 ml-4 list-disc space-y-0.5 text-zinc-500 text-[10.5px]">
+                      <li><b className="text-zinc-300">PuTTY</b> — export via <code className="text-zinc-300">regedit /e ... HKCU\Software\SimonTatham\PuTTY\Sessions</code>, open the .reg file, paste its contents.</li>
+                      <li><b className="text-zinc-300">MobaXterm</b> — Export sessions → open <code className="text-zinc-300">.mxtsessions</code>, paste.</li>
+                      <li><b className="text-zinc-300">JSON</b> — an array of <code className="text-zinc-300">{`{name,host,port,user}`}</code> or Termius-style <code className="text-zinc-300">{`{label,address,port,username}`}</code>.</li>
+                    </ul>
+                  </div>
+                  <textarea
+                    value={importPasteText}
+                    onChange={(e) => setImportPasteText(e.target.value)}
+                    placeholder={`Paste your export here…\n\nExample JSON:\n[\n  {"name":"prod-web","host":"1.2.3.4","port":22,"user":"root"},\n  {"name":"db","host":"10.0.0.5","user":"admin"}\n]`}
+                    rows={10}
+                    className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-[11px] font-mono text-zinc-200 placeholder:text-zinc-600 focus:border-primary/40 focus:outline-none resize-none custom-scrollbar"
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      onClick={parsePastedImport}
+                      disabled={!importPasteText.trim()}
+                      className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase tracking-wider bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                    >
+                      Parse pasted text
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {importLoading && (
-                <div className="p-6 text-center text-[12px] text-zinc-400">Reading ~/.ssh/config…</div>
+                <div className="p-6 text-center text-[12px] text-zinc-400">
+                  {importSource === "ssh" ? "Reading ~/.ssh/config…" : "Parsing pasted text…"}
+                </div>
               )}
 
               {!importLoading && importError && importHosts.length === 0 && (
@@ -604,7 +716,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 </div>
               )}
 
-              {!importLoading && !importError && importHosts.length === 0 && (
+              {!importLoading && !importError && importSource === "ssh" && importHosts.length === 0 && (
                 <div className="p-6 text-center text-[12px] text-zinc-500">
                   No importable hosts found in ~/.ssh/config.
                 </div>

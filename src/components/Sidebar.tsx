@@ -1,4 +1,4 @@
-import { Server, KeyRound, Library, Activity, Settings, LogOut } from "lucide-react";
+import { Server, KeyRound, Library, Activity, Settings, LogOut, LayoutGrid } from "lucide-react";
 
 // Vertical rail on desktop, horizontal bottom dock on mobile. Layout swap is
 // driven by `isMobile` so the terminal/session views can use the full screen
@@ -16,6 +16,11 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout }: any) =>
     { id: 'nodes', icon: Server, label: 'Servers' },
     { id: 'vault', icon: KeyRound, label: 'Logins' },
     { id: 'library', icon: Library, label: 'Library' },
+    // Compare = tile any number of open sessions' terminals in a single
+    // canvas. Kept in the rail (not hidden behind Servers) because
+    // "watch three hosts at once" is a top-level workflow, not a per-
+    // session tool.
+    { id: 'compare', icon: LayoutGrid, label: 'Compare' },
     { id: 'monitor', icon: Activity, label: 'Monitor' },
   ];
 
