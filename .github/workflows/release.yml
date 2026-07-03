@@ -94,8 +94,18 @@ jobs:
           fi
           # Strip leading "v" — Cargo + Tauri want bare semver.
           VERSION="${RAW#v}"
+          # Strict-semver form: everything from the first '-' stripped.
+          # Windows MSI (WiX) rejects non-numeric pre-release identifiers
+          # (`optional pre-release identifier in app version must be
+          # numeric-only`), and Arch's makepkg rejects hyphens in pkgver
+          # outright. Both fall back to this shortened string for
+          # stamping / pkgver; the other targets (Android, macOS, .deb,
+          # .rpm, AppImage, NSIS) still see the full string so a dev
+          # build's artefacts self-identify as e.g. "0.2.37-dev".
+          VERSION_STRICT="${VERSION%%-*}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "Resolved release version: $VERSION"
+          echo "VERSION_STRICT=$VERSION_STRICT" >> "$GITHUB_ENV"
+          echo "Resolved release version: $VERSION (strict: $VERSION_STRICT)"
 
       # Stamp the version into Cargo.toml and tauri.conf.json so the
       # bundled binary's about/version metadata matches the git tag.
@@ -106,9 +116,19 @@ jobs:
       - name: Stamp version into manifests
         shell: bash
         run: |
-          node -e "
+          # Windows bundles MSI in the same job as NSIS; MSI requires
+          # a strict semver (no non-numeric pre-release) so we stamp
+          # the sanitised form for the whole Windows job. Other
+          # platforms keep the full string.
+          if [[ "${{ matrix.bundles }}" == *msi* ]]; then
+            STAMP="$VERSION_STRICT"
+          else
+            STAMP="$VERSION"
+          fi
+          echo "Stamping manifests with $STAMP"
+          STAMP_VERSION="$STAMP" node -e "
             const fs=require('fs');
-            const v=process.env.VERSION;
+            const v=process.env.STAMP_VERSION;
             // Cargo.toml: only the package.version line — leave dep versions alone.
             const cargo=fs.readFileSync('src-tauri/Cargo.toml','utf8');
             const next=cargo.replace(/^version *= *\".*\"/m, 'version = \"'+v+'\"');
@@ -203,10 +223,19 @@ jobs:
           # anything; it just installs the already-built Tauri binary +
           # .desktop + icon, so the dep check in the build container
           # would only force us to download those packages for nothing.
+          # Arch's pkgver forbids hyphens (and colons, slashes, spaces).
+          # For a dev / rc / beta release the version we WANT to stamp
+          # is "0.2.37-dev" but pkgver has to be "0.2.37" or makepkg
+          # rejects the PKGBUILD with `pkgver is not allowed to contain
+          # colons, forward slashes, hyphens or whitespace`. Passing
+          # VERSION_STRICT keeps the pkg name usable; the file name
+          # inside the artefact bundle still says v${VERSION} because
+          # we compose that from $VERSION (with the pre-release intact)
+          # elsewhere in the workflow.
           docker run --rm \
             -v "$PWD/arch-build:/build" \
             -w /build \
-            -e VERSION="$VERSION" \
+            -e VERSION="$VERSION_STRICT" \
             archlinux:latest \
             bash -c '
               set -e
