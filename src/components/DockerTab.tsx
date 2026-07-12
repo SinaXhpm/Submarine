@@ -132,7 +132,10 @@ function describeError(err: string, ctx?: string): { title: string; hint?: strin
 // Mobile-first sizing: h-9 (36 px) keeps the tap target above 32 px on
 // phones; the explicit `min-w-[44px]` on icon-only variants guards the
 // 44 pt iOS guideline even when the label is a single short word.
-const subTabBase = "shrink-0 h-9 sm:h-8 px-3 rounded-md flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider transition-all";
+// Compact, minimal — Docker's strip sits UNDER the Info strip (Info > Docker),
+// so two heavy uppercase rows stacked up and wrapped to a second line. No
+// uppercase / letter-spacing, smaller height + padding keeps it to one line.
+const subTabBase = "shrink-0 h-8 sm:h-7 px-2.5 rounded-md flex items-center gap-1.5 text-[10.5px] font-semibold tracking-tight transition-all";
 const subTabIdle = "text-zinc-400 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white";
 const subTabActive = "bg-primary/15 text-primary border border-primary/30 shadow-inner";
 
@@ -726,7 +729,7 @@ const KindPill = ({
 }) => (
   <button
     onClick={onClick}
-    className={`h-9 sm:h-7 px-3 sm:px-2.5 rounded-md text-[10.5px] font-bold uppercase tracking-wider transition-all border flex items-center gap-1.5 ${
+    className={`h-8 sm:h-7 px-2.5 sm:px-2 rounded-md text-[10.5px] font-semibold tracking-tight transition-all border flex items-center gap-1.5 ${
       active
         ? "bg-primary/15 text-primary border-primary/30"
         : "bg-white/[0.04] text-zinc-400 border-white/10 hover:bg-white/[0.08] hover:text-white"

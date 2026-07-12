@@ -37,11 +37,11 @@ interface SystemctlResult {
 
 type SubTab = "overview" | "network" | "ports" | "services" | "docker";
 const TABS: { id: SubTab; label: string; icon: any }[] = [
-  { id: "overview", label: "Overview", icon: Server },
-  { id: "network",  label: "Network",  icon: NetIcon },
-  { id: "ports",    label: "Ports",    icon: Plug },
+  { id: "overview", label: "System",  icon: Server },
+  { id: "network",  label: "Network", icon: NetIcon },
+  { id: "ports",    label: "Ports",   icon: Plug },
   { id: "services", label: "Services", icon: Cog },
-  { id: "docker",   label: "Docker",   icon: Box },
+  { id: "docker",   label: "Docker",  icon: Box },
 ];
 
 // Visible caps. Servers with hundreds of veth/dummy interfaces (think a
@@ -441,7 +441,10 @@ function freshTab<T>(): TabState<T> {
   return { loaded: false, loading: false, error: null, data: null, meta: null };
 }
 
-const subTabBase = "shrink-0 h-9 sm:h-8 px-3 rounded-lg flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider transition-all";
+// Compact + minimal: no uppercase / letter-spacing (both widen text ~30% and
+// were pushing the strip onto a second row on narrow panes), smaller height
+// and padding. Keeps the strip to a single line on far more widths.
+const subTabBase = "shrink-0 h-8 sm:h-7 px-2.5 rounded-lg flex items-center gap-1.5 text-[11px] font-semibold tracking-tight transition-all";
 const subTabIdle = "text-zinc-400 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white";
 const subTabActive = "bg-primary/10 text-primary border border-primary/20 shadow-inner";
 
@@ -1246,18 +1249,22 @@ const InfoCard = ({ title, icon, actions, children, className = "", bodyClassNam
 );
 
 interface KVProps { label: string; value: string; icon?: React.ReactNode; copyable?: boolean; }
+// Label ABOVE value (stacked), not side-by-side. Long values — OS strings like
+// "Red Hat Enterprise Linux 9.4 (Plow)", full kernel/uname, hostnames — used to
+// be jammed into a narrow right-aligned column where they truncated to nothing
+// or wrapped awkwardly. Stacking gives the value the card's full width and lets
+// it wrap cleanly on its own line, which is what reads well across every pane
+// width.
 const KV = ({ label, value, icon, copyable }: KVProps) => (
-  <div className="flex items-baseline justify-between gap-3 py-1 first:pt-0 last:pb-0 border-b border-white/[0.03] last:border-0">
-    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 shrink-0 flex items-center gap-1">
+  <div className="py-1 first:pt-0 last:pb-0 border-b border-white/[0.03] last:border-0">
+    <div className="text-[9.5px] font-semibold uppercase tracking-wider text-zinc-500 flex items-center gap-1 mb-0.5">
       {icon}{label}
-    </span>
-    {copyable && value && value !== "—" ? (
-      <span className="text-[11px] font-mono text-zinc-200 text-right truncate select-text min-w-0">
-        <CopyValue value={value}>{value}</CopyValue>
-      </span>
-    ) : (
-      <span className="text-[11px] font-mono text-zinc-200 text-right truncate select-text">{value}</span>
-    )}
+    </div>
+    <div className="text-[11px] font-mono text-zinc-200 select-text break-words leading-snug">
+      {copyable && value && value !== "—"
+        ? <CopyValue value={value}>{value}</CopyValue>
+        : value}
+    </div>
   </div>
 );
 
