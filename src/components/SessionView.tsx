@@ -142,6 +142,9 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   });
 
   const initiatedRef = useRef(false);
+  // Guards the per-node "run on connect" commands to fire exactly once for
+  // this session view — first successful connect only, never on reconnect.
+  const ranOnConnectRef = useRef(false);
 
   // ---- Auto-reconnect with exponential backoff -----------------------------
   // After a previously-good session drops, try to reconnect on a 1.5s → 3 → 6
@@ -216,6 +219,23 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       // routes into the fresh PTY.
       if (wasReconnect) {
         setConnectionEpoch(e => e + 1);
+      } else if (session.runOnConnect && session.runOnConnect.trim() && !ranOnConnectRef.current) {
+        // Per-node on-connect commands: auto-typed ONCE into the first
+        // terminal on the INITIAL connect only (the `else` gates out
+        // reconnects; ranOnConnectRef gates out any duplicate success
+        // event). Delayed so the PTY is open and the shell has printed its
+        // prompt — the commands then land after it instead of racing the
+        // shell's startup and getting swallowed.
+        ranOnConnectRef.current = true;
+        const cmds = session.runOnConnect
+          .split(/\r?\n/)
+          .map((l: string) => l.trimEnd())
+          .filter((l: string) => l.trim().length > 0)
+          .join('\n') + '\n';
+        const bytes = Array.from(new TextEncoder().encode(cmds));
+        setTimeout(() => {
+          invoke('write_terminal_data', { terminalId: `${session.id}-term-0`, data: bytes }).catch(() => {});
+        }, 700);
       }
       // The handshake may have inserted a row into `known_hosts` (user just
       // accepted a new fingerprint). Flush the encrypted vault so the entry

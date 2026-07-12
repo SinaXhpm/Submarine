@@ -30,7 +30,7 @@ const appWindow = getCurrentWindow();
 // connect (one-shot, `serverId === 0` and `quickAuth` populated). SessionView
 // forwards `quickAuth` to `initiate_connection` which uses it instead of
 // looking up the DB row.
-type Session = { id: string; serverId: number; serverName: string; mirrors?: string; quickAuth?: QuickAuth | null };
+type Session = { id: string; serverId: number; serverName: string; mirrors?: string; runOnConnect?: string; quickAuth?: QuickAuth | null };
 
 const hexToRgb = (hex: string) => {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -192,6 +192,9 @@ function DesktopApp() {
     // in the encrypted vault. Empty string by default — the textarea in the
     // panel renders a placeholder when blank.
     notes: "" as string,
+    // Commands auto-typed into the FIRST terminal on the INITIAL connect only
+    // (never on reconnect or extra shells). Newline-separated. Empty = off.
+    runOnConnect: "" as string,
     // True only after the user typed into the password field on this form
     // instance. If still false at save time, the backend uses
     // `preserve_password` to keep the existing DB column. Without this
@@ -496,6 +499,8 @@ function DesktopApp() {
         // MirrorsPanel can pre-populate "Saved on this node" without
         // another round-trip to the backend.
         mirrors: server.mirrors,
+        // Commands to auto-run once on the first terminal (see SessionView).
+        runOnConnect: server.run_on_connect || "",
       }]);
     }
 
@@ -555,6 +560,7 @@ function DesktopApp() {
       })(),
       color: server.color ?? null,
       notes: server.notes || "",
+      runOnConnect: server.run_on_connect || "",
       // Starts clean — only flips true if the user types into the password
       // field. Save handler reads this to decide between `preserve_password`
       // and a real overwrite.
@@ -2169,6 +2175,12 @@ function DesktopApp() {
               await invoke("set_server_notes", { id: savedId, notes: newNode.notes || "" });
             } catch (e) {
               addLog(`SAVE_NOTES_FAILED: ${e}`, "error");
+            }
+            // Same separate-write pattern for the on-connect commands.
+            try {
+              await invoke("set_server_run_on_connect", { id: savedId, value: newNode.runOnConnect || "" });
+            } catch (e) {
+              addLog(`SAVE_RUN_ON_CONNECT_FAILED: ${e}`, "error");
             }
             setIsPanelOpen(false);
             setFormError("");

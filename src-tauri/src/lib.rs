@@ -740,6 +740,9 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
             // so existing rows don't need backfill. NOT NULL keeps the read
             // path branchless.
             "ALTER TABLE servers ADD COLUMN notes TEXT NOT NULL DEFAULT ''",
+            // Commands auto-typed into the FIRST terminal on the INITIAL
+            // connect (never on reconnect / extra shells). Empty = nothing.
+            "ALTER TABLE servers ADD COLUMN run_on_connect TEXT NOT NULL DEFAULT ''",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let s = e.to_string();
@@ -771,7 +774,7 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
             "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT);
@@ -1266,6 +1269,24 @@ async fn set_server_notes(state: tauri::State<'_, DbState>, id: i32, notes: Stri
     Ok(())
 }
 
+/// Per-server commands auto-typed into the first terminal on initial connect.
+/// Stored as a single blob (newline-separated lines); the frontend sends them
+/// only for `-term-0` and only on the first open, never on reconnect. Written
+/// through its own command (like set_server_notes) so it doesn't have to be
+/// threaded through add_server / edit_server's positional parameter lists.
+#[tauri::command]
+async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, value: String) -> Result<(), String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    conn.execute(
+        "UPDATE servers SET run_on_connect=?1 WHERE id=?2",
+        rusqlite::params![value, id],
+    ).map_err(|e| format!("[DATABASE] SERVER_RUN_ON_CONNECT_FAILED: {}", e))?;
+    drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(())
+}
+
 /// Duplicate a server row verbatim — including credentials linkage, tunnels,
 /// mirrors, proxy config, colour. The clone gets a "{name} (copy)" suffix so
 /// it shows up beside the original in the grid; everything else is identical
@@ -1312,7 +1333,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     // unless someone explicitly invokes `reveal_server_password`. The edit
     // panel calls reveal on open, but the cards / sidebar / quick-connect
     // grid never see the plaintext.
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes FROM servers")
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect FROM servers")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -1336,6 +1357,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             "mirrors": row.get::<_, Option<String>>(15)?.unwrap_or_else(|| "[]".to_string()),
             "color": row.get::<_, Option<String>>(16)?,
             "notes": row.get::<_, Option<String>>(17)?.unwrap_or_default(),
+            "run_on_connect": row.get::<_, Option<String>>(18)?.unwrap_or_default(),
         }))
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
@@ -6165,7 +6187,7 @@ pub fn run() {
             cloud::cloud_force_upload_profile, cloud::cloud_download_profile,
             cloud::cloud_delete_remote_profile,
             cloud::cloud_sync_overview, cloud::cloud_sync_all,
-            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
+            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,
             add_command, edit_command, delete_command, get_commands,
