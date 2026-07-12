@@ -3533,11 +3533,26 @@ uname -srm 2>/dev/null
 echo __SUB_INFO_OV_SEP__
 uptime 2>/dev/null
 echo __SUB_INFO_OV_SEP__
-free -b 2>/dev/null
+# Memory. procps `free -b` gives bytes + an `available` column; busybox `free`
+# ignores `-b` (prints KiB) and has no `available`, so fall back to the
+# universal /proc/meminfo (kB) with a format tag the frontend switches on.
+if F=$(free -b 2>/dev/null) && printf '%s' "$F" | grep -q '^Mem:'; then
+  printf 'MEMFMT:free-b\n'; printf '%s\n' "$F"
+else
+  printf 'MEMFMT:meminfo\n'; cat /proc/meminfo 2>/dev/null
+fi
 echo __SUB_INFO_OV_SEP__
-df -PT 2>/dev/null
+# Disks. `-T` (fs-type column) + `-k` (1 KiB blocks) is GNU coreutils; busybox
+# df lacks `-T`, so fall back to the no-type layout. `-k` pins the block size
+# so the frontend's *1024 is always correct.
+if D=$(df -PTk 2>/dev/null) && [ -n "$D" ]; then
+  printf 'DFFMT:pt\n'; printf '%s\n' "$D"
+else
+  printf 'DFFMT:p\n'; df -Pk 2>/dev/null
+fi
 echo __SUB_INFO_OV_SEP__
-nproc 2>/dev/null
+# CPU count: coreutils nproc -> POSIX getconf -> /proc/cpuinfo (universal floor).
+nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null
 echo __SUB_INFO_OV_SEP__
 cat /proc/loadavg 2>/dev/null
 echo __SUB_INFO_OV_SEP__
@@ -3545,8 +3560,8 @@ echo __SUB_INFO_OV_SEP__
 
 // Network probe layout (sections delimited by SEP):
 //   [0] empty (printed before first SEP)
-//   [1] `ip -j addr`           — JSON NIC list
-//   [2] `ip -j route`          — JSON route table
+//   [1] NIC list   — first line `ADDRFMT:<ip-json|ip-oneline|ifconfig|none>`
+//   [2] route table — first line `ROUTEFMT:<ip-json|ip-oneline|route|netstat|none>`
 //   [3] firewall summary:
 //         line 1: 'FW:<engine>' where engine is one of
 //                 iptables | iptables-sudo | iptables-denied |
@@ -3564,9 +3579,34 @@ echo __SUB_INFO_OV_SEP__
 // systems still reports both — picking iptables gives a consistent first
 // hit even on hybrid hosts.
 const INFO_SCRIPT_NETWORK: &str = r#"echo __SUB_INFO_NET_SEP__
-ip -j addr 2>/dev/null
+# NIC addresses. First line is a format tag the frontend switches on. `ip -j`
+# (JSON) needs iproute2 >= 4.13, so RHEL/CentOS 7 (4.11) falls back to the
+# text `ip -o` layout, then net-tools ifconfig for hosts without `ip` at all.
+if J=$(ip -j addr 2>/dev/null) && [ -n "$J" ]; then
+  printf 'ADDRFMT:ip-json\n'; printf '%s\n' "$J"
+elif command -v ip >/dev/null 2>&1; then
+  printf 'ADDRFMT:ip-oneline\n'
+  ip -o link show 2>/dev/null
+  echo __SUB_INFO_NET_SUB__
+  ip -o addr show 2>/dev/null
+elif command -v ifconfig >/dev/null 2>&1; then
+  printf 'ADDRFMT:ifconfig\n'; ifconfig -a 2>/dev/null
+else
+  printf 'ADDRFMT:none\n'
+fi
 echo __SUB_INFO_NET_SEP__
-ip -j route 2>/dev/null
+# Routes, same tag+fallback idea.
+if J=$(ip -j route 2>/dev/null) && [ -n "$J" ]; then
+  printf 'ROUTEFMT:ip-json\n'; printf '%s\n' "$J"
+elif command -v ip >/dev/null 2>&1; then
+  printf 'ROUTEFMT:ip-oneline\n'; ip -o route show 2>/dev/null
+elif command -v route >/dev/null 2>&1; then
+  printf 'ROUTEFMT:route\n'; route -n 2>/dev/null
+elif command -v netstat >/dev/null 2>&1; then
+  printf 'ROUTEFMT:netstat\n'; netstat -rn 2>/dev/null
+else
+  printf 'ROUTEFMT:none\n'
+fi
 echo __SUB_INFO_NET_SEP__
 if command -v iptables >/dev/null 2>&1; then
   IPT=""
@@ -3634,10 +3674,12 @@ fi
 // an error. We surface it gracefully on the UI.
 const INFO_SCRIPT_PORTS: &str = r#"if command -v ss >/dev/null 2>&1; then
   printf 'ENGINE:ss\n'
-  ss -tulnpH 2>/dev/null
-else
+  ss -tuln -p 2>/dev/null
+elif command -v netstat >/dev/null 2>&1; then
   printf 'ENGINE:netstat\n'
   netstat -tulnp 2>/dev/null
+else
+  printf 'ENGINE:none\n'
 fi
 "#;
 

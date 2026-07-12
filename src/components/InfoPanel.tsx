@@ -94,6 +94,37 @@ function parseFreeBytes(out: string): { totalMem: number; usedMem: number; total
   return ok ? { totalMem, usedMem, totalSwap, usedSwap } : null;
 }
 
+type MemInfo = { totalMem: number; usedMem: number; totalSwap: number; usedSwap: number } | null;
+
+// /proc/meminfo (universal): kB -> bytes. used = MemTotal - MemAvailable, with a
+// pre-3.14-kernel fallback of MemTotal - MemFree - Buffers - Cached.
+function parseMeminfo(out: string): MemInfo {
+  const kv: Record<string, number> = {};
+  for (const l of out.split(/\r?\n/)) {
+    const m = l.match(/^(\w+):\s+(\d+)\s*kB/i);
+    if (m) kv[m[1]] = parseInt(m[2], 10) * 1024;
+  }
+  if (!kv.MemTotal) return null;
+  const totalMem = kv.MemTotal;
+  const avail = kv.MemAvailable ?? (totalMem - (kv.MemFree || 0) - (kv.Buffers || 0) - (kv.Cached || 0));
+  const totalSwap = kv.SwapTotal || 0;
+  return {
+    totalMem,
+    usedMem: Math.max(0, totalMem - avail),
+    totalSwap,
+    usedSwap: Math.max(0, totalSwap - (kv.SwapFree || 0)),
+  };
+}
+// Peel the `MEMFMT:<free-b|meminfo>` tag (probe line 1) and dispatch.
+function parseMemSection(section: string): MemInfo {
+  const nl = section.indexOf("\n");
+  const tag = (nl >= 0 ? section.slice(0, nl) : section).trim();
+  const body = nl >= 0 ? section.slice(nl + 1) : "";
+  if (tag === "MEMFMT:meminfo") return parseMeminfo(body);
+  if (tag === "MEMFMT:free-b") return parseFreeBytes(body);
+  return parseFreeBytes(section); // untagged (older probe): raw `free -b`
+}
+
 interface DiskRow { device: string; fsType: string; size: number; used: number; avail: number; mount: string; }
 function parseDfPT(out: string): DiskRow[] {
   const lines = out.split(/\r?\n/).filter(Boolean);
@@ -114,6 +145,38 @@ function parseDfPT(out: string): DiskRow[] {
     });
   }
   return rows;
+}
+
+// df with NO type column (busybox): Filesystem 1024-blocks Used Available Capacity Mounted-on.
+function parseDfP(out: string): DiskRow[] {
+  const lines = out.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return [];
+  const rows: DiskRow[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].trim().split(/\s+/);
+    if (parts.length < 6) continue;
+    const device = parts[0];
+    // No fsType column — skip pseudo-FS by device name instead.
+    if (/^(tmpfs|devtmpfs|overlay|shm|udev|none|cgroup2?|proc|sysfs|ramfs|mqueue|hugetlbfs|squashfs|autofs)$/i.test(device)) continue;
+    rows.push({
+      device,
+      fsType: "",
+      size: (parseInt(parts[1], 10) || 0) * 1024,
+      used: (parseInt(parts[2], 10) || 0) * 1024,
+      avail: (parseInt(parts[3], 10) || 0) * 1024,
+      mount: parts.slice(5).join(" "),
+    });
+  }
+  return rows;
+}
+// Peel the `DFFMT:<pt|p>` tag (probe line 1) and dispatch.
+function parseDiskSection(section: string): DiskRow[] {
+  const nl = section.indexOf("\n");
+  const tag = (nl >= 0 ? section.slice(0, nl) : section).trim();
+  const body = nl >= 0 ? section.slice(nl + 1) : "";
+  if (tag === "DFFMT:pt") return parseDfPT(body);
+  if (tag === "DFFMT:p") return parseDfP(body);
+  return parseDfPT(section); // untagged (older probe): raw `df -PT`
 }
 
 interface OverviewData {
@@ -138,8 +201,8 @@ function parseOverview(raw: string): OverviewData {
     os: get(2),
     uname: get(3),
     uptime: parseUptime(get(4)),
-    mem: parseFreeBytes(get(5)),
-    disks: parseDfPT(get(6)),
+    mem: parseMemSection(get(5)),
+    disks: parseDiskSection(get(6)),
     cpuCount: parseInt(get(7), 10) || 0,
     load,
   };
@@ -149,47 +212,187 @@ function parseOverview(raw: string): OverviewData {
 
 interface NicAddr { family: string; local: string; prefixlen: number; }
 interface Nic { name: string; state: string; mac: string; mtu: number; addrs: NicAddr[]; }
-function parseNics(raw: string): Nic[] {
+
+// `ip -o link` reports loopback as UNKNOWN; treat UNKNOWN/UP as up.
+function isNicUp(state: string): boolean {
+  const s = (state || "").toUpperCase();
+  return s === "UP" || s === "UNKNOWN";
+}
+// UP first (user asked), loopback anchored last, then by name.
+function sortNics(nics: Nic[]): Nic[] {
+  return nics.sort((a, b) => {
+    const aUp = isNicUp(a.state) ? 0 : 1;
+    const bUp = isNicUp(b.state) ? 0 : 1;
+    if (aUp !== bUp) return aUp - bUp;
+    const aLo = a.name === "lo" ? 1 : 0;
+    const bLo = b.name === "lo" ? 1 : 0;
+    if (aLo !== bLo) return aLo - bLo;
+    return a.name.localeCompare(b.name);
+  });
+}
+// Dotted-quad netmask (255.255.255.0) -> prefix length (24). ifconfig/route give
+// masks, not prefixes.
+function maskToPrefix(mask: string): number {
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(mask)) return 0;
+  return mask.split(".").reduce((acc, o) => acc + (((parseInt(o, 10) || 0).toString(2).match(/1/g) || []).length), 0);
+}
+
+// Tier 1 — `ip -j addr` JSON (iproute2 >= 4.13).
+function parseNicsJson(raw: string): Nic[] {
   if (!raw) return [];
   try {
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
-    const nics: Nic[] = arr.map((n: any) => ({
+    return sortNics(arr.map((n: any) => ({
       name: n.ifname || "?",
       state: n.operstate || (Array.isArray(n.flags) && n.flags.includes("UP") ? "UP" : "DOWN"),
       mac: n.address || "",
       mtu: n.mtu || 0,
       addrs: (n.addr_info || []).map((a: any) => ({
-        family: a.family || "",
-        local: a.local || "",
-        prefixlen: a.prefixlen || 0,
+        family: a.family || "", local: a.local || "", prefixlen: a.prefixlen || 0,
       })),
-    }));
-    // UP first (user explicitly asked for this sort), then by name. Loopback
-    // is always present so we anchor it last among UPs so real NICs come
-    // first — that's almost always what the user is looking for.
-    return nics.sort((a, b) => {
-      const aUp = a.state === "UP" ? 0 : 1;
-      const bUp = b.state === "UP" ? 0 : 1;
-      if (aUp !== bUp) return aUp - bUp;
-      const aLo = a.name === "lo" ? 1 : 0;
-      const bLo = b.name === "lo" ? 1 : 0;
-      if (aLo !== bLo) return aLo - bLo;
-      return a.name.localeCompare(b.name);
-    });
+    })));
   } catch { return []; }
 }
 
+// Tier 2 — `ip -o link show` + SUB delimiter + `ip -o addr show` (RHEL/CentOS 7,
+// old Debian: has `ip` but not `-j`). Keyword-anchored: field order after `mtu`
+// varies by kernel.
+function parseNicsOneline(body: string): Nic[] {
+  const [linkPart, addrPart] = body.split("__SUB_INFO_NET_SUB__");
+  const byName = new Map<string, Nic>();
+  for (const raw of (linkPart || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    // "2: eth0: <BROADCAST,..> mtu 1500 .. state UP .. link/ether 52:54:.. brd .."
+    const m = line.match(/^\d+:\s*([^:@\s]+)[^:]*:\s*(.*)$/);
+    if (!m) continue;
+    const name = m[1];
+    const rest = m[2];
+    const flags = (rest.match(/^<([^>]*)>/) || ["", ""])[1];
+    const stateM = rest.match(/\bstate\s+(\S+)/);
+    const state = stateM ? stateM[1] : (/\bUP\b/.test(flags) ? "UP" : "DOWN");
+    const mtuM = rest.match(/\bmtu\s+(\d+)/);
+    const macM = rest.match(/link\/\w+\s+([0-9a-fA-F:]{17})/);
+    byName.set(name, { name, state, mac: macM ? macM[1] : "", mtu: mtuM ? parseInt(mtuM[1], 10) : 0, addrs: [] });
+  }
+  for (const raw of (addrPart || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    // "2: eth0    inet 192.168.1.20/24 brd .. scope global eth0\  .."
+    const p = line.split(/\s+/);
+    if (p.length < 4) continue;
+    const name = (p[1] || "").split("@")[0];
+    const fam = p[2];
+    if (fam !== "inet" && fam !== "inet6") continue;
+    const [addr, prefix] = (p[3] || "").split("/");
+    if (!addr) continue;
+    let nic = byName.get(name);
+    if (!nic) { nic = { name, state: "DOWN", mac: "", mtu: 0, addrs: [] }; byName.set(name, nic); }
+    nic.addrs.push({ family: fam, local: addr, prefixlen: parseInt(prefix || "0", 10) || 0 });
+  }
+  return sortNics([...byName.values()]);
+}
+
+// Tier 3 — `ifconfig -a` (hosts without `ip` at all). Handles both the modern
+// net-tools 2.x layout ("eth0: flags=..", "inet .. netmask ..", "ether ..") and
+// the legacy 1.60 / busybox one ("eth0  Link encap:", "inet addr:.. Mask:..",
+// "HWaddr .."). Best-effort — the two `ip` tiers already cover RHEL 7+.
+function parseNicsIfconfig(body: string): Nic[] {
+  const nics: Nic[] = [];
+  let cur: Nic | null = null;
+  for (const raw of body.split(/\r?\n/)) {
+    if (!raw.trim()) continue;
+    if (!/^\s/.test(raw)) {
+      const nameM = raw.match(/^([^\s:]+)/);
+      cur = { name: nameM ? nameM[1] : "?", state: "DOWN", mac: "", mtu: 0, addrs: [] };
+      nics.push(cur);
+      const up = raw.toUpperCase();
+      if (/\bUP\b/.test(up) || /\bRUNNING\b/.test(up)) cur.state = "UP";
+      const mtuM = raw.match(/\bmtu\s+(\d+)/i) || raw.match(/\bMTU:(\d+)/i);
+      if (mtuM) cur.mtu = parseInt(mtuM[1], 10) || 0;
+      const hw = raw.match(/HWaddr\s+([0-9a-fA-F:]{17})/i);
+      if (hw) cur.mac = hw[1];
+      continue;
+    }
+    if (!cur) continue;
+    const macM = raw.match(/\bether\s+([0-9a-fA-F:]{17})/i) || raw.match(/HWaddr\s+([0-9a-fA-F:]{17})/i);
+    if (macM && !cur.mac) cur.mac = macM[1];
+    const mtuM = raw.match(/\bMTU:(\d+)/i);
+    if (mtuM && !cur.mtu) cur.mtu = parseInt(mtuM[1], 10) || 0;
+    let m4 = raw.match(/\binet\s+(\d+\.\d+\.\d+\.\d+)\s+netmask\s+(\d+\.\d+\.\d+\.\d+)/i);
+    if (!m4) m4 = raw.match(/inet addr:\s*(\d+\.\d+\.\d+\.\d+).*?Mask:\s*(\d+\.\d+\.\d+\.\d+)/i);
+    if (m4) cur.addrs.push({ family: "inet", local: m4[1], prefixlen: maskToPrefix(m4[2]) });
+    let m6 = raw.match(/\binet6\s+([0-9a-fA-F:]+)\s+prefixlen\s+(\d+)/i);
+    if (!m6) m6 = raw.match(/inet6 addr:\s*([0-9a-fA-F:]+)\/(\d+)/i);
+    if (m6) cur.addrs.push({ family: "inet6", local: m6[1], prefixlen: parseInt(m6[2], 10) || 0 });
+  }
+  return sortNics(nics);
+}
+
+// Peel the `ADDRFMT:<tier>` tag (probe line 1) and dispatch.
+function parseNicsSection(section: string): Nic[] {
+  const nl = section.indexOf("\n");
+  const tag = (nl >= 0 ? section.slice(0, nl) : section).trim();
+  const body = nl >= 0 ? section.slice(nl + 1) : "";
+  switch (tag) {
+    case "ADDRFMT:ip-json":    return parseNicsJson(body.trim());
+    case "ADDRFMT:ip-oneline": return parseNicsOneline(body);
+    case "ADDRFMT:ifconfig":   return parseNicsIfconfig(body);
+    case "ADDRFMT:none":       return [];
+    default:                   return section.trim().startsWith("[") ? parseNicsJson(section.trim()) : [];
+  }
+}
+
 interface RouteRow { dst: string; via: string; dev: string; }
-function parseRoutes(raw: string): RouteRow[] {
+function parseRoutesJson(raw: string): RouteRow[] {
   if (!raw) return [];
   try {
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
-    return arr.map((r: any): RouteRow => ({
-      dst: r.dst || "default", via: r.gateway || "", dev: r.dev || "",
-    }));
+    return arr.map((r: any): RouteRow => ({ dst: r.dst || "default", via: r.gateway || "", dev: r.dev || "" }));
   } catch { return []; }
+}
+// `ip -o route show`: "default via 192.168.1.1 dev eth0 proto dhcp .."
+function parseRoutesOneline(body: string): RouteRow[] {
+  const rows: RouteRow[] = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const dst = line.split(/\s+/)[0] || "default";
+    const via = (line.match(/\bvia\s+(\S+)/) || ["", ""])[1];
+    const dev = (line.match(/\bdev\s+(\S+)/) || ["", ""])[1];
+    rows.push({ dst, via, dev });
+  }
+  return rows;
+}
+// `route -n` / `netstat -rn`: Destination Gateway Genmask Flags Metric Ref Use Iface
+function parseRoutesTable(body: string): RouteRow[] {
+  const rows: RouteRow[] = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (/^Kernel/i.test(line) || /^Destination\b/i.test(line)) continue;
+    const p = line.split(/\s+/);
+    if (p.length < 8) continue;
+    const [dest, gw, mask] = p;
+    const dst = (dest === "0.0.0.0" && mask === "0.0.0.0") ? "default" : `${dest}/${maskToPrefix(mask)}`;
+    rows.push({ dst, via: gw === "0.0.0.0" ? "" : gw, dev: p[7] });
+  }
+  return rows;
+}
+function parseRoutesSection(section: string): RouteRow[] {
+  const nl = section.indexOf("\n");
+  const tag = (nl >= 0 ? section.slice(0, nl) : section).trim();
+  const body = nl >= 0 ? section.slice(nl + 1) : "";
+  switch (tag) {
+    case "ROUTEFMT:ip-json":    return parseRoutesJson(body.trim());
+    case "ROUTEFMT:ip-oneline": return parseRoutesOneline(body);
+    case "ROUTEFMT:route":
+    case "ROUTEFMT:netstat":    return parseRoutesTable(body);
+    case "ROUTEFMT:none":       return [];
+    default:                    return section.trim().startsWith("[") ? parseRoutesJson(section.trim()) : [];
+  }
 }
 
 // Firewall section. Engine prefix tells us which tool produced the rules and
@@ -266,8 +469,8 @@ interface NetworkData { nics: Nic[]; routes: RouteRow[]; firewall: FirewallData;
 function parseNetwork(raw: string): NetworkData {
   const parts = raw.split("__SUB_INFO_NET_SEP__").map(s => s.trim());
   return {
-    nics: parseNics(parts[1] ?? ""),
-    routes: parseRoutes(parts[2] ?? ""),
+    nics: parseNicsSection(parts[1] ?? ""),
+    routes: parseRoutesSection(parts[2] ?? ""),
     firewall: parseFirewall(parts[3] ?? ""),
   };
 }
@@ -285,9 +488,9 @@ interface PortRow {
 }
 
 // Detect the engine line printed by the probe so we can pick the right parser.
-function detectPortsEngine(raw: string): { engine: "ss" | "netstat" | "unknown"; body: string } {
-  const m = raw.match(/^ENGINE:(ss|netstat)\s*\n([\s\S]*)/);
-  if (m) return { engine: m[1] as "ss" | "netstat", body: m[2] };
+function detectPortsEngine(raw: string): { engine: "ss" | "netstat" | "none" | "unknown"; body: string } {
+  const m = raw.match(/^ENGINE:(ss|netstat|none)\s*\n?([\s\S]*)/);
+  if (m) return { engine: m[1] as "ss" | "netstat" | "none", body: m[2] };
   return { engine: "unknown", body: raw };
 }
 
@@ -299,6 +502,9 @@ function parsePortsSs(body: string): PortRow[] {
   for (const line of body.split(/\r?\n/)) {
     const t = line.trim();
     if (!t) continue;
+    // Header row — present now that the probe dropped `-H` (RHEL/CentOS 7's ss
+    // lacks that flag). Skip it.
+    if (/^(Netid|State|Recv-Q)\b/.test(t)) continue;
     const parts = t.split(/\s+/);
     if (parts.length < 5) continue;
     const proto = parts[0];
@@ -362,14 +568,18 @@ function parsePortsNetstat(body: string): PortRow[] {
 }
 
 interface PortsData {
-  engine: "ss" | "netstat" | "unknown";
+  engine: "ss" | "netstat" | "none" | "unknown";
   rows: PortRow[];
   partiallyHidden: boolean;
   available: boolean;
 }
 function parsePorts(raw: string): PortsData {
   const { engine, body } = detectPortsEngine(raw);
-  if (engine === "unknown") return { engine, rows: [], partiallyHidden: false, available: false };
+  // `none` = neither ss nor netstat installed (RHEL/ubi-minimal). `unknown` =
+  // no ENGINE tag at all. Both surface the unavailable banner.
+  if (engine === "unknown" || engine === "none") {
+    return { engine, rows: [], partiallyHidden: false, available: false };
+  }
   const rows = engine === "ss" ? parsePortsSs(body) : parsePortsNetstat(body);
   const partiallyHidden = rows.some(r => r.hidden);
   return { engine, rows, partiallyHidden, available: true };
@@ -663,7 +873,7 @@ const OverviewTab = ({ data }: { data: OverviewData }) => {
         <InfoCard title="Runtime" icon={<Clock size={12} />} className="h-full" bodyClassName="!p-4 space-y-1">
           <KV label="Uptime" value={data.uptime} icon={<Clock size={11} />} />
           {data.load && (
-            <KV label="Load avg" value={`${data.load.l1.toFixed(2)}  ${data.load.l5.toFixed(2)}  ${data.load.l15.toFixed(2)}`} icon={<Activity size={11} />} />
+            <KV label="Load avg (1m · 5m · 15m)" value={`${data.load.l1.toFixed(2)} · ${data.load.l5.toFixed(2)} · ${data.load.l15.toFixed(2)}`} icon={<Activity size={11} />} />
           )}
           <KV label="CPU" value={cpuTxt} icon={<Cpu size={11} />} />
         </InfoCard>
@@ -692,8 +902,15 @@ const OverviewTab = ({ data }: { data: OverviewData }) => {
             {data.disks.map((d, i) => (
               <div key={i}>
                 <div className="flex items-baseline justify-between text-[11px] mb-1 gap-2">
-                  <span className="text-zinc-200 font-mono truncate min-w-0">{d.mount}</span>
-                  <span className="text-zinc-500 shrink-0 text-[10px]">{d.fsType} · {d.device}</span>
+                  <span className="text-zinc-200 font-mono truncate min-w-0 flex-1">{d.mount}</span>
+                  {/* fsType may be empty on the no-type df fallback (busybox);
+                      device can be very long (LVM paths) so it truncates too. */}
+                  <span
+                    className="text-zinc-500 shrink text-[10px] font-mono truncate max-w-[45%]"
+                    title={`${d.fsType ? d.fsType + " · " : ""}${d.device}`}
+                  >
+                    {d.fsType ? `${d.fsType} · ` : ""}{d.device}
+                  </span>
                 </div>
                 <Meter label="" used={d.used} total={d.size} compact />
               </div>
@@ -725,7 +942,7 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
       <InfoCard
         title={`Interfaces · ${upCount} up / ${data.nics.length} total`}
         icon={<Wifi size={12} />}
-        actions={
+        toolbar={
           <FilterInput value={filter} onChange={setFilter} placeholder="Filter by name / IP / MAC" />
         }
       >
@@ -739,20 +956,22 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
                   <span className="text-[12px] font-mono font-bold text-white truncate">{n.name}</span>
                   <StatusBadge tone={n.state === "UP" ? "green" : "zinc"}>{n.state}</StatusBadge>
                 </div>
-                <div className="text-[10px] text-zinc-500 font-mono mb-1 truncate flex items-center gap-1">
-                  {n.mac ? <CopyValue value={n.mac}>{n.mac}</CopyValue> : "—"}
-                  <span>· MTU {n.mtu || "—"}</span>
+                <div className="text-[10px] text-zinc-500 font-mono mb-1 flex items-center gap-1 min-w-0">
+                  <span className="truncate min-w-0">{n.mac ? <CopyValue value={n.mac}>{n.mac}</CopyValue> : "—"}</span>
+                  <span className="shrink-0">· MTU {n.mtu || "—"}</span>
                 </div>
                 {n.addrs.length === 0 ? (
                   <div className="text-[10px] text-zinc-600 italic">no addresses</div>
                 ) : (
                   <div className="space-y-0.5">
                     {n.addrs.map((a, i) => (
-                      <div key={i} className="text-[11px] font-mono text-zinc-300 flex items-center gap-2">
-                        <span className="text-[9px] uppercase text-zinc-500 w-6 shrink-0">
+                      // items-start + break-all: full IPv6 addresses WRAP and stay
+                      // readable instead of truncating away half the address.
+                      <div key={i} className="text-[11px] font-mono text-zinc-300 flex items-start gap-2">
+                        <span className="text-[9px] uppercase text-zinc-500 w-6 shrink-0 mt-0.5">
                           {a.family === "inet" ? "v4" : a.family === "inet6" ? "v6" : a.family}
                         </span>
-                        <span className="truncate min-w-0">
+                        <span className="min-w-0 break-all">
                           <CopyValue value={a.local}>
                             <span>{a.local}<span className="text-zinc-500">/{a.prefixlen}</span></span>
                           </CopyValue>
@@ -879,12 +1098,8 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
     <InfoCard
       title={`Firewall · ${label} · ${chains.length} chains · ${totalRules} rules`}
       icon={<Shield size={12} />}
-      actions={
-        <div className="flex items-center gap-1.5">
-          {fw.usedSudo && <StatusBadge tone="zinc">sudo</StatusBadge>}
-          <FilterInput value={filter} onChange={setFilter} placeholder="Filter chains" />
-        </div>
-      }
+      actions={fw.usedSudo ? <StatusBadge tone="zinc">sudo</StatusBadge> : undefined}
+      toolbar={<FilterInput value={filter} onChange={setFilter} placeholder="Filter chains" />}
     >
       {visibleChains.length === 0 ? (
         <Empty>{chains.length === 0 ? "No chains reported." : "No chains match."}</Empty>
@@ -1000,53 +1215,49 @@ const PortsTab = ({ data }: { data: PortsData }) => {
       <InfoCard
         title={`Listening · ${tcp.length} tcp · ${udp.length} udp`}
         icon={<Plug size={12} />}
-        actions={
-          <div className="flex items-center gap-1.5">
+        toolbar={
+          <div className="flex items-center gap-1.5 flex-wrap">
             <ProtoPill active={protoFilter === "all"} onClick={() => setProtoFilter("all")}>All</ProtoPill>
             <ProtoPill active={protoFilter === "tcp"} onClick={() => setProtoFilter("tcp")}>TCP</ProtoPill>
             <ProtoPill active={protoFilter === "udp"} onClick={() => setProtoFilter("udp")}>UDP</ProtoPill>
-            <FilterInput value={filter} onChange={setFilter} placeholder="Port / address / process" />
+            <div className="flex-1 min-w-[120px]">
+              <FilterInput value={filter} onChange={setFilter} placeholder="Port / address / process" />
+            </div>
           </div>
         }
       >
         {filtered.length === 0 ? (
           <Empty>{data.rows.length === 0 ? "No listening sockets reported." : "No matches."}</Empty>
         ) : (
-          <div className="overflow-x-auto -mx-3 px-3">
-            <table className="w-full text-[11px] font-mono">
-              <thead>
-                <tr className="text-zinc-500 text-[9px] font-bold uppercase tracking-wider border-b border-white/5">
-                  <th className="text-left py-1.5 pr-2 w-10">Proto</th>
-                  <th className="text-right py-1.5 pr-2 w-16">Port</th>
-                  <th className="text-left py-1.5 pr-2">Address</th>
-                  <th className="text-left py-1.5 pr-2">Process</th>
-                  <th className="text-right py-1.5 pr-2 w-14">PID</th>
-                  <th className="text-left py-1.5">State</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((r, i) => (
-                  <tr key={i} className="border-b border-white/[0.02] hover:bg-white/[0.02]">
-                    <td className="py-1 pr-2">
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${r.proto === "tcp" ? "bg-sky-500/15 text-sky-300 border border-sky-500/30" : "bg-amber-500/15 text-amber-300 border border-amber-500/30"}`}>{r.proto}</span>
-                    </td>
-                    <td className="py-1 pr-2 text-right text-white font-bold">
+          // A 2-line card per socket, not a 6-column table: a wide monospace
+          // table forced constant horizontal scroll in a narrow tool pane and
+          // its `truncate` did nothing under auto table-layout. Line 1: proto +
+          // port + bind address + state; line 2: process + pid. Everything
+          // truncates cleanly at any pane width.
+          <div className="space-y-1">
+            {filtered.map((r, i) => {
+              const anyBind = r.localAddr === "0.0.0.0" || r.localAddr === "*" || r.localAddr === "::";
+              return (
+                <div key={i} className="bg-black/30 border border-white/5 rounded-lg px-2.5 py-1.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${r.proto === "tcp" ? "bg-sky-500/15 text-sky-300 border border-sky-500/30" : "bg-amber-500/15 text-amber-300 border border-amber-500/30"}`}>{r.proto}</span>
+                    <span className="shrink-0 text-[12px] font-mono font-bold text-white">
                       {r.localPort ? <CopyValue value={r.localPort}>{r.localPort}</CopyValue> : "—"}
-                    </td>
-                    <td className="py-1 pr-2 text-zinc-300 truncate" title={r.localAddr}>
-                      {r.localAddr ? <CopyValue value={r.localAddr}>{r.localAddr}</CopyValue> : "—"}
-                    </td>
-                    <td className="py-1 pr-2 text-zinc-200 truncate" title={r.process}>
-                      {r.process ? <CopyValue value={r.process}>{r.process}</CopyValue> : <span className="text-zinc-600 italic">hidden</span>}
-                    </td>
-                    <td className="py-1 pr-2 text-right text-zinc-500">
-                      {r.pid ? <CopyValue value={r.pid}>{r.pid}</CopyValue> : "—"}
-                    </td>
-                    <td className="py-1 text-zinc-500 text-[10px]">{r.state || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </span>
+                    <span className="min-w-0 flex-1 text-[10px] font-mono text-zinc-500 truncate" title={r.localAddr}>
+                      {r.localAddr ? (anyBind ? <span className="text-zinc-600">{r.localAddr}</span> : <CopyValue value={r.localAddr}>{r.localAddr}</CopyValue>) : ""}
+                    </span>
+                    {r.state && <span className="shrink-0 text-[9px] uppercase tracking-wider text-zinc-600">{r.state}</span>}
+                  </div>
+                  <div className="flex items-center gap-2 min-w-0 mt-0.5">
+                    <span className="min-w-0 flex-1 text-[11px] font-mono text-zinc-200 truncate" title={r.process}>
+                      {r.process ? <CopyValue value={r.process}>{r.process}</CopyValue> : <span className="text-zinc-600 italic">process hidden (not owned by you)</span>}
+                    </span>
+                    {r.pid && <span className="shrink-0 text-[10px] font-mono text-zinc-500">pid {r.pid}</span>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </InfoCard>
@@ -1154,17 +1365,18 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
       <InfoCard
         title="Services"
         icon={<Cog size={12} />}
-        actions={
-          <FilterInput value={filter} onChange={setFilter} placeholder="Filter…" />
+        toolbar={
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <CountPill active={stateFilter === "active"}   onClick={() => setStateFilter("active")}   tone="green"  count={counts.active}>active</CountPill>
+              <CountPill active={stateFilter === "inactive"} onClick={() => setStateFilter("inactive")} tone="zinc"   count={counts.inactive}>inactive</CountPill>
+              <CountPill active={stateFilter === "failed"}   onClick={() => setStateFilter("failed")}   tone="red"    count={counts.failed}>failed</CountPill>
+              <CountPill active={stateFilter === "all"}      onClick={() => setStateFilter("all")}      tone="primary" count={data.rows.length}>all</CountPill>
+            </div>
+            <FilterInput value={filter} onChange={setFilter} placeholder="Filter services…" />
+          </div>
         }
       >
-        <div className="flex items-center gap-1.5 mb-2 flex-wrap">
-          <CountPill active={stateFilter === "active"}   onClick={() => setStateFilter("active")}   tone="green"  count={counts.active}>active</CountPill>
-          <CountPill active={stateFilter === "inactive"} onClick={() => setStateFilter("inactive")} tone="zinc"   count={counts.inactive}>inactive</CountPill>
-          <CountPill active={stateFilter === "failed"}   onClick={() => setStateFilter("failed")}   tone="red"    count={counts.failed}>failed</CountPill>
-          <CountPill active={stateFilter === "all"}      onClick={() => setStateFilter("all")}      tone="primary" count={data.rows.length}>all</CountPill>
-        </div>
-
         {filtered.length === 0 ? (
           <Empty>No matching services.</Empty>
         ) : (
@@ -1230,19 +1442,29 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
 // ============== Reusable bits ==============
 
 interface InfoCardProps {
-  title: string; icon?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode;
+  title: string; icon?: React.ReactNode; actions?: React.ReactNode;
+  // A full-width row UNDER the title for filters / pill clusters. Kept separate
+  // from `actions` so a long title and a wide control set never fight for the
+  // same row (the old `flex-wrap` header broke to two ragged rows on narrow
+  // panes). `actions` is for small always-fits controls (a count, one badge).
+  toolbar?: React.ReactNode;
+  children: React.ReactNode;
   // Hooks for cards that need to participate in a flex layout (e.g. the Disks
   // card on the Overview tab grows to fill the remaining vertical space and
   // scrolls its body internally so the page never grows a global scrollbar).
   className?: string;
   bodyClassName?: string;
 }
-const InfoCard = ({ title, icon, actions, children, className = "", bodyClassName = "" }: InfoCardProps) => (
+const InfoCard = ({ title, icon, actions, toolbar, children, className = "", bodyClassName = "" }: InfoCardProps) => (
   <section className={`bg-[#121215] border border-white/5 rounded-xl overflow-hidden ${className}`}>
-    <div className="px-3 py-2 border-b border-white/5 bg-white/[0.02] flex items-center gap-2 flex-wrap">
-      <span className="text-zinc-500">{icon}</span>
-      <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 select-text">{title}</span>
-      {actions && <div className="ml-auto">{actions}</div>}
+    <div className="border-b border-white/5 bg-white/[0.02]">
+      {/* Title row never wraps: the title truncates, small actions stay pinned. */}
+      <div className="px-3 py-2 flex items-center gap-2 min-w-0">
+        {icon && <span className="text-zinc-500 shrink-0">{icon}</span>}
+        <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 select-text truncate min-w-0 flex-1">{title}</span>
+        {actions && <div className="shrink-0 flex items-center gap-1.5">{actions}</div>}
+      </div>
+      {toolbar && <div className="px-3 pb-2">{toolbar}</div>}
     </div>
     <div className={`p-3 select-text ${bodyClassName}`}>{children}</div>
   </section>
@@ -1301,15 +1523,17 @@ const StatusBadge = ({ tone, children }: { tone: "green" | "amber" | "red" | "zi
   return <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider border ${cls}`}>{children}</span>;
 };
 
+// Fluid width — designed to live in an InfoCard `toolbar` row and fill it, so
+// it shrinks with the pane instead of a fixed 176px that forced header wraps.
 const FilterInput = ({ value, onChange, placeholder }: { value: string; onChange: (s: string) => void; placeholder?: string }) => (
-  <div className="relative">
+  <div className="relative w-full min-w-0">
     <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
     <input
       type="text"
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="h-7 pl-7 pr-2 text-[10px] bg-black/40 border border-white/10 rounded-md text-zinc-200 placeholder:text-zinc-600 focus:border-primary/50 outline-none w-44"
+      className="h-7 pl-7 pr-2 text-[10px] bg-black/40 border border-white/10 rounded-md text-zinc-200 placeholder:text-zinc-600 focus:border-primary/50 outline-none w-full"
     />
   </div>
 );
