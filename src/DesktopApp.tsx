@@ -563,6 +563,16 @@ function DesktopApp() {
     setIsPanelOpen(true);
   };
 
+  // Render helper, NOT a component — it is invoked as `{TitleBar()}` below,
+  // never as `<TitleBar />`. Rendering it as a JSX element would give it a
+  // fresh function identity on every DesktopApp render, so React would treat
+  // it as a new component type and fully unmount + remount the whole title-bar
+  // subtree (tab strip, pickers, window controls) on every render — throwing
+  // away tab-strip scroll position and focus, and re-doing all that DOM work,
+  // on every connect/reconnect and tab switch. Calling it inlines its JSX into
+  // DesktopApp's own output with no component boundary, so React reconciles in
+  // place. It closes over DesktopApp scope and uses no hooks, so a plain call
+  // is safe. Do NOT convert this to `<TitleBar />`.
   const TitleBar = () => (
     <div
       data-tauri-drag-region
@@ -1276,7 +1286,7 @@ function DesktopApp() {
 
   return (
     <div className="h-full w-full bg-background flex flex-col overflow-hidden text-zinc-200 select-none">
-      <TitleBar />
+      {TitleBar()}
       {!isUnlocked ? (
         <ProfileSelectPage onUnlocked={handleProfileUnlocked} />
       ) : (

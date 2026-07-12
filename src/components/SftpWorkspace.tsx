@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -30,6 +30,44 @@ interface SftpWorkspaceProps {
 type SftpView = "files" | "mirror";
 type FilesLayout = "tabs" | "split";
 type FilesSide = "local" | "remote";
+
+// Cursor-following drag ghost, isolated into its own component so that the
+// per-mousemove position updates re-render ONLY this tiny node — not the whole
+// SftpWorkspace and, through it, both (un-memoized) FilePanels with their full
+// row lists. The parent drives it imperatively via the ref instead of holding
+// the position in its own state.
+export interface DragGhostHandle {
+  show: (drag: ActiveDrag) => void;
+  hide: () => void;
+}
+
+const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
+  const [drag, setDrag] = useState<ActiveDrag | null>(null);
+  useImperativeHandle(ref, () => ({
+    show: (d) => setDrag(d),
+    hide: () => setDrag(null),
+  }), []);
+  if (!drag) return null;
+  // Rendered through a portal so any ancestor's `transform` / `backdrop-filter`
+  // doesn't re-anchor the `position: fixed` element to a containing block.
+  return createPortal(
+    <div
+      style={{
+        position: "fixed",
+        top: drag.y + 8,
+        left: drag.x + 12,
+        pointerEvents: "none",
+        zIndex: 10000,
+      }}
+      className="bg-[#0c0c0e]/95 border border-indigo-500/40 rounded-lg px-3 py-1.5 text-[11px] font-mono text-zinc-100 shadow-2xl backdrop-blur-md flex items-center gap-2"
+    >
+      <FileIcon size={12} className="text-indigo-300 shrink-0" />
+      <span className="truncate max-w-[260px]">{drag.entry.name}</span>
+    </div>,
+    document.body
+  );
+});
+DragGhost.displayName = "DragGhost";
 
 const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [] }: SftpWorkspaceProps) => {
   // Active sub-tab. Files is the default (the common workflow); Mirror is
@@ -96,8 +134,9 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   // because `setDrag → render → useEffect` doesn't always settle before the
   // mouseup propagates.
   const dragRef = useRef<ActiveDrag | null>(null);
-  // Separate state purely for the ghost element render.
-  const [ghostDrag, setGhostDrag] = useState<ActiveDrag | null>(null);
+  // The ghost owns its own position state; we poke it imperatively so a
+  // mousemove never re-renders this workspace (and its FilePanels).
+  const ghostRef = useRef<DragGhostHandle>(null);
   const [notification, setNotification] = useState<{ msg: string; type: "info" | "success" | "error" } | null>(null);
 
   const notify = (msg: string, type: "info" | "success" | "error" = "info") => {
@@ -107,7 +146,8 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
 
   const handleDragMove = (drag: ActiveDrag | null) => {
     dragRef.current = drag;
-    setGhostDrag(drag);
+    if (drag) ghostRef.current?.show(drag);
+    else ghostRef.current?.hide();
   };
 
   // Live transfer progress, keyed by the backend-assigned id. The Rust
@@ -448,25 +488,9 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
         </div>
       )}
 
-      {/* Ghost element that follows the cursor while dragging. Rendered through
-          a portal so any ancestor's `transform` / `backdrop-filter` doesn't
-          re-anchor the `position: fixed` element to a containing block. */}
-      {ghostDrag && createPortal(
-        <div
-          style={{
-            position: "fixed",
-            top: ghostDrag.y + 8,
-            left: ghostDrag.x + 12,
-            pointerEvents: "none",
-            zIndex: 10000,
-          }}
-          className="bg-[#0c0c0e]/95 border border-indigo-500/40 rounded-lg px-3 py-1.5 text-[11px] font-mono text-zinc-100 shadow-2xl backdrop-blur-md flex items-center gap-2"
-        >
-          <FileIcon size={12} className="text-indigo-300 shrink-0" />
-          <span className="truncate max-w-[260px]">{ghostDrag.entry.name}</span>
-        </div>,
-        document.body
-      )}
+      {/* Cursor-following drag ghost. Self-contained so its per-mousemove
+          position updates don't re-render this workspace or the FilePanels. */}
+      <DragGhost ref={ghostRef} />
     </div>
   );
 };
