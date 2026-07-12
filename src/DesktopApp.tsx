@@ -195,6 +195,10 @@ function DesktopApp() {
     // Commands auto-typed into the FIRST terminal on the INITIAL connect only
     // (never on reconnect or extra shells). Newline-separated. Empty = off.
     runOnConnect: "" as string,
+    // ProxyJump: id (as a string, like credentialId/folderId) of another node
+    // to bounce through. Empty = connect directly. parseInt'd to a number (or
+    // null) at save time.
+    jumpHostId: "" as string,
     // True only after the user typed into the password field on this form
     // instance. If still false at save time, the backend uses
     // `preserve_password` to keep the existing DB column. Without this
@@ -561,6 +565,7 @@ function DesktopApp() {
       color: server.color ?? null,
       notes: server.notes || "",
       runOnConnect: server.run_on_connect || "",
+      jumpHostId: server.jump_host_id?.toString() || "",
       // Starts clean — only flips true if the user types into the password
       // field. Save handler reads this to decide between `preserve_password`
       // and a real overwrite.
@@ -2182,6 +2187,13 @@ function DesktopApp() {
             } catch (e) {
               addLog(`SAVE_RUN_ON_CONNECT_FAILED: ${e}`, "error");
             }
+            // ProxyJump target — same separate-write pattern. Empty string
+            // means "no jump host" → store NULL.
+            try {
+              await invoke("set_server_jump_host", { id: savedId, value: newNode.jumpHostId ? parseInt(newNode.jumpHostId) : null });
+            } catch (e) {
+              addLog(`SAVE_JUMP_HOST_FAILED: ${e}`, "error");
+            }
             setIsPanelOpen(false);
             setFormError("");
             refreshServers();
@@ -2194,6 +2206,7 @@ function DesktopApp() {
         formError={formError}
         credentials={credentials} sshKeys={sshKeys} folders={folders} refreshFolders={refreshFolders}
         refreshServers={refreshServers}
+        servers={servers}
         isMobile={isMobile}
       />
 

@@ -400,6 +400,14 @@ async fn close_profile(
     for tx in waiters {
         let _ = tx.send(false);
     }
+    // Same for any pending keyboard-interactive (2FA) prompt — sending `None`
+    // signals cancel so the connect worker aborts the interactive attempt
+    // instead of hanging on its 120s timeout after the profile is gone.
+    let kbi_waiters: Vec<tokio::sync::oneshot::Sender<Option<Vec<String>>>> =
+        ssh.kbi_txs.lock().await.drain().map(|(_, v)| v).collect();
+    for tx in kbi_waiters {
+        let _ = tx.send(None);
+    }
 
     // 5. Belt-and-suspenders: clear the residual maps in case anything
     // raced in between the steps above.
@@ -407,7 +415,9 @@ async fn close_profile(
     ssh.forwarded_targets.lock().await.clear();
     ssh.sftp_sessions.lock().await.clear();
     ssh.connections.lock().await.clear();
+    ssh.jump_connections.lock().await.clear();
     ssh.fp_txs.lock().await.clear();
+    ssh.kbi_txs.lock().await.clear();
 
     // 6. Drop DB state last, so any in-flight write triggered by a
     // disconnecting handler above had a valid DB to land in.
@@ -743,6 +753,10 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
             // Commands auto-typed into the FIRST terminal on the INITIAL
             // connect (never on reconnect / extra shells). Empty = nothing.
             "ALTER TABLE servers ADD COLUMN run_on_connect TEXT NOT NULL DEFAULT ''",
+            // ProxyJump: optional id of another server to bounce through. NULL
+            // = connect directly. Nullable + additive so old binaries ignore
+            // it (no SCHEMA_VERSION bump, matching run_on_connect above).
+            "ALTER TABLE servers ADD COLUMN jump_host_id INTEGER",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let s = e.to_string();
@@ -774,7 +788,7 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
             "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT);
@@ -1287,6 +1301,23 @@ async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, va
     Ok(())
 }
 
+/// ProxyJump target for a node: `Some(other_server_id)` to bounce through that
+/// server, or `None` to connect directly. Written through its own command
+/// (like set_server_notes / set_server_run_on_connect) so it stays out of
+/// add_server / edit_server's positional parameter lists.
+#[tauri::command]
+async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: Option<i32>) -> Result<(), String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    conn.execute(
+        "UPDATE servers SET jump_host_id=?1 WHERE id=?2",
+        rusqlite::params![value, id],
+    ).map_err(|e| format!("[DATABASE] SERVER_JUMP_HOST_FAILED: {}", e))?;
+    drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(())
+}
+
 /// Duplicate a server row verbatim — including credentials linkage, tunnels,
 /// mirrors, proxy config, colour. The clone gets a "{name} (copy)" suffix so
 /// it shows up beside the original in the grid; everything else is identical
@@ -1333,7 +1364,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     // unless someone explicitly invokes `reveal_server_password`. The edit
     // panel calls reveal on open, but the cards / sidebar / quick-connect
     // grid never see the plaintext.
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect FROM servers")
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id FROM servers")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -1358,6 +1389,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             "color": row.get::<_, Option<String>>(16)?,
             "notes": row.get::<_, Option<String>>(17)?.unwrap_or_default(),
             "run_on_connect": row.get::<_, Option<String>>(18)?.unwrap_or_default(),
+            "jump_host_id": row.get::<_, Option<i32>>(19)?,
         }))
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
@@ -1843,6 +1875,437 @@ struct QuickAuth {
     passphrase: Option<String>,
 }
 
+/// Drive keyboard-interactive (RFC 4256) authentication — the method behind
+/// most SSH "verification code" / 2FA / OTP setups. The server sends a
+/// sequence of `InfoRequest`s (each a set of prompts like "Verification
+/// code:"); we relay every prompt to the UI via `kbi-prompt-{session_id}`,
+/// wait for the user's answers on a per-nonce oneshot, and send them back.
+///
+/// Return contract:
+///   * `Some(Ok(true))`  — authenticated.
+///   * `Some(Ok(false))` — the user answered but the server rejected, OR the
+///                         user cancelled / timed out.
+///   * `Some(Err(e))`    — transport error talking to the server.
+///   * `None`            — the server never actually prompted us (it doesn't
+///                         offer keyboard-interactive). The caller keeps its
+///                         original, more meaningful auth result instead of
+///                         masking it with a generic interactive failure.
+///
+/// Generic over the handler so both the primary connection (`ClientHandler`)
+/// and a ProxyJump intermediate hop can reuse it.
+async fn run_keyboard_interactive<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    app: &tauri::AppHandle,
+    session_id: &str,
+    nonce: &str,
+    kbi_txs: &std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, tokio::sync::oneshot::Sender<Option<Vec<String>>>>,
+        >,
+    >,
+) -> Option<Result<bool, russh::Error>> {
+    use russh::client::KeyboardInteractiveAuthResponse;
+    use tauri::Emitter;
+
+    let log = |msg: &str, ty: &str| {
+        println!("[LOG-{}] {}", session_id, msg);
+        let _ = app.emit(
+            &format!("session-log-{}", session_id),
+            serde_json::json!({"msg": msg, "type": ty}),
+        );
+    };
+
+    log("Attempting Keyboard-Interactive (verification code) authentication...", "info");
+
+    let mut resp = match session
+        .authenticate_keyboard_interactive_start(user.to_string(), None)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return Some(Err(e)),
+    };
+
+    // Guards against masking the primary error: only report a definitive
+    // result once the server has actually asked us something.
+    let mut asked_anything = false;
+
+    loop {
+        match resp {
+            KeyboardInteractiveAuthResponse::Success => return Some(Ok(true)),
+            KeyboardInteractiveAuthResponse::Failure => {
+                if !asked_anything {
+                    // Server declined the method outright — not really offered.
+                    return None;
+                }
+                log("Verification code rejected by server.", "error");
+                return Some(Ok(false));
+            }
+            KeyboardInteractiveAuthResponse::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => {
+                // A banner-only InfoRequest (zero prompts) needs an empty
+                // response set to advance — nothing to ask the user.
+                if prompts.is_empty() {
+                    resp = match session
+                        .authenticate_keyboard_interactive_respond(Vec::new())
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    continue;
+                }
+                asked_anything = true;
+
+                // Fresh oneshot each round — a server may issue several
+                // sequential InfoRequests within one auth exchange.
+                let (tx, rx) = tokio::sync::oneshot::channel::<Option<Vec<String>>>();
+                kbi_txs.lock().await.insert(nonce.to_string(), tx);
+
+                let prompt_payload: Vec<serde_json::Value> = prompts
+                    .iter()
+                    .map(|p| serde_json::json!({ "prompt": p.prompt, "echo": p.echo }))
+                    .collect();
+                let _ = app.emit(
+                    &format!("kbi-prompt-{}", session_id),
+                    serde_json::json!({
+                        "nonce": nonce,
+                        "name": name,
+                        "instructions": instructions,
+                        "prompts": prompt_payload,
+                    }),
+                );
+
+                // 120s: 2FA codes often mean reaching for a phone / authenticator.
+                let answers = match tokio::time::timeout(
+                    std::time::Duration::from_secs(120),
+                    rx,
+                )
+                .await
+                {
+                    Ok(Ok(Some(a))) => a,
+                    _ => {
+                        // Timed out, cancelled, or the channel was dropped.
+                        kbi_txs.lock().await.remove(nonce);
+                        let _ = app.emit(
+                            &format!("kbi-prompt-dismiss-{}", session_id),
+                            serde_json::json!({}),
+                        );
+                        log("Verification prompt cancelled or timed out.", "error");
+                        return Some(Ok(false));
+                    }
+                };
+                let _ = app.emit(
+                    &format!("kbi-prompt-dismiss-{}", session_id),
+                    serde_json::json!({}),
+                );
+
+                // The protocol requires exactly one response per prompt.
+                // Pad/truncate so a UI/prompt-count mismatch can never desync
+                // the SSH auth state machine.
+                let mut answers = answers;
+                answers.resize(prompts.len(), String::new());
+
+                resp = match session
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => return Some(Err(e)),
+                };
+            }
+        }
+    }
+}
+
+/// The russh client config shared by the primary connection and any ProxyJump
+/// hop, so both negotiate an identical algorithm set. Extracted verbatim from
+/// the inline block `initiate_connection` used to carry.
+fn build_ssh_client_config() -> russh::client::Config {
+    use tokio::time::Duration;
+    let mut config = russh::client::Config::default();
+    // SSH keepalive every 20s. The shorter interval matters because most
+    // consumer routers drop idle NAT mappings around the 2-minute mark, and
+    // many corporate firewalls are stricter still. russh 0.40 has no
+    // `keepalive_max` knob, so the watcher loop relies on `is_closed()` to
+    // surface drops within a couple of seconds.
+    config.keepalive_interval = Some(Duration::from_secs(20));
+    // Bigger receive window + max-allowed packet size: lets SFTP/tunnel
+    // streams keep the BDP full on high-latency links.
+    config.window_size = 8 * 1024 * 1024;
+    config.maximum_packet_size = 65535;
+    // Widen the negotiation set to match OpenSSH — but only in builds that
+    // include the OpenSSL backend (release CI via `full-ssh-algos`). See the
+    // long rationale that used to sit inline: legacy DH groups, the full RSA
+    // host-key family, and HMAC-SHA1 MAC variants for older/embedded servers.
+    #[cfg(feature = "full-ssh-algos")]
+    {
+        config.preferred = russh::Preferred {
+            kex: &[
+                russh::kex::CURVE25519,
+                russh::kex::CURVE25519_PRE_RFC_8731,
+                russh::kex::DH_G14_SHA256,
+                russh::kex::DH_G14_SHA1,
+                russh::kex::DH_G1_SHA1,
+                russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
+                russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
+            ],
+            key: &[
+                russh_keys::key::ED25519,
+                russh_keys::key::ECDSA_SHA2_NISTP256,
+                russh_keys::key::RSA_SHA2_512,
+                russh_keys::key::RSA_SHA2_256,
+                russh_keys::key::SSH_RSA,
+            ],
+            cipher: &[
+                russh::cipher::CHACHA20_POLY1305,
+                russh::cipher::AES_256_GCM,
+                russh::cipher::AES_256_CTR,
+                russh::cipher::AES_192_CTR,
+                russh::cipher::AES_128_CTR,
+            ],
+            mac: &[
+                russh::mac::HMAC_SHA512_ETM,
+                russh::mac::HMAC_SHA256_ETM,
+                russh::mac::HMAC_SHA512,
+                russh::mac::HMAC_SHA256,
+                russh::mac::HMAC_SHA1_ETM,
+                russh::mac::HMAC_SHA1,
+            ],
+            compression: &["zlib@openssh.com", "zlib", "none"],
+        };
+    }
+    config
+}
+
+/// Minimal auth/identity resolver for a ProxyJump bastion. Mirrors the
+/// vault-vs-custom / credential-join / key-loading rules of the main connect
+/// path but returns only what a jump hop needs (host, port, user, password,
+/// optional key). Deliberately kept separate from `initiate_connection`'s
+/// inline resolver so the primary connection path is byte-for-byte untouched.
+/// It never reads `jump_host_id`, which makes ProxyJump strictly single-hop —
+/// there is no way for it to recurse.
+///
+/// Runs fully synchronously (no `.await`) so the non-`Send` rusqlite
+/// `Connection` never has to be held across a suspension point.
+fn resolve_jump_auth(
+    conn: &rusqlite::Connection,
+    server_id: i32,
+) -> Result<
+    Option<(String, i32, String, Option<String>, Option<(String, Option<String>)>)>,
+    String,
+> {
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT s.host, s.port,
+                   s.username as s_user, c.username as c_user,
+                   s.password as s_pass, c.password as c_pass,
+                   s.key_id   as s_key,  c.key_id   as c_key,
+                   s.auth_type, c.auth_type as cred_auth_type
+            FROM servers s
+            LEFT JOIN credentials c ON s.credential_id = c.id
+            WHERE s.id=?1
+        ",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([server_id]).map_err(|e| e.to_string())?;
+    let row = match rows.next().map_err(|e| e.to_string())? {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    let host: String = row.get::<_, String>(0).map_err(|e| format!("[DB] jump host: {}", e))?;
+    let port: i32 = row.get::<_, i32>(1).map_err(|e| format!("[DB] jump port: {}", e))?;
+    let s_user: Option<String> = row.get::<_, Option<String>>(2).unwrap_or_default();
+    let c_user: Option<String> = row.get::<_, Option<String>>(3).unwrap_or_default();
+    let s_pass: Option<String> = row.get::<_, Option<String>>(4).unwrap_or_default();
+    let c_pass: Option<String> = row.get::<_, Option<String>>(5).unwrap_or_default();
+    let s_key: Option<i32> = row.get::<_, Option<i32>>(6).unwrap_or_default();
+    let c_key: Option<i32> = row.get::<_, Option<i32>>(7).unwrap_or_default();
+    let server_auth_type: String = row
+        .get::<_, Option<String>>(8)
+        .unwrap_or_default()
+        .unwrap_or_else(|| "vault".to_string());
+    let cred_auth_type: Option<String> = row.get::<_, Option<String>>(9).unwrap_or_default();
+
+    let (username, password, key_id) = if server_auth_type == "vault" {
+        (c_user.unwrap_or_default(), c_pass, c_key)
+    } else {
+        (s_user.unwrap_or_default(), s_pass, s_key)
+    };
+    let effective_key_id = if server_auth_type == "vault" {
+        if cred_auth_type.as_deref() == Some("key") { key_id } else { None }
+    } else if server_auth_type == "custom_key" {
+        key_id
+    } else {
+        None
+    };
+    let key_data = if let Some(kid) = effective_key_id {
+        let mut key_stmt = conn
+            .prepare("SELECT private_key, passphrase FROM ssh_keys WHERE id = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut key_rows = key_stmt.query([kid]).map_err(|e| e.to_string())?;
+        if let Some(key_row) = key_rows.next().map_err(|e| e.to_string())? {
+            let private_key: String = key_row.get::<_, String>(0).map_err(|e| e.to_string())?;
+            let passphrase: Option<String> = key_row.get::<_, Option<String>>(1).map_err(|e| e.to_string())?;
+            Some((private_key, passphrase))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok(Some((host, port, username, password, key_data)))
+}
+
+/// Establish + authenticate an SSH connection to a ProxyJump intermediate
+/// ("bastion") host and return its live `Handle`. The caller opens a
+/// `direct-tcpip` channel over this handle to reach the real target, then keeps
+/// the handle alive for the target session's lifetime (see
+/// `SshState::jump_connections`).
+///
+/// The bastion is reached by a DIRECT TCP connection — its own proxy config, if
+/// any, is not honored (bastions are normally directly reachable). Its host key
+/// is verified through the SAME frontend prompt as the target (events emitted
+/// under the target's `session_id`, keyed by a distinct nonce), and it supports
+/// the full key → password → keyboard-interactive auth ladder.
+async fn connect_jump_host(
+    app: &tauri::AppHandle,
+    db: &std::sync::Arc<std::sync::Mutex<Option<rusqlite::Connection>>>,
+    fp_txs: &std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    >,
+    kbi_txs: &std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, tokio::sync::oneshot::Sender<Option<Vec<String>>>>,
+        >,
+    >,
+    session_id: &str,
+    jump_server_id: i32,
+) -> Result<russh::client::Handle<ssh_manager::ClientHandler>, String> {
+    use tokio::time::Duration;
+    use tauri::Emitter;
+
+    let log = |msg: &str, ty: &str| {
+        println!("[LOG-{}] [jump] {}", session_id, msg);
+        let _ = app.emit(
+            &format!("session-log-{}", session_id),
+            serde_json::json!({"msg": msg, "type": ty}),
+        );
+    };
+
+    // 1. Resolve the bastion's config synchronously and drop the DB guard
+    //    before any await (rusqlite Connection is not Send).
+    let (host, port, user, password, key_data) = {
+        let guard = db.lock().map_err(|_| "[STATE] LOCK_FAILED".to_string())?;
+        let conn = guard
+            .as_ref()
+            .ok_or_else(|| "[STATE] DATABASE_NOT_INITIALIZED".to_string())?;
+        match resolve_jump_auth(conn, jump_server_id)? {
+            Some(v) => v,
+            None => return Err("jump host not found".into()),
+        }
+    };
+    let effective_user = if user.trim().is_empty() {
+        "root".to_string()
+    } else {
+        user.trim().to_string()
+    };
+
+    // 2. Direct TCP to the bastion.
+    log(&format!("Connecting to jump host {}:{}...", host, port), "info");
+    let tcp = match tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::net::TcpStream::connect((host.as_str(), port as u16)),
+    )
+    .await
+    {
+        Ok(Ok(s)) => {
+            let _ = s.set_nodelay(true);
+            s
+        }
+        Ok(Err(e)) => return Err(humanize_network_err(&e.to_string(), &host, port, "Jump host connection")),
+        Err(_) => return Err(format!("jump host {}:{} did not respond within 10 seconds", host, port)),
+    };
+
+    // 3. Host-key round-trip: own nonce, shared fp_txs map + frontend session.
+    let (fp_tx, fp_rx) = tokio::sync::oneshot::channel();
+    let jump_nonce: String = {
+        let mut bytes = [0u8; 16];
+        rand::thread_rng().fill(&mut bytes);
+        hex::encode(bytes)
+    };
+    fp_txs.lock().await.insert(jump_nonce.clone(), fp_tx);
+    let fp_outcome = std::sync::Arc::new(std::sync::atomic::AtomicI8::new(-1));
+
+    let handler = ssh_manager::ClientHandler {
+        app: app.clone(),
+        session_id: session_id.to_string(),
+        connect_nonce: jump_nonce.clone(),
+        server_host: host.clone(),
+        server_port: port as u16,
+        db: std::sync::Arc::clone(db),
+        fp_rx: Some(fp_rx),
+        forwarded_targets: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        fp_outcome,
+    };
+
+    // 4. Handshake.
+    let config = std::sync::Arc::new(build_ssh_client_config());
+    log("Jump host: SSH handshake...", "info");
+    let connect_res = tokio::time::timeout(
+        Duration::from_secs(15),
+        russh::client::connect_stream(config, tcp, handler),
+    )
+    .await;
+    // The host-key prompt (if any) is resolved by now — drop the sender.
+    fp_txs.lock().await.remove(&jump_nonce);
+
+    let mut session = match connect_res {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return Err(format!("jump host handshake failed: {}", e)),
+        Err(_) => return Err("jump host handshake timed out".into()),
+    };
+
+    // 5. Auth ladder: key → password → keyboard-interactive.
+    let mut auth_res = if let Some((private_key, passphrase)) = key_data {
+        log("Jump host: private key authentication...", "info");
+        let normalized_key = private_key.replace("\r\n", "\n");
+        match russh_keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
+            Ok(keypair) => session.authenticate_publickey(&effective_user, std::sync::Arc::new(keypair)).await,
+            Err(e) => Err(russh::Error::from(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))),
+        }
+    } else if let Some(pass) = password {
+        log("Jump host: password authentication...", "info");
+        session.authenticate_password(&effective_user, pass).await
+    } else {
+        Ok(false)
+    };
+
+    if !matches!(auth_res, Ok(true)) {
+        if let Some(kbi_res) =
+            run_keyboard_interactive(&mut session, &effective_user, app, session_id, &jump_nonce, kbi_txs).await
+        {
+            auth_res = kbi_res;
+        }
+    }
+    // Belt-and-suspenders: no dangling interactive sender for this hop.
+    kbi_txs.lock().await.remove(&jump_nonce);
+
+    match auth_res {
+        Ok(true) => {
+            log("Jump host authenticated.", "success");
+            Ok(session)
+        }
+        Ok(false) => Err("jump host authentication failed".into()),
+        Err(e) => Err(format!("jump host auth error: {}", e)),
+    }
+}
+
 #[tauri::command]
 async fn initiate_connection(
     app: tauri::AppHandle,
@@ -1874,6 +2337,9 @@ async fn initiate_connection(
             println!("[BACKEND] Tearing down stale session for reconnect: {}", session_id);
         }
     }
+    // Drop any ProxyJump bastion handle from a prior attempt — dropping it
+    // closes the old jump connection so the reconnect opens a fresh one.
+    state.jump_connections.lock().await.remove(&session_id);
     state.sftp_sessions.lock().await.remove(&session_id);
     // Terminal IDs are `${session_id}-term-N` (see SessionView.tsx), so we
     // sweep every PTY task tied to the old handle. Match by the exact
@@ -1914,6 +2380,12 @@ async fn initiate_connection(
     let state_session_tunnel_specs = Arc::clone(&state.session_tunnel_specs);
     let state_session_generation = Arc::clone(&state.session_generation);
     let fp_txs_clone = Arc::clone(&state.fp_txs);
+    let kbi_txs_clone = Arc::clone(&state.kbi_txs);
+    let state_jump_connections = Arc::clone(&state.jump_connections);
+    // Second Arc into the DB for the ProxyJump hop — the handler below moves
+    // the primary `db_conn_shared`, and the spawned worker needs its own owned
+    // handle to resolve the bastion's credentials.
+    let db_for_jump = Arc::clone(&db_state.conn);
     let db_conn_shared = Arc::clone(&db_state.conn);
 
     // Reconnect path: tear down any stale listeners + R-tunnel registrations
@@ -1964,6 +2436,7 @@ async fn initiate_connection(
             None,                       // db_key_id (debug-log only)
             None,                       // effective_key_id (auth code branches on key_data, not this)
             "[]".to_string(),           // tunnels_json — no auto-start tunnels
+            None,                       // jump_host_id — quick connect never bounces through a bastion
         ))
     } else {
     // Fetch DB record inside a nested block to drop non-Send Rows/Statement before any await
@@ -1982,7 +2455,8 @@ async fn initiate_connection(
                    s.password as s_pass, c.password as c_pass,
                    s.key_id   as s_key,  c.key_id   as c_key,
                    s.proxy_type, s.proxy_host, s.proxy_port,
-                   s.auth_type, c.auth_type as cred_auth_type, s.tunnels
+                   s.auth_type, c.auth_type as cred_auth_type, s.tunnels,
+                   s.jump_host_id
             FROM servers s
             LEFT JOIN credentials c ON s.credential_id = c.id
             WHERE s.id=?1
@@ -2008,6 +2482,7 @@ async fn initiate_connection(
             let server_auth_type: String = row.get::<_, Option<String>>(11).unwrap_or_default().unwrap_or_else(|| "vault".to_string());
             let cred_auth_type: Option<String> = row.get::<_, Option<String>>(12).unwrap_or_default();
             let tunnels_json: String = row.get::<_, Option<String>>(13).unwrap_or_default().unwrap_or_else(|| "[]".to_string());
+            let jump_host_id: Option<i32> = row.get::<_, Option<i32>>(14).unwrap_or_default();
 
             // Single source of truth per auth_type — no field mixing.
             // - vault: identity comes ENTIRELY from the credential row. Any
@@ -2047,14 +2522,14 @@ async fn initiate_connection(
                 None
             };
 
-            Some((host, port, username, password, key_data, proxy_type, proxy_host, proxy_port, server_auth_type, cred_auth_type, key_id, effective_key_id, tunnels_json))
+            Some((host, port, username, password, key_data, proxy_type, proxy_host, proxy_port, server_auth_type, cred_auth_type, key_id, effective_key_id, tunnels_json, jump_host_id))
         } else {
             None
         }
     }
     };
 
-    let (host, port, user, password, key_data, proxy_type, proxy_host, proxy_port, server_auth_type, cred_auth_type, db_key_id, effective_key_id, tunnels_json) = match db_res {
+    let (host, port, user, password, key_data, proxy_type, proxy_host, proxy_port, server_auth_type, cred_auth_type, db_key_id, effective_key_id, tunnels_json, jump_host_id) = match db_res {
         Some(val) => val,
         None => {
             state.fp_txs.lock().await.remove(&connect_nonce);
@@ -2091,19 +2566,25 @@ async fn initiate_connection(
 
         struct FpCleanupGuard {
             fp_txs: Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+            kbi_txs: Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Option<Vec<String>>>>>>,
             nonce: String,
         }
         impl Drop for FpCleanupGuard {
             fn drop(&mut self) {
                 let fp_txs = Arc::clone(&self.fp_txs);
+                let kbi_txs = Arc::clone(&self.kbi_txs);
                 let nonce = self.nonce.clone();
                 tauri::async_runtime::spawn(async move {
                     fp_txs.lock().await.remove(&nonce);
+                    // Worker died mid keyboard-interactive prompt — drop any
+                    // dangling sender so a late frontend response is a no-op.
+                    kbi_txs.lock().await.remove(&nonce);
                 });
             }
         }
         let _guard = FpCleanupGuard {
             fp_txs: Arc::clone(&fp_txs_clone),
+            kbi_txs: Arc::clone(&kbi_txs_clone),
             nonce: cleanup_nonce.clone(),
         };
 
@@ -2165,7 +2646,40 @@ async fn initiate_connection(
             }
         }
 
-        let stream_res: Result<Box<dyn AsyncStream>, String> = match proxy_type.as_str() {
+        // ProxyJump takes precedence over a direct / proxied transport. When a
+        // bastion is configured we connect+auth to it first, then open a
+        // `direct-tcpip` channel to the REAL target over that connection and
+        // use the channel as the transport for the primary handshake — exactly
+        // what `ssh -J bastion target` does. The bastion's own Handle is parked
+        // in `jump_handle_holder` so it lives through the target handshake; on
+        // success it moves into `state_jump_connections` for the session's life.
+        let mut jump_handle_holder: Option<russh::client::Handle<ssh_manager::ClientHandler>> = None;
+        let stream_res: Result<Box<dyn AsyncStream>, String> = if let Some(jid) = jump_host_id {
+            emit_log(&format!("ProxyJump: routing through jump host (server id {})...", jid), "info");
+            match connect_jump_host(&app, &db_for_jump, &fp_txs_clone, &kbi_txs_clone, &session_id_clone, jid).await {
+                Ok(jump_handle) => {
+                    // Originator address is cosmetic (logged by the bastion); the
+                    // pair below is what OpenSSH sends for a -J hop.
+                    match jump_handle
+                        .channel_open_direct_tcpip(host.clone(), port as u32, "127.0.0.1", 0)
+                        .await
+                    {
+                        Ok(channel) => {
+                            emit_log(&format!("ProxyJump: opened tunnel to {}:{} through the jump host.", host, port), "success");
+                            let boxed: Box<dyn AsyncStream> = Box::new(channel.into_stream());
+                            jump_handle_holder = Some(jump_handle);
+                            Ok(boxed)
+                        }
+                        Err(e) => Err(format!(
+                            "ProxyJump: could not open a channel to {}:{} through the jump host: {}",
+                            host, port, e
+                        )),
+                    }
+                }
+                Err(e) => Err(format!("ProxyJump: {}", e)),
+            }
+        } else {
+        match proxy_type.as_str() {
             "socks5" => {
                 let p_host = match proxy_host.as_ref().filter(|h| !h.is_empty()) {
                     Some(h) => h,
@@ -2268,6 +2782,7 @@ async fn initiate_connection(
                     }
                 }
             }
+        }
         };
 
         let stream = match stream_res {
@@ -2281,71 +2796,10 @@ async fn initiate_connection(
         };
 
         emit_log("Starting SSH Handshake and establishing secure session...", "info");
-        let mut config = client::Config::default();
-        // SSH keepalive every 20s. The shorter interval matters because most
-        // consumer routers drop idle NAT mappings around the 2-minute mark,
-        // and many corporate firewalls are stricter still. russh 0.40 has
-        // no `keepalive_max` knob, so the watcher loop below relies on
-        // `is_closed()` to surface drops within a couple of seconds.
-        config.keepalive_interval = Some(Duration::from_secs(20));
-        // Bigger receive window + max-allowed packet size: lets SFTP/tunnel
-        // streams keep the BDP full on high-latency links. Default 2 MiB
-        // window caps a single channel at ~16 Mbps over 1s RTT; 8 MiB lifts
-        // that ceiling well above typical home/office links. 65535 is the
-        // protocol max for maximum_packet_size (russh enforces this).
-        config.window_size = 8 * 1024 * 1024;
-        config.maximum_packet_size = 65535;
-        // Widen the negotiation set to match what OpenSSH ships — but only
-        // in builds that include the OpenSSL backend (release CI via the
-        // `full-ssh-algos` feature). russh's default `Preferred` only lists
-        // curve25519 + DH-G14-SHA256 for KEX and Ed25519 + ECDSA-P256 for
-        // host keys, which fails "No common key/kex algorithm" against
-        // older servers, embedded SSH stacks, and any shared host still
-        // using RSA host keys. The full list below adds legacy DH groups,
-        // the entire RSA host-key family, and the HMAC-SHA1 MAC variants.
-        // Order is strongest-first; russh negotiates by picking the first
-        // entry from our list that the server also offers. Default (local
-        // debug) builds use russh's defaults, which is fine for connecting
-        // to any modern server.
-        #[cfg(feature = "full-ssh-algos")]
-        {
-            config.preferred = russh::Preferred {
-                kex: &[
-                    russh::kex::CURVE25519,
-                    russh::kex::CURVE25519_PRE_RFC_8731,
-                    russh::kex::DH_G14_SHA256,
-                    russh::kex::DH_G14_SHA1,
-                    russh::kex::DH_G1_SHA1,
-                    russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
-                    russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
-                ],
-                key: &[
-                    russh_keys::key::ED25519,
-                    russh_keys::key::ECDSA_SHA2_NISTP256,
-                    russh_keys::key::RSA_SHA2_512,
-                    russh_keys::key::RSA_SHA2_256,
-                    russh_keys::key::SSH_RSA,
-                ],
-                cipher: &[
-                    russh::cipher::CHACHA20_POLY1305,
-                    russh::cipher::AES_256_GCM,
-                    russh::cipher::AES_256_CTR,
-                    russh::cipher::AES_192_CTR,
-                    russh::cipher::AES_128_CTR,
-                ],
-                mac: &[
-                    russh::mac::HMAC_SHA512_ETM,
-                    russh::mac::HMAC_SHA256_ETM,
-                    russh::mac::HMAC_SHA512,
-                    russh::mac::HMAC_SHA256,
-                    russh::mac::HMAC_SHA1_ETM,
-                    russh::mac::HMAC_SHA1,
-                ],
-                compression: &["zlib@openssh.com", "zlib", "none"],
-            };
-        }
-        let config = Arc::new(config);
-        
+        // Config (keepalive, windows, algorithm negotiation) is shared with the
+        // ProxyJump hop — see build_ssh_client_config for the full rationale.
+        let config = Arc::new(build_ssh_client_config());
+
         let connect_future = client::connect_stream(config, StreamWrapper(stream), handler);
 
         match tokio::time::timeout(Duration::from_secs(15), connect_future).await {
@@ -2354,7 +2808,7 @@ async fn initiate_connection(
                 
                 let final_pass = custom_password.or(password);
                 
-                let auth_res = if let Some((private_key, passphrase)) = key_data {
+                let mut auth_res = if let Some((private_key, passphrase)) = key_data {
                     emit_log("Attempting Private Key Authentication...", "info");
                     let normalized_key = private_key.replace("\r\n", "\n");
                     match russh_keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
@@ -2392,6 +2846,29 @@ async fn initiate_connection(
                     Ok(false)
                 };
 
+                // Keyboard-interactive (2FA / verification-code) fallback. Many
+                // hardened servers gate login behind an interactive one-time
+                // code AFTER — or INSTEAD of — a password. If the primary
+                // attempt above didn't already authenticate us and the server
+                // offers keyboard-interactive, drive it: relay each prompt to
+                // the UI, collect the user's answers, and send them back. If
+                // the server doesn't offer it, `run_keyboard_interactive`
+                // returns None and we keep the original auth result untouched.
+                if !matches!(auth_res, Ok(true)) {
+                    if let Some(kbi_res) = run_keyboard_interactive(
+                        &mut session,
+                        &effective_user,
+                        &app,
+                        &session_id_clone,
+                        &connect_nonce,
+                        &kbi_txs_clone,
+                    )
+                    .await
+                    {
+                        auth_res = kbi_res;
+                    }
+                }
+
                 match auth_res {
                     Ok(true) => {
                         emit_log("Authentication successful. Session ready.", "success");
@@ -2400,6 +2877,13 @@ async fn initiate_connection(
                             .lock()
                             .await
                             .insert(session_id_clone.clone(), Arc::clone(&session_arc));
+                        // ProxyJump: now that the target session is live, park
+                        // the bastion's Handle so it stays alive for the whole
+                        // session (its direct-tcpip channel carries our
+                        // transport). Dropped on reconnect / disconnect / close.
+                        if let Some(jh) = jump_handle_holder.take() {
+                            state_jump_connections.lock().await.insert(session_id_clone.clone(), jh);
+                        }
                         let _ = app.emit(
                             &format!("connection-success-{}", session_id_clone),
                             serde_json::json!({}),
@@ -2691,6 +3175,24 @@ async fn verify_fingerprint_response(
     Ok(())
 }
 
+/// Frontend callback for a keyboard-interactive (2FA / verification-code)
+/// prompt. `responses` is `Some(answers)` when the user submits, or `None`
+/// when they cancel. Mirrors `verify_fingerprint_response`: the nonce binds
+/// the answer 1:1 to the connect attempt that emitted the prompt, and a nonce
+/// with no in-flight entry is silently a no-op (stale / forged responses can't
+/// satisfy a fresh prompt).
+#[tauri::command]
+async fn submit_kbi_response(
+    state: tauri::State<'_, SshState>,
+    nonce: String,
+    responses: Option<Vec<String>>,
+) -> Result<(), String> {
+    if let Some(tx) = state.kbi_txs.lock().await.remove(&nonce) {
+        let _ = tx.send(responses);
+    }
+    Ok(())
+}
+
 // ---- Port forwarding (tunnels) ---------------------------------------------
 
 #[tauri::command]
@@ -2847,6 +3349,9 @@ async fn disconnect_session(
     // underlying SSH handle.
     state.sftp_sessions.lock().await.remove(&session_id);
     state.connections.lock().await.remove(&session_id);
+    // Drop any ProxyJump bastion handle for this session — closes the jump
+    // connection once the target it was carrying is gone.
+    state.jump_connections.lock().await.remove(&session_id);
     // Drop terminal tx/resize entries so a subsequent reconnect doesn't try
     // to write into a dead PTY task. Match by the exact `${session_id}-term-`
     // prefix — a `contains` here silently tears down session-10's terminals
@@ -6187,7 +6692,7 @@ pub fn run() {
             cloud::cloud_force_upload_profile, cloud::cloud_download_profile,
             cloud::cloud_delete_remote_profile,
             cloud::cloud_sync_overview, cloud::cloud_sync_all,
-            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
+            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,
             add_command, edit_command, delete_command, get_commands,
@@ -6196,7 +6701,7 @@ pub fn run() {
             mirror_dry_run, start_mirror, stop_mirror, list_mirrors, pick_local_directory,
             add_credential, edit_credential, delete_credential,
             add_ssh_key, edit_ssh_key, delete_ssh_key,
-            initiate_connection, verify_fingerprint_response, disconnect_session,
+            initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session,
             start_tunnel, stop_tunnel, list_tunnels,
             open_terminal, write_terminal_data, resize_terminal, close_terminal,
             ssh_info_probe_section, ssh_systemctl_action,

@@ -15,7 +15,7 @@ type ImportedHost = {
   proxy_jump: string | null;
 };
 
-const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, folders, refreshFolders, refreshServers, isEditMode, formError, isMobile }: any) => {
+const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, folders, refreshFolders, refreshServers, servers, isEditMode, formError, isMobile }: any) => {
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
 
@@ -400,6 +400,29 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 />
               </div>
             )}
+
+            {/* ProxyJump — bounce through another saved node to reach this one
+                (like `ssh -J bastion target`). Distinct from the SOCKS/HTTP
+                proxy above: that's a plain TCP proxy, this is a full SSH hop
+                that opens a direct-tcpip channel to the target. Self is filtered
+                out so a node can't jump through itself. */}
+            <div className="flex justify-between items-center gap-3">
+              <label className="text-[11px] font-bold text-zinc-400 shrink-0">Jump via</label>
+              <select
+                className="flex-1 min-w-0 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
+                value={newNode.jumpHostId || ""}
+                onChange={e => setNewNode({ ...newNode, jumpHostId: e.target.value })}
+              >
+                <option value="" className="bg-[#1a1a1e] text-zinc-500">Direct — no jump host</option>
+                {(servers || [])
+                  .filter((s: any) => s.id !== newNode.id)
+                  .map((s: any) => (
+                    <option key={s.id} value={s.id.toString()} className="bg-[#1a1a1e] text-zinc-300">
+                      {s.name} ({s.host})
+                    </option>
+                  ))}
+              </select>
+            </div>
 
             <div className="space-y-2.5">
               <div className="flex justify-between items-center">
