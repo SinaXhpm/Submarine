@@ -643,7 +643,11 @@ async fn walk_remote(
     let items: Vec<_> = read.collect();
     for entry in items {
         let name = entry.file_name();
-        if name == "." || name == ".." { continue; }
+        // Skip any entry whose name isn't a single plain component. A hostile
+        // SFTP server can return `../../x` or `..\x`; that rel path later feeds
+        // local_root.join(...) in the transfer pool and would escape the mirror
+        // root (zip-slip → arbitrary local write). See is_safe_dir_entry_name.
+        if !crate::is_safe_dir_entry_name(&name) { continue; }
         let remote_path = format!("{}/{}", remote_dir.trim_end_matches('/'), name);
         let rel = remote_path.strip_prefix(&prefix)
             .unwrap_or(remote_path.as_str())

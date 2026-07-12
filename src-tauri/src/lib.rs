@@ -3874,7 +3874,11 @@ async fn sftp_download_dir(
         };
         for entry in read {
             let name = entry.file_name();
-            if name == "." || name == ".." { continue; }
+            // Skip any entry whose name isn't a single plain component. A
+            // hostile SFTP server can return `../../x` or `..\x` here; joining
+            // that onto local_root below would escape the chosen folder
+            // (zip-slip → arbitrary local write). See is_safe_dir_entry_name.
+            if !is_safe_dir_entry_name(&name) { continue; }
             let full = format!("{}/{}", dir.trim_end_matches('/'), name);
             if entry.file_type().is_dir() {
                 stack.push(full);
@@ -5393,6 +5397,28 @@ fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
 /// directories, and unresolvable paths. If the renderer is ever compromised
 /// (XSS via terminal output, a future feature, etc.) this stops
 /// `local_remove("C:\\")` cold.
+/// True when a single SFTP directory-entry name is a plain, safe filename —
+/// i.e. one that can be joined onto a local root without escaping it.
+///
+/// `read_dir` entry names come straight off the SFTP wire, so a malicious or
+/// compromised server can return a name that contains path separators or `..`
+/// (e.g. `../../../.config/autostart/x.desktop`, or `..\..\Startup\x.bat`).
+/// Joining such a name onto the download root resolves OUTSIDE it — a zip-slip
+/// arbitrary-write primitive. A genuine filesystem entry name is always a
+/// single component: it never contains `/` (the POSIX/SFTP separator), `\` (a
+/// separator once the rel path is split for a Windows client), or a NUL, and is
+/// never `.`/`..`. Rejecting anything else costs nothing on a well-behaved
+/// server and stops the traversal at the point the untrusted name first enters
+/// our local-path building. Callers skip (or abort on) a rejected entry.
+pub(crate) fn is_safe_dir_entry_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+}
+
 fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::PathBuf, String> {
     let p = std::path::Path::new(path);
     let canonical = match p.canonicalize() {
@@ -6186,4 +6212,44 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dir_entry_name_rejects_traversal_and_separators() {
+        // Attack vectors a hostile SFTP server can put in a readdir name.
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../../etc/passwd",
+            "..\\..\\Startup\\x.bat",
+            "a/b",
+            "a\\b",
+            "/etc/passwd",
+            "with\0nul",
+        ] {
+            assert!(!is_safe_dir_entry_name(bad), "should reject {:?}", bad);
+        }
+    }
+
+    #[test]
+    fn dir_entry_name_accepts_plain_filenames() {
+        // Legitimate names must still pass — including ones that merely
+        // start with dots or contain colons/spaces (all legal on POSIX).
+        for ok in [
+            "file.txt",
+            "notes 2024.md",
+            ".bashrc",
+            "..foo",
+            "2024:01:01.log",
+            "release-v0.2.37",
+            "Ω_unicode_名前",
+        ] {
+            assert!(is_safe_dir_entry_name(ok), "should accept {:?}", ok);
+        }
+    }
 }
