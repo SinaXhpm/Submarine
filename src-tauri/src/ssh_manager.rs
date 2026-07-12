@@ -138,14 +138,20 @@ impl client::Handler for ClientHandler {
         }));
 
         // Look at every prior fingerprint we've recorded for this host:port.
-        // Three possible outcomes:
-        //   - one of them matches the offered key → trusted, proceed
-        //   - none match BUT some rows exist → KEY CHANGED. Looks just like
-        //     an SSH MITM. The user must be warned with very different copy
-        //     than "first time seeing this host".
-        //   - no rows at all → unknown host, ordinary first-time prompt.
+        // Outcomes:
+        //   - the offered fingerprint matches ANY stored row → trusted, proceed
+        //     (fingerprint identifies the key regardless of the algorithm label,
+        //     so this also recognizes a key offered under a different signature
+        //     name without re-prompting).
+        //   - no match, but a row for the SAME host-key ALGORITHM has a different
+        //     fingerprint → KEY CHANGED. Looks like an SSH MITM; warn loudly.
+        //   - no match and only OTHER algorithms are on file (e.g. the server
+        //     just added an ed25519 key beside its old rsa key) → NOT a change;
+        //     falls through to the ordinary unknown-key prompt.
+        // This mirrors OpenSSH's per-(host,keytype) known_hosts semantics and
+        // stops benign algorithm additions from firing a false MITM warning.
         let mut is_known = false;
-        let mut had_any_prior = false;
+        let mut mismatch = false; // same algorithm, different fingerprint
         let mut prior_fingerprints: Vec<String> = Vec::new();
         // Read known_hosts in a SCOPED block — the std mutex guard mustn't
         // cross any `.await` (the !Send guard would break the future's Send
@@ -157,15 +163,29 @@ impl client::Handler for ClientHandler {
             match self.db.lock() {
                 Ok(guard) => {
                     if let Some(ref conn) = *guard {
-                        if let Ok(mut stmt) = conn.prepare("SELECT fingerprint FROM known_hosts WHERE host=?1 AND port=?2") {
+                        if let Ok(mut stmt) = conn.prepare("SELECT fingerprint, key_type FROM known_hosts WHERE host=?1 AND port=?2") {
                             if let Ok(mut rows) = stmt.query(rusqlite::params![self.server_host, self.server_port]) {
                                 while let Some(row) = rows.next().ok().flatten() {
-                                    if let Some(saved_fp) = row.get::<_, String>(0).ok() {
-                                        had_any_prior = true;
+                                    let saved_fp = row.get::<_, String>(0).ok();
+                                    let saved_kt = row.get::<_, Option<String>>(1).ok().flatten();
+                                    if let Some(saved_fp) = saved_fp {
                                         if saved_fp == fp_str {
                                             is_known = true;
                                         } else {
-                                            prior_fingerprints.push(saved_fp);
+                                            // A different fingerprint is a "key CHANGED"
+                                            // event only when it's on file for the SAME
+                                            // algorithm. Legacy rows (NULL key_type) are
+                                            // treated as same-type so we never DOWNGRADE a
+                                            // genuine rotation of a pre-migration host to a
+                                            // benign first-time prompt.
+                                            let same_type = match saved_kt.as_deref() {
+                                                Some(kt) => kt == key_type,
+                                                None => true,
+                                            };
+                                            if same_type {
+                                                mismatch = true;
+                                                prior_fingerprints.push(saved_fp);
+                                            }
                                         }
                                     }
                                 }
@@ -195,8 +215,6 @@ impl client::Handler for ClientHandler {
             self.fp_outcome.store(1, std::sync::atomic::Ordering::SeqCst);
             return Ok((self, true));
         }
-
-        let mismatch = had_any_prior;
 
         if mismatch {
             // Loud, distinct log line for the activity panel — this is the
@@ -250,14 +268,18 @@ impl client::Handler for ClientHandler {
                             let result: rusqlite::Result<()> = (|| {
                                 conn.execute("BEGIN", [])?;
                                 if mismatch {
+                                    // Only clear the SAME-algorithm entries (and
+                                    // legacy NULL-type rows the user is effectively
+                                    // re-confirming) — a trusted key for a DIFFERENT
+                                    // algorithm on this host stays put.
                                     conn.execute(
-                                        "DELETE FROM known_hosts WHERE host=?1 AND port=?2",
-                                        rusqlite::params![self.server_host, self.server_port],
+                                        "DELETE FROM known_hosts WHERE host=?1 AND port=?2 AND (key_type=?3 OR key_type IS NULL)",
+                                        rusqlite::params![self.server_host, self.server_port, key_type],
                                     )?;
                                 }
                                 conn.execute(
-                                    "INSERT INTO known_hosts (host, port, fingerprint) VALUES (?1, ?2, ?3)",
-                                    rusqlite::params![self.server_host, self.server_port, fp_str],
+                                    "INSERT INTO known_hosts (host, port, fingerprint, key_type) VALUES (?1, ?2, ?3, ?4)",
+                                    rusqlite::params![self.server_host, self.server_port, fp_str, key_type],
                                 )?;
                                 conn.execute("COMMIT", [])?;
                                 Ok(())

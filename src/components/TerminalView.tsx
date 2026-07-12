@@ -10,6 +10,21 @@ import { MobileKeyBar, ModifiersState, ModKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
 
+// Does the recent remote OUTPUT look like a no-echo password / passphrase
+// prompt? Used to skip command-history capture so typed secrets (sudo, su,
+// mysql -p, ssh/gpg passphrase) aren't persisted into searchable history. At a
+// no-echo prompt the output still ENDS with the prompt text because the user's
+// keystrokes were never echoed back. We strip ANSI colour/OSC sequences first
+// and only match when the prompt is the trailing content.
+const looksLikePasswordPrompt = (out: string): boolean => {
+  const clean = out
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC …BEL/ST
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")          // CSI …final
+    .replace(/[\r\n]+/g, "\n");
+  const tail = clean.slice(-160);
+  return /(?:password|passphrase)\b[^:\n]*:\s*$/i.test(tail);
+};
+
 // Shared search options — highlight all matches in yellow, the active
 // match in orange. `decorations` uses the marker overlay so the highlight
 // survives scrollback and repaints (the addon's built-in selection-based
@@ -169,6 +184,9 @@ const TerminalView = ({
   // is mutated inside the long-lived onData closure so a ref (not state)
   // is the right container.
   const commandBufRef = useRef<string>("");
+  // Small tail of recent remote OUTPUT, kept only to detect no-echo password
+  // prompts (see looksLikePasswordPrompt) — never persisted or displayed.
+  const recentOutputRef = useRef<string>("");
 
   const toggleModifier = (m: ModKey) => {
     setModifiers(prev => ({ ...prev, [m]: cycleMod(prev[m]) }));
@@ -446,7 +464,13 @@ const TerminalView = ({
       // technically fine but almost always a footgun ("wait, why did that
       // command run there instead of here?"). 2+ makes the intent explicit.
       const bcast = broadcastRef.current;
-      if (bcast.enabled && bcast.targetSessionIds.size >= 2) {
+      // Fan out ONLY when the source session is itself one of the armed
+      // targets. Without this guard, typing into an unrelated session (not in
+      // the target set) still wrote to every target — so a command meant only
+      // for the focused server would silently execute on the broadcast group.
+      // Requiring the source to be a member makes "this pane broadcasts to the
+      // group" the explicit, safe model.
+      if (bcast.enabled && bcast.targetSessionIds.size >= 2 && bcast.targetSessionIds.has(sessionId)) {
         for (const targetSid of bcast.targetSessionIds) {
           if (targetSid === sessionId) continue; // skip source; already written
           const targetTid = bcast.sessionTerminalMap[targetSid];
@@ -472,7 +496,11 @@ const TerminalView = ({
         if (ch === 0x0d /* CR */ || ch === 0x0a /* LF */) {
           const line = commandBufRef.current.trim();
           commandBufRef.current = "";
-          if (line.length >= 3) {
+          // Do NOT persist what was typed at a no-echo password/passphrase
+          // prompt — otherwise sudo/su/mysql -p/gpg secrets land verbatim in
+          // searchable history. The onData handler can't see the PTY echo
+          // mode, so we infer it from the remote output tail.
+          if (line.length >= 3 && !looksLikePasswordPrompt(recentOutputRef.current)) {
             invoke('cmd_history_add', {
               serverId: serverId > 0 ? serverId : null,
               serverName: serverName || "",
@@ -601,6 +629,13 @@ const TerminalView = ({
     const unlistenPromise = listen(`terminal-output-${terminalId}`, (event: any) => {
       const data = new Uint8Array(event.payload);
       term.write(data);
+      // Keep a short tail of decoded output so command-history capture can
+      // recognize a no-echo password prompt and skip the typed secret.
+      try {
+        const txt = new TextDecoder().decode(data);
+        const combined = recentOutputRef.current + txt;
+        recentOutputRef.current = combined.length > 512 ? combined.slice(-512) : combined;
+      } catch { /* decode hiccup on a split multibyte chunk — ignore */ }
     });
 
     // Coalesce resize bursts via rAF, and skip the refit on hidden tabs

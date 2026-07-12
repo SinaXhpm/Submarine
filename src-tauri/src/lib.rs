@@ -379,9 +379,13 @@ async fn close_profile(
         ssh.forwarded_targets.lock().await.remove(sid);
         ssh.sftp_sessions.lock().await.remove(sid);
         ssh.connections.lock().await.remove(sid);
-        let temp = std::env::temp_dir().join(format!("submarine_sftp_{}", sid));
+        let temp = session_sftp_dir(sid);
         if temp.exists() {
             let _ = std::fs::remove_dir_all(&temp);
+        }
+        let drag = session_drag_dir(sid);
+        if drag.exists() {
+            let _ = std::fs::remove_dir_all(&drag);
         }
     }
 
@@ -757,6 +761,12 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
             // = connect directly. Nullable + additive so old binaries ignore
             // it (no SCHEMA_VERSION bump, matching run_on_connect above).
             "ALTER TABLE servers ADD COLUMN jump_host_id INTEGER",
+            // Per-algorithm host-key tracking. Legacy rows keep key_type NULL
+            // (treated conservatively as "same type" so a real key rotation is
+            // never downgraded to a benign first-time prompt); rows recorded
+            // after this migration store the host-key algorithm so a server
+            // ADDING a new algorithm no longer looks like a MITM key change.
+            "ALTER TABLE known_hosts ADD COLUMN key_type TEXT",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let s = e.to_string();
@@ -791,7 +801,7 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
              CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT);
-             CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT);
+             CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
              CREATE TABLE monitor_configs (node_id INTEGER PRIMARY KEY, enabled_metrics TEXT NOT NULL DEFAULT '[\"cpu\",\"mem\",\"disk\",\"load\"]', custom_metrics TEXT NOT NULL DEFAULT '[]', paused INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE);
              CREATE TABLE monitor_settings (id INTEGER PRIMARY KEY, json TEXT NOT NULL);
              CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -1328,8 +1338,8 @@ async fn clone_server(state: tauri::State<'_, DbState>, id: i32) -> Result<i64, 
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     let affected = conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color)
-         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id)
+         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color, notes, run_on_connect, jump_host_id
          FROM servers WHERE id = ?1",
         rusqlite::params![id],
     ).map_err(|e| format!("[DATABASE] SERVER_CLONE_FAILED: {}", e))?;
@@ -2371,7 +2381,10 @@ async fn initiate_connection(
         rand::thread_rng().fill(&mut bytes);
         hex::encode(bytes)
     };
-    state.fp_txs.lock().await.insert(connect_nonce.clone(), fp_tx);
+    // NB: the fp_txs insert is deliberately deferred until AFTER the DB
+    // resolution below. The resolution block has several `?` early-returns; if
+    // we inserted here, any of them would return before the worker (which owns
+    // the FpCleanupGuard) is spawned, orphaning the sender in the map forever.
 
     let session_id_clone = session_id.clone();
     let state_connections = Arc::clone(&state.connections);
@@ -2532,10 +2545,14 @@ async fn initiate_connection(
     let (host, port, user, password, key_data, proxy_type, proxy_host, proxy_port, server_auth_type, cred_auth_type, db_key_id, effective_key_id, tunnels_json, jump_host_id) = match db_res {
         Some(val) => val,
         None => {
-            state.fp_txs.lock().await.remove(&connect_nonce);
             return Err("Server not found".into());
         }
     };
+
+    // DB resolution succeeded — now register the fingerprint sender. From here
+    // on the worker is always spawned, so its FpCleanupGuard guarantees this
+    // entry is removed even on the failure paths.
+    state.fp_txs.lock().await.insert(connect_nonce.clone(), fp_tx);
 
     // Shared between the handler and the connect driver so we can tell host-
     // key timeouts apart from real auth errors on the failure path. See
@@ -3359,12 +3376,16 @@ async fn disconnect_session(
     let term_prefix = format!("{}-term-", session_id);
     state.terminal_txs.lock().await.retain(|k, _| !k.starts_with(&term_prefix));
     state.resize_txs.lock().await.retain(|k, _| !k.starts_with(&term_prefix));
-    // Wipe any temp files this session left behind (live-edit downloads).
-    // Best-effort: failures are usually because an editor still holds a lock
-    // on a file, in which case the file persists until the OS cleans temp.
-    let session_temp_dir = std::env::temp_dir().join(format!("submarine_sftp_{}", session_id));
+    // Wipe any temp files this session left behind (live-edit downloads + drag
+    // staging). Best-effort: failures are usually because an editor still holds
+    // a lock on a file, in which case the file persists until the OS cleans temp.
+    let session_temp_dir = session_sftp_dir(&session_id);
     if session_temp_dir.exists() {
         let _ = std::fs::remove_dir_all(&session_temp_dir);
+    }
+    let session_drag = session_drag_dir(&session_id);
+    if session_drag.exists() {
+        let _ = std::fs::remove_dir_all(&session_drag);
     }
     // Tell the UI so the tab status dot flips to red. `user_initiated` keeps
     // SessionView from kicking off an auto-reconnect cycle for an intentional
@@ -5047,6 +5068,59 @@ fn transfer_id() -> String {
     format!("{}-{}", ts, seq)
 }
 
+/// Process-global, UNPREDICTABLE temp root for SFTP live-edit / drag staging,
+/// created once with a random name (and 0700 on Unix). The old code used a
+/// fully predictable `submarine_sftp_<session_id>` directory directly in the
+/// world-writable, sticky-bit /tmp — on a shared host a local attacker could
+/// pre-create it (owning it) before the victim opened a remote file, capturing
+/// the downloaded (possibly sensitive) contents or redirecting the write via a
+/// planted symlink. A random, non-guessable root the attacker cannot pre-create
+/// closes that; per-session subdirs live under it and are removed by name.
+fn app_temp_root() -> &'static std::path::PathBuf {
+    static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let mut bytes = [0u8; 12];
+        rand::thread_rng().fill(&mut bytes);
+        let root = std::env::temp_dir().join(format!("submarine-{}", hex::encode(bytes)));
+        let _ = std::fs::create_dir_all(&root);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700));
+        }
+        root
+    })
+}
+
+/// Per-session live-edit staging dir, under the unpredictable root.
+fn session_sftp_dir(session_id: &str) -> std::path::PathBuf {
+    app_temp_root().join(format!("sftp_{}", session_id))
+}
+
+/// Per-session drag staging dir, under the unpredictable root.
+fn session_drag_dir(session_id: &str) -> std::path::PathBuf {
+    app_temp_root().join(format!("drag_{}", session_id))
+}
+
+/// Reduce a server-controlled remote path to a safe LOCAL leaf filename for
+/// temp staging. Rejects empty / "." / ".." and any name containing a path
+/// separator, a drive marker (`:`), or NUL — the exact set that would let a
+/// hostile/compromised SFTP server escape the per-session temp dir. On Windows
+/// a leaf like "C:evil.txt" is drive-relative: `PathBuf::join` discards the
+/// base and resolves it against the process CWD, writing (and auto-opening)
+/// attacker bytes outside the sandbox. One gate for both live-edit and drag.
+fn safe_temp_leaf_name(remote_path: &str) -> Result<String, String> {
+    let raw = std::path::Path::new(remote_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let bad = |c: char| matches!(c, '/' | '\\' | ':' | '\0');
+    if raw.is_empty() || raw == "." || raw == ".." || raw.contains(bad) {
+        return Err(format!("refusing file with unsafe name: {:?}", raw));
+    }
+    Ok(raw.to_string())
+}
+
 #[tauri::command]
 async fn sftp_open_remote_file(
     app_handle: tauri::AppHandle,
@@ -5055,13 +5129,9 @@ async fn sftp_open_remote_file(
     remote_path: String,
 ) -> Result<(), String> {
     use tauri::Emitter;
-    
+
     let sftp = get_sftp_session(&state, &session_id).await?;
-    let filename = std::path::Path::new(&remote_path)
-        .file_name()
-        .ok_or("Invalid remote path")?
-        .to_string_lossy()
-        .to_string();
+    let filename = safe_temp_leaf_name(&remote_path)?;
 
     // Read file data
     let data = sftp.read(&remote_path).await.map_err(|e| format!("Failed to read remote file: {}", e))?;
@@ -5070,7 +5140,7 @@ async fn sftp_open_remote_file(
     // disconnect rather than leaving loose `submarine_sftp_*` files in the global
     // temp dir. The directory is also a smaller blast radius for any path-
     // related shenanigans (each editor sees only files from one session).
-    let session_temp_dir = std::env::temp_dir().join(format!("submarine_sftp_{}", session_id));
+    let session_temp_dir = session_sftp_dir(&session_id);
     std::fs::create_dir_all(&session_temp_dir)
         .map_err(|e| format!("Failed to create temp dir: {}", e))?;
     let temp_file_path = session_temp_dir.join(&filename);
@@ -5261,22 +5331,14 @@ async fn sftp_prepare_drag(
     
     // Sanitize the filename: a hostile (or compromised) SFTP server picks
     // remote_path, and we used to drop the basename straight into the OS
-    // temp dir — letting the server pick any filename it wanted at top of
-    // temp. Restrict to a safe leaf name (no path separators, no `..`,
-    // no drive markers) and scope to a per-session subdir so parallel
-    // drags don't clobber each other.
-    let raw_name = std::path::Path::new(&remote_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("file");
-    let bad = |c: char| matches!(c, '/' | '\\' | ':' | '\0');
-    if raw_name.is_empty() || raw_name == "." || raw_name == ".." || raw_name.contains(bad) {
-        return Err(format!("refusing to drag file with unsafe name: {:?}", raw_name));
-    }
-    let session_dir = std::env::temp_dir().join(format!("submarine_drag_{}", session_id));
+    // temp dir. safe_temp_leaf_name restricts to a safe leaf (no separators,
+    // no `..`, no drive markers) and we scope to a per-session subdir so
+    // parallel drags don't clobber each other.
+    let raw_name = safe_temp_leaf_name(&remote_path)?;
+    let session_dir = session_drag_dir(&session_id);
     std::fs::create_dir_all(&session_dir)
         .map_err(|e| format!("Failed to create drag staging dir: {}", e))?;
-    let temp_file_path = session_dir.join(raw_name);
+    let temp_file_path = session_dir.join(&raw_name);
     std::fs::write(&temp_file_path, &data).map_err(|e| format!("Failed to write temporary file: {}", e))?;
 
     Ok(temp_file_path.to_string_lossy().to_string())
@@ -5829,7 +5891,15 @@ fn putty_unescape(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
+        // Only treat `%HH` as an escape when both following bytes are ASCII
+        // hex digits. The is_ascii_hexdigit guard also keeps the `&s[..]`
+        // slice on char boundaries — without it, a `%` before a multi-byte
+        // UTF-8 char (e.g. `%€`) would slice mid-codepoint and panic.
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
             let hex = &s[i + 1..i + 3];
             if let Ok(n) = u8::from_str_radix(hex, 16) {
                 out.push(n as char);
@@ -6004,6 +6074,28 @@ fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::Pa
         let pfx = prefix.to_lowercase();
         if canon_norm == pfx || canon_norm.starts_with(&format!("{}/", pfx)) {
             return Err(format!("Refusing operation on system path: {}", canonical.display()));
+        }
+    }
+
+    // Auto-run / login-persistence locations. Unlike the fixed system-dir
+    // prefixes above, these sit inside the per-user profile
+    // (C:\Users\<name>\AppData\..., ~/Library/..., ~/.config/...) so no static
+    // prefix catches them — match on a path tail instead. Blocking them stops
+    // a download destination (or any local op) from dropping an executable
+    // into a folder the OS auto-runs at next login. The markers are
+    // platform-specific strings that simply never match on the wrong OS, so a
+    // single unconditional loop is fine.
+    const PERSIST_MARKERS: &[&str] = &[
+        "/start menu/programs/startup",        // Windows Startup (per-user & all-users)
+        "/appdata/roaming/microsoft/windows",  // Windows autorun / machine-managed
+        "/appdata/local/microsoft/windows",
+        "/library/launchagents",               // macOS per-user launch agents
+        "/library/launchdaemons",              // macOS launch daemons
+        "/.config/autostart",                  // Linux XDG autostart
+    ];
+    for marker in PERSIST_MARKERS {
+        if canon_norm.contains(marker) {
+            return Err(format!("Refusing operation on auto-run / persistence path: {}", canonical.display()));
         }
     }
 

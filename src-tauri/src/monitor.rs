@@ -1021,10 +1021,15 @@ fn parse_probe(text: &str) -> Result<RawSnapshot, String> {
         match tag {
             "CPU" if rest.len() >= 4 => {
                 // user nice system idle iowait irq softirq steal
+                // Saturating arithmetic: the values come straight off the
+                // monitored host's /proc/stat, so a malicious/compromised
+                // server could send u64::MAX-scale tokens whose sum overflows
+                // and panics this poller task in a debug build (overflow-checks
+                // on). Saturate instead of trusting the remote input.
                 let nums: Vec<u64> = rest.iter().map(|s| s.parse().unwrap_or(0)).collect();
-                let total: u64 = nums.iter().sum();
+                let total: u64 = nums.iter().fold(0u64, |acc, &n| acc.saturating_add(n));
                 let idle = nums.get(3).copied().unwrap_or(0)
-                    + nums.get(4).copied().unwrap_or(0);
+                    .saturating_add(nums.get(4).copied().unwrap_or(0));
                 snap.cpu_total = total;
                 snap.cpu_idle = idle;
             }

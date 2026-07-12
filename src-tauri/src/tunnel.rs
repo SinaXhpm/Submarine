@@ -863,6 +863,28 @@ async fn read_exact_to(
     }
 }
 
+/// `read_exact` bounded by an ABSOLUTE deadline shared across an entire
+/// handshake phase. read_exact_to's per-read timeout is fine for the fixed-size
+/// SOCKS reads (a bounded count, each capped at 30s), but the byte-at-a-time
+/// loops below reset a per-read timeout on every single byte — so a client
+/// dribbling one byte just under the limit could keep a task (and one of the
+/// 512 connection permits) alive for hours: the slowloris DoS. Threading one
+/// `deadline` through each loop caps the whole field/line/header read regardless
+/// of how the peer paces individual bytes.
+async fn read_exact_by(
+    sock: &mut tokio::net::TcpStream,
+    buf: &mut [u8],
+    deadline: tokio::time::Instant,
+) -> std::io::Result<()> {
+    match tokio::time::timeout_at(deadline, sock.read_exact(buf)).await {
+        Ok(r) => r.map(|_| ()),
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "handshake timed out",
+        )),
+    }
+}
+
 /// Anything else (control bytes, unknown SOCKS versions) gets a clean log
 /// line and the connection closes; we don't try to autodetect TLS or other
 /// raw bytes because there's no useful action we could take with them.
@@ -917,8 +939,12 @@ async fn handle_http_proxy(
     session_id: String,
     tunnel_id: String,
 ) -> Result<(), String> {
+    // One absolute deadline for the ENTIRE HTTP handshake (request line +
+    // headers). Shared across every loop read so cumulative time is bounded no
+    // matter how the peer paces bytes — see read_exact_by.
+    let hs_deadline = tokio::time::Instant::now() + HANDSHAKE_READ_TIMEOUT;
     // Reconstruct the request line: dispatcher ate one byte, read the rest.
-    let mut rest = read_line_max(&mut sock, 8192).await
+    let mut rest = read_line_max(&mut sock, 8192, hs_deadline).await
         .map_err(|e| format!("http read req-line: {}", e))?;
     let mut line = Vec::with_capacity(rest.len() + 1);
     line.push(first_byte);
@@ -935,7 +961,7 @@ async fn handle_http_proxy(
 
     if method == "CONNECT" {
         // `CONNECT host:port HTTP/1.1` — consume headers, open tunnel, reply 200.
-        consume_headers(&mut sock, 16 * 1024).await
+        consume_headers(&mut sock, 16 * 1024, hs_deadline).await
             .map_err(|e| format!("http connect headers: {}", e))?;
         let (host, port) = parse_host_port(&uri)
             .ok_or_else(|| format!("http connect: bad target {:?}", uri))?;
@@ -994,7 +1020,7 @@ async fn handle_http_proxy(
     // proxy-only ones before forwarding. We also force Connection: close
     // upstream so we don't have to demultiplex a keep-alive pipeline back
     // to multiple destinations on the same socket.
-    let headers_raw = read_headers_raw(&mut sock, 64 * 1024).await
+    let headers_raw = read_headers_raw(&mut sock, 64 * 1024, hs_deadline).await
         .map_err(|e| format!("http headers: {}", e))?;
     let forwarded_headers = filter_and_rewrite_headers(&headers_raw);
 
@@ -1040,12 +1066,12 @@ async fn handle_http_proxy(
 /// Read bytes until a CRLF terminator (the line itself is returned without
 /// the CRLF). Capped at `max` bytes to refuse a malicious client streaming
 /// indefinitely.
-async fn read_line_max(sock: &mut tokio::net::TcpStream, max: usize) -> std::io::Result<Vec<u8>> {
+async fn read_line_max(sock: &mut tokio::net::TcpStream, max: usize, deadline: tokio::time::Instant) -> std::io::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(128);
     let mut b = [0u8; 1];
     let mut last_was_cr = false;
     loop {
-        read_exact_to(sock, &mut b).await?;
+        read_exact_by(sock, &mut b, deadline).await?;
         if b[0] == b'\n' && last_was_cr {
             out.pop(); // drop the trailing CR
             return Ok(out);
@@ -1061,10 +1087,10 @@ async fn read_line_max(sock: &mut tokio::net::TcpStream, max: usize) -> std::io:
 /// Consume header block (lines until an empty line). Total bytes capped at
 /// `max`. Used by the CONNECT path where we don't need to parse, just skip
 /// past the headers.
-async fn consume_headers(sock: &mut tokio::net::TcpStream, max: usize) -> std::io::Result<()> {
+async fn consume_headers(sock: &mut tokio::net::TcpStream, max: usize, deadline: tokio::time::Instant) -> std::io::Result<()> {
     let mut total = 0usize;
     loop {
-        let line = read_line_max(sock, max).await?;
+        let line = read_line_max(sock, max, deadline).await?;
         total = total.saturating_add(line.len() + 2);
         if line.is_empty() {
             return Ok(());
@@ -1078,10 +1104,10 @@ async fn consume_headers(sock: &mut tokio::net::TcpStream, max: usize) -> std::i
 /// Read headers and return the raw bytes (each header line followed by
 /// CRLF; terminator blank line is NOT included so the caller can substitute
 /// its own rewritten header set + blank line).
-async fn read_headers_raw(sock: &mut tokio::net::TcpStream, max: usize) -> std::io::Result<Vec<u8>> {
+async fn read_headers_raw(sock: &mut tokio::net::TcpStream, max: usize, deadline: tokio::time::Instant) -> std::io::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(512);
     loop {
-        let line = read_line_max(sock, max).await?;
+        let line = read_line_max(sock, max, deadline).await?;
         if line.is_empty() {
             return Ok(out);
         }
@@ -1214,6 +1240,10 @@ async fn handle_socks4(
     session_id: String,
     tunnel_id: String,
 ) -> Result<(), String> {
+    // One absolute deadline shared across BOTH NUL-terminated reads (userid +
+    // optional SOCKS4a hostname) so the whole handshake is bounded regardless
+    // of per-byte pacing — see read_exact_by.
+    let hs_deadline = tokio::time::Instant::now() + HANDSHAKE_READ_TIMEOUT;
     let mut hdr = [0u8; 7]; // CD + DSTPORT(2) + DSTIP(4)
     read_exact_to(&mut sock, &mut hdr).await.map_err(|e| format!("socks4 read req: {}", e))?;
     let cmd = hdr[0];
@@ -1221,7 +1251,7 @@ async fn handle_socks4(
     let ip = [hdr[3], hdr[4], hdr[5], hdr[6]];
 
     // Read userid (ignored — we don't authenticate) until NUL.
-    let userid = read_until_nul(&mut sock, 256).await
+    let userid = read_until_nul(&mut sock, 256, hs_deadline).await
         .map_err(|e| format!("socks4 read userid: {}", e))?;
     let _ = userid;
 
@@ -1234,7 +1264,7 @@ async fn handle_socks4(
     // SOCKS4a hostname extension: DSTIP = 0.0.0.X with X != 0 → hostname
     // follows the userid, also NUL-terminated.
     let target_host = if ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] != 0 {
-        let host_bytes = read_until_nul(&mut sock, 256).await
+        let host_bytes = read_until_nul(&mut sock, 256, hs_deadline).await
             .map_err(|e| format!("socks4a read host: {}", e))?;
         String::from_utf8(host_bytes).map_err(|e| format!("socks4a host non-utf8: {}", e))?
     } else {
@@ -1278,11 +1308,11 @@ async fn handle_socks4(
 /// hostname extension, both of which are NUL-terminated and unbounded by
 /// the spec — we cap at 256 bytes to refuse malicious clients trying to
 /// stream forever.
-async fn read_until_nul(sock: &mut tokio::net::TcpStream, max: usize) -> std::io::Result<Vec<u8>> {
+async fn read_until_nul(sock: &mut tokio::net::TcpStream, max: usize, deadline: tokio::time::Instant) -> std::io::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(32);
     let mut b = [0u8; 1];
     loop {
-        read_exact_to(sock, &mut b).await?;
+        read_exact_by(sock, &mut b, deadline).await?;
         if b[0] == 0 || out.len() >= max {
             break;
         }
