@@ -1013,13 +1013,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         )}
       </div>
 
-      {/* Bulk action bar — shows for any non-empty selection so the user
-          can send / move / delete with one click without right-clicking.
-          Below the threshold of 1 the bar still appears (was previously
-          ≥2) because in tabs mode the user can't drag-drop between sides
-          and needs a discoverable "Send to other side" target. */}
+      {/* Bulk action bar — shows for any non-empty selection so the user can
+          send / move / delete with one click without right-clicking. It is a
+          FLOATING overlay (absolute, pinned bottom-center) rather than a flex
+          sibling, so its appearance never pushes the file list down — the rows
+          stay exactly where they are when a selection starts. */}
       {selected.size > 0 && (
-        <div className="shrink-0 flex items-center gap-1.5 px-2 py-1 bg-indigo-950/40 border border-indigo-500/30 rounded text-[10.5px] text-indigo-100 font-mono">
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 max-w-[calc(100%-1rem)] flex flex-wrap items-center justify-center gap-1.5 px-2.5 py-1.5 bg-indigo-950/95 border border-indigo-500/40 rounded-lg shadow-2xl shadow-black/50 backdrop-blur-md text-[10.5px] text-indigo-100 font-mono">
           <span className="font-bold uppercase tracking-wider text-[9.5px] text-indigo-300 shrink-0">
             {selected.size} selected
           </span>
@@ -1083,20 +1083,22 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             row click (single select), Ctrl/Shift-click (extend), Ctrl+A
             (select all), right-click → context menu, and the header bar's
             select-all toggle to the right of the address bar. */}
-        <div className={`min-w-full grid ${
-          selected.size > 0
-            ? (showPerms ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_75px_125px]")
-            : (showPerms ? "grid-cols-1 sm:grid-cols-[minmax(180px,1fr)_65px_115px_85px]"                : "grid-cols-1 sm:grid-cols-[minmax(180px,1fr)_75px_125px]")
+        <div className={`group min-w-full grid ${
+          showPerms
+            ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]"
+            : "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_75px_125px]"
         } gap-1.5 px-2.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 select-none font-bold shrink-0 sticky top-0 z-10 shadow-md`}>
-          {selected.size > 0 && (
-            <div
-              className="bg-[#161619] flex items-center justify-center py-1.5 cursor-pointer hover:text-white"
-              onClick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
-              title={allSelected ? "Deselect all" : "Select all"}
-            >
-              {allSelected ? <CheckSquare size={12} className="text-indigo-300" /> : <Square size={12} className="text-zinc-500" />}
-            </div>
-          )}
+          {/* Select-all — the 22px column is ALWAYS reserved (both here and in
+              every row) so starting a selection never shifts the columns
+              sideways. The control is revealed on header hover, or whenever a
+              selection is already active. */}
+          <div
+            className={`bg-[#161619] flex items-center justify-center py-1.5 cursor-pointer hover:text-white transition-opacity ${selected.size > 0 ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+            onClick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
+            title={allSelected ? "Deselect all" : "Select all"}
+          >
+            {allSelected ? <CheckSquare size={12} className="text-indigo-300" /> : <Square size={12} className="text-zinc-500" />}
+          </div>
           <div className="bg-[#161619] cursor-pointer hover:text-white py-1.5" onClick={() => toggleSort("name")}>
             NAME {sortIcon("name")}
           </div>
@@ -1149,39 +1151,41 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 }}
                 data-fs-row-path={entry.path}
                 data-fs-row-isdir={entry.isDir ? "1" : "0"}
-                className={`grid ${
-                  selected.size > 0
-                    ? (showPerms ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]" : "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_75px_125px]")
-                    : (showPerms ? "grid-cols-1 sm:grid-cols-[minmax(180px,1fr)_65px_115px_85px]"                : "grid-cols-1 sm:grid-cols-[minmax(180px,1fr)_75px_125px]")
+                className={`group grid ${
+                  showPerms
+                    ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]"
+                    : "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_75px_125px]"
                 } gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
                   isSel
                     ? "bg-indigo-950/40 border-indigo-400 text-indigo-100 font-bold"
                     : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
                 }`}
               >
-                {selected.size > 0 && (
-                  <div
-                    className="flex items-center justify-center"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      // Pure toggle for this row — doesn't replace the
-                      // selection the way a bare row click does. Keeps
-                      // existing selection intact and just flips this entry
-                      // in/out.
-                      e.stopPropagation();
-                      const next = new Set(selected);
-                      if (next.has(entry.path)) next.delete(entry.path);
-                      else next.add(entry.path);
-                      setSelected(next);
-                      lastSelectedPathRef.current = entry.path;
-                    }}
-                    title={isSel ? "Deselect" : "Select"}
-                  >
-                    {isSel
-                      ? <CheckSquare size={12} className="text-indigo-300" />
-                      : <Square size={12} className="text-zinc-500 hover:text-zinc-300" />}
-                  </div>
-                )}
+                {/* Per-row checkbox. Its 22px column is always reserved, so the
+                    box appearing never shifts the row's content sideways. Hidden
+                    at rest, revealed on row hover or whenever a selection is
+                    already active (so any row can be toggled). */}
+                <div
+                  className={`flex items-center justify-center transition-opacity ${isSel || selected.size > 0 ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    // Pure toggle for this row — doesn't replace the
+                    // selection the way a bare row click does. Keeps
+                    // existing selection intact and just flips this entry
+                    // in/out.
+                    e.stopPropagation();
+                    const next = new Set(selected);
+                    if (next.has(entry.path)) next.delete(entry.path);
+                    else next.add(entry.path);
+                    setSelected(next);
+                    lastSelectedPathRef.current = entry.path;
+                  }}
+                  title={isSel ? "Deselect" : "Select"}
+                >
+                  {isSel
+                    ? <CheckSquare size={12} className="text-indigo-300" />
+                    : <Square size={12} className="text-zinc-500 hover:text-zinc-300" />}
+                </div>
                 <div className="flex items-center gap-2 min-w-0 pr-1">
                   {entry.isDir
                     ? <Folder size={12} className="text-indigo-300 shrink-0" />
