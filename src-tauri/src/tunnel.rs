@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, oneshot, Mutex};
+use tokio::sync::{broadcast, oneshot, Mutex, Semaphore};
 
 use crate::ssh_manager::ClientHandler;
 
@@ -521,6 +521,7 @@ async fn run_local_forward(
 
     let (target_host, target_port) = parse_target(&target)?;
     let active = Arc::new(AtomicU32::new(0));
+    let conn_limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNS));
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
     // The listener does ONE thing: accept incoming TCP connections and spawn
@@ -542,6 +543,14 @@ async fn run_local_forward(
             accepted = listener.accept() => {
                 let (sock, peer) = accepted.map_err(|e| format!("accept: {}", e))?;
                 let _ = sock.set_nodelay(true);
+                // Hard cap on concurrent bridge tasks. try_acquire is
+                // non-blocking: at the cap we close the new socket and keep
+                // serving existing connections rather than queueing (an
+                // unbounded queue is the same resource-exhaustion problem).
+                let permit = match Arc::clone(&conn_limiter).try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => { drop(sock); continue; }
+                };
                 let handle = Arc::clone(&handle);
                 let status = Arc::clone(&status);
                 let app = app.clone();
@@ -553,6 +562,7 @@ async fn run_local_forward(
                 let mut shutdown_rx = shutdown_tx.subscribe();
 
                 tauri::async_runtime::spawn(async move {
+                    let _permit = permit; // released when this bridge task ends
                     let _guard = ActiveGuard::enter(active, Arc::clone(&status), app.clone()).await;
                     emit_log(&app, &session_id, &tunnel_id, "info", "connect",
                              Some(target_full.clone()), Some(peer.to_string()), None);
@@ -619,6 +629,7 @@ async fn run_dynamic_forward(
              Some("Dynamic forward up; accepting SOCKS4 + SOCKS5 (CONNECT)".into()));
 
     let active = Arc::new(AtomicU32::new(0));
+    let conn_limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNS));
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
     // Single-responsibility listener: accept SOCKS / HTTP requests and spawn
@@ -636,6 +647,12 @@ async fn run_dynamic_forward(
             accepted = listener.accept() => {
                 let (sock, peer) = accepted.map_err(|e| format!("accept: {}", e))?;
                 let _ = sock.set_nodelay(true);
+                // Hard cap on concurrent bridge tasks — see run_local_forward.
+                // Non-blocking: at the cap we close the socket and keep serving.
+                let permit = match Arc::clone(&conn_limiter).try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => { drop(sock); continue; }
+                };
                 let handle = Arc::clone(&handle);
                 let status = Arc::clone(&status);
                 let app = app.clone();
@@ -645,6 +662,7 @@ async fn run_dynamic_forward(
                 let mut shutdown_rx = shutdown_tx.subscribe();
 
                 tauri::async_runtime::spawn(async move {
+                    let _permit = permit; // released when this bridge task ends
                     let _guard = ActiveGuard::enter(active, Arc::clone(&status), app.clone()).await;
 
                     tokio::select! {
@@ -811,6 +829,40 @@ async fn open_channel_with_retry(
 ///     Triggered by ANY ASCII uppercase letter — the only legitimate first
 ///     byte of an HTTP request method.
 ///
+/// Maximum concurrent bridge tasks per listener. Each accepted connection
+/// spawns one task holding a socket + FD; without a cap a flood (especially
+/// stalled slowloris connections) spawns them unbounded and exhausts FDs /
+/// memory. 512 is far above any legitimate interactive use (a browser opens
+/// ~6 preconnects per host) while still bounding the blast radius. At the cap
+/// new connections are closed immediately rather than queued.
+const MAX_CONCURRENT_CONNS: usize = 512;
+
+/// Maximum time any single handshake read may block. SOCKS/HTTP proxy
+/// handshakes are a handful of small reads that finish in milliseconds for a
+/// real client; a client that connects and then stalls mid-handshake must not
+/// be able to park a spawned task forever holding a socket + FD (the slowloris
+/// half of a resource-exhaustion DoS). The data-pump phase
+/// (`copy_bidirectional`) is deliberately NOT bounded — a long-lived idle
+/// tunnel is legitimate.
+const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `read_exact` with a per-read deadline. Semantically identical to
+/// `sock.read_exact(buf)` except it returns an `ErrorKind::TimedOut` error
+/// instead of blocking indefinitely when the peer stops sending. Used for
+/// every read on the handshake path so a stalled client can't wedge the task.
+async fn read_exact_to(
+    sock: &mut tokio::net::TcpStream,
+    buf: &mut [u8],
+) -> std::io::Result<()> {
+    match tokio::time::timeout(HANDSHAKE_READ_TIMEOUT, sock.read_exact(buf)).await {
+        Ok(r) => r.map(|_| ()),
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "handshake read timed out",
+        )),
+    }
+}
+
 /// Anything else (control bytes, unknown SOCKS versions) gets a clean log
 /// line and the connection closes; we don't try to autodetect TLS or other
 /// raw bytes because there's no useful action we could take with them.
@@ -993,7 +1045,7 @@ async fn read_line_max(sock: &mut tokio::net::TcpStream, max: usize) -> std::io:
     let mut b = [0u8; 1];
     let mut last_was_cr = false;
     loop {
-        sock.read_exact(&mut b).await?;
+        read_exact_to(sock, &mut b).await?;
         if b[0] == b'\n' && last_was_cr {
             out.pop(); // drop the trailing CR
             return Ok(out);
@@ -1163,7 +1215,7 @@ async fn handle_socks4(
     tunnel_id: String,
 ) -> Result<(), String> {
     let mut hdr = [0u8; 7]; // CD + DSTPORT(2) + DSTIP(4)
-    sock.read_exact(&mut hdr).await.map_err(|e| format!("socks4 read req: {}", e))?;
+    read_exact_to(&mut sock, &mut hdr).await.map_err(|e| format!("socks4 read req: {}", e))?;
     let cmd = hdr[0];
     let port = u16::from_be_bytes([hdr[1], hdr[2]]);
     let ip = [hdr[3], hdr[4], hdr[5], hdr[6]];
@@ -1230,7 +1282,7 @@ async fn read_until_nul(sock: &mut tokio::net::TcpStream, max: usize) -> std::io
     let mut out = Vec::with_capacity(32);
     let mut b = [0u8; 1];
     loop {
-        sock.read_exact(&mut b).await?;
+        read_exact_to(sock, &mut b).await?;
         if b[0] == 0 || out.len() >= max {
             break;
         }
@@ -1254,10 +1306,10 @@ async fn handle_socks5(
 ) -> Result<(), String> {
     // --- Greeting (version already consumed by handle_socks) ---
     let mut nm = [0u8; 1];
-    sock.read_exact(&mut nm).await.map_err(|e| format!("read methods cnt: {}", e))?;
+    read_exact_to(&mut sock, &mut nm).await.map_err(|e| format!("read methods cnt: {}", e))?;
     let n_methods = nm[0] as usize;
     let mut methods = vec![0u8; n_methods];
-    sock.read_exact(&mut methods).await.map_err(|e| format!("read methods: {}", e))?;
+    read_exact_to(&mut sock, &mut methods).await.map_err(|e| format!("read methods: {}", e))?;
     // Always reply NO-AUTH (0x00). If the client didn't offer it, send
     // 0xFF and close.
     if !methods.contains(&0x00) {
@@ -1268,7 +1320,7 @@ async fn handle_socks5(
 
     // --- Request ---
     let mut req_hdr = [0u8; 4];
-    sock.read_exact(&mut req_hdr).await.map_err(|e| format!("read req hdr: {}", e))?;
+    read_exact_to(&mut sock, &mut req_hdr).await.map_err(|e| format!("read req hdr: {}", e))?;
     if req_hdr[0] != 0x05 {
         return Err(format!("unexpected SOCKS version {:#x}", req_hdr[0]));
     }
@@ -1284,15 +1336,15 @@ async fn handle_socks5(
         0x01 => {
             // IPv4
             let mut octets = [0u8; 4];
-            sock.read_exact(&mut octets).await.map_err(|e| format!("read v4: {}", e))?;
+            read_exact_to(&mut sock, &mut octets).await.map_err(|e| format!("read v4: {}", e))?;
             format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
         }
         0x03 => {
             // Domain
             let mut lenb = [0u8; 1];
-            sock.read_exact(&mut lenb).await.map_err(|e| format!("read dom len: {}", e))?;
+            read_exact_to(&mut sock, &mut lenb).await.map_err(|e| format!("read dom len: {}", e))?;
             let mut name = vec![0u8; lenb[0] as usize];
-            sock.read_exact(&mut name).await.map_err(|e| format!("read dom: {}", e))?;
+            read_exact_to(&mut sock, &mut name).await.map_err(|e| format!("read dom: {}", e))?;
             String::from_utf8(name).map_err(|e| format!("non-utf8 host: {}", e))?
         }
         0x04 => {
@@ -1301,7 +1353,7 @@ async fn handle_socks5(
             // `0:0:0:0:0:0:0:1` shape. russh expects a normalised host
             // string when opening direct-tcpip channels.
             let mut octets = [0u8; 16];
-            sock.read_exact(&mut octets).await.map_err(|e| format!("read v6: {}", e))?;
+            read_exact_to(&mut sock, &mut octets).await.map_err(|e| format!("read v6: {}", e))?;
             format!("[{}]", std::net::Ipv6Addr::from(octets))
         }
         other => {
@@ -1310,7 +1362,7 @@ async fn handle_socks5(
         }
     };
     let mut port_buf = [0u8; 2];
-    sock.read_exact(&mut port_buf).await.map_err(|e| format!("read port: {}", e))?;
+    read_exact_to(&mut sock, &mut port_buf).await.map_err(|e| format!("read port: {}", e))?;
     let target_port = u16::from_be_bytes(port_buf);
 
     let target_full = format!("{}:{}", target_host, target_port);
