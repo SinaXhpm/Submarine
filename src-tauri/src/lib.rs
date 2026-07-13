@@ -2316,6 +2316,39 @@ async fn connect_jump_host(
     }
 }
 
+/// Fully tear down ONE connection map-entry by its exact key. Used to reap the
+/// dedicated `::sftp` / `::fwd` secondary connections the separate-sessions
+/// feature spins up, so disconnecting or reconnecting the PRIMARY never orphans
+/// them (a leaked secondary would hold a live TCP + SSH session forever). Safe
+/// to call on a key that doesn't exist — every step is then a no-op. Bumps the
+/// key's generation so the secondary's own health watcher observes the change on
+/// its next tick and bows out WITHOUT emitting a `session-disconnected-{key}`.
+async fn teardown_connection_key(state: &SshState, mirrors: &MirrorMap, key: &str) {
+    // Stop forwarders first so their listener sockets release before the SSH
+    // handle drops — same ordering rationale as disconnect_session.
+    tunnel::stop_all_for_session(&state.tunnels, key).await;
+    state.forwarded_targets.lock().await.remove(key);
+    state.session_tunnel_specs.lock().await.remove(key);
+    mirror::stop_all_for_session(mirrors, key).await;
+    state.sftp_sessions.lock().await.remove(key);
+    state.connections.lock().await.remove(key);
+    state.jump_connections.lock().await.remove(key);
+    {
+        let mut g = state.session_generation.lock().await;
+        let next = g.get(key).copied().unwrap_or(0).wrapping_add(1);
+        g.insert(key.to_string(), next);
+    }
+    // Wipe temp files the secondary's SFTP downloads / drags left behind.
+    let td = session_sftp_dir(key);
+    if td.exists() {
+        let _ = std::fs::remove_dir_all(&td);
+    }
+    let dd = session_drag_dir(key);
+    if dd.exists() {
+        let _ = std::fs::remove_dir_all(&dd);
+    }
+}
+
 #[tauri::command]
 async fn initiate_connection(
     app: tauri::AppHandle,
@@ -2326,14 +2359,51 @@ async fn initiate_connection(
     server_id: i32,
     custom_password: Option<String>,
     quick_auth: Option<QuickAuth>,
+    // Separate-sessions feature (default OFF). `session_role` marks whether this
+    // is the primary terminal connection ("primary", the default) or a dedicated
+    // secondary connection carved off for SFTP ("sftp") or port-forwarding
+    // ("forward"). `separate_sessions` is only meaningful on the PRIMARY call: it
+    // tells the primary to NOT auto-start the saved tunnels itself, because the
+    // dedicated "forward" connection (opened by the frontend right after) will.
+    // See the connection topology notes near the auth block below.
+    session_role: Option<String>,
+    separate_sessions: Option<bool>,
 ) -> Result<(), String> {
     use tauri::Emitter;
     use tokio::time::Duration;
     use russh::client;
     use std::sync::Arc;
     use tokio::sync::Mutex;
-    
-    println!("[BACKEND] initiate_connection invoked for session_id: {}, server_id: {}", session_id, server_id);
+
+    // Connection role + topology flags. Kept as plain locals so the whole
+    // function (worker included) can branch on them without re-parsing.
+    let role: String = session_role
+        .as_deref()
+        .map(str::to_string)
+        .unwrap_or_else(|| "primary".to_string());
+    let is_secondary = role != "primary";
+    let separate = separate_sessions.unwrap_or(false);
+    // Only the PRIMARY drives interactive keyboard-interactive (2FA) auth. A
+    // secondary connection that hit a 2FA challenge would emit a `kbi-prompt`
+    // the UI isn't wired to answer for the suffixed session id, so it would just
+    // hang. Instead we let the secondary fail its auth and the frontend falls
+    // back to routing SFTP / forwarding over the primary connection.
+    let allow_kbi = !is_secondary;
+    // Which connection actually auto-starts this server's saved tunnels. For the
+    // primary, `separate` means "a ::fwd connection will own the tunnels, so
+    // defer". For the "forward" secondary, `separate` is repurposed as an
+    // "autostart" flag: true on a fresh coordinated connect (where the primary
+    // deferred, so ::fwd must start them), false when the ::fwd connection is
+    // opened LIVE by a mid-session toggle (the primary already owns the saved
+    // tunnels, so ::fwd stays empty and only carries newly-added ones).
+    //   - primary + shared mode    → yes (unchanged legacy behaviour)
+    //   - primary + separate mode  → no  (the "forward" connection does it)
+    //   - "forward" + autostart    → yes (tags them under its own ::fwd key)
+    //   - "forward" (live toggle)  → no
+    //   - "sftp" secondary         → no
+    let start_tunnels_inline = (role == "primary" && !separate) || (role == "forward" && separate);
+
+    println!("[BACKEND] initiate_connection invoked for session_id: {} (role: {}, separate: {}), server_id: {}", session_id, role, separate, server_id);
 
     // Reconnect path: if a previous session under this id is still registered,
     // tear it down before starting the fresh handshake. Without this, the
@@ -2414,6 +2484,17 @@ async fn initiate_connection(
     // fine but the mirror keeps writing upload-fail logs against the old
     // socket forever, and manual Stop is the only way to clear it.
     mirror::stop_all_for_session(&mirrors, &session_id).await;
+
+    // Separate-sessions: a PRIMARY (re)connect must reap any stale dedicated
+    // `::sftp` / `::fwd` connections from a previous attempt, so the frontend can
+    // re-open fresh ones after this success. Gated to the primary so a secondary
+    // connect doesn't try to sweep its own (non-existent) grandchildren. Skipped
+    // entirely for keys that already carry a `::` suffix (i.e. this IS a
+    // secondary), and a plain no-op on first connect / shared mode.
+    if !is_secondary {
+        teardown_connection_key(state.inner(), mirrors.inner(), &format!("{}::sftp", session_id)).await;
+        teardown_connection_key(state.inner(), mirrors.inner(), &format!("{}::fwd", session_id)).await;
+    }
 
     // Per-session map for R-tunnel target lookups. Created here so the same
     // Arc can be handed to both the ClientHandler (consulted on incoming
@@ -2871,7 +2952,7 @@ async fn initiate_connection(
                 // the UI, collect the user's answers, and send them back. If
                 // the server doesn't offer it, `run_keyboard_interactive`
                 // returns None and we keep the original auth result untouched.
-                if !matches!(auth_res, Ok(true)) {
+                if allow_kbi && !matches!(auth_res, Ok(true)) {
                     if let Some(kbi_res) = run_keyboard_interactive(
                         &mut session,
                         &effective_user,
@@ -2906,6 +2987,14 @@ async fn initiate_connection(
                             serde_json::json!({}),
                         );
 
+                        // Separate-sessions topology: in shared mode the primary
+                        // owns the saved tunnels; in separate mode the dedicated
+                        // `::fwd` connection owns them (it re-enters this same
+                        // block under its own suffixed session id, so the tunnels
+                        // are tagged/keyed against `::fwd` and ride that handle).
+                        // `start_tunnels_inline` is false for the `::sftp`
+                        // connection and for the primary when `separate` is on.
+                        if start_tunnels_inline {
                         // Auto-start every tunnel attached to this session.
                         // Source of truth is the in-memory `session_tunnel_specs`
                         // map, which carries both the DB-saved rules AND any
@@ -2959,6 +3048,7 @@ async fn initiate_connection(
                                 }
                             }
                         }
+                        } // end if start_tunnels_inline
 
                         // Health watcher: polls the SSH handle every 5s. If
                         // `is_closed()` flips to true while the session is
@@ -3281,6 +3371,113 @@ async fn list_tunnels(
     Ok(tunnel::list_tunnels(&state.tunnels, session_id.as_deref()).await)
 }
 
+/// Separate-sessions fallback. When the setting is ON the dedicated `::fwd`
+/// connection normally auto-starts a node's saved tunnels on itself, and the
+/// PRIMARY deliberately skips them. But if that `::fwd` connection can't be
+/// established (e.g. a 2FA server, where the secondary skips keyboard-
+/// interactive and fails auth), those saved tunnels would never come up. The
+/// frontend calls this on `::fwd` failure so the saved tunnels still start —
+/// this time on the PRIMARY handle, tagged under the primary session id so the
+/// Tunnels panel (which falls back to the primary key) shows and manages them.
+/// No-op for quick-connect (`server_id <= 0`, which has no saved tunnels).
+#[tauri::command]
+async fn start_saved_tunnels_fallback(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    session_id: String,
+    server_id: i32,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    if server_id <= 0 {
+        return Ok(());
+    }
+    // Read the node's saved tunnels JSON in a nested block so the non-Send
+    // rusqlite guard is dropped before any await.
+    let tunnels_json: String = {
+        let conn_guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        let mut stmt = conn
+            .prepare("SELECT tunnels FROM servers WHERE id=?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([server_id]).map_err(|e| e.to_string())?;
+        match rows.next().map_err(|e| e.to_string())? {
+            Some(row) => row
+                .get::<_, Option<String>>(0)
+                .unwrap_or_default()
+                .unwrap_or_else(|| "[]".to_string()),
+            None => "[]".to_string(),
+        }
+    };
+
+    let specs: Vec<tunnel::TunnelSpec> = match serde_json::from_str(&tunnels_json) {
+        Ok(v) => v,
+        Err(_) => return Ok(()), // malformed / empty — nothing to replay
+    };
+    if specs.is_empty() {
+        return Ok(());
+    }
+
+    let handle = {
+        let conns = state.connections.lock().await;
+        conns
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| "Session not connected".to_string())?
+    };
+    let forwarded = {
+        let map = state.forwarded_targets.lock().await;
+        map.get(&session_id)
+            .cloned()
+            .ok_or_else(|| "Session forwarded-targets map missing — reconnect first".to_string())?
+    };
+
+    let emit_log = |msg: &str, log_type: &str| {
+        let _ = app.emit(
+            &format!("session-log-{}", session_id),
+            serde_json::json!({ "msg": msg, "type": log_type }),
+        );
+    };
+    emit_log(
+        "Dedicated forwarding connection unavailable — starting saved tunnels on the main session.",
+        "info",
+    );
+
+    for spec in &specs {
+        // Skip specs already running for this session (idempotent if called
+        // more than once) — dedup against the recorded replay list.
+        {
+            let map = state.session_tunnel_specs.lock().await;
+            if map.get(&session_id).map(|l| l.contains(spec)).unwrap_or(false) {
+                continue;
+            }
+        }
+        match tunnel::start_tunnel(
+            app.clone(),
+            session_id.clone(),
+            Arc::clone(&handle),
+            Arc::clone(&state.tunnels),
+            Arc::clone(&forwarded),
+            spec.clone(),
+        )
+        .await
+        {
+            Ok(id) => {
+                emit_log(&format!("Tunnel started [{}]: {} {}", id, spec.kind, spec.local), "info");
+                let mut map = state.session_tunnel_specs.lock().await;
+                let entry = map.entry(session_id.clone()).or_insert_with(Vec::new);
+                if !entry.contains(spec) {
+                    entry.push(spec.clone());
+                }
+            }
+            Err(e) => {
+                emit_log(&format!("Tunnel start failed ({} {}): {}", spec.kind, spec.local, e), "error");
+            }
+        }
+    }
+    Ok(())
+}
+
 // ----- Mirror commands -----------------------------------------------------
 
 #[tauri::command]
@@ -3386,6 +3583,14 @@ async fn disconnect_session(
     let session_drag = session_drag_dir(&session_id);
     if session_drag.exists() {
         let _ = std::fs::remove_dir_all(&session_drag);
+    }
+    // Separate-sessions: reap the dedicated `::sftp` / `::fwd` secondaries so an
+    // explicit primary disconnect doesn't leak their SSH sessions. Only when
+    // this IS a primary id (no `::` suffix) — a direct disconnect of a secondary
+    // must not recurse into non-existent grandchildren.
+    if !session_id.contains("::") {
+        teardown_connection_key(state.inner(), mirrors.inner(), &format!("{}::sftp", session_id)).await;
+        teardown_connection_key(state.inner(), mirrors.inner(), &format!("{}::fwd", session_id)).await;
     }
     // Tell the UI so the tab status dot flips to red. `user_initiated` keeps
     // SessionView from kicking off an auto-reconnect cycle for an intentional
@@ -3573,6 +3778,9 @@ echo __SUB_INFO_OV_SEP__
 //         expand via ssh_iptables_chain / ssh_nft_chain — the wire cost
 //         of first paint drops from ~50-500 KB to ~1-2 KB, which is the
 //         single biggest bandwidth win for low-bandwidth SSH users.
+//   [4] DNS resolvers — first line `DNSFMT:list`, then raw lines from
+//         resolvectl / systemd-resolve / resolv.conf; the frontend extracts
+//         IPs, dedupes, and flags the systemd-resolved 127.0.0.53 stub.
 // The firewall block tries the user's own credentials first, falls back to
 // non-interactive sudo (`sudo -n`) so we never hang waiting for a password,
 // and prefers iptables over nft because iptables-nft on modern Debian-family
@@ -3666,6 +3874,21 @@ elif command -v nft >/dev/null 2>&1; then
 else
   printf 'FW:none\n'
 fi
+echo __SUB_INFO_NET_SEP__
+# DNS resolvers. systemd-resolved stubs /etc/resolv.conf at 127.0.0.53 and hides
+# the real upstreams behind resolvectl, so we gather from BOTH sources and let
+# the frontend extract IPs, dedupe, and flag the local stub. `systemd-resolve`
+# is the pre-239 name for resolvectl. Always emits the DNSFMT tag so the
+# frontend can tell "no resolvers found" from "section missing".
+printf 'DNSFMT:list\n'
+if command -v resolvectl >/dev/null 2>&1; then
+  resolvectl dns 2>/dev/null
+elif command -v systemd-resolve >/dev/null 2>&1; then
+  systemd-resolve --status 2>/dev/null | grep -iE 'DNS Servers|Current DNS Server'
+fi
+if [ -r /etc/resolv.conf ]; then
+  grep -E '^[[:space:]]*nameserver[[:space:]]' /etc/resolv.conf 2>/dev/null
+fi
 "#;
 
 // Ports: ss is preferred (parseable, modern). Falls back to netstat. The -p
@@ -3680,6 +3903,23 @@ elif command -v netstat >/dev/null 2>&1; then
   netstat -tulnp 2>/dev/null
 else
   printf 'ENGINE:none\n'
+fi
+"#;
+
+// Process list for the Processes tab. First line is a format tag the frontend
+// switches on. Prefer the procps `-eo` custom format (Linux); fall back to
+// BSD-style `ps aux` for busybox / minimal userlands. Sorting + capping happen
+// client-side so the probe stays a single cheap snapshot suitable for a ~1s
+// auto-refresh.
+const INFO_SCRIPT_PROCESSES: &str = r#"if ps -eo pid,user,pcpu,pmem,rss,comm >/dev/null 2>&1; then
+  printf 'PSFMT:full\n'
+  ps -eo pid,user,pcpu,pmem,rss,comm 2>/dev/null
+elif ps aux >/dev/null 2>&1; then
+  printf 'PSFMT:aux\n'
+  ps aux 2>/dev/null
+else
+  printf 'PSFMT:none\n'
+  ps 2>/dev/null
 fi
 "#;
 
@@ -3791,6 +4031,7 @@ async fn ssh_info_probe_section(
         "overview" => (INFO_SCRIPT_OVERVIEW, 10u64),
         "network"  => (INFO_SCRIPT_NETWORK, 10u64),
         "ports"    => (INFO_SCRIPT_PORTS, 10u64),
+        "processes" => (INFO_SCRIPT_PROCESSES, 10u64),
         "services" => (INFO_SCRIPT_SERVICES, 15u64),
         "docker"   => (INFO_SCRIPT_DOCKER, 20u64),
         other => return Err(format!("unknown info section: {}", other)),
@@ -3972,6 +4213,58 @@ async fn ssh_systemctl_action(
 
     let sudo_cmd = format!("sudo -n systemctl {} {} 2>&1; echo __SUB_EXITCODE:$?", action, unit);
     let raw2 = run_exec_capture(&state, &session_id, &sudo_cmd, 30).await?;
+    let (code2, out2) = parse_exit_marker(&raw2);
+    Ok(SystemctlActionResult {
+        success: code2 == 0,
+        exit_code: code2,
+        stdout: out2,
+        stderr: String::new(),
+        used_sudo: true,
+    })
+}
+
+/// Signal a process by PID (Ports / Processes tab "kill" action). Tries the
+/// user's own `kill` first, then `sudo -n kill` on a permission error — same
+/// non-interactive sudo pattern as ssh_systemctl_action. Both the PID (a
+/// validated i32) and the signal (an allow-listed name) are interpolated into
+/// the shell command, so neither is attacker-controlled free text.
+#[tauri::command]
+async fn ssh_kill_process(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    pid: i32,
+    signal: Option<String>,
+) -> Result<SystemctlActionResult, String> {
+    // Never signal PID <= 1 — that's init / the kernel and would be catastrophic.
+    if pid <= 1 {
+        return Err("refusing to signal PID <= 1".to_string());
+    }
+    let sig = signal.unwrap_or_else(|| "TERM".to_string());
+    if !matches!(sig.as_str(), "TERM" | "KILL" | "HUP" | "INT") {
+        return Err(format!("invalid signal: {}", sig));
+    }
+
+    let plain = format!("kill -{} {} 2>&1; echo __SUB_EXITCODE:$?", sig, pid);
+    let raw1 = run_exec_capture(&state, &session_id, &plain, 15).await?;
+    let (code1, out1) = parse_exit_marker(&raw1);
+    let low = out1.to_lowercase();
+    let needs_sudo = code1 != 0
+        && (low.contains("not permitted")
+            || low.contains("permission denied")
+            || low.contains("operation not permitted"));
+
+    if code1 == 0 || !needs_sudo {
+        return Ok(SystemctlActionResult {
+            success: code1 == 0,
+            exit_code: code1,
+            stdout: out1,
+            stderr: String::new(),
+            used_sudo: false,
+        });
+    }
+
+    let sudo_cmd = format!("sudo -n kill -{} {} 2>&1; echo __SUB_EXITCODE:$?", sig, pid);
+    let raw2 = run_exec_capture(&state, &session_id, &sudo_cmd, 15).await?;
     let (code2, out2) = parse_exit_marker(&raw2);
     Ok(SystemctlActionResult {
         success: code2 == 0,
@@ -6836,9 +7129,9 @@ pub fn run() {
             add_credential, edit_credential, delete_credential,
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session,
-            start_tunnel, stop_tunnel, list_tunnels,
+            start_tunnel, stop_tunnel, list_tunnels, start_saved_tunnels_fallback,
             open_terminal, write_terminal_data, resize_terminal, close_terminal,
-            ssh_info_probe_section, ssh_systemctl_action,
+            ssh_info_probe_section, ssh_systemctl_action, ssh_kill_process,
             ssh_iptables_chain, ssh_nft_chain,
             docker::ssh_docker_container_action,
             docker::ssh_docker_inspect,

@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   RefreshCw, AlertTriangle, Loader2, Server, Network as NetIcon,
   Cog, Cpu, MemoryStick, HardDrive, Clock, Activity, Wifi,
   AlertCircle, Search, ShieldAlert, Plug, Play, Square, RotateCw, Box,
-  Shield,
+  Shield, Globe,
 } from "lucide-react";
 import DockerTab from "./DockerTab";
 import { ScrollableTabs } from "./ScrollableTabs";
@@ -14,6 +14,13 @@ import CopyValue from "./CopyValue";
 interface InfoPanelProps {
   sessionId: string;
   disabled?: boolean;
+  // True only while the Info panel is the visible tool. SessionView keeps the
+  // panel MOUNTED (hidden via CSS) across tool switches to preserve cached
+  // probe results, so without this flag a tab's fetch — and especially the
+  // Processes tab's auto-refresh timer — would keep hitting the server over
+  // SSH even while the user is looking at the terminal. We gate all fetching
+  // on it: nothing probes unless the panel is actually on screen.
+  visible?: boolean;
   // Called when the user wants to open a `docker exec -it` terminal into a
   // specific container. SessionView spawns a new terminal tab with the
   // container exec command and switches focus to it. Optional because non-
@@ -35,11 +42,12 @@ interface SystemctlResult {
   used_sudo: boolean;
 }
 
-type SubTab = "overview" | "network" | "ports" | "services" | "docker";
+type SubTab = "overview" | "network" | "ports" | "processes" | "services" | "docker";
 const TABS: { id: SubTab; label: string; icon: any }[] = [
   { id: "overview", label: "System",  icon: Server },
   { id: "network",  label: "Network", icon: NetIcon },
   { id: "ports",    label: "Ports",   icon: Plug },
+  { id: "processes", label: "Processes", icon: Activity },
   { id: "services", label: "Services", icon: Cog },
   { id: "docker",   label: "Docker",  icon: Box },
 ];
@@ -465,13 +473,55 @@ function parseFirewall(section: string): FirewallData {
   return { engine: eng, usedSudo, available: true, denied: false, chains };
 }
 
-interface NetworkData { nics: Nic[]; routes: RouteRow[]; firewall: FirewallData; }
+// DNS resolvers, extracted from the section [4] blob (resolvectl / resolv.conf).
+// `servers` are the distinct configured resolvers; `stub` flags that the
+// systemd-resolved 127.0.0.53 loopback stub was present (real upstreams, when
+// resolvectl surfaced them, are listed instead of the stub).
+interface DnsData { servers: string[]; stub: boolean; }
+function parseDns(section: string): DnsData {
+  const trimmed = section.trim();
+  if (!trimmed) return { servers: [], stub: false };
+  const nl = trimmed.indexOf("\n");
+  const header = nl >= 0 ? trimmed.slice(0, nl).trim() : trimmed;
+  if (!/^DNSFMT:/.test(header)) return { servers: [], stub: false };
+  const body = nl >= 0 ? trimmed.slice(nl + 1) : "";
+  // Token-based extraction: split each line into whitespace/comma fields and
+  // test each whole token as an IP. This is robust against resolvectl's link
+  // labels (`Link 2 (eth0): …`) and, crucially, compressed IPv6 (`::`) which a
+  // loose global-scan regex mangles. IPv6 zone ids (`fe80::1%eth0`) are stripped.
+  const isV4 = (t: string) => /^(?:\d{1,3}\.){3}\d{1,3}$/.test(t);
+  const isV6 = (t: string) =>
+    /^(?:[0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$/.test(t) &&
+    !/:::/.test(t) &&
+    (t.includes("::") || (t.match(/:/g) || []).length >= 2);
+  const isLoopback = (ip: string) => ip.startsWith("127.") || ip === "::1";
+  const seen = new Set<string>();
+  const real: string[] = [];
+  let stub = false;
+  for (const line of body.split(/\r?\n/)) {
+    for (let tok of line.split(/[\s,]+/)) {
+      tok = tok.replace(/[.,;]+$/, "").split("%")[0];
+      if (!isV4(tok) && !isV6(tok)) continue;
+      if (isLoopback(tok)) { stub = true; continue; }
+      if (seen.has(tok)) continue;
+      seen.add(tok);
+      real.push(tok);
+    }
+  }
+  // Only the systemd-resolved stub surfaced (resolvectl unavailable) — show it
+  // rather than an empty card so the user knows resolution goes through it.
+  if (real.length === 0 && stub) return { servers: ["127.0.0.53"], stub: true };
+  return { servers: real, stub };
+}
+
+interface NetworkData { nics: Nic[]; routes: RouteRow[]; firewall: FirewallData; dns: DnsData; }
 function parseNetwork(raw: string): NetworkData {
   const parts = raw.split("__SUB_INFO_NET_SEP__").map(s => s.trim());
   return {
     nics: parseNicsSection(parts[1] ?? ""),
     routes: parseRoutesSection(parts[2] ?? ""),
     firewall: parseFirewall(parts[3] ?? ""),
+    dns: parseDns(parts[4] ?? ""),
   };
 }
 
@@ -585,6 +635,70 @@ function parsePorts(raw: string): PortsData {
   return { engine, rows, partiallyHidden, available: true };
 }
 
+// ---------- PROCESSES ----------
+
+interface ProcRow {
+  pid: string;
+  user: string;
+  cpu: number;    // %CPU (procps: cumulative over lifetime)
+  mem: number;    // %MEM
+  rssKb: number;  // resident set size, KiB
+  command: string;
+}
+// `PSFMT:full` → `ps -eo pid,user,pcpu,pmem,rss,comm`; `PSFMT:aux` → BSD-style
+// `ps aux` (busybox fallback). Both skip the header row and validate the PID.
+function parseProcesses(raw: string): { available: boolean; rows: ProcRow[] } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { available: false, rows: [] };
+  const nl = trimmed.indexOf("\n");
+  const header = nl >= 0 ? trimmed.slice(0, nl).trim() : trimmed;
+  const m = header.match(/^PSFMT:(full|aux|none)$/);
+  const fmt = m ? m[1] : "unknown";
+  if (fmt === "none" || fmt === "unknown") return { available: false, rows: [] };
+  const body = nl >= 0 ? trimmed.slice(nl + 1) : "";
+  const rows: ProcRow[] = [];
+  for (const line of body.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || /^(PID|USER)\b/i.test(t)) continue;
+    const parts = t.split(/\s+/);
+    if (fmt === "full") {
+      // pid user %cpu %mem rss comm...
+      if (parts.length < 6) continue;
+      if (!/^\d+$/.test(parts[0])) continue;
+      rows.push({
+        pid: parts[0],
+        user: parts[1],
+        cpu: parseFloat(parts[2]) || 0,
+        mem: parseFloat(parts[3]) || 0,
+        rssKb: parseInt(parts[4], 10) || 0,
+        command: parts.slice(5).join(" "),
+      });
+    } else {
+      // aux: user pid %cpu %mem vsz rss tty stat start time command...
+      if (parts.length < 11) continue;
+      if (!/^\d+$/.test(parts[1])) continue;
+      rows.push({
+        pid: parts[1],
+        user: parts[0],
+        cpu: parseFloat(parts[2]) || 0,
+        mem: parseFloat(parts[3]) || 0,
+        rssKb: parseInt(parts[5], 10) || 0,
+        command: parts.slice(10).join(" "),
+      });
+    }
+  }
+  return { available: true, rows };
+}
+
+// KiB → compact human size for the RSS column.
+function fmtKb(kb: number): string {
+  if (!kb) return "—";
+  if (kb < 1024) return `${kb}K`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)}M`;
+  return `${(mb / 1024).toFixed(1)}G`;
+}
+
 // ---------- SERVICES ----------
 
 interface ServiceRow {
@@ -658,7 +772,7 @@ const subTabBase = "shrink-0 h-8 sm:h-7 px-2.5 rounded-lg flex items-center gap-
 const subTabIdle = "text-zinc-400 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white";
 const subTabActive = "bg-primary/10 text-primary border border-primary/20 shadow-inner";
 
-const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelProps) => {
+const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTerminal }: InfoPanelProps) => {
   const [tab, setTab] = useState<SubTab>("overview");
 
   const [overview, setOverview] = useState<TabState<OverviewData>>(freshTab);
@@ -673,7 +787,9 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
   // this generic ssh_info_probe_section pipeline. Looking the docker tab up
   // here would be a type error AND a behavioural bug (running the heavy
   // umbrella probe needlessly).
-  type ProbeSubTab = Exclude<SubTab, "docker">;
+  // Docker AND processes own their internal state + fetch cadence (processes
+  // self-refreshes on a timer), so both bypass this generic probe pipeline.
+  type ProbeSubTab = Exclude<SubTab, "docker" | "processes">;
   const stateMap: Record<ProbeSubTab, readonly [TabState<any>, React.Dispatch<React.SetStateAction<TabState<any>>>]> = {
     overview: [overview, setOverview] as const,
     network:  [network, setNetwork] as const,
@@ -684,7 +800,7 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
   // refresh button can render uniformly; the real status lives inside
   // DockerTab itself.
   const dockerSentinel: TabState<null> = { loaded: true, loading: false, error: null, data: null, meta: null };
-  const activeState: TabState<any> = tab === "docker" ? dockerSentinel : stateMap[tab as ProbeSubTab][0];
+  const activeState: TabState<any> = (tab === "docker" || tab === "processes") ? dockerSentinel : stateMap[tab as ProbeSubTab][0];
 
   // Per-section token counter. We can't cancel an SSH exec channel from
   // the frontend (that would need a backend-side abort handle, out of
@@ -732,13 +848,18 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
   // sub-sub-tabs, so we skip the umbrella probe for it.
   useEffect(() => {
     if (disabled) return;
-    if (tab === "docker") return;
+    // Only fetch while the panel is actually on screen — otherwise switching
+    // sub-tabs behind a hidden panel (or the initial mount) would pull data
+    // over SSH the user can't see. Becoming visible re-runs this and loads
+    // whatever the active tab needs.
+    if (!visible) return;
+    if (tab === "docker" || tab === "processes") return;
     const [st] = stateMap[tab as ProbeSubTab];
     if (!st.loaded && !st.loading) {
       fetchSection(tab);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, disabled, sessionId]);
+  }, [tab, disabled, sessionId, visible]);
 
   // On tab switch, invalidate in-flight probes for the tab we're leaving
   // by bumping every section's token in the cleanup. Placed in cleanup
@@ -785,7 +906,7 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="shrink-0 h-9 px-3 flex items-center justify-between border-b border-white/5 bg-white/[0.02] gap-2">
         <span className="text-[10px] text-zinc-500 truncate select-text">{fmtMeta}</span>
-        {tab !== "docker" && (
+        {tab !== "docker" && tab !== "processes" && (
           <button
             onClick={() => fetchSection(tab)}
             disabled={activeState.loading || disabled}
@@ -829,7 +950,8 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
 
         {tab === "overview" && overview.data && <OverviewTab data={overview.data} />}
         {tab === "network"  && network.data  && <NetworkTab sessionId={sessionId} data={network.data} />}
-        {tab === "ports"    && ports.data    && <PortsTab data={ports.data} />}
+        {tab === "ports"    && ports.data    && <PortsTab data={ports.data} sessionId={sessionId} onRefresh={() => fetchSection("ports")} />}
+        {tab === "processes" && <ProcessesTab sessionId={sessionId} disabled={disabled} visible={visible} />}
         {tab === "services" && services.data && (
           <ServicesTab
             sessionId={sessionId}
@@ -851,19 +973,21 @@ const InfoPanel = ({ sessionId, disabled, onOpenContainerTerminal }: InfoPanelPr
 
 // ============== Sub-tabs ==============
 
-// Overview lays its cards strictly 2-per-row on any width ≥560px (1-per-row
-// below) — the user explicitly asked for "pair, pair" instead of the previous
-// 3-up grid that felt cramped. The bottom row pairs Memory with Disks; both
-// use `items-stretch` so they share a track height (looks balanced even
-// when Memory has fewer rows than Disks) and the Disks card's body scrolls
-// internally past a few entries so it doesn't shove Memory off-screen on
-// short windows.
+// Overview pairs its cards 2-per-row ONLY when the panel itself is wide enough
+// (≥480px), collapsing to 1-per-row (each card a full row) otherwise. The
+// breakpoint is a CONTAINER query against this tab's own width — not the
+// viewport — because InfoPanel lives in the resizable tool pane, which is often
+// narrow even on a wide window. A viewport `@media` query here forced two
+// cramped columns into a skinny pane and mangled the content. The bottom row
+// pairs Memory with Disks; both use `items-stretch` so they share a track
+// height, and the Disks card's body scrolls internally past a few entries so it
+// doesn't shove Memory off-screen on short windows.
 const OverviewTab = ({ data }: { data: OverviewData }) => {
   const cpuTxt = data.cpuCount ? `${data.cpuCount} core${data.cpuCount === 1 ? "" : "s"}` : "—";
   return (
-    <div className="min-h-full flex flex-col gap-4">
+    <div className="min-h-full flex flex-col gap-4 [container-type:inline-size]">
       {/* Row 1: Identity | Runtime */}
-      <div className="grid gap-4 grid-cols-1 [@media(min-width:560px)]:grid-cols-2 items-stretch">
+      <div className="grid gap-4 grid-cols-1 [@container(min-width:480px)]:grid-cols-2 items-stretch">
         <InfoCard title="Identity" icon={<Server size={12} />} className="h-full" bodyClassName="!p-4 space-y-1">
           <KV label="Hostname" value={data.hostname || "—"} copyable />
           <KV label="OS" value={data.os || "—"} copyable />
@@ -882,7 +1006,7 @@ const OverviewTab = ({ data }: { data: OverviewData }) => {
       {/* Row 2: Memory | Disks (paired). Disks grows to take remaining
           vertical space via flex-1 on this wrapper, and its body scrolls
           internally so Memory isn't squashed when there are many disks. */}
-      <div className="grid gap-4 grid-cols-1 [@media(min-width:560px)]:grid-cols-2 items-stretch flex-1 min-h-0">
+      <div className="grid gap-4 grid-cols-1 [@container(min-width:480px)]:grid-cols-2 items-stretch flex-1 min-h-0">
         {data.mem ? (
           <InfoCard title="Memory" icon={<MemoryStick size={12} />} className="h-full" bodyClassName="!p-4 space-y-3">
             <Meter label="RAM" used={data.mem.usedMem} total={data.mem.totalMem} />
@@ -1008,6 +1132,29 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
               <div className="text-[10px] text-zinc-500 italic px-2 pt-1">+{data.routes.length - 30} more</div>
             )}
           </div>
+        </InfoCard>
+      )}
+
+      {data.dns.servers.length > 0 && (
+        <InfoCard title={`DNS Servers (${data.dns.servers.length})`} icon={<Globe size={12} />}>
+          <div className="space-y-1">
+            {data.dns.servers.map((s, i) => (
+              <div key={i} className="flex items-center gap-2 text-[11px] font-mono px-2 py-1 rounded bg-black/30 border border-white/5">
+                <Globe size={11} className="text-primary/70 shrink-0" />
+                <span className="text-zinc-200 truncate min-w-0 flex-1">
+                  <CopyValue value={s}>{s}</CopyValue>
+                </span>
+                {data.dns.stub && s.startsWith("127.") && (
+                  <span className="text-[9px] uppercase tracking-wider text-amber-400/80 shrink-0">stub</span>
+                )}
+              </div>
+            ))}
+          </div>
+          {data.dns.stub && data.dns.servers.some(s => !s.startsWith("127.")) && (
+            <div className="text-[10px] text-zinc-500 italic mt-2 px-1">
+              Resolved through the local systemd-resolved stub (127.0.0.53).
+            </div>
+          )}
         </InfoCard>
       )}
 
@@ -1173,9 +1320,33 @@ const ChevronRightIcon = ({ open }: { open: boolean }) => (
   </svg>
 );
 
-const PortsTab = ({ data }: { data: PortsData }) => {
+const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: string; onRefresh: () => void }) => {
   const [filter, setFilter] = useState("");
   const [protoFilter, setProtoFilter] = useState<"all" | "tcp" | "udp">("all");
+  const [killing, setKilling] = useState<Record<string, boolean>>({});
+  const [killError, setKillError] = useState<string | null>(null);
+  const confirm = useConfirm();
+
+  const killProc = async (pid: string, name: string) => {
+    const ok = await confirm({
+      title: `Kill PID ${pid}?`,
+      message: `Send SIGTERM to ${name || "this process"} — it will stop listening on its port.`,
+      destructive: true,
+      okLabel: "Kill",
+    });
+    if (!ok) return;
+    setKilling(k => ({ ...k, [pid]: true }));
+    setKillError(null);
+    try {
+      const r = await invoke<SystemctlResult>("ssh_kill_process", { sessionId, pid: parseInt(pid, 10), signal: "TERM" });
+      if (!r.success) setKillError(`PID ${pid}: ${r.stdout || `kill exited ${r.exit_code}`}`);
+      else setTimeout(onRefresh, 500);
+    } catch (e: any) {
+      setKillError(`PID ${pid}: ${typeof e === "string" ? e : (e?.message || "kill failed")}`);
+    } finally {
+      setKilling(k => ({ ...k, [pid]: false }));
+    }
+  };
 
   const filtered = useMemo(() => {
     let rows = data.rows;
@@ -1211,6 +1382,9 @@ const PortsTab = ({ data }: { data: PortsData }) => {
           Some process names are hidden because your user doesn't own them. Reconnect as root or grant NOPASSWD sudo to see all.
         </BannerIcon>
       )}
+      {killError && (
+        <BannerIcon tone="red" icon={<AlertTriangle size={14} />}>{killError}</BannerIcon>
+      )}
 
       <InfoCard
         title={`Listening · ${tcp.length} tcp · ${udp.length} udp`}
@@ -1229,37 +1403,242 @@ const PortsTab = ({ data }: { data: PortsData }) => {
         {filtered.length === 0 ? (
           <Empty>{data.rows.length === 0 ? "No listening sockets reported." : "No matches."}</Empty>
         ) : (
-          // A 2-line card per socket, not a 6-column table: a wide monospace
-          // table forced constant horizontal scroll in a narrow tool pane and
-          // its `truncate` did nothing under auto table-layout. Line 1: proto +
-          // port + bind address + state; line 2: process + pid. Everything
-          // truncates cleanly at any pane width.
-          <div className="space-y-1">
-            {filtered.map((r, i) => {
-              const anyBind = r.localAddr === "0.0.0.0" || r.localAddr === "*" || r.localAddr === "::";
-              return (
-                <div key={i} className="bg-black/30 border border-white/5 rounded-lg px-2.5 py-1.5">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${r.proto === "tcp" ? "bg-sky-500/15 text-sky-300 border border-sky-500/30" : "bg-amber-500/15 text-amber-300 border border-amber-500/30"}`}>{r.proto}</span>
-                    <span className="shrink-0 text-[12px] font-mono font-bold text-white">
-                      {r.localPort ? <CopyValue value={r.localPort}>{r.localPort}</CopyValue> : "—"}
-                    </span>
-                    <span className="min-w-0 flex-1 text-[10px] font-mono text-zinc-500 truncate" title={r.localAddr}>
-                      {r.localAddr ? (anyBind ? <span className="text-zinc-600">{r.localAddr}</span> : <CopyValue value={r.localAddr}>{r.localAddr}</CopyValue>) : ""}
-                    </span>
-                    {r.state && <span className="shrink-0 text-[9px] uppercase tracking-wider text-zinc-600">{r.state}</span>}
-                  </div>
-                  <div className="flex items-center gap-2 min-w-0 mt-0.5">
-                    <span className="min-w-0 flex-1 text-[11px] font-mono text-zinc-200 truncate" title={r.process}>
-                      {r.process ? <CopyValue value={r.process}>{r.process}</CopyValue> : <span className="text-zinc-600 italic">process hidden (not owned by you)</span>}
-                    </span>
-                    {r.pid && <span className="shrink-0 text-[10px] font-mono text-zinc-500">pid {r.pid}</span>}
-                  </div>
-                </div>
-              );
-            })}
+          // Tabular layout — everything aligned in columns so a socket's proto /
+          // port / bind / state / process / pid read at a glance. `table-fixed`
+          // is the key: it gives each column a definite width so the address &
+          // process cells actually truncate (full value on hover) instead of
+          // stretching the table and forcing endless horizontal scroll. Fixed
+          // columns hold the short fields; the two flexible columns absorb the
+          // slack. `min-w` keeps it readable, scrolling only when the pane is
+          // genuinely too narrow.
+          <div className="overflow-x-auto custom-scrollbar -mx-1 px-1">
+            <table className="w-full min-w-[460px] table-fixed border-collapse text-[11px] font-mono">
+              <thead>
+                <tr className="text-left text-[9px] uppercase tracking-wider text-zinc-500 border-b border-white/10">
+                  <th className="font-bold px-2 py-1.5 w-[46px]">Proto</th>
+                  <th className="font-bold px-2 py-1.5 w-[54px]">Port</th>
+                  <th className="font-bold px-2 py-1.5">Address</th>
+                  <th className="font-bold px-2 py-1.5 w-[72px]">State</th>
+                  <th className="font-bold px-2 py-1.5">Process</th>
+                  <th className="font-bold px-2 py-1.5 w-[52px]">PID</th>
+                  <th className="font-bold px-1 py-1.5 w-[36px]"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r, i) => {
+                  const anyBind = r.localAddr === "0.0.0.0" || r.localAddr === "*" || r.localAddr === "::";
+                  return (
+                    <tr key={i} className="border-b border-white/5 hover:bg-white/5">
+                      <td className="px-2 py-1 align-middle">
+                        <span className={`text-[9px] px-1 py-0.5 rounded font-bold uppercase ${r.proto === "tcp" ? "bg-sky-500/15 text-sky-300 border border-sky-500/30" : "bg-amber-500/15 text-amber-300 border border-amber-500/30"}`}>{r.proto}</span>
+                      </td>
+                      <td className="px-2 py-1 align-middle font-bold text-white whitespace-nowrap">
+                        {r.localPort ? <CopyValue value={r.localPort}>{r.localPort}</CopyValue> : "—"}
+                      </td>
+                      <td className="px-2 py-1 align-middle text-zinc-400 truncate" title={r.localAddr}>
+                        {r.localAddr ? (anyBind ? <span className="text-zinc-600">{r.localAddr}</span> : <CopyValue value={r.localAddr}>{r.localAddr}</CopyValue>) : ""}
+                      </td>
+                      <td className="px-2 py-1 align-middle text-[10px] uppercase tracking-wider text-zinc-500 truncate" title={r.state}>{r.state || ""}</td>
+                      <td className="px-2 py-1 align-middle text-zinc-200 truncate" title={r.process}>
+                        {r.process ? <CopyValue value={r.process}>{r.process}</CopyValue> : <span className="text-zinc-600 italic">hidden</span>}
+                      </td>
+                      <td className="px-2 py-1 align-middle text-zinc-500 whitespace-nowrap">{r.pid || ""}</td>
+                      <td className="px-1 py-1 align-middle text-right">
+                        {r.pid && (
+                          <button
+                            onClick={() => killProc(r.pid, r.process)}
+                            disabled={!!killing[r.pid]}
+                            title={`Kill PID ${r.pid} (SIGTERM)`}
+                            className="p-1 rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+                          >
+                            {killing[r.pid] ? <Loader2 size={12} className="animate-spin" /> : <Square size={11} />}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
+      </InfoCard>
+    </div>
+  );
+};
+
+const REFRESH_OPTIONS: { label: string; ms: number }[] = [
+  { label: "Manual", ms: 0 },
+  { label: "1s", ms: 1000 },
+  { label: "2s", ms: 2000 },
+  { label: "5s", ms: 5000 },
+];
+
+// Self-contained live process monitor. Unlike the other Info tabs it owns its
+// own fetch + auto-refresh cadence (default 2s, configurable / manual) instead
+// of going through the umbrella probe pipeline, so a 1s refresh doesn't flicker
+// the shared loading state. Simple summary table with the vital columns only,
+// horizontal scroll for long command lines, sortable by CPU/MEM, kill per row.
+const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: string; disabled?: boolean; visible?: boolean }) => {
+  const [rows, setRows] = useState<ProcRow[]>([]);
+  const [available, setAvailable] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [lastMs, setLastMs] = useState<number | null>(null);
+  const [intervalMs, setIntervalMs] = useState(2000);
+  const [filter, setFilter] = useState("");
+  const [sortKey, setSortKey] = useState<"cpu" | "mem">("cpu");
+  const [killing, setKilling] = useState<Record<string, boolean>>({});
+  const confirm = useConfirm();
+
+  const fetchNow = useCallback(async () => {
+    if (disabled || !visible) return;
+    setLoading(true);
+    try {
+      const r = await invoke<SectionResult>("ssh_info_probe_section", { sessionId, section: "processes" });
+      const p = parseProcesses(r.data);
+      setRows(p.rows);
+      setAvailable(p.available);
+      setLastMs(r.exec_ms);
+      setErr(null);
+    } catch (e: any) {
+      setErr(typeof e === "string" ? e : (e?.message || "probe failed"));
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId, disabled, visible]);
+
+  // Fetch when the tab becomes visible (and on session change). While hidden we
+  // fetch nothing — no snapshot, no timer — so a backgrounded Info panel never
+  // pulls process data over SSH.
+  useEffect(() => { if (visible) fetchNow(); }, [fetchNow, visible]);
+  // Auto-refresh timer — off when Manual (intervalMs 0), the session is down,
+  // or the panel is off screen.
+  useEffect(() => {
+    if (!intervalMs || disabled || !visible) return;
+    const id = setInterval(fetchNow, intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs, disabled, visible, fetchNow]);
+
+  const killProc = async (row: ProcRow) => {
+    const ok = await confirm({
+      title: `Kill PID ${row.pid}?`,
+      message: `Send SIGTERM to "${row.command}" (${row.user}).`,
+      destructive: true,
+      okLabel: "Kill",
+    });
+    if (!ok) return;
+    setKilling(k => ({ ...k, [row.pid]: true }));
+    try {
+      const r = await invoke<SystemctlResult>("ssh_kill_process", { sessionId, pid: parseInt(row.pid, 10), signal: "TERM" });
+      if (!r.success) setErr(`PID ${row.pid}: ${r.stdout || `kill exited ${r.exit_code}`}`);
+      setTimeout(fetchNow, 400);
+    } catch (e: any) {
+      setErr(`PID ${row.pid}: ${typeof e === "string" ? e : (e?.message || "kill failed")}`);
+    } finally {
+      setKilling(k => ({ ...k, [row.pid]: false }));
+    }
+  };
+
+  const filtered = useMemo(() => {
+    let rs = rows;
+    if (filter.trim()) {
+      const f = filter.toLowerCase();
+      rs = rs.filter(r => r.command.toLowerCase().includes(f) || r.user.toLowerCase().includes(f) || r.pid.includes(f));
+    }
+    return [...rs].sort((a, b) => (sortKey === "cpu" ? b.cpu - a.cpu : b.mem - a.mem));
+  }, [rows, filter, sortKey]);
+
+  const CAP = 250;
+  const shown = filtered.slice(0, CAP);
+
+  if (!available && !loading && rows.length === 0) {
+    return (
+      <BannerIcon tone="amber" icon={<AlertTriangle size={14} />}>
+        <code className="font-mono px-1">ps</code> is not available on this host, so the process list can't be read.
+      </BannerIcon>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {err && <BannerIcon tone="red" icon={<AlertTriangle size={14} />}>{err}</BannerIcon>}
+      <InfoCard
+        title={`Processes · ${rows.length}`}
+        icon={<Activity size={12} />}
+        toolbar={
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="flex items-center gap-1">
+              {REFRESH_OPTIONS.map(o => (
+                <ProtoPill key={o.ms} active={intervalMs === o.ms} onClick={() => setIntervalMs(o.ms)}>{o.label}</ProtoPill>
+              ))}
+            </div>
+            <button
+              onClick={fetchNow}
+              disabled={loading || disabled}
+              title="Refresh now"
+              className="h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 transition-all"
+            >
+              {loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+            </button>
+            <div className="flex-1 min-w-[110px]">
+              <FilterInput value={filter} onChange={setFilter} placeholder="Filter process / user / pid" />
+            </div>
+          </div>
+        }
+      >
+        {shown.length === 0 ? (
+          <Empty>{rows.length === 0 ? "No processes reported." : "No matches."}</Empty>
+        ) : (
+          // Simple summary table with horizontal scroll (whitespace-nowrap keeps
+          // long command lines on one line and lets the table scroll sideways).
+          <div className="overflow-x-auto custom-scrollbar -mx-1 px-1">
+            <table className="w-full border-collapse text-[11px] font-mono whitespace-nowrap">
+              <thead>
+                <tr className="text-left text-[9px] uppercase tracking-wider text-zinc-500 border-b border-white/10">
+                  <th className="font-bold px-2 py-1.5">PID</th>
+                  <th className="font-bold px-2 py-1.5">User</th>
+                  <th onClick={() => setSortKey("cpu")} className={`font-bold px-2 py-1.5 cursor-pointer hover:text-zinc-300 ${sortKey === "cpu" ? "text-primary" : ""}`}>CPU%</th>
+                  <th onClick={() => setSortKey("mem")} className={`font-bold px-2 py-1.5 cursor-pointer hover:text-zinc-300 ${sortKey === "mem" ? "text-primary" : ""}`}>MEM%</th>
+                  <th className="font-bold px-2 py-1.5">RSS</th>
+                  <th className="font-bold px-2 py-1.5">Command</th>
+                  <th className="font-bold px-1 py-1.5 w-[36px]"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((r) => (
+                  <tr key={r.pid} className="border-b border-white/5 hover:bg-white/5">
+                    <td className="px-2 py-1 text-zinc-400"><CopyValue value={r.pid}>{r.pid}</CopyValue></td>
+                    <td className="px-2 py-1 text-zinc-400">{r.user}</td>
+                    <td className={`px-2 py-1 tabular-nums ${r.cpu >= 20 ? "text-amber-300 font-bold" : "text-zinc-300"}`}>{r.cpu.toFixed(1)}</td>
+                    <td className={`px-2 py-1 tabular-nums ${r.mem >= 20 ? "text-amber-300 font-bold" : "text-zinc-300"}`}>{r.mem.toFixed(1)}</td>
+                    <td className="px-2 py-1 tabular-nums text-zinc-400">{fmtKb(r.rssKb)}</td>
+                    <td className="px-2 py-1 text-zinc-200"><CopyValue value={r.command}>{r.command}</CopyValue></td>
+                    <td className="px-1 py-1 text-right">
+                      <button
+                        onClick={() => killProc(r)}
+                        disabled={!!killing[r.pid]}
+                        title={`Kill PID ${r.pid} (SIGTERM)`}
+                        className="p-1 rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+                      >
+                        {killing[r.pid] ? <Loader2 size={12} className="animate-spin" /> : <Square size={11} />}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {filtered.length > CAP && (
+              <div className="text-[10px] text-zinc-500 italic px-2 pt-2">Showing top {CAP} of {filtered.length} by {sortKey.toUpperCase()}.</div>
+            )}
+          </div>
+        )}
+        <div className="mt-2 text-[10px] text-zinc-600 flex items-center gap-2">
+          {intervalMs
+            ? <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> auto · every {intervalMs / 1000}s</span>
+            : <span>manual refresh</span>}
+          {lastMs != null && <span>· probed in {lastMs} ms</span>}
+        </div>
       </InfoCard>
     </div>
   );

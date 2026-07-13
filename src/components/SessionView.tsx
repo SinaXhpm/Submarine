@@ -11,6 +11,30 @@ import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
 
+// Compact "run this tab on its own dedicated SSH connection" toggle, shown in
+// the SFTP and Port-Forwarding tab headers. The status dot reflects the live
+// state of the dedicated connection: green = up, amber (pulsing) = opening /
+// applies-on-connect, red = couldn't be established (falling back to the main
+// session). No dot when the toggle is off.
+const SepToggle = ({ on, onToggle, status, title }: {
+  on: boolean;
+  onToggle: (v: boolean) => void;
+  status: 'ready' | 'pending' | 'failed' | 'off';
+  title: string;
+}) => (
+  <label className="flex items-center gap-1.5 text-[10px] text-zinc-400 hover:text-zinc-200 cursor-pointer select-none" title={title}>
+    <input type="checkbox" className="w-3 h-3 accent-primary" checked={on} onChange={(e) => onToggle(e.target.checked)} />
+    <span className="uppercase tracking-wider font-bold">Dedicated session</span>
+    {on && (
+      <span
+        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+          status === 'ready' ? 'bg-emerald-400' : status === 'failed' ? 'bg-red-400' : 'bg-amber-400 animate-pulse'
+        }`}
+      />
+    )}
+  </label>
+);
+
 const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
@@ -60,6 +84,102 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // reconnected terminal appeared frozen while SFTP/tunnels worked fine.
   const statusRef = useRef(status);
   useEffect(() => { statusRef.current = status; }, [status]);
+
+  // ---- Dedicated SSH connections for SFTP / port-forwarding -----------------
+  // Two INDEPENDENT, per-tab toggles (the controls live in the SFTP and
+  // Port-Forwarding tab headers, persisted globally in localStorage under
+  // `submarine-separate-sftp` / `submarine-separate-fwd`, default OFF). When a
+  // toggle is on we open a dedicated secondary SSH connection — keyed
+  // `${session.id}::sftp` / `${session.id}::fwd` — and route that tab at it, so
+  // a big transfer or a busy tunnel doesn't contend with the interactive shell.
+  // Everything degrades to the primary connection if a secondary can't be
+  // established (e.g. a 2FA server, where the backend skips keyboard-interactive
+  // on secondaries): SFTP falls back to the primary and saved tunnels replay on
+  // it. Toggling while connected applies immediately.
+  const [separateSftp, setSeparateSftp] = useState(localStorage.getItem('submarine-separate-sftp') === 'true');
+  const [separateFwd, setSeparateFwd] = useState(localStorage.getItem('submarine-separate-fwd') === 'true');
+  const separateSftpRef = useRef(separateSftp);
+  const separateFwdRef = useRef(separateFwd);
+  useEffect(() => { separateSftpRef.current = separateSftp; }, [separateSftp]);
+  useEffect(() => { separateFwdRef.current = separateFwd; }, [separateFwd]);
+
+  // Live status of the dedicated connections (drives the tab-header indicators).
+  // `sftpConnReady` gates whether the SFTP browser targets `::sftp` (true) or
+  // the primary (false). `fwdConnStatus` is 'off' when not engaged, 'connecting'
+  // during the `::fwd` handshake (Tunnels panel disabled meanwhile so a manual
+  // add doesn't land on the wrong connection), 'ready' once up, or 'failed' when
+  // it couldn't be established (tunnels then fall back to the primary).
+  const [sftpConnReady, setSftpConnReady] = useState(false);
+  const [fwdConnStatus, setFwdConnStatus] = useState<'off' | 'connecting' | 'ready' | 'failed'>('off');
+  // Refs so the toggle handlers (invoked from a possibly-stale closure) read the
+  // latest connection status.
+  const sftpConnReadyRef = useRef(false);
+  const fwdConnStatusRef = useRef<'off' | 'connecting' | 'ready' | 'failed'>('off');
+  useEffect(() => { sftpConnReadyRef.current = sftpConnReady; }, [sftpConnReady]);
+  useEffect(() => { fwdConnStatusRef.current = fwdConnStatus; }, [fwdConnStatus]);
+
+  const openSftpConn = () => {
+    invoke("initiate_connection", {
+      sessionId: `${session.id}::sftp`,
+      serverId: session.serverId,
+      customPassword: customPasswordRef.current || null,
+      quickAuth: session.quickAuth || null,
+      sessionRole: "sftp",
+      separateSessions: false,
+    }).catch(console.error);
+  };
+  // `autostart` = should the `::fwd` connection auto-start the node's saved
+  // tunnels on itself. True only on a fresh connect where the primary deferred
+  // them (separateFwd on at connect time); false for a live toggle, where the
+  // primary already owns the saved tunnels and `::fwd` is just for new ones.
+  const openFwdConn = (autostart: boolean) => {
+    setFwdConnStatus('connecting');
+    invoke("initiate_connection", {
+      sessionId: `${session.id}::fwd`,
+      serverId: session.serverId,
+      customPassword: customPasswordRef.current || null,
+      quickAuth: session.quickAuth || null,
+      sessionRole: "forward",
+      separateSessions: autostart,
+    }).catch(console.error);
+  };
+  const closeSecondaryConn = (suffix: 'sftp' | 'fwd') => {
+    invoke("disconnect_session", { sessionId: `${session.id}::${suffix}` }).catch(console.error);
+  };
+
+  // Open whichever dedicated connections are enabled — called from the primary
+  // `connection-success` handler (first-connect AND reconnect; the backend
+  // sweeps stale secondaries at the top of the primary's connect, so this is
+  // clean). Fresh connect → `::fwd` auto-starts saved tunnels (primary deferred).
+  const openSecondaryConnections = () => {
+    if (separateSftpRef.current) openSftpConn();
+    if (separateFwdRef.current) openFwdConn(true);
+  };
+
+  // Reset secondary tracking when the primary drops / reconnects. The backend
+  // has already torn the secondaries down (primary connect-teardown, or the
+  // primary disconnect sweep); this just returns the UI to primary-backed keys.
+  const resetSecondaryStatus = () => {
+    setSftpConnReady(false);
+    setFwdConnStatus('off');
+  };
+
+  // Tab-header toggles. Persist immediately; apply live if the session is
+  // already connected, otherwise they take effect on the next connect.
+  const toggleSeparateSftp = (on: boolean) => {
+    setSeparateSftp(on);
+    localStorage.setItem('submarine-separate-sftp', String(on));
+    if (statusRef.current !== 'connected') return;
+    if (on && !sftpConnReadyRef.current) openSftpConn();
+    else if (!on && sftpConnReadyRef.current) { closeSecondaryConn('sftp'); setSftpConnReady(false); }
+  };
+  const toggleSeparateFwd = (on: boolean) => {
+    setSeparateFwd(on);
+    localStorage.setItem('submarine-separate-fwd', String(on));
+    if (statusRef.current !== 'connected') return;
+    if (on && fwdConnStatusRef.current === 'off') openFwdConn(false);
+    else if (!on && fwdConnStatusRef.current !== 'off') { closeSecondaryConn('fwd'); setFwdConnStatus('off'); }
+  };
 
   // Terminal IDs MUST be unique across every open session, not just within
   // this one — the backend dispatches `terminal-output-<id>` events globally
@@ -188,7 +308,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     // Start connection. We read from the ref so a password the user types
     // into the auth-retry input is picked up by later attempts inside this
     // same effect closure (the effect itself only runs once).
-    invoke("initiate_connection", { sessionId: session.id, serverId: session.serverId, customPassword: customPasswordRef.current || null, quickAuth: session.quickAuth || null })
+    invoke("initiate_connection", { sessionId: session.id, serverId: session.serverId, customPassword: customPasswordRef.current || null, quickAuth: session.quickAuth || null, sessionRole: "primary", separateSessions: separateFwdRef.current })
       .catch(e => {
         pushLog({ msg: `Failed to initiate: ${e}`, type: 'error' });
         setStatus('failed');
@@ -217,6 +337,23 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       setKbiPrompt(null);
       setKbiValues([]);
     });
+
+    // ---- Dedicated secondary connections (separate-sessions mode) ----------
+    // These fire only when the setting is on and we opened `::sftp` / `::fwd`.
+    // They just flip local routing state; the primary session's own KBI /
+    // fingerprint prompts (which drive auth) stay wired above.
+    const unlistenSftpOk = listen(`connection-success-${session.id}::sftp`, () => setSftpConnReady(true));
+    const unlistenSftpFail = listen(`connection-failed-${session.id}::sftp`, () => setSftpConnReady(false));
+    const unlistenSftpDown = listen(`session-disconnected-${session.id}::sftp`, () => setSftpConnReady(false));
+
+    const unlistenFwdOk = listen(`connection-success-${session.id}::fwd`, () => setFwdConnStatus('ready'));
+    const unlistenFwdFail = listen(`connection-failed-${session.id}::fwd`, () => {
+      // The dedicated forward connection couldn't be established — start the
+      // node's saved tunnels on the primary so port-forwarding still works.
+      setFwdConnStatus('failed');
+      invoke("start_saved_tunnels_fallback", { sessionId: session.id, serverId: session.serverId }).catch(console.error);
+    });
+    const unlistenFwdDown = listen(`session-disconnected-${session.id}::fwd`, () => setFwdConnStatus('off'));
 
     const unlistenSuccess = listen(`connection-success-${session.id}`, () => {
       // statusRef.current is authoritative here — the plain `status` we
@@ -258,6 +395,12 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       // survives an app restart — otherwise the prompt would reappear every
       // session, which was especially painful for SOCKS-proxied connections.
       invoke("persist_vault").catch(console.error);
+      // Separate-sessions: now that the primary is up (and the host key is
+      // saved, so no double fingerprint prompt), spin up the dedicated SFTP /
+      // forwarding connections. No-op when the setting is off. Fires on
+      // reconnect too — the backend already reaped the stale secondaries.
+      resetSecondaryStatus();
+      openSecondaryConnections();
     });
 
     const unlistenFailed = listen(`connection-failed-${session.id}`, (event: any) => {
@@ -265,6 +408,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       const isAuth = !!event.payload?.is_auth_error;
       setStatus('failed');
       setIsAuthError(isAuth);
+      resetSecondaryStatus();
       addLog(`SSH_CONNECTION_FAILED [${session.serverName}]: ${event.payload?.reason}`, "error");
       // If this failure happened during an auto-reconnect attempt, queue the
       // next try unless we've exhausted them or the credentials are wrong
@@ -286,6 +430,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       const userInitiated = !!event.payload?.user_initiated;
       setStatus('disconnected');
       setDisconnectReason(reason);
+      resetSecondaryStatus();
       addLog(`SSH_DISCONNECTED [${session.serverName}]: ${reason}`, "error");
       // User-initiated disconnect (right-click → Disconnect) should NOT
       // bounce straight into auto-reconnect — the user explicitly asked
@@ -304,6 +449,12 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       unlistenPromptDismiss.then(f => f());
       unlistenKbi.then(f => f());
       unlistenKbiDismiss.then(f => f());
+      unlistenSftpOk.then(f => f());
+      unlistenSftpFail.then(f => f());
+      unlistenSftpDown.then(f => f());
+      unlistenFwdOk.then(f => f());
+      unlistenFwdFail.then(f => f());
+      unlistenFwdDown.then(f => f());
       unlistenSuccess.then(f => f());
       unlistenFailed.then(f => f());
       unlistenDisconnected.then(f => f());
@@ -338,6 +489,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
         serverId: session.serverId,
         customPassword: customPasswordRef.current || null,
         quickAuth: session.quickAuth || null,
+        sessionRole: "primary",
+        separateSessions: separateFwdRef.current,
       }).catch(console.error);
     }, delay);
   };
@@ -348,11 +501,14 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     setLogs([]);
     setIsAuthError(false);
     setDisconnectReason("");
+    resetSecondaryStatus();
     invoke("initiate_connection", {
       sessionId: session.id,
       serverId: session.serverId,
       customPassword: customPassword || null,
       quickAuth: session.quickAuth || null,
+      sessionRole: "primary",
+      separateSessions: separateFwdRef.current,
     }).catch(console.error);
   };
 
@@ -824,35 +980,33 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
           </button>
         </div>
 
-        {/* Tool rail: icon-only across every viewport so the terminal
-            tab strip owns the horizontal real estate. Labels moved to
-            tooltips (native title + aria-label). This clawed back ~200
-            px on desktop that was previously spent on repeated bold-
-            uppercase "SFTP / PORTS / LIBRARY / INFO" text — the icons
-            plus the always-visible active-state tint already convey
-            which tool is open. */}
+        {/* Tool rail: icon + text label. The label collapses to icon-only on
+            narrow viewports (below md) so the terminal tab strip keeps its
+            horizontal real estate when space is tight; the full description
+            stays in the tooltip either way. */}
         <div className="flex items-center gap-1 shrink-0 sm:border-l border-white/5 sm:pl-3 pl-1">
           {([
-            { id: 'sftp',    icon: Folder,  label: 'SFTP — file browser' },
-            { id: 'tunnels', icon: Network, label: 'Ports — port forwarding' },
-            { id: 'cmds',    icon: Library, label: 'Library — commands & notes' },
-            { id: 'info',    icon: Info,    label: 'Info — server overview' },
-          ] as const).map(({ id, icon: Icon, label }) => {
+            { id: 'sftp',    icon: Folder,  label: 'SFTP',    hint: 'SFTP — file browser' },
+            { id: 'tunnels', icon: Network, label: 'Ports',   hint: 'Ports — port forwarding' },
+            { id: 'cmds',    icon: Library, label: 'Library', hint: 'Library — commands & notes' },
+            { id: 'info',    icon: Info,    label: 'Info',    hint: 'Info — server overview' },
+          ] as const).map(({ id, icon: Icon, label, hint }) => {
             const on = activeTool === id;
             return (
               <button
                 key={id}
                 onClick={() => setActiveTool(on ? null : id)}
-                title={label}
-                aria-label={label}
+                title={hint}
+                aria-label={hint}
                 aria-pressed={on}
-                className={`h-10 w-10 sm:h-8 sm:w-8 rounded-lg flex items-center justify-center transition-all ${
+                className={`h-10 sm:h-8 px-2.5 rounded-lg flex items-center gap-1.5 transition-all ${
                   on
                     ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner'
                     : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'
                 }`}
               >
-                <Icon size={14} />
+                <Icon size={14} className="shrink-0" />
+                <span className="hidden md:inline text-[11px] font-semibold tracking-tight">{label}</span>
               </button>
             );
           })}
@@ -1176,15 +1330,23 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
         >
           {activeTool === 'sftp' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">SFTP File Browser</span>
-                <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
+              <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 shrink-0">SFTP File Browser</span>
+                  <SepToggle
+                    on={separateSftp}
+                    onToggle={toggleSeparateSftp}
+                    status={!separateSftp ? 'off' : sftpConnReady ? 'ready' : 'pending'}
+                    title="Run SFTP over its own dedicated SSH connection instead of sharing the terminal's session"
+                  />
+                </div>
+                <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors shrink-0">
                   <X size={14} />
                 </button>
               </div>
               <div className="flex-1 overflow-hidden relative">
                 <SftpWorkspace
-                  sessionId={session.id}
+                  sessionId={sftpConnReady ? `${session.id}::sftp` : session.id}
                   disabled={status !== 'connected'}
                   serverId={session.serverId}
                   mirrorsConfig={(() => {
@@ -1197,14 +1359,25 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
 
           {activeTool === 'tunnels' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Port Forwarding</span>
-                <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
+              <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 shrink-0">Port Forwarding</span>
+                  <SepToggle
+                    on={separateFwd}
+                    onToggle={toggleSeparateFwd}
+                    status={!separateFwd ? 'off' : fwdConnStatus === 'ready' ? 'ready' : fwdConnStatus === 'failed' ? 'failed' : 'pending'}
+                    title="Run port-forwarding over its own dedicated SSH connection instead of sharing the terminal's session"
+                  />
+                </div>
+                <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors shrink-0">
                   <X size={14} />
                 </button>
               </div>
               <div className="flex-1 overflow-hidden relative">
-                <TunnelsPanel sessionId={session.id} disabled={status !== 'connected'} />
+                <TunnelsPanel
+                  sessionId={fwdConnStatus === 'ready' ? `${session.id}::fwd` : session.id}
+                  disabled={status !== 'connected' || fwdConnStatus === 'connecting'}
+                />
               </div>
             </div>
           )}
@@ -1232,6 +1405,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
             <InfoPanel
               sessionId={session.id}
               disabled={status !== 'connected'}
+              visible={activeTool === 'info'}
               onOpenContainerTerminal={openContainerTerminal}
             />
           </div>
