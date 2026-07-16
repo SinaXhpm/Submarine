@@ -5,6 +5,7 @@ import {
   Trash2, RefreshCw, LogOut, Mail, KeyRound, UserPlus, LogIn, Wand2,
 } from "lucide-react";
 import { useConfirm } from "../ui/confirm";
+import SharingSection from "./SharingSection";
 
 // Cloud sync panel. Owns its own auth + sync state — the parent just
 // mounts/unmounts. The signed-out experience is split into two clearly
@@ -859,6 +860,8 @@ const CloudPanel = ({ isOpen, onClose, localProfiles, onLocalProfilesChanged }: 
                   </ul>
                 )}
               </div>
+
+              <SharingSection onLocalProfilesChanged={onLocalProfilesChanged} />
 
               <div className="pt-2 flex justify-end">
                 <button

@@ -1,4 +1,4 @@
-import { Server, KeyRound, Library, Activity, Settings, LogOut, RefreshCw } from "lucide-react";
+import { Server, KeyRound, Library, Activity, Settings, LogOut, RefreshCw, Share2 } from "lucide-react";
 
 // Vertical rail on desktop, horizontal bottom dock on mobile. Layout swap is
 // driven by `isMobile` so the terminal/session views can use the full screen
@@ -6,7 +6,7 @@ import { Server, KeyRound, Library, Activity, Settings, LogOut, RefreshCw } from
 // a 360px-wide viewport. The parent in DesktopApp uses `flex-col-reverse` on
 // mobile so this component visually lands at the bottom while staying first
 // in DOM order (keyboard tab-order stays intuitive).
-export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, onSync, syncing, syncTitle }: any) => {
+export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, onSync, syncing, syncTitle, onShare }: any) => {
   // Commands + Notes used to be separate rails. Both are per-profile lists
   // of small text blobs stored under the vault; the only real distinction
   // was "runnable snippet vs freeform prose". A single Library rail with
@@ -68,6 +68,15 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, onSync, s
               <RefreshCw size={20} className={syncing ? "animate-spin" : ""} />
             </button>
           )}
+          {onShare && (
+            <button
+              onClick={onShare}
+              className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-primary hover:bg-primary/10"
+              title="Share this profile"
+            >
+              <Share2 size={20} />
+            </button>
+          )}
           {onLogout && (
             <button
               onClick={onLogout}
@@ -126,6 +135,15 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, onSync, s
             title={syncTitle || "Sync this profile to cloud"}
           >
             <RefreshCw size={20} className={syncing ? "animate-spin" : ""} />
+          </button>
+        )}
+        {onShare && (
+          <button
+            onClick={onShare}
+            className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-primary hover:bg-primary/10"
+            title="Share this profile"
+          >
+            <Share2 size={20} />
           </button>
         )}
         {onLogout && (

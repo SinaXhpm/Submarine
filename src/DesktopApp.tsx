@@ -386,6 +386,46 @@ function DesktopApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addLog]);
 
+  // Share the OPEN profile as an end-to-end-encrypted shared profile. Invites +
+  // member management happen from the Cloud panel; this just creates the share.
+  // If the sharing identity isn't unlocked yet, prompt for the passphrase inline
+  // (masked) rather than bouncing the user back to the profile picker.
+  const handleShareProfile = useCallback(async () => {
+    const doShare = async () => {
+      const name = await textPrompt({
+        title: "Share this profile",
+        message: "Creates an end-to-end encrypted shared copy. Invite people afterwards from the Cloud panel (profile picker → Cloud → Profile Sharing).",
+        placeholder: "Share name",
+        initialValue: activeProfile ?? "",
+        okLabel: "Create share",
+        validate: (v) => (v.trim().length === 0 ? "Name is required" : null),
+      });
+      if (!name) return;
+      await invoke<{ share_id: string }>("share_current_profile", { name: name.trim() });
+      addLog(`"${name.trim()}" is now shared. Invite people from the Cloud panel.`, "success");
+    };
+    const clean = (e: unknown) => String(e).replace(/^\[[A-Z_]+\]\s*/, "");
+    try {
+      await doShare();
+    } catch (e) {
+      if (!String(e).includes("IDENTITY_LOCKED")) { addLog(`Share failed: ${clean(e)}`, "error"); return; }
+      const pass = await textPrompt({
+        title: "Unlock sharing",
+        message: "Enter your sharing encryption passphrase — or set one now (min 8 chars). It never leaves this device.",
+        placeholder: "Encryption passphrase",
+        password: true,
+        okLabel: "Continue",
+        validate: (v) => (v.length < 8 ? "At least 8 characters" : null),
+      });
+      if (!pass) return;
+      try {
+        await invoke("setup_identity", { encPassphrase: pass });
+        await doShare();
+      } catch (e2) { addLog(`Share failed: ${clean(e2)}`, "error"); }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addLog, activeProfile]);
+
   const removeServer = async (id: number) => {
     try {
       await invoke("delete_server", { id });
@@ -1339,7 +1379,7 @@ function DesktopApp() {
         // tab-order stays intuitive and <main> grabs the full screen width
         // (terminal gains the ~50px the vertical rail used to eat).
         <div className={`flex-1 flex ${isMobile ? 'flex-col-reverse' : ''} overflow-hidden pt-10`}>
-          <Sidebar activeTab={activeView.startsWith('session-') ? 'nodes' : activeView} setActiveTab={setActiveView} isMobile={isMobile} onLogout={handleLogout} onSync={handleCloudSync} syncing={cloudSyncing} syncTitle={lastSyncLabel} />
+          <Sidebar activeTab={activeView.startsWith('session-') ? 'nodes' : activeView} setActiveTab={setActiveView} isMobile={isMobile} onLogout={handleLogout} onSync={handleCloudSync} syncing={cloudSyncing} syncTitle={lastSyncLabel} onShare={handleShareProfile} />
 
           <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-transparent relative">
             {activeView === "nodes" && (

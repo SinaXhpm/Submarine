@@ -101,6 +101,8 @@ export interface TextPromptOptions {
   initialValue?: string;
   okLabel?: string;
   cancelLabel?: string;
+  /** Mask the input (passwords / passphrases). */
+  password?: boolean;
   /** Return an error string to block OK; return null to allow. */
   validate?: (v: string) => string | null;
 }
@@ -335,7 +337,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             )}
             <input
               autoFocus
-              type="text"
+              type={tpState.opts.password ? "password" : "text"}
               value={tpValue}
               onChange={(e) => { setTpValue(e.target.value); setTpError(null); }}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitTextPrompt(); } }}
