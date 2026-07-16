@@ -57,6 +57,12 @@ pub struct DbState {
     /// path of `db_path` (under `<app_data>/profiles/<name>.submarine`) and is
     /// cleared by `close_profile` so the app returns to the picker.
     pub active_profile: StdMutex<Option<String>>,
+    /// This profile's Hybrid Logical Clock, shared into the SQLite `hlc_now()`
+    /// custom function so every row mutation auto-stamps `updated_at`. `Some`
+    /// while a profile is open; `None` on the picker. Held behind an Arc so the
+    /// same clock instance backs both the SQL function and any Rust-side sync
+    /// code (the merge engine's `observe`).
+    pub hlc: StdMutex<Option<std::sync::Arc<hlc::Hlc>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +396,145 @@ fn backfill_sync_columns(conn: &Connection, hlc: &hlc::Hlc) -> Result<bool, Stri
     Ok(changed)
 }
 
+/// Register the SQLite custom functions the auto-stamp triggers call. Must run
+/// on every freshly-opened connection — custom functions are per-connection
+/// state, not stored in the serialized DB, whereas the triggers (which call
+/// them) ARE serialized and survive across opens. `hlc_now()` returns this
+/// profile's next monotonic stamp; `sync_new_uuid()` mints a fresh row id.
+fn register_sync_functions(conn: &Connection, hlc: &std::sync::Arc<hlc::Hlc>) -> Result<(), String> {
+    use rusqlite::functions::FunctionFlags;
+    let h = hlc.clone();
+    conn.create_scalar_function("hlc_now", 0, FunctionFlags::empty(), move |_| Ok(h.tick()))
+        .map_err(|e| format!("[SYNC] FN_HLC: {e}"))?;
+    conn.create_scalar_function("sync_new_uuid", 0, FunctionFlags::empty(), move |_| Ok(new_entity_uuid()))
+        .map_err(|e| format!("[SYNC] FN_UUID: {e}"))?;
+    Ok(())
+}
+
+/// Create the tombstone side-table + the per-table auto-stamp triggers
+/// (idempotent). This is the whole per-entity instrumentation, centralised:
+///   - AFTER INSERT  → assign a uuid + HLC stamp (skipped when the row already
+///     carries a uuid — i.e. the merge engine applying a remote insert).
+///   - AFTER UPDATE  → bump the HLC, UNLESS the caller set `updated_at` itself
+///     (again: the merge engine applying a remote change keeps the remote stamp).
+///   - AFTER DELETE  → record a tombstone so the deletion propagates. Fires for
+///     FK-cascade deletes too (monitor_configs), which the map flagged as the
+///     one path that bypassed Rust. Rows are still HARD-deleted, so every
+///     existing `SELECT` is untouched — the tombstone lives only in the side
+///     table the sync layer reads.
+/// `monitor_configs` gets a column-aware UPDATE guard so the per-open `paused`
+/// reset (device-local housekeeping) never churns the stamp.
+fn create_sync_triggers(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sync_tombstones (uuid TEXT PRIMARY KEY, entity_type TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        [],
+    )
+    .map_err(|e| format!("[SYNC] TOMBSTONE_TABLE: {e}"))?;
+    for t in SYNCED_TABLES {
+        let au_when = if *t == "monitor_configs" {
+            "WHEN NEW.updated_at IS OLD.updated_at AND (NEW.enabled_metrics IS NOT OLD.enabled_metrics OR NEW.custom_metrics IS NOT OLD.custom_metrics OR NEW.deleted IS NOT OLD.deleted)"
+        } else {
+            "WHEN NEW.updated_at IS OLD.updated_at"
+        };
+        let ddl = format!(
+            "CREATE TRIGGER IF NOT EXISTS {t}_sync_ai AFTER INSERT ON {t} FOR EACH ROW WHEN NEW.uuid IS NULL
+               BEGIN UPDATE {t} SET uuid = sync_new_uuid(), updated_at = hlc_now() WHERE rowid = NEW.rowid; END;
+             CREATE TRIGGER IF NOT EXISTS {t}_sync_au AFTER UPDATE ON {t} FOR EACH ROW {au_when}
+               BEGIN UPDATE {t} SET updated_at = hlc_now() WHERE rowid = NEW.rowid; END;
+             CREATE TRIGGER IF NOT EXISTS {t}_sync_ad AFTER DELETE ON {t} FOR EACH ROW WHEN OLD.uuid IS NOT NULL
+               BEGIN INSERT INTO sync_tombstones(uuid, entity_type, updated_at) VALUES (OLD.uuid, '{t}', hlc_now())
+                     ON CONFLICT(uuid) DO UPDATE SET updated_at = excluded.updated_at, entity_type = excluded.entity_type; END;"
+        );
+        conn.execute_batch(&ddl)
+            .map_err(|e| format!("[SYNC] TRIGGER {t}: {e}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod sync_trigger_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal stand-ins for the synced tables — only the columns the
+        // triggers touch. monitor_configs keeps enabled_metrics/custom_metrics
+        // so the column-aware UPDATE guard can be exercised.
+        conn.execute_batch(
+            "CREATE TABLE folders(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE credentials(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE commands(id INTEGER PRIMARY KEY, title TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE notes(id INTEGER PRIMARY KEY, title TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER NOT NULL DEFAULT 1, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);",
+        ).unwrap();
+        let hlc = std::sync::Arc::new(hlc::Hlc::new("testnode".into(), 0));
+        register_sync_functions(&conn, &hlc).unwrap();
+        create_sync_triggers(&conn).unwrap();
+        conn
+    }
+    fn ua(conn: &Connection, name: &str) -> String {
+        conn.query_row("SELECT updated_at FROM servers WHERE name=?1", [name], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn insert_auto_stamps_uuid_and_updated_at() {
+        let conn = setup();
+        conn.execute("INSERT INTO servers(name) VALUES('a')", []).unwrap();
+        let (uuid, at): (Option<String>, Option<String>) = conn
+            .query_row("SELECT uuid, updated_at FROM servers WHERE name='a'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert!(uuid.as_deref().map(|s| !s.is_empty()).unwrap_or(false), "uuid must be stamped");
+        assert!(at.as_deref().map(|s| !s.is_empty()).unwrap_or(false), "updated_at must be stamped");
+    }
+
+    #[test]
+    fn edit_bumps_stamp_but_merge_apply_is_preserved() {
+        let conn = setup();
+        conn.execute("INSERT INTO servers(name) VALUES('a')", []).unwrap();
+        let t1 = ua(&conn, "a");
+        conn.execute("UPDATE servers SET name='b' WHERE name='a'", []).unwrap();
+        let t2 = ua(&conn, "b");
+        assert!(t2 > t1, "a normal edit must bump the stamp");
+        // The merge engine applies a remote change by setting updated_at itself;
+        // the trigger must NOT overwrite it with a fresh local stamp.
+        conn.execute(
+            "UPDATE servers SET name='c', updated_at='999999999999999:00000:remote' WHERE name='b'",
+            [],
+        ).unwrap();
+        assert_eq!(ua(&conn, "c"), "999999999999999:00000:remote", "merge-applied stamp must survive");
+    }
+
+    #[test]
+    fn delete_leaves_a_tombstone_and_hard_deletes() {
+        let conn = setup();
+        conn.execute("INSERT INTO servers(name) VALUES('a')", []).unwrap();
+        let uuid: String = conn.query_row("SELECT uuid FROM servers WHERE name='a'", [], |r| r.get(0)).unwrap();
+        conn.execute("DELETE FROM servers WHERE name='a'", []).unwrap();
+        let tombs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_tombstones WHERE uuid=?1 AND entity_type='servers'", [&uuid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tombs, 1, "delete must record a tombstone");
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM servers WHERE name='a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 0, "row must be hard-deleted so existing SELECTs are unaffected");
+    }
+
+    #[test]
+    fn monitor_paused_reset_does_not_churn_but_real_change_stamps() {
+        let conn = setup();
+        conn.execute("INSERT INTO monitor_configs(node_id, enabled_metrics, custom_metrics) VALUES(1,'[]','[]')", []).unwrap();
+        let t1: String = conn.query_row("SELECT updated_at FROM monitor_configs WHERE node_id=1", [], |r| r.get(0)).unwrap();
+        conn.execute("UPDATE monitor_configs SET paused=1", []).unwrap();
+        let t2: String = conn.query_row("SELECT updated_at FROM monitor_configs WHERE node_id=1", [], |r| r.get(0)).unwrap();
+        assert_eq!(t1, t2, "device-local paused reset must not churn the sync stamp");
+        conn.execute("UPDATE monitor_configs SET enabled_metrics='[\"cpu\"]' WHERE node_id=1", []).unwrap();
+        let t3: String = conn.query_row("SELECT updated_at FROM monitor_configs WHERE node_id=1", [], |r| r.get(0)).unwrap();
+        assert!(t3 > t2, "a real config change must stamp");
+    }
+}
+
 /// Async-friendly vault save. Snapshots the key/salt/path under the sync
 /// mutexes, clones the Arc'd connection slot, then hands the whole thing
 /// to `spawn_blocking`. The SQLite serialise + zstd + AES-GCM + fsync
@@ -543,6 +688,7 @@ async fn close_profile(
     *state.salt.lock().map_err(|_| "[STATE] LOCK_FAILED_SALT")? = None;
     *state.db_path.lock().map_err(|_| "[STATE] LOCK_FAILED_PATH")? = None;
     *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE")? = None;
+    *state.hlc.lock().map_err(|_| "[STATE] LOCK_FAILED_HLC")? = None;
     Ok(())
 }
 
@@ -912,27 +1058,6 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
                 }
             }
         }
-        // One-time uuid + HLC backfill for rows created before the sync columns
-        // existed. Uses this device's node id; forces a resave if it changed
-        // anything so the assigned ids persist.
-        let node_id = sync_device_node_id(&app_handle);
-        let seed_ms: u64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(updated_at),'') FROM (
-                   SELECT updated_at FROM servers UNION ALL SELECT updated_at FROM credentials
-                   UNION ALL SELECT updated_at FROM ssh_keys UNION ALL SELECT updated_at FROM folders
-                   UNION ALL SELECT updated_at FROM commands UNION ALL SELECT updated_at FROM notes
-                   UNION ALL SELECT updated_at FROM monitor_configs)",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-            .map(|s| hlc::Hlc::phys_of(&s))
-            .unwrap_or(0);
-        let backfill_hlc = hlc::Hlc::new(node_id, seed_ms);
-        if backfill_sync_columns(&conn, &backfill_hlc)? {
-            needs_resave = true;
-        }
     } else {
         // Master-password strength floor — enforced ONLY at vault CREATION, not
         // on unlock (an existing vault with a short password must still open).
@@ -981,6 +1106,35 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
 
     conn.execute("PRAGMA foreign_keys = ON", []).map_err(|e| format!("[DATABASE] PRAGMA_FAILED: {}", e))?;
 
+    // ---- Per-entity sync instrumentation (schema v6) ----
+    // A per-profile Hybrid Logical Clock backs the `hlc_now()` SQL function so
+    // every row mutation auto-stamps `updated_at`. Seed the clock past the
+    // newest stamp already in the vault so a freshly-started process never
+    // issues one that sorts before data it already holds.
+    let sync_node_id = sync_device_node_id(&app_handle);
+    let seed_ms: u64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(updated_at),'') FROM (
+               SELECT updated_at FROM servers UNION ALL SELECT updated_at FROM credentials
+               UNION ALL SELECT updated_at FROM ssh_keys UNION ALL SELECT updated_at FROM folders
+               UNION ALL SELECT updated_at FROM commands UNION ALL SELECT updated_at FROM notes
+               UNION ALL SELECT updated_at FROM monitor_configs)",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .map(|s| hlc::Hlc::phys_of(&s))
+        .unwrap_or(0);
+    let hlc_arc = std::sync::Arc::new(hlc::Hlc::new(sync_node_id, seed_ms));
+    register_sync_functions(&conn, &hlc_arc)?;
+    // Backfill rows that predate the sync columns (no-op on a fresh vault, and
+    // a no-op on every open after the first). Run it BEFORE creating triggers so
+    // the backfill UPDATEs can't fire them.
+    if backfill_sync_columns(&conn, &hlc_arc)? {
+        needs_resave = true;
+    }
+    create_sync_triggers(&conn)?;
+
     // Reset every monitor to paused on profile open. Pollers don't survive
     // app restart, so a row with `paused=0` left over from the previous
     // session would advertise itself as "running" in the UI while no actual
@@ -998,10 +1152,13 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
     let mut key_guard = state.master_key.lock().map_err(|_| "[STATE] LOCK_FAILED_KEY")?;
     let mut salt_guard = state.salt.lock().map_err(|_| "[STATE] LOCK_FAILED_SALT")?;
     let mut path_guard = state.db_path.lock().map_err(|_| "[STATE] LOCK_FAILED_PATH")?;
+    let mut hlc_guard = state.hlc.lock().map_err(|_| "[STATE] LOCK_FAILED_HLC")?;
     *conn_guard = Some(conn);
     *key_guard = Some(key);
     *salt_guard = Some(salt_bytes);
     *path_guard = Some(path);
+    *hlc_guard = Some(hlc_arc);
+    drop(hlc_guard);
     drop(path_guard);
     drop(salt_guard);
     drop(key_guard);
@@ -7536,7 +7693,7 @@ pub fn run() {
     // installer AND the Android APK. Capability is granted in default.json.
     let builder = builder.plugin(tauri_plugin_opener::init());
     builder
-        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None) })
+        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None) })
         .manage(SshState::new())
         // Docker live-log stream registry — keyed by frontend-issued stream id,
         // values are tokio AbortHandles so the user can stop tailing on demand.
