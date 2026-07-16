@@ -18,6 +18,10 @@
 // here because the ECIES construction (ephemeral ECDH → HKDF → AEAD) is
 // specific to sharing.
 
+// This module is the crypto foundation for sharing; its API is wired into
+// commands incrementally (S3b onward), so some items are test-only until then.
+#![allow(dead_code)]
+
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;

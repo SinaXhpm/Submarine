@@ -917,6 +917,126 @@ pub async fn sync_exchange(
 }
 
 // ---------------------------------------------------------------------------
+// Identity key directory (E2E profile sharing) — thin transport over /keys/*.
+// The session identity + sharing commands that call these are wired next.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct PublishKeyReq<'a> {
+    public_key: &'a str,
+    wrapped_privkey: &'a str,
+    enc_salt: &'a str,
+}
+#[derive(Deserialize)]
+#[allow(dead_code)]
+pub struct PublishKeyResp {
+    pub created: bool,
+    pub rotated: bool,
+}
+
+/// Publish (or rotate) this account's identity key: the public key plus the
+/// private scalar wrapped under the user's encryption passphrase. Both are
+/// opaque to the server.
+#[allow(dead_code)]
+pub async fn publish_identity(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    public_key: &str,
+    wrapped_privkey: &str,
+    enc_salt: &str,
+) -> Result<PublishKeyResp, String> {
+    let token = require_token(state).await?;
+    let resp = state
+        .http()
+        .post(url("/keys/publish"))
+        .header(AUTH_HEADER, &token)
+        .json(&PublishKeyReq { public_key, wrapped_privkey, enc_salt })
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(app, state, resp.status()).await {
+            return Err(e);
+        }
+        return Err(decode_error(resp).await);
+    }
+    resp.json().await.map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+pub struct MyKeys {
+    pub exists: bool,
+    pub public_key: Option<String>,
+    pub wrapped_privkey: Option<String>,
+    pub enc_salt: Option<String>,
+}
+
+/// Fetch our own key material — used to restore identity on a new device.
+#[allow(dead_code)]
+pub async fn fetch_my_keys(app: &tauri::AppHandle, state: &CloudState) -> Result<MyKeys, String> {
+    let token = require_token(state).await?;
+    let resp = state
+        .http()
+        .get(url("/keys/me"))
+        .header(AUTH_HEADER, &token)
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(app, state, resp.status()).await {
+            return Err(e);
+        }
+        return Err(decode_error(resp).await);
+    }
+    resp.json().await.map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))
+}
+
+#[derive(Serialize)]
+struct LookupReq<'a> {
+    email: &'a str,
+}
+#[derive(Deserialize)]
+#[allow(dead_code)]
+pub struct PubkeyInfo {
+    pub user_id: i64,
+    pub email: String,
+    pub public_key: String,
+}
+
+/// Resolve an email to its published public key, to share a profile with it.
+/// A 404 (no such shareable account) maps to `Ok(None)` so the caller can show
+/// a friendly "that person hasn't set up sharing yet" instead of an error.
+#[allow(dead_code)]
+pub async fn lookup_pubkey(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    email: &str,
+) -> Result<Option<PubkeyInfo>, String> {
+    let token = require_token(state).await?;
+    let resp = state
+        .http()
+        .post(url("/keys/lookup"))
+        .header(AUTH_HEADER, &token)
+        .json(&LookupReq { email })
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if resp.status().as_u16() == 404 {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(app, state, resp.status()).await {
+            return Err(e);
+        }
+        return Err(decode_error(resp).await);
+    }
+    Ok(Some(
+        resp.json().await.map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?,
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Unified sync overview + one-shot sync
 // ---------------------------------------------------------------------------
 //
