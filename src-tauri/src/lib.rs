@@ -470,8 +470,19 @@ fn create_sync_triggers(conn: &Connection) -> Result<(), String> {
         [],
     )
     .map_err(|e| format!("[SYNC] FLAGS_TABLE: {e}"))?;
+    // Ensure sync_meta exists before the triggers (which read editor_label from
+    // it) are created — the convergence path also creates it, but tests call
+    // create_sync_triggers directly.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )
+    .map_err(|e| format!("[SYNC] SYNC_META_TABLE: {e}"))?;
     // Guard shared by the stamp/tombstone triggers: suppress them while merging.
     const GUARD: &str = "COALESCE((SELECT val FROM sync_flags WHERE key='merge'),0)=0";
+    // The editor label stamped onto edited_by at mutation time (email when known,
+    // else NULL). Kept as a subquery so it always reflects the latest value.
+    const EDITOR: &str = "(SELECT value FROM sync_meta WHERE key='editor_label')";
     for t in SYNCED_TABLES {
         let au_extra = if *t == "monitor_configs" {
             " AND (NEW.enabled_metrics IS NOT OLD.enabled_metrics OR NEW.custom_metrics IS NOT OLD.custom_metrics OR NEW.deleted IS NOT OLD.deleted)"
@@ -485,10 +496,10 @@ fn create_sync_triggers(conn: &Connection) -> Result<(), String> {
              DROP TRIGGER IF EXISTS {t}_sync_au;
              DROP TRIGGER IF EXISTS {t}_sync_ad;
              CREATE TRIGGER {t}_sync_ai AFTER INSERT ON {t} FOR EACH ROW WHEN NEW.uuid IS NULL AND {GUARD}
-               BEGIN UPDATE {t} SET uuid = sync_new_uuid(), updated_at = hlc_now() WHERE rowid = NEW.rowid; END;
+               BEGIN UPDATE {t} SET uuid = sync_new_uuid(), updated_at = hlc_now(), edited_by = {EDITOR} WHERE rowid = NEW.rowid; END;
              CREATE TRIGGER {t}_sync_au AFTER UPDATE ON {t} FOR EACH ROW
                WHEN NEW.updated_at IS OLD.updated_at{au_extra} AND {GUARD}
-               BEGIN UPDATE {t} SET updated_at = hlc_now() WHERE rowid = NEW.rowid; END;
+               BEGIN UPDATE {t} SET updated_at = hlc_now(), edited_by = {EDITOR} WHERE rowid = NEW.rowid; END;
              CREATE TRIGGER {t}_sync_ad AFTER DELETE ON {t} FOR EACH ROW WHEN OLD.uuid IS NOT NULL AND {GUARD}
                BEGIN INSERT INTO sync_tombstones(uuid, entity_type, updated_at) VALUES (OLD.uuid, '{t}', hlc_now())
                      ON CONFLICT(uuid) DO UPDATE SET updated_at = excluded.updated_at, entity_type = excluded.entity_type; END;"
@@ -519,13 +530,13 @@ mod sync_trigger_tests {
         // triggers touch. monitor_configs keeps enabled_metrics/custom_metrics
         // so the column-aware UPDATE guard can be exercised.
         conn.execute_batch(
-            "CREATE TABLE folders(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE credentials(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE commands(id INTEGER PRIMARY KEY, title TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE notes(id INTEGER PRIMARY KEY, title TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER NOT NULL DEFAULT 1, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);",
+            "CREATE TABLE folders(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE credentials(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE commands(id INTEGER PRIMARY KEY, title TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE notes(id INTEGER PRIMARY KEY, title TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER NOT NULL DEFAULT 1, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);",
         ).unwrap();
         let hlc = std::sync::Arc::new(hlc::Hlc::new("testnode".into(), 0));
         register_sync_functions(&conn, &hlc).unwrap();
@@ -623,13 +634,17 @@ struct EntitySpec {
 /// Applied in this order so most FK referents already exist on merge; the two
 /// self-referential FKs (folders.parent_id, servers.jump_host_id) are resolved
 /// in a deferred fixup pass afterwards.
+// `edited_by` rides along as a normal column on every spec: the auto-stamp
+// triggers set it to the current editor label at mutation time, so it flows
+// through collect + apply for free and records WHO last changed each entity
+// (zero-knowledge — it's inside the encrypted blob, never seen by the server).
 const ENTITIES: &[EntitySpec] = &[
-    EntitySpec { table: "ssh_keys", cols: &["name", "public_key", "private_key", "passphrase"], fks: &[] },
-    EntitySpec { table: "folders", cols: &["name", "color"], fks: &[Fk { key: "parent_uuid", col: "parent_id", ref_table: "folders" }] },
-    EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys" }] },
+    EntitySpec { table: "ssh_keys", cols: &["name", "public_key", "private_key", "passphrase", "edited_by"], fks: &[] },
+    EntitySpec { table: "folders", cols: &["name", "color", "edited_by"], fks: &[Fk { key: "parent_uuid", col: "parent_id", ref_table: "folders" }] },
+    EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password", "edited_by"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys" }] },
     EntitySpec {
         table: "servers",
-        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect"],
+        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "edited_by"],
         fks: &[
             Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials" },
             Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders" },
@@ -637,8 +652,8 @@ const ENTITIES: &[EntitySpec] = &[
             Fk { key: "jump_uuid", col: "jump_host_id", ref_table: "servers" },
         ],
     },
-    EntitySpec { table: "commands", cols: &["title", "content"], fks: &[] },
-    EntitySpec { table: "notes", cols: &["title", "body"], fks: &[] },
+    EntitySpec { table: "commands", cols: &["title", "content", "edited_by"], fks: &[] },
+    EntitySpec { table: "notes", cols: &["title", "body", "edited_by"], fks: &[] },
 ];
 
 /// AES-256-GCM a per-entity payload with the profile key; frame is `nonce || ct`
@@ -1245,12 +1260,54 @@ async fn share_delete(
     cloud::delete_share(&app, &cloud, &share_id).await
 }
 
+/// Set the label stamped onto future local edits (the `edited_by` column). The
+/// frontend calls this on unlock with the signed-in cloud email so changes are
+/// attributed to a person across shared/multi-device use. An empty label clears
+/// it (edits stay unattributed). Local-only — sync_meta never leaves the vault.
+#[tauri::command]
+async fn set_editor_label(db_state: tauri::State<'_, DbState>, label: String) -> Result<(), String> {
+    let label = label.trim().to_string();
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        if label.is_empty() {
+            conn.execute("DELETE FROM sync_meta WHERE key='editor_label'", [])
+                .map_err(|e| format!("[SYNC] EDITOR_CLEAR: {e}"))?;
+        } else {
+            conn.execute(
+                "INSERT INTO sync_meta(key,value) VALUES('editor_label',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [&label],
+            )
+            .map_err(|e| format!("[SYNC] EDITOR_SET: {e}"))?;
+        }
+    }
+    save_vault_async(&db_state).await
+}
+
 #[cfg(test)]
 mod sync_engine_tests {
     use super::*;
     use rusqlite::Connection;
 
     const KEY: [u8; 32] = [7u8; 32];
+
+    #[test]
+    fn edited_by_is_stamped_and_syncs() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO sync_meta(key,value) VALUES('editor_label','alice@x.com')", []).unwrap();
+        a.execute("INSERT INTO servers(name,host,port) VALUES('web','h',22)", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        let srv = recs.iter().find(|r| r.entity_type == "servers").unwrap();
+        let plain = decrypt_entity(srv.blob.as_ref().unwrap(), &KEY).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(v["edited_by"], "alice@x.com", "trigger must stamp the editor label");
+
+        // Cross-device apply preserves who edited it (not overwritten locally).
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let eb: String = b.query_row("SELECT edited_by FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        assert_eq!(eb, "alice@x.com");
+    }
 
     #[test]
     fn dek_is_stable_and_encrypts_blobs() {
@@ -1270,13 +1327,13 @@ mod sync_engine_tests {
     fn device(node: &str) -> (Connection, std::sync::Arc<hlc::Hlc>) {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);",
+            "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);",
         ).unwrap();
         let hlc = std::sync::Arc::new(hlc::Hlc::new(node.into(), 0));
         register_sync_functions(&conn, &hlc).unwrap();
@@ -1851,6 +1908,15 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
             "ALTER TABLE monitor_configs ADD COLUMN uuid TEXT",
             "ALTER TABLE monitor_configs ADD COLUMN updated_at TEXT",
             "ALTER TABLE monitor_configs ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            // Per-person attribution (schema v6+). The auto-stamp triggers set
+            // this to the editor label at mutation time; NULL on legacy rows.
+            "ALTER TABLE folders ADD COLUMN edited_by TEXT",
+            "ALTER TABLE ssh_keys ADD COLUMN edited_by TEXT",
+            "ALTER TABLE credentials ADD COLUMN edited_by TEXT",
+            "ALTER TABLE servers ADD COLUMN edited_by TEXT",
+            "ALTER TABLE commands ADD COLUMN edited_by TEXT",
+            "ALTER TABLE notes ADD COLUMN edited_by TEXT",
+            "ALTER TABLE monitor_configs ADD COLUMN edited_by TEXT",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let s = e.to_string();
@@ -1889,14 +1955,14 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
         conn = Connection::open_in_memory()
             .map_err(|e| format!("[DATABASE] MEM_INIT_FAILED: {}", e))?;
         conn.execute_batch(
-            "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(folder_id) REFERENCES folders(id));
-             CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+            "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
-             CREATE TABLE monitor_configs (node_id INTEGER PRIMARY KEY, enabled_metrics TEXT NOT NULL DEFAULT '[\"cpu\",\"mem\",\"disk\",\"load\"]', custom_metrics TEXT NOT NULL DEFAULT '[]', paused INTEGER NOT NULL DEFAULT 1, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE);
+             CREATE TABLE monitor_configs (node_id INTEGER PRIMARY KEY, enabled_metrics TEXT NOT NULL DEFAULT '[\"cpu\",\"mem\",\"disk\",\"load\"]', custom_metrics TEXT NOT NULL DEFAULT '[]', paused INTEGER NOT NULL DEFAULT 1, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE);
              CREATE TABLE monitor_settings (id INTEGER PRIMARY KEY, json TEXT NOT NULL);
              CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE cmd_history (id INTEGER PRIMARY KEY AUTOINCREMENT, server_id INTEGER, server_name TEXT, command TEXT NOT NULL, ts INTEGER NOT NULL, exit_code INTEGER);
@@ -2514,7 +2580,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     // unless someone explicitly invokes `reveal_server_password`. The edit
     // panel calls reveal on open, but the cards / sidebar / quick-connect
     // grid never see the plaintext.
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id FROM servers")
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by FROM servers")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -2540,6 +2606,9 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             "notes": row.get::<_, Option<String>>(17)?.unwrap_or_default(),
             "run_on_connect": row.get::<_, Option<String>>(18)?.unwrap_or_default(),
             "jump_host_id": row.get::<_, Option<i32>>(19)?,
+            // Attribution: HLC stamp (encodes last-edit time) + who last edited.
+            "updated_at": row.get::<_, Option<String>>(20)?,
+            "edited_by": row.get::<_, Option<String>>(21)?,
         }))
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
@@ -8550,6 +8619,7 @@ pub fn run() {
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
             accept_share, import_shared_profile, share_set_role, share_revoke, share_leave, share_delete,
+            set_editor_label,
             add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,

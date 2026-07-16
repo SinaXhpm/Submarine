@@ -203,6 +203,10 @@ function DesktopApp() {
     // to bounce through. Empty = connect directly. parseInt'd to a number (or
     // null) at save time.
     jumpHostId: "" as string,
+    // Read-only attribution shown in the edit panel: who last edited this node
+    // (email, when set) + the HLC stamp of that edit. Null on a new node.
+    editedBy: null as string | null,
+    updatedAt: null as string | null,
     // True only after the user typed into the password field on this form
     // instance. If still false at save time, the backend uses
     // `preserve_password` to keep the existing DB column. Without this
@@ -463,6 +467,12 @@ function DesktopApp() {
     setIsUnlocked(true);
     addLog(`Profile "${name}" unlocked.`, "success");
     refreshAll();
+    // Attribute future edits to the signed-in cloud account so shared/multi-
+    // device profiles show "last edited by <email>". Best-effort; unattributed
+    // when not signed in.
+    invoke<{ signed_in: boolean; email: string | null }>("cloud_status")
+      .then((s) => invoke("set_editor_label", { label: s.signed_in && s.email ? s.email : "" }))
+      .catch(() => {});
     // Autostart sweep: load servers directly (refreshAll is also doing this
     // in parallel, but its state update is async and we can't read `servers`
     // back here without a stale-closure race), pick the ones flagged
@@ -638,6 +648,9 @@ function DesktopApp() {
       notes: server.notes || "",
       runOnConnect: server.run_on_connect || "",
       jumpHostId: server.jump_host_id?.toString() || "",
+      // Attribution (read-only display): who last edited + the HLC stamp.
+      editedBy: server.edited_by ?? null,
+      updatedAt: server.updated_at ?? null,
       // Starts clean — only flips true if the user types into the password
       // field. Save handler reads this to decide between `preserve_password`
       // and a real overwrite.

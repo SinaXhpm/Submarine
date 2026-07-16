@@ -1,8 +1,26 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square } from "lucide-react";
+import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square, History } from "lucide-react";
 import PasswordField from "./PasswordField";
+
+// Compact "2h ago" style relative time for the attribution line.
+function relTime(d: Date): string {
+  const s = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (s < 45) return "just now";
+  const m = Math.floor(s / 60); if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`;
+  const dd = Math.floor(h / 24); if (dd < 30) return `${dd}d ago`;
+  return d.toLocaleDateString();
+}
+
+// The HLC stamp is "{phys_ms}:{counter}:{node_id}" — the leading segment is the
+// wall-clock millisecond the row was last written.
+function hlcTime(stamp?: string | null): Date | null {
+  if (!stamp) return null;
+  const ms = parseInt(String(stamp).split(":")[0], 10);
+  return Number.isFinite(ms) && ms > 0 ? new Date(ms) : null;
+}
 
 // Shape returned by the `parse_ssh_config` backend command. One entry per
 // non-wildcard alias resolved from the user's OpenSSH config.
@@ -620,6 +638,21 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 rows={6}
                 className="w-full bg-[#1a1a1e] rounded-lg p-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner font-mono leading-relaxed resize-y"
               />
+              {/* Attribution — who last changed this node and when. Populated by
+                  the sync layer; most useful on shared / multi-device profiles. */}
+              {isEditMode && (newNode.updatedAt || newNode.editedBy) && (() => {
+                const when = hlcTime(newNode.updatedAt);
+                return (
+                  <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 ml-1 pt-0.5">
+                    <History size={11} className="text-zinc-600 shrink-0" />
+                    <span>
+                      Last edited{when ? ` ${relTime(when)}` : ""}
+                      {newNode.editedBy ? <> by <span className="text-zinc-300 font-medium">{newNode.editedBy}</span></> : ""}
+                      {when && <span className="text-zinc-600" title={when.toLocaleString()}> · {when.toLocaleDateString()}</span>}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* On-connect commands — auto-typed into the FIRST terminal the
