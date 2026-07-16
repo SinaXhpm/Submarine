@@ -277,6 +277,38 @@ fn save_vault_blocking(
     Ok(())
 }
 
+/// Atomically write raw vault bytes to `path`, keeping the prior file as a
+/// `.bak`. Shared by the cloud-restore path so a crash / disk-full mid-download
+/// can't truncate an existing local vault — the exact failure the local save
+/// path (save_vault_blocking) was hardened against, which the cloud download
+/// previously bypassed with a direct `fs::write`. The atomic rename replaces
+/// the target in one step, so `path` is never observed truncated; the `.bak`
+/// copy makes even a semantically-bad-but-header-valid restore recoverable.
+pub(crate) fn atomic_write_bytes_with_backup(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    use std::io::Write as _;
+    let tmp_path = path.with_extension("submarine.tmp");
+    {
+        let mut f = fs::File::create(&tmp_path)
+            .map_err(|e| format!("[FILE] TMP_CREATE_FAILED at {:?}: {}", tmp_path, e))?;
+        f.write_all(bytes)
+            .map_err(|e| format!("[FILE] TMP_WRITE_FAILED at {:?}: {}", tmp_path, e))?;
+        f.sync_all()
+            .map_err(|e| format!("[FILE] TMP_SYNC_FAILED at {:?}: {}", tmp_path, e))?;
+    }
+    // Best-effort recovery copy of the prior contents. Copy (not rename) so the
+    // live file stays present right up to the atomic rename below.
+    if path.exists() {
+        let bak = path.with_extension("submarine.bak");
+        let _ = fs::copy(path, &bak);
+    }
+    fs::rename(&tmp_path, path)
+        .map_err(|e| format!("[FILE] RENAME_FAILED {:?} -> {:?}: {}", tmp_path, path, e))?;
+    Ok(())
+}
+
 /// Async-friendly vault save. Snapshots the key/salt/path under the sync
 /// mutexes, clones the Arc'd connection slot, then hands the whole thing
 /// to `spawn_blocking`. The SQLite serialise + zstd + AES-GCM + fsync
@@ -776,6 +808,16 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
             }
         }
     } else {
+        // Master-password strength floor — enforced ONLY at vault CREATION, not
+        // on unlock (an existing vault with a short password must still open).
+        // This password is the single cryptographic root protecting every
+        // stored credential and private key, so a trivial one is a real risk.
+        // Count Unicode scalar values, not bytes, so non-Latin passwords aren't
+        // over-counted. 8 is a floor, not a ceiling — the UI should also nudge.
+        if password.chars().count() < 8 {
+            password.zeroize();
+            return Err("[CRYPTO] WEAK_MASTER_PASSWORD: choose at least 8 characters — this password protects every saved credential.".into());
+        }
         let mut fresh = [0u8; SALT_LEN];
         rand::thread_rng().fill(&mut fresh);
         salt_bytes = fresh;
@@ -2031,6 +2073,24 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
     }
 }
 
+/// OS-level TCP keepalive on an SSH transport socket. Complements the SSH
+/// protocol keepalive (`keepalive_interval` below): russh 0.40 has no
+/// `keepalive_max`, so an unanswered protocol keepalive never tears the
+/// connection down — but with TCP keepalive the kernel itself probes an idle
+/// peer (30s idle, then every 10s) and errors the socket when the peer is
+/// truly gone, which russh's run loop surfaces as `is_closed()`. That gives
+/// dead-link detection during long-idle periods without any SSH traffic, and
+/// keeps NAT/firewall mappings warm on flaky consumer networks. Best-effort:
+/// failure to set it is never a reason to abort a connect. (`with_retries`
+/// is deliberately not used — socket2 doesn't support it on Windows.)
+fn apply_tcp_keepalive(stream: &tokio::net::TcpStream) {
+    use socket2::{SockRef, TcpKeepalive};
+    let ka = TcpKeepalive::new()
+        .with_time(std::time::Duration::from_secs(30))
+        .with_interval(std::time::Duration::from_secs(10));
+    let _ = SockRef::from(stream).set_tcp_keepalive(&ka);
+}
+
 /// The russh client config shared by the primary connection and any ProxyJump
 /// hop, so both negotiate an identical algorithm set. Extracted verbatim from
 /// the inline block `initiate_connection` used to carry.
@@ -2236,6 +2296,7 @@ async fn connect_jump_host(
     {
         Ok(Ok(s)) => {
             let _ = s.set_nodelay(true);
+            apply_tcp_keepalive(&s);
             s
         }
         Ok(Err(e)) => return Err(humanize_network_err(&e.to_string(), &host, port, "Jump host connection")),
@@ -2324,6 +2385,16 @@ async fn connect_jump_host(
 /// key's generation so the secondary's own health watcher observes the change on
 /// its next tick and bows out WITHOUT emitting a `session-disconnected-{key}`.
 async fn teardown_connection_key(state: &SshState, mirrors: &MirrorMap, key: &str) {
+    // Bump the generation FIRST — before removing the connection — so a connect
+    // worker for this key that's still handshaking observes the newer value at
+    // its "still wanted?" registration guard and bails instead of registering a
+    // zombie. (Worker holds the generation lock across its check+insert, and we
+    // bump-then-remove here, so the two orderings can't leave a stray entry.)
+    {
+        let mut g = state.session_generation.lock().await;
+        let next = g.get(key).copied().unwrap_or(0).wrapping_add(1);
+        g.insert(key.to_string(), next);
+    }
     // Stop forwarders first so their listener sockets release before the SSH
     // handle drops — same ordering rationale as disconnect_session.
     tunnel::stop_all_for_session(&state.tunnels, key).await;
@@ -2331,13 +2402,14 @@ async fn teardown_connection_key(state: &SshState, mirrors: &MirrorMap, key: &st
     state.session_tunnel_specs.lock().await.remove(key);
     mirror::stop_all_for_session(mirrors, key).await;
     state.sftp_sessions.lock().await.remove(key);
+    // The base session's cached SFTP subsystem may be riding this dedicated
+    // `::sftp` transport — drop it so the next file op re-opens on whatever
+    // transport remains instead of erroring on a closed channel.
+    if let Some(base) = key.strip_suffix("::sftp") {
+        state.sftp_sessions.lock().await.remove(base);
+    }
     state.connections.lock().await.remove(key);
     state.jump_connections.lock().await.remove(key);
-    {
-        let mut g = state.session_generation.lock().await;
-        let next = g.get(key).copied().unwrap_or(0).wrapping_add(1);
-        g.insert(key.to_string(), next);
-    }
     // Wipe temp files the secondary's SFTP downloads / drags left behind.
     let td = session_sftp_dir(key);
     if td.exists() {
@@ -2389,19 +2461,14 @@ async fn initiate_connection(
     // hang. Instead we let the secondary fail its auth and the frontend falls
     // back to routing SFTP / forwarding over the primary connection.
     let allow_kbi = !is_secondary;
-    // Which connection actually auto-starts this server's saved tunnels. For the
-    // primary, `separate` means "a ::fwd connection will own the tunnels, so
-    // defer". For the "forward" secondary, `separate` is repurposed as an
-    // "autostart" flag: true on a fresh coordinated connect (where the primary
-    // deferred, so ::fwd must start them), false when the ::fwd connection is
-    // opened LIVE by a mid-session toggle (the primary already owns the saved
-    // tunnels, so ::fwd stays empty and only carries newly-added ones).
+    // Which connection auto-starts this server's saved tunnels inline:
     //   - primary + shared mode    → yes (unchanged legacy behaviour)
-    //   - primary + separate mode  → no  (the "forward" connection does it)
-    //   - "forward" + autostart    → yes (tags them under its own ::fwd key)
-    //   - "forward" (live toggle)  → no
+    //   - primary + separate mode  → no  (the "forward" connection takes over)
+    //   - "forward" secondary      → never inline; it runs the MIGRATION block
+    //     instead (stop anything running under the base tag, then restart the
+    //     full replay list on itself, still tagged under the base session id)
     //   - "sftp" secondary         → no
-    let start_tunnels_inline = (role == "primary" && !separate) || (role == "forward" && separate);
+    let start_tunnels_inline = role == "primary" && !separate;
 
     println!("[BACKEND] initiate_connection invoked for session_id: {} (role: {}, separate: {}), server_id: {}", session_id, role, separate, server_id);
 
@@ -2494,6 +2561,19 @@ async fn initiate_connection(
     if !is_secondary {
         teardown_connection_key(state.inner(), mirrors.inner(), &format!("{}::sftp", session_id)).await;
         teardown_connection_key(state.inner(), mirrors.inner(), &format!("{}::fwd", session_id)).await;
+    } else {
+        // Dedicated-transport reconnect (manual button / auto-retry) OVER a
+        // still-live old handle: the base-tagged tunnels ride this transport and
+        // the base SFTP cache points at it, so release them before the new
+        // handshake. Otherwise, if the fresh attempt fails, the old tunnels keep
+        // running on a connection nobody watches (zombie) and file ops hit a
+        // dead subsystem. Mirrors disconnect_session's dedicated-transport hooks.
+        if let Some(base) = session_id.strip_suffix("::fwd") {
+            tunnel::stop_all_for_session(&state.tunnels, base).await;
+        }
+        if let Some(base) = session_id.strip_suffix("::sftp") {
+            state.sftp_sessions.lock().await.remove(base);
+        }
     }
 
     // Per-session map for R-tunnel target lookups. Created here so the same
@@ -2799,6 +2879,9 @@ async fn initiate_connection(
                 ).await {
                     Ok(Ok(stream)) => {
                         emit_log("SOCKS5 Proxy tunnel established successfully.", "success");
+                        // Socks5Stream derefs to the inner TcpStream, so the
+                        // kernel keepalive applies to the real proxy socket.
+                        apply_tcp_keepalive(&stream);
                         Ok(Box::new(stream))
                     }
                     Ok(Err(e)) => {
@@ -2834,6 +2917,7 @@ async fn initiate_connection(
                         // round-trip latency. Ignore failures — set_nodelay is
                         // best-effort; some platforms / virtual NICs reject it.
                         let _ = tcp_stream.set_nodelay(true);
+                        apply_tcp_keepalive(&tcp_stream);
                         emit_log(&format!("Requesting HTTP CONNECT tunnel to {}:{}...", host, port), "info");
                         match tokio::time::timeout(
                             Duration::from_secs(10),
@@ -2869,6 +2953,7 @@ async fn initiate_connection(
                         // See HTTP-proxy branch — SSH wants every packet on the
                         // wire immediately, no Nagle batching.
                         let _ = stream.set_nodelay(true);
+                        apply_tcp_keepalive(&stream);
                         emit_log("Direct TCP Connection established successfully.", "success");
                         Ok(Box::new(stream))
                     }
@@ -2969,12 +3054,47 @@ async fn initiate_connection(
 
                 match auth_res {
                     Ok(true) => {
-                        emit_log("Authentication successful. Session ready.", "success");
                         let session_arc = Arc::new(Mutex::new(session));
-                        state_connections
-                            .lock()
-                            .await
-                            .insert(session_id_clone.clone(), Arc::clone(&session_arc));
+                        // "Still wanted?" registration guard. The handshake can
+                        // take up to ~15s (longer via proxy/jump). If, meanwhile,
+                        // a reconnect for this key bumped the generation or a
+                        // disconnect/teardown swept it (both of which bump the
+                        // generation BEFORE removing the connection), registering
+                        // now would create a ZOMBIE: a live SSH connection with a
+                        // watcher that immediately exits on the generation
+                        // mismatch, plus — for ::fwd — tunnels migrated onto a
+                        // connection nobody tracks. Do the check and the insert
+                        // TOGETHER under the generation lock so a concurrent
+                        // teardown can't interleave: we either observe the newer
+                        // generation and bail, or insert first and the teardown's
+                        // later connection-remove reaps us.
+                        let registered = {
+                            let g = state_session_generation.lock().await;
+                            if g.get(&session_id_clone).copied().unwrap_or(0) == connect_generation {
+                                state_connections
+                                    .lock()
+                                    .await
+                                    .insert(session_id_clone.clone(), Arc::clone(&session_arc));
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if !registered {
+                            emit_log("Connection superseded before it was ready — dropping it.", "info");
+                            // `session_arc` drops here, closing the transport.
+                            // The FpCleanupGuard's Drop still clears the nonce.
+                            return;
+                        }
+                        emit_log("Authentication successful. Session ready.", "success");
+                        // A dedicated `::sftp` transport just came up — drop the
+                        // base session's cached SFTP subsystem (it rides the
+                        // primary). The next file operation re-opens on this
+                        // dedicated connection via get_sftp_session's
+                        // transport preference. Live migration, no re-keying.
+                        if let Some(base) = session_id_clone.strip_suffix("::sftp") {
+                            state_sftp_sessions.lock().await.remove(base);
+                        }
                         // ProxyJump: now that the target session is live, park
                         // the bastion's Handle so it stays alive for the whole
                         // session (its direct-tcpip channel carries our
@@ -3050,6 +3170,62 @@ async fn initiate_connection(
                         }
                         } // end if start_tunnels_inline
 
+                        // Dedicated `::fwd` transport: MIGRATE the session's
+                        // tunnels onto this fresh connection. Stop whatever is
+                        // running under the base tag (riding the primary, or a
+                        // previous dead `::fwd`) so re-binding the same local
+                        // ports can't conflict, then start the full replay
+                        // list — seeded from the node's saved tunnels on first
+                        // engagement — on this handle, still tagged under the
+                        // BASE session id so the Tunnels panel / list / events
+                        // never re-key. This runs on fresh connects, live
+                        // toggle-on, the reconnect button, and auto-retry.
+                        if role == "forward" {
+                            let base = session_id_clone
+                                .strip_suffix("::fwd")
+                                .unwrap_or(&session_id_clone)
+                                .to_string();
+                            tunnel::stop_all_for_session(&state_tunnels, &base).await;
+                            let specs: Vec<tunnel::TunnelSpec> = {
+                                let mut map = state_session_tunnel_specs.lock().await;
+                                // A PRESENT replay list — even an empty one — is
+                                // authoritative: the session is already engaged
+                                // and an empty list means the user stopped every
+                                // tunnel. Only seed from the node's saved tunnels
+                                // when the key is ABSENT (genuine first
+                                // engagement) — otherwise stopped tunnels would
+                                // resurrect on every ::fwd reconnect / toggle.
+                                match map.get(&base).cloned() {
+                                    Some(existing) => existing,
+                                    None => match serde_json::from_str::<Vec<tunnel::TunnelSpec>>(&tunnels_json) {
+                                        Ok(db_specs) => {
+                                            if !db_specs.is_empty() {
+                                                map.insert(base.clone(), db_specs.clone());
+                                            }
+                                            db_specs
+                                        }
+                                        Err(e) => {
+                                            emit_log(&format!("Tunnels JSON parse error: {}", e), "error");
+                                            Vec::new()
+                                        }
+                                    },
+                                }
+                            };
+                            if !specs.is_empty() {
+                                emit_log("Dedicated forwarding connection ready — moving tunnels onto it.", "info");
+                                start_tunnel_specs_on(
+                                    &app,
+                                    &base,
+                                    &session_arc,
+                                    &session_forwarded_targets,
+                                    &state_tunnels,
+                                    &state_session_tunnel_specs,
+                                    specs,
+                                )
+                                .await;
+                            }
+                        }
+
                         // Health watcher: polls the SSH handle every 5s. If
                         // `is_closed()` flips to true while the session is
                         // still registered (i.e. the user did NOT call
@@ -3068,20 +3244,26 @@ async fn initiate_connection(
                         let my_gen = connect_generation;
                         tauri::async_runtime::spawn(async move {
                             // Two-tier liveness check:
-                            //   - Every 2s: cheap is_closed() poll catches TCP
-                            //     RST / FIN and russh's own internal teardown.
-                            //   - Every ~10s (every 5th tick): active probe —
-                            //     try to open a tiny SSH session channel under
-                            //     a 5s timeout. is_closed() misses the case
-                            //     where the network silently black-holes
-                            //     traffic (NAT timeout, dropped Wi-Fi, mobile
-                            //     hotspot suspend) because the socket stays
-                            //     half-open from the local stack's point of
-                            //     view until the next TCP retransmit window
-                            //     finally gives up — which can take minutes.
-                            //     The probe forces a round-trip so we surface
-                            //     the drop within ~15s of it happening.
+                            //   - Every 2s: cheap is_closed() poll. Catches TCP
+                            //     RST / FIN, russh's own teardown, AND — now that
+                            //     the transport socket carries OS TCP keepalive
+                            //     (see apply_tcp_keepalive) — kernel-detected
+                            //     dead peers during long idle.
+                            //   - Slow active probe: open a tiny SSH channel to
+                            //     force a real round-trip, catching black-holes
+                            //     the kernel hasn't flagged yet. Primary every
+                            //     ~30s, dedicated `::sftp`/`::fwd` secondaries
+                            //     every ~60s (they matter less urgently and the
+                            //     probes multiply per-session overhead).
+                            //     TWO consecutive probe failures are required
+                            //     before declaring death: on poor networks a
+                            //     single 10s latency spike is common, and the
+                            //     old one-strike/5s-timeout probe tore down
+                            //     perfectly recoverable sessions — the exact
+                            //     opposite of what a flaky link needs.
+                            let probe_every: u32 = if sid_w.contains("::") { 30 } else { 15 };
                             let mut tick: u32 = 0;
+                            let mut probe_strikes: u8 = 0;
                             loop {
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 tick = tick.wrapping_add(1);
@@ -3114,44 +3296,71 @@ async fn initiate_connection(
 
                                 let mut dead = is_closed;
 
-                                // Active probe roughly every 16s (8 * 2s
-                                // poll). Earlier (every 10s) it occasionally
-                                // overlapped a busy keystroke window because
-                                // the probe holds the handle Mutex for up
-                                // to 5s. The new cadence still surfaces a
-                                // black-hole drop within ~20s without
-                                // contending as often with interactive use.
-                                if !dead && tick % 8 == 0 {
+                                if !dead && tick % probe_every == 0 {
                                     // Active probe: hold the handle lock long
                                     // enough to start AND finish the round
                                     // trip — concurrent commands wait, but
                                     // that's fine, they would block on the
                                     // same lock to open their own channel
-                                    // anyway. A 5s timeout catches a black-
-                                    // holed link without making the UI
-                                    // unresponsive.
+                                    // anyway. 10s timeout: generous enough
+                                    // that a congested-but-alive link doesn't
+                                    // strike out spuriously.
                                     let probe = {
                                         let h = handle_arc.lock().await;
                                         tokio::time::timeout(
-                                            Duration::from_secs(5),
+                                            Duration::from_secs(10),
                                             h.channel_open_session(),
                                         ).await
                                     };
                                     match probe {
                                         Ok(Ok(ch)) => {
+                                            probe_strikes = 0;
                                             // Close cleanly so the server
                                             // doesn't log a stuck session.
                                             let _ = ch.close().await;
                                         }
                                         _ => {
-                                            dead = true;
+                                            probe_strikes += 1;
+                                            if probe_strikes >= 2 {
+                                                dead = true;
+                                            } else {
+                                                // One strike: re-probe on the
+                                                // next 2s tick instead of a
+                                                // full interval away, so a
+                                                // real death still surfaces
+                                                // promptly.
+                                                tick = probe_every.wrapping_sub(1);
+                                            }
                                         }
                                     }
                                 }
 
                                 if dead {
+                                    // Re-check generation + verify OUR handle is
+                                    // still the registered one before tearing
+                                    // anything down. A slow probe holds the handle
+                                    // lock up to 10s; during that window a manual
+                                    // reconnect / auto-retry can bump the
+                                    // generation and register a fresh, healthy
+                                    // connection. Without this guard we'd remove
+                                    // that NEW connection and kill its just-
+                                    // migrated tunnels. Bail silently on mismatch.
+                                    {
+                                        let g = state_gen_w.lock().await;
+                                        if g.get(&sid_w).copied().unwrap_or(0) != my_gen {
+                                            break;
+                                        }
+                                    }
+                                    // Compare-and-remove: only drop the map entry
+                                    // if it's still OUR handle (Arc identity).
+                                    {
+                                        let mut conns = state_w.lock().await;
+                                        match conns.get(&sid_w) {
+                                            Some(cur) if Arc::ptr_eq(cur, &handle_arc) => { conns.remove(&sid_w); }
+                                            _ => break, // superseded by a fresh connection — leave it be
+                                        }
+                                    }
                                     state_sftp_w.lock().await.remove(&sid_w);
-                                    state_w.lock().await.remove(&sid_w);
                                     // Tear down all tunnels bound to this
                                     // session so their listeners release the
                                     // local ports + bridge tasks exit. Without
@@ -3163,6 +3372,20 @@ async fn initiate_connection(
                                     // path; the listener tasks themselves no
                                     // longer probe the handle.
                                     tunnel::stop_all_for_session(&state_tunnels_w, &sid_w).await;
+                                    // Dedicated-transport death: tunnels are
+                                    // tagged under the BASE session id but ride
+                                    // this `::fwd` connection — stop them so
+                                    // their listeners release; the frontend's
+                                    // auto-retry either brings the transport
+                                    // back (migration restarts them on it) or
+                                    // falls back to the primary. Same for the
+                                    // base SFTP cache riding a dead `::sftp`.
+                                    if let Some(base) = sid_w.strip_suffix("::fwd") {
+                                        tunnel::stop_all_for_session(&state_tunnels_w, base).await;
+                                    }
+                                    if let Some(base) = sid_w.strip_suffix("::sftp") {
+                                        state_sftp_w.lock().await.remove(base);
+                                    }
                                     // Stop any mirrors bound to this session too — otherwise the
                                     // mirror worker keeps its own Arc<SftpSession> pointing at
                                     // this dead handle and hammers upload-fail on every future
@@ -3302,6 +3525,107 @@ async fn submit_kbi_response(
 
 // ---- Port forwarding (tunnels) ---------------------------------------------
 
+/// Resolve the SSH transport a session's tunnels should ride: the dedicated
+/// `::fwd` connection when the per-tab toggle has one up, else the primary.
+/// The forwarded-targets map MUST belong to the same connection as the handle
+/// — for R tunnels the server pushes `forwarded-tcpip` channels back on the
+/// connection that sent `tcpip_forward`, and its ClientHandler consults only
+/// its own map (ssh_manager.rs::server_channel_open_forwarded_tcpip).
+async fn resolve_tunnel_transport(
+    state: &SshState,
+    session_id: &str,
+) -> Result<(Arc<tokio::sync::Mutex<russh::client::Handle<ssh_manager::ClientHandler>>>, tunnel::ForwardedTargets), String> {
+    let fwd_key = format!("{}::fwd", session_id);
+    let (primary, dedicated) = {
+        let conns = state.connections.lock().await;
+        (conns.get(session_id).cloned(), if session_id.contains("::") { None } else { conns.get(&fwd_key).cloned() })
+    };
+    let targets_map = state.forwarded_targets.lock().await;
+    if let Some(h) = dedicated {
+        // The `::fwd` entry's forwarded-targets map is created by its own
+        // initiate_connection; if it's somehow missing, fall through to the
+        // primary rather than starting an R tunnel whose inbound channels
+        // would never resolve.
+        if let Some(t) = targets_map.get(&fwd_key) {
+            return Ok((h, Arc::clone(t)));
+        }
+    }
+    let h = primary.ok_or_else(|| "Session not connected".to_string())?;
+    let t = targets_map
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| "Session forwarded-targets map missing — reconnect first".to_string())?;
+    Ok((h, t))
+}
+
+/// Start every spec in `specs` that isn't already running under `sid`'s tag,
+/// on the given transport. Successes are recorded into the session's replay
+/// list; failures are logged to the session log and the poison spec is
+/// stripped from the replay list so auto-retry cycles don't error-loop on it.
+/// Used by the `::fwd` migration (connect success), the fallback/restore
+/// command, and shares its semantics with the primary's auto-start.
+async fn start_tunnel_specs_on(
+    app: &tauri::AppHandle,
+    sid: &str,
+    handle: &Arc<tokio::sync::Mutex<russh::client::Handle<ssh_manager::ClientHandler>>>,
+    targets: &tunnel::ForwardedTargets,
+    tunnels: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, tunnel::ActiveTunnel>>>,
+    specs_map: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, Vec<tunnel::TunnelSpec>>>>,
+    specs: Vec<tunnel::TunnelSpec>,
+) {
+    use tauri::Emitter;
+    let emit_log = |msg: &str, log_type: &str| {
+        let _ = app.emit(
+            &format!("session-log-{}", sid),
+            serde_json::json!({ "msg": msg, "type": log_type }),
+        );
+    };
+    // Snapshot running specs for this tag. Two-phase (ids under the map lock,
+    // status after releasing it) to respect the same lock-ordering rule as
+    // tunnel::stop_all_for_session.
+    let candidates: Vec<(tunnel::TunnelSpec, Arc<tokio::sync::Mutex<tunnel::TunnelStatus>>)> = {
+        let map = tunnels.lock().await;
+        map.values().map(|t| (t.spec.clone(), Arc::clone(&t.status))).collect()
+    };
+    let mut running: Vec<tunnel::TunnelSpec> = Vec::new();
+    for (spec, status) in candidates {
+        if status.lock().await.session_id == sid {
+            running.push(spec);
+        }
+    }
+    for spec in specs {
+        if running.contains(&spec) {
+            continue;
+        }
+        match tunnel::start_tunnel(
+            app.clone(),
+            sid.to_string(),
+            Arc::clone(handle),
+            Arc::clone(tunnels),
+            Arc::clone(targets),
+            spec.clone(),
+        )
+        .await
+        {
+            Ok(id) => {
+                emit_log(&format!("Tunnel started [{}]: {} {}", id, spec.kind, spec.local), "info");
+                let mut map = specs_map.lock().await;
+                let entry = map.entry(sid.to_string()).or_insert_with(Vec::new);
+                if !entry.contains(&spec) {
+                    entry.push(spec);
+                }
+            }
+            Err(e) => {
+                emit_log(&format!("Tunnel start failed ({} {}): {}", spec.kind, spec.local, e), "error");
+                let mut map = specs_map.lock().await;
+                if let Some(list) = map.get_mut(sid) {
+                    list.retain(|s| s != &spec);
+                }
+            }
+        }
+    }
+}
+
 #[tauri::command]
 async fn start_tunnel(
     app: tauri::AppHandle,
@@ -3309,16 +3633,10 @@ async fn start_tunnel(
     session_id: String,
     spec: tunnel::TunnelSpec,
 ) -> Result<String, String> {
-    let handle = {
-        let conns = state.connections.lock().await;
-        conns.get(&session_id).cloned()
-            .ok_or_else(|| "Session not connected".to_string())?
-    };
-    let forwarded = {
-        let map = state.forwarded_targets.lock().await;
-        map.get(&session_id).cloned()
-            .ok_or_else(|| "Session forwarded-targets map missing — reconnect first".to_string())?
-    };
+    // Dedicated-transport aware: rides the `::fwd` connection when one is up,
+    // the primary otherwise. The tunnel is TAGGED under the plain session id
+    // either way, so the Tunnels panel / list / teardown never re-key.
+    let (handle, forwarded) = resolve_tunnel_transport(state.inner(), &session_id).await?;
     let id = tunnel::start_tunnel(app, session_id.clone(), handle, Arc::clone(&state.tunnels), forwarded, spec.clone()).await?;
     // Record this ad-hoc spec against the session so a future reconnect can
     // re-open it. Dedup against (kind, local, remote) so toggling the same
@@ -3371,110 +3689,68 @@ async fn list_tunnels(
     Ok(tunnel::list_tunnels(&state.tunnels, session_id.as_deref()).await)
 }
 
-/// Separate-sessions fallback. When the setting is ON the dedicated `::fwd`
-/// connection normally auto-starts a node's saved tunnels on itself, and the
-/// PRIMARY deliberately skips them. But if that `::fwd` connection can't be
-/// established (e.g. a 2FA server, where the secondary skips keyboard-
-/// interactive and fails auth), those saved tunnels would never come up. The
-/// frontend calls this on `::fwd` failure so the saved tunnels still start —
-/// this time on the PRIMARY handle, tagged under the primary session id so the
-/// Tunnels panel (which falls back to the primary key) shows and manages them.
-/// No-op for quick-connect (`server_id <= 0`, which has no saved tunnels).
+/// (Re)start every tunnel the session should have — the in-memory replay list
+/// when it's non-empty, else the node's saved tunnels JSON — on the best
+/// available transport (`::fwd` when the dedicated connection is up, primary
+/// otherwise). Idempotent: specs already running under the session's tag are
+/// skipped. The frontend calls this to restore forwarding after the dedicated
+/// connection fails or is toggled off, so tunnels always land somewhere.
 #[tauri::command]
-async fn start_saved_tunnels_fallback(
+async fn restart_session_tunnels(
     app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
     db_state: tauri::State<'_, DbState>,
     session_id: String,
     server_id: i32,
 ) -> Result<(), String> {
-    use tauri::Emitter;
-    if server_id <= 0 {
-        return Ok(());
-    }
-    // Read the node's saved tunnels JSON in a nested block so the non-Send
-    // rusqlite guard is dropped before any await.
-    let tunnels_json: String = {
-        let conn_guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
-        let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-        let mut stmt = conn
-            .prepare("SELECT tunnels FROM servers WHERE id=?1")
-            .map_err(|e| e.to_string())?;
-        let mut rows = stmt.query([server_id]).map_err(|e| e.to_string())?;
-        match rows.next().map_err(|e| e.to_string())? {
-            Some(row) => row
-                .get::<_, Option<String>>(0)
-                .unwrap_or_default()
-                .unwrap_or_else(|| "[]".to_string()),
-            None => "[]".to_string(),
+    // In-memory replay list first — it carries ad-hoc tunnels too. A PRESENT
+    // list (even empty) is authoritative (user stopped everything); only seed
+    // from the node's saved tunnels when the key is ABSENT (first engagement),
+    // so explicitly-stopped tunnels don't resurrect on a restore.
+    let existing: Option<Vec<tunnel::TunnelSpec>> =
+        state.session_tunnel_specs.lock().await.get(&session_id).cloned();
+    let mut specs: Vec<tunnel::TunnelSpec> = existing.clone().unwrap_or_default();
+    if existing.is_none() && server_id > 0 {
+        // Nested block so the non-Send rusqlite guard drops before any await.
+        let tunnels_json: String = {
+            let conn_guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+            let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+            let mut stmt = conn
+                .prepare("SELECT tunnels FROM servers WHERE id=?1")
+                .map_err(|e| e.to_string())?;
+            let mut rows = stmt.query([server_id]).map_err(|e| e.to_string())?;
+            match rows.next().map_err(|e| e.to_string())? {
+                Some(row) => row
+                    .get::<_, Option<String>>(0)
+                    .unwrap_or_default()
+                    .unwrap_or_else(|| "[]".to_string()),
+                None => "[]".to_string(),
+            }
+        };
+        specs = serde_json::from_str(&tunnels_json).unwrap_or_default();
+        if !specs.is_empty() {
+            state
+                .session_tunnel_specs
+                .lock()
+                .await
+                .insert(session_id.clone(), specs.clone());
         }
-    };
-
-    let specs: Vec<tunnel::TunnelSpec> = match serde_json::from_str(&tunnels_json) {
-        Ok(v) => v,
-        Err(_) => return Ok(()), // malformed / empty — nothing to replay
-    };
+    }
     if specs.is_empty() {
         return Ok(());
     }
 
-    let handle = {
-        let conns = state.connections.lock().await;
-        conns
-            .get(&session_id)
-            .cloned()
-            .ok_or_else(|| "Session not connected".to_string())?
-    };
-    let forwarded = {
-        let map = state.forwarded_targets.lock().await;
-        map.get(&session_id)
-            .cloned()
-            .ok_or_else(|| "Session forwarded-targets map missing — reconnect first".to_string())?
-    };
-
-    let emit_log = |msg: &str, log_type: &str| {
-        let _ = app.emit(
-            &format!("session-log-{}", session_id),
-            serde_json::json!({ "msg": msg, "type": log_type }),
-        );
-    };
-    emit_log(
-        "Dedicated forwarding connection unavailable — starting saved tunnels on the main session.",
-        "info",
-    );
-
-    for spec in &specs {
-        // Skip specs already running for this session (idempotent if called
-        // more than once) — dedup against the recorded replay list.
-        {
-            let map = state.session_tunnel_specs.lock().await;
-            if map.get(&session_id).map(|l| l.contains(spec)).unwrap_or(false) {
-                continue;
-            }
-        }
-        match tunnel::start_tunnel(
-            app.clone(),
-            session_id.clone(),
-            Arc::clone(&handle),
-            Arc::clone(&state.tunnels),
-            Arc::clone(&forwarded),
-            spec.clone(),
-        )
-        .await
-        {
-            Ok(id) => {
-                emit_log(&format!("Tunnel started [{}]: {} {}", id, spec.kind, spec.local), "info");
-                let mut map = state.session_tunnel_specs.lock().await;
-                let entry = map.entry(session_id.clone()).or_insert_with(Vec::new);
-                if !entry.contains(spec) {
-                    entry.push(spec.clone());
-                }
-            }
-            Err(e) => {
-                emit_log(&format!("Tunnel start failed ({} {}): {}", spec.kind, spec.local, e), "error");
-            }
-        }
-    }
+    let (handle, targets) = resolve_tunnel_transport(state.inner(), &session_id).await?;
+    start_tunnel_specs_on(
+        &app,
+        &session_id,
+        &handle,
+        &targets,
+        &state.tunnels,
+        &state.session_tunnel_specs,
+        specs,
+    )
+    .await;
     Ok(())
 }
 
@@ -3547,6 +3823,40 @@ async fn disconnect_session(
     mirrors: tauri::State<'_, MirrorMap>,
     session_id: String,
 ) -> Result<(), String> {
+    // Invalidate any connect worker still handshaking for THIS key: bump the
+    // generation before removing anything, so a late auth-success hits its
+    // "still wanted?" guard and drops instead of re-registering a transport the
+    // user just turned off (which would then steal / strand tunnels). Done for
+    // every key, including secondaries — this is the toggle-off / reconnect-
+    // button invalidation path.
+    {
+        let mut g = state.session_generation.lock().await;
+        let next = g.get(&session_id).copied().unwrap_or(0).wrapping_add(1);
+        g.insert(session_id.clone(), next);
+    }
+    // Disconnecting a dedicated transport directly (toggle-off / reconnect
+    // button): tunnels are tagged under the BASE session id but ride this
+    // `::fwd` connection. Stop them ONLY when the dedicated connection actually
+    // exists — i.e. the tunnels really are riding it. If it's absent (a failed
+    // `::fwd` that never registered, so the tunnels fell back to the primary),
+    // stopping base-tagged tunnels here would needlessly bounce every live
+    // primary tunnel. The caller restarts them on the best transport via
+    // restart_session_tunnels afterwards.
+    if let Some(base) = session_id.strip_suffix("::fwd") {
+        if state.connections.lock().await.contains_key(&session_id) {
+            tunnel::stop_all_for_session(&state.tunnels, base).await;
+        }
+    }
+    // `::sftp`: remove the dedicated transport FIRST, then purge the base SFTP
+    // cache — so an SFTP op racing this teardown can't re-cache a subsystem on
+    // the dying transport after the purge (get_sftp_session's still-current
+    // check would then see the transport gone and refuse to cache).
+    if session_id.ends_with("::sftp") {
+        state.connections.lock().await.remove(&session_id);
+        if let Some(base) = session_id.strip_suffix("::sftp") {
+            state.sftp_sessions.lock().await.remove(base);
+        }
+    }
     // Stop all forwarders so their listener sockets are released before the
     // SSH handle is dropped (otherwise newly-incoming connections would just
     // bounce off a dead channel).
@@ -4303,10 +4613,20 @@ pub async fn get_sftp_session(
         return Ok(Arc::clone(s));
     }
 
-    let session_arc = {
+    // Transport preference: when a dedicated `::sftp` connection exists for
+    // this session (the per-tab "Dedicated session" toggle), the SFTP
+    // subsystem rides IT — but the cache stays keyed by the plain session id,
+    // so the frontend never has to re-key anything. The dedicated connection
+    // is a pure transport: it appearing/disappearing just invalidates this
+    // cache (see the `::sftp` lifecycle hooks) and the next file operation
+    // re-opens the subsystem on whatever transport is available.
+    let (transport_key, session_arc) = {
         let connections = state.connections.lock().await;
-        if let Some(sess) = connections.get(session_id) {
-            Arc::clone(sess)
+        let dedicated_key = format!("{}::sftp", session_id);
+        if !session_id.contains("::") && connections.contains_key(&dedicated_key) {
+            (dedicated_key.clone(), Arc::clone(connections.get(&dedicated_key).unwrap()))
+        } else if let Some(sess) = connections.get(session_id) {
+            (session_id.to_string(), Arc::clone(sess))
         } else {
             return Err("Session not connected".into());
         }
@@ -4323,15 +4643,24 @@ pub async fn get_sftp_session(
         // Another caller raced us; keep the existing one and drop ours.
         return Ok(Arc::clone(existing));
     }
-    // Generation guard: if a reconnect replaced the SSH handle while we
-    // were opening the SFTP subsystem, our `session_arc` now points at a
-    // dead handle and inserting it would poison the cache. Compare by Arc
-    // pointer — same handle = same SSH connection.
+    // Guard against two races before caching: (a) a reconnect replaced/removed
+    // the transport handle while we were opening the subsystem (stale handle),
+    // and (b) a dedicated `::sftp` transport APPEARED meanwhile — which changes
+    // the preferred transport, so caching this primary-backed subsystem would
+    // permanently bypass the dedicated connection. Require both the recomputed
+    // preference AND the handle identity to still match the key we opened on.
     let still_current = {
         let connections = state.connections.lock().await;
-        connections.get(session_id)
-            .map(|c| Arc::ptr_eq(c, &session_arc))
-            .unwrap_or(false)
+        let dedicated_key = format!("{}::sftp", session_id);
+        let preferred: &str = if !session_id.contains("::") && connections.contains_key(&dedicated_key) {
+            dedicated_key.as_str()
+        } else {
+            session_id
+        };
+        transport_key.as_str() == preferred
+            && connections.get(&transport_key)
+                .map(|c| Arc::ptr_eq(c, &session_arc))
+                .unwrap_or(false)
     };
     if !still_current {
         return Err("Session reconnected while opening SFTP — try again".into());
@@ -7129,7 +7458,7 @@ pub fn run() {
             add_credential, edit_credential, delete_credential,
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session,
-            start_tunnel, stop_tunnel, list_tunnels, start_saved_tunnels_fallback,
+            start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels,
             open_terminal, write_terminal_data, resize_terminal, close_terminal,
             ssh_info_probe_section, ssh_systemctl_action, ssh_kill_process,
             ssh_iptables_chain, ssh_nft_chain,

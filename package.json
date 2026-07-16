@@ -1,6 +1,7 @@
 {
   "name": "submarine",
   "version": "0.2.38",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

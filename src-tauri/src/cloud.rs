@@ -601,8 +601,28 @@ async fn require_token(state: &CloudState) -> Result<String, String> {
         .ok_or_else(|| "[CLOUD] NOT_SIGNED_IN".to_string())
 }
 
+/// Handle a revoked/expired token on an authenticated call. A server `401`
+/// means our stored bearer token is no longer valid — clear it locally so the
+/// UI drops to the signed-out state instead of staying "signed in but broken"
+/// forever (with a lying green "Synced" indicator). Returns the message to
+/// surface when it was a 401; `None` for any other status (caller falls through
+/// to the normal error decode).
+async fn on_unauthorized(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    status: reqwest::StatusCode,
+) -> Option<String> {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        state.clear_token(app).await;
+        Some("[CLOUD] SESSION_EXPIRED: your cloud session ended — please sign in again".to_string())
+    } else {
+        None
+    }
+}
+
 #[tauri::command]
 pub async fn cloud_list_remote(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<CloudState>>,
 ) -> Result<Vec<RemoteProfile>, String> {
     let token = require_token(&state).await?;
@@ -614,6 +634,7 @@ pub async fn cloud_list_remote(
         .await
         .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
     if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(&app, &state, resp.status()).await { return Err(e); }
         return Err(decode_error(resp).await);
     }
     let body: ListProfilesResponse = resp
@@ -636,6 +657,7 @@ pub enum UploadOutcome {
 /// Internal helper: post the multipart form. Caller decides what version
 /// to ask for; we don't probe the server ourselves here.
 async fn do_upload(
+    app: &tauri::AppHandle,
     state: &CloudState,
     token: &str,
     name: &str,
@@ -660,6 +682,9 @@ async fn do_upload(
         .await
         .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
 
+    if let Some(e) = on_unauthorized(app, state, resp.status()).await {
+        return Err(e);
+    }
     if resp.status() == reqwest::StatusCode::CONFLICT {
         // Parse the server's "I have version X" response so the UI can show
         // a meaningful prompt instead of a generic conflict message.
@@ -705,14 +730,14 @@ pub async fn cloud_upload_profile(
 
     // Look up the current server version so we can submit the next one.
     // First-time uploads (profile not on server yet) get version 1.
-    let remote = cloud_list_remote(state.clone()).await?;
+    let remote = cloud_list_remote(app.clone(), state.clone()).await?;
     let next_version = remote
         .iter()
         .find(|p| p.name == name)
         .map(|p| p.version + 1)
         .unwrap_or(1);
 
-    do_upload(&state, &token, &name, next_version, bytes).await
+    do_upload(&app, &state, &token, &name, next_version, bytes).await
 }
 
 /// Force upload: the user has acknowledged the conflict and wants to
@@ -730,7 +755,7 @@ pub async fn cloud_force_upload_profile(
     let path = crate::profile_path(&app, &name)?;
     let bytes = std::fs::read(&path)
         .map_err(|e| format!("[CLOUD] LOCAL_READ_FAILED for {:?}: {}", path, e))?;
-    do_upload(&state, &token, &name, server_version + 1, bytes).await
+    do_upload(&app, &state, &token, &name, server_version + 1, bytes).await
 }
 
 /// Download a remote profile and save it as a local `.submarine` file
@@ -772,6 +797,7 @@ pub async fn cloud_download_profile(
         .await
         .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
     if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(&app, &state, resp.status()).await { return Err(e); }
         return Err(decode_error(resp).await);
     }
     // Vault blobs are small (compressed sqlite, encrypted). A 100 MiB cap is
@@ -807,14 +833,24 @@ pub async fn cloud_download_profile(
     if bytes[4] != crate::VAULT_VERSION {
         return Err(format!("[CLOUD] UNSUPPORTED_VAULT_VERSION: {}", bytes[4]));
     }
+    // Reject a header-valid-but-truncated body (the same floor the local import
+    // enforces). Without this, a short blob would still replace a good vault
+    // with one that can never be unlocked.
+    if bytes.len() < crate::HEADER_LEN + crate::NONCE_LEN + 16 {
+        return Err("[CLOUD] BAD_BLOB: vault body is truncated".into());
+    }
 
-    std::fs::write(&dst, &bytes)
-        .map_err(|e| format!("[CLOUD] LOCAL_WRITE_FAILED to {:?}: {}", dst, e))?;
+    // Atomic write + `.bak`. A direct `fs::write` (create+truncate) could leave
+    // the LIVE local vault truncated on a crash / disk-full mid-write — the
+    // exact corruption the local save path was hardened against and this path
+    // previously reintroduced.
+    crate::atomic_write_bytes_with_backup(&dst, &bytes)?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn cloud_delete_remote_profile(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<CloudState>>,
     remote_id: i64,
 ) -> Result<(), String> {
@@ -827,6 +863,7 @@ pub async fn cloud_delete_remote_profile(
         .await
         .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
     if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(&app, &state, resp.status()).await { return Err(e); }
         return Err(decode_error(resp).await);
     }
     Ok(())
@@ -896,7 +933,7 @@ pub async fn cloud_sync_overview(
         })
         .collect();
 
-    let remote = cloud_list_remote(state.clone()).await?;
+    let remote = cloud_list_remote(app.clone(), state.clone()).await?;
     let remote_by_name: std::collections::HashMap<String, RemoteProfile> = remote
         .iter()
         .map(|r| (r.name.clone(), r.clone()))

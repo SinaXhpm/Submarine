@@ -2,7 +2,8 @@
 name = "submarine"
 version = "0.2.38"
 description = "Submarine SSH Client"
-authors = ["Sina"]
+authors = ["Sina Xhpm (sinaxhpm.com)"]
+license = "MIT"
 edition = "2021"
 rust-version = "1.70"
 
@@ -73,6 +74,9 @@ hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
+# TCP-level keepalive on the SSH transport sockets (poor-network resilience).
+# Already in the tree transitively via tokio — a direct dep adds no new crates.
+socket2 = "0.6"
 rusqlite = { version = "0.31", features = ["bundled", "backup", "serialize"] }
 argon2 = "0.5"
 aes-gcm = "0.10"

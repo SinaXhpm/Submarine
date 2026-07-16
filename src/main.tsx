@@ -1,7 +1,18 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import ErrorBoundary from "./components/ErrorBoundary";
 import "./App.css";
+
+// Last-resort global handlers so a failure that escapes React (an async reject,
+// a listener throw) is at least recorded instead of vanishing silently. The
+// ErrorBoundary below covers render-time throws; these cover everything else.
+window.addEventListener("unhandledrejection", (e) => {
+  console.error("[app] unhandled promise rejection:", e.reason);
+});
+window.addEventListener("error", (e) => {
+  console.error("[app] uncaught error:", e.error ?? e.message);
+});
 
 // ── Android soft-keyboard sizing (visualViewport → --vv-h) ──────────────────
 // The Android on-screen keyboard covers our fixed-bottom UI (MobileKeyBar,
@@ -33,5 +44,7 @@ window.addEventListener("resize", syncVvHeight);
 window.addEventListener("orientationchange", syncVvHeight);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <App />,
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
 );

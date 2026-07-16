@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows } from "lucide-react";
+import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
@@ -16,23 +16,39 @@ import { useIsCompact } from "../hooks/useViewport";
 // state of the dedicated connection: green = up, amber (pulsing) = opening /
 // applies-on-connect, red = couldn't be established (falling back to the main
 // session). No dot when the toggle is off.
-const SepToggle = ({ on, onToggle, status, title }: {
+const SepToggle = ({ on, onToggle, status, title, onReconnect }: {
   on: boolean;
   onToggle: (v: boolean) => void;
   status: 'ready' | 'pending' | 'failed' | 'off';
   title: string;
+  onReconnect?: () => void;
 }) => (
-  <label className="flex items-center gap-1.5 text-[10px] text-zinc-400 hover:text-zinc-200 cursor-pointer select-none" title={title}>
-    <input type="checkbox" className="w-3 h-3 accent-primary" checked={on} onChange={(e) => onToggle(e.target.checked)} />
-    <span className="uppercase tracking-wider font-bold">Dedicated session</span>
-    {on && (
-      <span
-        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-          status === 'ready' ? 'bg-emerald-400' : status === 'failed' ? 'bg-red-400' : 'bg-amber-400 animate-pulse'
-        }`}
-      />
+  <span className="flex items-center gap-1.5">
+    <label className="flex items-center gap-1.5 text-[10px] text-zinc-400 hover:text-zinc-200 cursor-pointer select-none" title={title}>
+      <input type="checkbox" className="w-3 h-3 accent-primary" checked={on} onChange={(e) => onToggle(e.target.checked)} />
+      <span className="uppercase tracking-wider font-bold">Dedicated session</span>
+      {on && (
+        <span
+          className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+            status === 'ready' ? 'bg-emerald-400' : status === 'failed' ? 'bg-red-400' : 'bg-amber-400 animate-pulse'
+          }`}
+        />
+      )}
+    </label>
+    {/* Reconnect just the dedicated connection — outside the <label> so a
+        click can't toggle the checkbox. Shown whenever the toggle is on and
+        no connect attempt is already in flight; also the retry affordance
+        after a red (failed) dot. */}
+    {on && onReconnect && status !== 'pending' && (
+      <button
+        onClick={onReconnect}
+        title="Reconnect the dedicated session"
+        className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10 transition-colors"
+      >
+        <RotateCw size={10} />
+      </button>
     )}
-  </label>
+  </span>
 );
 
 const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange }: any) => {
@@ -90,12 +106,14 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // Port-Forwarding tab headers, persisted globally in localStorage under
   // `submarine-separate-sftp` / `submarine-separate-fwd`, default OFF). When a
   // toggle is on we open a dedicated secondary SSH connection — keyed
-  // `${session.id}::sftp` / `${session.id}::fwd` — and route that tab at it, so
-  // a big transfer or a busy tunnel doesn't contend with the interactive shell.
-  // Everything degrades to the primary connection if a secondary can't be
-  // established (e.g. a 2FA server, where the backend skips keyboard-interactive
-  // on secondaries): SFTP falls back to the primary and saved tunnels replay on
-  // it. Toggling while connected applies immediately.
+  // `${session.id}::sftp` / `${session.id}::fwd` — as a pure TRANSPORT: the
+  // backend routes SFTP subsystems and tunnels over it when it exists, while
+  // everything stays keyed/tagged under the plain session id. The panels never
+  // re-key, tunnels migrate live in both directions, and if a dedicated
+  // connection can't be established (2FA server, network blip) everything just
+  // rides the primary. Unexpected drops auto-retry with backoff, and each tab
+  // header has a manual reconnect button for the dedicated connection.
+  type SecondaryStatus = 'off' | 'connecting' | 'ready' | 'failed';
   const [separateSftp, setSeparateSftp] = useState(localStorage.getItem('submarine-separate-sftp') === 'true');
   const [separateFwd, setSeparateFwd] = useState(localStorage.getItem('submarine-separate-fwd') === 'true');
   const separateSftpRef = useRef(separateSftp);
@@ -103,22 +121,30 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   useEffect(() => { separateSftpRef.current = separateSftp; }, [separateSftp]);
   useEffect(() => { separateFwdRef.current = separateFwd; }, [separateFwd]);
 
-  // Live status of the dedicated connections (drives the tab-header indicators).
-  // `sftpConnReady` gates whether the SFTP browser targets `::sftp` (true) or
-  // the primary (false). `fwdConnStatus` is 'off' when not engaged, 'connecting'
-  // during the `::fwd` handshake (Tunnels panel disabled meanwhile so a manual
-  // add doesn't land on the wrong connection), 'ready' once up, or 'failed' when
-  // it couldn't be established (tunnels then fall back to the primary).
-  const [sftpConnReady, setSftpConnReady] = useState(false);
-  const [fwdConnStatus, setFwdConnStatus] = useState<'off' | 'connecting' | 'ready' | 'failed'>('off');
-  // Refs so the toggle handlers (invoked from a possibly-stale closure) read the
-  // latest connection status.
-  const sftpConnReadyRef = useRef(false);
-  const fwdConnStatusRef = useRef<'off' | 'connecting' | 'ready' | 'failed'>('off');
-  useEffect(() => { sftpConnReadyRef.current = sftpConnReady; }, [sftpConnReady]);
+  // Live status of the dedicated connections — drives the tab-header dots and
+  // the retry logic only; nothing routes on it (the backend picks transports).
+  const [sftpConnStatus, setSftpConnStatus] = useState<SecondaryStatus>('off');
+  const [fwdConnStatus, setFwdConnStatus] = useState<SecondaryStatus>('off');
+  const sftpConnStatusRef = useRef<SecondaryStatus>('off');
+  const fwdConnStatusRef = useRef<SecondaryStatus>('off');
+  useEffect(() => { sftpConnStatusRef.current = sftpConnStatus; }, [sftpConnStatus]);
   useEffect(() => { fwdConnStatusRef.current = fwdConnStatus; }, [fwdConnStatus]);
 
+  // Bounded auto-retry for unexpected secondary drops: 2s → 5s → 10s, then
+  // give up (red dot; manual reconnect button still works). Counters reset on
+  // success and on any manual action.
+  const SECONDARY_RETRY_DELAYS = [2000, 5000, 10000];
+  const sftpRetryRef = useRef(0);
+  const fwdRetryRef = useRef(0);
+  const sftpRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fwdRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearSecondaryRetryTimers = () => {
+    if (sftpRetryTimerRef.current) { clearTimeout(sftpRetryTimerRef.current); sftpRetryTimerRef.current = null; }
+    if (fwdRetryTimerRef.current) { clearTimeout(fwdRetryTimerRef.current); fwdRetryTimerRef.current = null; }
+  };
+
   const openSftpConn = () => {
+    setSftpConnStatus('connecting');
     invoke("initiate_connection", {
       sessionId: `${session.id}::sftp`,
       serverId: session.serverId,
@@ -128,11 +154,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       separateSessions: false,
     }).catch(console.error);
   };
-  // `autostart` = should the `::fwd` connection auto-start the node's saved
-  // tunnels on itself. True only on a fresh connect where the primary deferred
-  // them (separateFwd on at connect time); false for a live toggle, where the
-  // primary already owns the saved tunnels and `::fwd` is just for new ones.
-  const openFwdConn = (autostart: boolean) => {
+  const openFwdConn = () => {
     setFwdConnStatus('connecting');
     invoke("initiate_connection", {
       sessionId: `${session.id}::fwd`,
@@ -140,45 +162,125 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       customPassword: customPasswordRef.current || null,
       quickAuth: session.quickAuth || null,
       sessionRole: "forward",
-      separateSessions: autostart,
+      separateSessions: false,
     }).catch(console.error);
   };
-  const closeSecondaryConn = (suffix: 'sftp' | 'fwd') => {
-    invoke("disconnect_session", { sessionId: `${session.id}::${suffix}` }).catch(console.error);
+
+  // Restore forwarding on the best available transport (primary, unless a
+  // dedicated connection is up). Called when the dedicated path is abandoned —
+  // toggle-off, or retries exhausted — so tunnels always land somewhere.
+  const restoreTunnelsOnPrimary = () => {
+    invoke("restart_session_tunnels", { sessionId: session.id, serverId: session.serverId }).catch(console.error);
+  };
+
+  // Whether the in-flight PRIMARY connect deferred its saved tunnels for a
+  // `::fwd` connection (i.e. separateFwd was on when we sent it). If the user
+  // toggles fwd OFF during the primary handshake, the primary won't have
+  // started the tunnels AND openSecondaryConnections won't open `::fwd`, so
+  // they'd start nowhere — the success handler reconciles using this.
+  const primarySeparateRef = useRef(false);
+
+  // Schedule an auto-retry for a dropped secondary. Fires only if the toggle
+  // is still on and the primary is still connected at fire time.
+  const scheduleSecondaryRetry = (which: 'sftp' | 'fwd') => {
+    const retryRef = which === 'sftp' ? sftpRetryRef : fwdRetryRef;
+    const timerRef = which === 'sftp' ? sftpRetryTimerRef : fwdRetryTimerRef;
+    const enabledRef = which === 'sftp' ? separateSftpRef : separateFwdRef;
+    const setStatus = which === 'sftp' ? setSftpConnStatus : setFwdConnStatus;
+    if (retryRef.current >= SECONDARY_RETRY_DELAYS.length) {
+      // Out of retries — mark failed; operations ride the primary. For
+      // forwarding, explicitly restore the tunnels there.
+      setStatus('failed');
+      if (which === 'fwd') restoreTunnelsOnPrimary();
+      return;
+    }
+    const delay = SECONDARY_RETRY_DELAYS[retryRef.current];
+    retryRef.current += 1;
+    setStatus('connecting');
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      if (!enabledRef.current || statusRef.current !== 'connected') return;
+      if (which === 'sftp') openSftpConn(); else openFwdConn();
+    }, delay);
   };
 
   // Open whichever dedicated connections are enabled — called from the primary
   // `connection-success` handler (first-connect AND reconnect; the backend
   // sweeps stale secondaries at the top of the primary's connect, so this is
-  // clean). Fresh connect → `::fwd` auto-starts saved tunnels (primary deferred).
+  // clean). On `::fwd` success the backend migrates the session's tunnels onto
+  // the fresh transport.
   const openSecondaryConnections = () => {
     if (separateSftpRef.current) openSftpConn();
-    if (separateFwdRef.current) openFwdConn(true);
+    if (separateFwdRef.current) openFwdConn();
   };
 
   // Reset secondary tracking when the primary drops / reconnects. The backend
   // has already torn the secondaries down (primary connect-teardown, or the
-  // primary disconnect sweep); this just returns the UI to primary-backed keys.
+  // primary disconnect sweep); this just resets the indicators + retry state.
   const resetSecondaryStatus = () => {
-    setSftpConnReady(false);
+    clearSecondaryRetryTimers();
+    sftpRetryRef.current = 0;
+    fwdRetryRef.current = 0;
+    setSftpConnStatus('off');
     setFwdConnStatus('off');
+  };
+
+  // Manual reconnect buttons in the tab headers. initiate_connection sweeps
+  // its own key's stale state, so a plain re-open is a full clean reconnect
+  // of just the dedicated connection — never the whole server session.
+  const reconnectSftpConn = () => {
+    if (statusRef.current !== 'connected') return;
+    sftpRetryRef.current = 0;
+    openSftpConn();
+  };
+  const reconnectFwdConn = () => {
+    if (statusRef.current !== 'connected') return;
+    fwdRetryRef.current = 0;
+    openFwdConn();
   };
 
   // Tab-header toggles. Persist immediately; apply live if the session is
   // already connected, otherwise they take effect on the next connect.
   const toggleSeparateSftp = (on: boolean) => {
     setSeparateSftp(on);
+    // Sync ref update: the disconnect below emits session-disconnected-…::sftp,
+    // and its listener consults this ref — the useEffect mirror only lands
+    // after the next render, which can be AFTER the event. Without this, a
+    // toggle-off could read a stale "on" and auto-retry the connection the
+    // user just closed.
+    separateSftpRef.current = on;
     localStorage.setItem('submarine-separate-sftp', String(on));
+    sftpRetryRef.current = 0;
     if (statusRef.current !== 'connected') return;
-    if (on && !sftpConnReadyRef.current) openSftpConn();
-    else if (!on && sftpConnReadyRef.current) { closeSecondaryConn('sftp'); setSftpConnReady(false); }
+    if (on) {
+      if (sftpConnStatusRef.current !== 'ready' && sftpConnStatusRef.current !== 'connecting') openSftpConn();
+    } else {
+      setSftpConnStatus('off');
+      // Backend drops the base SFTP cache with the transport, so the next
+      // file operation transparently re-opens on the primary.
+      invoke("disconnect_session", { sessionId: `${session.id}::sftp` }).catch(console.error);
+    }
   };
   const toggleSeparateFwd = (on: boolean) => {
     setSeparateFwd(on);
+    // Sync ref update — same stale-ref race as toggleSeparateSftp.
+    separateFwdRef.current = on;
     localStorage.setItem('submarine-separate-fwd', String(on));
+    fwdRetryRef.current = 0;
     if (statusRef.current !== 'connected') return;
-    if (on && fwdConnStatusRef.current === 'off') openFwdConn(false);
-    else if (!on && fwdConnStatusRef.current !== 'off') { closeSecondaryConn('fwd'); setFwdConnStatus('off'); }
+    if (on) {
+      if (fwdConnStatusRef.current !== 'ready' && fwdConnStatusRef.current !== 'connecting') openFwdConn();
+    } else {
+      setFwdConnStatus('off');
+      // Order matters: the disconnect stops tunnels riding the dedicated
+      // transport AND removes it from the connections map; only then does
+      // the restart re-resolve the transport — now the primary — and bring
+      // the same tunnels back up there.
+      invoke("disconnect_session", { sessionId: `${session.id}::fwd` })
+        .catch(console.error)
+        .finally(() => { restoreTunnelsOnPrimary(); });
+    }
   };
 
   // Terminal IDs MUST be unique across every open session, not just within
@@ -308,6 +410,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     // Start connection. We read from the ref so a password the user types
     // into the auth-retry input is picked up by later attempts inside this
     // same effect closure (the effect itself only runs once).
+    primarySeparateRef.current = separateFwdRef.current;
     invoke("initiate_connection", { sessionId: session.id, serverId: session.serverId, customPassword: customPasswordRef.current || null, quickAuth: session.quickAuth || null, sessionRole: "primary", separateSessions: separateFwdRef.current })
       .catch(e => {
         pushLog({ msg: `Failed to initiate: ${e}`, type: 'error' });
@@ -340,20 +443,57 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
 
     // ---- Dedicated secondary connections (separate-sessions mode) ----------
     // These fire only when the setting is on and we opened `::sftp` / `::fwd`.
-    // They just flip local routing state; the primary session's own KBI /
-    // fingerprint prompts (which drive auth) stay wired above.
-    const unlistenSftpOk = listen(`connection-success-${session.id}::sftp`, () => setSftpConnReady(true));
-    const unlistenSftpFail = listen(`connection-failed-${session.id}::sftp`, () => setSftpConnReady(false));
-    const unlistenSftpDown = listen(`session-disconnected-${session.id}::sftp`, () => setSftpConnReady(false));
-
-    const unlistenFwdOk = listen(`connection-success-${session.id}::fwd`, () => setFwdConnStatus('ready'));
-    const unlistenFwdFail = listen(`connection-failed-${session.id}::fwd`, () => {
-      // The dedicated forward connection couldn't be established — start the
-      // node's saved tunnels on the primary so port-forwarding still works.
-      setFwdConnStatus('failed');
-      invoke("start_saved_tunnels_fallback", { sessionId: session.id, serverId: session.serverId }).catch(console.error);
+    // They drive the status dots + auto-retry; routing itself lives in the
+    // backend (transport preference), so no keys flip here. The primary
+    // session's own KBI / fingerprint prompts stay wired above.
+    const unlistenSftpOk = listen(`connection-success-${session.id}::sftp`, () => {
+      sftpRetryRef.current = 0;
+      setSftpConnStatus('ready');
     });
-    const unlistenFwdDown = listen(`session-disconnected-${session.id}::fwd`, () => setFwdConnStatus('off'));
+    const unlistenSftpFail = listen(`connection-failed-${session.id}::sftp`, (event: any) => {
+      // Auth-style failures (2FA-only server, bad credentials) won't get
+      // better on retry — go straight to failed; SFTP rides the primary.
+      if (event.payload?.is_auth_error) setSftpConnStatus('failed');
+      else if (separateSftpRef.current && statusRef.current === 'connected') scheduleSecondaryRetry('sftp');
+      else setSftpConnStatus('off');
+    });
+    const unlistenSftpDown = listen(`session-disconnected-${session.id}::sftp`, (event: any) => {
+      // Unexpected transport death (the backend already dropped the base SFTP
+      // cache, so file ops already fall back to the primary) — try to bring
+      // the dedicated connection back. A user-initiated disconnect (toggle
+      // off) must never retry.
+      const userInitiated = !!event.payload?.user_initiated;
+      if (!userInitiated && separateSftpRef.current && statusRef.current === 'connected') scheduleSecondaryRetry('sftp');
+      else setSftpConnStatus('off');
+    });
+
+    const unlistenFwdOk = listen(`connection-success-${session.id}::fwd`, () => {
+      fwdRetryRef.current = 0;
+      setFwdConnStatus('ready');
+      // Tunnel migration onto the fresh transport happens backend-side.
+    });
+    const unlistenFwdFail = listen(`connection-failed-${session.id}::fwd`, (event: any) => {
+      if (event.payload?.is_auth_error) {
+        // Won't get better on retry — run the tunnels on the primary instead.
+        setFwdConnStatus('failed');
+        invoke("restart_session_tunnels", { sessionId: session.id, serverId: session.serverId }).catch(console.error);
+      } else if (separateFwdRef.current && statusRef.current === 'connected') {
+        // scheduleSecondaryRetry falls back to the primary (and restores the
+        // tunnels there) once the retry budget is exhausted.
+        scheduleSecondaryRetry('fwd');
+      } else {
+        setFwdConnStatus('off');
+      }
+    });
+    const unlistenFwdDown = listen(`session-disconnected-${session.id}::fwd`, (event: any) => {
+      // The watcher already stopped the tunnels that rode this transport.
+      // Retry brings the transport back (backend migration restarts them on
+      // it); exhausted retries restore them on the primary. A user-initiated
+      // disconnect (toggle off — which restores tunnels itself) never retries.
+      const userInitiated = !!event.payload?.user_initiated;
+      if (!userInitiated && separateFwdRef.current && statusRef.current === 'connected') scheduleSecondaryRetry('fwd');
+      else setFwdConnStatus('off');
+    });
 
     const unlistenSuccess = listen(`connection-success-${session.id}`, () => {
       // statusRef.current is authoritative here — the plain `status` we
@@ -401,6 +541,12 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       // reconnect too — the backend already reaped the stale secondaries.
       resetSecondaryStatus();
       openSecondaryConnections();
+      // Reconcile the toggled-off-during-handshake case: the primary deferred
+      // its saved tunnels for a `::fwd` connection we are NOT going to open, so
+      // nobody would start them — restore on the primary.
+      if (primarySeparateRef.current && !separateFwdRef.current) {
+        restoreTunnelsOnPrimary();
+      }
     });
 
     const unlistenFailed = listen(`connection-failed-${session.id}`, (event: any) => {
@@ -460,6 +606,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       unlistenDisconnected.then(f => f());
 
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      clearSecondaryRetryTimers();
       invoke("disconnect_session", { sessionId: session.id }).catch(console.error);
     };
   }, [session.id, session.serverId]);
@@ -484,6 +631,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     reconnectTimerRef.current = setTimeout(() => {
       setNextReconnectAt(null);
       setStatus('connecting');
+      primarySeparateRef.current = separateFwdRef.current;
       invoke("initiate_connection", {
         sessionId: session.id,
         serverId: session.serverId,
@@ -502,6 +650,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     setIsAuthError(false);
     setDisconnectReason("");
     resetSecondaryStatus();
+    primarySeparateRef.current = separateFwdRef.current;
     invoke("initiate_connection", {
       sessionId: session.id,
       serverId: session.serverId,
@@ -1336,8 +1485,9 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                   <SepToggle
                     on={separateSftp}
                     onToggle={toggleSeparateSftp}
-                    status={!separateSftp ? 'off' : sftpConnReady ? 'ready' : 'pending'}
+                    status={!separateSftp ? 'off' : sftpConnStatus === 'ready' ? 'ready' : sftpConnStatus === 'failed' ? 'failed' : 'pending'}
                     title="Run SFTP over its own dedicated SSH connection instead of sharing the terminal's session"
+                    onReconnect={reconnectSftpConn}
                   />
                 </div>
                 <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors shrink-0">
@@ -1346,7 +1496,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               </div>
               <div className="flex-1 overflow-hidden relative">
                 <SftpWorkspace
-                  sessionId={sftpConnReady ? `${session.id}::sftp` : session.id}
+                  sessionId={session.id}
                   disabled={status !== 'connected'}
                   serverId={session.serverId}
                   mirrorsConfig={(() => {
@@ -1367,6 +1517,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                     onToggle={toggleSeparateFwd}
                     status={!separateFwd ? 'off' : fwdConnStatus === 'ready' ? 'ready' : fwdConnStatus === 'failed' ? 'failed' : 'pending'}
                     title="Run port-forwarding over its own dedicated SSH connection instead of sharing the terminal's session"
+                    onReconnect={reconnectFwdConn}
                   />
                 </div>
                 <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors shrink-0">
@@ -1374,10 +1525,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                 </button>
               </div>
               <div className="flex-1 overflow-hidden relative">
-                <TunnelsPanel
-                  sessionId={fwdConnStatus === 'ready' ? `${session.id}::fwd` : session.id}
-                  disabled={status !== 'connected' || fwdConnStatus === 'connecting'}
-                />
+                <TunnelsPanel sessionId={session.id} disabled={status !== 'connected'} />
               </div>
             </div>
           )}
