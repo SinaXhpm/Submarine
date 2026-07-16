@@ -870,6 +870,53 @@ pub async fn cloud_delete_remote_profile(
 }
 
 // ---------------------------------------------------------------------------
+// Per-entity sync transport (the new model)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct SyncExchangeReq<'a> {
+    profile: &'a str,
+    since: &'a str,
+    records: &'a [crate::SyncRecord],
+}
+#[derive(Deserialize)]
+struct SyncExchangeResp {
+    records: Vec<crate::SyncRecord>,
+}
+
+/// One per-entity sync round-trip: push our changed records and receive the
+/// server's records changed since `since`. The server Last-Write-Wins-merges
+/// them by `updated_at` WITHOUT decrypting the blobs — zero-knowledge holds.
+pub async fn sync_exchange(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    profile: &str,
+    since: &str,
+    records: &[crate::SyncRecord],
+) -> Result<Vec<crate::SyncRecord>, String> {
+    let token = require_token(state).await?;
+    let resp = state
+        .http()
+        .post(url("/sync"))
+        .header(AUTH_HEADER, &token)
+        .json(&SyncExchangeReq { profile, since, records })
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(app, state, resp.status()).await {
+            return Err(e);
+        }
+        return Err(decode_error(resp).await);
+    }
+    let body: SyncExchangeResp = resp
+        .json()
+        .await
+        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    Ok(body.records)
+}
+
+// ---------------------------------------------------------------------------
 // Unified sync overview + one-shot sync
 // ---------------------------------------------------------------------------
 //

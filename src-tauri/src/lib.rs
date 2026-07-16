@@ -803,6 +803,57 @@ fn apply_tombstone(conn: &Connection, rec: &SyncRecord) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct SyncReport {
+    pushed: usize,
+    pulled: usize,
+}
+
+/// One full per-entity sync of the OPEN profile: collect every local record,
+/// exchange with the server (which LWW-merges + returns its view), merge the
+/// server's records back, and persist. Full-set each call (the dataset is
+/// small — a handful of servers/credentials); a `since` watermark is a later
+/// optimisation, not needed for correctness.
+#[tauri::command]
+async fn sync_now(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<SyncReport, String> {
+    let profile = db_state
+        .active_profile
+        .lock()
+        .map_err(|_| "[STATE] LOCK_PROFILE")?
+        .clone()
+        .ok_or("[SYNC] NO_PROFILE_OPEN")?;
+
+    // Snapshot key + clock and serialise local records, then DROP all locks
+    // before the network round-trip (never hold a std Mutex across .await).
+    let (records, key, hlc) = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        let key_g = db_state.master_key.lock().map_err(|_| "[STATE] LOCK_KEY")?;
+        let key = key_g.as_ref().ok_or("[STATE] NO_KEY")?.clone();
+        let hlc_g = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?;
+        let hlc = hlc_g.as_ref().ok_or("[SYNC] NO_HLC")?.clone();
+        let records = collect_local_records(conn, &key, "")?;
+        (records, key, hlc)
+    };
+    let pushed = records.len();
+
+    let remote = cloud::sync_exchange(&app, &cloud, &profile, "", &records).await?;
+    let pulled = remote.len();
+
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        apply_remote_records(conn, &key, &remote, &hlc)?;
+    }
+    // Persist the merged vault so the applied changes survive a restart.
+    save_vault_async(&db_state).await?;
+    Ok(SyncReport { pushed, pulled })
+}
+
 #[cfg(test)]
 mod sync_engine_tests {
     use super::*;
@@ -8075,6 +8126,7 @@ pub fn run() {
             cloud::cloud_force_upload_profile, cloud::cloud_download_profile,
             cloud::cloud_delete_remote_profile,
             cloud::cloud_sync_overview, cloud::cloud_sync_all,
+            sync_now,
             add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,
