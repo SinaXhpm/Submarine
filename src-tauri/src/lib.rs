@@ -866,18 +866,34 @@ async fn sync_now(
     // hold the DEK via a sealed grant without ever knowing this vault's
     // password. The DEK is created + persisted at profile-open, so it already
     // exists here; get_or_create is a defensive fallback only.
-    let (records, dek, hlc) = {
+    let (records, dek, hlc, share) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let hlc_g = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?;
         let hlc = hlc_g.as_ref().ok_or("[SYNC] NO_HLC")?.clone();
         let (dek, _created) = get_or_create_dek(conn)?;
         let records = collect_local_records(conn, &dek, "")?;
-        (records, dek, hlc)
+        // If this profile is shared, sync_meta carries its share_id + my role;
+        // that routes the exchange to /shares/sync instead of personal /sync.
+        let share_id: Option<String> = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
+            .ok();
+        let share_role: Option<String> = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
+            .ok();
+        (records, dek, hlc, share_id.map(|s| (s, share_role.unwrap_or_default())))
     };
-    let pushed = records.len();
 
-    let remote = cloud::sync_exchange(&app, &cloud, &profile, "", &records).await?;
+    // Shared profile → /shares/sync (role-gated). A viewer ('user') pushes
+    // nothing — it can only pull, so sending records would just 403.
+    let (remote, pushed) = if let Some((share_id, role)) = &share {
+        let to_push: &[SyncRecord] = if role == "user" { &[] } else { &records };
+        let remote = cloud::shared_sync_exchange(&app, &cloud, share_id, "", to_push).await?;
+        (remote, to_push.len())
+    } else {
+        let remote = cloud::sync_exchange(&app, &cloud, &profile, "", &records).await?;
+        (remote, records.len())
+    };
     let pulled = remote.len();
 
     {
@@ -1115,6 +1131,72 @@ async fn accept_share(
         return Err("[SHARE] BAD_DEK_LEN".into());
     }
     Ok(AcceptResult { role: resp.role })
+}
+
+/// Invitee: materialise an accepted share as a local profile and pull its data.
+/// Creates a fresh local vault (encrypted at rest with `vault_password`), sets
+/// its DEK to the shared data-key unsealed from my grant, records the share,
+/// then syncs to populate it. The vault password is local-only and unrelated to
+/// the DEK, so each member protects their on-disk copy with their own password.
+#[tauri::command]
+async fn import_shared_profile(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    share_id: String,
+    local_name: String,
+    vault_password: String,
+) -> Result<SyncReport, String> {
+    let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: unlock your sharing identity first")?;
+    let mine = cloud::share_dek(&app, &cloud, &share_id).await?;
+    let dek_vec = identity::unseal(&my_secret, &hex::decode(&mine.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
+        .map_err(|_| "[SHARE] UNSEAL_FAILED: this share wasn't sealed to your identity")?;
+    if dek_vec.len() != 32 {
+        return Err("[SHARE] BAD_DEK_LEN".into());
+    }
+    let dek_hex = hex::encode(&dek_vec);
+
+    // Create the local vault (fresh profile) — same steps as create_profile.
+    validate_profile_name(&local_name)?;
+    if vault_password.is_empty() {
+        return Err("Password cannot be empty".into());
+    }
+    let dir = profiles_dir(&app)?;
+    fs::create_dir_all(&dir).map_err(|e| format!("[FILE] MKDIR_FAILED: {}", e))?;
+    if profile_path(&app, &local_name)?.exists() {
+        return Err(format!("Profile '{}' already exists", local_name));
+    }
+    *db_state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED")? = Some(local_name.clone());
+    // setup_master_db consumes a State handle; hand it a fresh one from `app` so
+    // our own `db_state` stays usable for the sync_meta writes + sync below.
+    {
+        use tauri::Manager as _;
+        setup_master_db(app.clone(), vault_password, app.state::<DbState>()).await?;
+    }
+
+    // Replace the freshly-minted DEK with the SHARED one + record share meta, so
+    // sync_now routes to /shares/sync and decrypts the shared blobs correctly.
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&dek_hex],
+        )
+        .map_err(|e| format!("[SHARE] SET_DEK: {e}"))?;
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('share_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&share_id],
+        )
+        .map_err(|e| format!("[SHARE] SET_SHARE_ID: {e}"))?;
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('share_role',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&mine.role],
+        )
+        .map_err(|e| format!("[SHARE] SET_ROLE: {e}"))?;
+    }
+    // Pull the shared data into the new profile.
+    sync_now(app, db_state, cloud).await
 }
 
 /// Owner: change a member's role.
@@ -8467,7 +8549,7 @@ pub fn run() {
             sync_now,
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
-            accept_share, share_set_role, share_revoke, share_leave, share_delete,
+            accept_share, import_shared_profile, share_set_role, share_revoke, share_leave, share_delete,
             add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,

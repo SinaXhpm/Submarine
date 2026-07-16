@@ -932,6 +932,46 @@ pub async fn sync_exchange(
     Ok(body.records)
 }
 
+#[derive(Serialize)]
+struct SharedSyncReq<'a> {
+    share_id: &'a str,
+    since: &'a str,
+    records: &'a [crate::SyncRecord],
+}
+
+/// Per-entity sync of a SHARED profile (keyed by share_id). Same LWW exchange
+/// as `sync_exchange`, but the server gates it by membership + role: viewers
+/// may only pull (the caller must send an empty `records`), owner/editor push.
+#[allow(dead_code)]
+pub async fn shared_sync_exchange(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    share_id: &str,
+    since: &str,
+    records: &[crate::SyncRecord],
+) -> Result<Vec<crate::SyncRecord>, String> {
+    let token = require_token(state).await?;
+    let resp = state
+        .http()
+        .post(url("/shares/sync"))
+        .header(AUTH_HEADER, &token)
+        .json(&SharedSyncReq { share_id, since, records })
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(app, state, resp.status()).await {
+            return Err(e);
+        }
+        return Err(decode_error(resp).await);
+    }
+    let body: SyncExchangeResp = resp
+        .json()
+        .await
+        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    Ok(body.records)
+}
+
 // ---------------------------------------------------------------------------
 // Identity key directory (E2E profile sharing) — thin transport over /keys/*.
 // The session identity + sharing commands that call these are wired next.
