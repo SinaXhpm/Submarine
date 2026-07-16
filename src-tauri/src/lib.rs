@@ -430,23 +430,48 @@ fn create_sync_triggers(conn: &Connection) -> Result<(), String> {
         [],
     )
     .map_err(|e| format!("[SYNC] TOMBSTONE_TABLE: {e}"))?;
+    // Device-local operational flags. `merge` is set to 1 while the sync engine
+    // applies remote records, which the auto-stamp triggers check so they don't
+    // overwrite the incoming HLC stamps with fresh local ones.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sync_flags (key TEXT PRIMARY KEY, val INTEGER NOT NULL)",
+        [],
+    )
+    .map_err(|e| format!("[SYNC] FLAGS_TABLE: {e}"))?;
+    // Guard shared by the stamp/tombstone triggers: suppress them while merging.
+    const GUARD: &str = "COALESCE((SELECT val FROM sync_flags WHERE key='merge'),0)=0";
     for t in SYNCED_TABLES {
-        let au_when = if *t == "monitor_configs" {
-            "WHEN NEW.updated_at IS OLD.updated_at AND (NEW.enabled_metrics IS NOT OLD.enabled_metrics OR NEW.custom_metrics IS NOT OLD.custom_metrics OR NEW.deleted IS NOT OLD.deleted)"
+        let au_extra = if *t == "monitor_configs" {
+            " AND (NEW.enabled_metrics IS NOT OLD.enabled_metrics OR NEW.custom_metrics IS NOT OLD.custom_metrics OR NEW.deleted IS NOT OLD.deleted)"
         } else {
-            "WHEN NEW.updated_at IS OLD.updated_at"
+            ""
         };
+        // Drop-then-create so the definition is always current across app
+        // versions (CREATE IF NOT EXISTS would keep a stale earlier trigger).
         let ddl = format!(
-            "CREATE TRIGGER IF NOT EXISTS {t}_sync_ai AFTER INSERT ON {t} FOR EACH ROW WHEN NEW.uuid IS NULL
+            "DROP TRIGGER IF EXISTS {t}_sync_ai;
+             DROP TRIGGER IF EXISTS {t}_sync_au;
+             DROP TRIGGER IF EXISTS {t}_sync_ad;
+             CREATE TRIGGER {t}_sync_ai AFTER INSERT ON {t} FOR EACH ROW WHEN NEW.uuid IS NULL AND {GUARD}
                BEGIN UPDATE {t} SET uuid = sync_new_uuid(), updated_at = hlc_now() WHERE rowid = NEW.rowid; END;
-             CREATE TRIGGER IF NOT EXISTS {t}_sync_au AFTER UPDATE ON {t} FOR EACH ROW {au_when}
+             CREATE TRIGGER {t}_sync_au AFTER UPDATE ON {t} FOR EACH ROW
+               WHEN NEW.updated_at IS OLD.updated_at{au_extra} AND {GUARD}
                BEGIN UPDATE {t} SET updated_at = hlc_now() WHERE rowid = NEW.rowid; END;
-             CREATE TRIGGER IF NOT EXISTS {t}_sync_ad AFTER DELETE ON {t} FOR EACH ROW WHEN OLD.uuid IS NOT NULL
+             CREATE TRIGGER {t}_sync_ad AFTER DELETE ON {t} FOR EACH ROW WHEN OLD.uuid IS NOT NULL AND {GUARD}
                BEGIN INSERT INTO sync_tombstones(uuid, entity_type, updated_at) VALUES (OLD.uuid, '{t}', hlc_now())
                      ON CONFLICT(uuid) DO UPDATE SET updated_at = excluded.updated_at, entity_type = excluded.entity_type; END;"
         );
         conn.execute_batch(&ddl)
             .map_err(|e| format!("[SYNC] TRIGGER {t}: {e}"))?;
+        // Unique index on uuid enables ON CONFLICT(uuid) upserts in the merge
+        // engine. NOT partial — SQLite treats NULLs as distinct, so pre-backfill
+        // NULL uuids coexist fine, and a plain index (unlike a partial one) is a
+        // valid ON CONFLICT target.
+        conn.execute(
+            &format!("CREATE UNIQUE INDEX IF NOT EXISTS ux_{t}_uuid ON {t}(uuid)"),
+            [],
+        )
+        .map_err(|e| format!("[SYNC] UUID_INDEX {t}: {e}"))?;
     }
     Ok(())
 }
@@ -532,6 +557,325 @@ mod sync_trigger_tests {
         conn.execute("UPDATE monitor_configs SET enabled_metrics='[\"cpu\"]' WHERE node_id=1", []).unwrap();
         let t3: String = conn.query_row("SELECT updated_at FROM monitor_configs WHERE node_id=1", [], |r| r.get(0)).unwrap();
         assert!(t3 > t2, "a real config change must stamp");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sync engine: per-entity serialize (FK int -> uuid) + LWW merge apply
+// ---------------------------------------------------------------------------
+
+/// One record as it travels to/from the server: metadata in the clear (so the
+/// server can LWW-order without decrypting) + an encrypted payload blob. A
+/// tombstone is `deleted: true` with no blob.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct SyncRecord {
+    pub uuid: String,
+    pub entity_type: String,
+    pub updated_at: String,
+    pub deleted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob: Option<String>,
+}
+
+struct Fk {
+    key: &'static str,       // payload key holding the referenced row's uuid
+    col: &'static str,       // local FK int column
+    ref_table: &'static str, // table the FK points at
+}
+struct EntitySpec {
+    table: &'static str,
+    cols: &'static [&'static str], // content columns synced verbatim
+    fks: &'static [Fk],
+}
+
+/// Applied in this order so most FK referents already exist on merge; the two
+/// self-referential FKs (folders.parent_id, servers.jump_host_id) are resolved
+/// in a deferred fixup pass afterwards.
+const ENTITIES: &[EntitySpec] = &[
+    EntitySpec { table: "ssh_keys", cols: &["name", "public_key", "private_key", "passphrase"], fks: &[] },
+    EntitySpec { table: "folders", cols: &["name", "color"], fks: &[Fk { key: "parent_uuid", col: "parent_id", ref_table: "folders" }] },
+    EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys" }] },
+    EntitySpec {
+        table: "servers",
+        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect"],
+        fks: &[
+            Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials" },
+            Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders" },
+            Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys" },
+            Fk { key: "jump_uuid", col: "jump_host_id", ref_table: "servers" },
+        ],
+    },
+    EntitySpec { table: "commands", cols: &["title", "content"], fks: &[] },
+    EntitySpec { table: "notes", cols: &["title", "body"], fks: &[] },
+];
+
+/// AES-256-GCM a per-entity payload with the profile key; frame is `nonce || ct`
+/// hex-encoded. Same key that protects the whole vault, so the server stays
+/// zero-knowledge.
+fn encrypt_entity(plaintext: &[u8], key: &[u8; 32]) -> Result<String, String> {
+    let (ct, nonce) = encrypt_with_key(plaintext, key)?;
+    let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ct);
+    Ok(hex::encode(out))
+}
+fn decrypt_entity(blob_hex: &str, key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    let raw = hex::decode(blob_hex).map_err(|e| format!("[SYNC] BLOB_HEX: {e}"))?;
+    if raw.len() < NONCE_LEN + 16 {
+        return Err("[SYNC] BLOB_TOO_SHORT".into());
+    }
+    decrypt_with_key(&raw[NONCE_LEN..], &raw[..NONCE_LEN], key)
+}
+
+fn json_to_sql(v: Option<&serde_json::Value>) -> Box<dyn rusqlite::types::ToSql> {
+    use serde_json::Value;
+    match v {
+        None | Some(Value::Null) => Box::new(rusqlite::types::Null),
+        Some(Value::String(s)) => Box::new(s.clone()),
+        Some(Value::Bool(b)) => Box::new(*b as i64),
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                Box::new(i)
+            } else {
+                Box::new(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        // arrays/objects (shouldn't occur — tunnels/mirrors are TEXT) → JSON text
+        Some(other) => Box::new(other.to_string()),
+    }
+}
+
+/// Serialize every synced entity + tombstone changed since `since` (empty = all)
+/// into encrypted records. FK ints are translated to the referenced row's uuid
+/// via SQL subqueries so the payload is portable across devices.
+fn collect_local_records(conn: &Connection, key: &[u8; 32], since: &str) -> Result<Vec<SyncRecord>, String> {
+    let mut out = Vec::new();
+    for spec in ENTITIES {
+        let mut pairs: Vec<String> = spec.cols.iter().map(|c| format!("'{c}', t.{c}")).collect();
+        for fk in spec.fks {
+            pairs.push(format!("'{}', (SELECT uuid FROM {} WHERE id = t.{})", fk.key, fk.ref_table, fk.col));
+        }
+        let sql = format!(
+            "SELECT t.uuid, t.updated_at, json_object({}) FROM {} t WHERE t.uuid IS NOT NULL AND t.updated_at > ?1",
+            pairs.join(", "),
+            spec.table
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| format!("[SYNC] SER_PREP {}: {e}", spec.table))?;
+        let rows = stmt
+            .query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+            .map_err(|e| format!("[SYNC] SER_QUERY {}: {e}", spec.table))?;
+        for row in rows {
+            let (uuid, updated_at, payload) = row.map_err(|e| format!("[SYNC] SER_ROW {}: {e}", spec.table))?;
+            out.push(SyncRecord {
+                uuid,
+                entity_type: spec.table.to_string(),
+                updated_at,
+                deleted: false,
+                blob: Some(encrypt_entity(payload.as_bytes(), key)?),
+            });
+        }
+    }
+    let mut stmt = conn
+        .prepare("SELECT uuid, entity_type, updated_at FROM sync_tombstones WHERE updated_at > ?1")
+        .map_err(|e| format!("[SYNC] SER_TOMB_PREP: {e}"))?;
+    let rows = stmt
+        .query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+        .map_err(|e| format!("[SYNC] SER_TOMB_QUERY: {e}"))?;
+    for row in rows {
+        let (uuid, entity_type, updated_at) = row.map_err(|e| format!("[SYNC] SER_TOMB_ROW: {e}"))?;
+        out.push(SyncRecord { uuid, entity_type, updated_at, deleted: true, blob: None });
+    }
+    Ok(out)
+}
+
+/// Merge incoming records into the local vault, Last-Write-Wins per row. Runs
+/// with the auto-stamp triggers suppressed so incoming HLC stamps are written
+/// verbatim, and advances the local clock past everything seen.
+fn apply_remote_records(conn: &Connection, key: &[u8; 32], records: &[SyncRecord], hlc: &hlc::Hlc) -> Result<(), String> {
+    conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
+        .map_err(|e| format!("[SYNC] MERGE_ON: {e}"))?;
+    let r = apply_remote_inner(conn, key, records, hlc);
+    let _ = conn.execute("UPDATE sync_flags SET val=0 WHERE key='merge'", []);
+    r
+}
+
+fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord], hlc: &hlc::Hlc) -> Result<(), String> {
+    for rec in records {
+        hlc.observe(hlc::Hlc::phys_of(&rec.updated_at));
+    }
+    // (table, uuid, fk_col, ref_uuid) — self-ref / not-yet-present FKs to fix up.
+    let mut fk_fixups: Vec<(String, String, String, String)> = Vec::new();
+    for spec in ENTITIES {
+        for rec in records.iter().filter(|r| !r.deleted && r.entity_type == spec.table) {
+            apply_entity(conn, key, spec, rec, &mut fk_fixups)?;
+        }
+    }
+    for rec in records.iter().filter(|r| r.deleted) {
+        apply_tombstone(conn, rec)?;
+    }
+    for (table, uuid, fk_col, ref_uuid) in fk_fixups {
+        let id: Option<i64> = conn
+            .query_row(&format!("SELECT id FROM {table} WHERE uuid=?1"), [&ref_uuid], |r| r.get(0))
+            .ok();
+        conn.execute(&format!("UPDATE {table} SET {fk_col}=?1 WHERE uuid=?2"), rusqlite::params![id, uuid])
+            .map_err(|e| format!("[SYNC] FK_FIXUP {table}: {e}"))?;
+    }
+    Ok(())
+}
+
+fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &SyncRecord, fk_fixups: &mut Vec<(String, String, String, String)>) -> Result<(), String> {
+    // LWW: keep local if it's newer-or-equal.
+    let local_ua: Option<String> = conn
+        .query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", spec.table), [&rec.uuid], |r| r.get(0))
+        .ok();
+    if let Some(l) = &local_ua {
+        if l.as_str() >= rec.updated_at.as_str() {
+            return Ok(());
+        }
+    }
+    let blob = rec.blob.as_deref().ok_or("[SYNC] ENTITY_NO_BLOB")?;
+    let plain = decrypt_entity(blob, key)?;
+    let payload: serde_json::Value = serde_json::from_slice(&plain).map_err(|e| format!("[SYNC] PAYLOAD_JSON: {e}"))?;
+    let obj = payload.as_object().ok_or("[SYNC] PAYLOAD_NOT_OBJ")?;
+
+    let mut columns: Vec<String> = vec!["uuid".into(), "updated_at".into(), "deleted".into()];
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+        vec![Box::new(rec.uuid.clone()), Box::new(rec.updated_at.clone()), Box::new(rec.deleted as i64)];
+    for c in spec.cols {
+        columns.push((*c).into());
+        params.push(json_to_sql(obj.get(*c)));
+    }
+    for fk in spec.fks {
+        let ref_uuid = obj.get(fk.key).and_then(|v| v.as_str());
+        let id: Option<i64> = match ref_uuid {
+            None => None,
+            Some(ru) => {
+                let found: Option<i64> = conn
+                    .query_row(&format!("SELECT id FROM {} WHERE uuid=?1", fk.ref_table), [ru], |r| r.get(0))
+                    .ok();
+                if found.is_none() {
+                    fk_fixups.push((spec.table.to_string(), rec.uuid.clone(), fk.col.to_string(), ru.to_string()));
+                }
+                found
+            }
+        };
+        columns.push(fk.col.into());
+        params.push(Box::new(id));
+    }
+
+    let placeholders = std::iter::repeat("?").take(columns.len()).collect::<Vec<_>>().join(",");
+    let update_set: Vec<String> = columns.iter().filter(|c| c.as_str() != "uuid").map(|c| format!("{c}=excluded.{c}")).collect();
+    let sql = format!(
+        "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT(uuid) DO UPDATE SET {}",
+        spec.table,
+        columns.join(","),
+        placeholders,
+        update_set.join(",")
+    );
+    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    conn.execute(&sql, refs.as_slice()).map_err(|e| format!("[SYNC] UPSERT {}: {e}", spec.table))?;
+    Ok(())
+}
+
+fn apply_tombstone(conn: &Connection, rec: &SyncRecord) -> Result<(), String> {
+    // Only tombstones for known entity types are meaningful here.
+    if !ENTITIES.iter().any(|s| s.table == rec.entity_type) {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO sync_tombstones(uuid, entity_type, updated_at) VALUES (?1,?2,?3)
+         ON CONFLICT(uuid) DO UPDATE SET updated_at=excluded.updated_at, entity_type=excluded.entity_type
+         WHERE excluded.updated_at > sync_tombstones.updated_at",
+        rusqlite::params![rec.uuid, rec.entity_type, rec.updated_at],
+    )
+    .map_err(|e| format!("[SYNC] TOMB_UPSERT: {e}"))?;
+    let local_ua: Option<String> = conn
+        .query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", rec.entity_type), [&rec.uuid], |r| r.get(0))
+        .ok();
+    if let Some(l) = local_ua {
+        if l.as_str() < rec.updated_at.as_str() {
+            // Merge guard is on → the AFTER DELETE trigger won't create a
+            // competing tombstone; the explicit upsert above stands.
+            conn.execute(&format!("DELETE FROM {} WHERE uuid=?1", rec.entity_type), [&rec.uuid])
+                .map_err(|e| format!("[SYNC] TOMB_DELETE: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod sync_engine_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    const KEY: [u8; 32] = [7u8; 32];
+
+    fn device(node: &str) -> (Connection, std::sync::Arc<hlc::Hlc>) {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);",
+        ).unwrap();
+        let hlc = std::sync::Arc::new(hlc::Hlc::new(node.into(), 0));
+        register_sync_functions(&conn, &hlc).unwrap();
+        create_sync_triggers(&conn).unwrap();
+        (conn, hlc)
+    }
+
+    #[test]
+    fn round_trip_resolves_fks_across_devices() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO ssh_keys(name, public_key, private_key) VALUES('k','pub','priv')", []).unwrap();
+        a.execute("INSERT INTO credentials(name, auth_type, username, key_id) VALUES('c','key','root',(SELECT id FROM ssh_keys WHERE name='k'))", []).unwrap();
+        a.execute("INSERT INTO folders(name) VALUES('f')", []).unwrap();
+        a.execute("INSERT INTO servers(name, host, port, credential_id, folder_id) VALUES('s1','h',22,(SELECT id FROM credentials WHERE name='c'),(SELECT id FROM folders WHERE name='f'))", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+
+        let (b, hb) = device("B");
+        // Unrelated pre-existing row so B's autoincrement ids differ from A's,
+        // proving the merge resolves references by uuid, not by raw id.
+        b.execute("INSERT INTO folders(name) VALUES('other')", []).unwrap();
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+
+        let (cred, folder): (String, String) = b.query_row(
+            "SELECT (SELECT name FROM credentials c WHERE c.id=s.credential_id), (SELECT name FROM folders f WHERE f.id=s.folder_id) FROM servers s WHERE s.name='s1'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(cred, "c", "server.credential_id must resolve to the right credential on B");
+        assert_eq!(folder, "f", "server.folder_id must resolve to the right folder on B");
+        let key_name: String = b.query_row("SELECT (SELECT name FROM ssh_keys k WHERE k.id=c.key_id) FROM credentials c WHERE c.name='c'", [], |r| r.get(0)).unwrap();
+        assert_eq!(key_name, "k", "credential.key_id must resolve to the right ssh_key on B");
+    }
+
+    #[test]
+    fn lww_older_remote_does_not_clobber_newer_local() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name, host) VALUES('s','h1')", []).unwrap();
+        let old = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &old, &hb).unwrap();
+        b.execute("UPDATE servers SET host='h2-newer' WHERE name='s'", []).unwrap();
+        apply_remote_records(&b, &KEY, &old, &hb).unwrap(); // re-apply the STALE version
+        let host: String = b.query_row("SELECT host FROM servers WHERE name='s'", [], |r| r.get(0)).unwrap();
+        assert_eq!(host, "h2-newer", "an older remote record must not overwrite a newer local edit");
+    }
+
+    #[test]
+    fn delete_propagates_via_tombstone() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name, host) VALUES('s','h')", []).unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        assert_eq!(b.query_row("SELECT COUNT(*) FROM servers WHERE name='s'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        a.execute("DELETE FROM servers WHERE name='s'", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        assert!(recs.iter().any(|r| r.deleted), "delete must produce a tombstone record");
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        assert_eq!(b.query_row("SELECT COUNT(*) FROM servers WHERE name='s'", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "delete must propagate to B");
     }
 }
 
