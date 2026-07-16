@@ -338,6 +338,37 @@ fn new_entity_uuid() -> String {
     hex::encode(bytes)
 }
 
+/// This profile's Data Encryption Key — the 256-bit key that every per-entity
+/// sync blob is encrypted under. Stored in `sync_meta` inside the vault (itself
+/// encrypted at rest with the vault password), so a solo profile needs no
+/// passphrase to sync. When the profile is shared, THIS key is what gets sealed
+/// to each member's public key — decoupling "who can read the synced data" from
+/// "who knows the vault password". Generated once and reused; rotating it (on a
+/// member revoke) is a deliberate, separate action. Returns `(dek, created)`.
+fn get_or_create_dek(conn: &Connection) -> Result<([u8; 32], bool), String> {
+    let existing: Option<String> = conn
+        .query_row("SELECT value FROM sync_meta WHERE key='dek'", [], |r| r.get(0))
+        .ok();
+    if let Some(hex_s) = existing {
+        let raw = hex::decode(&hex_s).map_err(|e| format!("[SHARE] DEK_HEX: {e}"))?;
+        if raw.len() == 32 {
+            let mut d = [0u8; 32];
+            d.copy_from_slice(&raw);
+            return Ok((d, false));
+        }
+        // Malformed row (shouldn't happen) — fall through and mint a fresh one.
+    }
+    let mut d = [0u8; 32];
+    rand::thread_rng().fill(&mut d);
+    conn.execute(
+        "INSERT INTO sync_meta(key,value) VALUES('dek',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [hex::encode(d)],
+    )
+    .map_err(|e| format!("[SHARE] DEK_STORE: {e}"))?;
+    Ok((d, true))
+}
+
 /// Load — or generate once — this device's stable sync node id. Stored in a
 /// device-local sidecar next to the cloud token, deliberately OUTSIDE the vault
 /// so it never travels when a vault is copied/restored to another device (two
@@ -828,17 +859,21 @@ async fn sync_now(
         .clone()
         .ok_or("[SYNC] NO_PROFILE_OPEN")?;
 
-    // Snapshot key + clock and serialise local records, then DROP all locks
-    // before the network round-trip (never hold a std Mutex across .await).
-    let (records, key, hlc) = {
+    // Snapshot the profile DEK + clock and serialise local records, then DROP
+    // all locks before the network round-trip (never hold a std Mutex across
+    // .await). Per-entity blobs are encrypted with the DEK — NOT the vault
+    // master key — so the same records can be shared with other members, who
+    // hold the DEK via a sealed grant without ever knowing this vault's
+    // password. The DEK is created + persisted at profile-open, so it already
+    // exists here; get_or_create is a defensive fallback only.
+    let (records, dek, hlc) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-        let key_g = db_state.master_key.lock().map_err(|_| "[STATE] LOCK_KEY")?;
-        let key = key_g.as_ref().ok_or("[STATE] NO_KEY")?.clone();
         let hlc_g = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?;
         let hlc = hlc_g.as_ref().ok_or("[SYNC] NO_HLC")?.clone();
-        let records = collect_local_records(conn, &key, "")?;
-        (records, key, hlc)
+        let (dek, _created) = get_or_create_dek(conn)?;
+        let records = collect_local_records(conn, &dek, "")?;
+        (records, dek, hlc)
     };
     let pushed = records.len();
 
@@ -848,7 +883,7 @@ async fn sync_now(
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-        apply_remote_records(conn, &key, &remote, &hlc)?;
+        apply_remote_records(conn, &dek, &remote, &hlc)?;
     }
     // Persist the merged vault so the applied changes survive a restart.
     save_vault_async(&db_state).await?;
@@ -861,6 +896,21 @@ mod sync_engine_tests {
     use rusqlite::Connection;
 
     const KEY: [u8; 32] = [7u8; 32];
+
+    #[test]
+    fn dek_is_stable_and_encrypts_blobs() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
+            .unwrap();
+        let (dek1, created1) = get_or_create_dek(&conn).unwrap();
+        assert!(created1, "first call must mint the DEK");
+        let (dek2, created2) = get_or_create_dek(&conn).unwrap();
+        assert!(!created2, "second call must reuse it");
+        assert_eq!(dek1, dek2, "DEK must be stable across opens");
+        // A per-entity blob encrypted under the DEK round-trips with the reloaded DEK.
+        let blob = encrypt_entity(b"{\"host\":\"h\"}", &dek1).unwrap();
+        assert_eq!(decrypt_entity(&blob, &dek2).unwrap(), b"{\"host\":\"h\"}");
+    }
 
     fn device(node: &str) -> (Connection, std::sync::Arc<hlc::Hlc>) {
         let conn = Connection::open_in_memory().unwrap();
@@ -1530,6 +1580,20 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
         needs_resave = true;
     }
     create_sync_triggers(&conn)?;
+
+    // Per-profile sync metadata (the DEK, and later the identity/grant state).
+    // Created here so an existing vault gains it on first open under a v6 build.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )
+    .map_err(|e| format!("[SHARE] SYNC_META_TABLE: {e}"))?;
+    // Mint the profile's Data Encryption Key eagerly and persist it, so it can
+    // never drift from blobs already pushed (which would happen if a sync
+    // created it in-memory but crashed before saving). No-op after the first.
+    if get_or_create_dek(&conn)?.1 {
+        needs_resave = true;
+    }
 
     // Reset every monitor to paused on profile open. Pollers don't survive
     // app restart, so a row with `paused=0` left over from the previous
