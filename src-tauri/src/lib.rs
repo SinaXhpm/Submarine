@@ -21,6 +21,7 @@ mod about;
 mod mirror;
 mod docker;
 mod hlc;
+mod identity;
 use ssh_manager::SshState;
 use monitor::{MonitorMap, SharedSettings};
 use mirror::MirrorMap;
