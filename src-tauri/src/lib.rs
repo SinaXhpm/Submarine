@@ -890,6 +890,279 @@ async fn sync_now(
     Ok(SyncReport { pushed, pulled })
 }
 
+// ===========================================================================
+// Profile sharing commands (E2E). Identity lives in the cloud session; the
+// per-profile DEK is what actually gets shared, sealed to each member.
+// ===========================================================================
+
+fn hex_to_32(s: &str) -> Result<[u8; 32], String> {
+    let raw = hex::decode(s).map_err(|_| "[SHARE] BAD_HEX".to_string())?;
+    if raw.len() != 32 {
+        return Err("[SHARE] BAD_KEY_LEN".into());
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&raw);
+    Ok(out)
+}
+
+#[derive(serde::Serialize)]
+struct IdentityStatus {
+    exists_on_server: bool,
+    unlocked: bool,
+    public_key: Option<String>,
+}
+
+/// Is a sharing identity set up (server) and/or unlocked (this session)?
+#[tauri::command]
+async fn identity_status(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<IdentityStatus, String> {
+    let unlocked = cloud.identity().await;
+    if let Some((pubk, _)) = unlocked {
+        return Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(hex::encode(pubk)) });
+    }
+    // Not unlocked — ask the server whether a key exists (requires being signed in).
+    if cloud.token().await.is_none() {
+        return Ok(IdentityStatus { exists_on_server: false, unlocked: false, public_key: None });
+    }
+    let keys = cloud::fetch_my_keys(&app, &cloud).await?;
+    Ok(IdentityStatus { exists_on_server: keys.exists, unlocked: false, public_key: keys.public_key })
+}
+
+/// Set up (first time) or unlock (already exists) the sharing identity from the
+/// user's encryption passphrase. Never overwrites an existing key — a wrong
+/// passphrase errors instead, so a real key with live grants is never orphaned
+/// by a typo. Use `reset_identity` to deliberately regenerate.
+#[tauri::command]
+async fn setup_identity(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    enc_passphrase: String,
+) -> Result<IdentityStatus, String> {
+    if enc_passphrase.chars().count() < 8 {
+        return Err("[SHARE] WEAK_PASSPHRASE: use at least 8 characters".into());
+    }
+    let existing = cloud::fetch_my_keys(&app, &cloud).await?;
+    if existing.exists {
+        let salt_hex = existing.enc_salt.ok_or("[SHARE] MISSING_SALT")?;
+        let wrapped = existing.wrapped_privkey.ok_or("[SHARE] MISSING_WRAPPED")?;
+        let pub_hex = existing.public_key.ok_or("[SHARE] MISSING_PUB")?;
+        let salt = hex::decode(&salt_hex).map_err(|_| "[SHARE] BAD_SALT")?;
+        let secret = identity::unwrap_secret(&enc_passphrase, &salt, &wrapped).map_err(|_| {
+            "[SHARE] WRONG_PASSPHRASE: that passphrase doesn't match your sharing identity. If you forgot it, reset your identity (regenerates keys — you'll need to re-share)."
+        })?;
+        if hex::encode(identity::public_of(&secret)) != pub_hex {
+            return Err("[SHARE] KEY_MISMATCH: stored identity is inconsistent — reset your identity to regenerate.".into());
+        }
+        cloud.set_identity(identity::public_of(&secret), secret).await;
+        return Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(pub_hex) });
+    }
+    // First-time setup — generate, wrap, publish.
+    let kp = identity::generate_keypair();
+    let mut salt = [0u8; 16];
+    rand::thread_rng().fill(&mut salt);
+    let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
+    cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
+    cloud.set_identity(kp.public, kp.secret).await;
+    Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(hex::encode(kp.public)) })
+}
+
+/// Deliberately regenerate the sharing identity (e.g. forgotten passphrase).
+/// Rotates the published key; grants sealed to the OLD key stop working, so the
+/// caller must re-share afterwards. Overwrites unconditionally.
+#[tauri::command]
+async fn reset_identity(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    enc_passphrase: String,
+) -> Result<IdentityStatus, String> {
+    if enc_passphrase.chars().count() < 8 {
+        return Err("[SHARE] WEAK_PASSPHRASE: use at least 8 characters".into());
+    }
+    let kp = identity::generate_keypair();
+    let mut salt = [0u8; 16];
+    rand::thread_rng().fill(&mut salt);
+    let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
+    cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
+    cloud.set_identity(kp.public, kp.secret).await;
+    Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(hex::encode(kp.public)) })
+}
+
+#[derive(serde::Serialize)]
+struct ShareResult {
+    share_id: String,
+}
+
+/// Owner: turn the OPEN profile into a shared profile. Seals the profile DEK to
+/// my own public key and records the share_id locally.
+#[tauri::command]
+async fn share_current_profile(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    name: String,
+) -> Result<ShareResult, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err("[SHARE] BAD_NAME: 1-64 characters".into());
+    }
+    let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: set up your sharing identity first")?;
+    let dek = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        get_or_create_dek(conn)?.0
+    };
+    let sealed_self = hex::encode(identity::seal_to(&my_pub, &dek)?);
+    let share_id = new_entity_uuid(); // 32 hex — within the server's {16,64}
+    cloud::create_share(&app, &cloud, &share_id, &name, &sealed_self).await?;
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('share_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&share_id],
+        )
+        .map_err(|e| format!("[SHARE] STORE_SHARE_ID: {e}"))?;
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('share_role','owner') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [],
+        )
+        .map_err(|e| format!("[SHARE] STORE_ROLE: {e}"))?;
+    }
+    save_vault_async(&db_state).await?;
+    Ok(ShareResult { share_id })
+}
+
+#[derive(serde::Serialize)]
+struct InviteResult {
+    email: String,
+}
+
+/// Owner: invite `email` to a share at `role` (editor|user). Obtains the DEK by
+/// unsealing my own grant, then re-seals it to the invitee's public key.
+#[tauri::command]
+async fn invite_to_share(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    share_id: String,
+    email: String,
+    role: String,
+) -> Result<InviteResult, String> {
+    if role != "editor" && role != "user" {
+        return Err("[SHARE] BAD_ROLE: role must be 'editor' or 'user'".into());
+    }
+    let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
+    // Get the DEK by unsealing my own grant for this share.
+    let mine = cloud::share_dek(&app, &cloud, &share_id).await?;
+    let dek_bytes = identity::unseal(&my_secret, &hex::decode(&mine.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
+        .map_err(|_| "[SHARE] UNSEAL_SELF: cannot open your own grant — your identity may have changed")?;
+    let dek = {
+        if dek_bytes.len() != 32 {
+            return Err("[SHARE] BAD_DEK_LEN".into());
+        }
+        let mut d = [0u8; 32];
+        d.copy_from_slice(&dek_bytes);
+        d
+    };
+    let info = cloud::lookup_pubkey(&app, &cloud, &email)
+        .await?
+        .ok_or("[SHARE] NO_ACCOUNT: that email hasn't set up sharing yet")?;
+    let invitee_pub = hex_to_32(&info.public_key)?;
+    let sealed = hex::encode(identity::seal_to(&invitee_pub, &dek)?);
+    cloud::invite_member(&app, &cloud, &share_id, &email, &role, &sealed).await?;
+    Ok(InviteResult { email: info.email })
+}
+
+/// Every share I'm a member of.
+#[tauri::command]
+async fn list_shares(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<Vec<cloud::ShareInfo>, String> {
+    cloud::list_shares(&app, &cloud).await
+}
+
+/// The member roster of a share I belong to.
+#[tauri::command]
+async fn share_member_list(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    share_id: String,
+) -> Result<Vec<cloud::MemberInfo>, String> {
+    cloud::share_members(&app, &cloud, &share_id).await
+}
+
+#[derive(serde::Serialize)]
+struct AcceptResult {
+    role: String,
+}
+
+/// Accept a pending invite. Verifies I can unseal the DEK with my identity, then
+/// records the share locally. (Materialising it as a syncable local profile is
+/// wired in S3c.)
+#[tauri::command]
+async fn accept_share(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    share_id: String,
+) -> Result<AcceptResult, String> {
+    let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: unlock your sharing identity first")?;
+    let resp = cloud::accept_share(&app, &cloud, &share_id).await?;
+    let dek = identity::unseal(&my_secret, &hex::decode(&resp.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
+        .map_err(|_| "[SHARE] UNSEAL_FAILED: this invite wasn't sealed to your current identity")?;
+    if dek.len() != 32 {
+        return Err("[SHARE] BAD_DEK_LEN".into());
+    }
+    Ok(AcceptResult { role: resp.role })
+}
+
+/// Owner: change a member's role.
+#[tauri::command]
+async fn share_set_role(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    share_id: String,
+    member_user_id: i64,
+    role: String,
+) -> Result<(), String> {
+    if role != "editor" && role != "user" {
+        return Err("[SHARE] BAD_ROLE".into());
+    }
+    cloud::set_member_role(&app, &cloud, &share_id, member_user_id, &role).await
+}
+
+/// Owner: remove a member.
+#[tauri::command]
+async fn share_revoke(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    share_id: String,
+    member_user_id: i64,
+) -> Result<(), String> {
+    cloud::revoke_member(&app, &cloud, &share_id, member_user_id).await
+}
+
+/// Non-owner: leave a share.
+#[tauri::command]
+async fn share_leave(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    share_id: String,
+) -> Result<(), String> {
+    cloud::leave_share(&app, &cloud, &share_id).await
+}
+
+/// Owner: delete the whole shared profile.
+#[tauri::command]
+async fn share_delete(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    share_id: String,
+) -> Result<(), String> {
+    cloud::delete_share(&app, &cloud, &share_id).await
+}
+
 #[cfg(test)]
 mod sync_engine_tests {
     use super::*;
@@ -8192,6 +8465,9 @@ pub fn run() {
             cloud::cloud_delete_remote_profile,
             cloud::cloud_sync_overview, cloud::cloud_sync_all,
             sync_now,
+            identity_status, setup_identity, reset_identity,
+            share_current_profile, invite_to_share, list_shares, share_member_list,
+            accept_share, share_set_role, share_revoke, share_leave, share_delete,
             add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,

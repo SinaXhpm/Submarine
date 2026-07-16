@@ -207,6 +207,10 @@ pub struct CloudState {
 struct Inner {
     token: Option<String>,
     email: Option<String>,
+    // The account's X25519 identity, unwrapped for this session so sharing can
+    // seal/unseal data-keys without re-deriving from the passphrase each time.
+    // Memory-only; never persisted, and cleared on logout. (public, secret)
+    identity: Option<([u8; 32], [u8; 32])>,
 }
 
 impl CloudState {
@@ -224,6 +228,7 @@ impl CloudState {
         let inner = Inner {
             token: stored.as_ref().map(|s| s.token.clone()),
             email: stored.as_ref().map(|s| s.email.clone()),
+            identity: None,
         };
         Arc::new(Self {
             http,
@@ -266,10 +271,21 @@ impl CloudState {
         let mut g = self.inner.lock().await;
         g.token = None;
         g.email = None;
+        g.identity = None;
     }
 
     pub async fn token(&self) -> Option<String> {
         self.inner.lock().await.token.clone()
+    }
+
+    /// Store this session's unwrapped identity keypair (memory only).
+    pub async fn set_identity(&self, public: [u8; 32], secret: [u8; 32]) {
+        self.inner.lock().await.identity = Some((public, secret));
+    }
+
+    /// The session identity, if `setup_identity` has run this session.
+    pub async fn identity(&self) -> Option<([u8; 32], [u8; 32])> {
+        self.inner.lock().await.identity
     }
 
     pub fn http(&self) -> &reqwest::Client {
@@ -1034,6 +1050,200 @@ pub async fn lookup_pubkey(
     Ok(Some(
         resp.json().await.map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Shares + membership transport (/shares/*)
+// ---------------------------------------------------------------------------
+
+/// Authenticated POST to a /shares endpoint, deserialising the JSON reply.
+async fn shares_post<B: Serialize, R: for<'de> Deserialize<'de>>(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    path: &str,
+    body: &B,
+) -> Result<R, String> {
+    let token = require_token(state).await?;
+    let resp = state
+        .http()
+        .post(url(path))
+        .header(AUTH_HEADER, &token)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(app, state, resp.status()).await {
+            return Err(e);
+        }
+        return Err(decode_error(resp).await);
+    }
+    resp.json().await.map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct OkResp {
+    #[serde(default)]
+    ok: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct ShareInfo {
+    pub share_id: String,
+    pub name: String,
+    pub role: String,
+    pub status: String,
+    pub owner_email: String,
+}
+#[derive(Deserialize)]
+struct SharesListResp {
+    shares: Vec<ShareInfo>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct MemberInfo {
+    pub user_id: i64,
+    pub email: String,
+    pub role: String,
+    pub status: String,
+}
+#[derive(Deserialize)]
+struct MembersResp {
+    members: Vec<MemberInfo>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+pub struct DekResp {
+    pub role: String,
+    pub status: String,
+    pub sealed_dek: String,
+}
+#[derive(Deserialize)]
+#[allow(dead_code)]
+pub struct AcceptResp {
+    pub role: String,
+    pub sealed_dek: String,
+}
+#[derive(Deserialize)]
+#[allow(dead_code)]
+pub struct InviteResp {
+    pub member_user_id: i64,
+}
+
+/// Owner: register a local profile as a shared profile, seeding the owner's own
+/// membership with the DEK sealed to their own public key.
+#[allow(dead_code)]
+pub async fn create_share(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    share_id: &str,
+    name: &str,
+    sealed_dek: &str,
+) -> Result<(), String> {
+    let _: OkResp = shares_post(
+        app,
+        state,
+        "/shares/create",
+        &serde_json::json!({ "share_id": share_id, "name": name, "sealed_dek": sealed_dek }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Owner: invite `email` at `role`, uploading the DEK sealed to their pubkey.
+#[allow(dead_code)]
+pub async fn invite_member(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    share_id: &str,
+    email: &str,
+    role: &str,
+    sealed_dek: &str,
+) -> Result<InviteResp, String> {
+    shares_post(
+        app,
+        state,
+        "/shares/invite",
+        &serde_json::json!({ "share_id": share_id, "email": email, "role": role, "sealed_dek": sealed_dek }),
+    )
+    .await
+}
+
+/// Every share I'm a member of (metadata only — no sealed_dek; see `share_dek`).
+#[allow(dead_code)]
+pub async fn list_shares(app: &tauri::AppHandle, state: &CloudState) -> Result<Vec<ShareInfo>, String> {
+    let r: SharesListResp = shares_post(app, state, "/shares/list", &serde_json::json!({})).await?;
+    Ok(r.shares)
+}
+
+/// My sealed data-key for one share (PK lookup — safe under tmp-disk pressure).
+#[allow(dead_code)]
+pub async fn share_dek(app: &tauri::AppHandle, state: &CloudState, share_id: &str) -> Result<DekResp, String> {
+    shares_post(app, state, "/shares/dek", &serde_json::json!({ "share_id": share_id })).await
+}
+
+/// The member roster of a share I belong to.
+#[allow(dead_code)]
+pub async fn share_members(app: &tauri::AppHandle, state: &CloudState, share_id: &str) -> Result<Vec<MemberInfo>, String> {
+    let r: MembersResp = shares_post(app, state, "/shares/members", &serde_json::json!({ "share_id": share_id })).await?;
+    Ok(r.members)
+}
+
+/// Accept a pending invite; returns my role + sealed_dek so the caller can
+/// unseal the DEK and start syncing the shared profile.
+#[allow(dead_code)]
+pub async fn accept_share(app: &tauri::AppHandle, state: &CloudState, share_id: &str) -> Result<AcceptResp, String> {
+    shares_post(app, state, "/shares/accept", &serde_json::json!({ "share_id": share_id })).await
+}
+
+/// Owner: change a member's role (editor|user).
+#[allow(dead_code)]
+pub async fn set_member_role(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    share_id: &str,
+    member_user_id: i64,
+    role: &str,
+) -> Result<(), String> {
+    let _: OkResp = shares_post(
+        app,
+        state,
+        "/shares/set-role",
+        &serde_json::json!({ "share_id": share_id, "member_user_id": member_user_id, "role": role }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Owner: remove a member.
+#[allow(dead_code)]
+pub async fn revoke_member(app: &tauri::AppHandle, state: &CloudState, share_id: &str, member_user_id: i64) -> Result<(), String> {
+    let _: OkResp = shares_post(
+        app,
+        state,
+        "/shares/revoke",
+        &serde_json::json!({ "share_id": share_id, "member_user_id": member_user_id }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Non-owner: leave a share.
+#[allow(dead_code)]
+pub async fn leave_share(app: &tauri::AppHandle, state: &CloudState, share_id: &str) -> Result<(), String> {
+    let _: OkResp = shares_post(app, state, "/shares/leave", &serde_json::json!({ "share_id": share_id })).await?;
+    Ok(())
+}
+
+/// Owner: delete the whole shared profile.
+#[allow(dead_code)]
+pub async fn delete_share(app: &tauri::AppHandle, state: &CloudState, share_id: &str) -> Result<(), String> {
+    let _: OkResp = shares_post(app, state, "/shares/delete", &serde_json::json!({ "share_id": share_id })).await?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
