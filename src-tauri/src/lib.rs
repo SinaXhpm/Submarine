@@ -20,6 +20,7 @@ mod cloud;
 mod about;
 mod mirror;
 mod docker;
+mod hlc;
 use ssh_manager::SshState;
 use monitor::{MonitorMap, SharedSettings};
 use mirror::MirrorMap;
@@ -307,6 +308,86 @@ pub(crate) fn atomic_write_bytes_with_backup(
     fs::rename(&tmp_path, path)
         .map_err(|e| format!("[FILE] RENAME_FAILED {:?} -> {:?}: {}", tmp_path, path, e))?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Per-entity sync foundation (uuid + HLC + tombstone)
+// ---------------------------------------------------------------------------
+
+/// The vault tables that participate in per-entity Last-Write-Wins sync. Each
+/// carries the `uuid` (portable identity) / `updated_at` (HLC) / `deleted`
+/// (tombstone) columns. `known_hosts`, `cmd_history`, `monitor_settings`, and
+/// `schema_meta` are intentionally device-local and NOT synced.
+const SYNCED_TABLES: &[&str] = &[
+    "folders", "ssh_keys", "credentials", "servers", "commands", "notes", "monitor_configs",
+];
+
+/// Opaque 128-bit hex id for a synced row. Not RFC-4122 formatted — we only
+/// need global uniqueness, and this matches the app's existing random-id idiom
+/// (see `app_temp_root`).
+fn new_entity_uuid() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill(&mut bytes);
+    hex::encode(bytes)
+}
+
+/// Load — or generate once — this device's stable sync node id. Stored in a
+/// device-local sidecar next to the cloud token, deliberately OUTSIDE the vault
+/// so it never travels when a vault is copied/restored to another device (two
+/// devices sharing a node id would make HLC tie-breaks collide and corrupt the
+/// causal order).
+fn sync_device_node_id(app: &tauri::AppHandle) -> String {
+    use tauri::Manager as _;
+    let fresh = || {
+        let mut b = [0u8; 8];
+        rand::thread_rng().fill(&mut b);
+        hex::encode(b)
+    };
+    let Ok(dir) = app.path().app_data_dir() else { return fresh() };
+    let path = dir.join("sync_device.json");
+    if let Ok(bytes) = std::fs::read(&path) {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if let Some(id) = v.get("node_id").and_then(|x| x.as_str()) {
+                if !id.is_empty() {
+                    return id.to_string();
+                }
+            }
+        }
+    }
+    let id = fresh();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(&path, serde_json::json!({ "node_id": id }).to_string());
+    id
+}
+
+/// One-time backfill: give a uuid + HLC stamp to every existing synced row that
+/// predates the sync columns (i.e. `uuid IS NULL`). Idempotent. Returns whether
+/// anything changed, so the caller can force a resave to persist the ids.
+fn backfill_sync_columns(conn: &Connection, hlc: &hlc::Hlc) -> Result<bool, String> {
+    let mut changed = false;
+    for table in SYNCED_TABLES {
+        let pk = if *table == "monitor_configs" { "node_id" } else { "id" };
+        // Snapshot the PKs first — can't hold the SELECT statement open across
+        // the per-row UPDATE on the same connection.
+        let ids: Vec<i64> = {
+            let mut stmt = conn
+                .prepare(&format!("SELECT {pk} FROM {table} WHERE uuid IS NULL"))
+                .map_err(|e| format!("[SYNC] BACKFILL_SELECT {table}: {e}"))?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, i64>(0))
+                .map_err(|e| format!("[SYNC] BACKFILL_QUERY {table}: {e}"))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for id in ids {
+            conn.execute(
+                &format!("UPDATE {table} SET uuid=?1, updated_at=?2 WHERE {pk}=?3"),
+                rusqlite::params![new_entity_uuid(), hlc.tick(), id],
+            )
+            .map_err(|e| format!("[SYNC] BACKFILL_UPDATE {table}: {e}"))?;
+            changed = true;
+        }
+    }
+    Ok(changed)
 }
 
 /// Async-friendly vault save. Snapshots the key/salt/path under the sync
@@ -663,7 +744,7 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
     // and at the natural end of this function. Once it lands in DbState
     // the StdMutex<Option<Zeroizing<...>>> takes over the same guarantee.
     let key: Zeroizing<[u8; 32]>;
-    let needs_resave;
+    let mut needs_resave;
 
     if path.exists() {
         let encrypted_data = fs::read(&path)
@@ -758,7 +839,7 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
             "CREATE INDEX IF NOT EXISTS idx_cmd_history_ts ON cmd_history(ts DESC)",
             [],
         ).map_err(|e| format!("[DATABASE] CMD_HISTORY_INDEX_FAILED: {}", e))?;
-        const SCHEMA_VERSION: i64 = 5;
+        const SCHEMA_VERSION: i64 = 6;
         let stored: i64 = conn.query_row(
             "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'schema_version'",
             [],
@@ -799,6 +880,30 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
             // after this migration store the host-key algorithm so a server
             // ADDING a new algorithm no longer looks like a MITM key change.
             "ALTER TABLE known_hosts ADD COLUMN key_type TEXT",
+            // Per-entity sync columns (schema v6). Nullable uuid/updated_at get
+            // backfilled row-by-row just below; deleted is a plain constant
+            // default so it's a safe single-statement ADD.
+            "ALTER TABLE folders ADD COLUMN uuid TEXT",
+            "ALTER TABLE folders ADD COLUMN updated_at TEXT",
+            "ALTER TABLE folders ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE ssh_keys ADD COLUMN uuid TEXT",
+            "ALTER TABLE ssh_keys ADD COLUMN updated_at TEXT",
+            "ALTER TABLE ssh_keys ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE credentials ADD COLUMN uuid TEXT",
+            "ALTER TABLE credentials ADD COLUMN updated_at TEXT",
+            "ALTER TABLE credentials ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE servers ADD COLUMN uuid TEXT",
+            "ALTER TABLE servers ADD COLUMN updated_at TEXT",
+            "ALTER TABLE servers ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE commands ADD COLUMN uuid TEXT",
+            "ALTER TABLE commands ADD COLUMN updated_at TEXT",
+            "ALTER TABLE commands ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE notes ADD COLUMN uuid TEXT",
+            "ALTER TABLE notes ADD COLUMN updated_at TEXT",
+            "ALTER TABLE notes ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE monitor_configs ADD COLUMN uuid TEXT",
+            "ALTER TABLE monitor_configs ADD COLUMN updated_at TEXT",
+            "ALTER TABLE monitor_configs ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let s = e.to_string();
@@ -806,6 +911,27 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
                     return Err(format!("[DATABASE] COLUMN_MIGRATION_FAILED: {}", s));
                 }
             }
+        }
+        // One-time uuid + HLC backfill for rows created before the sync columns
+        // existed. Uses this device's node id; forces a resave if it changed
+        // anything so the assigned ids persist.
+        let node_id = sync_device_node_id(&app_handle);
+        let seed_ms: u64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(updated_at),'') FROM (
+                   SELECT updated_at FROM servers UNION ALL SELECT updated_at FROM credentials
+                   UNION ALL SELECT updated_at FROM ssh_keys UNION ALL SELECT updated_at FROM folders
+                   UNION ALL SELECT updated_at FROM commands UNION ALL SELECT updated_at FROM notes
+                   UNION ALL SELECT updated_at FROM monitor_configs)",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .map(|s| hlc::Hlc::phys_of(&s))
+            .unwrap_or(0);
+        let backfill_hlc = hlc::Hlc::new(node_id, seed_ms);
+        if backfill_sync_columns(&conn, &backfill_hlc)? {
+            needs_resave = true;
         }
     } else {
         // Master-password strength floor — enforced ONLY at vault CREATION, not
@@ -837,19 +963,19 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
         conn = Connection::open_in_memory()
             .map_err(|e| format!("[DATABASE] MEM_INIT_FAILED: {}", e))?;
         conn.execute_batch(
-            "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT);
-             CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT);
-             CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, FOREIGN KEY(folder_id) REFERENCES folders(id));
-             CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT);
-             CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT);
+            "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
-             CREATE TABLE monitor_configs (node_id INTEGER PRIMARY KEY, enabled_metrics TEXT NOT NULL DEFAULT '[\"cpu\",\"mem\",\"disk\",\"load\"]', custom_metrics TEXT NOT NULL DEFAULT '[]', paused INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE);
+             CREATE TABLE monitor_configs (node_id INTEGER PRIMARY KEY, enabled_metrics TEXT NOT NULL DEFAULT '[\"cpu\",\"mem\",\"disk\",\"load\"]', custom_metrics TEXT NOT NULL DEFAULT '[]', paused INTEGER NOT NULL DEFAULT 1, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE);
              CREATE TABLE monitor_settings (id INTEGER PRIMARY KEY, json TEXT NOT NULL);
              CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE cmd_history (id INTEGER PRIMARY KEY AUTOINCREMENT, server_id INTEGER, server_name TEXT, command TEXT NOT NULL, ts INTEGER NOT NULL, exit_code INTEGER);
              CREATE INDEX idx_cmd_history_ts ON cmd_history(ts DESC);
-             INSERT INTO schema_meta (key, value) VALUES ('schema_version', '5');"
+             INSERT INTO schema_meta (key, value) VALUES ('schema_version', '6');"
         ).map_err(|e| format!("[DATABASE] SCHEMA_CREATION_FAILED: {}", e))?;
     }
 
