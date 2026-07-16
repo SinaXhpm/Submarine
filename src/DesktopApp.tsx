@@ -51,6 +51,10 @@ function DesktopApp() {
   // until ProfileSelectPage's onUnlocked fires, at which point the app
   // flips straight into the main view — no intermediate state.
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
+  // Per-entity cloud sync of the OPEN profile (the new Last-Write-Wins model).
+  // `cloudSyncing` gates the sidebar button; `lastSyncLabel` feeds its tooltip.
+  const [cloudSyncing, setCloudSyncing] = useState(false);
+  const [lastSyncLabel, setLastSyncLabel] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<string>("nodes");
   const [sessions, setSessions] = useState<Session[]>([]);
   // Tracks the live status of each open session ('connecting' | 'connected'
@@ -353,6 +357,34 @@ function DesktopApp() {
       refreshNotes(),
     ]);
   };
+
+  // Per-entity cloud sync of the currently-open profile. Pushes every locally
+  // changed record and merges back the server's view (Last-Write-Wins by HLC),
+  // without the server ever decrypting anything. A guard prevents overlapping
+  // runs; on success we reload all local lists so a pulled change shows at once.
+  const handleCloudSync = useCallback(async () => {
+    setCloudSyncing(true);
+    try {
+      const report = await invoke<{ pushed: number; pulled: number }>("sync_now");
+      await refreshAll();
+      setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
+      addLog(`Cloud sync complete — pushed ${report.pushed}, pulled ${report.pulled}.`, "success");
+    } catch (e) {
+      const msg = String(e);
+      if (/NO_TOKEN|invalid_token|Missing auth|401/i.test(msg)) {
+        addLog("Cloud sync: not signed in. Open the Cloud panel from the profile picker and sign in first.", "error");
+      } else if (/NO_PROFILE_OPEN|DB_NOT_OPEN|NO_KEY|NO_HLC/i.test(msg)) {
+        addLog("Cloud sync: no profile open — unlock a profile first.", "error");
+      } else {
+        addLog(`Cloud sync failed: ${msg}`, "error");
+      }
+    } finally {
+      setCloudSyncing(false);
+    }
+    // refreshAll closes over stable setters; addLog is memoised. Intentionally
+    // excluded to keep this handler identity stable across renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addLog]);
 
   const removeServer = async (id: number) => {
     try {
@@ -1307,7 +1339,7 @@ function DesktopApp() {
         // tab-order stays intuitive and <main> grabs the full screen width
         // (terminal gains the ~50px the vertical rail used to eat).
         <div className={`flex-1 flex ${isMobile ? 'flex-col-reverse' : ''} overflow-hidden pt-10`}>
-          <Sidebar activeTab={activeView.startsWith('session-') ? 'nodes' : activeView} setActiveTab={setActiveView} isMobile={isMobile} onLogout={handleLogout} />
+          <Sidebar activeTab={activeView.startsWith('session-') ? 'nodes' : activeView} setActiveTab={setActiveView} isMobile={isMobile} onLogout={handleLogout} onSync={handleCloudSync} syncing={cloudSyncing} syncTitle={lastSyncLabel} />
 
           <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-transparent relative">
             {activeView === "nodes" && (
