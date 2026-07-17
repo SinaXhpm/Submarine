@@ -1,4 +1,4 @@
-import { Server, KeyRound, Library, Activity, Settings, LogOut, RefreshCw, Share2 } from "lucide-react";
+import { Server, KeyRound, Library, Activity, Settings, LogOut, UserCircle } from "lucide-react";
 
 // Vertical rail on desktop, horizontal bottom dock on mobile. Layout swap is
 // driven by `isMobile` so the terminal/session views can use the full screen
@@ -6,7 +6,29 @@ import { Server, KeyRound, Library, Activity, Settings, LogOut, RefreshCw, Share
 // a 360px-wide viewport. The parent in DesktopApp uses `flex-col-reverse` on
 // mobile so this component visually lands at the bottom while staying first
 // in DOM order (keyboard tab-order stays intuitive).
-export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, onSync, syncing, syncTitle, onShare }: any) => {
+export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileName, syncing }: any) => {
+  // The profile rail is deliberately apart from the content rails below. Those
+  // switch what you're looking at INSIDE the open profile; this one is about the
+  // profile itself — its cloud sync and who else can get into it. It used to
+  // take a Share button here plus a trip out to the profile picker's Cloud panel
+  // to answer "who can see this?"; now it's one click and it's all in one place.
+  const profileRail = (
+    <button
+      onClick={() => setActiveTab('profile')}
+      className={`p-2.5 rounded-xl transition-all duration-300 relative flex items-center justify-center ${
+        activeTab === 'profile'
+          ? 'text-primary bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.15)]'
+          : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'
+      }`}
+      title={profileName ? `Profile — ${profileName}` : 'Profile'}
+    >
+      <UserCircle size={20} className={activeTab === 'profile' ? "drop-shadow-[0_0_8px_rgba(var(--primary),0.5)]" : ""} />
+      {/* Sync moved into the panel, so the rail carries the only cue that it's
+          running — otherwise a background sync would be completely invisible. */}
+      {syncing && <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />}
+    </button>
+  );
+
   // Commands + Notes used to be separate rails. Both are per-profile lists
   // of small text blobs stored under the vault; the only real distinction
   // was "runnable snippet vs freeform prose". A single Library rail with
@@ -58,25 +80,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, onSync, s
             the horizontal bar so the muscle-memory mapping "settings is the
             last icon" still holds, just now read left-to-right. */}
         <div className="flex items-center gap-1 pl-2 ml-1 border-l border-white/5">
-          {onSync && (
-            <button
-              onClick={onSync}
-              disabled={syncing}
-              className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-primary hover:bg-primary/10 disabled:opacity-50 disabled:cursor-wait"
-              title={syncTitle || "Sync this profile to cloud"}
-            >
-              <RefreshCw size={20} className={syncing ? "animate-spin" : ""} />
-            </button>
-          )}
-          {onShare && (
-            <button
-              onClick={onShare}
-              className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-primary hover:bg-primary/10"
-              title="Share this profile"
-            >
-              <Share2 size={20} />
-            </button>
-          )}
+          {profileRail}
           {onLogout && (
             <button
               onClick={onLogout}
@@ -104,6 +108,12 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, onSync, s
 
   return (
     <aside className="w-14 h-full bg-background border-r border-white/5 flex flex-col items-center py-6 shrink-0 relative z-10 shadow-2xl brightness-95 transition-all">
+      {/* Which profile you're in, and everything scoped to it — sits above the
+          divider because it answers "where am I?", not "what am I looking at?". */}
+      <div className="w-full px-2 pb-3 mb-3 border-b border-white/5">
+        {profileRail}
+      </div>
+
       <nav className="flex flex-col gap-3 w-full px-2">
         {items.map((item) => (
           <button
@@ -127,25 +137,6 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, onSync, s
           last-most icon — matches the muscle memory from when it was the
           only bottom action. */}
       <div className="mt-auto w-full px-2 flex flex-col gap-2">
-        {onSync && (
-          <button
-            onClick={onSync}
-            disabled={syncing}
-            className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-primary hover:bg-primary/10 disabled:opacity-50 disabled:cursor-wait"
-            title={syncTitle || "Sync this profile to cloud"}
-          >
-            <RefreshCw size={20} className={syncing ? "animate-spin" : ""} />
-          </button>
-        )}
-        {onShare && (
-          <button
-            onClick={onShare}
-            className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-primary hover:bg-primary/10"
-            title="Share this profile"
-          >
-            <Share2 size={20} />
-          </button>
-        )}
         {onLogout && (
           <button
             onClick={onLogout}

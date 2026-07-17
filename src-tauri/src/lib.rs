@@ -285,38 +285,6 @@ fn save_vault_blocking(
     Ok(())
 }
 
-/// Atomically write raw vault bytes to `path`, keeping the prior file as a
-/// `.bak`. Shared by the cloud-restore path so a crash / disk-full mid-download
-/// can't truncate an existing local vault — the exact failure the local save
-/// path (save_vault_blocking) was hardened against, which the cloud download
-/// previously bypassed with a direct `fs::write`. The atomic rename replaces
-/// the target in one step, so `path` is never observed truncated; the `.bak`
-/// copy makes even a semantically-bad-but-header-valid restore recoverable.
-pub(crate) fn atomic_write_bytes_with_backup(
-    path: &std::path::Path,
-    bytes: &[u8],
-) -> Result<(), String> {
-    use std::io::Write as _;
-    let tmp_path = path.with_extension("submarine.tmp");
-    {
-        let mut f = fs::File::create(&tmp_path)
-            .map_err(|e| format!("[FILE] TMP_CREATE_FAILED at {:?}: {}", tmp_path, e))?;
-        f.write_all(bytes)
-            .map_err(|e| format!("[FILE] TMP_WRITE_FAILED at {:?}: {}", tmp_path, e))?;
-        f.sync_all()
-            .map_err(|e| format!("[FILE] TMP_SYNC_FAILED at {:?}: {}", tmp_path, e))?;
-    }
-    // Best-effort recovery copy of the prior contents. Copy (not rename) so the
-    // live file stays present right up to the atomic rename below.
-    if path.exists() {
-        let bak = path.with_extension("submarine.bak");
-        let _ = fs::copy(path, &bak);
-    }
-    fs::rename(&tmp_path, path)
-        .map_err(|e| format!("[FILE] RENAME_FAILED {:?} -> {:?}: {}", tmp_path, path, e))?;
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Per-entity sync foundation (uuid + HLC + tombstone)
 // ---------------------------------------------------------------------------
@@ -771,14 +739,28 @@ fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord],
 }
 
 fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &SyncRecord, fk_fixups: &mut Vec<(String, String, String, String)>) -> Result<(), String> {
-    // LWW: keep local if it's newer-or-equal.
+    // LWW: keep local if it's newer-or-equal. A deleted row is hard-deleted, so
+    // its tombstone carries its only surviving stamp — it has to count as the
+    // local side of the comparison. Without it, a batch collected before a
+    // delete (sync drops the lock for the network leg, so the user can delete
+    // mid-flight) comes back still carrying the row as live, finds no live row
+    // to compare against, and re-inserts it — secrets and all.
     let local_ua: Option<String> = conn
         .query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", spec.table), [&rec.uuid], |r| r.get(0))
         .ok();
-    if let Some(l) = &local_ua {
-        if l.as_str() >= rec.updated_at.as_str() {
-            return Ok(());
-        }
+    let tomb_ua: Option<String> = conn
+        .query_row(
+            "SELECT updated_at FROM sync_tombstones WHERE uuid=?1 AND entity_type=?2",
+            rusqlite::params![&rec.uuid, spec.table],
+            |r| r.get(0),
+        )
+        .ok();
+    if [local_ua.as_deref(), tomb_ua.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|l| l >= rec.updated_at.as_str())
+    {
+        return Ok(());
     }
     let blob = rec.blob.as_deref().ok_or("[SYNC] ENTITY_NO_BLOB")?;
     let plain = decrypt_entity(blob, key)?;
@@ -856,6 +838,30 @@ struct SyncReport {
     pulled: usize,
 }
 
+// A personal profile's DEK, sealed to the owner's sharing identity, rides the
+// normal /sync stream as one reserved record. That's what lets a fresh device
+// bootstrap a personal profile: sign in, unlock the identity, pull, and unseal
+// the DEK from this record — no whole-vault blob download, no server changes
+// (the /sync table accepts any entity_type ≤24 chars). The server stores it as
+// an opaque blob like every other record, so zero-knowledge still holds. It
+// never matches an ENTITIES spec, so apply naturally ignores it; only the
+// restore path reads it. The updated_at is a fixed low sentinel so it sorts
+// first and never churns the LWW upsert.
+const ESCROW_ETYPE: &str = "dek_escrow";
+const ESCROW_UUID: &str = "0000000000000000000000000000dead";
+const ESCROW_UAT: &str = "000000000000000:00000:0";
+
+/// Build the reserved DEK-escrow record: the profile DEK sealed to `my_pub`.
+fn build_escrow_record(my_pub: &[u8; 32], dek: &[u8; 32]) -> Result<SyncRecord, String> {
+    Ok(SyncRecord {
+        uuid: ESCROW_UUID.to_string(),
+        entity_type: ESCROW_ETYPE.to_string(),
+        updated_at: ESCROW_UAT.to_string(),
+        deleted: false,
+        blob: Some(hex::encode(identity::seal_to(my_pub, dek)?)),
+    })
+}
+
 /// One full per-entity sync of the OPEN profile: collect every local record,
 /// exchange with the server (which LWW-merges + returns its view), merge the
 /// server's records back, and persist. Full-set each call (the dataset is
@@ -881,7 +887,7 @@ async fn sync_now(
     // hold the DEK via a sealed grant without ever knowing this vault's
     // password. The DEK is created + persisted at profile-open, so it already
     // exists here; get_or_create is a defensive fallback only.
-    let (records, dek, hlc, share) = {
+    let (records, dek, hlc, share, cloud_profile) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let hlc_g = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?;
@@ -896,7 +902,13 @@ async fn sync_now(
         let share_role: Option<String> = conn
             .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
             .ok();
-        (records, dek, hlc, share_id.map(|s| (s, share_role.unwrap_or_default())))
+        // Personal /sync is keyed by profile name. A restored profile may carry
+        // a different LOCAL name than its cloud key, so it records the cloud
+        // name in sync_meta; fall back to the local name for everything else.
+        let cloud_profile: String = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='cloud_profile'", [], |r| r.get(0))
+            .unwrap_or_else(|_| profile.clone());
+        (records, dek, hlc, share_id.map(|s| (s, share_role.unwrap_or_default())), cloud_profile)
     };
 
     // Shared profile → /shares/sync (role-gated). A viewer ('user') pushes
@@ -906,8 +918,17 @@ async fn sync_now(
         let remote = cloud::shared_sync_exchange(&app, &cloud, share_id, "", to_push).await?;
         (remote, to_push.len())
     } else {
-        let remote = cloud::sync_exchange(&app, &cloud, &profile, "", &records).await?;
-        (remote, records.len())
+        // Personal profile: if the sharing identity is unlocked this session,
+        // publish (or refresh) the sealed-DEK escrow record alongside the data,
+        // so a new device can later restore this profile. Opportunistic — a
+        // profile only becomes restorable once it's synced with the identity
+        // unlocked; a device that never touches sharing pays nothing.
+        let mut to_push = records.clone();
+        if let Some((my_pub, _)) = cloud.identity().await {
+            to_push.push(build_escrow_record(&my_pub, &dek)?);
+        }
+        let remote = cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &to_push).await?;
+        (remote, to_push.len())
     };
     let pulled = remote.len();
 
@@ -919,6 +940,183 @@ async fn sync_now(
     // Persist the merged vault so the applied changes survive a restart.
     save_vault_async(&db_state).await?;
     Ok(SyncReport { pushed, pulled })
+}
+
+#[derive(serde::Serialize)]
+struct RecentEdit {
+    name: String,
+    edited_by: String,
+    updated_at: String,
+}
+
+#[derive(serde::Serialize)]
+struct SyncDiff {
+    in_sync: usize,
+    needs_push: usize,
+    needs_pull: usize,
+    /// Names of local nodes whose local copy differs from the cloud (either an
+    /// unpushed local edit, or a cloud copy at a different stamp). Capped.
+    out_of_sync_nodes: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ProfileSyncStats {
+    /// Total synced records held locally (live rows + tombstones).
+    total_records: usize,
+    /// On-disk size of this profile's encrypted vault, for heaviness awareness.
+    vault_bytes: u64,
+    /// Last few edited nodes with who touched them — read straight from the
+    /// local vault, no network. Always present.
+    recent_edits: Vec<RecentEdit>,
+    /// Live comparison against the cloud. `None` when offline / not signed in /
+    /// never synced — the panel then shows recent edits only.
+    diff: Option<SyncDiff>,
+}
+
+/// Read-only sync + activity snapshot for the Profile panel. The recent-edits
+/// list is local and instant; the cloud diff is a best-effort dry run (an empty
+/// push that mutates nothing, then a local comparison) and is omitted on any
+/// network/auth failure rather than erroring the whole call.
+#[tauri::command]
+async fn profile_sync_stats(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<ProfileSyncStats, String> {
+    let profile = db_state
+        .active_profile
+        .lock()
+        .map_err(|_| "[STATE] LOCK_PROFILE")?
+        .clone()
+        .ok_or("[SYNC] NO_PROFILE_OPEN")?;
+
+    // Local snapshot under the lock: records, DEK, routing, recent edits, and a
+    // uuid→name map for servers so the diff can name what's out of sync.
+    let (local, dek, share, cloud_profile, recent_edits, server_names) = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        let (dek, _created) = get_or_create_dek(conn)?;
+        let local = collect_local_records(conn, &dek, "")?;
+        let share_id: Option<String> = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
+            .ok();
+        let share_role: Option<String> = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
+            .ok();
+        let cloud_profile: String = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='cloud_profile'", [], |r| r.get(0))
+            .unwrap_or_else(|_| profile.clone());
+
+        let mut recent_edits = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name, COALESCE(edited_by,''), COALESCE(updated_at,'') FROM servers \
+                     WHERE deleted=0 AND updated_at IS NOT NULL ORDER BY updated_at DESC LIMIT 5",
+                )
+                .map_err(|e| format!("[SYNC] RECENT_PREP: {e}"))?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(RecentEdit {
+                        name: r.get(0)?,
+                        edited_by: r.get(1)?,
+                        updated_at: r.get(2)?,
+                    })
+                })
+                .map_err(|e| format!("[SYNC] RECENT_QUERY: {e}"))?;
+            for row in rows {
+                recent_edits.push(row.map_err(|e| format!("[SYNC] RECENT_ROW: {e}"))?);
+            }
+        }
+
+        let mut server_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT uuid, name FROM servers WHERE uuid IS NOT NULL AND deleted=0")
+                .map_err(|e| format!("[SYNC] NAMES_PREP: {e}"))?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .map_err(|e| format!("[SYNC] NAMES_QUERY: {e}"))?;
+            for row in rows {
+                let (u, n) = row.map_err(|e| format!("[SYNC] NAMES_ROW: {e}"))?;
+                server_names.insert(u, n);
+            }
+        }
+
+        (
+            local,
+            dek,
+            share_id.map(|s| (s, share_role.unwrap_or_default())),
+            cloud_profile,
+            recent_edits,
+            server_names,
+        )
+    };
+
+    let total_records = local.len();
+    let vault_bytes = profile_path(&app, &profile)
+        .ok()
+        .and_then(|p| std::fs::metadata(&p).ok())
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let _ = &dek; // reserved for future decrypt of incoming node names
+
+    // Best-effort dry run: pure pull (empty push mutates nothing on the server).
+    let diff = {
+        let pulled = if let Some((share_id, _role)) = &share {
+            cloud::shared_sync_exchange(&app, &cloud, share_id, "", &[]).await
+        } else {
+            cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &[]).await
+        };
+        match pulled {
+            Ok(server) => {
+                use std::collections::HashMap;
+                let local_map: HashMap<&str, (&str, &str)> = local
+                    .iter()
+                    .map(|r| (r.uuid.as_str(), (r.updated_at.as_str(), r.entity_type.as_str())))
+                    .collect();
+                let server_map: HashMap<&str, (&str, &str)> = server
+                    .iter()
+                    // The reserved escrow record is bookkeeping, not user data.
+                    .filter(|r| r.entity_type != ESCROW_ETYPE)
+                    .map(|r| (r.uuid.as_str(), (r.updated_at.as_str(), r.entity_type.as_str())))
+                    .collect();
+
+                let mut in_sync = 0usize;
+                let mut needs_push = 0usize;
+                let mut needs_pull = 0usize;
+                let mut out: Vec<String> = Vec::new();
+
+                let mut uuids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                uuids.extend(local_map.keys());
+                uuids.extend(server_map.keys());
+                for u in uuids {
+                    let l = local_map.get(u).map(|(ua, _)| *ua).unwrap_or("");
+                    let s = server_map.get(u).map(|(ua, _)| *ua).unwrap_or("");
+                    let is_server = local_map.get(u).map(|(_, et)| *et == "servers").unwrap_or(false)
+                        || server_map.get(u).map(|(_, et)| *et == "servers").unwrap_or(false);
+                    if l == s {
+                        in_sync += 1;
+                    } else {
+                        if l > s {
+                            needs_push += 1;
+                        } else {
+                            needs_pull += 1;
+                        }
+                        if is_server && out.len() < 20 {
+                            if let Some(name) = server_names.get(u) {
+                                out.push(name.clone());
+                            }
+                        }
+                    }
+                }
+                Some(SyncDiff { in_sync, needs_push, needs_pull, out_of_sync_nodes: out })
+            }
+            Err(_) => None,
+        }
+    };
+
+    Ok(ProfileSyncStats { total_records, vault_bytes, recent_edits, diff })
 }
 
 // ===========================================================================
@@ -1214,6 +1412,81 @@ async fn import_shared_profile(
     sync_now(app, db_state, cloud).await
 }
 
+/// New device: restore one of YOUR OWN personal cloud profiles. Pulls the
+/// profile's /sync stream, unseals its DEK from the reserved escrow record with
+/// your sharing identity, materialises a fresh local vault under that DEK, and
+/// populates it. This is the personal-profile counterpart to
+/// `import_shared_profile` — no whole-vault blob download needed. The profile
+/// must have been synced at least once with your identity unlocked (so the
+/// escrow record exists on the server).
+#[tauri::command]
+async fn restore_personal_profile(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    cloud_profile: String,
+    local_name: String,
+    vault_password: String,
+) -> Result<SyncReport, String> {
+    let (_, my_secret) = cloud
+        .identity()
+        .await
+        .ok_or("[SHARE] IDENTITY_LOCKED: unlock your sharing identity first")?;
+
+    // Peek at the cloud stream (empty push) and lift the escrow record out.
+    let cloud_profile = cloud_profile.trim().to_string();
+    if cloud_profile.is_empty() {
+        return Err("[SYNC] NO_PROFILE_NAME".into());
+    }
+    let peek = cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &[]).await?;
+    let escrow = peek
+        .iter()
+        .find(|r| r.entity_type == ESCROW_ETYPE && r.uuid == ESCROW_UUID)
+        .ok_or("[SYNC] NO_ESCROW: no restorable copy of that profile in your cloud (check the name, and make sure it was synced with sharing unlocked)")?;
+    let sealed = escrow.blob.as_deref().ok_or("[SYNC] ESCROW_NO_BLOB")?;
+    let dek_vec = identity::unseal(&my_secret, &hex::decode(sealed).map_err(|_| "[SYNC] ESCROW_BAD_HEX")?)
+        .map_err(|_| "[SYNC] ESCROW_UNSEAL_FAILED: this profile's key wasn't sealed to your current identity")?;
+    if dek_vec.len() != 32 {
+        return Err("[SYNC] ESCROW_BAD_DEK_LEN".into());
+    }
+    let dek_hex = hex::encode(&dek_vec);
+
+    // Create the local vault (fresh profile) — same steps as create_profile.
+    validate_profile_name(&local_name)?;
+    if vault_password.is_empty() {
+        return Err("Password cannot be empty".into());
+    }
+    let dir = profiles_dir(&app)?;
+    fs::create_dir_all(&dir).map_err(|e| format!("[FILE] MKDIR_FAILED: {}", e))?;
+    if profile_path(&app, &local_name)?.exists() {
+        return Err(format!("Profile '{}' already exists", local_name));
+    }
+    *db_state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED")? = Some(local_name.clone());
+    {
+        use tauri::Manager as _;
+        setup_master_db(app.clone(), vault_password, app.state::<DbState>()).await?;
+    }
+
+    // Swap the freshly-minted random DEK for the escrowed one, and remember the
+    // cloud key in case the local name differs, so sync_now targets the right
+    // /sync stream and decrypts the pulled blobs.
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&dek_hex],
+        )
+        .map_err(|e| format!("[SYNC] SET_DEK: {e}"))?;
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('cloud_profile',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&cloud_profile],
+        )
+        .map_err(|e| format!("[SYNC] SET_CLOUD_PROFILE: {e}"))?;
+    }
+    sync_now(app, db_state, cloud).await
+}
+
 /// Owner: change a member's role.
 #[tauri::command]
 async fn share_set_role(
@@ -1260,6 +1533,95 @@ async fn share_delete(
     cloud::delete_share(&app, &cloud, &share_id).await
 }
 
+#[derive(serde::Serialize)]
+struct ProfileShareStatus {
+    profile: Option<String>,
+    share_id: Option<String>,
+    role: Option<String>,
+    identity_unlocked: bool,
+    signed_in: bool,
+    email: Option<String>,
+}
+
+/// Everything the in-app Profile panel needs about the OPEN profile, read in one
+/// shot with no network call so the panel paints instantly: which profile is
+/// open, whether it's shared and at what role, and whether the cloud account and
+/// sharing identity are ready. The member roster is fetched separately.
+#[tauri::command]
+async fn profile_share_status(
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<ProfileShareStatus, String> {
+    // Scoped so both std MutexGuards drop before the awaits below.
+    let (profile, share_id, role) = {
+        let profile = db_state
+            .active_profile
+            .lock()
+            .map_err(|_| "[STATE] LOCK_FAILED")?
+            .clone();
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        match conn_g.as_ref() {
+            Some(conn) => {
+                let sid: Option<String> = conn
+                    .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
+                    .ok();
+                let role: Option<String> = conn
+                    .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
+                    .ok();
+                (profile, sid, role)
+            }
+            None => (profile, None, None),
+        }
+    };
+    let st = cloud.status().await;
+    Ok(ProfileShareStatus {
+        profile,
+        share_id,
+        role,
+        identity_unlocked: cloud.identity().await.is_some(),
+        signed_in: st.signed_in,
+        email: st.email,
+    })
+}
+
+/// Stop sharing the OPEN profile. Owner → tears the share down for everyone;
+/// member → leaves it. Either way this device keeps its local copy: only the
+/// share bookkeeping is cleared, so the profile falls back to syncing on the
+/// personal path under the DEK it already holds.
+#[tauri::command]
+async fn stop_sharing(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<(), String> {
+    let (share_id, role) = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        let sid: Option<String> = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
+            .ok();
+        let role: Option<String> = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
+            .ok();
+        (
+            sid.ok_or("[SHARE] NOT_SHARED: this profile isn't shared")?,
+            role.unwrap_or_default(),
+        )
+    };
+    if role == "owner" {
+        cloud::delete_share(&app, &cloud, &share_id).await?;
+    } else {
+        cloud::leave_share(&app, &cloud, &share_id).await?;
+    }
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        conn.execute("DELETE FROM sync_meta WHERE key IN ('share_id','share_role')", [])
+            .map_err(|e| format!("[SHARE] CLEAR_META: {e}"))?;
+    }
+    save_vault_async(&db_state).await
+}
+
 /// Set the label stamped onto future local edits (the `edited_by` column). The
 /// frontend calls this on unlock with the signed-in cloud email so changes are
 /// attributed to a person across shared/multi-device use. An empty label clears
@@ -1290,6 +1652,33 @@ mod sync_engine_tests {
     use rusqlite::Connection;
 
     const KEY: [u8; 32] = [7u8; 32];
+
+    // The DEK-escrow record round-trips through the sync stream: sealed to the
+    // owner's identity on push, unsealed on a fresh device to recover the DEK —
+    // and it's inert to the merge engine (never becomes a phantom row).
+    #[test]
+    fn dek_escrow_round_trips_and_apply_ignores_it() {
+        let kp = identity::generate_keypair();
+        let dek: [u8; 32] = KEY;
+        let rec = build_escrow_record(&kp.public, &dek).unwrap();
+        assert_eq!(rec.entity_type, ESCROW_ETYPE);
+        assert_eq!(rec.uuid, ESCROW_UUID);
+
+        // A fresh device unseals the DEK from the escrow blob with its identity.
+        let sealed = hex::decode(rec.blob.as_ref().unwrap()).unwrap();
+        let recovered = identity::unseal(&kp.secret, &sealed).unwrap();
+        assert_eq!(recovered.as_slice(), &dek[..], "escrow must recover the exact DEK");
+
+        // Applying an escrow record must not create a phantom row anywhere.
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&rec), &hb).unwrap();
+        for spec in ENTITIES {
+            let n: i64 = b
+                .query_row(&format!("SELECT COUNT(*) FROM {}", spec.table), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "escrow record must not land in table {}", spec.table);
+        }
+    }
 
     #[test]
     fn edited_by_is_stamped_and_syncs() {
@@ -1376,6 +1765,62 @@ mod sync_engine_tests {
         apply_remote_records(&b, &KEY, &old, &hb).unwrap(); // re-apply the STALE version
         let host: String = b.query_row("SELECT host FROM servers WHERE name='s'", [], |r| r.get(0)).unwrap();
         assert_eq!(host, "h2-newer", "an older remote record must not overwrite a newer local edit");
+    }
+
+    // `sync_now` snapshots records under the DB lock, then DROPS the lock for
+    // the network leg — so the user can delete a node while their own batch is
+    // still in flight. The reply is the server's view computed from the
+    // PRE-delete push (and `since` is always "", so it echoes everything back),
+    // meaning it still carries the deleted node as live. The tombstone is the
+    // only thing standing between that reply and a resurrected password.
+    #[test]
+    fn stale_inflight_batch_does_not_resurrect_a_deleted_row() {
+        let (a, ha) = device("A");
+        a.execute("INSERT INTO servers(name, host, password) VALUES('prod','h','SUPERSECRET')", []).unwrap();
+
+        // T=0 — sync collects the batch and lets go of the lock.
+        let inflight = collect_local_records(&a, &KEY, "").unwrap();
+
+        // T=2s — user deletes the node while the POST is still in flight.
+        a.execute("DELETE FROM servers WHERE name='prod'", []).unwrap();
+
+        // T=5s — reply lands, still carrying 'prod' as live at its old stamp.
+        apply_remote_records(&a, &KEY, &inflight, &ha).unwrap();
+
+        let live: i64 = a
+            .query_row("SELECT COUNT(*) FROM servers WHERE name='prod'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(live, 0, "a stale in-flight batch must not resurrect a deleted row");
+    }
+
+    // The mirror case: a delete must not shadow a genuine re-creation. If some
+    // other device creates a row again AFTER our delete, its stamp is newer than
+    // our tombstone and it has to land.
+    #[test]
+    fn tombstone_does_not_block_a_newer_recreate() {
+        let (a, ha) = device("A");
+        a.execute("INSERT INTO servers(name, host) VALUES('s','h1')", []).unwrap();
+        let uuid: String = a.query_row("SELECT uuid FROM servers WHERE name='s'", [], |r| r.get(0)).unwrap();
+        a.execute("DELETE FROM servers WHERE name='s'", []).unwrap();
+        assert_eq!(
+            a.query_row("SELECT COUNT(*) FROM sync_tombstones WHERE uuid=?1", [&uuid], |r| r.get::<_, i64>(0)).unwrap(),
+            1,
+        );
+
+        // Device B re-creates the same uuid later (newer HLC than our tombstone).
+        let (b, hb) = device("B");
+        b.execute("INSERT INTO servers(name, host) VALUES('s','h2-recreated')", []).unwrap();
+        b.execute("UPDATE servers SET uuid=?1, updated_at=hlc_now() WHERE name='s'", [&uuid]).unwrap();
+        let recreate = collect_local_records(&b, &KEY, "").unwrap();
+        let _ = hb;
+
+        apply_remote_records(&a, &KEY, &recreate, &ha).unwrap();
+        let host: Option<String> = a.query_row("SELECT host FROM servers WHERE uuid=?1", [&uuid], |r| r.get(0)).ok();
+        assert_eq!(
+            host.as_deref(),
+            Some("h2-recreated"),
+            "a re-create newer than the tombstone must still apply",
+        );
     }
 
     #[test]
@@ -8611,14 +9056,11 @@ pub fn run() {
             cloud::cloud_set_password, cloud::cloud_login, cloud::cloud_logout,
             cloud::cloud_request_password_reset, cloud::cloud_reset_password,
             cloud::cloud_request_login_link, cloud::cloud_login_with_link,
-            cloud::cloud_list_remote, cloud::cloud_upload_profile,
-            cloud::cloud_force_upload_profile, cloud::cloud_download_profile,
-            cloud::cloud_delete_remote_profile,
-            cloud::cloud_sync_overview, cloud::cloud_sync_all,
             sync_now,
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
-            accept_share, import_shared_profile, share_set_role, share_revoke, share_leave, share_delete,
+            accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
+            profile_share_status, stop_sharing, profile_sync_stats,
             set_editor_label,
             add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,

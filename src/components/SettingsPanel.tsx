@@ -1,4 +1,4 @@
-import { Settings, Palette, RefreshCw, Pipette, List } from "lucide-react";
+import { Settings, Palette, RefreshCw, Pipette, List, Cloud } from "lucide-react";
 
 const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
   const accentColors = [
@@ -159,6 +159,34 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
           </section>
         )}
 
+        {/* Cloud Section */}
+        <section className="space-y-6">
+          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs mb-4">
+            <Cloud size={14} /> Cloud Sync
+          </div>
+
+          <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-zinc-100">Auto-sync</div>
+                <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
+                  Keep open profiles synced in the background — shortly after you make a change, when
+                  you return to the window, and every few minutes to pull in others' edits on shared
+                  profiles. Turn off to sync only with the manual button.
+                </p>
+              </div>
+              <button
+                role="switch"
+                aria-checked={settings.autoSync !== false}
+                onClick={() => setSettings((s: any) => ({ ...s, autoSync: !(s.autoSync !== false) }))}
+                className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${settings.autoSync !== false ? 'bg-primary' : 'bg-zinc-700'}`}
+              >
+                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${settings.autoSync !== false ? 'left-[22px]' : 'left-0.5'}`} />
+              </button>
+            </div>
+          </div>
+        </section>
+
         {/* Maintenance Section */}
         <section className="space-y-6">
           <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs mb-4">
@@ -172,7 +200,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
             <button
               onClick={() => {
                 if(window.confirm('Reset all UI customizations?')) {
-                  setSettings({ primaryColor: '#60a5fa', backgroundColor: '#0a0a0c', terminalFontSize: 14 });
+                  setSettings((s: any) => ({ ...s, primaryColor: '#60a5fa', backgroundColor: '#0a0a0c', terminalFontSize: 14 }));
                 }
               }}
               className="px-4 h-9 bg-zinc-900 border border-white/5 text-zinc-300 rounded-xl text-xs font-bold uppercase hover:bg-white/5 transition-all w-full"

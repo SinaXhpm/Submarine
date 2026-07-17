@@ -7,12 +7,6 @@ import logoUrl from "../assets/logo.png";
 import { IS_ANDROID } from "../util/platform";
 
 interface CloudStatus { signed_in: boolean; email: string | null; }
-type SyncStatusKind = "both" | "local_only" | "remote_only";
-interface SyncEntry { name: string; status: SyncStatusKind; }
-interface SyncAllReport {
-  uploaded: string[]; downloaded: string[];
-  skipped_conflicts: string[]; failed: string[];
-}
 
 interface Props {
   onUnlocked: (profileName: string) => void;
@@ -45,8 +39,6 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   // Cloud status surfaced directly on this page so the user doesn't have
   // to open the modal just to know if sync is connected or pending.
   const [cloudStatus, setCloudStatus] = useState<CloudStatus>({ signed_in: false, email: null });
-  const [pendingSync, setPendingSync] = useState<number>(0);
-  const [syncing, setSyncing] = useState(false);
 
   const passwordInputRef = useRef<HTMLInputElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
@@ -68,49 +60,19 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   };
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
-  // Cloud status + pending-changes counter. Best-effort: a network failure
-  // shouldn't keep the user from unlocking a local profile, so all errors
-  // here are swallowed silently and the bar just doesn't render.
-  const refreshCloud = useCallback(async (currentProfiles: string[]) => {
+  // Cloud connection status only. Per-profile sync now happens inside the app
+  // (each profile's Profile panel), so the picker just shows whether the cloud
+  // account is connected + a way in to manage it. Best-effort: a network
+  // failure shouldn't block unlocking a local profile, so errors are swallowed.
+  const refreshCloud = useCallback(async () => {
     try {
-      const s = await invoke<CloudStatus>("cloud_status");
-      setCloudStatus(s);
-      if (s.signed_in) {
-        const list = await invoke<SyncEntry[]>("cloud_sync_overview", {
-          localProfiles: currentProfiles,
-        });
-        const pending = list.filter((e) => e.status !== "both").length;
-        setPendingSync(pending);
-      } else {
-        setPendingSync(0);
-      }
+      setCloudStatus(await invoke<CloudStatus>("cloud_status"));
     } catch {
       // swallow — network down, modal can still be opened to retry
     }
   }, []);
 
-  useEffect(() => { refreshCloud(profiles); }, [profiles, refreshCloud]);
-
-  const doQuickSync = async () => {
-    if (syncing) return;
-    setSyncing(true); setError(null); setInfo(null);
-    try {
-      const report = await invoke<SyncAllReport>("cloud_sync_all", {
-        localProfiles: profiles,
-      });
-      const parts: string[] = [];
-      if (report.uploaded.length) parts.push(`uploaded ${report.uploaded.length}`);
-      if (report.downloaded.length) parts.push(`downloaded ${report.downloaded.length}`);
-      if (report.skipped_conflicts.length) parts.push(`${report.skipped_conflicts.length} conflict`);
-      if (report.failed.length) parts.push(`${report.failed.length} failed`);
-      setInfo(parts.length ? `Sync: ${parts.join(", ")}.` : "Already in sync.");
-      await reload();
-    } catch (e: any) {
-      setError(String(e));
-    } finally {
-      setSyncing(false);
-    }
-  };
+  useEffect(() => { refreshCloud(); }, [refreshCloud]);
 
   useEffect(() => {
     setPassword("");
@@ -467,13 +429,10 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
         )}
 
         {/* Cloud status bar — always visible. Signed-out shows a Connect
-            link; signed-in shows email, pending count, Sync, Manage. */}
+            link; signed-in shows the account email + a way into Manage. */}
         <CloudBar
           status={cloudStatus}
-          pending={pendingSync}
-          syncing={syncing}
           busy={busy}
-          onSync={doQuickSync}
           onManage={() => setCloudOpen(true)}
         />
 
@@ -493,9 +452,8 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
           setCloudOpen(false);
           // The modal may have logged in/out or changed cloud state —
           // re-pull so the bar reflects reality.
-          refreshCloud(profiles);
+          refreshCloud();
         }}
-        localProfiles={profiles}
         onLocalProfilesChanged={reload}
       />
 
@@ -505,13 +463,10 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
 };
 
 const CloudBar = ({
-  status, pending, syncing, busy, onSync, onManage,
+  status, busy, onManage,
 }: {
   status: CloudStatus;
-  pending: number;
-  syncing: boolean;
   busy: boolean;
-  onSync: () => void;
   onManage: () => void;
 }) => {
   // Signed-out: a thin, low-weight link rather than a fourth full-width
@@ -527,26 +482,13 @@ const CloudBar = ({
       </button>
     );
   }
-  const inSync = pending === 0;
   return (
     <div className="mt-4 h-9 px-2.5 rounded-lg border border-white/5 bg-white/[0.02] flex items-center gap-2 text-[11.5px]">
       <Cloud size={12} className="text-primary shrink-0" />
       <span className="text-zinc-300 truncate font-mono flex-1 min-w-0">{status.email}</span>
-      {inSync ? (
-        <span className="text-emerald-400 flex items-center gap-1 shrink-0">
-          <CheckCircle2 size={11} /> Synced
-        </span>
-      ) : (
-        <button
-          onClick={onSync}
-          disabled={syncing || busy}
-          title="Sync all (upload local-only, download remote-only)"
-          className="h-6 px-2 rounded text-[11px] font-semibold bg-primary text-black disabled:opacity-50 flex items-center gap-1 shrink-0"
-        >
-          <RefreshCw size={10} className={syncing ? "animate-spin" : ""} />
-          {syncing ? "…" : `Sync ${pending}`}
-        </button>
-      )}
+      <span className="text-emerald-400 flex items-center gap-1 shrink-0">
+        <CheckCircle2 size={11} /> Connected
+      </span>
       <button
         onClick={onManage}
         disabled={busy}
