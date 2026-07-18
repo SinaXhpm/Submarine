@@ -838,28 +838,79 @@ struct SyncReport {
     pulled: usize,
 }
 
-// A personal profile's DEK, sealed to the owner's sharing identity, rides the
+// A personal profile's DEK, sealed under the profile's OWN password, rides the
 // normal /sync stream as one reserved record. That's what lets a fresh device
-// bootstrap a personal profile: sign in, unlock the identity, pull, and unseal
-// the DEK from this record — no whole-vault blob download, no server changes
-// (the /sync table accepts any entity_type ≤24 chars). The server stores it as
-// an opaque blob like every other record, so zero-knowledge still holds. It
-// never matches an ENTITIES spec, so apply naturally ignores it; only the
+// bootstrap a personal profile with nothing but the profile password: sign in,
+// pull, derive the key from the password + the salt carried in this record, and
+// unseal the DEK — no whole-vault blob download, no separate recovery secret,
+// no server changes (the /sync table accepts any entity_type ≤24 chars). The
+// server stores it as an opaque blob like every other record, so zero-knowledge
+// still holds — cracking it costs the same Argon2id work as the vault itself.
+// It never matches an ENTITIES spec, so apply naturally ignores it; only the
 // restore path reads it. The updated_at is a fixed low sentinel so it sorts
 // first and never churns the LWW upsert.
+//
+// Blob layout (hex): version(1) ‖ salt(SALT_LEN) ‖ nonce(NONCE_LEN) ‖
+// AES-256-GCM(master_key, dek). `master_key` is Argon2id(password, salt) — the
+// exact same derivation as the on-disk vault — so a device that knows the
+// password reproduces it from the embedded salt and decrypts the DEK.
 const ESCROW_ETYPE: &str = "dek_escrow";
 const ESCROW_UUID: &str = "0000000000000000000000000000dead";
 const ESCROW_UAT: &str = "000000000000000:00000:0";
+// Version byte fronting the escrow blob. `2` = password-sealed (the format
+// below). `1` was the retired identity-sealed sealed-box; no such records were
+// ever published to any live account, so there is nothing to migrate — but the
+// byte lets the reader reject an unknown/legacy shape cleanly instead of
+// mis-parsing it.
+const PW_ESCROW_VERSION: u8 = 2;
 
-/// Build the reserved DEK-escrow record: the profile DEK sealed to `my_pub`.
-fn build_escrow_record(my_pub: &[u8; 32], dek: &[u8; 32]) -> Result<SyncRecord, String> {
+/// Build the reserved DEK-escrow record: the profile DEK sealed under the
+/// profile's master key (Argon2id of its password). `salt` is the vault's own
+/// KDF salt, embedded so a fresh device can re-derive `master_key` from just the
+/// password.
+fn build_pw_escrow_record(
+    master_key: &[u8; 32],
+    salt: &[u8; SALT_LEN],
+    dek: &[u8; 32],
+) -> Result<SyncRecord, String> {
+    let (ct, nonce) = encrypt_with_key(dek, master_key)?;
+    let mut blob = Vec::with_capacity(1 + SALT_LEN + NONCE_LEN + ct.len());
+    blob.push(PW_ESCROW_VERSION);
+    blob.extend_from_slice(salt);
+    blob.extend_from_slice(&nonce);
+    blob.extend_from_slice(&ct);
     Ok(SyncRecord {
         uuid: ESCROW_UUID.to_string(),
         entity_type: ESCROW_ETYPE.to_string(),
         updated_at: ESCROW_UAT.to_string(),
         deleted: false,
-        blob: Some(hex::encode(identity::seal_to(my_pub, dek)?)),
+        blob: Some(hex::encode(blob)),
     })
+}
+
+/// Recover a profile's DEK from a password-sealed escrow blob. Runs Argon2id, so
+/// callers hand it to the blocking pool. Returns `DECRYPT_FAILURE` (via
+/// `decrypt_with_key`) when the password is wrong — the GCM tag won't verify.
+fn open_pw_escrow(blob_hex: &str, password: &str) -> Result<[u8; 32], String> {
+    let raw = hex::decode(blob_hex).map_err(|_| "[SYNC] ESCROW_BAD_HEX")?;
+    let head = 1 + SALT_LEN + NONCE_LEN;
+    if raw.len() < head + 16 {
+        return Err("[SYNC] ESCROW_TOO_SHORT".into());
+    }
+    if raw[0] != PW_ESCROW_VERSION {
+        return Err(format!("[SYNC] ESCROW_BAD_VERSION: {}", raw[0]));
+    }
+    let salt = &raw[1..1 + SALT_LEN];
+    let nonce = &raw[1 + SALT_LEN..head];
+    let ct = &raw[head..];
+    let mk = Zeroizing::new(derive_key(password, salt)?);
+    let dek_vec = Zeroizing::new(decrypt_with_key(ct, nonce, &mk)?);
+    if dek_vec.len() != 32 {
+        return Err("[SYNC] ESCROW_BAD_DEK_LEN".into());
+    }
+    let mut dek = [0u8; 32];
+    dek.copy_from_slice(&dek_vec);
+    Ok(dek)
 }
 
 /// One full per-entity sync of the OPEN profile: collect every local record,
@@ -887,11 +938,21 @@ async fn sync_now(
     // hold the DEK via a sealed grant without ever knowing this vault's
     // password. The DEK is created + persisted at profile-open, so it already
     // exists here; get_or_create is a defensive fallback only.
-    let (records, dek, hlc, share, cloud_profile) = {
+    let (records, dek, hlc, share, cloud_profile, master_key, salt) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let hlc_g = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?;
         let hlc = hlc_g.as_ref().ok_or("[SYNC] NO_HLC")?.clone();
+        // The session master key + salt (retained in DbState for the vault
+        // re-save) let us seal the DEK under the profile's own password with no
+        // extra KDF work — copied out here so no guard is held across the await.
+        let master_key = db_state
+            .master_key
+            .lock()
+            .map_err(|_| "[STATE] LOCK_KEY")?
+            .as_ref()
+            .map(|k| **k);
+        let salt = *db_state.salt.lock().map_err(|_| "[STATE] LOCK_SALT")?;
         let (dek, _created) = get_or_create_dek(conn)?;
         let records = collect_local_records(conn, &dek, "")?;
         // If this profile is shared, sync_meta carries its share_id + my role;
@@ -908,7 +969,7 @@ async fn sync_now(
         let cloud_profile: String = conn
             .query_row("SELECT value FROM sync_meta WHERE key='cloud_profile'", [], |r| r.get(0))
             .unwrap_or_else(|_| profile.clone());
-        (records, dek, hlc, share_id.map(|s| (s, share_role.unwrap_or_default())), cloud_profile)
+        (records, dek, hlc, share_id.map(|s| (s, share_role.unwrap_or_default())), cloud_profile, master_key, salt)
     };
 
     // Shared profile → /shares/sync (role-gated). A viewer ('user') pushes
@@ -918,16 +979,19 @@ async fn sync_now(
         let remote = cloud::shared_sync_exchange(&app, &cloud, share_id, "", to_push).await?;
         (remote, to_push.len())
     } else {
-        // Personal profile: if the sharing identity is unlocked this session,
-        // publish (or refresh) the sealed-DEK escrow record alongside the data,
-        // so a new device can later restore this profile. Opportunistic — a
-        // profile only becomes restorable once it's synced with the identity
-        // unlocked; a device that never touches sharing pays nothing.
+        // Personal profile: publish (or refresh) the DEK escrow alongside the
+        // data so any device that knows this profile's password can bring it
+        // down. Sealed under the profile's OWN master key — always-on, no
+        // sharing identity or separate recovery secret required.
         let mut to_push = records.clone();
-        if let Some((my_pub, _)) = cloud.identity().await {
-            to_push.push(build_escrow_record(&my_pub, &dek)?);
+        if let (Some(mk), Some(salt)) = (master_key, salt) {
+            to_push.push(build_pw_escrow_record(&mk, &salt, &dek)?);
         }
-        let remote = cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &to_push).await?;
+        // Send the local display name so the server can label this partition —
+        // essential once `cloud_profile` is an opaque UUID for new profiles. For
+        // legacy `main` the name equals the partition, so it's a harmless echo.
+        let remote =
+            cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &to_push, Some(profile.as_str())).await?;
         (remote, to_push.len())
     };
     let pulled = remote.len();
@@ -1066,7 +1130,7 @@ async fn profile_sync_stats(
         let pulled = if let Some((share_id, _role)) = &share {
             cloud::shared_sync_exchange(&app, &cloud, share_id, "", &[]).await
         } else {
-            cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &[]).await
+            cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &[], None).await
         };
         match pulled {
             Ok(server) => {
@@ -1412,12 +1476,14 @@ async fn import_shared_profile(
     sync_now(app, db_state, cloud).await
 }
 
-/// New device: restore one of YOUR OWN personal cloud profiles. Pulls the
-/// profile's /sync stream, unseals its DEK from the reserved escrow record with
-/// your sharing identity, materialises a fresh local vault under that DEK, and
-/// populates it. This is the personal-profile counterpart to
-/// `import_shared_profile` — no whole-vault blob download needed. The profile
-/// must have been synced at least once with your identity unlocked (so the
+/// New device: restore one of YOUR OWN personal cloud profiles using nothing but
+/// its password. Pulls the profile's /sync stream, unseals its DEK from the
+/// reserved escrow record by re-deriving the master key from the password + the
+/// salt carried in that record, materialises a fresh local vault under that DEK
+/// (protected by the same password), and populates it. This is the
+/// personal-profile counterpart to `import_shared_profile` — no whole-vault blob
+/// download, no sharing identity, no separate recovery secret. The profile must
+/// have been synced at least once since it became password-restorable (so the
 /// escrow record exists on the server).
 #[tauri::command]
 async fn restore_personal_profile(
@@ -1428,34 +1494,35 @@ async fn restore_personal_profile(
     local_name: String,
     vault_password: String,
 ) -> Result<SyncReport, String> {
-    let (_, my_secret) = cloud
-        .identity()
-        .await
-        .ok_or("[SHARE] IDENTITY_LOCKED: unlock your sharing identity first")?;
-
-    // Peek at the cloud stream (empty push) and lift the escrow record out.
+    // Validate up front so a bad name/empty password fails before any network.
     let cloud_profile = cloud_profile.trim().to_string();
     if cloud_profile.is_empty() {
         return Err("[SYNC] NO_PROFILE_NAME".into());
     }
-    let peek = cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &[]).await?;
-    let escrow = peek
-        .iter()
-        .find(|r| r.entity_type == ESCROW_ETYPE && r.uuid == ESCROW_UUID)
-        .ok_or("[SYNC] NO_ESCROW: no restorable copy of that profile in your cloud (check the name, and make sure it was synced with sharing unlocked)")?;
-    let sealed = escrow.blob.as_deref().ok_or("[SYNC] ESCROW_NO_BLOB")?;
-    let dek_vec = identity::unseal(&my_secret, &hex::decode(sealed).map_err(|_| "[SYNC] ESCROW_BAD_HEX")?)
-        .map_err(|_| "[SYNC] ESCROW_UNSEAL_FAILED: this profile's key wasn't sealed to your current identity")?;
-    if dek_vec.len() != 32 {
-        return Err("[SYNC] ESCROW_BAD_DEK_LEN".into());
-    }
-    let dek_hex = hex::encode(&dek_vec);
-
-    // Create the local vault (fresh profile) — same steps as create_profile.
     validate_profile_name(&local_name)?;
     if vault_password.is_empty() {
         return Err("Password cannot be empty".into());
     }
+
+    // Peek at the cloud stream (empty push) and lift the escrow record out.
+    let peek = cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &[], None).await?;
+    let sealed = peek
+        .iter()
+        .find(|r| r.entity_type == ESCROW_ETYPE && r.uuid == ESCROW_UUID)
+        .and_then(|r| r.blob.clone())
+        .ok_or("[SYNC] NO_ESCROW: no restorable copy of that profile in your cloud. Open it on the original device and sync once, then try again.")?;
+
+    // Re-derive the master key from the password (Argon2id → blocking pool) and
+    // unseal the DEK. A wrong password fails the GCM tag → surfaced as a wrong
+    // password below.
+    let pw_for_escrow = vault_password.clone();
+    let dek = tokio::task::spawn_blocking(move || open_pw_escrow(&sealed, &pw_for_escrow))
+        .await
+        .map_err(|e| format!("[SYNC] ESCROW_JOIN: {e}"))?
+        .map_err(|_| "[SYNC] ESCROW_UNSEAL_FAILED: wrong password for this profile")?;
+    let dek_hex = hex::encode(dek);
+
+    // Create the local vault (fresh profile) — same steps as create_profile.
     let dir = profiles_dir(&app)?;
     fs::create_dir_all(&dir).map_err(|e| format!("[FILE] MKDIR_FAILED: {}", e))?;
     if profile_path(&app, &local_name)?.exists() {
@@ -1653,21 +1720,27 @@ mod sync_engine_tests {
 
     const KEY: [u8; 32] = [7u8; 32];
 
-    // The DEK-escrow record round-trips through the sync stream: sealed to the
-    // owner's identity on push, unsealed on a fresh device to recover the DEK —
-    // and it's inert to the merge engine (never becomes a phantom row).
+    // The DEK-escrow record round-trips through the sync stream: sealed under
+    // the profile's own password on push, recovered on a fresh device from just
+    // that password — and it's inert to the merge engine (never a phantom row).
     #[test]
     fn dek_escrow_round_trips_and_apply_ignores_it() {
-        let kp = identity::generate_keypair();
         let dek: [u8; 32] = KEY;
-        let rec = build_escrow_record(&kp.public, &dek).unwrap();
+        let salt = [3u8; SALT_LEN];
+        let password = "correct horse battery staple";
+        let master_key = derive_key(password, &salt).unwrap();
+        let rec = build_pw_escrow_record(&master_key, &salt, &dek).unwrap();
         assert_eq!(rec.entity_type, ESCROW_ETYPE);
         assert_eq!(rec.uuid, ESCROW_UUID);
 
-        // A fresh device unseals the DEK from the escrow blob with its identity.
-        let sealed = hex::decode(rec.blob.as_ref().unwrap()).unwrap();
-        let recovered = identity::unseal(&kp.secret, &sealed).unwrap();
-        assert_eq!(recovered.as_slice(), &dek[..], "escrow must recover the exact DEK");
+        // A fresh device recovers the exact DEK from just the password...
+        let recovered = open_pw_escrow(rec.blob.as_ref().unwrap(), password).unwrap();
+        assert_eq!(recovered, dek, "escrow must recover the exact DEK");
+        // ...and the wrong password must not (GCM tag fails).
+        assert!(
+            open_pw_escrow(rec.blob.as_ref().unwrap(), "wrong password").is_err(),
+            "wrong password must not recover the DEK"
+        );
 
         // Applying an escrow record must not create a phantom row anywhere.
         let (b, hb) = device("B");
@@ -1887,6 +1960,39 @@ async fn list_profiles(app_handle: tauri::AppHandle) -> Result<Vec<String>, Stri
     }
     out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
     Ok(out)
+}
+
+/// List the caller's CLOUD profiles (from the per-entity sync store) so the
+/// picker can surface profiles that exist in the account but not yet on this
+/// device — the "sign in and see all your profiles" path. Read-only; requires
+/// a signed-in cloud session. The UI merges these with the local
+/// `list_profiles`, matching by name: a profile present locally is opened with
+/// its password; a cloud-only one is restored (name pre-filled) then opened.
+#[tauri::command]
+async fn cloud_list_sync_profiles(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<Vec<cloud::SyncProfileInfo>, String> {
+    cloud::list_sync_profiles(&app, &cloud).await
+}
+
+/// Delete one of the caller's OWN personal profiles from the cloud: wipes every
+/// synced record (data, tombstones, and the escrow key) for that partition on
+/// the server. Owner-scoped by construction — the /sync store is per-user, so a
+/// caller can only ever delete their own partition. The local vault (if any) is
+/// left alone; the UI offers "remove from this device" as a separate action.
+/// Returns the number of records the server removed.
+#[tauri::command]
+async fn cloud_delete_profile(
+    app: tauri::AppHandle,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    profile: String,
+) -> Result<i64, String> {
+    let profile = profile.trim().to_string();
+    if profile.is_empty() {
+        return Err("[SYNC] NO_PROFILE_NAME".into());
+    }
+    cloud::delete_sync_profile(&app, &cloud, &profile).await
 }
 
 /// Mark a profile as the active one. Subsequent `check_db_exists` /
@@ -2531,7 +2637,36 @@ async fn create_profile(
     *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED")? = Some(name);
     // Reuse setup_master_db's fresh-schema branch by deferring to it. Empty
     // profile starts with the same migrations the legacy path would do.
-    setup_master_db(app_handle, password, state).await
+    setup_master_db(app_handle.clone(), password, state).await?;
+
+    // New profile: mint a stable UUID and partition its cloud sync by that UUID
+    // rather than its name. Two vaults that happen to share a display name then
+    // land in SEPARATE server partitions with separate keys — no cross-decrypt
+    // failures, no silently merged records. Legacy `main` predates this and
+    // keeps its name partition (untouched); only profiles born here get a UUID.
+    // The human-readable name still reaches the server via sync_now's `name`.
+    let db_state = app_handle.state::<DbState>();
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        let mut pid = [0u8; 16];
+        rand::thread_rng().fill(&mut pid);
+        let pid_hex = hex::encode(pid); // 32 hex chars — fits the server's 32-char partition column
+        // DO NOTHING (never overwrite): a fresh vault has neither key, but this
+        // must never repartition a profile if it somehow re-runs.
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('profile_id',?1) ON CONFLICT(key) DO NOTHING",
+            [&pid_hex],
+        )
+        .map_err(|e| format!("[STATE] PROFILE_ID_STORE: {e}"))?;
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('cloud_profile',?1) ON CONFLICT(key) DO NOTHING",
+            [&pid_hex],
+        )
+        .map_err(|e| format!("[STATE] CLOUD_PROFILE_STORE: {e}"))?;
+    }
+    save_vault_internal(&db_state)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2741,6 +2876,7 @@ async fn add_server(
 #[tauri::command]
 async fn edit_server(
     state: tauri::State<'_, DbState>,
+    ssh_state: tauri::State<'_, SshState>,
     id: i32,
     name: String,
     host: String,
@@ -2767,9 +2903,6 @@ async fn edit_server(
     // COALESCE(?, password) so the existing column survives.
     preserve_password: Option<bool>,
 ) -> Result<(), String> {
-    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
-    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-
     let tunnels_json = serde_json::to_string(&tunnels).unwrap_or_else(|_| "[]".to_string());
     let mirrors_json = mirrors.as_ref()
         .map(|m| serde_json::to_string(m).unwrap_or_else(|_| "[]".into()))
@@ -2778,27 +2911,60 @@ async fn edit_server(
     let (db_username, db_password, db_key_id, db_credential_id) = normalize_server_identity(
         &auth_type, username, password, key_id, credential_id,
     );
-
     let autostart_i: i32 = if autostart.unwrap_or(false) { 1 } else { 0 };
-    // Two-flavour UPDATE: with `preserve_password`, the password column is
-    // wrapped in COALESCE(?, password) so a NULL bind keeps the existing
-    // value. Without it, the password column is overwritten the usual way.
-    // The behaviour difference matters only when the auth path is custom_pass
-    // because normalize_server_identity zeros password for the other modes.
-    if preserve_password.unwrap_or(false) && auth_type == "custom_pass" {
-        conn.execute(
-            "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=COALESCE(?5, password), credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
-            rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
-        ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
-    } else {
-        conn.execute(
-            "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
-            rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
-        ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
-    }
 
-    drop(conn_guard);
+    // All SQLite work is scoped so the non-Send connection guard is fully
+    // dropped before the async cache-invalidation await below — Tauri requires
+    // the command future to be Send. Returns whether the forwarding rules
+    // changed: if they did, the node's saved rules become the new source of
+    // truth and the live session's cached replay list must be dropped (below).
+    // Otherwise a session that already seeded its specs, or had them stripped
+    // to an empty list by a failed bind, keeps using the stale set and never
+    // re-reads the edited rules — the "changed the port but the forward never
+    // comes up" bug.
+    let tunnels_changed = {
+        let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+
+        let old_tunnels_json: String = conn
+            .query_row("SELECT COALESCE(tunnels,'[]') FROM servers WHERE id=?1", [id], |r| r.get(0))
+            .unwrap_or_else(|_| "[]".to_string());
+
+        // Two-flavour UPDATE: with `preserve_password`, the password column is
+        // wrapped in COALESCE(?, password) so a NULL bind keeps the existing
+        // value. Without it, the password column is overwritten the usual way.
+        // The behaviour difference matters only when the auth path is custom_pass
+        // because normalize_server_identity zeros password for the other modes.
+        if preserve_password.unwrap_or(false) && auth_type == "custom_pass" {
+            conn.execute(
+                "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=COALESCE(?5, password), credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
+                rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
+            ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
+        } else {
+            conn.execute(
+                "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
+                rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
+            ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
+        }
+
+        old_tunnels_json != tunnels_json
+    };
+
     save_vault_internal(&state)?;
+
+    // Forwarding rules changed → drop this server's live tunnel replay cache so
+    // every (re)connect / restore path re-seeds from the freshly-saved DB rules
+    // instead of clinging to a stale (or failure-emptied) in-memory list. All
+    // those paths seed from the node's `tunnels` JSON precisely when the key is
+    // ABSENT, so removing it is what lets the edit take effect. Session ids are
+    // `session-{server_id}` (see openServer in the frontend).
+    if tunnels_changed {
+        ssh_state
+            .session_tunnel_specs
+            .lock()
+            .await
+            .remove(&format!("session-{}", id));
+    }
     Ok(())
 }
 
@@ -9050,7 +9216,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             check_db_exists, setup_master_db, persist_vault,
-            list_profiles, select_profile, create_profile, delete_profile, close_profile,
+            list_profiles, cloud_list_sync_profiles, cloud_delete_profile, select_profile, create_profile, delete_profile, close_profile,
             export_profile, import_profile_pick, import_profile_save,
             cloud::cloud_status, cloud::cloud_signup, cloud::cloud_consume_verify_link,
             cloud::cloud_set_password, cloud::cloud_login, cloud::cloud_logout,

@@ -27,7 +27,7 @@ use tokio::sync::Mutex;
 /// Where the cloud API lives. Hardcoded per the design decision — change
 /// here and rebuild. Trailing slash intentionally omitted; the client
 /// joins paths with a leading slash.
-pub const CLOUD_API_BASE: &str = "https://api.sinaxhpm.com";
+pub const CLOUD_API_BASE: &str = "https://submarine.sinaxhpm.com";
 
 /// HTTP request timeout. Uploads of large vaults can take time but we
 /// don't want a stuck connection to hang the UI forever.
@@ -619,6 +619,12 @@ struct SyncExchangeReq<'a> {
     profile: &'a str,
     since: &'a str,
     records: &'a [crate::SyncRecord],
+    // Human-readable display label for this partition. Sent so the server can
+    // show a friendly name in `/sync/profiles` even when `profile` is an opaque
+    // UUID. Omitted (not just empty) for pulls/dry-runs so we never overwrite a
+    // stored label with nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
 }
 #[derive(Deserialize)]
 struct SyncExchangeResp {
@@ -628,19 +634,22 @@ struct SyncExchangeResp {
 /// One per-entity sync round-trip: push our changed records and receive the
 /// server's records changed since `since`. The server Last-Write-Wins-merges
 /// them by `updated_at` WITHOUT decrypting the blobs — zero-knowledge holds.
+/// `name` is the profile's display label (see the field doc); pass `None` for
+/// read-only exchanges (dry runs, restore peeks).
 pub async fn sync_exchange(
     app: &tauri::AppHandle,
     state: &CloudState,
     profile: &str,
     since: &str,
     records: &[crate::SyncRecord],
+    name: Option<&str>,
 ) -> Result<Vec<crate::SyncRecord>, String> {
     let token = require_token(state).await?;
     let resp = state
         .http()
         .post(url("/sync"))
         .header(AUTH_HEADER, &token)
-        .json(&SyncExchangeReq { profile, since, records })
+        .json(&SyncExchangeReq { profile, since, records, name })
         .send()
         .await
         .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
@@ -655,6 +664,107 @@ pub async fn sync_exchange(
         .await
         .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
     Ok(body.records)
+}
+
+// ---------------------------------------------------------------------------
+// Personal profile enumeration (GET /sync/profiles)
+// ---------------------------------------------------------------------------
+
+/// One personal per-entity sync profile as reported by the server. Names +
+/// counts only — never blob contents, so zero-knowledge holds. `live_records`
+/// excludes tombstones and the reserved dek_escrow record, so a value of 0
+/// marks an empty / retired profile the UI can hide.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct SyncProfileInfo {
+    /// Partition key on the server: a name for legacy profiles, an opaque UUID
+    /// for new ones. This is what `restore` targets.
+    pub profile: String,
+    /// Human-readable label to SHOW (the stored display name, or the partition
+    /// string when none was recorded). May equal `profile` for legacy profiles.
+    #[serde(default)]
+    pub name: String,
+    pub records: i64,
+    pub live_records: i64,
+    pub last_updated: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SyncProfilesResp {
+    profiles: Vec<SyncProfileInfo>,
+}
+
+/// List the caller's personal cloud profiles so a freshly-signed-in device can
+/// SHOW them (by name) instead of making the user remember and type one. This
+/// is the enumeration the blob-list removal left missing. Read-only GET; the
+/// server returns only profile names + record counts, never the encrypted
+/// blobs, so it stays zero-knowledge.
+pub async fn list_sync_profiles(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+) -> Result<Vec<SyncProfileInfo>, String> {
+    let token = require_token(state).await?;
+    let resp = state
+        .http()
+        .get(url("/sync/profiles"))
+        .header(AUTH_HEADER, &token)
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(app, state, resp.status()).await {
+            return Err(e);
+        }
+        return Err(decode_error(resp).await);
+    }
+    let body: SyncProfilesResp = resp
+        .json()
+        .await
+        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    Ok(body.profiles)
+}
+
+#[derive(Serialize)]
+struct SyncDeleteReq<'a> {
+    profile: &'a str,
+}
+
+#[derive(Deserialize)]
+struct SyncDeleteResp {
+    #[serde(default)]
+    deleted: i64,
+}
+
+/// Owner-side hard delete of ONE of the caller's personal cloud profiles: the
+/// server wipes every `sync_records` row (data + tombstones + escrow) for this
+/// user + partition, plus its display-name row. Scoped to the authenticated
+/// user's own `user_id`, so it can never touch anyone else's data. Local copies
+/// are untouched — the caller decides separately whether to also remove the
+/// on-device vault. Returns the number of rows the server removed.
+pub async fn delete_sync_profile(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    profile: &str,
+) -> Result<i64, String> {
+    let token = require_token(state).await?;
+    let resp = state
+        .http()
+        .post(url("/sync/delete"))
+        .header(AUTH_HEADER, &token)
+        .json(&SyncDeleteReq { profile })
+        .send()
+        .await
+        .map_err(|e| format!("[CLOUD] NETWORK: {}", e))?;
+    if !resp.status().is_success() {
+        if let Some(e) = on_unauthorized(app, state, resp.status()).await {
+            return Err(e);
+        }
+        return Err(decode_error(resp).await);
+    }
+    let body: SyncDeleteResp = resp
+        .json()
+        .await
+        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    Ok(body.deleted)
 }
 
 #[derive(Serialize)]

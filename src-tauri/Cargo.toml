@@ -1,6 +1,6 @@
 [package]
 name = "submarine"
-version = "0.3.0"
+version = "0.3.1"
 description = "Submarine SSH Client"
 authors = ["Sina Xhpm (sinaxhpm.com)"]
 license = "MIT"

@@ -1041,6 +1041,7 @@ function DesktopApp() {
                     const ok = await confirm({
                       title: "Close this session?",
                       message: "The SSH connection will be dropped.",
+                      okLabel: "Close",
                       destructive: true,
                     });
                     if (!ok) return;
@@ -2331,6 +2332,14 @@ function DesktopApp() {
             setFormError("");
             refreshServers();
             bumpSync();
+            // If we just edited a node whose session is live, re-apply its saved
+            // forwarding rules now so a changed/added tunnel comes up without a
+            // manual reconnect. The backend cleared the stale tunnel cache when
+            // the rules changed, so this re-seeds from the freshly-saved DB rules
+            // (idempotent + a no-op when nothing forwarding-related changed).
+            if (newNode.id && sessionStatuses[`session-${savedId}`] === "connected") {
+              invoke("restart_session_tunnels", { sessionId: `session-${savedId}`, serverId: savedId }).catch(() => {});
+            }
             addLog(`Node ${newNode.id ? 'updated' : 'added'} successfully.`, "success");
           } catch (e) {
             setFormError(`Failed to save: ${e}`);

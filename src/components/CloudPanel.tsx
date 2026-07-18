@@ -5,7 +5,6 @@ import {
   LogOut, Mail, KeyRound, UserPlus, LogIn, Wand2,
 } from "lucide-react";
 import InvitesSection from "./InvitesSection";
-import RestoreSection from "./RestoreSection";
 
 // Cloud account panel, opened from the profile picker. Owns its own auth state;
 // the parent just mounts/unmounts. Signed-out is split into intent-first flows
@@ -607,8 +606,6 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
               </p>
 
               <InvitesSection onLocalProfilesChanged={onLocalProfilesChanged} />
-
-              <RestoreSection onLocalProfilesChanged={onLocalProfilesChanged} />
 
               <div className="pt-2 flex justify-end">
                 <button
