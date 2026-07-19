@@ -417,6 +417,15 @@ function DesktopApp() {
   const cloudSyncingRef = useRef(cloudSyncing);
   useEffect(() => { cloudSyncingRef.current = cloudSyncing; }, [cloudSyncing]);
 
+  // When the last background sync actually ran. The focus trigger reads this so
+  // it can't out-pace the cadence the user configured — see the interval effect.
+  const lastSyncAt = useRef(0);
+  // refreshAll is redefined every render, so quietSync (which is deliberately
+  // identity-stable) would otherwise capture the very first one forever and
+  // repopulate the lists through stale handlers after a pull.
+  const refreshAllRef = useRef(refreshAll);
+  refreshAllRef.current = refreshAll;
+
   const quietSync = useCallback(async () => {
     if (autoSyncBusy.current || cloudSyncingRef.current) return;
     if (!isUnlockedRef.current) return;
@@ -424,12 +433,15 @@ function DesktopApp() {
     setCloudSyncing(true);
     try {
       const report = await invoke<{ pushed: number; pulled: number }>("sync_now");
-      if (report.pulled > 0) await refreshAll();
+      if (report.pulled > 0) await refreshAllRef.current();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
     } catch {
       // Silent by design — not signed in, offline, or a viewer with nothing to
       // push. The manual Sync-now button is where errors surface loudly.
     } finally {
+      // Stamped even on failure: a server that's down shouldn't turn every
+      // window focus into a fresh retry storm.
+      lastSyncAt.current = Date.now();
       autoSyncBusy.current = false;
       setCloudSyncing(false);
     }
@@ -447,6 +459,19 @@ function DesktopApp() {
     bumpTimer.current = setTimeout(() => { quietSync(); }, 6000);
   }, [appSettings.autoSync, quietSync]);
 
+  // Turning auto-sync off has to cancel a push that's already armed. The check
+  // above only runs when the timer is SCHEDULED, so editing something and then
+  // switching auto-sync off within the six-second window still fired the sync —
+  // which is precisely the moment someone reaching for that switch (metered
+  // connection, about to go offline) most wants it not to.
+  useEffect(() => {
+    if (appSettings.autoSync) return;
+    if (bumpTimer.current) {
+      clearTimeout(bumpTimer.current);
+      bumpTimer.current = null;
+    }
+  }, [appSettings.autoSync]);
+
   // Interval (pulls collaborators' changes on shared profiles) + on-focus fresh
   // pull. Both are no-ops until a profile is unlocked and auto-sync is enabled.
   useEffect(() => {
@@ -457,7 +482,15 @@ function DesktopApp() {
     const initial = setTimeout(() => { quietSync(); }, 4000);
     const id = setInterval(() => { quietSync(); }, INTERVAL_MS);
     let focusTimer: ReturnType<typeof setTimeout> | null = null;
+    // Coming back to the window is a good moment to be fresh, but it used to be
+    // an UNCONDITIONAL sync — and on a desktop app you alt-tab back constantly,
+    // so this fired far more often than the interval ever did. The cadence the
+    // user picked was effectively decoration: set it to 30 minutes and you'd
+    // still sync every time you switched windows. Now focus only pulls when the
+    // interval is already due, so the setting means what it says.
     const onFocus = () => {
+      if (document.visibilityState === "hidden") return;
+      if (Date.now() - lastSyncAt.current < INTERVAL_MS) return;
       if (focusTimer) clearTimeout(focusTimer);
       focusTimer = setTimeout(() => { quietSync(); }, 1500);
     };
@@ -1478,6 +1511,8 @@ function DesktopApp() {
                 syncing={cloudSyncing}
                 lastSyncLabel={lastSyncLabel}
                 autoSync={appSettings.autoSync}
+                syncIntervalMin={appSettings.syncIntervalMin}
+                onSetInterval={(m: number) => setAppSettings((s: any) => ({ ...s, syncIntervalMin: m }))}
                 onToggleAutoSync={() => setAppSettings((s: any) => ({ ...s, autoSync: !s.autoSync }))}
               />
             )}
@@ -1562,7 +1597,7 @@ function DesktopApp() {
                                 <button onClick={async () => {
                                   const ok = await confirm({ title: "Delete saved password?", message: `“${c.name}” will be removed. Servers using this login will lose it.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_credential", { id: c.id }).then(() => refreshCredentials());
+                                  invoke("delete_credential", { id: c.id }).then(() => { refreshCredentials(); bumpSync(); });
                                 }} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -1611,7 +1646,7 @@ function DesktopApp() {
                                 <button onClick={async () => {
                                   const ok = await confirm({ title: "Delete SSH key?", message: `“${k.name}” will be removed. This key cannot be recovered.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_ssh_key", { id: k.id }).then(() => refreshSshKeys());
+                                  invoke("delete_ssh_key", { id: k.id }).then(() => { refreshSshKeys(); bumpSync(); });
                                 }} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -2124,7 +2159,7 @@ function DesktopApp() {
                                 <button onClick={async () => {
                                   const ok = await confirm({ title: "Delete command?", message: `“${cmd.title}” will be removed.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_command", { id: cmd.id }).then(() => refreshCommands());
+                                  invoke("delete_command", { id: cmd.id }).then(() => { refreshCommands(); bumpSync(); });
                                 }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -2151,7 +2186,7 @@ function DesktopApp() {
                                 <button onClick={async () => {
                                   const ok = await confirm({ title: "Delete note?", message: `“${n.title || "Untitled"}” will be removed.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_note", { id: n.id }).then(() => refreshNotes());
+                                  invoke("delete_note", { id: n.id }).then(() => { refreshNotes(); bumpSync(); });
                                 }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -2403,6 +2438,7 @@ function DesktopApp() {
                   await action;
                   setIsCommandPanelOpen(false);
                   refreshCommands();
+                  bumpSync();
                   addLog("Command saved.", "success");
                 } catch (e) {
                   setFormError(`Failed to save command: ${e}`);
@@ -2453,6 +2489,7 @@ function DesktopApp() {
                   await action;
                   setIsNotePanelOpen(false);
                   refreshNotes();
+                  bumpSync();
                   addLog("Note saved.", "success");
                 } catch (e) {
                   setFormError(`Failed to save note: ${e}`);
@@ -2553,6 +2590,7 @@ function DesktopApp() {
                   await action;
                   setIsCredPanelOpen(false);
                   refreshCredentials();
+                  bumpSync();
                   addLog("Credential saved.", "success");
                 } catch (e) {
                   setFormError(`Failed to save credential: ${e}`);
@@ -2621,6 +2659,7 @@ function DesktopApp() {
                   await action;
                   setIsKeyPanelOpen(false);
                   refreshSshKeys();
+                  bumpSync();
                   addLog("SSH Key saved.", "success");
                 } catch (e) {
                   setFormError(`Failed to save SSH Key: ${e}`);

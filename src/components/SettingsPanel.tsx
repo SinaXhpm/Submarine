@@ -32,10 +32,13 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
         </p>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8">
+      {/* Columns rather than a grid: the sections are very different heights, and
+          a 2-col grid rows them up so a short card leaves a tall empty gap beside
+          it. Column flow packs them, and break-inside-avoid keeps a card whole. */}
+      <div className="columns-1 md:columns-2 gap-4 sm:gap-8">
         {/* Appearance Section */}
-        <section className="space-y-6">
-          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs mb-4">
+        <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
             <Palette size={14} /> UI Customization
           </div>
 
@@ -107,8 +110,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
         </section>
 
         {/* Terminal Section */}
-        <section className="space-y-6">
-          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs mb-4">
+        <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
             <Settings size={14} /> Terminal Configuration
           </div>
           
@@ -140,8 +143,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
             only; keeping them one click deep here cleans up the sidebar on
             mobile (six icons → five) without burying the data. */}
         {onOpenLogs && (
-          <section className="space-y-6">
-            <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs mb-4">
+          <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+            <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
               <List size={14} /> Activity Log
             </div>
 
@@ -160,8 +163,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
         )}
 
         {/* Cloud Section */}
-        <section className="space-y-6">
-          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs mb-4">
+        <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
             <Cloud size={14} /> Cloud Sync
           </div>
 
@@ -185,33 +188,19 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
               </button>
             </div>
 
-            <div className={`border-t border-white/5 pt-4 transition-opacity ${settings.autoSync !== false ? '' : 'opacity-40 pointer-events-none'}`}>
-              <div className="text-[12px] text-zinc-300 font-medium">Check for others' changes every</div>
-              <p className="text-[11.5px] text-zinc-500 leading-relaxed mt-0.5 mb-2.5">
-                Only affects the background pull timer — your own edits still push a few seconds after you stop.
-              </p>
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {[1, 2, 5, 10, 15, 30].map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setSettings((s: any) => ({ ...s, syncIntervalMin: m }))}
-                    className={`h-7 px-3 rounded-lg text-[12px] font-semibold transition-colors ${
-                      (settings.syncIntervalMin ?? 5) === m
-                        ? 'bg-primary text-black'
-                        : 'bg-white/5 text-zinc-300 hover:bg-white/10'
-                    }`}
-                  >
-                    {m} min
-                  </button>
-                ))}
+            {settings.autoSync !== false && (
+              <div className="border-t border-white/5 pt-4 text-[12px] text-zinc-400">
+                Currently checking every{' '}
+                <span className="text-zinc-100 font-semibold">{settings.syncIntervalMin ?? 5} min</span>. Change it
+                on the Profile tab, next to Sync now.
               </div>
-            </div>
+            )}
           </div>
         </section>
 
         {/* Maintenance Section */}
-        <section className="space-y-6">
-          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs mb-4">
+        <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
             <RefreshCw size={14} /> Maintenance
           </div>
 
