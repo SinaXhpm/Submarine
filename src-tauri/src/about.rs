@@ -8,9 +8,9 @@
 
 use serde::Serialize;
 
-/// `<owner>/<repo>` on GitHub. Used to build the API URL for the
-/// "latest release" query and the user-facing repo URL.
-pub const GITHUB_REPO: &str = "sinaxhpm/submarine";
+/// `<owner>/<repo>` on GitHub (canonical casing). Used to build the API URL
+/// for the releases query and the user-facing repo URL.
+pub const GITHUB_REPO: &str = "SinaXhpm/Submarine";
 
 /// Marketing site / project page. Surfaced in the About panel.
 pub const WEBSITE_URL: &str = "https://sinaxhpm.com";
@@ -42,8 +42,9 @@ pub struct UpdateInfo {
     /// Latest release tag on GitHub, with "v" stripped to match `current`.
     /// `None` if the API call failed or no release exists.
     pub latest: Option<String>,
-    /// True when `latest > current` under naive lexicographic compare on
-    /// dot-split numeric components. Frontend uses this to colour the
+    /// True when the highest published, non-prerelease release on GitHub is a
+    /// strictly newer semver than the running build (per-component NUMERIC
+    /// compare — see `semver_greater`). Frontend uses this to colour the
     /// banner (green = up-to-date, amber = update available).
     pub has_update: bool,
     /// Direct link to the latest release page. Frontend shows an "Open
@@ -66,13 +67,19 @@ struct GhRelease {
     prerelease: bool,
 }
 
-/// Hit GitHub's "latest release" endpoint. Anonymous calls are rate-
-/// limited to ~60/hour per IP — fine for an occasional click. The
-/// timeout is short so a hung connection can't freeze the About modal.
+/// Ask GitHub which release is newest and whether it beats the running build.
+///
+/// We pull the RELEASES LIST rather than `/releases/latest`: GitHub's "latest"
+/// flag is date-based (and manually overridable), so a hotfix published on an
+/// old line could point it at a lower version than what's actually shipped.
+/// Instead we scan every published, non-prerelease release and pick the highest
+/// SEMVER ourselves, then compare that to `current`. Anonymous calls are rate-
+/// limited to ~60/hour per IP — fine for an occasional check. The timeout is
+/// short so a hung connection can't freeze the About modal.
 #[tauri::command]
 pub async fn check_for_updates() -> Result<UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
+    let url = format!("https://api.github.com/repos/{}/releases?per_page=100", GITHUB_REPO);
 
     // Build a fresh client per call rather than holding state — this is
     // a one-shot probe, not a hot path. User-Agent is required by the
@@ -91,35 +98,50 @@ pub async fn check_for_updates() -> Result<UpdateInfo, String> {
         .map_err(|e| format!("[UPDATE] NETWORK: {}", e))?;
 
     if !resp.status().is_success() {
-        // 404 means no releases yet — return current with latest=None
-        // so the UI can show "no releases on GitHub yet" rather than
-        // a scary error.
+        // 404 means the repo path is wrong; anything else is a transient
+        // GitHub / rate-limit error. Either way, don't nag — report "no
+        // newer release known" so the UI stays quiet rather than scary.
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(UpdateInfo { current, latest: None, has_update: false, release_url: None });
         }
         return Err(format!("[UPDATE] HTTP {}", resp.status()));
     }
 
-    let release: GhRelease = resp
+    // An empty repo returns `[]` (200), not 404 — handled naturally below.
+    let releases: Vec<GhRelease> = resp
         .json()
         .await
         .map_err(|e| format!("[UPDATE] BAD_JSON: {}", e))?;
 
-    // `latest` only counts published, non-prerelease tags. Drafts shouldn't
-    // appear via /releases/latest anyway but we double-check defensively.
-    if release.draft || release.prerelease || release.tag_name.is_empty() {
-        return Ok(UpdateInfo { current, latest: None, has_update: false, release_url: None });
+    // Highest published, non-prerelease semver wins. Drafts are only visible
+    // with auth (we're anonymous) but we skip them defensively all the same.
+    let mut best: Option<(String, String)> = None; // (clean_version, html_url)
+    for r in releases {
+        if r.draft || r.prerelease || r.tag_name.is_empty() {
+            continue;
+        }
+        let clean = r.tag_name.strip_prefix('v').unwrap_or(&r.tag_name).to_string();
+        let wins = match &best {
+            None => true,
+            Some((cur_best, _)) => semver_greater(&clean, cur_best),
+        };
+        if wins {
+            best = Some((clean, r.html_url));
+        }
     }
 
-    let latest_clean = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name).to_string();
-    let has_update = semver_greater(&latest_clean, &current);
-
-    Ok(UpdateInfo {
-        current,
-        latest: Some(latest_clean),
-        has_update,
-        release_url: if release.html_url.is_empty() { None } else { Some(release.html_url) },
-    })
+    match best {
+        None => Ok(UpdateInfo { current, latest: None, has_update: false, release_url: None }),
+        Some((latest_clean, html_url)) => {
+            let has_update = semver_greater(&latest_clean, &current);
+            Ok(UpdateInfo {
+                current,
+                latest: Some(latest_clean),
+                has_update,
+                release_url: if html_url.is_empty() { None } else { Some(html_url) },
+            })
+        }
+    }
 }
 
 /// True when `a > b` under dotted-number compare (ignores any non-numeric
