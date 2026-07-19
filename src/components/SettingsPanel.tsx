@@ -184,6 +184,28 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
                 <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${settings.autoSync !== false ? 'left-[22px]' : 'left-0.5'}`} />
               </button>
             </div>
+
+            <div className={`border-t border-white/5 pt-4 transition-opacity ${settings.autoSync !== false ? '' : 'opacity-40 pointer-events-none'}`}>
+              <div className="text-[12px] text-zinc-300 font-medium">Check for others' changes every</div>
+              <p className="text-[11.5px] text-zinc-500 leading-relaxed mt-0.5 mb-2.5">
+                Only affects the background pull timer — your own edits still push a few seconds after you stop.
+              </p>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {[1, 2, 5, 10, 15, 30].map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setSettings((s: any) => ({ ...s, syncIntervalMin: m }))}
+                    className={`h-7 px-3 rounded-lg text-[12px] font-semibold transition-colors ${
+                      (settings.syncIntervalMin ?? 5) === m
+                        ? 'bg-primary text-black'
+                        : 'bg-white/5 text-zinc-300 hover:bg-white/10'
+                    }`}
+                  >
+                    {m} min
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
 

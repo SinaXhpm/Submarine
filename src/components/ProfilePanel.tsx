@@ -58,9 +58,11 @@ type Props = {
   onSync: () => Promise<void> | void;
   syncing: boolean;
   lastSyncLabel: string | null;
+  autoSync: boolean;
+  onToggleAutoSync: () => void;
 };
 
-export default function ProfilePanel({ onSync, syncing, lastSyncLabel }: Props) {
+export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync, onToggleAutoSync }: Props) {
   const confirm = useConfirm();
   const textPrompt = useTextPrompt();
 
@@ -264,6 +266,25 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel }: Props) 
                 {syncing ? "Syncing…" : "Sync now"}
               </button>
               <span className="text-[11px] text-zinc-500">{lastSyncLabel ?? "Not synced yet this session."}</span>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap text-[11.5px]">
+              {autoSync ? (
+                <>
+                  <span className="flex items-center gap-1.5 text-emerald-300/90">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Auto-sync is on — your changes are saved to the cloud automatically.
+                  </span>
+                  <button onClick={onToggleAutoSync} className="text-zinc-400 hover:text-zinc-200 underline underline-offset-2 shrink-0">Turn off</button>
+                </>
+              ) : (
+                <>
+                  <span className="flex items-center gap-1.5 text-zinc-400">
+                    <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" />
+                    Auto-sync is off — changes sync only when you press Sync now.
+                  </span>
+                  <button onClick={onToggleAutoSync} className="text-primary hover:opacity-80 underline underline-offset-2 shrink-0">Turn on</button>
+                </>
+              )}
             </div>
             {stats?.diff && (() => {
               const d = stats.diff!;

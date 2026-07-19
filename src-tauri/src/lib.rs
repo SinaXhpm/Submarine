@@ -718,22 +718,47 @@ fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord],
     for rec in records {
         hlc.observe(hlc::Hlc::phys_of(&rec.updated_at));
     }
+    // The whole merge runs inside ONE transaction: either every applicable record
+    // lands or none does. A failure partway (an I/O error, a commit that won't go
+    // through) can never leave the vault half-merged — on any early return `tx`
+    // drops uncommitted and SQLite rolls the batch back. This is what keeps a bad
+    // sync from corrupting local data.
+    let tx = conn.unchecked_transaction().map_err(|e| format!("[SYNC] TX_BEGIN: {e}"))?;
     // (table, uuid, fk_col, ref_uuid) — self-ref / not-yet-present FKs to fix up.
     let mut fk_fixups: Vec<(String, String, String, String)> = Vec::new();
+    // Per-record application is best-effort: a single record that won't decrypt
+    // or parse — a corrupt or hostile blob from a broken/compromised server — is
+    // logged and skipped, never aborting the merge. One poison record must not be
+    // able to block every OTHER record (or every future sync) from applying.
+    let mut skipped = 0usize;
     for spec in ENTITIES {
         for rec in records.iter().filter(|r| !r.deleted && r.entity_type == spec.table) {
-            apply_entity(conn, key, spec, rec, &mut fk_fixups)?;
+            if let Err(e) = apply_entity(&tx, key, spec, rec, &mut fk_fixups) {
+                skipped += 1;
+                eprintln!("[SYNC] skipped record uuid={} type={}: {}", rec.uuid, rec.entity_type, e);
+            }
         }
     }
     for rec in records.iter().filter(|r| r.deleted) {
-        apply_tombstone(conn, rec)?;
+        if let Err(e) = apply_tombstone(&tx, rec) {
+            skipped += 1;
+            eprintln!("[SYNC] skipped tombstone uuid={} type={}: {}", rec.uuid, rec.entity_type, e);
+        }
     }
     for (table, uuid, fk_col, ref_uuid) in fk_fixups {
-        let id: Option<i64> = conn
+        let id: Option<i64> = tx
             .query_row(&format!("SELECT id FROM {table} WHERE uuid=?1"), [&ref_uuid], |r| r.get(0))
             .ok();
-        conn.execute(&format!("UPDATE {table} SET {fk_col}=?1 WHERE uuid=?2"), rusqlite::params![id, uuid])
-            .map_err(|e| format!("[SYNC] FK_FIXUP {table}: {e}"))?;
+        if let Err(e) = tx.execute(
+            &format!("UPDATE {table} SET {fk_col}=?1 WHERE uuid=?2"),
+            rusqlite::params![id, uuid],
+        ) {
+            eprintln!("[SYNC] fk fixup skipped {table}.{fk_col} uuid={uuid}: {e}");
+        }
+    }
+    tx.commit().map_err(|e| format!("[SYNC] TX_COMMIT: {e}"))?;
+    if skipped > 0 {
+        eprintln!("[SYNC] merge committed with {skipped} record(s) skipped");
     }
     Ok(())
 }
@@ -1908,6 +1933,41 @@ mod sync_engine_tests {
         assert!(recs.iter().any(|r| r.deleted), "delete must produce a tombstone record");
         apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
         assert_eq!(b.query_row("SELECT COUNT(*) FROM servers WHERE name='s'", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "delete must propagate to B");
+    }
+
+    // One corrupt / hostile record from a broken (or compromised) server must be
+    // skipped, never abort the whole merge — every OTHER record in the same batch
+    // still lands. This is the "one poison record can't take sync down" guarantee.
+    #[test]
+    fn corrupt_record_is_skipped_without_aborting_the_batch() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name, host) VALUES('good','h-good')", []).unwrap();
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+
+        // A record shaped like a real 'servers' row but whose blob is valid
+        // ciphertext under the WRONG key — it can't decrypt under KEY, exactly
+        // like a corrupt or tampered blob. Placed FIRST so we prove the good
+        // record after it still applies once the poison one is skipped.
+        let good = recs.iter().find(|r| r.entity_type == "servers").unwrap().clone();
+        let mut poison = good.clone();
+        poison.uuid = "ab".repeat(16);
+        poison.blob = Some(encrypt_entity(br#"{"host":"h-poison"}"#, &[9u8; 32]).unwrap());
+        recs.insert(0, poison);
+
+        let (b, hb) = device("B");
+        // Must NOT return Err — the poison record is logged and skipped internally.
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+
+        // The good record landed...
+        let host: Option<String> =
+            b.query_row("SELECT host FROM servers WHERE name='good'", [], |r| r.get(0)).ok();
+        assert_eq!(host.as_deref(), Some("h-good"), "a valid record must apply despite a poison record in the batch");
+        // ...and the corrupt record created no row.
+        assert_eq!(
+            b.query_row("SELECT COUNT(*) FROM servers", [], |r| r.get::<_, i64>(0)).unwrap(),
+            1,
+            "the corrupt record must be skipped, never inserted",
+        );
     }
 }
 

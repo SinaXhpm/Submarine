@@ -102,9 +102,6 @@ pub struct ApiError {
     pub error: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
-    /// On 409 version_conflict, the server includes the version it has.
-    #[serde(default)]
-    pub server_version: Option<i64>,
 }
 
 /// The shape we surface to the UI for status checks. Frontend uses this
@@ -197,6 +194,11 @@ impl CloudState {
     pub fn new(app: &tauri::AppHandle) -> Arc<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            // Fail fast when the host is unreachable / down instead of making the
+            // caller wait out the full request timeout for a connection that will
+            // never establish. The overall `.timeout` still caps slow-but-alive
+            // responses (e.g. a large-vault upload).
+            .connect_timeout(Duration::from_secs(10))
             // Tauri builds set their own user-agent for the WebView; we want
             // the API server to be able to distinguish app traffic from a
             // random browser hit.

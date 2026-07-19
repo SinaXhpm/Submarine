@@ -228,6 +228,10 @@ function DesktopApp() {
     terminalFontSize: parseInt(localStorage.getItem('submarine-terminal-font-size') || '14'),
     // Auto-sync defaults ON. Per-device (localStorage), like the other prefs.
     autoSync: localStorage.getItem('submarine-auto-sync') !== 'off',
+    // Background pull cadence in minutes (min 1). Only gates the periodic
+    // "pull collaborators' changes" timer — your own edits still push ~6s after
+    // you stop typing regardless of this.
+    syncIntervalMin: Math.max(1, parseInt(localStorage.getItem('submarine-sync-interval-min') || '5', 10) || 5),
   });
 
   useEffect(() => {
@@ -239,6 +243,7 @@ function DesktopApp() {
     localStorage.setItem('submarine-bg-color', appSettings.backgroundColor);
     localStorage.setItem('submarine-terminal-font-size', appSettings.terminalFontSize.toString());
     localStorage.setItem('submarine-auto-sync', appSettings.autoSync ? 'on' : 'off');
+    localStorage.setItem('submarine-sync-interval-min', String(appSettings.syncIntervalMin));
     // Tell already-mounted terminals to re-fit with the new font size.
     // Without this dispatch the listener in TerminalView is dead code and
     // users have to close+reopen every terminal to see a size change.
@@ -446,7 +451,7 @@ function DesktopApp() {
   // pull. Both are no-ops until a profile is unlocked and auto-sync is enabled.
   useEffect(() => {
     if (!isUnlocked || !appSettings.autoSync) return;
-    const INTERVAL_MS = 3 * 60 * 1000;
+    const INTERVAL_MS = Math.max(1, appSettings.syncIntervalMin || 5) * 60 * 1000;
     // Pull once shortly after unlock so the app opens on fresh data (a delay so
     // the unlock's own refresh + autostart settle first).
     const initial = setTimeout(() => { quietSync(); }, 4000);
@@ -465,7 +470,7 @@ function DesktopApp() {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
     };
-  }, [isUnlocked, appSettings.autoSync, quietSync]);
+  }, [isUnlocked, appSettings.autoSync, appSettings.syncIntervalMin, quietSync]);
 
   const removeServer = async (id: number) => {
     try {
@@ -1472,6 +1477,8 @@ function DesktopApp() {
                 onSync={handleCloudSync}
                 syncing={cloudSyncing}
                 lastSyncLabel={lastSyncLabel}
+                autoSync={appSettings.autoSync}
+                onToggleAutoSync={() => setAppSettings((s: any) => ({ ...s, autoSync: !s.autoSync }))}
               />
             )}
 

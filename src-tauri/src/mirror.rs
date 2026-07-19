@@ -283,11 +283,6 @@ async fn sftp_remote_mtime(sftp: &SftpSession, path: &str) -> Option<u64> {
     attr.mtime.map(|t| t as u64)
 }
 
-async fn local_mtime(path: &Path) -> Option<u64> {
-    let meta = tokio::fs::metadata(path).await.ok()?;
-    meta.modified().ok()?.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
-}
-
 /// Stream a file to SFTP in 64 KiB chunks. We do NOT set the remote mtime
 /// after upload — some SFTP servers truncated the file on a round-tripped
 /// SETSTAT. Subsequent dry-runs fall back to hash compare, which catches
