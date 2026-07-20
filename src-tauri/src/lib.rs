@@ -366,28 +366,134 @@ fn sync_device_node_id(app: &tauri::AppHandle) -> String {
     id
 }
 
+/// Stamp given to every backfilled row: the floor of the clock, not `now`.
+///
+/// A row with `uuid IS NULL` has never taken part in sync, so we know nothing
+/// about when it was last edited — only that it predates the sync era. Stamping
+/// it `now` (which is what we used to do) told the merge engine the exact
+/// opposite: that a vault which had been sitting untouched on a shelf held the
+/// freshest copy of every row in it. Opening an old backup on a second device
+/// was then enough to have it overwrite current data everywhere.
+///
+/// The floor is the honest answer: these rows lose every LWW comparison against
+/// anything that has actually been synced, and win only against nothing at all
+/// (a first-ever sync, where they upload unopposed). One tick above the reserved
+/// escrow stamp so the escrow record still sorts first.
+const BACKFILL_UAT: &str = "000000000000001:00000:backfill";
+
+/// Columns that identify a row well enough to recognise "the same thing" in a
+/// copy of this vault sitting on another device. Used only by the backfill —
+/// see `derived_entity_uuid`.
+fn backfill_identity_cols(table: &str) -> &'static [&'static str] {
+    match table {
+        "folders" => &["name"],
+        "ssh_keys" => &["name", "public_key"],
+        "credentials" => &["name", "username", "auth_type"],
+        "servers" => &["name", "host", "port", "username"],
+        "commands" => &["title", "content"],
+        "notes" => &["title"],
+        // monitor_configs hangs off a server; its identity is that server's.
+        "monitor_configs" => &[],
+        _ => &[],
+    }
+}
+
+/// Deterministic 128-bit id derived from a row's identifying content.
+///
+/// Random ids were the second half of the same bug as `BACKFILL_UAT`. Two
+/// devices holding copies of the same pre-sync vault would each mint a DIFFERENT
+/// uuid for what is plainly the same server, so the merge engine saw two
+/// unrelated entities and kept both: every row duplicated, and rows deleted on
+/// one device came back from the other because the tombstone was keyed to a uuid
+/// the second device had never heard of.
+///
+/// Hashing the identifying columns instead makes both devices arrive at the same
+/// id independently, so the row merges (and its tombstone applies) as intended.
+/// A hash collision means two rows agreeing on every identifying field, which is
+/// the case where merging them is correct anyway — and the caller still falls
+/// back to a random id if two rows in the SAME table derive the same uuid, so a
+/// collision can never silently fuse two local rows into one.
+fn derived_entity_uuid(table: &str, values: &[Option<String>]) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    // Nothing identifying to hash (all NULL/empty) → caller uses a random id.
+    if values.iter().all(|v| v.as_deref().unwrap_or("").is_empty()) {
+        return None;
+    }
+    let mut h = Sha256::new();
+    h.update(b"submarine-backfill-v1\0");
+    h.update(table.as_bytes());
+    for v in values {
+        h.update(b"\0");
+        h.update(v.as_deref().unwrap_or("").as_bytes());
+    }
+    Some(hex::encode(&h.finalize()[..16]))
+}
+
 /// One-time backfill: give a uuid + HLC stamp to every existing synced row that
 /// predates the sync columns (i.e. `uuid IS NULL`). Idempotent. Returns whether
 /// anything changed, so the caller can force a resave to persist the ids.
-fn backfill_sync_columns(conn: &Connection, hlc: &hlc::Hlc) -> Result<bool, String> {
+///
+/// Both the id and the stamp are chosen so that adopting an OLD copy of a vault
+/// is a safe, boring operation — see `derived_entity_uuid` and `BACKFILL_UAT`.
+fn backfill_sync_columns(conn: &Connection, _hlc: &hlc::Hlc) -> Result<bool, String> {
     let mut changed = false;
     for table in SYNCED_TABLES {
         let pk = if *table == "monitor_configs" { "node_id" } else { "id" };
-        // Snapshot the PKs first — can't hold the SELECT statement open across
-        // the per-row UPDATE on the same connection.
-        let ids: Vec<i64> = {
-            let mut stmt = conn
-                .prepare(&format!("SELECT {pk} FROM {table} WHERE uuid IS NULL"))
-                .map_err(|e| format!("[SYNC] BACKFILL_SELECT {table}: {e}"))?;
-            let rows = stmt
-                .query_map([], |r| r.get::<_, i64>(0))
-                .map_err(|e| format!("[SYNC] BACKFILL_QUERY {table}: {e}"))?;
-            rows.filter_map(|r| r.ok()).collect()
+        let idcols = backfill_identity_cols(table);
+        // monitor_configs inherits its server's identity; servers are backfilled
+        // earlier in SYNCED_TABLES, so that uuid is already in place here.
+        let select_ids = if *table == "monitor_configs" {
+            "(SELECT s.uuid FROM servers s WHERE s.id = t.node_id)".to_string()
+        } else if idcols.is_empty() {
+            "NULL".to_string()
+        } else {
+            idcols.iter().map(|c| format!("t.{c}")).collect::<Vec<_>>().join(", ")
         };
-        for id in ids {
+        let ncols = if *table == "monitor_configs" || idcols.is_empty() { 1 } else { idcols.len() };
+
+        // Snapshot the PKs + identity values first — can't hold the SELECT
+        // statement open across the per-row UPDATE on the same connection.
+        let rows: Vec<(i64, Vec<Option<String>>)> = {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT t.{pk}, {select_ids} FROM {table} t WHERE t.uuid IS NULL ORDER BY t.{pk}"
+                ))
+                .map_err(|e| format!("[SYNC] BACKFILL_SELECT {table}: {e}"))?;
+            let mapped = stmt
+                .query_map([], |r| {
+                    let id: i64 = r.get(0)?;
+                    let mut vals = Vec::with_capacity(ncols);
+                    for i in 0..ncols {
+                        // Read as a value first so INTEGER columns (servers.port)
+                        // don't fail the String conversion.
+                        vals.push(match r.get_ref(i + 1)? {
+                            rusqlite::types::ValueRef::Null => None,
+                            other => Some(match other {
+                                rusqlite::types::ValueRef::Integer(n) => n.to_string(),
+                                rusqlite::types::ValueRef::Real(f) => f.to_string(),
+                                v => String::from_utf8_lossy(v.as_bytes().unwrap_or(b"")).into_owned(),
+                            }),
+                        });
+                    }
+                    Ok((id, vals))
+                })
+                .map_err(|e| format!("[SYNC] BACKFILL_QUERY {table}: {e}"))?;
+            mapped.filter_map(|r| r.ok()).collect()
+        };
+
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (id, vals) in rows {
+            // Derived id when the row has identifying content and no other row in
+            // this table already claimed it; a random one otherwise. Falling back
+            // costs us a duplicate on the next device, which is recoverable —
+            // fusing two distinct rows would not be.
+            let uuid = derived_entity_uuid(table, &vals)
+                .filter(|u| !used.contains(u))
+                .unwrap_or_else(new_entity_uuid);
+            used.insert(uuid.clone());
             conn.execute(
                 &format!("UPDATE {table} SET uuid=?1, updated_at=?2 WHERE {pk}=?3"),
-                rusqlite::params![new_entity_uuid(), hlc.tick(), id],
+                rusqlite::params![uuid, BACKFILL_UAT, id],
             )
             .map_err(|e| format!("[SYNC] BACKFILL_UPDATE {table}: {e}"))?;
             changed = true;
@@ -408,6 +514,20 @@ fn register_sync_functions(conn: &Connection, hlc: &std::sync::Arc<hlc::Hlc>) ->
         .map_err(|e| format!("[SYNC] FN_HLC: {e}"))?;
     conn.create_scalar_function("sync_new_uuid", 0, FunctionFlags::empty(), move |_| Ok(new_entity_uuid()))
         .map_err(|e| format!("[SYNC] FN_UUID: {e}"))?;
+    // Deterministic id for a row whose identity is really its parent's.
+    // `monitor_configs` is 1:1 with a server, so two devices that each switch
+    // monitoring on for the same server must arrive at the SAME id — otherwise
+    // they'd be two unrelated configs fighting over one `node_id` primary key.
+    // Hashed with the table name so it can never collide with the server's own
+    // uuid in the cloud's record store.
+    conn.create_scalar_function("sync_derived_uuid", 2, FunctionFlags::empty(), move |ctx| {
+        let table = ctx.get::<String>(0).unwrap_or_default();
+        let seed = ctx.get::<Option<String>>(1).ok().flatten();
+        // No parent uuid to derive from (a server that predates the backfill) —
+        // a random id is the safe fallback, same reasoning as the backfill's.
+        Ok(derived_entity_uuid(&table, &[seed]).unwrap_or_else(new_entity_uuid))
+    })
+    .map_err(|e| format!("[SYNC] FN_DERIVED_UUID: {e}"))?;
     Ok(())
 }
 
@@ -457,6 +577,13 @@ fn create_sync_triggers(conn: &Connection) -> Result<(), String> {
         } else {
             ""
         };
+        // A monitor config's identity is its server's, derived — see
+        // `sync_derived_uuid`. Everything else mints a fresh random id.
+        let new_uuid_expr = if *t == "monitor_configs" {
+            "sync_derived_uuid('monitor_configs', (SELECT uuid FROM servers WHERE id = NEW.node_id))"
+        } else {
+            "sync_new_uuid()"
+        };
         // Drop-then-create so the definition is always current across app
         // versions (CREATE IF NOT EXISTS would keep a stale earlier trigger).
         let ddl = format!(
@@ -464,7 +591,7 @@ fn create_sync_triggers(conn: &Connection) -> Result<(), String> {
              DROP TRIGGER IF EXISTS {t}_sync_au;
              DROP TRIGGER IF EXISTS {t}_sync_ad;
              CREATE TRIGGER {t}_sync_ai AFTER INSERT ON {t} FOR EACH ROW WHEN NEW.uuid IS NULL AND {GUARD}
-               BEGIN UPDATE {t} SET uuid = sync_new_uuid(), updated_at = hlc_now(), edited_by = {EDITOR} WHERE rowid = NEW.rowid; END;
+               BEGIN UPDATE {t} SET uuid = {new_uuid_expr}, updated_at = hlc_now(), edited_by = {EDITOR} WHERE rowid = NEW.rowid; END;
              CREATE TRIGGER {t}_sync_au AFTER UPDATE ON {t} FOR EACH ROW
                WHEN NEW.updated_at IS OLD.updated_at{au_extra} AND {GUARD}
                BEGIN UPDATE {t} SET updated_at = hlc_now(), edited_by = {EDITOR} WHERE rowid = NEW.rowid; END;
@@ -592,6 +719,14 @@ struct Fk {
     key: &'static str,       // payload key holding the referenced row's uuid
     col: &'static str,       // local FK int column
     ref_table: &'static str, // table the FK points at
+    /// An optional FK whose referent hasn't arrived yet is written NULL and
+    /// repaired by the deferred fixup pass. A REQUIRED one can't be: for
+    /// `monitor_configs.node_id` the foreign key IS the primary key, so writing
+    /// NULL would have SQLite mint a fresh rowid and silently attach the config
+    /// to a different server. The record is skipped instead — a monitor config
+    /// without its server means nothing, and it arrives with the next sync once
+    /// the server does.
+    required: bool,
 }
 struct EntitySpec {
     table: &'static str,
@@ -608,20 +743,33 @@ struct EntitySpec {
 // (zero-knowledge — it's inside the encrypted blob, never seen by the server).
 const ENTITIES: &[EntitySpec] = &[
     EntitySpec { table: "ssh_keys", cols: &["name", "public_key", "private_key", "passphrase", "edited_by"], fks: &[] },
-    EntitySpec { table: "folders", cols: &["name", "color", "edited_by"], fks: &[Fk { key: "parent_uuid", col: "parent_id", ref_table: "folders" }] },
-    EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password", "edited_by"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys" }] },
+    EntitySpec { table: "folders", cols: &["name", "color", "edited_by"], fks: &[Fk { key: "parent_uuid", col: "parent_id", ref_table: "folders", required: false }] },
+    EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password", "edited_by"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys", required: false }] },
     EntitySpec {
         table: "servers",
         cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "edited_by"],
         fks: &[
-            Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials" },
-            Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders" },
-            Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys" },
-            Fk { key: "jump_uuid", col: "jump_host_id", ref_table: "servers" },
+            Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials", required: false },
+            Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders", required: false },
+            Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys", required: false },
+            Fk { key: "jump_uuid", col: "jump_host_id", ref_table: "servers", required: false },
         ],
     },
     EntitySpec { table: "commands", cols: &["title", "content", "edited_by"], fks: &[] },
     EntitySpec { table: "notes", cols: &["title", "body", "edited_by"], fks: &[] },
+    // Must come after `servers`: its node_id is resolved from the server's uuid,
+    // so the server has to already be in place when this is applied.
+    //
+    // `paused` is deliberately NOT synced. It records whether polling is running
+    // on THIS device — pausing monitoring on the laptop shouldn't stop it on the
+    // desktop — and the profile-open housekeeping resets it, which would
+    // otherwise churn. The UPDATE trigger's column guard already limits stamping
+    // to exactly the two columns below, so the two agree.
+    EntitySpec {
+        table: "monitor_configs",
+        cols: &["enabled_metrics", "custom_metrics", "edited_by"],
+        fks: &[Fk { key: "node_uuid", col: "node_id", ref_table: "servers", required: true }],
+    },
 ];
 
 /// AES-256-GCM a per-entity payload with the profile key; frame is `nonce || ct`
@@ -714,6 +862,16 @@ fn apply_remote_records(conn: &Connection, key: &[u8; 32], records: &[SyncRecord
     r
 }
 
+/// One deferred foreign-key repair: set `table.fk_col` for the row `uuid` to
+/// whatever `ref_table.uuid = ref_uuid` resolves to once the batch is complete.
+struct FkFixup {
+    table: String,
+    uuid: String,
+    fk_col: String,
+    ref_table: String,
+    ref_uuid: String,
+}
+
 fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord], hlc: &hlc::Hlc) -> Result<(), String> {
     for rec in records {
         hlc.observe(hlc::Hlc::phys_of(&rec.updated_at));
@@ -724,8 +882,13 @@ fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord],
     // drops uncommitted and SQLite rolls the batch back. This is what keeps a bad
     // sync from corrupting local data.
     let tx = conn.unchecked_transaction().map_err(|e| format!("[SYNC] TX_BEGIN: {e}"))?;
-    // (table, uuid, fk_col, ref_uuid) — self-ref / not-yet-present FKs to fix up.
-    let mut fk_fixups: Vec<(String, String, String, String)> = Vec::new();
+    // FKs to re-resolve once the whole batch has landed. `ref_table` has to ride
+    // along: the lookup used to read `SELECT id FROM {table}` — the row's OWN
+    // table — which was only ever correct because the sole queued FKs were the
+    // self-referential ones (folders.parent_id, servers.jump_host_id), where the
+    // two tables happen to be the same. Any cross-table FK looked up the uuid in
+    // entirely the wrong table, found nothing, and NULLed a perfectly good link.
+    let mut fk_fixups: Vec<FkFixup> = Vec::new();
     // Per-record application is best-effort: a single record that won't decrypt
     // or parse — a corrupt or hostile blob from a broken/compromised server — is
     // logged and skipped, never aborting the merge. One poison record must not be
@@ -745,15 +908,21 @@ fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord],
             eprintln!("[SYNC] skipped tombstone uuid={} type={}: {}", rec.uuid, rec.entity_type, e);
         }
     }
-    for (table, uuid, fk_col, ref_uuid) in fk_fixups {
+    // Re-resolve every optional FK against the FINAL state of the batch, now that
+    // both the entities and the tombstones have landed.
+    for f in fk_fixups {
         let id: Option<i64> = tx
-            .query_row(&format!("SELECT id FROM {table} WHERE uuid=?1"), [&ref_uuid], |r| r.get(0))
+            .query_row(
+                &format!("SELECT id FROM {} WHERE uuid=?1", f.ref_table),
+                [&f.ref_uuid],
+                |r| r.get(0),
+            )
             .ok();
         if let Err(e) = tx.execute(
-            &format!("UPDATE {table} SET {fk_col}=?1 WHERE uuid=?2"),
-            rusqlite::params![id, uuid],
+            &format!("UPDATE {} SET {}=?1 WHERE uuid=?2", f.table, f.fk_col),
+            rusqlite::params![id, f.uuid],
         ) {
-            eprintln!("[SYNC] fk fixup skipped {table}.{fk_col} uuid={uuid}: {e}");
+            eprintln!("[SYNC] fk fixup skipped {}.{} uuid={}: {}", f.table, f.fk_col, f.uuid, e);
         }
     }
     tx.commit().map_err(|e| format!("[SYNC] TX_COMMIT: {e}"))?;
@@ -763,7 +932,7 @@ fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord],
     Ok(())
 }
 
-fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &SyncRecord, fk_fixups: &mut Vec<(String, String, String, String)>) -> Result<(), String> {
+fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &SyncRecord, fk_fixups: &mut Vec<FkFixup>) -> Result<(), String> {
     // LWW: keep local if it's newer-or-equal. A deleted row is hard-deleted, so
     // its tombstone carries its only surviving stamp — it has to count as the
     // local side of the comparison. Without it, a batch collected before a
@@ -807,12 +976,43 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                 let found: Option<i64> = conn
                     .query_row(&format!("SELECT id FROM {} WHERE uuid=?1", fk.ref_table), [ru], |r| r.get(0))
                     .ok();
-                if found.is_none() {
-                    fk_fixups.push((spec.table.to_string(), rec.uuid.clone(), fk.col.to_string(), ru.to_string()));
+                if found.is_none() && fk.required {
+                    // Can't write this row at all without its referent, and a
+                    // later fixup can't rescue it either (the column is the
+                    // primary key). Drop the record; it'll come back on the
+                    // next sync once the referent lands. Required FKs are also
+                    // never queued below — if the referent is deleted later in
+                    // this same batch, SQLite's ON DELETE CASCADE removes this
+                    // row outright, which is the right answer for a config that
+                    // only exists to describe its parent.
+                    return Ok(());
+                }
+                if !fk.required {
+                    // Queue EVERY optional FK, not just the ones that failed to
+                    // resolve. Tombstones are applied after entities, so a
+                    // referent that was still present a moment ago can be gone by
+                    // the end of the batch — two devices doing ordinary
+                    // independent work (one edits a server, the other deletes
+                    // that server's jump host) is enough. Only re-checking the
+                    // initially-unresolved ones left the rest pointing at a row
+                    // that no longer exists, permanently and silently: the link
+                    // surfaced much later as "jump host not found", or as a
+                    // folder that had quietly lost its parent.
+                    fk_fixups.push(FkFixup {
+                        table: spec.table.to_string(),
+                        uuid: rec.uuid.clone(),
+                        fk_col: fk.col.to_string(),
+                        ref_table: fk.ref_table.to_string(),
+                        ref_uuid: ru.to_string(),
+                    });
                 }
                 found
             }
         };
+        // A required FK with no uuid in the payload at all is equally unusable.
+        if id.is_none() && fk.required {
+            return Ok(());
+        }
         columns.push(fk.col.into());
         params.push(Box::new(id));
     }
@@ -956,6 +1156,36 @@ async fn sync_now(
         .clone()
         .ok_or("[SYNC] NO_PROFILE_OPEN")?;
 
+    // A shared profile's key can change under us: the owner rotates it whenever
+    // a member is revoked, so the copy cached at import time goes stale. Refresh
+    // it BEFORE serialising anything, or this device would encrypt its push with
+    // a key nobody else can open. Cheap (a primary-key point lookup) and
+    // best-effort — offline or a hiccup just means we sync with what we have,
+    // exactly as before this existed.
+    let existing_share: Option<String> = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        conn.query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0)).ok()
+    };
+    if let Some(sid) = &existing_share {
+        if let Some((_, my_secret)) = cloud.identity().await {
+            if let Ok(grant) = cloud::share_dek(&app, &cloud, sid).await {
+                if let Ok(raw) = hex::decode(&grant.sealed_dek) {
+                    if let Ok(opened) = identity::unseal(&my_secret, &raw) {
+                        if opened.len() == 32 {
+                            let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+                            let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+                            let _ = conn.execute(
+                                "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                [&hex::encode(&opened)],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Snapshot the profile DEK + clock and serialise local records, then DROP
     // all locks before the network round-trip (never hold a std Mutex across
     // .await). Per-entity blobs are encrypted with the DEK — NOT the vault
@@ -994,7 +1224,13 @@ async fn sync_now(
         let cloud_profile: String = conn
             .query_row("SELECT value FROM sync_meta WHERE key='cloud_profile'", [], |r| r.get(0))
             .unwrap_or_else(|_| profile.clone());
-        (records, dek, hlc, share_id.map(|s| (s, share_role.unwrap_or_default())), cloud_profile, master_key, salt)
+        // Fail CLOSED on a missing role. The push gate below is `role != "user"`,
+        // so defaulting to an empty string would have granted write access to a
+        // profile whose role row went missing — the least safe reading of "we
+        // don't know". A viewer that should have been an editor is a visible,
+        // fixable annoyance; an editor that should have been a viewer is not.
+        let share = share_id.map(|s| (s, share_role.unwrap_or_else(|| "user".to_string())));
+        (records, dek, hlc, share, cloud_profile, master_key, salt)
     };
 
     // Shared profile → /shares/sync (role-gated). A viewer ('user') pushes
@@ -1135,7 +1371,12 @@ async fn profile_sync_stats(
         (
             local,
             dek,
-            share_id.map(|s| (s, share_role.unwrap_or_default())),
+            // Fail CLOSED on a missing role. The push gate below is `role != "user"`,
+        // so defaulting to an empty string would have granted write access to a
+        // profile whose role row went missing — the least safe reading of "we
+        // don't know". A viewer that should have been an editor is a visible,
+        // fixable annoyance; an editor that should have been a viewer is not.
+        share_id.map(|s| (s, share_role.unwrap_or_else(|| "user".to_string()))),
             cloud_profile,
             recent_edits,
             server_names,
@@ -1258,8 +1499,8 @@ async fn setup_identity(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
     enc_passphrase: String,
 ) -> Result<IdentityStatus, String> {
-    if enc_passphrase.chars().count() < 8 {
-        return Err("[SHARE] WEAK_PASSPHRASE: use at least 8 characters".into());
+    if enc_passphrase.is_empty() {
+        return Err("[SHARE] EMPTY_PASSPHRASE".into());
     }
     let existing = cloud::fetch_my_keys(&app, &cloud).await?;
     if existing.exists {
@@ -1276,7 +1517,17 @@ async fn setup_identity(
         cloud.set_identity(identity::public_of(&secret), secret).await;
         return Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(pub_hex) });
     }
-    // First-time setup — generate, wrap, publish.
+    // First-time setup — generate, wrap, publish. The strength floor belongs
+    // HERE, not at the top of the function: this one command serves both
+    // "pick your sharing passphrase" and "unlock with the one you already have",
+    // and the caller can't tell which until `fetch_my_keys` answers. Checking
+    // length before that branch would mean a raised floor (or any future client
+    // that provisioned an identity under different rules) rejecting a passphrase
+    // that genuinely unwraps a published key — locking someone out of shares
+    // they own over a rule that only ever applied at sign-up.
+    if enc_passphrase.chars().count() < 8 {
+        return Err("[SHARE] WEAK_PASSPHRASE: use at least 8 characters".into());
+    }
     let kp = identity::generate_keypair();
     let mut salt = [0u8; 16];
     rand::thread_rng().fill(&mut salt);
@@ -1329,6 +1580,17 @@ async fn share_current_profile(
     let dek = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        // Only the UI's hidden button stopped this from running twice. Called
+        // again on an already-shared profile it would mint a SECOND share_id,
+        // overwrite the local one, and orphan the first — leaving its members
+        // syncing against a share this device no longer knows exists, and which
+        // nobody can revoke or delete any more.
+        let already: Option<String> = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
+            .ok();
+        if already.is_some() {
+            return Err("[SHARE] ALREADY_SHARED: this profile is already shared — stop sharing first if you want a new share.".into());
+        }
         get_or_create_dek(conn)?.0
     };
     let sealed_self = hex::encode(identity::seal_to(&my_pub, &dek)?);
@@ -1342,6 +1604,14 @@ async fn share_current_profile(
             [&share_id],
         )
         .map_err(|e| format!("[SHARE] STORE_SHARE_ID: {e}"))?;
+        // Remembered so a later key rotation can re-create the share record with
+        // its own name — /shares/create upserts the name, so passing a guess
+        // would quietly rename the share for every member.
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('share_name',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&name],
+        )
+        .map_err(|e| format!("[SHARE] STORE_SHARE_NAME: {e}"))?;
         conn.execute(
             "INSERT INTO sync_meta(key,value) VALUES('share_role','owner') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [],
@@ -1473,12 +1743,17 @@ async fn import_shared_profile(
     // our own `db_state` stays usable for the sync_meta writes + sync below.
     {
         use tauri::Manager as _;
-        setup_master_db(app.clone(), vault_password, app.state::<DbState>()).await?;
+        if let Err(e) = setup_master_db(app.clone(), vault_password, app.state::<DbState>()).await {
+            discard_half_built_profile(&app, &local_name);
+            return Err(e);
+        }
     }
 
+    // Past this point the vault exists on disk — an import that doesn't finish
+    // must leave no trace, or the next attempt hits "already exists" forever.
     // Replace the freshly-minted DEK with the SHARED one + record share meta, so
     // sync_now routes to /shares/sync and decrypts the shared blobs correctly.
-    {
+    let seeded = (|| -> Result<(), String> {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         conn.execute(
@@ -1496,9 +1771,49 @@ async fn import_shared_profile(
             [&mine.role],
         )
         .map_err(|e| format!("[SHARE] SET_ROLE: {e}"))?;
+        Ok(())
+    })();
+    if let Err(e) = seeded {
+        discard_half_built_profile(&app, &local_name);
+        return Err(e);
     }
     // Pull the shared data into the new profile.
-    sync_now(app, db_state, cloud).await
+    match sync_now(app.clone(), db_state, cloud).await {
+        Ok(report) => Ok(report),
+        Err(e) => {
+            discard_half_built_profile(&app, &local_name);
+            Err(e)
+        }
+    }
+}
+
+/// Undo a profile that was created on disk but never finished being filled.
+///
+/// Both `restore_personal_profile` and `import_shared_profile` build the local
+/// vault BEFORE the network round-trip that populates it, because the vault has
+/// to exist for the merge to have somewhere to land. That ordering left a trap:
+/// if the pull failed — an expired token on a fresh sign-in, a dropped
+/// connection, a 5xx — the command returned an error but the empty vault stayed
+/// on disk, sealed under a randomly-minted key that matches nothing in the
+/// cloud. Nothing marked it as broken, so the "Profile 'X' already exists" guard
+/// treated it as real and every retry bounced off it. The only escape was to
+/// spot the phantom in the picker and remove it by hand, which no error message
+/// suggested.
+///
+/// Best-effort by design: we're already returning an error, and the caller's
+/// original one is the one worth showing.
+fn discard_half_built_profile(app: &tauri::AppHandle, name: &str) {
+    use tauri::Manager as _;
+    let state = app.state::<DbState>();
+    if let Ok(mut g) = state.conn.lock() { *g = None; }
+    if let Ok(mut g) = state.master_key.lock() { *g = None; }
+    if let Ok(mut g) = state.salt.lock() { *g = None; }
+    if let Ok(mut g) = state.db_path.lock() { *g = None; }
+    if let Ok(mut g) = state.hlc.lock() { *g = None; }
+    if let Ok(mut g) = state.active_profile.lock() { *g = None; }
+    if let Ok(p) = profile_path(app, name) {
+        let _ = fs::remove_file(p);
+    }
 }
 
 /// New device: restore one of YOUR OWN personal cloud profiles using nothing but
@@ -1556,13 +1871,22 @@ async fn restore_personal_profile(
     *db_state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED")? = Some(local_name.clone());
     {
         use tauri::Manager as _;
-        setup_master_db(app.clone(), vault_password, app.state::<DbState>()).await?;
+        // No strength floor here: the escrow above already proved this is the
+        // profile's real password. A pre-existing short one must still restore.
+        if let Err(e) =
+            setup_master_db_inner(app.clone(), vault_password, app.state::<DbState>(), false).await
+        {
+            discard_half_built_profile(&app, &local_name);
+            return Err(e);
+        }
     }
 
+    // Past this point the vault exists on disk, so every remaining step has to
+    // clean up after itself — a restore that didn't finish must leave no trace.
     // Swap the freshly-minted random DEK for the escrowed one, and remember the
     // cloud key in case the local name differs, so sync_now targets the right
     // /sync stream and decrypts the pulled blobs.
-    {
+    let seeded = (|| -> Result<(), String> {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         conn.execute(
@@ -1575,8 +1899,19 @@ async fn restore_personal_profile(
             [&cloud_profile],
         )
         .map_err(|e| format!("[SYNC] SET_CLOUD_PROFILE: {e}"))?;
+        Ok(())
+    })();
+    if let Err(e) = seeded {
+        discard_half_built_profile(&app, &local_name);
+        return Err(e);
     }
-    sync_now(app, db_state, cloud).await
+    match sync_now(app.clone(), db_state, cloud).await {
+        Ok(report) => Ok(report),
+        Err(e) => {
+            discard_half_built_profile(&app, &local_name);
+            Err(e)
+        }
+    }
 }
 
 /// Owner: change a member's role.
@@ -1594,15 +1929,98 @@ async fn share_set_role(
     cloud::set_member_role(&app, &cloud, &share_id, member_user_id, &role).await
 }
 
-/// Owner: remove a member.
+/// Mint a fresh DEK for a share and re-seal it to everyone still on the roster.
+///
+/// Without this, revocation had no cryptographic backing at all: the removed
+/// member kept the only key the share ever had, so the entire guarantee rested
+/// on the server's access check never having a gap — no defence in depth, and
+/// `get_or_create_dek`'s own doc already called rotation "a deliberate, separate
+/// action" that was never actually built.
+///
+/// Both writes reuse existing endpoints, which upsert: `/shares/invite` replaces
+/// an existing member's `sealed_dek` without disturbing their `status`, and
+/// `/shares/create` replaces the owner's own grant. The owner's next sync
+/// re-uploads every record under the new key (pushes are always a full set), and
+/// remaining members pick the new key up because `sync_now` now refreshes it
+/// before each shared exchange.
+async fn rotate_share_dek(
+    app: &tauri::AppHandle,
+    db_state: &tauri::State<'_, DbState>,
+    cloud: &tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    share_id: &str,
+    share_name: &str,
+) -> Result<(), String> {
+    let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
+    let mut fresh = [0u8; 32];
+    rand::thread_rng().fill(&mut fresh);
+
+    // Re-seal to the owner FIRST. If this is the step that fails, nobody's grant
+    // has changed yet and the old key is still universally valid — a clean no-op
+    // rather than a share whose members hold a key the owner can't open.
+    cloud::create_share(app, cloud, share_id, share_name, &hex::encode(identity::seal_to(&my_pub, &fresh)?)).await?;
+
+    let roster = cloud::share_members(app, cloud, share_id).await?;
+    for m in roster.iter().filter(|m| m.role != "owner" && m.status != "revoked") {
+        let Some(info) = cloud::lookup_pubkey(app, cloud, &m.email).await? else { continue };
+        let sealed = hex::encode(identity::seal_to(&hex_to_32(&info.public_key)?, &fresh)?);
+        // Best-effort per member: one member whose key lookup fails must not
+        // abort the rotation and leave the rest on a key the owner has already
+        // replaced. They simply can't decrypt until re-invited, which is the
+        // safe direction to fail.
+        if let Err(e) = cloud::invite_member(app, cloud, share_id, &m.email, &m.role, &sealed).await {
+            eprintln!("[SHARE] re-seal failed for {}: {e}", m.email);
+        }
+    }
+
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&hex::encode(fresh)],
+        )
+        .map_err(|e| format!("[SHARE] SET_DEK: {e}"))?;
+    }
+    save_vault_async(db_state).await
+}
+
+/// Owner: remove a member, then rotate the key they walked away with.
 #[tauri::command]
 async fn share_revoke(
     app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
     share_id: String,
     member_user_id: i64,
 ) -> Result<(), String> {
-    cloud::revoke_member(&app, &cloud, &share_id, member_user_id).await
+    cloud::revoke_member(&app, &cloud, &share_id, member_user_id).await?;
+    // Revocation itself has succeeded by here. If the rotation leg fails we
+    // still report success for the removal — the member IS out — but say plainly
+    // that the key wasn't replaced, because that's the part with a security
+    // consequence and silently swallowing it would misrepresent what happened.
+    let name = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        conn.query_row("SELECT value FROM sync_meta WHERE key='share_name'", [], |r| r.get::<_, String>(0))
+            .ok()
+    };
+    let name = match name {
+        Some(n) => n,
+        None => db_state
+            .active_profile
+            .lock()
+            .map_err(|_| "[STATE] LOCK_FAILED")?
+            .clone()
+            .unwrap_or_else(|| "profile".to_string()),
+    };
+    if let Err(e) = rotate_share_dek(&app, &db_state, &cloud, &share_id, &name).await {
+        return Err(format!(
+            "[SHARE] REVOKED_BUT_KEY_NOT_ROTATED: {} is out of the share, but the shared key could not be replaced ({e}). \
+             They can no longer reach the server, but they still hold the old key — retry from the members list to rotate it.",
+            member_user_id
+        ));
+    }
+    Ok(())
 }
 
 /// Non-owner: leave a share.
@@ -1701,14 +2119,27 @@ async fn stop_sharing(
         )
     };
     if role == "owner" {
+        // The owner is the only one who can manage or delete the share, so if
+        // the server never got the message we must NOT forget the share_id —
+        // dropping it locally would orphan a live share that members keep
+        // syncing against, with nobody left able to shut it down.
         cloud::delete_share(&app, &cloud, &share_id).await?;
     } else {
-        cloud::leave_share(&app, &cloud, &share_id).await?;
+        // Leaving is the member's own decision about their own device, so it has
+        // to succeed locally whatever the server says. It used to abort on any
+        // error — which meant a member who had ALREADY been revoked could never
+        // leave: the server rightly rejects a leave from a non-member, so the
+        // one escape hatch the UI offers failed every single time, and their
+        // vault stayed pointed at a dead share that errored on every sync
+        // forever. Best-effort tell the server, then clear regardless.
+        if let Err(e) = cloud::leave_share(&app, &cloud, &share_id).await {
+            eprintln!("[SHARE] leave_share failed, clearing locally anyway: {e}");
+        }
     }
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-        conn.execute("DELETE FROM sync_meta WHERE key IN ('share_id','share_role')", [])
+        conn.execute("DELETE FROM sync_meta WHERE key IN ('share_id','share_role','share_name')", [])
             .map_err(|e| format!("[SHARE] CLEAR_META: {e}"))?;
     }
     save_vault_async(&db_state).await
@@ -1826,6 +2257,234 @@ mod sync_engine_tests {
         register_sync_functions(&conn, &hlc).unwrap();
         create_sync_triggers(&conn).unwrap();
         (conn, hlc)
+    }
+
+    /// A vault from before the sync era: the same schema, but no triggers have
+    /// ever run over it, so every row still has `uuid IS NULL`. Two calls give
+    /// two byte-identical copies — i.e. the same vault sitting on two devices.
+    fn presync_vault() -> Connection {
+        let (conn, _) = device("pre");
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS trg_servers_ai; DROP TRIGGER IF EXISTS trg_servers_au;
+             DROP TRIGGER IF EXISTS trg_servers_ad;",
+        )
+        .unwrap();
+        conn.execute("DELETE FROM servers", []).unwrap();
+        conn.execute("DELETE FROM sync_tombstones", []).unwrap();
+        conn.execute("INSERT INTO servers(id,name,host,port,username) VALUES(1,'web','h1',22,'root')", []).unwrap();
+        conn.execute("INSERT INTO servers(id,name,host,port,username) VALUES(2,'old','h9',22,'root')", []).unwrap();
+        conn.execute("UPDATE servers SET uuid=NULL, updated_at=NULL", []).unwrap();
+        conn
+    }
+
+    // The exact incident: an old copy of a vault was opened on a second device.
+    // It had never synced, so the backfill had to invent identity for its rows.
+    // Inventing a RANDOM uuid + a NOW stamp (what we used to do) meant the stale
+    // copy pushed itself as brand-new, freshest-in-the-world entities —
+    // duplicating every row and resurrecting everything deleted elsewhere.
+    #[test]
+    fn an_old_vault_copy_cannot_overwrite_or_resurrect() {
+        // Device A: adopted the vault, then did real work — edited one server
+        // and deleted the other.
+        let a = presync_vault();
+        let ha = std::sync::Arc::new(hlc::Hlc::new("A".into(), 0));
+        register_sync_functions(&a, &ha).unwrap();
+        backfill_sync_columns(&a, &ha).unwrap();
+        create_sync_triggers(&a).unwrap();
+        a.execute("UPDATE servers SET host='h2' WHERE name='web'", []).unwrap();
+        a.execute("DELETE FROM servers WHERE name='old'", []).unwrap();
+        let from_a = collect_local_records(&a, &KEY, "").unwrap();
+
+        // Device B: the OLD phone. Same vault, untouched, adopted just now.
+        let b = presync_vault();
+        let hb = std::sync::Arc::new(hlc::Hlc::new("B".into(), 0));
+        register_sync_functions(&b, &hb).unwrap();
+        backfill_sync_columns(&b, &hb).unwrap();
+        create_sync_triggers(&b).unwrap();
+        let from_b = collect_local_records(&b, &KEY, "").unwrap();
+
+        // Both devices independently derived the SAME id for the same row, so
+        // the merge sees one entity rather than two unrelated ones.
+        let ua: String = a.query_row("SELECT uuid FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        let ub: String = b.query_row("SELECT uuid FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        assert_eq!(ua, ub, "same row on two copies of one vault must derive one uuid");
+
+        // B's untouched rows sit at the clock floor, not at "now".
+        let uat: String = b.query_row("SELECT updated_at FROM servers WHERE name='old'", [], |r| r.get(0)).unwrap();
+        assert_eq!(uat, BACKFILL_UAT, "a never-synced row must not claim to be fresh");
+
+        // Now the round trip. A's work reaches B...
+        apply_remote_records(&b, &KEY, &from_a, &hb).unwrap();
+        let host: String = b.query_row("SELECT host FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        assert_eq!(host, "h2", "B must take A's edit");
+        let alive: i64 = b
+            .query_row("SELECT COUNT(*) FROM servers WHERE name='old' AND deleted=0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(alive, 0, "B must honour A's deletion");
+
+        // ...and B's stale copy reaches A, where it must change nothing.
+        apply_remote_records(&a, &KEY, &from_b, &ha).unwrap();
+        let host: String = a.query_row("SELECT host FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        assert_eq!(host, "h2", "a stale copy must not overwrite a real edit");
+        let alive: i64 = a
+            .query_row("SELECT COUNT(*) FROM servers WHERE name='old' AND deleted=0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(alive, 0, "a stale copy must not resurrect a deleted row");
+        let total: i64 = a.query_row("SELECT COUNT(*) FROM servers", [], |r| r.get(0)).unwrap();
+        assert_eq!(total, 1, "a stale copy must not duplicate rows");
+    }
+
+    // Rows with nothing to identify them can't derive a stable id, and two rows
+    // that DO collide must not be fused into one — both fall back to random ids.
+    #[test]
+    fn backfill_falls_back_to_random_ids_rather_than_fusing_rows() {
+        assert_eq!(derived_entity_uuid("servers", &[None, Some(String::new())]), None);
+
+        let conn = presync_vault();
+        // Two rows identical in every identifying column.
+        conn.execute("UPDATE servers SET name='web', host='h1', port=22, username='root' WHERE id=2", []).unwrap();
+        let h = std::sync::Arc::new(hlc::Hlc::new("A".into(), 0));
+        register_sync_functions(&conn, &h).unwrap();
+        backfill_sync_columns(&conn, &h).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(DISTINCT uuid) FROM servers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "two local rows must never share one uuid");
+    }
+
+    // Monitoring config used to be instrumented for sync — triggers, backfill,
+    // a uuid index — but was missing from ENTITIES, the list that actually
+    // drives push/apply. So it silently never crossed devices.
+    #[test]
+    fn monitor_config_syncs_and_binds_to_the_right_server() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port) VALUES('web','h',22)", []).unwrap();
+        a.execute(
+            "INSERT INTO monitor_configs(node_id,enabled_metrics,custom_metrics,paused)
+             VALUES((SELECT id FROM servers WHERE name='web'),'[\"cpu\",\"mem\"]','[\"nginx\"]',0)",
+            [],
+        )
+        .unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        assert!(
+            recs.iter().any(|r| r.entity_type == "monitor_configs"),
+            "monitor config must be pushed"
+        );
+
+        // B has an unrelated server first, so its rowids differ from A's —
+        // binding by uuid rather than by raw id is the whole point.
+        let (b, hb) = device("B");
+        b.execute("INSERT INTO servers(name,host,port) VALUES('other','o',22)", []).unwrap();
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+
+        let bound: String = b
+            .query_row(
+                "SELECT s.name FROM monitor_configs mc JOIN servers s ON s.id = mc.node_id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bound, "web", "config must attach to the SAME server, not a matching rowid");
+        let metrics: String = b
+            .query_row("SELECT enabled_metrics FROM monitor_configs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(metrics, "[\"cpu\",\"mem\"]");
+    }
+
+    // Both devices enabling monitoring on the same server independently must
+    // converge on one config row, not collide over its node_id primary key.
+    #[test]
+    fn independent_monitor_configs_for_one_server_converge() {
+        let mk = |node: &str| {
+            let (c, h) = device(node);
+            c.execute("INSERT INTO servers(uuid,name,host,port) VALUES('fixedserveruuid00000000000000ab','web','h',22)", []).unwrap();
+            c.execute(
+                "INSERT INTO monitor_configs(node_id,enabled_metrics,custom_metrics,paused)
+                 VALUES((SELECT id FROM servers WHERE name='web'),'[\"cpu\"]','[]',1)",
+                [],
+            )
+            .unwrap();
+            (c, h)
+        };
+        let (a, _ha) = mk("A");
+        let (b, hb) = mk("B");
+
+        let ua: String = a.query_row("SELECT uuid FROM monitor_configs", [], |r| r.get(0)).unwrap();
+        let ub: String = b.query_row("SELECT uuid FROM monitor_configs", [], |r| r.get(0)).unwrap();
+        assert_eq!(ua, ub, "same server ⇒ same config id on both devices");
+        assert_ne!(ua, "fixedserveruuid00000000000000ab", "must not reuse the server's own id");
+
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        let n: i64 = b.query_row("SELECT COUNT(*) FROM monitor_configs", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "must converge to one config, not two");
+    }
+
+    // A config whose server hasn't arrived yet must be skipped, never written
+    // with a NULL node_id — that column is the primary key, so SQLite would mint
+    // a rowid and silently bind the config to nothing.
+    #[test]
+    fn monitor_config_without_its_server_is_skipped() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port) VALUES('web','h',22)", []).unwrap();
+        a.execute(
+            "INSERT INTO monitor_configs(node_id,enabled_metrics,custom_metrics,paused)
+             VALUES((SELECT id FROM servers WHERE name='web'),'[\"cpu\"]','[]',1)",
+            [],
+        )
+        .unwrap();
+        let only_config: Vec<SyncRecord> = collect_local_records(&a, &KEY, "")
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.entity_type == "monitor_configs")
+            .collect();
+        assert_eq!(only_config.len(), 1);
+
+        let (b, hb) = device("B"); // no servers at all
+        apply_remote_records(&b, &KEY, &only_config, &hb).unwrap();
+        let n: i64 = b.query_row("SELECT COUNT(*) FROM monitor_configs", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "orphan config must be skipped, not bound to a phantom node");
+    }
+
+    // Two devices doing ordinary independent work: one edits a server, the other
+    // deletes that server's jump host. Both changes arrive in ONE batch. The FK
+    // resolved fine while the jump host was still present, then the tombstone
+    // removed it — and the fixup pass used to skip anything that had resolved, so
+    // the link was left pointing at a row that no longer existed.
+    #[test]
+    fn a_referent_deleted_in_the_same_batch_clears_the_link() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port) VALUES('bastion','b',22)", []).unwrap();
+        a.execute(
+            "INSERT INTO servers(name,host,port,jump_host_id) VALUES('app','a',22,(SELECT id FROM servers WHERE name='bastion'))",
+            [],
+        )
+        .unwrap();
+        let seed = collect_local_records(&a, &KEY, "").unwrap();
+
+        // Device C starts from the same state, so it holds both servers, linked.
+        let (c, hc) = device("C");
+        apply_remote_records(&c, &KEY, &seed, &hc).unwrap();
+        let linked: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM servers s JOIN servers j ON j.id = s.jump_host_id WHERE s.name='app'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked, 1, "precondition: the jump link exists on C");
+
+        // A re-touches 'app' (so it ships as a live record) and deletes the
+        // bastion (so a tombstone ships in the SAME batch).
+        a.execute("UPDATE servers SET host='a2' WHERE name='app'", []).unwrap();
+        a.execute("DELETE FROM servers WHERE name='bastion'", []).unwrap();
+        let batch = collect_local_records(&a, &KEY, "").unwrap();
+        assert!(batch.iter().any(|r| r.deleted), "batch must carry the tombstone");
+
+        apply_remote_records(&c, &KEY, &batch, &hc).unwrap();
+        let dangling: Option<i64> = c
+            .query_row("SELECT jump_host_id FROM servers WHERE name='app'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(dangling, None, "the link must be cleared, not left dangling");
     }
 
     #[test]
@@ -2053,6 +2712,54 @@ async fn cloud_delete_profile(
         return Err("[SYNC] NO_PROFILE_NAME".into());
     }
     cloud::delete_sync_profile(&app, &cloud, &profile).await
+}
+
+/// Replace this profile's entire cloud copy with what's on THIS device.
+///
+/// The escape hatch for a partition that can no longer converge. Records are
+/// encrypted with the profile's DEK, and a vault copy that reached a device
+/// without one — an old pre-sync backup, say — mints a brand-new DEK on open and
+/// pushes everything under it. Those records are then permanently undecryptable
+/// to every other device: the merge skips them on every sync (correctly — they
+/// could be corrupt or hostile), so they sit in the cloud forever showing up as
+/// "N to receive" that no amount of syncing can clear. Nothing else can remove
+/// them, because you can't tombstone a record whose uuid you never learned.
+///
+/// Wipes the server partition, then pushes the local vault back in full. Local
+/// data is never touched. Personal profiles only — on a shared one this would
+/// silently destroy other members' contributions, which is not a decision one
+/// member gets to make from a "fix my sync" button.
+#[tauri::command]
+async fn force_push_profile(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<SyncReport, String> {
+    let profile = db_state
+        .active_profile
+        .lock()
+        .map_err(|_| "[STATE] LOCK_PROFILE")?
+        .clone()
+        .ok_or("[SYNC] NO_PROFILE_OPEN")?;
+    let (share_id, cloud_profile) = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        let sid: Option<String> = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
+            .ok();
+        let cp: String = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='cloud_profile'", [], |r| r.get(0))
+            .unwrap_or_else(|_| profile.clone());
+        (sid, cp)
+    };
+    if share_id.is_some() {
+        return Err("[SYNC] SHARED_PROFILE: this profile is shared with other people, and replacing the cloud copy would delete their changes too. Stop sharing first if you really want to reset it.".into());
+    }
+    let removed = cloud::delete_sync_profile(&app, &cloud, &cloud_profile).await?;
+    eprintln!("[SYNC] force push: server dropped {removed} record(s) for '{cloud_profile}'");
+    // Pushes are always a full set, so the very next sync repopulates the
+    // partition from this vault — including a fresh DEK escrow record.
+    sync_now(app, db_state, cloud).await
 }
 
 /// Mark a profile as the active one. Subsequent `check_db_exists` /
@@ -2338,7 +3045,26 @@ async fn check_db_exists(
 }
 
 #[tauri::command]
-async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+async fn setup_master_db(app_handle: tauri::AppHandle, password: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    // Every path that reaches here from the UI is the user CHOOSING a password
+    // (create a profile, or unlock an existing one), so the strength floor
+    // applies. `restore_personal_profile` is the one caller that doesn't get to
+    // choose — see `enforce_strength` below.
+    setup_master_db_inner(app_handle, password, state, true).await
+}
+
+/// `enforce_strength = false` is for restoring a profile that ALREADY exists in
+/// the cloud. The password isn't being chosen — it was chosen long ago, and the
+/// cloud copy is already sealed under it. Rejecting it as "too weak" wouldn't
+/// make anything safer; it would just lock the owner out of their own data on a
+/// new device while the old device keeps opening it fine. The floor belongs on
+/// creation, where the choice is actually being made.
+async fn setup_master_db_inner(
+    app_handle: tauri::AppHandle,
+    mut password: String,
+    state: tauri::State<'_, DbState>,
+    enforce_strength: bool,
+) -> Result<(), String> {
     // The active profile must be picked before this command — the UI does
     // it from the picker screen. Refuse early instead of silently writing
     // to a default path.
@@ -2543,7 +3269,8 @@ async fn setup_master_db(app_handle: tauri::AppHandle, mut password: String, sta
         // stored credential and private key, so a trivial one is a real risk.
         // Count Unicode scalar values, not bytes, so non-Latin passwords aren't
         // over-counted. 8 is a floor, not a ceiling — the UI should also nudge.
-        if password.chars().count() < 8 {
+        // Skipped when restoring an existing cloud profile (see the caller doc).
+        if enforce_strength && password.chars().count() < 8 {
             password.zeroize();
             return Err("[CRYPTO] WEAK_MASTER_PASSWORD: choose at least 8 characters — this password protects every saved credential.".into());
         }
@@ -3230,13 +3957,27 @@ async fn clone_server(state: tauri::State<'_, DbState>, id: i32) -> Result<i64, 
 }
 
 #[tauri::command]
-async fn delete_server(state: tauri::State<'_, DbState>, id: i32) -> Result<(), String> {
+async fn delete_server(
+    state: tauri::State<'_, DbState>,
+    map: tauri::State<'_, MonitorMap>,
+    id: i32,
+) -> Result<(), String> {
+    // Stop the poller BEFORE the row goes away. The monitor_configs row does
+    // cascade-delete with the server, but that only removes the config — the
+    // spawned poller lives in MonitorMap and would keep opening SSH connections
+    // to the host on its interval, using credentials the user just deleted.
+    // Worse, it becomes unreachable: monitor_list JOINs servers, so the node
+    // vanishes from the UI and monitor_remove (the only other caller of
+    // stop_monitor) can no longer be invoked for it. Only an app restart
+    // stopped it.
+    monitor::stop_monitor(map.inner().clone(), id).await;
+
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-    
+
     conn.execute("DELETE FROM servers WHERE id=?1", rusqlite::params![id])
         .map_err(|e| format!("[DATABASE] SERVER_DELETE_FAILED: {}", e))?;
-    
+
     drop(conn_guard);
     save_vault_internal(&state)?;
     Ok(())
@@ -3419,18 +4160,40 @@ async fn rename_folder(state: tauri::State<'_, DbState>, id: i32, name: String) 
 }
 
 #[tauri::command]
-async fn delete_folder(state: tauri::State<'_, DbState>, id: i32) -> Result<(), String> {
+async fn delete_folder(
+    state: tauri::State<'_, DbState>,
+    map: tauri::State<'_, MonitorMap>,
+    id: i32,
+) -> Result<(), String> {
+    // Same orphaned-poller problem as delete_server, one level up: this deletes
+    // every server in the folder, so every one of their monitors has to be
+    // stopped first. Collect the ids while the rows still exist.
+    let doomed: Vec<i32> = {
+        let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM servers WHERE folder_id=?1")
+            .map_err(|e| format!("[DATABASE] FOLDER_SERVERS_QUERY_FAILED: {}", e))?;
+        let rows = stmt
+            .query_map(rusqlite::params![id], |r| r.get::<_, i32>(0))
+            .map_err(|e| format!("[DATABASE] FOLDER_SERVERS_QUERY_FAILED: {}", e))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    for node_id in doomed {
+        monitor::stop_monitor(map.inner().clone(), node_id).await;
+    }
+
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-    
+
     // First, delete all servers in this folder
     conn.execute("DELETE FROM servers WHERE folder_id=?1", rusqlite::params![id])
         .map_err(|e| format!("[DATABASE] FOLDER_SERVERS_DELETE_FAILED: {}", e))?;
-        
+
     // Then delete the folder
     conn.execute("DELETE FROM folders WHERE id=?1", rusqlite::params![id])
         .map_err(|e| format!("[DATABASE] FOLDER_DELETE_FAILED: {}", e))?;
-    
+
     drop(conn_guard);
     save_vault_internal(&state)?;
     Ok(())
@@ -4961,9 +5724,18 @@ async fn initiate_connection(
                         // we seed it from the DB row's `tunnels` JSON.
                         let specs_to_start: Vec<tunnel::TunnelSpec> = {
                             let mut map = state_session_tunnel_specs.lock().await;
+                            // A PRESENT replay list — even an empty one — is
+                            // authoritative, exactly as in the ::fwd branch below
+                            // and in restart_session_tunnels. An empty list means
+                            // the user stopped every tunnel; only an ABSENT key is
+                            // a genuine first engagement worth seeding from the
+                            // node's saved rules. Treating empty as "unset" here
+                            // meant every reconnect — including the health
+                            // watcher's automatic one — silently reopened local
+                            // listeners the user had deliberately closed.
                             match map.get(&session_id_clone).cloned() {
-                                Some(existing) if !existing.is_empty() => existing,
-                                _ => match serde_json::from_str::<Vec<tunnel::TunnelSpec>>(&tunnels_json) {
+                                Some(existing) => existing,
+                                None => match serde_json::from_str::<Vec<tunnel::TunnelSpec>>(&tunnels_json) {
                                     Ok(db_specs) => {
                                         map.insert(session_id_clone.clone(), db_specs.clone());
                                         db_specs
@@ -9276,7 +10048,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             check_db_exists, setup_master_db, persist_vault,
-            list_profiles, cloud_list_sync_profiles, cloud_delete_profile, select_profile, create_profile, delete_profile, close_profile,
+            list_profiles, cloud_list_sync_profiles, cloud_delete_profile, force_push_profile, select_profile, create_profile, delete_profile, close_profile,
             export_profile, import_profile_pick, import_profile_save,
             cloud::cloud_status, cloud::cloud_signup, cloud::cloud_consume_verify_link,
             cloud::cloud_set_password, cloud::cloud_login, cloud::cloud_logout,

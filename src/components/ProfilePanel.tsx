@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Cloud, CloudOff, RefreshCw, Share2, UserPlus, X, Loader2, Users,
@@ -59,10 +59,12 @@ type Props = {
   syncing: boolean;
   lastSyncLabel: string | null;
   autoSync: boolean;
+  syncIntervalMin: number;
+  onSetInterval: (m: number) => void;
   onToggleAutoSync: () => void;
 };
 
-export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync, onToggleAutoSync }: Props) {
+export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync, syncIntervalMin, onSetInterval, onToggleAutoSync }: Props) {
   const confirm = useConfirm();
   const textPrompt = useTextPrompt();
 
@@ -74,6 +76,12 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
   const [ok, setOk] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"editor" | "user">("editor");
+  // Set once a sync completes and items to receive are STILL outstanding. That
+  // second observation is what separates "mid-sync, be patient" from "syncing
+  // can't fix this" — offering a destructive reset for the former would be
+  // handing someone a sledgehammer for a door that was about to open anyway.
+  const [stuck, setStuck] = useState(false);
+  const prevPull = useRef<number | null>(null);
 
   const clean = (e: unknown) => String(e).replace(/^\[[A-Z_]+\]\s*/, "");
   const flash = (m: string) => { setOk(m); setErr(null); setTimeout(() => setOk(null), 4000); };
@@ -95,11 +103,43 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
   // Stats are separate from share status because the cloud diff inside them is a
   // network round-trip; we don't want it blocking the panel's first paint.
   const loadStats = useCallback(async () => {
-    try { setStats(await invoke<SyncStats>("profile_sync_stats")); }
+    try {
+      const s = await invoke<SyncStats>("profile_sync_stats");
+      setStats(s);
+      // Same count still waiting after another round trip ⇒ these aren't in
+      // flight, they're stuck. One repeat is enough to be sure without making
+      // the user click Sync five times before the app admits there's a problem.
+      const pull = s.diff?.needs_pull ?? 0;
+      if (pull > 0 && prevPull.current === pull) setStuck(true);
+      if (pull === 0) setStuck(false);
+      prevPull.current = pull;
+    }
     catch { /* offline or no profile — panel still shows the rest */ }
   }, []);
 
   useEffect(() => { refresh(); loadStats(); }, [refresh, loadStats]);
+
+  // Last resort for a partition that can't converge. Destructive to the CLOUD
+  // copy only, so the confirm spells out exactly what goes and what stays.
+  const forcePush = async () => {
+    if (!(await confirm({
+      title: "Replace the cloud copy?",
+      message:
+        "Everything currently in the cloud for this profile is deleted, then this device uploads its own copy in full.\n\n" +
+        "Nothing on this device changes. But any item that exists ONLY in the cloud — including the ones this device can't read — is gone for good, " +
+        "and other devices will take this copy as the truth the next time they sync.",
+      okLabel: "Replace cloud copy",
+      destructive: true,
+    }))) return;
+    setBusy(true); setErr(null);
+    try {
+      const rep = await invoke<{ pushed: number; pulled: number }>("force_push_profile");
+      setStuck(false);
+      prevPull.current = null;
+      flash(`Cloud copy replaced — uploaded ${rep.pushed} item${rep.pushed === 1 ? "" : "s"}.`);
+      await loadStats();
+    } catch (e) { fail(e); } finally { setBusy(false); }
+  };
 
   // The sharing identity protects the private key that shared profiles are
   // sealed to. It's deliberately a different secret from the vault password, so
@@ -286,6 +326,29 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                 </>
               )}
             </div>
+            {/* The cadence lives here rather than in Settings: it only means
+                anything next to the Sync-now button and the on/off state it
+                modifies, and it's the answer to "is this thing even running?" */}
+            {autoSync && (
+              <div className="border-t border-white/5 pt-3 flex items-center gap-2 flex-wrap">
+                <span className="text-[11.5px] text-zinc-400">Check for others' changes every</span>
+                <div className="flex items-center gap-1">
+                  {[1, 2, 5, 10, 15, 30].map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => onSetInterval(m)}
+                      className={`h-7 px-2.5 rounded-md text-[11.5px] font-medium transition-colors ${
+                        syncIntervalMin === m
+                          ? "bg-primary text-black"
+                          : "bg-zinc-900/60 text-zinc-400 hover:text-zinc-200 border border-white/5"
+                      }`}
+                    >
+                      {m}m
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {stats?.diff && (() => {
               const d = stats.diff!;
               const pending = d.needs_push + d.needs_pull;
@@ -309,6 +372,26 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                     <div className="text-[10.5px] text-zinc-500 pl-[18px]">
                       Nodes: {d.out_of_sync_nodes.slice(0, 8).join(", ")}
                       {d.out_of_sync_nodes.length > 8 ? ` +${d.out_of_sync_nodes.length - 8} more` : ""}
+                    </div>
+                  )}
+                  {/* Only offered once syncing has demonstrably stopped helping.
+                      Items that won't come down are almost always unreadable to
+                      this device (pushed under a different key by a stray copy of
+                      the vault), and no amount of syncing can ever clear them. */}
+                  {stuck && (
+                    <div className="pl-[18px] pt-1 space-y-1">
+                      <div className="text-[10.5px] text-zinc-500 leading-relaxed">
+                        Still {d.needs_pull} to receive after syncing. These are almost certainly
+                        items this device can't read — pushed by another copy of this profile that had its
+                        own key. Syncing will never clear them.
+                      </div>
+                      <button
+                        onClick={forcePush}
+                        disabled={busy || syncing}
+                        className="text-[11px] text-amber-300 hover:text-amber-200 underline underline-offset-2 disabled:opacity-40"
+                      >
+                        Replace the cloud copy with this device
+                      </button>
                     </div>
                   )}
                 </div>

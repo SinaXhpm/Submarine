@@ -191,6 +191,9 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     setError(null);
     if (!newName.trim()) { setError("Pick a name."); return; }
     if (!newPassword) { setError("Set a password."); return; }
+    // The backend enforces this too — say it here so the rule shows up while
+    // they're still typing, not as a rejection after they've confirmed it twice.
+    if (newPassword.length < 8) { setError("Use at least 8 characters — this password protects every saved credential."); return; }
     if (newPassword !== newConfirmPassword) { setError("Passwords don't match."); return; }
     setBusy(true);
     try {
