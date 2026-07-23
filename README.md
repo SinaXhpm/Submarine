@@ -5,6 +5,7 @@
   <p>Manage servers, edit remote files, forward ports, and sync folders from one native window. Built with Rust and Tauri.</p>
   <p>
     <a href="https://github.com/sinaxhpm/submarine/releases"><img alt="release" src="https://img.shields.io/github/v/release/sinaxhpm/submarine?include_prereleases" /></a>
+    <a href="https://github.com/sinaxhpm/submarine/releases"><img alt="downloads" src="https://img.shields.io/github/downloads/sinaxhpm/submarine/total" /></a>
     <a href="https://github.com/sinaxhpm/submarine/actions"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/sinaxhpm/submarine/release.yml" /></a>
     <img alt="platforms" src="https://img.shields.io/badge/platform-windows%20%7C%20macos%20%7C%20linux%20%7C%20android-blue" />
     <img alt="license" src="https://img.shields.io/badge/license-MIT-green" />
