@@ -126,11 +126,11 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
                   className="w-16 h-8 bg-black border border-white/10 rounded-lg px-2 text-[12px] font-bold text-white focus:border-primary/50 outline-none text-center"
                 />
               </div>
-              <input 
-                type="range" 
-                min="10" 
-                max="24" 
-                value={settings.terminalFontSize || 14} 
+              <input
+                type="range"
+                min="1"
+                max="24"
+                value={settings.terminalFontSize || 14}
                 onChange={(e) => setSettings({ ...settings, terminalFontSize: parseInt(e.target.value) || 14 })}
                 className="w-full accent-primary"
               />

@@ -1501,6 +1501,12 @@ function DesktopApp() {
                   try { await invoke("clone_server", { id }); refreshServers(); bumpSync(); addLog("Node cloned.", "success"); }
                   catch (e) { addLog(`CLONE_ERROR: ${e}`, "error"); }
                 }}
+                onReorderServers={async (ids: number[]) => {
+                  // Rethrow on failure so NodeGrid drops its optimistic order
+                  // override and reverts to the real (unchanged) arrangement.
+                  try { await invoke("reorder_servers", { ids }); await refreshServers(); bumpSync(); }
+                  catch (e) { addLog(`REORDER_ERROR: ${e}`, "error"); throw e; }
+                }}
                 isMobile={isMobile}
               />
             )}

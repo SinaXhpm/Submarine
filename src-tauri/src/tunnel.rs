@@ -504,6 +504,40 @@ pub async fn stop_all_for_session(tunnels_map: &TunnelMap, session_id: &str) {
 // Local forward
 // ---------------------------------------------------------------------------
 
+/// Socket options every tunnel data socket wants:
+///   - TCP_NODELAY: don't Nagle-buffer interactive traffic.
+///   - TCP keepalive: detect a peer that vanished WITHOUT a FIN/RST — a slept
+///     laptop, a NAT that silently dropped the mapping, a yanked cable. The
+///     data pump (`copy_bidirectional`) is intentionally unbounded so a
+///     legitimately-idle tunnel stays open forever; the cost is that a
+///     half-open socket whose peer is gone would otherwise park the bridge
+///     task on a read that never completes and never errors. That task holds
+///     one of MAX_CONCURRENT_CONNS permits for good, and once enough leak the
+///     listener silently stops serving new connections while still reporting
+///     "listening" — a tunnel that is up but passes no data. Kernel keepalive
+///     turns that dead peer into a socket error within ~a minute, so the pump
+///     returns and the permit is freed. A genuinely idle-but-alive connection
+///     is untouched: its keepalive probes get ACKed.
+fn apply_tunnel_sockopts(sock: &tokio::net::TcpStream) {
+    use socket2::{SockRef, TcpKeepalive};
+    let _ = sock.set_nodelay(true);
+    let ka = TcpKeepalive::new()
+        .with_time(Duration::from_secs(30))
+        .with_interval(Duration::from_secs(10));
+    let _ = SockRef::from(sock).set_tcp_keepalive(&ka);
+}
+
+/// Whether an `accept()` error is a transient per-connection hiccup (the client
+/// went away between SYN and accept) that we should just skip, versus something
+/// that warrants a short breather before retrying so we don't hot-spin. Either
+/// way a "permanent" tunnel must NEVER tear its listener down over one accept
+/// error — that was itself a silent-death path: a momentary EMFILE would return
+/// from the loop, unbind the port, and kill the tunnel.
+fn transient_accept_error(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::*;
+    matches!(e.kind(), ConnectionAborted | ConnectionReset | Interrupted | WouldBlock)
+}
+
 async fn run_local_forward(
     app: AppHandle,
     session_id: String,
@@ -541,8 +575,19 @@ async fn run_local_forward(
                 break;
             }
             accepted = listener.accept() => {
-                let (sock, peer) = accepted.map_err(|e| format!("accept: {}", e))?;
-                let _ = sock.set_nodelay(true);
+                let (sock, peer) = match accepted {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        // Keep the listener alive across accept errors — see
+                        // transient_accept_error. Only a sustained resource
+                        // error gets a short sleep to avoid a hot loop.
+                        if !transient_accept_error(&e) {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        continue;
+                    }
+                };
+                apply_tunnel_sockopts(&sock);
                 // Hard cap on concurrent bridge tasks. try_acquire is
                 // non-blocking: at the cap we close the new socket and keep
                 // serving existing connections rather than queueing (an
@@ -645,8 +690,18 @@ async fn run_dynamic_forward(
                 break;
             }
             accepted = listener.accept() => {
-                let (sock, peer) = accepted.map_err(|e| format!("accept: {}", e))?;
-                let _ = sock.set_nodelay(true);
+                let (sock, peer) = match accepted {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        // Same resilience as run_local_forward: never let a
+                        // single accept error kill the listener.
+                        if !transient_accept_error(&e) {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        continue;
+                    }
+                };
+                apply_tunnel_sockopts(&sock);
                 // Hard cap on concurrent bridge tasks — see run_local_forward.
                 // Non-blocking: at the cap we close the socket and keep serving.
                 let permit = match Arc::clone(&conn_limiter).try_acquire_owned() {
@@ -768,7 +823,7 @@ pub async fn bridge_forwarded_channel(
 
     match tokio::net::TcpStream::connect(&entry.target).await {
         Ok(mut local) => {
-            let _ = local.set_nodelay(true);
+            apply_tunnel_sockopts(&local);
             let _ = tokio::io::copy_bidirectional(&mut local, &mut stream).await;
         }
         Err(e) => {

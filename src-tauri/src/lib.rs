@@ -747,7 +747,7 @@ const ENTITIES: &[EntitySpec] = &[
     EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password", "edited_by"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys", required: false }] },
     EntitySpec {
         table: "servers",
-        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "edited_by"],
+        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "position", "edited_by"],
         fks: &[
             Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials", required: false },
             Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders", required: false },
@@ -966,7 +966,20 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
         vec![Box::new(rec.uuid.clone()), Box::new(rec.updated_at.clone()), Box::new(rec.deleted as i64)];
     for c in spec.cols {
         columns.push((*c).into());
-        params.push(json_to_sql(obj.get(*c)));
+        let val = obj.get(*c);
+        // Backward-compat shim: `position` was added to servers' synced cols in
+        // 0.3.5. Records from a pre-0.3.5 peer omit the key entirely, so
+        // json_to_sql(None) would bind an explicit SQL NULL — which violates
+        // `position INTEGER NOT NULL` and makes the whole upsert fail, silently
+        // skipping the server row (its SSH credentials with it). Coerce a
+        // missing/null position to its default 0 so cross-version merges LAND
+        // the row instead of dropping it. Only needed for NOT-NULL columns
+        // added to an already-syncing entity after sync shipped.
+        if *c == "position" && matches!(val, None | Some(serde_json::Value::Null)) {
+            params.push(Box::new(0i64));
+        } else {
+            params.push(json_to_sql(val));
+        }
     }
     for fk in spec.fks {
         let ref_uuid = obj.get(fk.key).and_then(|v| v.as_str());
@@ -2248,7 +2261,7 @@ mod sync_engine_tests {
             "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
-             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);",
@@ -2509,6 +2522,40 @@ mod sync_engine_tests {
         assert_eq!(folder, "f", "server.folder_id must resolve to the right folder on B");
         let key_name: String = b.query_row("SELECT (SELECT name FROM ssh_keys k WHERE k.id=c.key_id) FROM credentials c WHERE c.name='c'", [], |r| r.get(0)).unwrap();
         assert_eq!(key_name, "k", "credential.key_id must resolve to the right ssh_key on B");
+    }
+
+    // Regression: `position` (NOT NULL) was added to servers' synced cols in
+    // 0.3.5. A PRE-0.3.5 peer's payload omits the key, so apply_entity used to
+    // bind an explicit SQL NULL, hit "NOT NULL constraint failed:
+    // servers.position", and silently skip the whole server row — losing its
+    // SSH credentials — with no self-heal. The merge must default a missing
+    // position to 0 and land the row.
+    #[test]
+    fn a_pre_0_3_5_peer_server_without_position_still_merges() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name, host, password) VALUES('prod','h','SECRET')", []).unwrap();
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        // Rewrite the server blob to look like an old peer's: strip `position`.
+        for r in recs.iter_mut() {
+            if r.entity_type == "servers" {
+                let plain = decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap();
+                let mut obj: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+                obj.as_object_mut().unwrap().remove("position");
+                assert!(obj.get("position").is_none(), "test setup: position must be absent");
+                let bytes = serde_json::to_vec(&obj).unwrap();
+                r.blob = Some(encrypt_entity(&bytes, &KEY).unwrap());
+            }
+        }
+
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+
+        // Row must exist (not skipped), and the absent position defaults to 0.
+        let (host, pos): (String, i64) = b
+            .query_row("SELECT host, position FROM servers WHERE name='prod'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("a server from a pre-0.3.5 peer (no position key) must merge, not be skipped");
+        assert_eq!(host, "h");
+        assert_eq!(pos, 0, "a missing position must default to 0");
     }
 
     #[test]
@@ -3254,6 +3301,11 @@ async fn setup_master_db_inner(
             "ALTER TABLE commands ADD COLUMN edited_by TEXT",
             "ALTER TABLE notes ADD COLUMN edited_by TEXT",
             "ALTER TABLE monitor_configs ADD COLUMN edited_by TEXT",
+            // Manual drag-to-reorder of the node grid. Default 0 keeps the
+            // pre-existing implicit rowid order until the user first reorders;
+            // `get_servers` sorts by (position, id) so ties fall back to id.
+            // Synced (it's in the servers ENTITIES cols), so order LWW-merges.
+            "ALTER TABLE servers ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let s = e.to_string();
@@ -3296,7 +3348,7 @@ async fn setup_master_db_inner(
             "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
@@ -3655,6 +3707,14 @@ async fn add_server(
     }
 
     let new_id = conn.last_insert_rowid();
+    // Append to the bottom of its folder's manual order: one past the current
+    // max position among the folder's other rows (`IS ?2` is NULL-safe so the
+    // root folder groups correctly). Without this a new node would inherit the
+    // default position 0 and jump to the TOP of a folder the user reordered.
+    let _ = conn.execute(
+        "UPDATE servers SET position = COALESCE((SELECT MAX(position) FROM servers WHERE id != ?1 AND folder_id IS ?2), -1) + 1 WHERE id = ?1",
+        rusqlite::params![new_id, folder_id],
+    );
     drop(conn_guard);
     save_vault_internal(&state)?;
     Ok(new_id)
@@ -3868,6 +3928,36 @@ async fn set_server_color(state: tauri::State<'_, DbState>, id: i32, color: Opti
     Ok(())
 }
 
+/// Persist a manual drag-to-reorder of the node grid. `ids` is the full list
+/// of server ids in their new visual order (typically the servers of one
+/// folder); we write each id's index as its `position`, so `get_servers`'
+/// `ORDER BY position, id` reproduces the arrangement. The AFTER-UPDATE trigger
+/// stamps updated_at/edited_by, so the new order LWW-syncs to other devices
+/// like any other edited field. Writing 0..n only for the passed ids is safe:
+/// positions are compared within a folder after `get_servers` filters, and id
+/// breaks any cross-folder ties.
+#[tauri::command]
+async fn reorder_servers(state: tauri::State<'_, DbState>, ids: Vec<i32>) -> Result<(), String> {
+    {
+        let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        for (idx, id) in ids.iter().enumerate() {
+            // Only touch rows whose position actually changes. The AFTER-UPDATE
+            // trigger stamps updated_at unconditionally on any matched row, and
+            // sync is whole-row LWW — so updating every folder member on each
+            // reorder would bump their updated_at and could clobber a field
+            // (password/host) edited concurrently on another device. Guarding on
+            // a real change limits that blast radius to the genuinely-moved rows.
+            conn.execute(
+                "UPDATE servers SET position=?1 WHERE id=?2 AND (position IS NULL OR position<>?1)",
+                rusqlite::params![idx as i64, id],
+            ).map_err(|e| format!("[DATABASE] SERVER_REORDER_FAILED: {}", e))?;
+        }
+    }
+    save_vault_internal(&state)?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn set_folder_color(state: tauri::State<'_, DbState>, id: i32, color: Option<String>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
@@ -3951,6 +4041,14 @@ async fn clone_server(state: tauri::State<'_, DbState>, id: i32) -> Result<i64, 
         return Err(format!("[DATABASE] SERVER_CLONE_FAILED: no row with id {}", id));
     }
     let new_id = conn.last_insert_rowid();
+    // Place the clone at the bottom of its folder's manual order (the INSERT
+    // above doesn't copy `position`, so without this it would default to 0 and
+    // jump to the top). Same append logic as add_server, folder taken from the
+    // clone's own row.
+    let _ = conn.execute(
+        "UPDATE servers SET position = COALESCE((SELECT MAX(position) FROM servers s2 WHERE s2.id != servers.id AND s2.folder_id IS servers.folder_id), -1) + 1 WHERE id = ?1",
+        rusqlite::params![new_id],
+    );
     drop(conn_guard);
     save_vault_internal(&state)?;
     Ok(new_id)
@@ -3992,7 +4090,10 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     // unless someone explicitly invokes `reveal_server_password`. The edit
     // panel calls reveal on open, but the cards / sidebar / quick-connect
     // grid never see the plaintext.
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by FROM servers")
+    // ORDER BY (position, id): `position` is the manual drag-to-reorder rank
+    // (default 0 for never-reordered rows), and id breaks ties so the order is
+    // stable and, before any reorder, identical to the old rowid order.
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position FROM servers ORDER BY position, id")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -4021,6 +4122,8 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             // Attribution: HLC stamp (encodes last-edit time) + who last edited.
             "updated_at": row.get::<_, Option<String>>(20)?,
             "edited_by": row.get::<_, Option<String>>(21)?,
+            // Manual drag-to-reorder rank (see ORDER BY above).
+            "position": row.get::<_, i64>(22).unwrap_or(0),
         }))
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
@@ -10060,7 +10163,7 @@ pub fn run() {
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
             profile_share_status, stop_sharing, profile_sync_stats,
             set_editor_label,
-            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
+            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,
             add_command, edit_command, delete_command, get_commands,

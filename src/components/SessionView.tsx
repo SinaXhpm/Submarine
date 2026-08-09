@@ -83,6 +83,17 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   const [kbiValues, setKbiValues] = useState<string[]>([]);
   const [isAuthError, setIsAuthError] = useState(false);
   const [customPassword, setCustomPassword] = useState("");
+  // The connect-time log box mirrors the terminal font-size setting, so the
+  // user's chosen size applies to the startup logs too — not just the shell.
+  // `submarine-settings-changed` (dispatched by Settings on save) keeps it live.
+  const readLogFontSize = () =>
+    Math.max(1, parseInt(localStorage.getItem('submarine-terminal-font-size') || '14') || 14);
+  const [logFontSize, setLogFontSize] = useState(readLogFontSize);
+  useEffect(() => {
+    const sync = () => setLogFontSize(readLogFontSize());
+    window.addEventListener('submarine-settings-changed', sync);
+    return () => window.removeEventListener('submarine-settings-changed', sync);
+  }, []);
   // The connection effect runs once and captures `customPassword=""` in its
   // closure. Auto-reconnect attempts and the disconnect listener that
   // schedules them must read the LATEST password the user typed into the
@@ -940,7 +951,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   if (reconnectAttempt === 0 && (status === 'connecting' || status === 'failed')) {
     return (
       <div className="flex-1 flex flex-col p-4 sm:p-8 bg-[#0a0a0c] text-white overflow-hidden">
-        <div className="max-w-2xl w-full mx-auto flex-1 flex flex-col">
+        <div className="max-w-2xl w-full mx-auto flex-1 flex flex-col min-h-0">
           {/* Header: on desktop, title row keeps title + actions side-by-side.
               On phone, wide letter-spacing on the title wraps "0-1 AMIR" onto
               three lines and the Reconnect / Close buttons get pushed past
@@ -979,8 +990,18 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
             )}
           </div>
 
-          {/* Log Window */}
-          <div className="flex-1 bg-[#121214] border border-white/5 rounded-2xl p-4 font-mono text-[11px] overflow-y-auto custom-scrollbar shadow-inner relative select-text cursor-text">
+          {/* Log Window. `min-h-0` is what makes it actually scroll: a flex
+              child defaults to min-height:auto (its content height), so without
+              this the box grows to fit every line and the parent's
+              overflow-hidden clips it instead of the inner overflow-y-auto
+              taking over — invisible on desktop with a tall window, but on a
+              short Android viewport the log gets cut off with no way to scroll.
+              overscroll-contain keeps a flick from scrolling the page behind it;
+              WebkitOverflowScrolling gives older Android WebViews momentum. */}
+          <div
+            className="flex-1 min-h-0 bg-[#121214] border border-white/5 rounded-2xl p-4 font-mono overflow-y-auto overscroll-contain custom-scrollbar shadow-inner relative select-text cursor-text"
+            style={{ WebkitOverflowScrolling: 'touch', fontSize: logFontSize, lineHeight: 1.5 }}
+          >
             {logs.map((l, i) => (
               <div key={i} className={`mb-2 ${l.type === 'error' ? 'text-red-400' : l.type === 'success' ? 'text-primary' : 'text-zinc-400'}`}>
                 <span className="text-zinc-600 opacity-50 mr-3">[{l.time}]</span>
