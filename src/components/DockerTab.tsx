@@ -40,13 +40,25 @@ interface ComposeContainer {
 }
 interface ContainerStats { id: string; name: string; cpuPerc: string; memUsage: string; memPerc: string; netIO: string; blockIO: string; pids: string; }
 
-// Parse `--format '{{json .}}'` JSONL output. One JSON object per line.
-function parseJsonl<T>(raw: string, mapper: (o: any) => T): T[] {
+// Parse our lean pipe-delimited `--format` output. We ask docker for ONLY the
+// fields the UI renders (not the whole `{{json .}}` object) to cut wire size —
+// a container's unused `.Labels`/`.Mounts`/`.Networks` alone can dwarf every
+// field we show. Each line is `val|val|…` in `keys` order; this rebuilds an
+// object keyed by the same capitalized names the old JSON had, so the field
+// mappers below are unchanged. The LAST key absorbs any stray delimiter in its
+// value (docker's fields don't contain `|`, but this keeps a surprise from
+// shifting columns).
+function parseFields<T>(raw: string, keys: string[], mapper: (o: any) => T): T[] {
   const out: T[] = [];
   for (const line of raw.split(/\r?\n/)) {
-    const l = line.trim();
-    if (!l) continue;
-    try { out.push(mapper(JSON.parse(l))); } catch { /* skip */ }
+    if (!line.trim()) continue;
+    const parts = line.split("|");
+    if (parts.length < keys.length) continue;
+    const o: Record<string, string> = {};
+    for (let i = 0; i < keys.length; i++) {
+      o[keys[i]] = i === keys.length - 1 ? parts.slice(i).join("|") : parts[i];
+    }
+    out.push(mapper(o));
   }
   return out;
 }
@@ -163,7 +175,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
       // when the user opens a container's Stats tab.
       const r = await invoke<DockerTextResult>("ssh_docker_containers", { sessionId });
       if (!r.success) throw new Error(r.data || "container list failed");
-      const data = parseJsonl<Container>(r.data, o => ({
+      const data = parseFields<Container>(r.data, ["ID", "Image", "Names", "Status", "State", "Ports"], o => ({
         id: o.ID || "",
         image: o.Image || "",
         names: o.Names || "",
@@ -183,7 +195,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
     try {
       const r = await invoke<DockerTextResult>("ssh_docker_images_list", { sessionId });
       if (!r.success) throw new Error(r.data || "image list failed");
-      const data = parseJsonl<ImageRow>(r.data, o => ({
+      const data = parseFields<ImageRow>(r.data, ["Repository", "Tag", "ID", "Size", "CreatedSince"], o => ({
         repo: o.Repository || "<none>",
         tag: o.Tag || "<none>",
         id: o.ID || "",
@@ -201,7 +213,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
     try {
       const r = await invoke<DockerTextResult>("ssh_docker_volumes_list", { sessionId });
       if (!r.success) throw new Error(r.data || "volume list failed");
-      const data = parseJsonl<VolumeRow>(r.data, o => ({
+      const data = parseFields<VolumeRow>(r.data, ["Name", "Driver", "Mountpoint"], o => ({
         name: o.Name || "",
         driver: o.Driver || "",
         mountpoint: o.Mountpoint || "",
@@ -217,7 +229,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
     try {
       const r = await invoke<DockerTextResult>("ssh_docker_networks", { sessionId });
       if (!r.success) throw new Error(r.data || "network list failed");
-      const data = parseJsonl<NetworkRow>(r.data, o => ({
+      const data = parseFields<NetworkRow>(r.data, ["ID", "Name", "Driver", "Scope"], o => ({
         id: o.ID || "",
         name: o.Name || "",
         driver: o.Driver || "",
@@ -838,6 +850,12 @@ const ContainerDetailsModal = ({
   const liveStreamIdRef = useRef<string | null>(null);
   const logsBoxRef = useRef<HTMLPreElement | null>(null);
   const autoScrollRef = useRef(true);
+  // Live-log chunks are coalesced through a one-per-frame rAF before hitting
+  // React state: a chatty stream used to fire a setLogs per event, each
+  // re-rendering the whole (up to 1 MB) <pre> — O(n*chunks) work that froze the
+  // tab. Buffering here caps that to ~60 state updates/sec no matter the rate.
+  const logBufRef = useRef("");
+  const logRafRef = useRef<number | null>(null);
 
   const fetchLogs = async (tail: number) => {
     setLogsLoading(true); setLogsError(null);
@@ -865,12 +883,23 @@ const ContainerDetailsModal = ({
     if (!logs) await fetchLogs(logsTail);
     try {
       const unlistenLine = await listen<string>(`docker-logs-${sid}`, (e) => {
-        setLogs(prev => {
-          const next = prev + e.payload;
-          // Trim from the front so memory doesn't explode in a long live
-          // tail. 1 MB of text is plenty of scroll-back for triage.
-          return next.length > 1_000_000 ? next.slice(next.length - 800_000) : next;
-        });
+        // Buffer the chunk and flush at most once per animation frame, so a
+        // firehose collapses to ~60 setLogs/sec instead of one per event.
+        logBufRef.current += e.payload;
+        if (logRafRef.current == null) {
+          logRafRef.current = requestAnimationFrame(() => {
+            logRafRef.current = null;
+            const chunk = logBufRef.current;
+            logBufRef.current = "";
+            if (!chunk) return;
+            setLogs(prev => {
+              const next = prev + chunk;
+              // Trim from the front so memory doesn't explode in a long live
+              // tail. 1 MB of text is plenty of scroll-back for triage.
+              return next.length > 1_000_000 ? next.slice(next.length - 800_000) : next;
+            });
+          });
+        }
       });
       const unlistenClose = await listen(`docker-logs-closed-${sid}`, () => {
         setLive(false);
@@ -878,7 +907,12 @@ const ContainerDetailsModal = ({
       });
       await invoke("ssh_docker_logs_start", { sessionId, streamId: sid, container: name, tail: 0 });
       // Clean up listeners when live ends or modal closes.
-      const cleanup = () => { unlistenLine(); unlistenClose(); };
+      const cleanup = () => {
+        unlistenLine();
+        unlistenClose();
+        if (logRafRef.current != null) { cancelAnimationFrame(logRafRef.current); logRafRef.current = null; }
+        logBufRef.current = "";
+      };
       (liveStreamIdRef as any).cleanup = cleanup;
     } catch (e: any) {
       setLogsError(typeof e === "string" ? e : (e?.message || "live start failed"));
@@ -936,7 +970,7 @@ const ContainerDetailsModal = ({
       // round-trip from seconds → ~80 ms and shrinks the wire response
       // to a single JSON line — a meaningful win on low-bandwidth SSH.
       const r = await invoke<DockerTextResult>("ssh_docker_stats", { sessionId, container: name });
-      const rows = parseJsonl<ContainerStats>(r.data, o => ({
+      const rows = parseFields<ContainerStats>(r.data, ["Name", "CPUPerc", "MemUsage", "MemPerc", "NetIO", "BlockIO", "PIDs"], o => ({
         id: o.ID || "", name: o.Name || "",
         cpuPerc: o.CPUPerc || "", memUsage: o.MemUsage || "", memPerc: o.MemPerc || "",
         netIO: o.NetIO || "", blockIO: o.BlockIO || "", pids: o.PIDs || "",

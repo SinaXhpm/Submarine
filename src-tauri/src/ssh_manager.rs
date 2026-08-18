@@ -22,6 +22,27 @@ pub struct PtySize {
     pub rows: u32,
 }
 
+/// Flush a coalesced batch of PTY output as one `terminal-output-{id}` event.
+///
+/// The read loops accumulate channel bytes and call this on an ~8ms timer or a
+/// size cap instead of emitting once per SSH packet. Two problems that fixes:
+/// a firehose (`cat` of a big file) used to emit thousands of tiny events —
+/// each a Tauri IPC dispatch the WebView main thread had to service — and each
+/// `Vec<u8>` payload serialized as a JSON number array (`[104,105,...]`),
+/// roughly 4x the bytes. Together they saturated the main thread and froze the
+/// whole terminal tab until it was closed. Batching cuts the event count, and
+/// base64 (~1.33x) keeps each payload compact. Bytes are sent (not a decoded
+/// string) so xterm can buffer a multibyte sequence split across batches.
+pub fn emit_terminal_batch(app: &AppHandle, terminal_id: &str, buf: &mut Vec<u8>) {
+    if buf.is_empty() {
+        return;
+    }
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+    let _ = app.emit(&format!("terminal-output-{}", terminal_id), b64);
+    buf.clear();
+}
+
 pub struct SshState {
     pub fp_txs: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     /// Pending keyboard-interactive (2FA / OTP) prompt responses, keyed by the

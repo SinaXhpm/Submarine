@@ -229,17 +229,17 @@ pub async fn ssh_docker_stats(
     // containers still work unchanged.
     container: Option<String>,
 ) -> Result<DockerTextResult, String> {
+    // Lean field list (only what the Stats panel renders). Kept as a plain const
+    // so the doubled `{{ }}` are literal docker-template braces, not format! args.
+    const STATS_FMT: &str = "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.NetIO}}|{{.BlockIO}}|{{.PIDs}}'";
     let cmd = match container.as_deref() {
         Some(name) => {
             if !is_safe_name(name) {
                 return Err("invalid container name".into());
             }
-            format!(
-                "docker stats --no-stream --format '{{{{json .}}}}' {}",
-                shq(name)
-            )
+            format!("{} {}", STATS_FMT, shq(name))
         }
-        None => "docker stats --no-stream --format '{{json .}}'".to_string(),
+        None => STATS_FMT.to_string(),
     };
     let (success, data, used_sudo) = run_docker_smart(&state, &session_id, &cmd, 20).await?;
     Ok(DockerTextResult {
@@ -280,7 +280,7 @@ pub async fn ssh_docker_networks(
     state: tauri::State<'_, SshState>,
     session_id: String,
 ) -> Result<DockerTextResult, String> {
-    let cmd = "docker network ls --format '{{json .}}'";
+    let cmd = "docker network ls --format '{{.ID}}|{{.Name}}|{{.Driver}}|{{.Scope}}'";
     let (success, data, used_sudo) = run_docker_smart(&state, &session_id, cmd, 15).await?;
     Ok(DockerTextResult {
         success,
@@ -301,7 +301,9 @@ pub async fn ssh_docker_containers(
     state: tauri::State<'_, SshState>,
     session_id: String,
 ) -> Result<DockerTextResult, String> {
-    let cmd = "docker ps -a --format '{{json .}}'";
+    // Lean field list (only what the UI renders) instead of `{{json .}}` — skips
+    // the unused, often-bulky .Labels/.Mounts/.Networks/.Command per container.
+    let cmd = "docker ps -a --format '{{.ID}}|{{.Image}}|{{.Names}}|{{.Status}}|{{.State}}|{{.Ports}}'";
     let (success, data, used_sudo) = run_docker_smart(&state, &session_id, cmd, 15).await?;
     Ok(DockerTextResult { success, data, used_sudo })
 }
@@ -311,7 +313,7 @@ pub async fn ssh_docker_images_list(
     state: tauri::State<'_, SshState>,
     session_id: String,
 ) -> Result<DockerTextResult, String> {
-    let cmd = "docker images --format '{{json .}}'";
+    let cmd = "docker images --format '{{.Repository}}|{{.Tag}}|{{.ID}}|{{.Size}}|{{.CreatedSince}}'";
     let (success, data, used_sudo) = run_docker_smart(&state, &session_id, cmd, 15).await?;
     Ok(DockerTextResult { success, data, used_sudo })
 }
@@ -321,7 +323,7 @@ pub async fn ssh_docker_volumes_list(
     state: tauri::State<'_, SshState>,
     session_id: String,
 ) -> Result<DockerTextResult, String> {
-    let cmd = "docker volume ls --format '{{json .}}'";
+    let cmd = "docker volume ls --format '{{.Name}}|{{.Driver}}|{{.Mountpoint}}'";
     let (success, data, used_sudo) = run_docker_smart(&state, &session_id, cmd, 15).await?;
     Ok(DockerTextResult { success, data, used_sudo })
 }
@@ -559,15 +561,66 @@ pub async fn ssh_docker_logs_start(
     // JoinHandle and its `.abort_handle()` — we want to be able to stop
     // the stream from another command later via DockerStreams.
     let handle = tokio::spawn(async move {
+        // Coalesce log output: a chatty container's `docker logs -f` can emit a
+        // firehose, and one event per 8 KB read flooded the frontend (each event
+        // triggered a setLogs + full re-render of the growing <pre>). Accumulate
+        // and flush at most every ~30 ms, or sooner past a size cap.
+        // `stream.read` is cancel-safe, so racing it against the flush timer in
+        // select! never drops data.
+        const FLUSH_CAP: usize = 256 * 1024;
         let mut buf = [0u8; 8192];
+        let mut out: Vec<u8> = Vec::new();
+        let mut flush = tokio::time::interval(std::time::Duration::from_millis(30));
+        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Emit only the complete-UTF-8 PREFIX per streaming flush and KEEP any
+        // trailing incomplete multibyte sequence in `out` so the next read can
+        // finish it — decoding the whole buffer lossily each flush would turn a
+        // character split across a flush boundary (the 30ms tick or the size cap)
+        // into replacement chars. A genuinely invalid byte is drained lossily so
+        // a malformed stream can't stall the buffer. `final_flush` emits the whole
+        // remainder (the stream is ending; a trailing partial will never arrive).
+        let flush_logs = |out: &mut Vec<u8>, final_flush: bool| {
+            if out.is_empty() { return; }
+            if final_flush {
+                let s = String::from_utf8_lossy(&out[..]).into_owned();
+                let _ = app_clone.emit(&event_name, s);
+                out.clear();
+                return;
+            }
+            let take = match std::str::from_utf8(&out[..]) {
+                Ok(_) => out.len(),
+                Err(e) => match e.error_len() {
+                    // Incomplete tail: keep it buffered for the next read.
+                    None => e.valid_up_to(),
+                    // Invalid bytes never complete — emit through them lossily and
+                    // drain so `out` can't stall/grow on a malformed stream.
+                    Some(bad) => {
+                        let end = e.valid_up_to() + bad;
+                        let s = String::from_utf8_lossy(&out[..end]).into_owned();
+                        let _ = app_clone.emit(&event_name, s);
+                        out.drain(..end);
+                        return;
+                    }
+                },
+            };
+            if take == 0 { return; } // only a partial char buffered so far
+            let s = String::from_utf8_lossy(&out[..take]).into_owned();
+            let _ = app_clone.emit(&event_name, s);
+            out.drain(..take);
+        };
         loop {
-            match stream.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let _ = app_clone.emit(&event_name, chunk);
+            tokio::select! {
+                r = stream.read(&mut buf) => {
+                    match r {
+                        Ok(0) => { flush_logs(&mut out, true); break; }
+                        Ok(n) => {
+                            out.extend_from_slice(&buf[..n]);
+                            if out.len() >= FLUSH_CAP { flush_logs(&mut out, false); }
+                        }
+                        Err(_) => { flush_logs(&mut out, true); break; }
+                    }
                 }
-                Err(_) => break,
+                _ = flush.tick() => { flush_logs(&mut out, false); }
             }
         }
         let _ = app_clone.emit(&close_event, serde_json::json!({}));
@@ -672,26 +725,59 @@ pub async fn open_container_terminal(
     let terminal_id_clone = terminal_id.clone();
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
+        // Same coalescing as the SSH terminal (see open_terminal): batch output
+        // and flush on an ~8ms timer or a size cap so a firehose can't flood the
+        // WebView main thread and freeze the tab. emit_terminal_batch base64s
+        // the batch into one compact event.
+        use crate::ssh_manager::emit_terminal_batch;
+        const FLUSH_CAP: usize = 256 * 1024;
+        const FLUSH_WINDOW: std::time::Duration = std::time::Duration::from_millis(8);
+        let mut out_buf: Vec<u8> = Vec::new();
+        // Flush timer armed only while bytes are buffered — an idle container
+        // terminal contributes zero wakeups (see open_terminal for the rationale).
+        let park = || tokio::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
+        let flush_timer = tokio::time::sleep_until(park());
+        tokio::pin!(flush_timer);
         loop {
             tokio::select! {
                 msg_opt = channel.wait() => {
                     match msg_opt {
                         Some(ChannelMsg::Data { ref data }) => {
-                            let _ = app_clone.emit(&format!("terminal-output-{}", terminal_id_clone), data.to_vec());
+                            let was_empty = out_buf.is_empty();
+                            out_buf.extend_from_slice(data);
+                            if out_buf.len() >= FLUSH_CAP {
+                                emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
+                            } else if was_empty {
+                                flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
+                            }
                         },
                         Some(ChannelMsg::ExtendedData { ref data, ext: _ }) => {
-                            let _ = app_clone.emit(&format!("terminal-output-{}", terminal_id_clone), data.to_vec());
+                            let was_empty = out_buf.is_empty();
+                            out_buf.extend_from_slice(data);
+                            if out_buf.len() >= FLUSH_CAP {
+                                emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
+                            } else if was_empty {
+                                flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
+                            }
                         },
-                        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => break,
+                        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; },
                         Some(_) => {},
-                        None => break,
+                        None => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; },
                     }
+                },
+                _ = &mut flush_timer => {
+                    emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
+                    flush_timer.as_mut().reset(park());
                 },
                 opt_cmd = rx.recv() => {
                     match opt_cmd {
                         Some(cmd) => match cmd {
                             TerminalCommand::Data(data) => {
-                                if channel.data(&data[..]).await.is_err() { break; }
+                                if channel.data(&data[..]).await.is_err() {
+                                    // Flush the last buffered output before bailing.
+                                    emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
+                                    break;
+                                }
                             }
                         },
                         None => { let _ = channel.close().await; break; }

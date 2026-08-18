@@ -249,12 +249,23 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
   };
 
   // Tick once per second so "offline for Xs" badges advance even without
-  // a new event firing.
+  // a new event firing. Pause while the OS window is hidden/minimized — nobody
+  // is watching the badges then, and the backend keeps monitoring regardless
+  // (this tick is display-only). Re-showing does an immediate tick so the
+  // badges are current the instant the window comes back.
   const [, forceTick] = useState(0);
+  const [winShown, setWinShown] = useState(() => typeof document === "undefined" || !document.hidden);
   useEffect(() => {
+    const onVis = () => setWinShown(!document.hidden);
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+  useEffect(() => {
+    if (!winShown) return;
+    forceTick((n) => n + 1);
     const id = window.setInterval(() => forceTick((n) => n + 1), 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [winShown]);
 
   // ---- data load + live listeners --------------------------------------------
 

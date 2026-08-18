@@ -584,16 +584,37 @@ const TerminalView = ({
       const ok = await writeClipboard(text);
       if (ok) notify('Copied');
     };
-    // Only copy when the release actually lands on the text grid. xterm's
-    // text rows live inside .xterm-screen in both renderers; releasing on
-    // padding, the viewport scrollbar, or anything outside that subtree
-    // means the user didn't finish on text — drop the copy so a stray
-    // click on the gutter doesn't clobber the clipboard.
-    const onMouseUp = (ev: MouseEvent) => {
-      const target = ev.target as HTMLElement | null;
-      if (!target || !target.closest('.xterm-screen')) return;
+    // Copy-on-select must fire wherever the mouse is RELEASED — not only inside
+    // the terminal. A user who drags a selection and lets go past the terminal's
+    // edge (a very natural motion) still expects the copy, but the old handler
+    // listened for `mouseup` on the terminal element itself, so a release
+    // outside it never fired and only left the text selected.
+    //
+    // Instead: ARM on a left-button mousedown that starts inside this terminal,
+    // then catch `mouseup` on the DOCUMENT so the release is seen anywhere.
+    // Requiring the drag to have started here keeps an unrelated release
+    // elsewhere from touching the clipboard, and copySelectionIfAny() no-ops
+    // when there's no real selection — so a plain click (which clears the
+    // selection) still can't clobber it. The selection end is set by the last
+    // mousemove, so it's final by the time we read it on mouseup.
+    let selectionArmed = false;
+    const onMouseDown = (ev: MouseEvent) => {
+      // Assign (not just set-true) so a non-left mousedown re-disarms a flag
+      // that got stuck from an earlier drag whose mouseup we never saw.
+      selectionArmed = ev.button === 0;
+    };
+    const onDocMouseUp = (ev: MouseEvent) => {
+      if (ev.button !== 0 || !selectionArmed) return;
+      selectionArmed = false;
       void copySelectionIfAny();
     };
+    // If the window loses focus mid-drag (Alt-Tab, a focus-stealing dialog),
+    // the button is released over another window and the matching `mouseup`
+    // never reaches `document`, leaving selectionArmed stuck true. A later
+    // unrelated left-click would then copy this terminal's stale selection and
+    // clobber the clipboard. Disarm on blur so only a release we actually see
+    // can copy.
+    const onWindowBlur = () => { selectionArmed = false; };
     // Right-click → paste clipboard into the PTY. preventDefault swallows the
     // platform context menu so the user gets the terminal-style behavior they
     // asked for. Disabled sessions silently drop the paste (matches onData).
@@ -617,7 +638,9 @@ const TerminalView = ({
       }).catch(console.error);
       notify('Pasted');
     };
-    terminalRef.current.addEventListener('mouseup', onMouseUp);
+    terminalRef.current.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('mouseup', onDocMouseUp);
+    window.addEventListener('blur', onWindowBlur);
     terminalRef.current.addEventListener('contextmenu', onContextMenu);
 
     // Handle Resize
@@ -627,7 +650,13 @@ const TerminalView = ({
 
     // Handle Output with proper async cleanup for StrictMode
     const unlistenPromise = listen(`terminal-output-${terminalId}`, (event: any) => {
-      const data = new Uint8Array(event.payload);
+      // The backend now coalesces output and sends it base64-encoded (was a raw
+      // JSON byte array — ~4x larger and one event per SSH packet, which flooded
+      // this main-thread handler and froze the tab on big output). Decode back
+      // to bytes; xterm buffers any multibyte sequence split across batches.
+      const bin = atob(event.payload as string);
+      const data = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
       term.write(data);
       // Keep a short tail of decoded output so command-history capture can
       // recognize a no-echo password prompt and skip the typed secret.
@@ -716,9 +745,11 @@ const TerminalView = ({
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       if (container) {
-        container.removeEventListener('mouseup', onMouseUp);
+        container.removeEventListener('mousedown', onMouseDown);
         container.removeEventListener('contextmenu', onContextMenu);
       }
+      document.removeEventListener('mouseup', onDocMouseUp);
+      window.removeEventListener('blur', onWindowBlur);
       window.visualViewport?.removeEventListener('resize', onVvResize);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
       unlistenPromise.then(unlisten => unlisten());

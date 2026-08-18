@@ -1,6 +1,6 @@
 [package]
 name = "submarine"
-version = "0.3.5"
+version = "0.3.6"
 description = "Submarine SSH Client"
 authors = ["Sina Xhpm (sinaxhpm.com)"]
 license = "MIT"
@@ -71,6 +71,10 @@ tauri = { version = "2.1", features = [] }
 # already cfg-gated.
 tauri-plugin-opener = "2"
 hex = "0.4"
+# Compact transport for coalesced terminal output over the Tauri event bridge
+# (a raw Vec<u8> serializes as a ~4x-bloated JSON number array). Already in the
+# dependency tree via tauri/russh, so this direct dep adds no new crate.
+base64 = "0.22"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }

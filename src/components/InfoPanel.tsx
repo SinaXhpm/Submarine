@@ -411,7 +411,16 @@ function parseRoutesSection(section: string): RouteRow[] {
 // paint stays under 2 KB even on hosts with thousands of rules. The full
 // rules for a specific chain are pulled lazily via `ssh_iptables_chain` /
 // `ssh_nft_chain` when the user expands one.
-type FwEngine = "iptables" | "nft" | "none";
+type FwEngine = "firewalld" | "ufw" | "iptables" | "nft" | "none";
+// A firewalld zone summary (active zones only). `services`/`ports` are the
+// allow-list the zone grants; `interfaces` are the NICs bound to it.
+interface FwZone {
+  name: string;
+  isDefault: boolean;
+  interfaces: string[];
+  services: string[];
+  ports: string[];
+}
 interface FwChainSummary {
   // Common
   name: string;
@@ -431,6 +440,8 @@ interface FirewallData {
   available: boolean;
   denied: boolean;        // engine present but ruleset unreadable (perm denied)
   chains: FwChainSummary[];
+  zones?: FwZone[];       // firewalld: active zones with their services/ports
+  ufwText?: string;       // ufw: raw `ufw status verbose`, shown verbatim
 }
 function parseFirewall(section: string): FirewallData {
   const empty = (): FirewallData => ({ engine: "none", usedSudo: false, available: false, denied: false, chains: [] });
@@ -448,6 +459,44 @@ function parseFirewall(section: string): FirewallData {
     return { engine: eng, usedSudo: false, available: false, denied: true, chains: [] };
   }
   const usedSudo = tag.endsWith("-sudo");
+  // firewalld: 'DEFAULT|<zone>' then per active zone ZONE|/SVC|/PORT| rows.
+  if (tag.startsWith("firewalld")) {
+    const zoneMap = new Map<string, FwZone>();
+    let defaultZone = "";
+    const ensure = (z: string): FwZone => {
+      let zn = zoneMap.get(z);
+      if (!zn) { zn = { name: z, isDefault: false, interfaces: [], services: [], ports: [] }; zoneMap.set(z, zn); }
+      return zn;
+    };
+    for (const rawLine of body.split(/\r?\n/)) {
+      const line = rawLine.trimEnd();
+      if (!line) continue;
+      const bar = line.indexOf("|");
+      if (bar < 0) continue;
+      const kind = line.slice(0, bar);
+      const rest = line.slice(bar + 1);
+      if (kind === "DEFAULT") { defaultZone = rest.trim(); continue; }
+      const bar2 = rest.indexOf("|");
+      const zname = (bar2 >= 0 ? rest.slice(0, bar2) : rest).trim();
+      if (!zname) continue;
+      const toks = (bar2 >= 0 ? rest.slice(bar2 + 1) : "").trim().split(/\s+/).filter(Boolean);
+      const zn = ensure(zname);
+      if (kind === "ZONE") zn.interfaces = toks;
+      else if (kind === "SVC") zn.services = toks;
+      else if (kind === "PORT") zn.ports = toks;
+    }
+    if (defaultZone) ensure(defaultZone).isDefault = true;
+    // Default zone first, then alphabetical.
+    const zones = Array.from(zoneMap.values()).sort((a, b) =>
+      a.isDefault === b.isDefault ? a.name.localeCompare(b.name) : (a.isDefault ? -1 : 1));
+    return { engine: "firewalld", usedSudo, available: true, denied: false, chains: [], zones };
+  }
+  // ufw: first body line is 'UFW|active'; the rest is the raw status text.
+  if (tag.startsWith("ufw")) {
+    const firstNl = body.indexOf("\n");
+    const ufwText = firstNl >= 0 ? body.slice(firstNl + 1).trim() : "";
+    return { engine: "ufw", usedSudo, available: true, denied: false, chains: [], ufwText };
+  }
   const eng: FwEngine = tag.startsWith("iptables") ? "iptables" : "nft";
   const chains: FwChainSummary[] = [];
   for (const rawLine of body.split(/\r?\n/)) {
@@ -1181,8 +1230,80 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
     return (
       <InfoCard title="Firewall" icon={<Shield size={12} />}>
         <BannerIcon tone="zinc" icon={<AlertCircle size={14} />}>
-          Neither <code className="font-mono px-1">iptables</code> nor <code className="font-mono px-1">nft</code> is installed on this host.
+          No firewall tool (<code className="font-mono px-1">firewalld</code>, <code className="font-mono px-1">ufw</code>, <code className="font-mono px-1">iptables</code>, or <code className="font-mono px-1">nft</code>) is active on this host.
         </BannerIcon>
+      </InfoCard>
+    );
+  }
+
+  // firewalld (RHEL/Fedora): show active zones with their allowed services and
+  // ports — the operator-facing abstraction, not the raw chains it generates.
+  if (fw.engine === "firewalld") {
+    const zones = fw.zones ?? [];
+    return (
+      <InfoCard
+        title={`Firewall · firewalld · ${zones.length} zone${zones.length === 1 ? "" : "s"}`}
+        icon={<Shield size={12} />}
+        actions={fw.usedSudo ? <StatusBadge tone="zinc">sudo</StatusBadge> : undefined}
+      >
+        {zones.length === 0 ? (
+          <Empty>No active zones reported.</Empty>
+        ) : (
+          <div className="space-y-1.5">
+            {zones.map((z) => (
+              <div key={z.name} className="bg-black/30 border border-white/5 rounded-lg px-2.5 py-2">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-[11px] font-mono font-bold text-white truncate">{z.name}</span>
+                  {z.isDefault && <StatusBadge tone="green">default</StatusBadge>}
+                  {z.interfaces.length > 0 && (
+                    <span className="text-[9.5px] text-zinc-500 font-mono truncate">{z.interfaces.join(", ")}</span>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  {([["services", z.services], ["ports", z.ports]] as const).map(([label, items]) => (
+                    <div key={label} className="flex items-start gap-2">
+                      <span className="text-[9px] text-zinc-500 uppercase tracking-wide w-12 shrink-0 pt-1">{label}</span>
+                      {items.length ? (
+                        <div className="flex flex-wrap gap-1">
+                          {items.map((it) => (
+                            <span key={it} className="text-[10px] font-mono text-zinc-300 bg-white/[0.04] border border-white/5 rounded px-1.5 py-0.5">{it}</span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-[10px] text-zinc-600 italic pt-0.5">none</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </InfoCard>
+    );
+  }
+
+  // ufw (Debian/Ubuntu): the `ufw status verbose` output is already a clean,
+  // human-readable rule table — show it verbatim in a monospace block.
+  if (fw.engine === "ufw") {
+    return (
+      <InfoCard
+        title="Firewall · ufw"
+        icon={<Shield size={12} />}
+        actions={
+          <>
+            <StatusBadge tone="green">active</StatusBadge>
+            {fw.usedSudo && <StatusBadge tone="zinc">sudo</StatusBadge>}
+          </>
+        }
+      >
+        {fw.ufwText ? (
+          <div className="max-h-[40vh] overflow-auto custom-scrollbar bg-black/30 border border-white/5 rounded-lg">
+            <pre className="text-[10.5px] font-mono text-zinc-300 px-2.5 py-1.5 select-text whitespace-pre">{fw.ufwText}</pre>
+          </div>
+        ) : (
+          <Empty>No rules reported.</Empty>
+        )}
       </InfoCard>
     );
   }
@@ -1491,6 +1612,17 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
   const [killing, setKilling] = useState<Record<string, boolean>>({});
   const confirm = useConfirm();
 
+  // Also pause when the OS window is minimized/hidden. `visible` only tracks the
+  // in-app Info tool being on screen; it stays true when the whole Submarine
+  // window is minimized, so without this the 2s poll would keep hitting the
+  // server over SSH while nobody's watching. Re-shows trigger a fresh fetch.
+  const [winShown, setWinShown] = useState(() => typeof document === "undefined" || !document.hidden);
+  useEffect(() => {
+    const onVis = () => setWinShown(!document.hidden);
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
   const fetchNow = useCallback(async () => {
     if (disabled || !visible) return;
     setLoading(true);
@@ -1508,17 +1640,18 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
     }
   }, [sessionId, disabled, visible]);
 
-  // Fetch when the tab becomes visible (and on session change). While hidden we
-  // fetch nothing — no snapshot, no timer — so a backgrounded Info panel never
-  // pulls process data over SSH.
-  useEffect(() => { if (visible) fetchNow(); }, [fetchNow, visible]);
+  // Fetch when the tab becomes visible again — the in-app tab shown AND the OS
+  // window shown — and on session change. While either is hidden we fetch
+  // nothing (no snapshot, no timer), so a backgrounded Info panel never pulls
+  // process data over SSH.
+  useEffect(() => { if (visible && winShown) fetchNow(); }, [fetchNow, visible, winShown]);
   // Auto-refresh timer — off when Manual (intervalMs 0), the session is down,
-  // or the panel is off screen.
+  // the panel is off screen, or the OS window is minimized/hidden.
   useEffect(() => {
-    if (!intervalMs || disabled || !visible) return;
+    if (!intervalMs || disabled || !visible || !winShown) return;
     const id = setInterval(fetchNow, intervalMs);
     return () => clearInterval(id);
-  }, [intervalMs, disabled, visible, fetchNow]);
+  }, [intervalMs, disabled, visible, winShown, fetchNow]);
 
   const killProc = async (row: ProcRow) => {
     const ok = await confirm({

@@ -964,6 +964,11 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     let mut columns: Vec<String> = vec!["uuid".into(), "updated_at".into(), "deleted".into()];
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
         vec![Box::new(rec.uuid.clone()), Box::new(rec.updated_at.clone()), Box::new(rec.deleted as i64)];
+    // Set when the incoming record omits `position` (a pre-0.3.5 peer). We then
+    // preserve the LOCAL rank on the UPDATE arm below instead of overwriting it
+    // with the coerced 0 — otherwise an ordinary field edit synced from an old
+    // peer would silently reset a manual drag-order on this device.
+    let mut preserve_local_position = false;
     for c in spec.cols {
         columns.push((*c).into());
         let val = obj.get(*c);
@@ -972,11 +977,12 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
         // json_to_sql(None) would bind an explicit SQL NULL — which violates
         // `position INTEGER NOT NULL` and makes the whole upsert fail, silently
         // skipping the server row (its SSH credentials with it). Coerce a
-        // missing/null position to its default 0 so cross-version merges LAND
-        // the row instead of dropping it. Only needed for NOT-NULL columns
-        // added to an already-syncing entity after sync shipped.
+        // missing/null position to its default 0 (so an INSERT lands the row)
+        // and remember to keep the local rank on UPDATE. Only needed for
+        // NOT-NULL columns added to an already-syncing entity after sync shipped.
         if *c == "position" && matches!(val, None | Some(serde_json::Value::Null)) {
             params.push(Box::new(0i64));
+            preserve_local_position = true;
         } else {
             params.push(json_to_sql(val));
         }
@@ -1031,7 +1037,19 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     }
 
     let placeholders = std::iter::repeat("?").take(columns.len()).collect::<Vec<_>>().join(",");
-    let update_set: Vec<String> = columns.iter().filter(|c| c.as_str() != "uuid").map(|c| format!("{c}=excluded.{c}")).collect();
+    let update_set: Vec<String> = columns
+        .iter()
+        .filter(|c| c.as_str() != "uuid")
+        .map(|c| {
+            if c.as_str() == "position" && preserve_local_position {
+                // Peer didn't know about `position` — don't clobber our local
+                // drag-order with the coerced 0; keep the existing row value.
+                format!("position={}.position", spec.table)
+            } else {
+                format!("{c}=excluded.{c}")
+            }
+        })
+        .collect();
     let sql = format!(
         "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT(uuid) DO UPDATE SET {}",
         spec.table,
@@ -2558,6 +2576,48 @@ mod sync_engine_tests {
         assert_eq!(pos, 0, "a missing position must default to 0");
     }
 
+    // Regression for the UPDATE-arm half of the 0.3.5 position shim. The INSERT
+    // case above lands a missing position as 0; here the row ALREADY EXISTS with
+    // a manual drag-rank when a pre-0.3.5 peer (payload omits `position`) syncs a
+    // winning edit to some OTHER field. The merge must apply the edit but KEEP
+    // the local rank — binding the coerced 0 into `position=excluded.position`
+    // would silently reset a deliberate ordering on every cross-version edit.
+    #[test]
+    fn a_pre_0_3_5_peer_edit_preserves_local_drag_position() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name, host, password) VALUES('prod','h1','SECRET')", []).unwrap();
+
+        // B receives the server, then the user drags it to rank 5.
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        b.execute("UPDATE servers SET position=5 WHERE name='prod'", []).unwrap();
+        let pos_before: i64 = b.query_row("SELECT position FROM servers WHERE name='prod'", [], |r| r.get(0)).unwrap();
+        assert_eq!(pos_before, 5, "test setup: B's local rank is 5");
+
+        // A (an old peer) edits the host. Strip `position` from the blob and
+        // force a lexically-max HLC stamp ("9"*15 dwarfs any real millis in the
+        // `{:015}:{:05}:node` format) so the record deterministically WINS LWW on
+        // B and reaches the UPDATE arm — the case this fix guards.
+        a.execute("UPDATE servers SET host='h2' WHERE name='prod'", []).unwrap();
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut() {
+            if r.entity_type == "servers" {
+                let plain = decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap();
+                let mut obj: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+                obj.as_object_mut().unwrap().remove("position");
+                r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+                r.updated_at = "999999999999999:99999:zzz".to_string();
+            }
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+
+        let (host, pos): (String, i64) = b
+            .query_row("SELECT host, position FROM servers WHERE name='prod'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(host, "h2", "the newer remote field edit must apply");
+        assert_eq!(pos, 5, "a pre-0.3.5 peer edit must NOT reset the local drag position to 0");
+    }
+
     #[test]
     fn lww_older_remote_does_not_clobber_newer_local() {
         let (a, _ha) = device("A");
@@ -3777,6 +3837,12 @@ async fn edit_server(
             .query_row("SELECT COALESCE(tunnels,'[]') FROM servers WHERE id=?1", [id], |r| r.get(0))
             .unwrap_or_else(|_| "[]".to_string());
 
+        // Capture the current folder so we can detect a move below and re-rank.
+        let old_folder_id: Option<i32> = conn
+            .query_row("SELECT folder_id FROM servers WHERE id=?1", [id], |r| r.get::<_, Option<i32>>(0))
+            .ok()
+            .flatten();
+
         // Two-flavour UPDATE: with `preserve_password`, the password column is
         // wrapped in COALESCE(?, password) so a NULL bind keeps the existing
         // value. Without it, the password column is overwritten the usual way.
@@ -3792,6 +3858,16 @@ async fn edit_server(
                 "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
                 rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
             ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
+        }
+
+        // Folder changed → re-append to the bottom of the destination folder's
+        // manual order (mirrors add_server). Otherwise the row keeps its stale
+        // rank from the old folder and can collide at the top of the new one.
+        if old_folder_id != folder_id {
+            let _ = conn.execute(
+                "UPDATE servers SET position = COALESCE((SELECT MAX(position) FROM servers WHERE id != ?1 AND folder_id IS ?2), -1) + 1 WHERE id = ?1",
+                rusqlite::params![id, folder_id],
+            );
         }
 
         old_tunnels_json != tunnels_json
@@ -6667,27 +6743,70 @@ async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>,
     let app_clone = app.clone();
 
     tauri::async_runtime::spawn(async move {
+        use crate::ssh_manager::emit_terminal_batch;
+        // Coalesce PTY output: accumulate channel bytes and flush at most every
+        // ~8ms, or sooner once a burst passes FLUSH_CAP. Emitting one event per
+        // SSH packet (each a ~4x-bloated JSON byte array) flooded the WebView
+        // main thread on large output and froze the whole tab; batching + the
+        // base64 payload in emit_terminal_batch keeps the UI responsive under a
+        // firehose. 8ms is imperceptible for interactive echo.
+        const FLUSH_CAP: usize = 256 * 1024;
+        // Flush at most every 8ms measured FROM THE FIRST buffered byte —
+        // imperceptible for interactive echo, but enough to collapse a firehose
+        // into a handful of events.
+        const FLUSH_WINDOW: std::time::Duration = std::time::Duration::from_millis(8);
+        let mut out_buf: Vec<u8> = Vec::new();
+        // A flush timer armed ONLY while bytes are buffered. When the buffer is
+        // empty its deadline is parked far in the future, so an open-but-idle
+        // terminal wakes this task zero times (a free-running interval would fire
+        // ~125x/sec doing nothing). The buffer going empty -> non-empty re-arms
+        // it to now + FLUSH_WINDOW; a flush parks it again.
+        let park = || tokio::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
+        let flush_timer = tokio::time::sleep_until(park());
+        tokio::pin!(flush_timer);
         loop {
             tokio::select! {
                 msg_opt = channel.wait() => {
                     match msg_opt {
                         Some(ChannelMsg::Data { ref data }) => {
-                            let _ = app_clone.emit(&format!("terminal-output-{}", terminal_id_clone), data.to_vec());
+                            let was_empty = out_buf.is_empty();
+                            out_buf.extend_from_slice(data);
+                            if out_buf.len() >= FLUSH_CAP {
+                                emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
+                            } else if was_empty {
+                                flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
+                            }
                         },
                         Some(ChannelMsg::ExtendedData { ref data, ext: _ }) => {
-                            let _ = app_clone.emit(&format!("terminal-output-{}", terminal_id_clone), data.to_vec());
+                            let was_empty = out_buf.is_empty();
+                            out_buf.extend_from_slice(data);
+                            if out_buf.len() >= FLUSH_CAP {
+                                emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
+                            } else if was_empty {
+                                flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
+                            }
                         },
-                        Some(ChannelMsg::Eof) => break,
-                        Some(ChannelMsg::Close) => break,
+                        // Flush whatever's buffered before the terminal goes away
+                        // so the last screenful isn't lost.
+                        Some(ChannelMsg::Eof) => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; },
+                        Some(ChannelMsg::Close) => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; },
                         Some(_) => {},
-                        None => break, // channel closed (e.g. after disconnect_session)
+                        None => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; }, // channel closed (e.g. after disconnect_session)
                     }
+                },
+                _ = &mut flush_timer => {
+                    emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
+                    // Park until the next buffered byte re-arms the timer.
+                    flush_timer.as_mut().reset(park());
                 },
                 opt_cmd = rx.recv() => {
                     match opt_cmd {
                         Some(cmd) => match cmd {
                             TerminalCommand::Data(data) => {
                                 if channel.data(&data[..]).await.is_err() {
+                                    // Flush the last buffered output before bailing on
+                                    // a dead transport — the terminal UI is still mounted.
+                                    emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
                                     break;
                                 }
                             }
@@ -6792,15 +6911,26 @@ echo __SUB_INFO_OV_SEP__
 //   [2] route table — first line `ROUTEFMT:<ip-json|ip-oneline|route|netstat|none>`
 //   [3] firewall summary:
 //         line 1: 'FW:<engine>' where engine is one of
-//                 iptables | iptables-sudo | iptables-denied |
-//                 nft      | nft-sudo      | nft-denied      | none
-//         lines 2..N: per-chain summary rows, not the full ruleset —
-//                 iptables: 'table|chain|policy|count'
-//                 nft:      'family|table|chain|type|count'
-//         The full ruleset for a specific chain is fetched lazily on
+//                 firewalld | firewalld-sudo |
+//                 ufw       | ufw-sudo       |
+//                 iptables  | iptables-sudo  | iptables-denied |
+//                 nft       | nft-sudo       | nft-denied       | none
+//         A high-level manager (firewalld on RHEL/Fedora, ufw on Ubuntu) is
+//         detected FIRST and, when running, shown instead of the raw tables
+//         it auto-generates. Body rows depend on the engine:
+//                 firewalld: 'DEFAULT|<zone>' then per active zone
+//                            'ZONE|<zone>|<interfaces>',
+//                            'SVC|<zone>|<services>', 'PORT|<zone>|<ports>'
+//                 ufw:       'UFW|active' then the raw `ufw status verbose`
+//                            lines, shown verbatim (already human-readable)
+//                 iptables:  'table|chain|policy|count'
+//                 nft:       'family|table|chain|type|count'
+//         For iptables/nft the rows are per-chain summaries, not the full
+//         ruleset — the ruleset for a specific chain is fetched lazily on
 //         expand via ssh_iptables_chain / ssh_nft_chain — the wire cost
 //         of first paint drops from ~50-500 KB to ~1-2 KB, which is the
 //         single biggest bandwidth win for low-bandwidth SSH users.
+//         firewalld/ufw summaries are already compact, so they ship inline.
 //   [4] DNS resolvers — first line `DNSFMT:list`, then raw lines from
 //         resolvectl / systemd-resolve / resolv.conf; the frontend extracts
 //         IPs, dedupes, and flags the systemd-resolved 127.0.0.53 stub.
@@ -6839,35 +6969,78 @@ else
   printf 'ROUTEFMT:none\n'
 fi
 echo __SUB_INFO_NET_SEP__
-if command -v iptables >/dev/null 2>&1; then
+# High-level firewall managers FIRST. On RHEL/Fedora/Rocky/Alma (firewalld) and
+# Ubuntu (ufw) the raw iptables/nft ruleset is auto-generated boilerplate the
+# manager owns — showing it is confusing and doesn't reflect the operator's
+# actual zones/rules. So when a manager is actually RUNNING we surface ITS view
+# and skip the raw tables; only if no manager is active do we fall through to
+# iptables -> nft -> none below. `FW_DONE` gates that fall-through.
+FW_DONE=""
+# firewalld (RHEL family default). `--state` and the list queries work over
+# D-Bus and are usually readable without root; sudo -n is a fallback.
+if command -v firewall-cmd >/dev/null 2>&1; then
+  FC=""
+  # `firewall-cmd --state` exits 0 only when the daemon is RUNNING (252 when
+  # not). Rely on the exit code, not a grep — "not running" contains the
+  # substring "running", so grepping would false-positive on a stopped daemon.
+  if firewall-cmd --state >/dev/null 2>&1; then
+    FC="firewall-cmd"; printf 'FW:firewalld\n'
+  elif sudo -n firewall-cmd --state >/dev/null 2>&1; then
+    FC="sudo -n firewall-cmd"; printf 'FW:firewalld-sudo\n'
+  fi
+  if [ -n "$FC" ]; then
+    FW_DONE=1
+    printf 'DEFAULT|%s\n' "$($FC --get-default-zone 2>/dev/null)"
+    for Z in $($FC --get-active-zones 2>/dev/null | awk '/^[^ \t]/{print $1}'); do
+      printf 'ZONE|%s|%s\n' "$Z" "$($FC --zone="$Z" --list-interfaces 2>/dev/null)"
+      printf 'SVC|%s|%s\n'  "$Z" "$($FC --zone="$Z" --list-services 2>/dev/null)"
+      printf 'PORT|%s|%s\n' "$Z" "$($FC --zone="$Z" --list-ports 2>/dev/null)"
+    done
+  fi
+fi
+# ufw (Debian/Ubuntu). Only surface it when ACTIVE — an installed-but-inactive
+# ufw means the host is really using the raw tables, so fall through instead.
+# `ufw status` needs root, so try direct then sudo -n.
+if [ -z "$FW_DONE" ] && command -v ufw >/dev/null 2>&1; then
+  US=""; SUF=""
+  if ufw status verbose 2>/dev/null | grep -qi 'Status:'; then
+    US=$(ufw status verbose 2>/dev/null)
+  elif sudo -n ufw status verbose 2>/dev/null | grep -qi 'Status:'; then
+    US=$(sudo -n ufw status verbose 2>/dev/null); SUF="-sudo"
+  fi
+  if printf '%s\n' "$US" | grep -qiE 'Status:[[:space:]]*active'; then
+    printf 'FW:ufw%s\n' "$SUF"
+    printf 'UFW|active\n'
+    printf '%s\n' "$US"
+    FW_DONE=1
+  fi
+fi
+if [ -z "$FW_DONE" ] && command -v iptables >/dev/null 2>&1; then
   IPT=""
-  if iptables -t filter -n -L >/dev/null 2>&1; then
+  # `-S` (rule-spec dump) is lighter than `-L`: no formatted table, no counter
+  # columns, no reverse-DNS, no header rows — just the rules, which is all the
+  # per-chain summary needs. The full ruleset for one chain is still fetched
+  # lazily on expand via ssh_iptables_chain.
+  if iptables -t filter -S >/dev/null 2>&1; then
     IPT="iptables"; printf 'FW:iptables\n'
-  elif sudo -n iptables -t filter -n -L >/dev/null 2>&1; then
+  elif sudo -n iptables -t filter -S >/dev/null 2>&1; then
     IPT="sudo -n iptables"; printf 'FW:iptables-sudo\n'
   else
     printf 'FW:iptables-denied\n'
   fi
   if [ -n "$IPT" ]; then
     for T in filter nat mangle raw; do
-      $IPT -t $T -n -L --line-numbers 2>/dev/null | awk -v t="$T" '
-        /^Chain / {
-          if (chain != "") print t "|" chain "|" policy "|" count
-          chain=$2; count=0; policy="-"
-          if ($3 == "(policy") policy=$4
-          next
-        }
-        /^num/ { next }
-        /^$/ {
-          if (chain != "") { print t "|" chain "|" policy "|" count; chain="" }
-          next
-        }
-        chain != "" && NF > 0 { count++ }
-        END { if (chain != "") print t "|" chain "|" policy "|" count }
+      # -P <chain> <policy> = built-in chain + policy; -N <chain> = custom chain
+      # (policy '-'); -A <chain> ... = one rule. Emit 'table|chain|policy|count'.
+      $IPT -t $T -S 2>/dev/null | awk -v t="$T" '
+        /^-P / { pol[$2]=$3; if(!($2 in seen)){seen[$2]=1; order[++n]=$2} next }
+        /^-N / { if(!($2 in seen)){seen[$2]=1; order[++n]=$2; pol[$2]="-"} next }
+        /^-A / { c=$2; cnt[c]++; if(!(c in seen)){seen[c]=1; order[++n]=c; pol[c]="-"} next }
+        END { for(i=1;i<=n;i++){ ch=order[i]; print t "|" ch "|" (ch in pol?pol[ch]:"-") "|" (cnt[ch]+0) } }
       '
     done
   fi
-elif command -v nft >/dev/null 2>&1; then
+elif [ -z "$FW_DONE" ] && command -v nft >/dev/null 2>&1; then
   NFT=""
   if nft list ruleset >/dev/null 2>&1; then
     NFT="nft"; printf 'FW:nft\n'
@@ -6894,7 +7067,7 @@ elif command -v nft >/dev/null 2>&1; then
       NF > 0 { count++ }
     '
   fi
-else
+elif [ -z "$FW_DONE" ]; then
   printf 'FW:none\n'
 fi
 echo __SUB_INFO_NET_SEP__
