@@ -7267,10 +7267,12 @@ async fn ssh_iptables_chain(
     }
     // Retry with `sudo -n` when the direct call comes back empty — mirrors
     // the semantics of the summary probe so the expand behaves consistently
-    // on hosts where only root can read the ruleset.
+    // on hosts where only root can read the ruleset. `-v` adds the per-rule
+    // `pkts`/`bytes` match-counter columns (human-readable K/M/G suffixes) so
+    // the operator can see how much traffic each rule has actually handled.
     let cmd = format!(
-        "OUT=$(iptables -t {t} -n -L {c} --line-numbers 2>/dev/null); \
-if [ -z \"$OUT\" ]; then OUT=$(sudo -n iptables -t {t} -n -L {c} --line-numbers 2>/dev/null); fi; \
+        "OUT=$(iptables -t {t} -n -v -L {c} --line-numbers 2>/dev/null); \
+if [ -z \"$OUT\" ]; then OUT=$(sudo -n iptables -t {t} -n -v -L {c} --line-numbers 2>/dev/null); fi; \
 printf '%s' \"$OUT\"",
         t = table, c = chain
     );
