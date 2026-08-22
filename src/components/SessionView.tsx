@@ -1546,7 +1546,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                 </button>
               </div>
               <div className="flex-1 overflow-hidden relative">
-                <TunnelsPanel sessionId={session.id} disabled={status !== 'connected'} />
+                <TunnelsPanel sessionId={session.id} serverId={session.serverId} disabled={status !== 'connected'} />
               </div>
             </div>
           )}

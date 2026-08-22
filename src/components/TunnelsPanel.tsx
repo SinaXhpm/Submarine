@@ -39,6 +39,10 @@ const LOG_CAP = 200;
 
 interface TunnelsPanelProps {
   sessionId: string;
+  // The node this session belongs to. When present (> 0), tunnel add/remove is
+  // persisted back to the node's saved rules so ad-hoc changes survive to the
+  // next open. Absent/0 for quick-connect sessions with no saved node.
+  serverId?: number;
   disabled?: boolean;
 }
 
@@ -46,7 +50,7 @@ const KIND_TO_SPEC: Record<string, "D" | "L" | "R"> = {
   dynamic: "D", local: "L", remote: "R",
 };
 
-const TunnelsPanel = ({ sessionId, disabled = false }: TunnelsPanelProps) => {
+const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelProps) => {
   const [tunnels, setTunnels] = useState<Record<string, TunnelStatus>>({});
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState<{ type: "D" | "L" | "R"; local: string; remote: string }>({
@@ -162,6 +166,8 @@ const TunnelsPanel = ({ sessionId, disabled = false }: TunnelsPanelProps) => {
       });
       setAdding(false);
       setDraft({ type: "D", local: "1080", remote: "" });
+      // Save the new tunnel to the node so it comes back next time.
+      persistTunnels();
       // The list updates via the live event — no manual reload needed.
     } catch (e: any) {
       setError(String(e));
@@ -170,9 +176,20 @@ const TunnelsPanel = ({ sessionId, disabled = false }: TunnelsPanelProps) => {
     }
   };
 
+  // Save the session's current tunnel set back to the node so ad-hoc changes
+  // survive to the next open. No-op for quick-connect (no serverId); best-effort
+  // (a save failure must never block the tunnel action the user just took).
+  const persistTunnels = () => {
+    if (!serverId || serverId <= 0) return;
+    invoke("persist_session_tunnels", { sessionId, serverId }).catch(() => {});
+  };
+
   const stopOne = async (id: string) => {
-    try { await invoke("stop_tunnel", { tunnelId: id }); }
-    catch (e: any) { setError(String(e)); }
+    try {
+      await invoke("stop_tunnel", { tunnelId: id });
+      // Persist the removal so a stopped tunnel doesn't return next open.
+      persistTunnels();
+    } catch (e: any) { setError(String(e)); }
   };
 
   const arr = Object.values(tunnels);

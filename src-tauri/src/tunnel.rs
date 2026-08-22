@@ -15,13 +15,15 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot, Mutex, Semaphore};
 
@@ -31,7 +33,7 @@ use crate::ssh_manager::ClientHandler;
 // Public types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TunnelSpec {
     /// "D" (dynamic / SOCKS5), "L" (local forward), "R" (remote forward —
     /// not implemented yet; start_tunnel returns an error for this kind).
@@ -277,6 +279,28 @@ async fn set_state(
 // Public entry: start a tunnel
 // ---------------------------------------------------------------------------
 
+/// Bind a local listener, retrying briefly on `AddrInUse`. A reconnect can race
+/// the previous listener's teardown, and on Windows a just-freed port can linger
+/// momentarily (there is no `SO_REUSEADDR` on the tokio listener), so a single
+/// bind would spuriously fail the auto-restore — and the caller used to strip
+/// the spec on that failure, dropping the tunnel for good until a manual
+/// restart. Retrying over ~1.5s rides out that transient window; a
+/// non-`AddrInUse` error (bad address, permission) still fails immediately.
+async fn bind_with_retry(addr: &str) -> std::io::Result<TcpListener> {
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..6 {
+        match TcpListener::bind(addr).await {
+            Ok(l) => return Ok(l),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                last = Some(e);
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::AddrInUse, "bind retries exhausted")))
+}
+
 pub async fn start_tunnel(
     app: AppHandle,
     session_id: String,
@@ -343,7 +367,7 @@ pub async fn start_tunnel(
     // status event, which the UI may have already started using.
     let local_listener = match kind.as_str() {
         "local" | "dynamic" => {
-            Some(TcpListener::bind(&listen_addr_str).await
+            Some(bind_with_retry(&listen_addr_str).await
                 .map_err(|e| format!("bind {}: {}", listen_addr_str, e))?)
         }
         _ => None,
@@ -538,6 +562,111 @@ fn transient_accept_error(e: &std::io::Error) -> bool {
     matches!(e.kind(), ConnectionAborted | ConnectionReset | Interrupted | WouldBlock)
 }
 
+/// How long a forwarded connection may go with ZERO bytes moving in EITHER
+/// direction before we close it and free its permit. This is the real cure for
+/// the "tunnel shows connected but passes no data until I restart it" leak: when
+/// the remote end of a forwarded connection dies silently (the SSH channel never
+/// delivers EOF) while the local peer is idle-but-alive (its TCP keepalive keeps
+/// answering), `copy_bidirectional` parks forever and pins one of
+/// MAX_CONCURRENT_CONNS permits — eventually the pool is exhausted and every new
+/// connection is silently refused. The idle window RESETS on any traffic, so a
+/// busy connection is never cut; only a truly-silent one is reaped, and the
+/// listener stays up so the client just reconnects.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// A passthrough AsyncRead+AsyncWrite that stamps `last` (millis since `base`)
+/// whenever it actually moves bytes, so the idle watchdog in `pump_bidirectional`
+/// can tell a quiet-but-alive connection from a wedged one. `S` is Unpin
+/// (TcpStream and the russh channel stream both are — `copy_bidirectional`
+/// already requires it), so the wrapper is Unpin and `get_mut()` is safe.
+struct ActivityTracked<'a, S> {
+    inner: &'a mut S,
+    last: Arc<AtomicU64>,
+    base: Instant,
+}
+
+impl<'a, S: AsyncRead + Unpin> AsyncRead for ActivityTracked<'a, S> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let r = Pin::new(&mut *this.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &r {
+            if buf.filled().len() != before {
+                this.last.store(this.base.elapsed().as_millis() as u64, Ordering::Relaxed);
+            }
+        }
+        r
+    }
+}
+
+impl<'a, S: AsyncWrite + Unpin> AsyncWrite for ActivityTracked<'a, S> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let r = Pin::new(&mut *this.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = &r {
+            if *n > 0 {
+                this.last.store(this.base.elapsed().as_millis() as u64, Ordering::Relaxed);
+            }
+        }
+        r
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut *this.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut *this.inner).poll_shutdown(cx)
+    }
+}
+
+/// Bidirectional copy that closes the connection after `IDLE_TIMEOUT` of no
+/// traffic in either direction, freeing its permit. Drop-in for the old bare
+/// `tokio::io::copy_bidirectional` at every bridge site — the only behavioural
+/// change is that a silently-dead connection can no longer pin a permit forever.
+async fn pump_bidirectional<A, B>(a: &mut A, b: &mut B)
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    pump_bidirectional_with_idle(a, b, IDLE_TIMEOUT).await
+}
+
+/// Core of `pump_bidirectional` with an injectable idle window (tests use a
+/// short one). Returns when either side closes/errors, or after `idle` of no
+/// bytes moving in EITHER direction.
+async fn pump_bidirectional_with_idle<A, B>(a: &mut A, b: &mut B, idle: Duration)
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    let base = Instant::now();
+    let last = Arc::new(AtomicU64::new(0));
+    let mut ta = ActivityTracked { inner: a, last: Arc::clone(&last), base };
+    let mut tb = ActivityTracked { inner: b, last: Arc::clone(&last), base };
+    let copy = tokio::io::copy_bidirectional(&mut ta, &mut tb);
+    tokio::pin!(copy);
+    // Poll the idle window at a quarter of its length so the reap lands within
+    // ~idle of the last byte without spinning. Floor the tick so a tiny test
+    // window still makes progress.
+    let tick = (idle / 4).max(Duration::from_millis(1));
+    let idle_ms = idle.as_millis() as u64;
+    loop {
+        tokio::select! {
+            _ = &mut copy => break, // normal EOF / close / error on either side
+            _ = tokio::time::sleep(tick) => {
+                let now_ms = base.elapsed().as_millis() as u64;
+                if now_ms.saturating_sub(last.load(Ordering::Relaxed)) >= idle_ms {
+                    // Silent too long — drop both streams (closing the sockets /
+                    // channel) and return so the bridge task ends and frees its
+                    // permit.
+                    break;
+                }
+            }
+        }
+    }
+}
+
 async fn run_local_forward(
     app: AppHandle,
     session_id: String,
@@ -651,7 +780,7 @@ async fn bridge_local_to_channel(
         &peer.ip().to_string(), peer.port() as u32,
     ).await.map_err(|e| format!("channel_open_direct_tcpip: {}", e))?;
     let mut stream = channel.into_stream();
-    let _ = tokio::io::copy_bidirectional(&mut sock, &mut stream).await;
+    let _ = pump_bidirectional(&mut sock, &mut stream).await;
     Ok(())
 }
 
@@ -824,7 +953,7 @@ pub async fn bridge_forwarded_channel(
     match tokio::net::TcpStream::connect(&entry.target).await {
         Ok(mut local) => {
             apply_tunnel_sockopts(&local);
-            let _ = tokio::io::copy_bidirectional(&mut local, &mut stream).await;
+            let _ = pump_bidirectional(&mut local, &mut stream).await;
         }
         Err(e) => {
             eprintln!("[remote-forward] connect to {} failed: {}", entry.target, e);
@@ -1046,7 +1175,7 @@ async fn handle_http_proxy(
         };
 
         let mut stream = channel.into_stream();
-        let _ = tokio::io::copy_bidirectional(&mut sock, &mut stream).await;
+        let _ = pump_bidirectional(&mut sock, &mut stream).await;
         emit_log(&app, &session_id, &tunnel_id, "info", "close",
                  Some(target_full), Some(peer.to_string()), None);
         return Ok(());
@@ -1110,7 +1239,7 @@ async fn handle_http_proxy(
     // forwarded request makes the upstream close its half after one
     // response, which cascades to closing the client socket — exactly what
     // a non-pipelined HTTP proxy should do.
-    let _ = tokio::io::copy_bidirectional(&mut sock, &mut stream).await;
+    let _ = pump_bidirectional(&mut sock, &mut stream).await;
     emit_log(&app, &session_id, &tunnel_id, "info", "close",
              Some(target_full), Some(peer.to_string()), None);
     Ok(())
@@ -1352,7 +1481,7 @@ async fn handle_socks4(
     };
 
     let mut stream = channel.into_stream();
-    let _ = tokio::io::copy_bidirectional(&mut sock, &mut stream).await;
+    let _ = pump_bidirectional(&mut sock, &mut stream).await;
     emit_log(&app, &session_id, &tunnel_id, "info", "close",
              Some(target_full), Some(peer.to_string()), None);
     Ok(())
@@ -1485,8 +1614,132 @@ async fn handle_socks5(
     };
 
     let mut stream = channel.into_stream();
-    let _ = tokio::io::copy_bidirectional(&mut sock, &mut stream).await;
+    let _ = pump_bidirectional(&mut sock, &mut stream).await;
     emit_log(&app, &session_id, &tunnel_id, "info", "close",
              Some(target_full), Some(peer.to_string()), None);
     Ok(())
+}
+
+#[cfg(test)]
+mod tunnel_tests {
+    use super::{bind_with_retry, pump_bidirectional_with_idle};
+    use std::time::{Duration, Instant};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // The reconnect fix: a bind that hits a transient AddrInUse (the previous
+    // listener still releasing the port during a reconnect) must succeed once
+    // the port frees, instead of failing and letting the caller drop the tunnel.
+    #[tokio::test]
+    async fn bind_with_retry_succeeds_once_the_port_frees() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{}", port);
+        // Free the port partway through the retry window.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            drop(l);
+        });
+        let got = tokio::time::timeout(Duration::from_secs(3), bind_with_retry(&addr))
+            .await
+            .expect("must not hang")
+            .expect("must bind once the port frees");
+        assert_eq!(got.local_addr().unwrap().port(), port);
+    }
+
+    // If the port never frees, it must give up cleanly (Err) rather than hang —
+    // the caller keeps the spec and retries on the next reconnect.
+    #[tokio::test]
+    async fn bind_with_retry_gives_up_if_port_stays_taken() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{}", port);
+        let r = tokio::time::timeout(Duration::from_secs(5), bind_with_retry(&addr))
+            .await
+            .expect("must return, not hang");
+        assert!(r.is_err(), "must give up when the port never frees");
+        drop(l);
+    }
+
+    // The pump must relay bytes in BOTH directions (it didn't break the copy
+    // semantics) and finish cleanly when both ends close (EOF), not hang.
+    #[tokio::test]
+    async fn pump_relays_both_directions_and_finishes_on_eof() {
+        let (mut ca, mut a) = tokio::io::duplex(64);
+        let (mut cb, mut b) = tokio::io::duplex(64);
+        let pump = tokio::spawn(async move {
+            pump_bidirectional_with_idle(&mut a, &mut b, Duration::from_secs(30)).await;
+        });
+
+        // a-side client -> b-side client
+        ca.write_all(b"ping").await.unwrap();
+        let mut buf = [0u8; 4];
+        cb.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+
+        // b-side client -> a-side client
+        cb.write_all(b"pong").await.unwrap();
+        let mut buf2 = [0u8; 4];
+        ca.read_exact(&mut buf2).await.unwrap();
+        assert_eq!(&buf2, b"pong");
+
+        // Both clients close -> pump sees EOF on both halves and returns.
+        drop(ca);
+        drop(cb);
+        tokio::time::timeout(Duration::from_secs(5), pump)
+            .await
+            .expect("pump must finish on EOF, not hang")
+            .unwrap();
+    }
+
+    // The core fix: a connection whose ends never close (no EOF) and never move
+    // a byte must be REAPED after the idle window, freeing its permit — instead
+    // of parking forever like the old bare copy_bidirectional.
+    #[tokio::test]
+    async fn pump_reaps_a_silent_connection() {
+        let (ca, mut a) = tokio::io::duplex(64);
+        let (cb, mut b) = tokio::io::duplex(64);
+        let idle = Duration::from_millis(300);
+        let start = Instant::now();
+        // Clients are kept ALIVE (not dropped) for the whole call, so there is
+        // no EOF — the only way this returns is the idle timeout.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            pump_bidirectional_with_idle(&mut a, &mut b, idle),
+        )
+        .await
+        .expect("a silent connection must be reaped by the idle timeout, not hang");
+        assert!(start.elapsed() >= idle, "must not reap before the idle window elapses");
+        drop(ca);
+        drop(cb);
+    }
+
+    // The don't-break-active guarantee: while traffic keeps flowing (each byte
+    // resets the idle window), the pump must NOT reap the connection.
+    #[tokio::test]
+    async fn pump_keeps_an_active_connection_open() {
+        let (mut ca, mut a) = tokio::io::duplex(1024);
+        let (mut cb, mut b) = tokio::io::duplex(1024);
+        let idle = Duration::from_millis(300);
+        let pump = tokio::spawn(async move {
+            pump_bidirectional_with_idle(&mut a, &mut b, idle).await;
+        });
+
+        // One byte every 100ms (< idle) for ~1s — well past the idle window in
+        // wall-clock time, but never idle for a full window.
+        for _ in 0..10 {
+            ca.write_all(b"x").await.unwrap();
+            let mut buf = [0u8; 1];
+            cb.read_exact(&mut buf).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!pump.is_finished(), "an actively-used connection must not be reaped");
+
+        // Stop traffic -> pump reaps (via EOF once we drop, or idle) and ends.
+        drop(ca);
+        drop(cb);
+        tokio::time::timeout(Duration::from_secs(5), pump)
+            .await
+            .expect("pump must finish after traffic stops")
+            .unwrap();
+    }
 }

@@ -5941,19 +5941,21 @@ async fn initiate_connection(
                                     "info",
                                 ),
                                 Err(e) => {
+                                    // KEEP the spec in the replay list on failure
+                                    // so the NEXT reconnect retries it. Stripping
+                                    // it here (the old behaviour) turned a
+                                    // transient rebind race on a flaky network —
+                                    // a momentary AddrInUse while the previous
+                                    // listener finished releasing the port — into
+                                    // permanent loss of the tunnel until the user
+                                    // manually restarted it. bind_with_retry now
+                                    // absorbs that race; anything still failing is
+                                    // logged and retried on the next reconnect
+                                    // rather than silently dropped.
                                     emit_log(
-                                        &format!("Tunnel start failed ({} {}): {}", spec.kind, spec.local, e),
+                                        &format!("Tunnel start failed ({} {}): {} — will retry on next reconnect", spec.kind, spec.local, e),
                                         "error",
                                     );
-                                    // A bind conflict or refused tcpip-forward
-                                    // means this spec is poison for the
-                                    // current session — strip it from the
-                                    // replay list so we don't re-trigger the
-                                    // same error on every reconnect.
-                                    let mut map = state_session_tunnel_specs.lock().await;
-                                    if let Some(list) = map.get_mut(&session_id_clone) {
-                                        list.retain(|s| s != spec);
-                                    }
                                 }
                             }
                         }
@@ -6030,6 +6032,11 @@ async fn initiate_connection(
                         let state_gen_w = Arc::clone(&state_session_generation);
                         let state_tunnels_w = Arc::clone(&state_tunnels);
                         let state_mirrors_w: MirrorMap = mirrors_owned.clone();
+                        // Captured so the watcher can periodically re-attempt a
+                        // configured tunnel that failed to bind while the session
+                        // stays alive (see the retry block in the loop below).
+                        let state_specs_w = Arc::clone(&state_session_tunnel_specs);
+                        let targets_w = Arc::clone(&session_forwarded_targets);
                         let my_gen = connect_generation;
                         tauri::async_runtime::spawn(async move {
                             // Two-tier liveness check:
@@ -6121,6 +6128,35 @@ async fn initiate_connection(
                                                 tick = probe_every.wrapping_sub(1);
                                             }
                                         }
+                                    }
+                                }
+
+                                // While the session is ALIVE, periodically re-attempt
+                                // any configured tunnel that isn't currently running.
+                                // A listener that failed to bind (its local port was
+                                // briefly taken) otherwise stays dead until the user
+                                // closes and reopens the tab — nothing retries it
+                                // without a full reconnect. `start_tunnel_specs_on`
+                                // skips specs already running (anywhere under this
+                                // session), so this is a no-op once everything is up
+                                // and can't create duplicates. Gated to the primary
+                                // session id: the dedicated `::fwd`/`::sftp`
+                                // transports have their own migration/restore paths,
+                                // and the primary handle is the correct transport for
+                                // the default (shared) topology. Spawned so a slow
+                                // bind retry never delays death detection.
+                                if !dead && tick % 30 == 0 && !sid_w.contains("::") {
+                                    let specs = state_specs_w.lock().await.get(&sid_w).cloned().unwrap_or_default();
+                                    if !specs.is_empty() {
+                                        let app_r = app_w.clone();
+                                        let sid_r = sid_w.clone();
+                                        let handle_r = Arc::clone(&handle_arc);
+                                        let targets_r = Arc::clone(&targets_w);
+                                        let tunnels_r = Arc::clone(&state_tunnels_w);
+                                        let specs_r = Arc::clone(&state_specs_w);
+                                        tauri::async_runtime::spawn(async move {
+                                            start_tunnel_specs_on(&app_r, &sid_r, &handle_r, &targets_r, &tunnels_r, &specs_r, specs).await;
+                                        });
                                     }
                                 }
 
@@ -6405,10 +6441,16 @@ async fn start_tunnel_specs_on(
                 }
             }
             Err(e) => {
-                emit_log(&format!("Tunnel start failed ({} {}): {}", spec.kind, spec.local, e), "error");
+                // KEEP the spec so the next reconnect retries it — never strip a
+                // user's tunnel on a transient restore failure (see the matching
+                // inline-restore comment; the old strip caused permanent loss of
+                // forwards on flaky networks). Ensure it's present in the replay
+                // list so a spec seeded from the DB (not yet recorded) survives.
+                emit_log(&format!("Tunnel start failed ({} {}): {} — will retry on next reconnect", spec.kind, spec.local, e), "error");
                 let mut map = specs_map.lock().await;
-                if let Some(list) = map.get_mut(sid) {
-                    list.retain(|s| s != &spec);
+                let entry = map.entry(sid.to_string()).or_insert_with(Vec::new);
+                if !entry.contains(&spec) {
+                    entry.push(spec);
                 }
             }
         }
@@ -6476,6 +6518,43 @@ async fn list_tunnels(
     session_id: Option<String>,
 ) -> Result<Vec<tunnel::TunnelStatus>, String> {
     Ok(tunnel::list_tunnels(&state.tunnels, session_id.as_deref()).await)
+}
+
+/// Persist the session's current live tunnel set to the node's saved `tunnels`
+/// column so ad-hoc port-forwards a user adds (or removes) during a session
+/// survive to the next time the node is opened. The Tunnels panel calls this
+/// after a successful start/stop. A quick-connect session (server_id <= 0) has
+/// no node to save to, so it's a no-op.
+#[tauri::command]
+async fn persist_session_tunnels(
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    session_id: String,
+    server_id: i32,
+) -> Result<(), String> {
+    if server_id <= 0 {
+        return Ok(());
+    }
+    let specs = state
+        .session_tunnel_specs
+        .lock()
+        .await
+        .get(&session_id)
+        .cloned()
+        .unwrap_or_default();
+    let json = serde_json::to_string(&specs).unwrap_or_else(|_| "[]".to_string());
+    {
+        // Scoped so the non-Send rusqlite guard drops before save_vault_internal.
+        let conn_guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        conn.execute(
+            "UPDATE servers SET tunnels=?1 WHERE id=?2",
+            rusqlite::params![json, server_id],
+        )
+        .map_err(|e| format!("[DATABASE] TUNNELS_SAVE_FAILED: SQL_ERROR={}", e))?;
+    }
+    save_vault_internal(&db_state)?;
+    Ok(())
 }
 
 /// (Re)start every tunnel the session should have — the in-memory replay list
@@ -10348,7 +10427,7 @@ pub fn run() {
             add_credential, edit_credential, delete_credential,
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session,
-            start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels,
+            start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             open_terminal, write_terminal_data, resize_terminal, close_terminal,
             ssh_info_probe_section, ssh_systemctl_action, ssh_kill_process,
             ssh_iptables_chain, ssh_nft_chain,
