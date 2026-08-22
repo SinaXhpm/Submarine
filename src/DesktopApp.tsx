@@ -671,10 +671,12 @@ function DesktopApp() {
     setActiveView(sessionId);
   };
 
-  // Spawn a one-shot session from inline auth — no DB row created. The
-  // session id is timestamped so multiple quick connects to the same host
-  // don't collide as separate tabs. `serverId = 0` is our sentinel for
-  // "look at quickAuth, not the DB" on the backend side.
+  // Spawn a session from inline Quick Connect auth AND leave behind a reusable
+  // node in the root directory so the target can be reconnected later without
+  // re-typing credentials. The connection itself still rides `quickAuth`
+  // (serverId = 0 sentinel = "look at quickAuth, not the DB") so it works
+  // exactly as before even if the save fails; the persisted node is a
+  // best-effort side effect the backend dedups by (host, port, username).
   const openQuickConnect = (auth: QuickAuth) => {
     const sessionId = `session-quick-${Date.now()}`;
     const displayName = `${auth.username}@${auth.host}:${auth.port}`;
@@ -687,6 +689,11 @@ function DesktopApp() {
     setActiveView(sessionId);
     setIsQuickConnectOpen(false);
     addLog(`Quick connect → ${displayName}`, "info");
+    // Persist a root-level profile for reuse. Best-effort: a failure here must
+    // never block the live connection the user just asked for.
+    invoke("save_quick_connect_node", { auth })
+      .then(() => { refreshServers(); bumpSync(); addLog(`Saved node → ${displayName}`, "success"); })
+      .catch((e) => addLog(`QUICK_NODE_SAVE_FAILED: ${e}`, "error"));
   };
 
   const handleEditNode = async (server: any) => {

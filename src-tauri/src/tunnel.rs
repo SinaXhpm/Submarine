@@ -963,6 +963,22 @@ pub async fn bridge_forwarded_channel(
     }
 }
 
+/// Hard ceiling on a single `channel_open_direct_tcpip`. russh awaits the
+/// server's CHANNEL_OPEN_CONFIRMATION with no timeout of its own, and we hold
+/// the shared handle mutex across that await — so when the SSH transport is
+/// silently wedged (a network blip the kernel/russh hasn't yet surfaced as a
+/// close) ONE new connection's open parks forever WHILE HOLDING THE HANDLE
+/// LOCK. That freezes the health watcher (its `is_closed()` poll and its active
+/// probe both take the same lock), so the session is never declared dead, never
+/// auto-reconnects, and the bridge task's permit never frees — the exact
+/// "tunnel dead, UI still green, only a manual restart brings it back" report.
+/// Bounding the open releases the lock (and the permit) within this window: the
+/// watcher runs again and, if the link is truly gone, its own probe strikes out
+/// and triggers a reconnect; if the link recovered, the next connection just
+/// succeeds. A real open completes in one round-trip (milliseconds), so 10s
+/// never trips a healthy link.
+const CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Open a `direct-tcpip` channel through the SSH session, with ONE quick
 /// retry on transient failure. Modern browsers fire bursts of channel-open
 /// requests (preconnect pools, image sprites, prefetch) and some SSH
@@ -970,22 +986,27 @@ pub async fn bridge_forwarded_channel(
 /// transport-shaped error even though the session itself is healthy. A
 /// 120ms backoff + single retry papers over those without holding the
 /// caller noticeably longer. Falls back to the original error on the
-/// second failure.
+/// second failure. Every open is bounded by CHANNEL_OPEN_TIMEOUT — see there
+/// for why an unbounded open is the root of the silent-tunnel-death bug.
 async fn open_channel_with_retry(
     handle: &Mutex<russh::client::Handle<ClientHandler>>,
     target_host: &str,
     target_port: u32,
     peer_ip: &str,
     peer_port: u32,
-) -> Result<russh::Channel<russh::client::Msg>, russh::Error> {
+) -> Result<russh::Channel<russh::client::Msg>, String> {
     let first = {
         let h = handle.lock().await;
-        h.channel_open_direct_tcpip(target_host.to_string(), target_port,
-                                     peer_ip.to_string(), peer_port).await
+        tokio::time::timeout(
+            CHANNEL_OPEN_TIMEOUT,
+            h.channel_open_direct_tcpip(target_host.to_string(), target_port,
+                                        peer_ip.to_string(), peer_port),
+        ).await
     };
-    let first_err = match first {
-        Ok(c) => return Ok(c),
-        Err(e) => e,
+    let first_err: String = match first {
+        Ok(Ok(c)) => return Ok(c),
+        Ok(Err(e)) => e.to_string(),
+        Err(_) => format!("channel open timed out after {:?}", CHANNEL_OPEN_TIMEOUT),
     };
     // Don't retry if the session is gone — wasted round-trip and the
     // user is about to see the disconnect banner anyway.
@@ -997,9 +1018,19 @@ async fn open_channel_with_retry(
         return Err(first_err);
     }
     tokio::time::sleep(Duration::from_millis(120)).await;
-    let h = handle.lock().await;
-    h.channel_open_direct_tcpip(target_host.to_string(), target_port,
-                                 peer_ip.to_string(), peer_port).await
+    let second = {
+        let h = handle.lock().await;
+        tokio::time::timeout(
+            CHANNEL_OPEN_TIMEOUT,
+            h.channel_open_direct_tcpip(target_host.to_string(), target_port,
+                                        peer_ip.to_string(), peer_port),
+        ).await
+    };
+    match second {
+        Ok(Ok(c)) => Ok(c),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!("channel open timed out after {:?} (retry)", CHANNEL_OPEN_TIMEOUT)),
+    }
 }
 
 /// Detect the protocol the client is speaking from its first byte and hand

@@ -3780,6 +3780,75 @@ async fn add_server(
     Ok(new_id)
 }
 
+/// Persist a Quick Connect target as a reusable node in the ROOT directory
+/// (folder_id NULL). Quick Connect is otherwise ephemeral; this leaves behind a
+/// saved profile the user can reconnect to later without re-typing credentials.
+/// Deduplicates by (host, port, username) among root nodes so repeatedly
+/// quick-connecting to the same host doesn't pile up identical rows — the
+/// existing node's id is returned instead. Password targets are stored as
+/// `custom_pass` (inline username + password); key targets save the private key
+/// into `ssh_keys` (public_key left empty — the connect path derives everything
+/// it needs from the private key via decode_secret_key, see the custom_key
+/// branch in initiate_connection) and reference it as `custom_key`.
+#[tauri::command]
+async fn save_quick_connect_node(
+    state: tauri::State<'_, DbState>,
+    auth: QuickAuth,
+) -> Result<i64, String> {
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+
+    let username = {
+        let t = auth.username.trim();
+        if t.is_empty() { "root".to_string() } else { t.to_string() }
+    };
+
+    // Dedup against existing, non-deleted ROOT nodes with the same identity so
+    // the grid doesn't fill with duplicates on repeated quick connects.
+    let existing = conn.query_row(
+        "SELECT id FROM servers WHERE deleted = 0 AND folder_id IS NULL AND host = ?1 AND port = ?2 AND COALESCE(username,'') = ?3 LIMIT 1",
+        rusqlite::params![auth.host, auth.port, username],
+        |r| r.get::<_, i64>(0),
+    );
+    match existing {
+        Ok(id) => return Ok(id),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+        Err(e) => return Err(format!("[DATABASE] QUICK_NODE_LOOKUP_FAILED: {}", e)),
+    }
+
+    let name = format!("{}@{}", username, auth.host);
+
+    // A private key wins over a password if both somehow arrived.
+    let (auth_type, db_password, db_key_id): (&str, Option<String>, Option<i64>) =
+        if let Some(pem) = auth.private_key.as_ref().filter(|s| !s.trim().is_empty()) {
+            validate_ssh_private_key(pem)?;
+            conn.execute(
+                "INSERT INTO ssh_keys (name, public_key, private_key, passphrase) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![name, "", pem, auth.passphrase],
+            ).map_err(|e| format!("[DATABASE] QUICK_KEY_INSERT_FAILED: {}", e))?;
+            ("custom_key", None, Some(conn.last_insert_rowid()))
+        } else {
+            ("custom_pass", auth.password.clone(), None)
+        };
+
+    conn.execute(
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color) \
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, 'none', '', 1080, '[]', ?6, ?7, 0, '[]', NULL)",
+        rusqlite::params![name, auth.host, auth.port, username, db_password, auth_type, db_key_id],
+    ).map_err(|e| format!("[DATABASE] QUICK_NODE_INSERT_FAILED: {}", e))?;
+
+    let new_id = conn.last_insert_rowid();
+    // Append to the bottom of the root order (mirrors add_server's position calc).
+    let _ = conn.execute(
+        "UPDATE servers SET position = COALESCE((SELECT MAX(position) FROM servers WHERE id != ?1 AND folder_id IS NULL), -1) + 1 WHERE id = ?1",
+        rusqlite::params![new_id],
+    );
+
+    drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(new_id)
+}
+
 #[tauri::command]
 async fn edit_server(
     state: tauri::State<'_, DbState>,
@@ -10417,7 +10486,7 @@ pub fn run() {
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
             profile_share_status, stop_sharing, profile_sync_stats,
             set_editor_label,
-            add_server, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
+            add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,
             add_command, edit_command, delete_command, get_commands,

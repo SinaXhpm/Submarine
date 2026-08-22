@@ -2,12 +2,12 @@ import { useState } from "react";
 import { Zap, X, AlertTriangle, KeyRound, Lock } from "lucide-react";
 import PasswordField from "./PasswordField";
 
-// One-shot connection without saving the host in the vault. The auth bundle
-// lives in component state, gets passed to DesktopApp via onConnect, and
-// the resulting session carries it through to `initiate_connection`'s
-// `quick_auth` param on the backend. Nothing is written to disk —
-// disconnecting the session leaves no trace beyond a `known_hosts` row
-// if the user accepted the host fingerprint.
+// Quick Connect: the auth bundle lives in component state, gets passed to
+// DesktopApp via onConnect, and the resulting session carries it through to
+// `initiate_connection`'s `quick_auth` param on the backend (so the live
+// connection uses the inline auth directly). DesktopApp ALSO persists the
+// target as a reusable node in the root directory (see save_quick_connect_node)
+// so it can be reconnected later without re-typing credentials.
 
 export interface QuickAuth {
   host: string;
@@ -178,7 +178,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
           )}
 
           <p className="text-[10.5px] text-zinc-400 leading-snug pt-1">
-            Nothing is saved. To reuse this host later, add it from the regular <span className="text-primary">+ Add Node</span> flow.
+            This host is saved as a node in your root directory for reuse. Edit or remove it anytime from the node grid.
           </p>
         </div>
 

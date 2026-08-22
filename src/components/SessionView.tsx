@@ -384,17 +384,16 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // this session view — first successful connect only, never on reconnect.
   const ranOnConnectRef = useRef(false);
 
-  // ---- Auto-reconnect with exponential backoff -----------------------------
-  // After a previously-good session drops, try to reconnect on a 1.5s → 3 → 6
-  // → 12 → 24s → 30s cadence (capped at 30s). Retries are UNBOUNDED — the
-  // user said the SOCKS use-case in particular needs the tunnel to come back
-  // by itself after a long blip (laptop sleep, mobile-hotspot dropout) rather
-  // than silently giving up after 5 attempts and leaving them with no SOCKS
-  // until they notice. Only an auth failure or an explicit Cancel stops the
-  // cycle; the terminal/SFTP overlay stays in place the whole time so the
-  // user can see what's happening without losing context.
-  const RECONNECT_BASE_MS = 1500;
-  const RECONNECT_MAX_MS = 30000;
+  // ---- Auto-reconnect: fixed 5s cadence, retried FOREVER -------------------
+  // After a previously-good session drops we retry every 5 seconds, forever —
+  // no backoff ramp, no give-up. The user wants the session/tunnel to keep
+  // trying relentlessly on any drop (laptop sleep, mobile-hotspot dropout, a
+  // flaky link) so a forward always comes back by itself once the link
+  // returns. Only a genuine AUTH failure (wrong credentials) or an explicit
+  // Cancel stops the cycle — retrying auth-rejected attempts every 5s would
+  // just spam the server and risk locking the account. The terminal/SFTP
+  // overlay stays in place the whole time so the user keeps their context.
+  const RECONNECT_INTERVAL_MS = 5000;
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [nextReconnectAt, setNextReconnectAt] = useState<number | null>(null);
   const reconnectAttemptRef = useRef(0);
@@ -636,7 +635,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, attempt - 1));
+    const delay = RECONNECT_INTERVAL_MS;
     updateAttempt(attempt);
     setNextReconnectAt(Date.now() + delay);
     reconnectTimerRef.current = setTimeout(() => {
