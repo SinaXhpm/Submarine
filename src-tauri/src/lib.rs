@@ -273,7 +273,26 @@ fn save_vault_blocking(
     let tmp_path = path.with_extension("submarine.tmp");
     {
         use std::io::Write as _;
-        let mut f = fs::File::create(&tmp_path)
+        // Drop any tmp left behind by a crashed save. Without this the
+        // OpenOptions below would reopen that file, and `mode` only applies
+        // to a file this call actually creates — so a stale tmp written by
+        // an older build would keep its umask-derived permissions forever.
+        let _ = fs::remove_file(&tmp_path);
+        // Mode is set at open time, not with a set_permissions call after
+        // creating the file. The gap between those two would be enough for
+        // another account on a multi-user host to open the vault while it
+        // still carried the process umask (0644 on most distros) — and this
+        // is the file every private key and password in the app lives in.
+        // Same idiom as the cloud bearer token in cloud.rs; on Windows the
+        // user-only ACL is inherited from app_data_dir.
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp_path)
             .map_err(|e| format!("[FILE] VAULT_TMP_CREATE_FAILED at {:?}: {}", tmp_path, e))?;
         f.write_all(&blob)
             .map_err(|e| format!("[FILE] VAULT_TMP_WRITE_FAILED at {:?}: {}", tmp_path, e))?;
@@ -2987,6 +3006,14 @@ async fn delete_profile(app_handle: tauri::AppHandle, name: String) -> Result<()
         fs::remove_file(&path)
             .map_err(|e| format!("[FILE] DELETE_PROFILE_FAILED at {:?}: {}", path, e))?;
     }
+    // A save that died between writing the tmp and renaming it leaves a
+    // `<name>.submarine.tmp` holding a complete vault. `list_profiles` filters
+    // on the `.submarine` extension so nothing ever surfaces it, which means
+    // deleting the profile would otherwise leave the user's keys on disk
+    // indefinitely with no way to see or remove them from the UI. Best-effort:
+    // the profile itself is already gone, so a locked tmp shouldn't fail the
+    // delete the user asked for.
+    let _ = fs::remove_file(path.with_extension("submarine.tmp"));
     Ok(())
 }
 
@@ -3423,6 +3450,45 @@ async fn setup_master_db_inner(
 
     conn.execute("PRAGMA foreign_keys = ON", []).map_err(|e| format!("[DATABASE] PRAGMA_FAILED: {}", e))?;
 
+    // Deleting a key or credential frees its SQLite page but leaves the bytes
+    // sitting there, and `conn.serialize()` copies free pages too — so the
+    // private key the user deleted last month is still inside every vault
+    // snapshot written since, and inside every per-entity sync blob derived
+    // from one. secure_delete zeroes the vacated bytes at DELETE/UPDATE time
+    // instead. `execute_batch` rather than `execute` because assigning this
+    // pragma reports the resulting value as a row, which `execute` rejects.
+    conn.execute_batch("PRAGMA secure_delete = ON;")
+        .map_err(|e| format!("[DATABASE] PRAGMA_FAILED: {}", e))?;
+
+    // secure_delete only governs deletes from here on. A vault that has been
+    // in use since before this build still carries whatever its old frees
+    // left behind, so purge that history once: VACUUM rebuilds the database
+    // with no free pages at all. Marked in schema_meta so it costs one
+    // rebuild per vault rather than one per launch. Best-effort — a vault
+    // that can't be vacuumed is still perfectly usable, just not scrubbed,
+    // and failing to open it over that would be a bad trade.
+    let scrubbed: bool = conn
+        .query_row(
+            "SELECT 1 FROM schema_meta WHERE key = 'free_pages_scrubbed'",
+            [],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if !scrubbed {
+        match conn.execute_batch("VACUUM;") {
+            Ok(()) => {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('free_pages_scrubbed', '1')",
+                    [],
+                );
+                needs_resave = true;
+            }
+            Err(e) => {
+                eprintln!("[DATABASE] VACUUM_SKIPPED: {}", e);
+            }
+        }
+    }
+
     // ---- Per-entity sync instrumentation (schema v6) ----
     // A per-profile Hybrid Logical Clock backs the `hlc_now()` SQL function so
     // every row mutation auto-stamps `updated_at`. Seed the clock past the
@@ -3683,10 +3749,238 @@ async fn delete_ssh_key(state: tauri::State<'_, DbState>, id: i32) -> Result<(),
     
     conn.execute("DELETE FROM ssh_keys WHERE id=?1", rusqlite::params![id])
         .map_err(|e| format!("[DATABASE] KEY_DELETE_FAILED: {}", e))?;
-    
+
     drop(conn_guard);
     save_vault_internal(&state)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Loading an SSH key off the filesystem
+// ---------------------------------------------------------------------------
+//
+// Keys reach the vault two ways here: the user browsing to one by hand, and
+// `IdentityFile` picked up while importing an OpenSSH config. Both land on
+// `load_key_from_disk`, so a key sourced either way is validated identically
+// and the file is read exactly once.
+
+/// Ceiling on how much of a chosen file we'll read. A private key is a couple
+/// of kilobytes; past this it isn't one, and reading the whole thing only to
+/// reject it would let a mis-click pull an ISO into memory.
+const SSH_KEY_MAX_BYTES: u64 = 512 * 1024;
+
+/// Expand a leading `~` the way OpenSSH does when it resolves `IdentityFile`.
+/// `~user/…` is left alone: it needs a passwd lookup, and a personal config
+/// pointing at another account's key isn't a case worth supporting.
+fn expand_home(raw: &str) -> PathBuf {
+    let trimmed = raw.trim().trim_matches('"');
+    let rest = match trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
+        Some(r) => r,
+        None => return PathBuf::from(trimmed),
+    };
+    match directories::UserDirs::new() {
+        Some(dirs) => dirs.home_dir().join(rest),
+        // No home directory to expand against — hand back the literal path so
+        // the caller reports "not found" on something the user can recognise,
+        // rather than a path with a silently-dropped tilde.
+        None => PathBuf::from(trimmed),
+    }
+}
+
+/// A key file read from disk, with everything we can determine without asking
+/// the user for a passphrase.
+#[derive(serde::Serialize)]
+struct LoadedSshKey {
+    /// Absolute path we actually read, after `~` expansion. Echoed back so the
+    /// UI can show what it picked up and pass it to `import_ssh_key_file`
+    /// without re-deriving it.
+    path: String,
+    /// Name to pre-fill, taken from the file stem (`id_ed25519`).
+    suggested_name: String,
+    private_key: String,
+    /// OpenSSH stores the public half in cleartext even in an encrypted key
+    /// file, so this is usually derivable from the private key alone. For an
+    /// RSA PEM (no embedded public half) we fall back to a sibling `<file>.pub`
+    /// and, failing that, leave it empty — nothing in the connect path needs
+    /// it, it's here so the user can copy it into an `authorized_keys`.
+    public_key: String,
+    /// Whether the key is passphrase-protected. The passphrase itself is never
+    /// on disk, so the UI has to ask for it separately before the key will
+    /// connect.
+    encrypted: bool,
+}
+
+/// Read and validate a private key file. Shared by the browse flow and the
+/// SSH-config import.
+fn load_key_from_disk(path: &std::path::Path) -> Result<LoadedSshKey, String> {
+    let meta = fs::metadata(path)
+        .map_err(|e| format!("[SSH] KEY_FILE_UNREADABLE at {}: {}", path.display(), e))?;
+    if !meta.is_file() {
+        return Err(format!("[SSH] KEY_FILE_NOT_A_FILE: {}", path.display()));
+    }
+    if meta.len() > SSH_KEY_MAX_BYTES {
+        return Err(format!(
+            "[SSH] KEY_FILE_TOO_LARGE: {} is {} bytes — that isn't a private key.",
+            path.display(),
+            meta.len()
+        ));
+    }
+
+    // A key file is text; a binary one (say, a PuTTY .ppk mistaken for an
+    // OpenSSH key) fails here with a clearer message than the validator's.
+    let private_key = fs::read_to_string(path).map_err(|e| {
+        format!("[SSH] KEY_FILE_NOT_TEXT at {}: {}", path.display(), e)
+    })?;
+    validate_ssh_private_key(&private_key)?;
+
+    let parsed = ssh_key::PrivateKey::from_openssh(private_key.trim()).ok();
+    let encrypted = parsed.as_ref().map(|p| p.is_encrypted()).unwrap_or(false);
+    // `with_extension` would turn `key.pem` into `key.pub`; the convention is
+    // to append, so `id_ed25519` → `id_ed25519.pub` and `key.pem` → `key.pem.pub`.
+    let sibling_pub = {
+        let mut s = path.as_os_str().to_os_string();
+        s.push(".pub");
+        PathBuf::from(s)
+    };
+    let public_key = parsed
+        .as_ref()
+        .and_then(|p| p.public_key().to_openssh().ok())
+        .or_else(|| fs::read_to_string(&sibling_pub).ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let suggested_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Imported key")
+        .to_string();
+
+    Ok(LoadedSshKey {
+        path: path.to_string_lossy().into_owned(),
+        suggested_name,
+        private_key,
+        public_key,
+        encrypted,
+    })
+}
+
+/// Open a native picker for a private key file and return the chosen path, or
+/// `None` if the user cancelled. Only the path crosses IPC — the file isn't
+/// read until the caller asks for it by name, so cancelling costs nothing and
+/// the key never travels for a dialog the user backed out of.
+///
+/// `async` for the same reason `export_profile` is: rfd's blocking dialog must
+/// not run on the main thread on macOS, and a sync Tauri command does.
+#[tauri::command]
+async fn pick_ssh_key_file() -> Result<Option<String>, String> {
+    // Native dialogs are desktop-only, same as profile export/import above.
+    #[cfg(target_os = "android")]
+    {
+        Err("Browsing for a key file isn't available on Android — paste the key instead.".into())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let mut dialog = rfd::FileDialog::new().set_title("Choose an SSH private key");
+        // Start where the keys almost always are. Key files are conventionally
+        // extensionless (`id_ed25519`), which no filter can express, so the
+        // picker stays unfiltered and `load_key_from_disk` does the rejecting.
+        if let Some(dirs) = directories::UserDirs::new() {
+            let ssh_dir = dirs.home_dir().join(".ssh");
+            if ssh_dir.is_dir() {
+                dialog = dialog.set_directory(&ssh_dir);
+            }
+        }
+        Ok(dialog.pick_file().map(|p| p.to_string_lossy().into_owned()))
+    }
+}
+
+/// Read a key file the user already chose, for the "fill in the new-key form"
+/// flow. Nothing is written to the vault — the user still reviews the name and
+/// supplies a passphrase before saving.
+#[tauri::command]
+fn read_ssh_key_file(path: String) -> Result<LoadedSshKey, String> {
+    load_key_from_disk(&expand_home(&path))
+}
+
+/// A key that `import_ssh_key_file` put in the vault (or found already there).
+#[derive(serde::Serialize)]
+struct ImportedSshKey {
+    id: i64,
+    name: String,
+    /// True when we matched an existing row instead of inserting one. Lets the
+    /// importer tell the user "attached your existing key" rather than
+    /// implying it created a duplicate.
+    reused: bool,
+    /// Carried through from the file so the caller can warn that this key
+    /// won't connect until its passphrase is filled in.
+    encrypted: bool,
+}
+
+/// Read a key file straight into the vault and hand back the row to link a
+/// server against. Used by the SSH-config import (one call per distinct
+/// `IdentityFile`) and by the browse button on the server sheet.
+///
+/// Re-importing the same file is idempotent: identity is the private key's
+/// own bytes, so a second run over an unchanged `~/.ssh/config` attaches the
+/// keys already in the vault instead of piling up copies of them.
+#[tauri::command]
+async fn import_ssh_key_file(
+    state: tauri::State<'_, DbState>,
+    path: String,
+    name: Option<String>,
+) -> Result<ImportedSshKey, String> {
+    let loaded = load_key_from_disk(&expand_home(&path))?;
+    let encrypted = loaded.encrypted;
+    // The key content only ever lives in this function, so keep it wiped on
+    // the way out rather than leaving it in a heap block for the allocator to
+    // hand to something else.
+    let private_key = Zeroizing::new(loaded.private_key);
+    let requested = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or(loaded.suggested_name);
+
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+
+    if let Ok((id, existing_name)) = conn.query_row(
+        "SELECT id, name FROM ssh_keys WHERE private_key = ?1 LIMIT 1",
+        rusqlite::params![private_key.as_str()],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    ) {
+        return Ok(ImportedSshKey { id, name: existing_name, reused: true, encrypted });
+    }
+
+    // Names aren't unique in the schema, but two rows called `id_ed25519` are
+    // indistinguishable in the key dropdown, so suffix a fresh import whose
+    // name some other key already holds.
+    let mut final_name = requested.clone();
+    for suffix in 2..100 {
+        let taken: bool = conn
+            .query_row(
+                "SELECT 1 FROM ssh_keys WHERE name = ?1",
+                rusqlite::params![final_name],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if !taken {
+            break;
+        }
+        final_name = format!("{} ({})", requested, suffix);
+    }
+
+    conn.execute(
+        "INSERT INTO ssh_keys (name, public_key, private_key) VALUES (?1, ?2, ?3)",
+        rusqlite::params![final_name, loaded.public_key, private_key.as_str()],
+    )
+    .map_err(|e| format!("[DATABASE] KEY_INSERT_FAILED: {}", e))?;
+    let id = conn.last_insert_rowid();
+
+    drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(ImportedSshKey { id, name: final_name, reused: false, encrypted })
 }
 
 /// Canonicalize a node row's identity fields based on the chosen auth_type.
@@ -9241,8 +9535,9 @@ async fn android_default_local_dir(app: tauri::AppHandle) -> Result<String, Stri
 
 /// One resolved entry from an OpenSSH client config `Host` block. The
 /// frontend picks a subset of these and turns each into a fresh server row
-/// via the existing `add_server` command — password/key are left blank so
-/// the user configures those after import.
+/// via the existing `add_server` command. A host that named an `IdentityFile`
+/// gets that key registered and linked; everything else lands password-less
+/// for the user to finish.
 #[derive(serde::Serialize)]
 struct ImportedHost {
     /// The alias the user actually types (`ssh <alias>`) — becomes the
@@ -9256,9 +9551,10 @@ struct ImportedHost {
     /// Resolved `User`. Empty string when unset — the frontend can fall
     /// back to whatever it uses elsewhere.
     user: String,
-    /// Resolved `IdentityFile`. Purely informational for now — the import
-    /// flow doesn't auto-attach keys because we'd need to also read and
-    /// register them in the vault, which is a separate feature.
+    /// Resolved `IdentityFile`, still in the config's own spelling (`~` and
+    /// all). The importer feeds it to `import_ssh_key_file`, which expands and
+    /// reads it, so a host that names a key comes in as a key-authenticated
+    /// row rather than one the user has to go back and finish.
     identity_file: Option<String>,
     /// Resolved `ProxyJump`. Informational only; live proxy config still
     /// happens in the Server details panel.
@@ -10495,6 +10791,7 @@ pub fn run() {
             mirror_dry_run, start_mirror, stop_mirror, list_mirrors, pick_local_directory,
             add_credential, edit_credential, delete_credential,
             add_ssh_key, edit_ssh_key, delete_ssh_key,
+            pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             open_terminal, write_terminal_data, resize_terminal, close_terminal,

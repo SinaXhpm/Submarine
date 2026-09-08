@@ -2402,7 +2402,7 @@ function DesktopApp() {
           }
         }}
         formError={formError}
-        credentials={credentials} sshKeys={sshKeys} folders={folders} refreshFolders={refreshFolders}
+        credentials={credentials} sshKeys={sshKeys} refreshSshKeys={refreshSshKeys} folders={folders} refreshFolders={refreshFolders}
         refreshServers={refreshServers}
         servers={servers}
         isMobile={isMobile}
@@ -2631,6 +2631,46 @@ function DesktopApp() {
           </div>
           <div className="p-6 flex-1 overflow-y-auto space-y-6">
             {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+            {/* Reading the key out of ~/.ssh beats making the user cat it in a
+                terminal and paste two multi-line blobs. Fields are filled in
+                rather than saved outright — the name is a guess from the
+                filename, and a passphrase-protected key still needs its
+                passphrase, so the user reviews before saving. */}
+            <button
+              type="button"
+              onClick={async () => {
+                setFormError("");
+                try {
+                  const path = await invoke<string | null>("pick_ssh_key_file");
+                  if (!path) return;
+                  const loaded = await invoke<{
+                    suggested_name: string;
+                    private_key: string;
+                    public_key: string;
+                    encrypted: boolean;
+                  }>("read_ssh_key_file", { path });
+                  setEditKeyData({
+                    ...editKeyData,
+                    name: editKeyData.name || loaded.suggested_name,
+                    public_key: loaded.public_key,
+                    private_key: loaded.private_key,
+                  });
+                  addLog(
+                    loaded.encrypted
+                      ? "Key loaded — it's passphrase-protected, so fill in the passphrase below."
+                      : "Key loaded from file.",
+                    loaded.encrypted ? "info" : "success",
+                  );
+                } catch (e) {
+                  setFormError(`Couldn't read that key file: ${e}`);
+                  addLog(`KEY_FILE_READ_ERROR: ${e}`, "error");
+                }
+              }}
+              className="w-full h-9 flex items-center justify-center gap-2 text-[12px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 rounded-lg transition-all"
+            >
+              <Key size={13} />
+              Load from a key file
+            </button>
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Name</label>
               <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. My laptop key" value={editKeyData.name} onChange={e => setEditKeyData({ ...editKeyData, name: e.target.value })} />
