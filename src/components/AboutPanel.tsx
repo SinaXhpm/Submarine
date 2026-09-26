@@ -1,7 +1,29 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { X, Github, Globe, RefreshCw, CheckCircle2, ArrowUpCircle, AlertTriangle } from "lucide-react";
+import { X, Globe, RefreshCw, CheckCircle2, ArrowUpCircle, AlertTriangle } from "lucide-react";
 import logoUrl from "../assets/logo.png";
+
+// lucide-react 1.0 dropped all brand icons; this is the ISC-licensed
+// `github` outline it used to ship, kept inline so the About panel keeps
+// its look.
+function GithubIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
+      <path d="M9 18c-4.51 2-5-2-7-2" />
+    </svg>
+  );
+}
 
 // Tiny modal that surfaces version + update status + a couple of project
 // links. Lives behind a small text-button in ProfileSelectPage's footer
@@ -140,7 +162,7 @@ const AboutPanel = ({ isOpen, onClose }: Props) => {
                 onClick={() => openUrl(info.github_repo_url)}
                 className="w-full h-9 rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/5 hover:border-white/10 text-[12px] text-zinc-300 hover:text-white flex items-center justify-center gap-2 transition-colors"
               >
-                <Github size={13} /> GitHub
+                <GithubIcon size={13} /> GitHub
               </button>
               <button
                 onClick={() => openUrl(info.website_url)}

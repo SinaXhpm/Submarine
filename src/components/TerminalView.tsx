@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Terminal } from 'xterm';
-import { FitAddon } from 'xterm-addon-fit';
-import { SearchAddon, ISearchOptions } from 'xterm-addon-search';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon, ISearchOptions } from '@xterm/addon-search';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import 'xterm/css/xterm.css';
+import '@xterm/xterm/css/xterm.css';
 import { useIsNarrow } from '../hooks/useViewport';
 import { MobileKeyBar, ModifiersState, ModKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';

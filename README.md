@@ -264,7 +264,7 @@ No. Distribution is via sideloadable APK from the [releases page](https://github
 
 ## Build from Source
 
-Requirements: Node 20+, Rust stable, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS. Windows additionally needs **Strawberry Perl** for the vendored OpenSSL build (`winget install StrawberryPerl.StrawberryPerl`).
+Requirements: Node 22+ (or 20.19+), Rust stable, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS. Windows additionally needs **Strawberry Perl** for the vendored OpenSSL build (`winget install StrawberryPerl.StrawberryPerl`).
 
 ```bash
 git clone https://github.com/sinaxhpm/submarine
@@ -297,7 +297,7 @@ This path works whether Wi-Fi is on or off — only USB matters. If you still se
 
 ## Tech Stack
 
-**Frontend** — React 18 · TypeScript · Tailwind CSS · xterm.js
+**Frontend** — React 19 · TypeScript · Tailwind CSS · xterm.js
 **Backend** — Rust · Tauri 2 · russh · rusqlite · aes-gcm · argon2 · zstd
 
 ## Credits
