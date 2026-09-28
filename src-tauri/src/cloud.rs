@@ -24,9 +24,10 @@ use tokio::sync::Mutex;
 // Config
 // ---------------------------------------------------------------------------
 
-/// Where the cloud API lives. Hardcoded per the design decision — change
-/// here and rebuild. Trailing slash intentionally omitted; the client
-/// joins paths with a leading slash.
+/// Default cloud API server. Users can point sync at a self-hosted server
+/// from the Cloud panel; that per-device override lives in `cloud_config`,
+/// and `url()` resolves through it. Trailing slash intentionally omitted;
+/// the client joins paths with a leading slash.
 pub const CLOUD_API_BASE: &str = "https://submarine.sinaxhpm.com";
 
 /// HTTP request timeout. Uploads of large vaults can take time but we
@@ -286,7 +287,7 @@ impl CloudState {
 /// MUST start with `/`.
 pub fn url(path: &str) -> String {
     debug_assert!(path.starts_with('/'), "cloud::url path must start with '/'");
-    format!("{}{}", CLOUD_API_BASE, path)
+    format!("{}{}", crate::cloud_config::base(), path)
 }
 
 /// Decode a non-2xx response into a human-readable error. We try JSON
