@@ -33,6 +33,7 @@ class MainActivity : TauriActivity() {
   // backgrounds with #0d0d10 so the OS chrome blends into our titlebar.
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    TailcatControlServer.start()
 
     // Keep the OS from killing our process while the user is in another
     // app. All SSH state lives in the Rust backend in this same process,
@@ -67,6 +68,7 @@ class MainActivity : TauriActivity() {
   // the persistent notification promptly instead of waiting for the next
   // system sweep.
   override fun onDestroy() {
+    TailcatControlServer.stop()
     stopService(Intent(this, ConnectionKeeperService::class.java))
     super.onDestroy()
   }

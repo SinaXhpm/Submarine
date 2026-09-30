@@ -16,6 +16,7 @@ export interface QuickAuth {
   password?: string | null;
   private_key?: string | null;
   passphrase?: string | null;
+  transport?: "none" | "tailcat";
 }
 
 interface Props {
@@ -29,6 +30,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
   const [port, setPort] = useState<number>(22);
   const [username, setUsername] = useState("root");
   const [authMode, setAuthMode] = useState<"password" | "key">("password");
+  const [transport, setTransport] = useState<"none" | "tailcat">("none");
   const [password, setPassword] = useState("");
   const [privateKey, setPrivateKey] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -38,7 +40,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
 
   const reset = () => {
     setHost(""); setPort(22); setUsername("root");
-    setAuthMode("password"); setPassword(""); setPrivateKey(""); setPassphrase("");
+    setAuthMode("password"); setTransport("none"); setPassword(""); setPrivateKey(""); setPassphrase("");
     setErr(null);
   };
 
@@ -46,7 +48,8 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
 
   const connect = () => {
     setErr(null);
-    if (!host.trim()) { setErr("Host is required"); return; }
+    if (!host.trim()) { setErr(transport === "tailcat" ? "Tailcat address is required" : "Host is required"); return; }
+    if (transport === "tailcat" && !host.trim().startsWith("tc")) { setErr("Tailcat address must start with tc"); return; }
     if (!username.trim()) { setErr("Username is required"); return; }
     if (!port || port < 1 || port > 65535) { setErr("Port must be 1–65535"); return; }
     if (authMode === "password" && !password) { setErr("Password is required"); return; }
@@ -59,6 +62,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
       password: authMode === "password" ? password : null,
       private_key: authMode === "key" ? privateKey : null,
       passphrase: authMode === "key" && passphrase ? passphrase : null,
+      transport,
     };
     reset();
     onConnect(auth);
@@ -85,11 +89,11 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
           {/* Host + port */}
           <div className="grid grid-cols-4 gap-2">
             <div className="col-span-3 space-y-1">
-              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">Host</label>
+              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{transport === "tailcat" ? "Tailcat address" : "Host"}</label>
               <input
                 value={host}
                 onChange={(e) => setHost(e.target.value)}
-                placeholder="192.168.1.1 or example.com"
+                placeholder={transport === "tailcat" ? "tc…" : "192.168.1.1 or example.com"}
                 className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-zinc-50 outline-none focus:border-primary/50"
                 autoFocus
               />
@@ -103,6 +107,13 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                 className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-zinc-50 outline-none focus:border-primary/50"
               />
             </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider">Transport</label>
+            <select value={transport} onChange={e => setTransport(e.target.value as "none" | "tailcat")} className="h-8 px-2 bg-zinc-900/60 border border-white/10 rounded-lg text-[11px] text-zinc-50">
+              <option value="none">Direct</option><option value="tailcat">Tailcat</option>
+            </select>
           </div>
 
           {/* Username */}

@@ -190,7 +190,7 @@ pub struct NodeAuth {
     /// the caller) — and its optional passphrase.
     pub private_key: Option<String>,
     pub passphrase: Option<String>,
-    /// "none", "socks5", or "http". Mirrors the interactive connect path so
+    /// "none", "socks5", "http", or "tailcat". Mirrors the interactive connect path so
     /// monitoring works through the same proxy the user configured for SSH.
     pub proxy_type: String,
     pub proxy_host: Option<String>,
@@ -716,6 +716,7 @@ async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Bo
             .map_err(|e| format!("HTTP CONNECT: {}", e))?;
             Ok(Box::new(tcp))
         }
+        "tailcat" => Ok(Box::new(crate::tailcat_transport::open(&auth.host, auth.port).await?)),
         _ => {
             let stream = tokio::time::timeout(
                 connect_timeout,
@@ -770,7 +771,7 @@ async fn connect_for_monitor(
 
     let handler = MonitorHandler {
         db: Arc::clone(db),
-        host: auth.host.clone(),
+        host: if auth.proxy_type == "tailcat" { crate::tailcat_transport::verification_host(&auth.host) } else { auth.host.clone() },
         port: auth.port,
     };
 

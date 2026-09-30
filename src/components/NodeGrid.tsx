@@ -3,6 +3,8 @@ import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
 
+const displayHost = (server: any) => server.proxy_type === "tailcat" ? "tc…[encrypted]" : server.host;
+
 export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, onReorderServers, isMobile }: any) => {
   const [search, setSearch] = useState("");
   // Native window.confirm() is a silent no-op inside Tauri's Android WebView
@@ -296,7 +298,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           <h3 className="font-bold text-zinc-100 text-[13px] truncate tracking-tight leading-tight">{s.name}</h3>
           <div className="flex items-center gap-1 mt-0.5">
             <Globe size={10} className="text-zinc-400 shrink-0" />
-            <span className="text-[10.5px] text-zinc-300 font-mono truncate">{s.host}</span>
+            <span className="text-[10.5px] text-zinc-300 font-mono truncate">{displayHost(s)}</span>
           </div>
         </div>
 
@@ -559,7 +561,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
               <h3 className="font-bold text-zinc-100 text-[13px] truncate tracking-tight leading-tight">{draggedServer.name}</h3>
               <div className="flex items-center gap-1 mt-0.5">
                 <Globe size={10} className="text-zinc-400 shrink-0" />
-                <span className="text-[10.5px] text-zinc-300 font-mono truncate">{draggedServer.host}</span>
+                <span className="text-[10.5px] text-zinc-300 font-mono truncate">{displayHost(draggedServer)}</span>
               </div>
             </div>
           </div>
