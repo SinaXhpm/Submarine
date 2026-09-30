@@ -30,10 +30,15 @@ export interface TransferTarget {
 // that, surface the overwrite prompt, and re-call with `overwrite=true`.
 // Drag-drop used to clobber silently; that's no longer the default
 // because users couldn't tell when they'd just overwritten work.
+//
+// `transferId` is passed to the SFTP commands (cross-side only), so the
+// transfers bar can show the item as starting and cancel it before its
+// first progress event, the same as a batch item.
 export async function transferFile(
   src: TransferSource,
   dest: TransferTarget,
   overwrite: boolean = false,
+  transferId?: string,
 ): Promise<void> {
   if (src.isDir) {
     // Recursive transfer between providers is non-trivial — we surface a clear
@@ -51,6 +56,7 @@ export async function transferFile(
       remotePath: src.path,
       localPath: destPath,
       overwrite,
+      transferId,
     });
     return;
   }
@@ -62,6 +68,7 @@ export async function transferFile(
       localPath: src.path,
       remotePath: destPath,
       overwrite,
+      transferId,
     });
     return;
   }
