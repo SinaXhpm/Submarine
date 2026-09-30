@@ -1,10 +1,56 @@
 use russh::client;
-use russh_keys::key::PublicKey;
+use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, oneshot, Mutex};
-use async_trait::async_trait;
+
+/// Host-key fingerprint in the format every `known_hosts` row was written
+/// with: un-padded base64 of SHA-256 over the key blob, WITHOUT the
+/// `SHA256:` prefix. russh-keys 0.40 produced exactly that; ssh-key's
+/// `Fingerprint` Display adds the prefix, so we strip it to keep existing
+/// rows matching (a format change would fire a false "KEY CHANGED" warning
+/// for every pinned host).
+pub fn host_key_fingerprint(key: &PublicKey) -> String {
+    let fp = key.fingerprint(HashAlg::Sha256).to_string();
+    fp.strip_prefix("SHA256:").map(str::to_owned).unwrap_or(fp)
+}
+
+/// Collapse the RSA signature-algorithm labels onto one family so a row
+/// pinned as `rsa-sha2-512` (russh-keys 0.40 reported the negotiated
+/// signature name) still counts as the same key TYPE as `ssh-rsa` (ssh-key
+/// reports the key algorithm). Only the mismatch heuristic uses this.
+fn key_type_family(name: &str) -> &str {
+    match name {
+        "rsa-sha2-256" | "rsa-sha2-512" => "ssh-rsa",
+        other => other,
+    }
+}
+
+/// Public-key auth with the `bool` contract callers relied on under russh
+/// 0.40. Picks the RSA hash the server advertises (no-op for non-RSA keys).
+pub async fn authenticate_with_key<H: client::Handler>(
+    session: &mut client::Handle<H>,
+    user: &str,
+    key: PrivateKey,
+) -> Result<bool, russh::Error> {
+    let hash_alg = if key.algorithm().is_rsa() {
+        session.best_supported_rsa_hash().await?.flatten()
+    } else {
+        None
+    };
+    let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
+    Ok(session.authenticate_publickey(user, key).await?.success())
+}
+
+/// Password auth with the `bool` contract callers relied on under russh 0.40.
+pub async fn authenticate_with_password<H: client::Handler>(
+    session: &mut client::Handle<H>,
+    user: &str,
+    password: &str,
+) -> Result<bool, russh::Error> {
+    Ok(session.authenticate_password(user, password).await?.success())
+}
 
 /// Per-terminal command. We deliberately split data from resize at the
 /// channel level: keystrokes flow through `Data` on an mpsc, while resizes
@@ -144,14 +190,14 @@ pub struct ClientHandler {
     pub fp_outcome: std::sync::Arc<std::sync::atomic::AtomicI8>,
 }
 
-#[async_trait]
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(mut self, server_public_key: &PublicKey) -> Result<(Self, bool), Self::Error> {
-        let fingerprint = server_public_key.fingerprint();
-        let key_type = server_public_key.name();
-        let fp_str = fingerprint.to_string();
+    async fn check_server_key(&mut self, server_public_key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+        let server_public_key = server_public_key.public_key();
+        let key_type = server_public_key.algorithm().to_string();
+        let key_type = key_type.as_str();
+        let fp_str = host_key_fingerprint(&server_public_key);
 
         let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
             "msg": format!("Server offered key ({}): {}", key_type, fp_str),
@@ -200,7 +246,7 @@ impl client::Handler for ClientHandler {
                                             // genuine rotation of a pre-migration host to a
                                             // benign first-time prompt.
                                             let same_type = match saved_kt.as_deref() {
-                                                Some(kt) => kt == key_type,
+                                                Some(kt) => key_type_family(kt) == key_type_family(key_type),
                                                 None => true,
                                             };
                                             if same_type {
@@ -222,7 +268,7 @@ impl client::Handler for ClientHandler {
                 "msg": "Host-key DB lock is poisoned — refusing connection. Restart the app.",
                 "type": "error"
             }));
-            return Ok((self, false));
+            return Ok(false);
         }
 
         if is_known {
@@ -234,7 +280,7 @@ impl client::Handler for ClientHandler {
             // driver knows host-key wasn't the failure mode for any
             // downstream error.
             self.fp_outcome.store(1, std::sync::atomic::Ordering::SeqCst);
-            return Ok((self, true));
+            return Ok(true);
         }
 
         if mismatch {
@@ -315,7 +361,7 @@ impl client::Handler for ClientHandler {
                         "type": "success"
                     }));
                     self.fp_outcome.store(1, std::sync::atomic::Ordering::SeqCst);
-                    Ok((self, true))
+                    Ok(true)
                 }
                 Ok(Ok(false)) => {
                     let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
@@ -324,7 +370,7 @@ impl client::Handler for ClientHandler {
                     }));
                     let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({}));
                     self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
-                    Ok((self, false))
+                    Ok(false)
                 }
                 Err(_) => {
                     let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
@@ -333,7 +379,7 @@ impl client::Handler for ClientHandler {
                     }));
                     let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({}));
                     self.fp_outcome.store(2, std::sync::atomic::Ordering::SeqCst);
-                    Ok((self, false))
+                    Ok(false)
                 }
                 _ => {
                     let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
@@ -342,11 +388,11 @@ impl client::Handler for ClientHandler {
                     }));
                     let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({}));
                     self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
-                    Ok((self, false))
+                    Ok(false)
                 }
             }
         } else {
-            Ok((self, false))
+            Ok(false)
         }
     }
 
@@ -355,17 +401,19 @@ impl client::Handler for ClientHandler {
     /// outside connection on `connected_port`; we just need to bridge that
     /// channel to a local TCP socket pointed at the user's chosen target.
     async fn server_channel_open_forwarded_tcpip(
-        self,
+        &mut self,
         channel: russh::Channel<client::Msg>,
         _connected_address: &str,
         connected_port: u32,
         _originator_address: &str,
         _originator_port: u32,
-        session: client::Session,
-    ) -> Result<(Self, client::Session), Self::Error> {
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
         let entry = self.forwarded_targets.lock().await.get(&connected_port).cloned();
         match entry {
             Some(entry) => {
+                reply.accept().await;
                 // Spawn the bridge so we don't hold up russh's protocol task.
                 // `bridge_forwarded_channel` does the local connect and
                 // tokio::io::copy_bidirectional dance, plus bumps the
@@ -375,11 +423,44 @@ impl client::Handler for ClientHandler {
                 });
             }
             None => {
-                // No tunnel registered for this port — let the channel drop,
-                // which closes it on the server's side.
+                // No tunnel registered for this port. Dropping `reply` rejects
+                // the open, which closes it on the server's side.
             }
         }
-        Ok((self, session))
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The stored `known_hosts` format must stay byte-identical to what
+    /// russh-keys 0.40 wrote: un-padded base64 SHA-256 of the key blob, no
+    /// `SHA256:` prefix. Guards the upgrade against silently invalidating
+    /// every pinned host.
+    #[test]
+    fn host_key_fingerprint_matches_legacy_format() {
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
+        let seed = [7u8; 32];
+        let key = PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from(
+            russh::keys::ssh_key::private::Ed25519PrivateKey::from_bytes(&seed),
+        ));
+        let public = key.public_key();
+        let fp = host_key_fingerprint(public);
+        let expected = base64::engine::general_purpose::STANDARD_NO_PAD
+            .encode(Sha256::digest(public.to_bytes().unwrap()));
+        assert_eq!(fp, expected);
+        assert!(!fp.starts_with("SHA256:"));
+    }
+
+    #[test]
+    fn rsa_signature_names_share_one_family() {
+        assert_eq!(key_type_family("rsa-sha2-512"), "ssh-rsa");
+        assert_eq!(key_type_family("rsa-sha2-256"), "ssh-rsa");
+        assert_eq!(key_type_family("ssh-rsa"), "ssh-rsa");
+        assert_eq!(key_type_family("ssh-ed25519"), "ssh-ed25519");
     }
 }
 

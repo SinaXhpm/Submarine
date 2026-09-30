@@ -4,7 +4,7 @@ use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use zeroize::{Zeroize, Zeroizing};
 use rand::Rng;
-use rusqlite::{ffi, Connection, DatabaseName};
+use rusqlite::{ffi, Connection, MAIN_DB};
 use rusqlite::serialize::OwnedData;
 use std::ptr::NonNull;
 use std::sync::Mutex as StdMutex;
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::fs;
 use tauri::Manager;
 use serde_json::json;
-use ssh_key::{private::Ed25519Keypair, rand_core::OsRng, PrivateKey};
+use ssh_key::{private::{Ed25519Keypair, Ed25519PrivateKey}, PrivateKey};
 mod ssh_manager;
 mod tunnel;
 mod monitor;
@@ -144,20 +144,17 @@ fn derive_key(password: &str, salt_bytes: &[u8]) -> Result<[u8; 32], String> {
 
 fn encrypt_with_key(plaintext: &[u8], key: &[u8; 32]) -> Result<(Vec<u8>, [u8; NONCE_LEN]), String> {
     let cipher = Aes256Gcm::new(key.into());
-    let nonce_bytes: [u8; NONCE_LEN] = rand::thread_rng().gen();
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, plaintext)
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let ciphertext = cipher.encrypt(&Nonce::from(nonce_bytes), plaintext)
         .map_err(|e| format!("[CRYPTO] ENCRYPT_FAILED: {}", e))?;
     Ok((ciphertext, nonce_bytes))
 }
 
 fn decrypt_with_key(ciphertext: &[u8], nonce_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    if nonce_bytes.len() != NONCE_LEN {
-        return Err("[CRYPTO] NONCE_LEN_INVALID".into());
-    }
+    let nonce = Nonce::try_from(nonce_bytes).map_err(|_| "[CRYPTO] NONCE_LEN_INVALID".to_string())?;
     let cipher = Aes256Gcm::new(key.into());
-    let nonce = Nonce::from_slice(nonce_bytes);
-    cipher.decrypt(nonce, ciphertext)
+    cipher.decrypt(&nonce, ciphertext)
         .map_err(|e| format!("[CRYPTO] DECRYPT_FAILURE: Possible wrong key or corrupted data. Details: {}", e))
 }
 
@@ -258,7 +255,7 @@ fn save_vault_blocking(
     salt: &[u8; SALT_LEN],
     path: &std::path::Path,
 ) -> Result<(), String> {
-    let serialized = conn.serialize(DatabaseName::Main)
+    let serialized = conn.serialize(MAIN_DB)
         .map_err(|e| format!("[DATABASE] SERIALIZE_FAILED: {}", e))?;
     // Compress-then-encrypt. Order matters: compressing AFTER encryption
     // is useless because AES-GCM ciphertext is indistinguishable from
@@ -321,7 +318,7 @@ const SYNCED_TABLES: &[&str] = &[
 /// (see `app_temp_root`).
 fn new_entity_uuid() -> String {
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -346,7 +343,7 @@ fn get_or_create_dek(conn: &Connection) -> Result<([u8; 32], bool), String> {
         // Malformed row (shouldn't happen) — fall through and mint a fresh one.
     }
     let mut d = [0u8; 32];
-    rand::thread_rng().fill(&mut d);
+    rand::rng().fill_bytes(&mut d);
     conn.execute(
         "INSERT INTO sync_meta(key,value) VALUES('dek',?1)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -365,7 +362,7 @@ fn sync_device_node_id(app: &tauri::AppHandle) -> String {
     use tauri::Manager as _;
     let fresh = || {
         let mut b = [0u8; 8];
-        rand::thread_rng().fill(&mut b);
+        rand::rng().fill_bytes(&mut b);
         hex::encode(b)
     };
     let Ok(dir) = app.path().app_data_dir() else { return fresh() };
@@ -1055,7 +1052,7 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
         params.push(Box::new(id));
     }
 
-    let placeholders = std::iter::repeat("?").take(columns.len()).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat_n("?", columns.len()).collect::<Vec<_>>().join(",");
     let update_set: Vec<String> = columns
         .iter()
         .filter(|c| c.as_str() != "uuid")
@@ -1580,7 +1577,7 @@ async fn setup_identity(
     }
     let kp = identity::generate_keypair();
     let mut salt = [0u8; 16];
-    rand::thread_rng().fill(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
     cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
     cloud.set_identity(kp.public, kp.secret).await;
@@ -1601,7 +1598,7 @@ async fn reset_identity(
     }
     let kp = identity::generate_keypair();
     let mut salt = [0u8; 16];
-    rand::thread_rng().fill(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
     cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
     cloud.set_identity(kp.public, kp.secret).await;
@@ -2002,7 +1999,7 @@ async fn rotate_share_dek(
 ) -> Result<(), String> {
     let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
     let mut fresh = [0u8; 32];
-    rand::thread_rng().fill(&mut fresh);
+    rand::rng().fill_bytes(&mut fresh);
 
     // Re-seal to the owner FIRST. If this is the step that fails, nobody's grant
     // has changed yet and the old key is still universally valid — a clean no-op
@@ -3254,7 +3251,7 @@ async fn setup_master_db_inner(
         conn = Connection::open_in_memory()
             .map_err(|e| format!("[DATABASE] MEM_INIT_FAILED: {}", e))?;
         let owned = to_sqlite_owned(&decrypted_data)?;
-        conn.deserialize(DatabaseName::Main, owned, false)
+        conn.deserialize(MAIN_DB, owned, false)
             .map_err(|e| format!("[DATABASE] DESERIALIZE_FAILED: {}", e))?;
         // Schema migration for vaults created before the Notes feature shipped.
         // Existing tables are untouched; only the new ones get materialised.
@@ -3414,7 +3411,7 @@ async fn setup_master_db_inner(
             return Err("[CRYPTO] WEAK_MASTER_PASSWORD: choose at least 8 characters — this password protects every saved credential.".into());
         }
         let mut fresh = [0u8; SALT_LEN];
-        rand::thread_rng().fill(&mut fresh);
+        rand::rng().fill_bytes(&mut fresh);
         salt_bytes = fresh;
         // Same reasoning as the unlock path above — keep the async runtime
         // unblocked during the Argon2 derivation on fresh-profile creation.
@@ -3615,7 +3612,7 @@ async fn create_profile(
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let mut pid = [0u8; 16];
-        rand::thread_rng().fill(&mut pid);
+        rand::rng().fill_bytes(&mut pid);
         let pid_hex = hex::encode(pid); // 32 hex chars — fits the server's 32-char partition column
         // DO NOTHING (never overwrite): a fresh vault has neither key, but this
         // must never repartition a profile if it somehow re-runs.
@@ -3636,7 +3633,9 @@ async fn create_profile(
 
 #[tauri::command]
 async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Result<(), String> {
-    let keypair = Ed25519Keypair::random(&mut OsRng);
+    let mut seed = [0u8; 32];
+    rand::rng().fill_bytes(&mut seed);
+    let keypair = Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&seed));
     let priv_key = PrivateKey::from(keypair);
     let pub_ssh = priv_key.public_key().to_openssh()
         .map_err(|e| format!("[SSH] PUB_EXPORT_FAILED: {}", e))?;
@@ -3659,18 +3658,9 @@ async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Res
 fn validate_ssh_private_key(private_key: &str) -> Result<(), String> {
     let trimmed = private_key.trim();
 
-    // PKCS#1 / PKCS#8 / SEC1 PEM headers. Whether we accept these depends on
-    // whether the build has russh's OpenSSL backend wired in — see the
-    // matching gate in the connect path.
+    // PKCS#1 RSA PEM is decoded by russh's pure-Rust backend in every build.
     if trimmed.starts_with("-----BEGIN RSA PRIVATE KEY-----") {
-        #[cfg(feature = "full-ssh-algos")]
-        {
-            return Ok(());
-        }
-        #[cfg(not(feature = "full-ssh-algos"))]
-        {
-            return Err("[SSH] UNSUPPORTED_KEY_FORMAT_DEV: RSA keys aren't available in this debug build. Either build with --features full-ssh-algos (requires Perl) or install a release build from GitHub — both support RSA. Ed25519 keys work everywhere.".into());
-        }
+        return Ok(());
     }
     if trimmed.starts_with("-----BEGIN DSA PRIVATE KEY-----")
         || trimmed.starts_with("-----BEGIN EC PRIVATE KEY-----")
@@ -3686,16 +3676,9 @@ fn validate_ssh_private_key(private_key: &str) -> Result<(), String> {
         // header is unencrypted even when the body is encrypted.
         if let Ok(parsed) = ssh_key::PrivateKey::from_openssh(trimmed) {
             match parsed.algorithm() {
-                ssh_key::Algorithm::Ed25519 => {}
-                ssh_key::Algorithm::Rsa { .. } | ssh_key::Algorithm::Ecdsa { .. } => {
-                    #[cfg(not(feature = "full-ssh-algos"))]
-                    {
-                        return Err(format!(
-                            "[SSH] UNSUPPORTED_KEY_TYPE_DEV: {} keys need a release build (or local build with --features full-ssh-algos). Ed25519 works everywhere.",
-                            parsed.algorithm().as_str()
-                        ));
-                    }
-                }
+                ssh_key::Algorithm::Ed25519
+                | ssh_key::Algorithm::Rsa { .. }
+                | ssh_key::Algorithm::Ecdsa { .. } => {}
                 other => {
                     return Err(format!(
                         "[SSH] UNSUPPORTED_KEY_TYPE: {} keys are not supported.",
@@ -5128,7 +5111,7 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
     loop {
         match resp {
             KeyboardInteractiveAuthResponse::Success => return Some(Ok(true)),
-            KeyboardInteractiveAuthResponse::Failure => {
+            KeyboardInteractiveAuthResponse::Failure { .. } => {
                 if !asked_anything {
                     // Server declined the method outright — not really offered.
                     return None;
@@ -5250,14 +5233,16 @@ fn build_ssh_client_config() -> russh::client::Config {
     // streams keep the BDP full on high-latency links.
     config.window_size = 8 * 1024 * 1024;
     config.maximum_packet_size = 65535;
-    // Widen the negotiation set to match OpenSSH — but only in builds that
-    // include the OpenSSL backend (release CI via `full-ssh-algos`). See the
-    // long rationale that used to sit inline: legacy DH groups, the full RSA
-    // host-key family, and HMAC-SHA1 MAC variants for older/embedded servers.
-    #[cfg(feature = "full-ssh-algos")]
+    // Widen the negotiation set to match OpenSSH: legacy DH groups, the full
+    // RSA host-key family, and HMAC-SHA1 MAC variants for older/embedded
+    // servers. russh >= 0.63 implements all of these in pure Rust, so the set
+    // is identical in debug and release builds (the old OpenSSL-backed
+    // `full-ssh-algos` feature is gone).
     {
+        use russh::keys::{Algorithm, EcdsaCurve, HashAlg};
+        use std::borrow::Cow;
         config.preferred = russh::Preferred {
-            kex: &[
+            kex: Cow::Borrowed(&[
                 russh::kex::CURVE25519,
                 russh::kex::CURVE25519_PRE_RFC_8731,
                 russh::kex::DH_G14_SHA256,
@@ -5265,30 +5250,35 @@ fn build_ssh_client_config() -> russh::client::Config {
                 russh::kex::DH_G1_SHA1,
                 russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
                 russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
-            ],
-            key: &[
-                russh_keys::key::ED25519,
-                russh_keys::key::ECDSA_SHA2_NISTP256,
-                russh_keys::key::RSA_SHA2_512,
-                russh_keys::key::RSA_SHA2_256,
-                russh_keys::key::SSH_RSA,
-            ],
-            cipher: &[
+            ]),
+            key: Cow::Borrowed(&[
+                Algorithm::Ed25519,
+                Algorithm::Ecdsa { curve: EcdsaCurve::NistP256 },
+                Algorithm::Rsa { hash: Some(HashAlg::Sha512) },
+                Algorithm::Rsa { hash: Some(HashAlg::Sha256) },
+                Algorithm::Rsa { hash: None },
+            ]),
+            host_key_certificates: Cow::Borrowed(&[]),
+            cipher: Cow::Borrowed(&[
                 russh::cipher::CHACHA20_POLY1305,
                 russh::cipher::AES_256_GCM,
                 russh::cipher::AES_256_CTR,
                 russh::cipher::AES_192_CTR,
                 russh::cipher::AES_128_CTR,
-            ],
-            mac: &[
+            ]),
+            mac: Cow::Borrowed(&[
                 russh::mac::HMAC_SHA512_ETM,
                 russh::mac::HMAC_SHA256_ETM,
                 russh::mac::HMAC_SHA512,
                 russh::mac::HMAC_SHA256,
                 russh::mac::HMAC_SHA1_ETM,
                 russh::mac::HMAC_SHA1,
-            ],
-            compression: &["zlib@openssh.com", "zlib", "none"],
+            ]),
+            compression: Cow::Borrowed(&[
+                russh::compression::ZLIB_LEGACY,
+                russh::compression::ZLIB,
+                russh::compression::NONE,
+            ]),
         };
     }
     config
@@ -5450,7 +5440,7 @@ async fn connect_jump_host(
     let (fp_tx, fp_rx) = tokio::sync::oneshot::channel();
     let jump_nonce: String = {
         let mut bytes = [0u8; 16];
-        rand::thread_rng().fill(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         hex::encode(bytes)
     };
     fp_txs.lock().await.insert(jump_nonce.clone(), fp_tx);
@@ -5489,13 +5479,13 @@ async fn connect_jump_host(
     let mut auth_res = if let Some((private_key, passphrase)) = key_data {
         log("Jump host: private key authentication...", "info");
         let normalized_key = private_key.replace("\r\n", "\n");
-        match russh_keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
-            Ok(keypair) => session.authenticate_publickey(&effective_user, std::sync::Arc::new(keypair)).await,
+        match russh::keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
+            Ok(keypair) => ssh_manager::authenticate_with_key(&mut session, &effective_user, keypair).await,
             Err(e) => Err(russh::Error::from(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))),
         }
     } else if let Some(pass) = password {
         log("Jump host: password authentication...", "info");
-        session.authenticate_password(&effective_user, pass).await
+        ssh_manager::authenticate_with_password(&mut session, &effective_user, &pass).await
     } else {
         Ok(false)
     };
@@ -5658,7 +5648,7 @@ async fn initiate_connection(
     // = 128 bits of entropy, plenty for a single-use guard.
     let connect_nonce: String = {
         let mut bytes = [0u8; 16];
-        rand::thread_rng().fill(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         hex::encode(bytes)
     };
     // NB: the fp_txs insert is deliberately deferred until AFTER the DB
@@ -6137,26 +6127,11 @@ async fn initiate_connection(
                 let mut auth_res = if let Some((private_key, passphrase)) = key_data {
                     emit_log("Attempting Private Key Authentication...", "info");
                     let normalized_key = private_key.replace("\r\n", "\n");
-                    match russh_keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
+                    match russh::keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
                         Ok(keypair) => {
-                            let key_arc = std::sync::Arc::new(keypair);
-                            session.authenticate_publickey(&effective_user, key_arc).await
+                            ssh_manager::authenticate_with_key(&mut session, &effective_user, keypair).await
                         }
                         Err(e) => {
-                            // RSA private keys only work in builds that include the
-                            // OpenSSL backend (release CI). Local debug builds skip
-                            // OpenSSL to stay Perl-free, so surface a targeted hint
-                            // instead of the raw "Unsupported key type rsa" string.
-                            #[cfg(not(feature = "full-ssh-algos"))]
-                            {
-                                let err_str = e.to_string();
-                                if err_str.contains("Unsupported key type rsa")
-                                    || err_str.contains("rsa")
-                                    || private_key.contains("RSA PRIVATE KEY")
-                                {
-                                    emit_log("RSA private keys aren't supported in this debug build — use Ed25519 for local testing, or grab a release build from GitHub for full RSA support.", "error");
-                                }
-                            }
                             emit_log(&format!("Failed to parse private key: {}", e), "error");
                             Err(russh::Error::from(std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
@@ -6166,7 +6141,7 @@ async fn initiate_connection(
                     }
                 } else if let Some(pass) = final_pass {
                     emit_log("Attempting Password Authentication...", "info");
-                    session.authenticate_password(&effective_user, pass).await
+                    ssh_manager::authenticate_with_password(&mut session, &effective_user, &pass).await
                 } else {
                     emit_log("Neither private key nor password auth credentials provided.", "error");
                     Ok(false)
@@ -6455,7 +6430,7 @@ async fn initiate_connection(
 
                                 let mut dead = is_closed;
 
-                                if !dead && tick % probe_every == 0 {
+                                if !dead && tick.is_multiple_of(probe_every) {
                                     // Active probe: hold the handle lock long
                                     // enough to start AND finish the round
                                     // trip — concurrent commands wait, but
@@ -6508,7 +6483,7 @@ async fn initiate_connection(
                                 // and the primary handle is the correct transport for
                                 // the default (shared) topology. Spawned so a slow
                                 // bind retry never delays death detection.
-                                if !dead && tick % 30 == 0 && !sid_w.contains("::") {
+                                if !dead && tick.is_multiple_of(30) && !sid_w.contains("::") {
                                     let specs = state_specs_w.lock().await.get(&sid_w).cloned().unwrap_or_default();
                                     if !specs.is_empty() {
                                         let app_r = app_w.clone();
@@ -8935,9 +8910,7 @@ fn classify_russh_error(e: &russh::Error) -> ConnectErrorKind {
 
         // Algorithm negotiation — server's reachable, we just don't share
         // the cipher / KEX / etc. it asked for.
-        NoCommonCipher | NoCommonKexAlgo | NoCommonKeyAlgo
-        | NoCommonCompression | NoCommonMac
-        | UnknownAlgo | UnknownKey => ConnectErrorKind::Algorithm,
+        NoCommonAlgo { .. } | UnknownAlgo | UnknownKey => ConnectErrorKind::Algorithm,
 
         // Host-key flow: the server's signature didn't verify. KeyChanged
         // carries data so it falls through to the catch-all branch which
@@ -8948,7 +8921,7 @@ fn classify_russh_error(e: &russh::Error) -> ConnectErrorKind {
         IO(_) | HUP | Disconnect | SendError => ConnectErrorKind::Transport,
 
         // Explicit timeouts from russh.
-        ConnectionTimeout | Elapsed(_) => ConnectErrorKind::Timeout,
+        ConnectionTimeout | KeepaliveTimeout | InactivityTimeout | Elapsed(_) => ConnectErrorKind::Timeout,
 
         // Protocol disagreements that aren't algorithm- or auth-shaped:
         // version skew, packet integrity, decryption — surface as transport
@@ -8961,7 +8934,7 @@ fn classify_russh_error(e: &russh::Error) -> ConnectErrorKind {
 
         // Key-file problems (local cert can't be parsed). Tag as Auth-shaped
         // so the UI doesn't auto-retry a key that will keep failing.
-        CouldNotReadKey | Keys(_) => ConnectErrorKind::Auth,
+        CouldNotReadKey | Keys(_) | SshKey(_) | UnsupportedAuthMethod => ConnectErrorKind::Auth,
 
         // Last-resort string sniff for anything russh adds in future
         // versions or for io::Error subtypes the explicit arms above
@@ -9074,7 +9047,7 @@ fn app_temp_root() -> &'static std::path::PathBuf {
     static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
         let mut bytes = [0u8; 12];
-        rand::thread_rng().fill(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         let root = std::env::temp_dir().join(format!("submarine-{}", hex::encode(bytes)));
         let _ = std::fs::create_dir_all(&root);
         #[cfg(unix)]
@@ -10870,4 +10843,4 @@ mod tests {
             assert!(is_safe_dir_entry_name(ok), "should accept {:?}", ok);
         }
     }
-}
+}
