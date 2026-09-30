@@ -22,6 +22,8 @@ mod mirror;
 mod docker;
 mod hlc;
 mod identity;
+#[cfg(test)]
+mod ssh_test_server;
 use ssh_manager::SshState;
 use monitor::{MonitorMap, SharedSettings};
 use mirror::MirrorMap;
@@ -5200,8 +5202,8 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
 }
 
 /// OS-level TCP keepalive on an SSH transport socket. Complements the SSH
-/// protocol keepalive (`keepalive_interval` below): russh 0.40 has no
-/// `keepalive_max`, so an unanswered protocol keepalive never tears the
+/// protocol keepalive (`keepalive_interval` below): russh's `keepalive_max`
+/// is deliberately 0 (off), so an unanswered protocol keepalive never tears the
 /// connection down — but with TCP keepalive the kernel itself probes an idle
 /// peer (30s idle, then every 10s) and errors the socket when the peer is
 /// truly gone, which russh's run loop surfaces as `is_closed()`. That gives
@@ -5217,6 +5219,110 @@ fn apply_tcp_keepalive(stream: &tokio::net::TcpStream) {
     let _ = SockRef::from(stream).set_tcp_keepalive(&ka);
 }
 
+/// Algorithm negotiation lists shared by EVERY SSH connection the app makes —
+/// the primary session, its `::sftp` / `::fwd` secondaries and ProxyJump hops
+/// (all via `build_ssh_client_config`) and the resource monitor
+/// (`monitor::monitor_client_config`) — so they all negotiate the same
+/// host-key type. The monitor depends on that: it only trusts a fingerprint
+/// the interactive session already stored.
+///
+/// Everything here is pure Rust in russh 0.63, so the set is identical in
+/// debug, release and Android builds (the old OpenSSL-backed `full-ssh-algos`
+/// feature is gone). Order = preference: modern first; the legacy entries
+/// (ssh-rsa/SHA-1 host keys, DH group14/group1 SHA-1 KEX, HMAC-SHA1) stay
+/// last, purely for old/embedded servers that offer nothing better.
+pub(crate) fn ssh_preferred_algorithms() -> russh::Preferred {
+    use russh::keys::{Algorithm, EcdsaCurve, HashAlg};
+    use russh::{cipher, compression, kex, mac};
+    use std::borrow::Cow;
+
+    const KEX: &[kex::Name] = &[
+        kex::MLKEM768X25519_SHA256, // hybrid post-quantum (OpenSSH 9.9+; its default since 10.0)
+        kex::CURVE25519,
+        kex::CURVE25519_PRE_RFC_8731,
+        // Group exchange (issue #33): the only KEX some hardened / appliance
+        // servers enable. Bounds in ssh_gex_params.
+        kex::DH_GEX_SHA256,
+        kex::DH_G18_SHA512,
+        kex::DH_G17_SHA512,
+        kex::DH_G16_SHA512,
+        kex::DH_G15_SHA512,
+        kex::DH_G14_SHA256,
+        // Legacy, last resort for old servers.
+        kex::DH_G14_SHA1,
+        kex::DH_G1_SHA1,
+        // Pseudo-algorithms, never selected as the KEX: RFC 8308 ext-info
+        // (server-sig-algs → RSA SHA-2 user auth) and OpenSSH strict KEX
+        // (Terrapin mitigation).
+        kex::EXTENSION_SUPPORT_AS_CLIENT,
+        kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
+    ];
+    // The first five are exactly the pre-0.63 release order, so every server
+    // that build could reach negotiates the same host-key type — and its
+    // pinned fingerprint keeps matching. ECDSA P-384 / P-521 are appended
+    // AFTER them for the same reason: they only come into play on servers
+    // whose sole host keys use those curves (which could not connect before).
+    const KEY: &[Algorithm] = &[
+        Algorithm::Ed25519,
+        Algorithm::Ecdsa { curve: EcdsaCurve::NistP256 },
+        Algorithm::Rsa { hash: Some(HashAlg::Sha512) }, // rsa-sha2-512
+        Algorithm::Rsa { hash: Some(HashAlg::Sha256) }, // rsa-sha2-256
+        Algorithm::Rsa { hash: None },                  // ssh-rsa (SHA-1), legacy
+        Algorithm::Ecdsa { curve: EcdsaCurve::NistP384 },
+        Algorithm::Ecdsa { curve: EcdsaCurve::NistP521 },
+    ];
+    const CIPHER: &[cipher::Name] = &[
+        cipher::CHACHA20_POLY1305,
+        cipher::AES_256_GCM,
+        cipher::AES_256_CTR,
+        cipher::AES_192_CTR,
+        cipher::AES_128_CTR,
+    ];
+    const MAC: &[mac::Name] = &[
+        mac::HMAC_SHA512_ETM,
+        mac::HMAC_SHA256_ETM,
+        mac::HMAC_SHA512,
+        mac::HMAC_SHA256,
+        // Legacy, last resort for old servers.
+        mac::HMAC_SHA1_ETM,
+        mac::HMAC_SHA1,
+    ];
+    // No compression preferred (issue #34 — SFTP uploads dropped the session
+    // under russh 0.40's zlib; fixed upstream, but compression still only
+    // costs CPU on fast links and on already-compressed payloads). zlib stays
+    // negotiable for a server that insists on it.
+    const COMPRESSION: &[compression::Name] = &[
+        compression::NONE,
+        compression::ZLIB_LEGACY, // zlib@openssh.com
+        compression::ZLIB,
+    ];
+
+    russh::Preferred {
+        kex: Cow::Borrowed(KEX),
+        key: Cow::Borrowed(KEY),
+        // Never advertise `*-cert-v01@openssh.com` host-key algorithms: there
+        // is no CA trust store, so servers must present their plain host key
+        // (TOFU via known_hosts). See ssh_manager::plain_host_key.
+        host_key_certificates: Cow::Borrowed(&[]),
+        cipher: Cow::Borrowed(CIPHER),
+        mac: Cow::Borrowed(MAC),
+        compression: Cow::Borrowed(COMPRESSION),
+    }
+}
+
+/// Bounds for `diffie-hellman-group-exchange-sha256` (issue #33), shared like
+/// `ssh_preferred_algorithms`. russh's default minimum is 3072 bits, which
+/// aborts the handshake with servers whose moduli (or appliance firmware)
+/// only offer 2048-bit groups — typical for DH-GEX-only boxes. OpenSSH's own
+/// client accepts 2048 (its DH_GRP_MIN), so we do too, while still asking for
+/// 8192 so a server with bigger groups uses one.
+pub(crate) fn ssh_gex_params() -> russh::client::GexParams {
+    // `new` only rejects min < 2048 or an unordered triple — neither applies
+    // (pinned by a unit test); fall back to russh's default rather than panic
+    // in the connect path.
+    russh::client::GexParams::new(2048, 8192, 8192).unwrap_or_default()
+}
+
 /// The russh client config shared by the primary connection and any ProxyJump
 /// hop, so both negotiate an identical algorithm set. Extracted verbatim from
 /// the inline block `initiate_connection` used to carry.
@@ -5225,63 +5331,128 @@ fn build_ssh_client_config() -> russh::client::Config {
     let mut config = russh::client::Config::default();
     // SSH keepalive every 20s. The shorter interval matters because most
     // consumer routers drop idle NAT mappings around the 2-minute mark, and
-    // many corporate firewalls are stricter still. russh 0.40 has no
-    // `keepalive_max` knob, so the watcher loop relies on `is_closed()` to
-    // surface drops within a couple of seconds.
+    // many corporate firewalls are stricter still.
     config.keepalive_interval = Some(Duration::from_secs(20));
+    // russh closes the connection after `keepalive_max` unanswered keepalives
+    // (default 3, i.e. ~80s of server silence). Kept OFF: liveness is decided
+    // by the session watcher (`is_closed()` + its two-strike active probe) and
+    // OS TCP keepalive (apply_tcp_keepalive), which are deliberately tolerant
+    // of the long latency spikes of poor links.
+    config.keepalive_max = 0;
     // Bigger receive window + max-allowed packet size: lets SFTP/tunnel
     // streams keep the BDP full on high-latency links.
     config.window_size = 8 * 1024 * 1024;
     config.maximum_packet_size = 65535;
-    // Widen the negotiation set to match OpenSSH: legacy DH groups, the full
-    // RSA host-key family, and HMAC-SHA1 MAC variants for older/embedded
-    // servers. russh >= 0.63 implements all of these in pure Rust, so the set
-    // is identical in debug and release builds (the old OpenSSL-backed
-    // `full-ssh-algos` feature is gone).
-    {
-        use russh::keys::{Algorithm, EcdsaCurve, HashAlg};
-        use std::borrow::Cow;
-        config.preferred = russh::Preferred {
-            kex: Cow::Borrowed(&[
-                russh::kex::CURVE25519,
-                russh::kex::CURVE25519_PRE_RFC_8731,
-                russh::kex::DH_G14_SHA256,
-                russh::kex::DH_G14_SHA1,
-                russh::kex::DH_G1_SHA1,
-                russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
-                russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
-            ]),
-            key: Cow::Borrowed(&[
-                Algorithm::Ed25519,
-                Algorithm::Ecdsa { curve: EcdsaCurve::NistP256 },
-                Algorithm::Rsa { hash: Some(HashAlg::Sha512) },
-                Algorithm::Rsa { hash: Some(HashAlg::Sha256) },
-                Algorithm::Rsa { hash: None },
-            ]),
-            host_key_certificates: Cow::Borrowed(&[]),
-            cipher: Cow::Borrowed(&[
-                russh::cipher::CHACHA20_POLY1305,
-                russh::cipher::AES_256_GCM,
-                russh::cipher::AES_256_CTR,
-                russh::cipher::AES_192_CTR,
-                russh::cipher::AES_128_CTR,
-            ]),
-            mac: Cow::Borrowed(&[
-                russh::mac::HMAC_SHA512_ETM,
-                russh::mac::HMAC_SHA256_ETM,
-                russh::mac::HMAC_SHA512,
-                russh::mac::HMAC_SHA256,
-                russh::mac::HMAC_SHA1_ETM,
-                russh::mac::HMAC_SHA1,
-            ]),
-            compression: Cow::Borrowed(&[
-                russh::compression::ZLIB_LEGACY,
-                russh::compression::ZLIB,
-                russh::compression::NONE,
-            ]),
-        };
-    }
+    // Full algorithm set + DH group-exchange bounds, shared with the monitor.
+    config.preferred = ssh_preferred_algorithms();
+    config.gex = ssh_gex_params();
     config
+}
+
+#[cfg(test)]
+mod ssh_config_tests {
+    use super::{build_ssh_client_config, ssh_preferred_algorithms};
+    use crate::ssh_test_server::{connect, connect_with_client, TestClient, TestServer};
+    use std::borrow::Cow;
+    use std::sync::Arc;
+
+    fn names<T: AsRef<str>>(list: &[T]) -> Vec<String> {
+        list.iter().map(|n| n.as_ref().to_string()).collect()
+    }
+
+    #[test]
+    fn client_config_policy() {
+        let config = build_ssh_client_config();
+        // S1: no keepalive-count disconnect.
+        assert_eq!(config.keepalive_max, 0);
+        // #33: 2048-bit DH-GEX groups accepted, 8192 preferred.
+        assert_eq!(config.gex.min_group_size(), 2048);
+        assert_eq!(config.gex.preferred_group_size(), 8192);
+        assert_eq!(config.gex.max_group_size(), 8192);
+        // #34: no compression preferred.
+        assert_eq!(names(&config.preferred.compression), ["none", "zlib@openssh.com", "zlib"]);
+    }
+
+    #[test]
+    fn algorithm_preferences() {
+        let p = ssh_preferred_algorithms();
+        let kex = names(&p.kex);
+        let pos = |n: &str| kex.iter().position(|k| k == n).unwrap_or_else(|| panic!("{n} missing"));
+        let gex = pos("diffie-hellman-group-exchange-sha256");
+        assert!(pos("mlkem768x25519-sha256") < gex && pos("curve25519-sha256") < gex);
+        assert!(gex < pos("diffie-hellman-group14-sha256"));
+        // Host keys: the pre-0.63 release order first, so already-pinned hosts
+        // keep negotiating the key type whose fingerprint is on file.
+        let keys: Vec<String> = p.key.iter().map(|a| a.to_string()).collect();
+        assert_eq!(
+            keys[..5],
+            ["ssh-ed25519", "ecdsa-sha2-nistp256", "rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"]
+        );
+        // No host certificates advertised (no CA trust store).
+        assert!(p.host_key_certificates.is_empty());
+    }
+
+    /// Against a real (in-process) server that PREFERS zlib: the client's
+    /// order decides, so the connection runs uncompressed (#34); the modern
+    /// hybrid KEX is picked when both sides have it.
+    #[tokio::test]
+    async fn negotiates_no_compression_even_when_the_server_prefers_zlib() {
+        use russh::compression::{NONE, ZLIB, ZLIB_LEGACY};
+        let client = TestClient::default();
+        let negotiated = Arc::clone(&client.negotiated);
+        let _session = connect_with_client(
+            TestServer::default(),
+            |c| {
+                c.preferred = russh::Preferred {
+                    compression: Cow::Borrowed(&[ZLIB_LEGACY, ZLIB, NONE]),
+                    ..russh::Preferred::default()
+                };
+            },
+            build_ssh_client_config(),
+            client,
+        )
+        .await
+        .expect("in-process SSH connection");
+        let names = negotiated.lock().unwrap().clone().expect("kex done");
+        assert_eq!(format!("{:?}", names.client_compression), "None");
+        assert_eq!(format!("{:?}", names.server_compression), "None");
+        assert_eq!(names.kex.as_ref(), "mlkem768x25519-sha256");
+    }
+
+    /// #33: a server that ONLY does diffie-hellman-group-exchange-sha256 and
+    /// only has 2048-bit groups. russh's stock bounds (min 3072) refuse it;
+    /// ours connect.
+    #[tokio::test]
+    async fn dh_gex_only_server_with_2048_bit_groups_connects() {
+        let dh_gex_only = |c: &mut russh::server::Config| {
+            c.preferred = russh::Preferred {
+                kex: Cow::Borrowed(&[russh::kex::DH_GEX_SHA256]),
+                ..russh::Preferred::default()
+            };
+        };
+        let server = TestServer::with_gex_group(russh::kex::dh::groups::DH_GROUP14);
+        let client = TestClient::default();
+        let negotiated = Arc::clone(&client.negotiated);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            connect_with_client(server.clone(), dh_gex_only, build_ssh_client_config(), client),
+        )
+        .await
+        .expect("handshake must finish")
+        .expect("DH-GEX with a 2048-bit group must be accepted");
+        let names = negotiated.lock().unwrap().clone().expect("kex done");
+        assert_eq!(names.kex.as_ref(), "diffie-hellman-group-exchange-sha256");
+
+        let mut stock = build_ssh_client_config();
+        stock.gex = russh::client::GexParams::default();
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            connect(server, dh_gex_only, stock),
+        )
+        .await
+        .expect("handshake must finish");
+        assert!(refused.is_err(), "control: russh's default 3072-bit minimum refuses this server");
+    }
 }
 
 /// Minimal auth/identity resolver for a ProxyJump bastion. Mirrors the
@@ -5977,7 +6148,14 @@ async fn initiate_connection(
                     {
                         Ok(channel) => {
                             emit_log(&format!("ProxyJump: opened tunnel to {}:{} through the jump host.", host, port), "success");
-                            let boxed: Box<dyn AsyncStream> = Box::new(channel.into_stream());
+                            // Always-drained (see tunnel::DrainedChannelStream):
+                            // the target session's protocol task stops reading its
+                            // transport while a write waits for the bastion's
+                            // window. A plain ChannelStream would then fill this
+                            // channel's queue, block the bastion connection's
+                            // protocol task — which is what delivers that window
+                            // adjust — and deadlock the whole ProxyJump session.
+                            let boxed: Box<dyn AsyncStream> = Box::new(crate::tunnel::drained_stream(channel));
                             jump_handle_holder = Some(jump_handle);
                             Ok(boxed)
                         }
@@ -7124,8 +7302,6 @@ async fn disconnect_session(
 
 #[tauri::command]
 async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>, session_id: String, terminal_id: String, cols: u32, rows: u32) -> Result<(), String> {
-    use russh::ChannelMsg;
-    use tauri::Emitter;
     use std::sync::Arc;
     use crate::ssh_manager::TerminalCommand;
 
@@ -7139,113 +7315,34 @@ async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>,
     };
 
     let session = session_arc.lock().await;
-    let mut channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
-    
+    let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
+
     // Request PTY
     channel.request_pty(false, "xterm-256color", cols, rows, 0, 0, &[]).await.map_err(|e| e.to_string())?;
     channel.request_shell(true).await.map_err(|e| e.to_string())?;
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<TerminalCommand>(32);
+    let (tx, rx) = tokio::sync::mpsc::channel::<TerminalCommand>(32);
     // Last-wins watch channel for PTY resizes. The PTY task selects on
     // changes; bursty resize events (e.g. window drag) collapse to the
     // final value rather than competing with keystrokes on the data
     // mpsc. Seed with the initial size so the watch is always populated.
-    let (resize_tx, mut resize_rx) = tokio::sync::watch::channel(
+    let (resize_tx, resize_rx) = tokio::sync::watch::channel(
         crate::ssh_manager::PtySize { cols, rows },
     );
     state.terminal_txs.lock().await.insert(terminal_id.clone(), tx);
     state.resize_txs.lock().await.insert(terminal_id.clone(), resize_tx);
 
-    let terminal_id_clone = terminal_id.clone();
-    let app_clone = app.clone();
-
-    tauri::async_runtime::spawn(async move {
-        use crate::ssh_manager::emit_terminal_batch;
-        // Coalesce PTY output: accumulate channel bytes and flush at most every
-        // ~8ms, or sooner once a burst passes FLUSH_CAP. Emitting one event per
-        // SSH packet (each a ~4x-bloated JSON byte array) flooded the WebView
-        // main thread on large output and froze the whole tab; batching + the
-        // base64 payload in emit_terminal_batch keeps the UI responsive under a
-        // firehose. 8ms is imperceptible for interactive echo.
-        const FLUSH_CAP: usize = 256 * 1024;
-        // Flush at most every 8ms measured FROM THE FIRST buffered byte —
-        // imperceptible for interactive echo, but enough to collapse a firehose
-        // into a handful of events.
-        const FLUSH_WINDOW: std::time::Duration = std::time::Duration::from_millis(8);
-        let mut out_buf: Vec<u8> = Vec::new();
-        // A flush timer armed ONLY while bytes are buffered. When the buffer is
-        // empty its deadline is parked far in the future, so an open-but-idle
-        // terminal wakes this task zero times (a free-running interval would fire
-        // ~125x/sec doing nothing). The buffer going empty -> non-empty re-arms
-        // it to now + FLUSH_WINDOW; a flush parks it again.
-        let park = || tokio::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
-        let flush_timer = tokio::time::sleep_until(park());
-        tokio::pin!(flush_timer);
-        loop {
-            tokio::select! {
-                msg_opt = channel.wait() => {
-                    match msg_opt {
-                        Some(ChannelMsg::Data { ref data }) => {
-                            let was_empty = out_buf.is_empty();
-                            out_buf.extend_from_slice(data);
-                            if out_buf.len() >= FLUSH_CAP {
-                                emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
-                            } else if was_empty {
-                                flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
-                            }
-                        },
-                        Some(ChannelMsg::ExtendedData { ref data, ext: _ }) => {
-                            let was_empty = out_buf.is_empty();
-                            out_buf.extend_from_slice(data);
-                            if out_buf.len() >= FLUSH_CAP {
-                                emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
-                            } else if was_empty {
-                                flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
-                            }
-                        },
-                        // Flush whatever's buffered before the terminal goes away
-                        // so the last screenful isn't lost.
-                        Some(ChannelMsg::Eof) => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; },
-                        Some(ChannelMsg::Close) => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; },
-                        Some(_) => {},
-                        None => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; }, // channel closed (e.g. after disconnect_session)
-                    }
-                },
-                _ = &mut flush_timer => {
-                    emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
-                    // Park until the next buffered byte re-arms the timer.
-                    flush_timer.as_mut().reset(park());
-                },
-                opt_cmd = rx.recv() => {
-                    match opt_cmd {
-                        Some(cmd) => match cmd {
-                            TerminalCommand::Data(data) => {
-                                if channel.data(&data[..]).await.is_err() {
-                                    // Flush the last buffered output before bailing on
-                                    // a dead transport — the terminal UI is still mounted.
-                                    emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
-                                    break;
-                                }
-                            }
-                        },
-                        None => {
-                            let _ = channel.close().await;
-                            break;
-                        }
-                    }
-                },
-                // `changed().await` resolves on every Sender::send(). We
-                // then read the LATEST value with .borrow() so coalesced
-                // bursts collapse to one window_change call.
-                changed = resize_rx.changed() => {
-                    if changed.is_err() { break; } // all senders dropped
-                    let size = *resize_rx.borrow();
-                    let _ = channel.window_change(size.cols, size.rows, 0, 0).await;
-                }
-            }
-        }
-        let _ = app_clone.emit(&format!("terminal-closed-{}", terminal_id_clone), serde_json::json!({}));
-    });
+    // Output coalescing, keystroke / resize forwarding and the split,
+    // always-draining read/write pump (required by russh's channel
+    // backpressure) live in ssh_manager::run_pty_pump — shared with the
+    // docker exec terminal.
+    tauri::async_runtime::spawn(crate::ssh_manager::run_pty_pump(
+        app.clone(),
+        terminal_id.clone(),
+        channel,
+        rx,
+        resize_rx,
+    ));
 
     Ok(())
 }
@@ -8970,7 +9067,7 @@ fn describe_error_kind(kind: ConnectErrorKind, target: &str) -> String {
         ConnectErrorKind::Auth =>
             "Authentication rejected by server (wrong password, missing key, or account locked).".into(),
         ConnectErrorKind::Algorithm =>
-            format!("Negotiation with {} failed: no SSH algorithm in common (this build might be missing legacy ciphers — try the release build).", target),
+            format!("Negotiation with {} failed: no SSH algorithm in common (the server only offers key-exchange, host-key, cipher or MAC algorithms Submarine doesn't support).", target),
         ConnectErrorKind::HostKey =>
             "Host key was not approved (wrong key, declined, or the fingerprint prompt timed out).".into(),
         ConnectErrorKind::Transport =>

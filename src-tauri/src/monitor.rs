@@ -614,9 +614,22 @@ impl client::Handler for MonitorHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &PublicKeyOrCertificate,
+        offered: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let fp = crate::ssh_manager::host_key_fingerprint(&server_public_key.public_key());
+        // Host certificates are refused (no CA trust store) — same policy as
+        // the interactive ClientHandler; see ssh_manager::plain_host_key.
+        let Some(server_public_key) = crate::ssh_manager::plain_host_key(offered) else {
+            eprintln!(
+                "[monitor] {}:{} presented a host certificate; certificates can't be verified (no trusted CA), refusing",
+                self.host, self.port
+            );
+            return Ok(false);
+        };
+        // Must be byte-identical to what the interactive path stored in
+        // known_hosts — this handler only trusts fingerprints already on file,
+        // matched by fingerprint alone (the key identity), so the RSA key_type
+        // spelling change between russh versions is moot here.
+        let fp = crate::ssh_manager::host_key_fingerprint(server_public_key);
         let mut ok = false;
         if let Ok(guard) = self.db.lock() {
             if let Some(conn) = guard.as_ref() {
@@ -752,6 +765,25 @@ fn classify_auth(auth: &NodeAuth) -> Result<(Option<(String, Option<String>)>, O
     Ok((key, pass))
 }
 
+/// russh client config for monitor connections. The algorithm lists and the
+/// DH group-exchange bounds come from the SAME functions as the interactive
+/// session's (`crate::build_ssh_client_config`), so the monitor negotiates the
+/// same host-key type whose fingerprint that session stored and approved.
+/// russh's default list would not: it prefers ECDSA P-384 / P-521 host keys
+/// over RSA (a fingerprint nobody approved → the monitor refuses the host)
+/// and drops the legacy algorithms older servers need.
+fn monitor_client_config() -> client::Config {
+    let mut config = client::Config::default();
+    config.keepalive_interval = Some(Duration::from_secs(30));
+    // No keepalive-count disconnect (russh's default of 3 drops a quiet
+    // connection after ~2 min of server silence): each poll has its own
+    // timeout, and a failed poll drops the handle and reconnects.
+    config.keepalive_max = 0;
+    config.preferred = crate::ssh_preferred_algorithms();
+    config.gex = crate::ssh_gex_params();
+    config
+}
+
 async fn connect_for_monitor(
     db: &Arc<std::sync::Mutex<Option<rusqlite::Connection>>>,
     auth: &NodeAuth,
@@ -762,9 +794,7 @@ async fn connect_for_monitor(
     }
     let (key_pair, password) = classify_auth(auth)?;
 
-    let mut config = client::Config::default();
-    config.keepalive_interval = Some(Duration::from_secs(30));
-    let config = Arc::new(config);
+    let config = Arc::new(monitor_client_config());
 
     let handler = MonitorHandler {
         db: Arc::clone(db),
@@ -1211,4 +1241,24 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::monitor_client_config;
+
+    /// S4 / S1: the monitor must negotiate exactly like the interactive
+    /// session (same algorithm lists + DH-GEX bounds) and must not drop a
+    /// quiet connection on its own.
+    #[test]
+    fn monitor_config_matches_the_interactive_session() {
+        let monitor = monitor_client_config();
+        let session = crate::build_ssh_client_config();
+        assert_eq!(format!("{:?}", monitor.preferred), format!("{:?}", session.preferred));
+        assert_eq!(
+            (monitor.gex.min_group_size(), monitor.gex.preferred_group_size(), monitor.gex.max_group_size()),
+            (session.gex.min_group_size(), session.gex.preferred_group_size(), session.gex.max_group_size()),
+        );
+        assert_eq!(monitor.keepalive_max, 0);
+    }
 }

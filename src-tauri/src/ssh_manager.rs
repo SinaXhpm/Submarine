@@ -16,15 +16,107 @@ pub fn host_key_fingerprint(key: &PublicKey) -> String {
     fp.strip_prefix("SHA256:").map(str::to_owned).unwrap_or(fp)
 }
 
-/// Collapse the RSA signature-algorithm labels onto one family so a row
-/// pinned as `rsa-sha2-512` (russh-keys 0.40 reported the negotiated
-/// signature name) still counts as the same key TYPE as `ssh-rsa` (ssh-key
-/// reports the key algorithm). Only the mismatch heuristic uses this.
-fn key_type_family(name: &str) -> &str {
-    match name {
-        "rsa-sha2-256" | "rsa-sha2-512" => "ssh-rsa",
-        other => other,
+/// Collapse an SSH host-key algorithm name to its key FAMILY — the unit both
+/// the "same key type, different fingerprint ⇒ key CHANGED" decision and the
+/// replace-on-accept DELETE (`save_approved_host_key`) work on. Every
+/// `known_hosts.key_type` comparison goes through this.
+///
+/// russh-keys 0.40 recorded an RSA host key under the NEGOTIATED signature
+/// algorithm (`rsa-sha2-512`, `rsa-sha2-256` or `ssh-rsa`), and that is what
+/// older rows contain; russh 0.63 reports the key's own type (`ssh-rsa`). All
+/// RSA spellings are therefore one family. ECDSA stays per-curve (a P-256 and
+/// a P-384 key are different host keys, as in OpenSSH) and Ed25519 is its own
+/// family. Case and surrounding whitespace are ignored, and a
+/// `-cert-v01@openssh.com` suffix maps a certificate type to the family of the
+/// key it certifies.
+fn key_type_family(key_type: &str) -> String {
+    let kt = key_type.trim().to_ascii_lowercase();
+    let base = kt.strip_suffix("-cert-v01@openssh.com").unwrap_or(&kt);
+    match base {
+        "ssh-rsa" | "rsa-sha2-256" | "rsa-sha2-512" => "ssh-rsa".to_string(),
+        other => other.to_string(),
     }
+}
+
+/// The plain host key offered by the server, or `None` for a host
+/// CERTIFICATE. Certificates are refused, fail-closed: there is no CA trust
+/// store yet (no `@cert-authority` equivalent), so a certificate's CA
+/// signature, principals and validity window can't be verified — and trusting
+/// the key embedded in it would answer a question russh never asked. In
+/// practice this never fires: `ssh_preferred_algorithms` leaves
+/// `host_key_certificates` empty, so no `*-cert-v01@openssh.com` host-key
+/// algorithm is advertised and a compliant server presents its plain host key
+/// (the TOFU path).
+pub fn plain_host_key(offered: &PublicKeyOrCertificate) -> Option<&PublicKey> {
+    match offered {
+        PublicKeyOrCertificate::PublicKey { key, .. } => Some(key),
+        PublicKeyOrCertificate::Certificate(_) => None,
+    }
+}
+
+/// Persist a host key the user just approved in the fingerprint prompt.
+///
+/// When the prompt was a KEY-CHANGED warning (`replace_same_family`), every
+/// row of the same key FAMILY for this host:port — plus legacy rows with a
+/// NULL key_type, which the user is effectively re-confirming — is deleted
+/// first; otherwise the next connection would find the RETIRED fingerprint
+/// still trusted ("any row matches = trusted"), defeating the warning. The
+/// family match runs in Rust (`key_type_family`) rather than as
+/// `key_type = ?`: rows written before russh 0.63 spell an RSA key
+/// `rsa-sha2-512` / `rsa-sha2-256` while new ones say `ssh-rsa`, so an exact
+/// string match would keep the old RSA fingerprint trusted next to the new
+/// one. Trusted keys of OTHER families on this host stay put.
+///
+/// All-or-nothing: manual BEGIN/COMMIT (we only hold `&Connection` through the
+/// mutex guard, not the `&mut Connection` rusqlite's `transaction()` needs),
+/// rolled back on any failure so the host is never left with zero recorded
+/// fingerprints — which would silently downgrade the next connection from
+/// "mismatch" to "first time".
+fn save_approved_host_key(
+    conn: &rusqlite::Connection,
+    host: &str,
+    port: u16,
+    fingerprint: &str,
+    key_type: &str,
+    replace_same_family: bool,
+) -> rusqlite::Result<()> {
+    let result: rusqlite::Result<()> = (|| {
+        conn.execute("BEGIN", [])?;
+        if replace_same_family {
+            let family = key_type_family(key_type);
+            let stale: Vec<i64> = {
+                let mut stmt = conn.prepare("SELECT rowid, key_type FROM known_hosts WHERE host=?1 AND port=?2")?;
+                let rows = stmt.query_map(rusqlite::params![host, port], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+                })?;
+                let mut ids = Vec::new();
+                for row in rows {
+                    let (id, saved_kt) = row?;
+                    let same_family = match saved_kt.as_deref() {
+                        Some(kt) => key_type_family(kt) == family,
+                        None => true,
+                    };
+                    if same_family {
+                        ids.push(id);
+                    }
+                }
+                ids
+            };
+            for id in stale {
+                conn.execute("DELETE FROM known_hosts WHERE rowid=?1", rusqlite::params![id])?;
+            }
+        }
+        conn.execute(
+            "INSERT INTO known_hosts (host, port, fingerprint, key_type) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![host, port, fingerprint, key_type],
+        )?;
+        conn.execute("COMMIT", [])?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = conn.execute("ROLLBACK", []);
+    }
+    result
 }
 
 /// Public-key auth with the `bool` contract callers relied on under russh
@@ -87,6 +179,141 @@ pub fn emit_terminal_batch(app: &AppHandle, terminal_id: &str, buf: &mut Vec<u8>
     let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
     let _ = app.emit(&format!("terminal-output-{}", terminal_id), b64);
     buf.clear();
+}
+
+/// Drive an interactive PTY channel — an SSH shell (`open_terminal`) or a
+/// `docker exec -it` (`docker::open_container_terminal`) — for the life of the
+/// tab: output → coalesced `terminal-output-{id}` events, keystrokes /
+/// resizes → the channel, then `terminal-closed-{id}`. See `pty_pump`.
+pub async fn run_pty_pump(
+    app: AppHandle,
+    terminal_id: String,
+    channel: russh::Channel<client::Msg>,
+    rx: mpsc::Receiver<TerminalCommand>,
+    resize_rx: tokio::sync::watch::Receiver<PtySize>,
+) {
+    pty_pump(channel, rx, resize_rx, |buf| emit_terminal_batch(&app, &terminal_id, buf)).await;
+    let _ = app.emit(&format!("terminal-closed-{}", terminal_id), serde_json::json!({}));
+}
+
+/// The pump behind `run_pty_pump`, with the output sink abstracted (`flush`
+/// gets each coalesced batch and must leave the buffer empty, as
+/// `emit_terminal_batch` does) so tests can run it against a real connection.
+///
+/// The channel is SPLIT so its read side is drained continuously, whatever the
+/// write side is doing. Since russh 0.50 every channel has a bounded queue and
+/// the connection's single protocol task *awaits* room in it — so a reader
+/// that stops to await a write stalls the ENTIRE connection (every terminal,
+/// tunnel and SFTP op on it). The old single-`select!` loop did exactly that:
+/// awaiting the write of a large paste (which waits for the server's window)
+/// while the server floods output filled this channel's queue, blocked the
+/// protocol task, and so never delivered the window adjust the write was
+/// waiting on — a deadlock. Here the writer runs in its own task; the reader
+/// only ever waits on the channel, the flush timer and the writer's stop
+/// signal.
+async fn pty_pump<F>(
+    channel: russh::Channel<client::Msg>,
+    mut rx: mpsc::Receiver<TerminalCommand>,
+    mut resize_rx: tokio::sync::watch::Receiver<PtySize>,
+    mut flush: F,
+) where
+    F: FnMut(&mut Vec<u8>),
+{
+    use russh::ChannelMsg;
+
+    let (mut read_half, write_half) = channel.split();
+
+    // Writer: keystrokes + last-wins resizes. It signals `stop` in the same
+    // cases the old loop `break`ed on the write side: the UI dropped the
+    // terminal (all senders gone → close the channel), the resize watch was
+    // dropped, or the transport rejected a write.
+    let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+    let writer = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                opt_cmd = rx.recv() => match opt_cmd {
+                    Some(TerminalCommand::Data(data)) => {
+                        if write_half.data_bytes(data).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => {
+                        let _ = write_half.close().await;
+                        break;
+                    }
+                },
+                // `changed().await` resolves on every Sender::send(). We then
+                // read the LATEST value with .borrow() so coalesced bursts
+                // collapse to one window_change call.
+                changed = resize_rx.changed() => {
+                    if changed.is_err() {
+                        break; // all senders dropped
+                    }
+                    let size = *resize_rx.borrow();
+                    let _ = write_half.window_change(size.cols, size.rows, 0, 0).await;
+                }
+            }
+        }
+        let _ = stop_tx.send(());
+    });
+
+    // Coalesce PTY output: accumulate channel bytes and flush at most every
+    // ~8ms, or sooner once a burst passes FLUSH_CAP. Emitting one event per
+    // SSH packet (each a ~4x-bloated JSON byte array) flooded the WebView
+    // main thread on large output and froze the whole tab; batching + the
+    // base64 payload in emit_terminal_batch keeps the UI responsive under a
+    // firehose. 8ms (measured from the FIRST buffered byte) is imperceptible
+    // for interactive echo.
+    const FLUSH_CAP: usize = 256 * 1024;
+    const FLUSH_WINDOW: std::time::Duration = std::time::Duration::from_millis(8);
+    let mut out_buf: Vec<u8> = Vec::new();
+    // A flush timer armed ONLY while bytes are buffered. When the buffer is
+    // empty its deadline is parked far in the future, so an open-but-idle
+    // terminal wakes this task zero times (a free-running interval would fire
+    // ~125x/sec doing nothing). The buffer going empty -> non-empty re-arms
+    // it to now + FLUSH_WINDOW; a flush parks it again.
+    let park = || tokio::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
+    let flush_timer = tokio::time::sleep_until(park());
+    tokio::pin!(flush_timer);
+    loop {
+        tokio::select! {
+            msg_opt = read_half.wait() => match msg_opt {
+                Some(ChannelMsg::Data { ref data })
+                | Some(ChannelMsg::ExtendedData { ref data, .. }) => {
+                    let was_empty = out_buf.is_empty();
+                    out_buf.extend_from_slice(data);
+                    if out_buf.len() >= FLUSH_CAP {
+                        flush(&mut out_buf);
+                    } else if was_empty {
+                        flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
+                    }
+                }
+                // Flush whatever's buffered before the terminal goes away so
+                // the last screenful isn't lost. `None` = channel gone (e.g.
+                // after disconnect_session).
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                    flush(&mut out_buf);
+                    break;
+                }
+                Some(_) => {}
+            },
+            _ = &mut flush_timer => {
+                flush(&mut out_buf);
+                // Park until the next buffered byte re-arms the timer.
+                flush_timer.as_mut().reset(park());
+            }
+            // Writer finished (UI closed the tab, or the transport is dead):
+            // flush the last buffered output — the terminal UI may still be
+            // mounted — and stop.
+            _ = &mut stop_rx => {
+                flush(&mut out_buf);
+                break;
+            }
+        }
+    }
+    // Reader done: stop the writer too. Dropping its `rx` makes later
+    // write_terminal_data calls silent no-ops, as before.
+    writer.abort();
 }
 
 pub struct SshState {
@@ -193,11 +420,22 @@ pub struct ClientHandler {
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, server_public_key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
-        let server_public_key = server_public_key.public_key();
+    async fn check_server_key(&mut self, offered: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+        let Some(server_public_key) = plain_host_key(offered) else {
+            let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
+                "msg": "Server presented an SSH host CERTIFICATE. Host certificates can't be verified yet (no trusted CA is configured), so the connection was refused.",
+                "type": "error"
+            }));
+            // A host-key failure (not a transport / algorithm error).
+            self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
+            return Ok(false);
+        };
+        // The key's own algorithm (`ssh-rsa` for any RSA key); compared with
+        // stored rows only through key_type_family.
         let key_type = server_public_key.algorithm().to_string();
         let key_type = key_type.as_str();
-        let fp_str = host_key_fingerprint(&server_public_key);
+        let key_family = key_type_family(key_type);
+        let fp_str = host_key_fingerprint(server_public_key);
 
         let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
             "msg": format!("Server offered key ({}): {}", key_type, fp_str),
@@ -210,15 +448,18 @@ impl client::Handler for ClientHandler {
         //     (fingerprint identifies the key regardless of the algorithm label,
         //     so this also recognizes a key offered under a different signature
         //     name without re-prompting).
-        //   - no match, but a row for the SAME host-key ALGORITHM has a different
+        //   - no match, but a row for the SAME key FAMILY has a different
         //     fingerprint → KEY CHANGED. Looks like an SSH MITM; warn loudly.
-        //   - no match and only OTHER algorithms are on file (e.g. the server
+        //     (key_type_family folds rsa-sha2-512 / rsa-sha2-256 / ssh-rsa
+        //     together: older rows carry the negotiated RSA signature name,
+        //     newer ones `ssh-rsa`, and a changed RSA key must still warn.)
+        //   - no match and only OTHER families are on file (e.g. the server
         //     just added an ed25519 key beside its old rsa key) → NOT a change;
         //     falls through to the ordinary unknown-key prompt.
         // This mirrors OpenSSH's per-(host,keytype) known_hosts semantics and
         // stops benign algorithm additions from firing a false MITM warning.
         let mut is_known = false;
-        let mut mismatch = false; // same algorithm, different fingerprint
+        let mut mismatch = false; // same key family, different fingerprint
         let mut prior_fingerprints: Vec<String> = Vec::new();
         // Read known_hosts in a SCOPED block — the std mutex guard mustn't
         // cross any `.await` (the !Send guard would break the future's Send
@@ -241,12 +482,12 @@ impl client::Handler for ClientHandler {
                                         } else {
                                             // A different fingerprint is a "key CHANGED"
                                             // event only when it's on file for the SAME
-                                            // algorithm. Legacy rows (NULL key_type) are
+                                            // key family. Legacy rows (NULL key_type) are
                                             // treated as same-type so we never DOWNGRADE a
                                             // genuine rotation of a pre-migration host to a
                                             // benign first-time prompt.
                                             let same_type = match saved_kt.as_deref() {
-                                                Some(kt) => key_type_family(kt) == key_type_family(key_type),
+                                                Some(kt) => key_type_family(kt) == key_family,
                                                 None => true,
                                             };
                                             if same_type {
@@ -318,42 +559,21 @@ impl client::Handler for ClientHandler {
             // the connection down — same error path as wrong credentials.
             match tokio::time::timeout(tokio::time::Duration::from_secs(90), rx).await {
                 Ok(Ok(true)) => {
-                    // Save to database. If this was a mismatch we must wipe
-                    // the stale rows first — otherwise the next connection
-                    // would see "any row matches the OLD fingerprint = trusted"
-                    // because of the loop above, defeating the warning.
-                    //
-                    // Manual BEGIN/COMMIT (instead of rusqlite's transaction())
-                    // because we only hold `&Connection` through the mutex
-                    // guard, not `&mut Connection`. On any failure between
-                    // DELETE and INSERT we roll back so we never leave the
-                    // host with zero recorded fingerprints (which would silently
-                    // downgrade the next connection from "mismatch" to "first
-                    // time").
+                    // Save to database. If this was a mismatch the stale
+                    // same-FAMILY rows are replaced in the same transaction —
+                    // otherwise the next connection would see "any row matches
+                    // the OLD fingerprint = trusted" because of the loop above,
+                    // defeating the warning. See save_approved_host_key.
                     if let Ok(guard) = self.db.lock() {
                         if let Some(ref conn) = *guard {
-                            let result: rusqlite::Result<()> = (|| {
-                                conn.execute("BEGIN", [])?;
-                                if mismatch {
-                                    // Only clear the SAME-algorithm entries (and
-                                    // legacy NULL-type rows the user is effectively
-                                    // re-confirming) — a trusted key for a DIFFERENT
-                                    // algorithm on this host stays put.
-                                    conn.execute(
-                                        "DELETE FROM known_hosts WHERE host=?1 AND port=?2 AND (key_type=?3 OR key_type IS NULL)",
-                                        rusqlite::params![self.server_host, self.server_port, key_type],
-                                    )?;
-                                }
-                                conn.execute(
-                                    "INSERT INTO known_hosts (host, port, fingerprint, key_type) VALUES (?1, ?2, ?3, ?4)",
-                                    rusqlite::params![self.server_host, self.server_port, fp_str, key_type],
-                                )?;
-                                conn.execute("COMMIT", [])?;
-                                Ok(())
-                            })();
-                            if result.is_err() {
-                                let _ = conn.execute("ROLLBACK", []);
-                            }
+                            let _ = save_approved_host_key(
+                                conn,
+                                &self.server_host,
+                                self.server_port,
+                                &fp_str,
+                                key_type,
+                                mismatch,
+                            );
                         }
                     }
                     let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
@@ -400,6 +620,15 @@ impl client::Handler for ClientHandler {
     /// (remote tunnel, the SSH `-R` shape). The server has accepted an
     /// outside connection on `connected_port`; we just need to bridge that
     /// channel to a local TCP socket pointed at the user's chosen target.
+    ///
+    /// Since russh 0.62 the open is answered through `reply`: nothing is
+    /// confirmed to the server (and no data can flow) until `accept()`. The
+    /// decision is made OFF the protocol task — `bridge_forwarded_channel`
+    /// dials the local target first and only then accepts, or rejects with
+    /// `ConnectFailed` — so the outside connector gets a real refusal instead
+    /// of an accepted-then-immediately-closed channel. An unknown port is
+    /// rejected right here. (A dropped `reply` also rejects, so no path can
+    /// leave the server waiting on an unanswered open.)
     async fn server_channel_open_forwarded_tcpip(
         &mut self,
         channel: russh::Channel<client::Msg>,
@@ -413,18 +642,18 @@ impl client::Handler for ClientHandler {
         let entry = self.forwarded_targets.lock().await.get(&connected_port).cloned();
         match entry {
             Some(entry) => {
-                reply.accept().await;
                 // Spawn the bridge so we don't hold up russh's protocol task.
-                // `bridge_forwarded_channel` does the local connect and
-                // tokio::io::copy_bidirectional dance, plus bumps the
-                // tunnel's connection counter for the UI.
-                tokio::spawn(async move {
-                    crate::tunnel::bridge_forwarded_channel(entry, channel.into_stream()).await;
-                });
+                // `bridge_forwarded_channel` does the local connect, answers
+                // the open, then runs the always-drained bidirectional pump,
+                // plus bumps the tunnel's connection counter for the UI.
+                tokio::spawn(crate::tunnel::bridge_forwarded_channel(entry, channel, reply));
             }
             None => {
-                // No tunnel registered for this port. Dropping `reply` rejects
-                // the open, which closes it on the server's side.
+                // No tunnel registered for this port — refuse the open. The
+                // never-accepted channel has no registered receiver, so
+                // dropping it can't stall the connection.
+                drop(channel);
+                reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
             }
         }
         Ok(())
@@ -461,6 +690,233 @@ mod tests {
         assert_eq!(key_type_family("rsa-sha2-256"), "ssh-rsa");
         assert_eq!(key_type_family("ssh-rsa"), "ssh-rsa");
         assert_eq!(key_type_family("ssh-ed25519"), "ssh-ed25519");
+    }
+
+    // Fixture keys generated with `ssh-keygen`; expected strings are
+    // `ssh-keygen -lf <key>.pub` output WITHOUT its `SHA256:` prefix — the
+    // exact format russh-keys 0.40's `PublicKey::fingerprint()` produced
+    // (BASE64_NOPAD(SHA-256(wire blob))), i.e. what known_hosts rows hold.
+    // The ed25519 and ecdsa values were also re-derived with the real
+    // russh-keys 0.40.1 crate (identical output).
+    const ED25519: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDUtueMG6aRvJ5KvL2MdRTSJvjovFlJSkevE6M2STKJo fixture";
+    const ED25519_FP_OLD_FORMAT: &str = "xmRWREanofXGEC0I34CTheE8ie4mzdYWeJicXVl4EvY";
+    const ECDSA_P256: &str = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHV+twrHbUzZsVehTQv4Nwncx45MzHiBuQHKD7m+V8LHNlLsEqFoh26DlW3X6QUOg5qyzlZP68I48UZL+mZUEi4= fixture";
+    const ECDSA_P256_FP_OLD_FORMAT: &str = "sv9PmqdzTou9hi/MJot5kkVRp1RlTzczpZBY9K1oNpY";
+    const RSA_2048: &str = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDV+BvzoBQWSFqUzFzroKlwFUmPsTDHZt3JKIX+S7eHR9CaLFSaUdxPgpf/s9BF5Ivm8sV4NiKGUbWzbwItcTzNk3JYEidewYxXb1B3drU7lt5aXWb2WkLQ3LNh+h7oyrJS9y6juLi4KYDceNwACb7gPJHiQYx187b9lfQhPr7YBAm6p17EQPp0p5mfdjXRR4fp/9bdGfjo32H+gdYlKUstcWM3h7/9t4D8DqVP+AGWdOav30dvqJkZecV81g7vCtFqGbpo6xw03yQ71BQJCcvaquptGtjJiA59iHql5D/KKM0zRN+r5lxNuduQIasBGc+GGdhioEqzmeYTI250PSAJ fixture";
+    const RSA_2048_FP_OLD_FORMAT: &str = "nxrXMG0NyO+gdFkxT/vcYRg0no5urQPoiP7rc75QHow";
+    // `ssh-keygen -s ca -I fixture-host -h -n fixture.example` over ED25519:
+    // a host certificate whose embedded key IS the ED25519 fixture.
+    const ED25519_HOST_CERT: &str = "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAILjv1QmqwKn8aXSULcG7kSL388pMiSjUZFMt7oFciUGlAAAAIDUtueMG6aRvJ5KvL2MdRTSJvjovFlJSkevE6M2STKJoAAAAAAAAAAAAAAACAAAADGZpeHR1cmUtaG9zdAAAABMAAAAPZml4dHVyZS5leGFtcGxlAAAAAAAAAAD//////////wAAAAAAAAAAAAAAAAAAADMAAAALc3NoLWVkMjU1MTkAAAAgwN6B0Tf3VF3rFiFU8qAOsYLC4fwgl+GFWGKHkzLdHgEAAABTAAAAC3NzaC1lZDI1NTE5AAAAQMcDmzwGhVWC1D/LhuYLi21OWAuN+VB5BUziWq3uWh0onmWkyuDEw0FwWeTlwq0BexJbTIZr7bcNEBECVX71BQ0= fixture";
+
+    fn key(openssh: &str) -> PublicKey {
+        PublicKey::from_openssh(openssh).expect("fixture key parses")
+    }
+
+    #[test]
+    fn fixture_fingerprints_match_russh_keys_0_40_format() {
+        let fp = host_key_fingerprint(&key(ED25519));
+        assert_eq!(fp, ED25519_FP_OLD_FORMAT);
+        // Guard against the ssh-key Display format (or padding) sneaking back in.
+        assert!(!fp.starts_with("SHA256:"));
+        assert!(!fp.ends_with('='));
+        assert_eq!(host_key_fingerprint(&key(ECDSA_P256)), ECDSA_P256_FP_OLD_FORMAT);
+        assert_eq!(host_key_fingerprint(&key(RSA_2048)), RSA_2048_FP_OLD_FORMAT);
+    }
+
+    #[test]
+    fn fingerprint_is_the_unprefixed_body_of_ssh_key_display() {
+        let k = key(ED25519);
+        let display = k.fingerprint(HashAlg::Sha256).to_string();
+        assert_eq!(display, format!("SHA256:{}", ED25519_FP_OLD_FORMAT));
+        assert_eq!(display.strip_prefix("SHA256:"), Some(host_key_fingerprint(&k).as_str()));
+    }
+
+    #[test]
+    fn key_type_names_reported_by_russh_0_63() {
+        // New rows store these; key_type_family must fold them with the names
+        // russh 0.40 stored for the same keys.
+        assert_eq!(key(ED25519).algorithm().to_string(), "ssh-ed25519");
+        assert_eq!(key(ECDSA_P256).algorithm().to_string(), "ecdsa-sha2-nistp256");
+        assert_eq!(key(RSA_2048).algorithm().to_string(), "ssh-rsa");
+    }
+
+    #[test]
+    fn rsa_spellings_are_one_family_regardless_of_case_or_cert_suffix() {
+        let fam = key_type_family("ssh-rsa");
+        for spelling in [
+            "rsa-sha2-256",
+            "rsa-sha2-512",
+            "RSA-SHA2-512",
+            " ssh-rsa ",
+            "rsa-sha2-512-cert-v01@openssh.com",
+            "ssh-rsa-cert-v01@openssh.com",
+        ] {
+            assert_eq!(key_type_family(spelling), fam, "{spelling}");
+        }
+    }
+
+    #[test]
+    fn other_families_stay_distinct() {
+        let all = [
+            key_type_family("ssh-ed25519"),
+            key_type_family("ecdsa-sha2-nistp256"),
+            key_type_family("ecdsa-sha2-nistp384"),
+            key_type_family("ecdsa-sha2-nistp521"),
+            key_type_family("rsa-sha2-512"),
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "families {a} and {b} must differ");
+                }
+            }
+        }
+        assert_eq!(key_type_family("ssh-ed25519-cert-v01@openssh.com"), all[0]);
+    }
+
+    #[test]
+    fn plain_keys_pass_through_and_certificates_are_refused() {
+        let k = key(ED25519);
+        let offered = PublicKeyOrCertificate::from(k.clone());
+        assert_eq!(plain_host_key(&offered).map(host_key_fingerprint), Some(host_key_fingerprint(&k)));
+
+        // Even though the certificate wraps an already-known key, it must NOT
+        // be reduced to that key: without a CA store it is refused.
+        let cert = russh::keys::Certificate::from_openssh(ED25519_HOST_CERT).expect("fixture cert parses");
+        assert_eq!(cert.public_key(), k.key_data());
+        let offered = PublicKeyOrCertificate::from(cert);
+        assert!(plain_host_key(&offered).is_none());
+    }
+
+    /// known_hosts exactly as `setup_master_db_inner` creates it.
+    fn known_hosts_db(rows: &[(&str, u16, &str, Option<&str>)]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);",
+        )
+        .unwrap();
+        for (host, port, fp, kt) in rows {
+            conn.execute(
+                "INSERT INTO known_hosts (host, port, fingerprint, key_type) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![host, port, fp, kt],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    fn fingerprints(conn: &rusqlite::Connection, host: &str, port: u16) -> Vec<(String, Option<String>)> {
+        let mut stmt = conn
+            .prepare("SELECT fingerprint, key_type FROM known_hosts WHERE host=?1 AND port=?2 ORDER BY fingerprint")
+            .unwrap();
+        stmt.query_map(rusqlite::params![host, port], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// B3: accepting a CHANGED RSA key must retire the old RSA fingerprint even
+    /// when it was pinned under a russh-0.40 signature name. The previous
+    /// `DELETE ... WHERE key_type=?3 OR key_type IS NULL` compared against
+    /// `ssh-rsa` and left the `rsa-sha2-*` rows — the old key stayed trusted.
+    #[test]
+    fn accepting_a_changed_rsa_key_retires_rows_pinned_under_old_rsa_names() {
+        let conn = known_hosts_db(&[
+            ("h", 22, "OLD_RSA_512", Some("rsa-sha2-512")),
+            ("h", 22, "OLD_RSA_256", Some("rsa-sha2-256")),
+            ("h", 22, "LEGACY", None),
+            ("h", 22, "ED", Some("ssh-ed25519")),
+            ("other", 22, "OTHER_HOST", Some("rsa-sha2-512")),
+            ("h", 2222, "OTHER_PORT", Some("ssh-rsa")),
+        ]);
+        save_approved_host_key(&conn, "h", 22, "NEW_RSA", "ssh-rsa", true).unwrap();
+        assert_eq!(
+            fingerprints(&conn, "h", 22),
+            vec![
+                ("ED".to_string(), Some("ssh-ed25519".to_string())),
+                ("NEW_RSA".to_string(), Some("ssh-rsa".to_string())),
+            ],
+            "same-family and NULL rows replaced, other families kept"
+        );
+        assert_eq!(fingerprints(&conn, "other", 22).len(), 1, "other hosts untouched");
+        assert_eq!(fingerprints(&conn, "h", 2222).len(), 1, "other ports untouched");
+    }
+
+    #[test]
+    fn accepting_an_unknown_key_only_adds_a_row() {
+        let conn = known_hosts_db(&[("h", 22, "RSA", Some("rsa-sha2-512"))]);
+        save_approved_host_key(&conn, "h", 22, "ED", "ssh-ed25519", false).unwrap();
+        assert_eq!(fingerprints(&conn, "h", 22).len(), 2);
+    }
+
+    #[test]
+    fn a_failed_save_rolls_back_so_the_old_key_stays_on_file() {
+        let conn = known_hosts_db(&[("h", 22, "OLD_RSA", Some("rsa-sha2-512"))]);
+        conn.execute_batch(
+            "CREATE TRIGGER no_insert BEFORE INSERT ON known_hosts BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+        assert!(save_approved_host_key(&conn, "h", 22, "NEW_RSA", "ssh-rsa", true).is_err());
+        assert_eq!(
+            fingerprints(&conn, "h", 22),
+            vec![("OLD_RSA".to_string(), Some("rsa-sha2-512".to_string()))],
+            "the DELETE must be rolled back — never zero fingerprints on file"
+        );
+        // And the connection is usable again (no transaction left open).
+        conn.execute_batch("DROP TRIGGER no_insert;").unwrap();
+        save_approved_host_key(&conn, "h", 22, "NEW_RSA", "ssh-rsa", true).unwrap();
+        assert_eq!(fingerprints(&conn, "h", 22).len(), 1);
+    }
+
+    /// B2 regression, against a real (in-process) SSH connection: a large paste
+    /// that must wait for the server's window, while the server floods output.
+    /// The pre-0.63-port single-`select!` loop stopped reading output while it
+    /// awaited the write, the channel queue filled, russh's protocol task
+    /// blocked delivering into it and so never processed the WINDOW_ADJUST the
+    /// write waited on — a deadlock that froze the whole connection.
+    #[tokio::test]
+    async fn pty_pump_keeps_draining_output_while_a_large_paste_waits_for_window() {
+        use crate::ssh_test_server::{connect, TestServer};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        let server = TestServer::default();
+        let received = Arc::clone(&server.received);
+        // Small server-side window: the paste below needs ~16 WINDOW_ADJUSTs,
+        // each of which our protocol task must be free to process.
+        let session = connect(server, |c| c.window_size = 64 * 1024, crate::build_ssh_client_config())
+            .await
+            .expect("in-process SSH connection");
+        let channel = session.channel_open_session().await.unwrap();
+        // The "shell" floods output for the whole test (think `yes`, a build log).
+        channel.exec(false, "flood 1073741824").await.unwrap();
+
+        let (tx, rx) = mpsc::channel::<TerminalCommand>(32);
+        let (_resize_tx, resize_rx) = tokio::sync::watch::channel(PtySize { cols: 80, rows: 24 });
+        let output = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&output);
+        let pump = tokio::spawn(pty_pump(channel, rx, resize_rx, move |buf: &mut Vec<u8>| {
+            sink.fetch_add(buf.len(), Ordering::SeqCst);
+            buf.clear();
+        }));
+
+        const PASTE: usize = 1024 * 1024;
+        tx.send(TerminalCommand::Data(vec![b'p'; PASTE])).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while received.load(Ordering::SeqCst) < PASTE {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the paste must reach the server while output keeps flowing (no deadlock)");
+        assert!(output.load(Ordering::SeqCst) > 0, "output must keep being drained meanwhile");
+
+        // Closing the tab (all senders dropped) ends the pump.
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(10), pump)
+            .await
+            .expect("pump must stop once the terminal is closed")
+            .unwrap();
     }
 }
 
