@@ -25,6 +25,10 @@ interface SftpWorkspaceProps {
   // one fewer item to fit on phones.
   serverId?: number;
   mirrorsConfig?: any[];
+  /** Focused PTY. Passed through while SFTP hides the terminal on a narrow window. */
+  terminalId?: string;
+  /** Compact layout: close the SFTP pane so the terminal that just received `cd` is visible. */
+  onRevealTerminal?: () => void;
 }
 
 type SftpView = "files" | "mirror";
@@ -69,7 +73,7 @@ const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
 });
 DragGhost.displayName = "DragGhost";
 
-const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [] }: SftpWorkspaceProps) => {
+const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], terminalId, onRevealTerminal }: SftpWorkspaceProps) => {
   // Active sub-tab. Files is the default (the common workflow); Mirror is
   // for the per-server one-way replication setup.
   const [view, setView] = useState<SftpView>("files");
@@ -399,6 +403,8 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
             initialPath={savedDirsRef.current.remote}
             onPathChange={(p) => saveDir("remote", p)}
             getOppositeDir={() => localRef.current?.currentDir()}
+            terminalId={terminalId}
+            onRevealTerminal={onRevealTerminal}
           />
         </div>
       </div>

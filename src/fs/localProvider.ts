@@ -15,6 +15,21 @@ type RawLocalEntry = {
 
 const isWindowsLike = (p: string) => /^[a-zA-Z]:[\\/]/.test(p) || p.includes("\\");
 
+// Parent of a local path. POSIX "/var" has its only slash at index 0; that
+// is the root, so the parent is "/", not "/var" again. "/" trims to "" and
+// takes the same branch. A path with no separator ("foo") stays put.
+export function parentPathOf(path: string, sep: "/" | "\\"): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const idx = trimmed.lastIndexOf(sep);
+  if (sep === "/" && (idx === 0 || trimmed === "")) return "/";
+  if (idx <= 0) return trimmed;
+  // Preserve drive root on Windows ("C:\").
+  if (sep === "\\" && idx === 2 && /^[a-zA-Z]:$/.test(trimmed.slice(0, 2))) {
+    return trimmed.slice(0, 3);
+  }
+  return trimmed.slice(0, idx);
+}
+
 export function createLocalProvider(): LocalFileProvider {
   // Sep is computed lazily from the first real path we see (after `homePath`
   // resolves). Defaulting to `\` on Windows is fine because the renderer is
@@ -78,14 +93,7 @@ export function createLocalProvider(): LocalFileProvider {
 
     parentPath(path: string) {
       const sep = inferSep(path);
-      const trimmed = path.replace(/[\\/]+$/, "");
-      const idx = trimmed.lastIndexOf(sep);
-      if (idx <= 0) return trimmed; // root or first segment
-      // Preserve drive root on Windows ("C:\")
-      if (sep === "\\" && idx === 2 && /^[a-zA-Z]:$/.test(trimmed.slice(0, 2))) {
-        return trimmed.slice(0, 3);
-      }
-      return trimmed.slice(0, idx);
+      return parentPathOf(path, sep);
     },
 
     async mkdir(path: string) {

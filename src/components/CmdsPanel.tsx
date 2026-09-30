@@ -419,41 +419,39 @@ export const CmdsPanel = ({ activeTab, onClose, serverId, serverName }: { active
                       </div>
                     </div>
                   ) : (
-                    <div className="p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1 min-w-0">
-                          <h4 className="text-xs font-bold text-zinc-200 truncate group-hover:text-primary transition-colors">
-                            {c.title}
-                          </h4>
-                          <pre
-                            className="mt-1.5 p-1.5 px-2 bg-black/40 rounded border border-white/5 font-mono text-[10px] text-zinc-400 truncate whitespace-nowrap overflow-hidden"
-                            title={c.content}
-                          >
-                            {c.content.split('\n')[0] || ""}{c.content.split('\n').length > 1 ? " ..." : ""}
-                          </pre>
-                        </div>
+                    <div className="flex items-center gap-3 px-3 py-2">
+                      <div className="flex-1 min-w-0">
+                        <h4 className="text-xs font-bold text-zinc-100 truncate group-hover:text-primary transition-colors">
+                          {c.title}
+                        </h4>
+                        <p
+                          className="mt-0.5 font-mono text-[10px] text-zinc-500 truncate"
+                          title={c.content}
+                        >
+                          {c.content.split('\n')[0] || ""}{c.content.split('\n').length > 1 ? " ..." : ""}
+                        </p>
                       </div>
-                      <div className="flex gap-1.5 mt-2">
+                      <div className="flex items-center gap-1.5 shrink-0">
                         <button
                           onClick={() => writeToTerminal(c.content, true)}
-                          className="flex-1 h-7 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
+                          className="w-7 h-7 rounded-md bg-primary/15 text-primary border border-primary/40 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center transition-all"
                           title="Run in active terminal (writes + Enter)"
                         >
-                          <Play size={11} fill="currentColor" /> Run
+                          <Play size={12} fill="currentColor" />
                         </button>
                         <button
                           onClick={() => writeToTerminal(c.content, false)}
-                          className="flex-1 h-7 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
+                          className="w-7 h-7 rounded-md bg-white/[0.03] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center transition-all"
                           title="Paste into active terminal (no Enter)"
                         >
-                          <ClipboardCopy size={11} /> Paste
+                          <ClipboardCopy size={12} />
                         </button>
                         <button
                           onClick={() => beginEditCommand(c)}
-                          className="flex-1 h-7 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
+                          className="w-7 h-7 rounded-md bg-white/[0.03] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center transition-all"
                           title="Edit command inline"
                         >
-                          <Pencil size={11} /> Edit
+                          <Pencil size={12} />
                         </button>
                       </div>
                     </div>

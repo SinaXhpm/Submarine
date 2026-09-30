@@ -103,6 +103,17 @@ select optgroup {
   }
 }
 
+/* Indeterminate fill for an open-in-editor download whose size is unknown.
+   The bar is 1/3 of the row; this slides it across the clipped row. */
+.open-progress-indeterminate {
+  animation: open-progress-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes open-progress-indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(360%); }
+}
+
 /* ==========================================================================
    BULLETPROOF THEMED SCROLLBAR OVERRIDES
    ========================================================================== */
