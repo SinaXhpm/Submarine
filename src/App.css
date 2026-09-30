@@ -103,6 +103,32 @@ select optgroup {
   }
 }
 
+/* Indeterminate fill for an open-in-editor download whose size is unknown.
+   The bar is 1/3 of the row; this slides it across the clipped row. */
+.open-progress-indeterminate {
+  animation: open-progress-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes open-progress-indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(360%); }
+}
+
+/* SFTP selection bar. Sized by the file panel, not the window: the SFTP side
+   panel can be 240px wide on a wide screen. With labels the row needs about
+   520px; below that the buttons show icons only (the title names the
+   action), and the flex row wraps on the narrowest panels. Tailwind 3.4
+   here has no container-query plugin, hence plain CSS. */
+.selection-bar {
+  container-type: inline-size;
+}
+
+@container (max-width: 519px) {
+  .selection-bar-label {
+    display: none;
+  }
+}
+
 /* ==========================================================================
    BULLETPROOF THEMED SCROLLBAR OVERRIDES
    ========================================================================== */

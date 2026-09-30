@@ -1522,6 +1522,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                   mirrorsConfig={(() => {
                     try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
                   })()}
+                  terminalId={activeTab}
+                  onRevealTerminal={isCompact ? () => setActiveTool(null) : undefined}
                 />
               </div>
             </div>
