@@ -15,6 +15,30 @@ type RawLocalEntry = {
 
 const isWindowsLike = (p: string) => /^[a-zA-Z]:[\\/]/.test(p) || p.includes("\\");
 
+// Parent of a local path. POSIX "/var" has its only slash at index 0; that
+// is the root, so the parent is "/", not "/var" again. "/" trims to "" and
+// takes the same branch. A path with no separator ("foo") stays put.
+export function parentPathOf(path: string, sep: "/" | "\\"): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const idx = trimmed.lastIndexOf(sep);
+  if (sep === "/" && (idx === 0 || trimmed === "")) return "/";
+  if (idx <= 0) return trimmed;
+  // Preserve drive root on Windows ("C:\").
+  if (sep === "\\" && idx === 2 && /^[a-zA-Z]:$/.test(trimmed.slice(0, 2))) {
+    return trimmed.slice(0, 3);
+  }
+  return trimmed.slice(0, idx);
+}
+
+// The backend lists the canonicalized directory, so on Windows entry paths
+// come back with the verbatim prefix (`\\?\C:\Users`, `\\?\UNC\srv\share`).
+// Drop it so the path bar and every later call use the ordinary form.
+export function stripVerbatimPrefix(path: string): string {
+  const unc = path.match(/^\\\\\?\\UNC\\(.*)$/i);
+  if (unc) return `\\\\${unc[1]}`;
+  return path.replace(/^\\\\\?\\(?=[a-zA-Z]:)/, "");
+}
+
 export function createLocalProvider(): LocalFileProvider {
   // Sep is computed lazily from the first real path we see (after `homePath`
   // resolves). Defaulting to `\` on Windows is fine because the renderer is
@@ -62,13 +86,13 @@ export function createLocalProvider(): LocalFileProvider {
       const raw = await invoke<RawLocalEntry[]>("local_list_dir", { path });
       const entries: FileEntry[] = raw.map((r) => ({
         name: r.name,
-        path: r.path,
+        path: stripVerbatimPrefix(r.path),
         isDir: r.is_dir,
         size: r.size,
         modified: r.modified,
       }));
       if (entries.length > 0) inferSep(entries[0].path);
-      return { currentPath: path, entries };
+      return { currentPath: stripVerbatimPrefix(path), entries };
     },
 
     joinPath(dir: string, name: string) {
@@ -78,14 +102,7 @@ export function createLocalProvider(): LocalFileProvider {
 
     parentPath(path: string) {
       const sep = inferSep(path);
-      const trimmed = path.replace(/[\\/]+$/, "");
-      const idx = trimmed.lastIndexOf(sep);
-      if (idx <= 0) return trimmed; // root or first segment
-      // Preserve drive root on Windows ("C:\")
-      if (sep === "\\" && idx === 2 && /^[a-zA-Z]:$/.test(trimmed.slice(0, 2))) {
-        return trimmed.slice(0, 3);
-      }
-      return trimmed.slice(0, idx);
+      return parentPathOf(path, sep);
     },
 
     async mkdir(path: string) {
@@ -98,6 +115,14 @@ export function createLocalProvider(): LocalFileProvider {
 
     async rename(from: string, to: string) {
       await invoke("local_rename", { from, to });
+    },
+
+    async archive(dir, names, dest, format, overwrite) {
+      await invoke("local_archive", { dir, names, dest, format, overwrite });
+    },
+
+    async extract(dir: string, name: string, folder: string | null) {
+      await invoke("local_extract", { dir, name, folder });
     },
   };
 }
