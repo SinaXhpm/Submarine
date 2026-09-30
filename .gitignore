@@ -62,6 +62,7 @@ desktop.ini
 
 # Reproducible Go Mobile artifact; build with tailcat-bridge/build-aar.sh.
 src-tauri/gen/android/app/libs/tailcat-bridge.aar
+src-tauri/gen/android/app/libs/tailcat-bridge-sources.jar
 
 # Test/coverage output (no test suite yet, but pre-empt the typical paths).
 coverage/

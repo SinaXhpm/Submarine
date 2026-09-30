@@ -2,10 +2,12 @@
 //! magicsock and DERP; Rust only asks it for a loopback TCP forward and hands
 //! that ordinary byte stream to russh. No VPN, TUN, or system route is used.
 
-use base64::Engine;
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "android")]
+use base64::Engine;
+#[cfg(target_os = "android")]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
+#[cfg(target_os = "android")]
 const CONTROL_ADDR: &str = "127.0.0.1:38491";
 
 /// Stable non-secret identity used for known_hosts and visible SSH prompts.

@@ -2,15 +2,12 @@ module github.com/SinaXhpm/Submarine/tailcat-bridge
 
 go 1.27.1
 
+tool golang.org/x/mobile/cmd/gomobile
+
 // Do not change this to main. The Go Mobile artifact is built from this exact
 // Tailcat revision so its wire protocol and Android native dependencies are
 // reproducible.
-require (
-	github.com/tailscale/tailcat v0.0.0-20260929145319-b4dc28e8aa89
-	golang.org/x/mobile v0.0.0-20260821190718-4776eadac327
-)
-
-tool golang.org/x/mobile/cmd/gomobile
+require github.com/tailscale/tailcat v0.0.0-20260929145319-b4dc28e8aa89
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
@@ -50,12 +47,15 @@ require (
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
+	golang.org/x/mobile v0.0.0-20260821190718-4776eadac327 // indirect
+	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
+	golang.org/x/tools v0.50.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
 	gvisor.dev/gvisor v0.0.0-20260915211658-a6f909f08a72 // indirect

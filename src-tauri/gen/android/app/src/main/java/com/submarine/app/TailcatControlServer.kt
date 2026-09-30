@@ -1,6 +1,6 @@
 package com.submarine.app
 
-import com.submarine.tailcatbridge.Tailcatbridge
+import com.submarine.tailcatbridge.tailcatbridge.Tailcatbridge
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
