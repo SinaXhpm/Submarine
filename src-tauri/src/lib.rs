@@ -10374,13 +10374,15 @@ async fn sftp_set_permissions(
     permissions: u32,
 ) -> Result<(), String> {
     let sftp = get_sftp_session(&state, &session_id).await?;
-    // Propagate metadata fetch errors instead of falling back to a zeroed
-    // FileAttributes. Without this, a transient network blip or a perms
-    // failure during read would have us send `set_metadata` with uid=gid
-    // =size=0 — silently clobbering ownership and other attributes.
-    let mut metadata = sftp.metadata(&path).await
-        .map_err(|e| format!("[SFTP] METADATA_READ_FAILED: {}", e))?;
-    metadata.permissions = Some(permissions);
+    // Send ONLY the permissions attribute. Echoing back the full stat result
+    // makes the server apply every field in it, and the size one turns into
+    // truncate(2) — which fails with EISDIR on a directory, surfacing as a
+    // bare SSH_FX_FAILURE. Omitted fields are left untouched by the server,
+    // so ownership and timestamps can't be clobbered either.
+    let metadata = russh_sftp::protocol::FileAttributes {
+        permissions: Some(permissions),
+        ..Default::default()
+    };
     sftp.set_metadata(path, metadata).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -10394,10 +10396,27 @@ async fn sftp_set_owner(
     gid: Option<u32>,
 ) -> Result<(), String> {
     let sftp = get_sftp_session(&state, &session_id).await?;
-    let mut metadata = sftp.metadata(&path).await
-        .map_err(|e| format!("[SFTP] METADATA_READ_FAILED: {}", e))?;
-    metadata.uid = uid;
-    metadata.gid = gid;
+    // uid and gid travel as a pair on the wire, so a missing half has to be
+    // filled from the current owner rather than defaulting to 0 (root).
+    // Propagate the stat error for the same reason.
+    let (uid, gid) = match (uid, gid) {
+        (Some(u), Some(g)) => (u, g),
+        _ => {
+            let current = sftp.metadata(&path).await
+                .map_err(|e| format!("[SFTP] METADATA_READ_FAILED: {}", e))?;
+            match (uid.or(current.uid), gid.or(current.gid)) {
+                (Some(u), Some(g)) => (u, g),
+                _ => return Err("[SFTP] METADATA_READ_FAILED: server did not report owner".into()),
+            }
+        }
+    };
+    // Only the owner fields — see sftp_set_permissions for why size must
+    // not be sent (truncate on a directory fails).
+    let metadata = russh_sftp::protocol::FileAttributes {
+        uid: Some(uid),
+        gid: Some(gid),
+        ..Default::default()
+    };
     sftp.set_metadata(path, metadata).await.map_err(|e| e.to_string())?;
     Ok(())
 }
