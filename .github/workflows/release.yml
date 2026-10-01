@@ -437,9 +437,8 @@ jobs:
       # Decode the base64-encoded keystore secret into a real .jks on disk
       # and write the matching SUBMARINE_KEYSTORE_PATH env var so Gradle's
       # signingConfig picks it up. Release builds fail loudly if signing
-      # secrets are missing — a manually dispatched, non-publishing fork
-      # validation instead receives an optimized release APK signed by a
-      # throwaway CI-only key.
+      # secrets are missing — a manually dispatched release on Loz's fork
+      # instead receives an optimized APK signed by a throwaway CI-only key.
       # The four required secrets:
       #   SUBMARINE_KEYSTORE_B64        — base64 of the .jks
       #   SUBMARINE_KEYSTORE_PASSWORD   — keystore password
@@ -459,10 +458,11 @@ jobs:
           [ -z "$SUBMARINE_KEY_ALIAS" ]         && missing+=("SUBMARINE_KEY_ALIAS")
           [ -z "$SUBMARINE_KEY_PASSWORD" ]      && missing+=("SUBMARINE_KEY_PASSWORD")
           if [ "${#missing[@]}" -gt 0 ]; then
-            # Fork validation runs cannot inherit signing secrets. Give a
-            # manually dispatched, non-publishing run an optimized APK signed
-            # by a fresh throwaway key; real releases stay signing-strict.
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.publish_release }}" != "true" ]; then
+            # Fork validation runs cannot inherit signing secrets. Manual
+            # draft releases on Loz's fork get an optimized APK signed by a
+            # fresh throwaway key; tag-based and upstream releases stay
+            # signing-strict.
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.repository }}" = "lozbrown/Submarine" ]; then
               mkdir -p "$RUNNER_TEMP/signing"
               validation_password="tailcat-validation"
               keytool -genkeypair -noprompt -storetype JKS \
@@ -518,7 +518,7 @@ jobs:
           mkdir -p artifacts
           # APKs land under app/build/outputs/apk/<abi>/release/*.apk.
           # Rename to include the version so release asset names are readable.
-          # Non-publishing fork artifacts are signed by a throwaway CI key.
+          # Fork-validation artifacts are signed by a throwaway CI key.
           shopt -s nullglob
           found=0
           for apk in $(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-release*.apk" ! -name "*-unsigned.apk"); do
