@@ -98,11 +98,23 @@ fn ensure_desktop_sidecar() -> Result<(), String> {
         }
     }
     let executable = desktop_sidecar_path()?;
-    let spawned = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(["--listen", CONTROL_ADDR, "--exit-on-stdin-close"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    // Go console executables allocate a visible console by default when
+    // spawned by a GUI process. Keep the bridge entirely in Submarine's
+    // background on Windows; diagnostics are reported through the control
+    // protocol rather than a terminal window.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let spawned = command
         .spawn()
         .map_err(|_| "Tailcat bridge could not start; reinstall Submarine".to_string())?;
     *child = Some(spawned);
