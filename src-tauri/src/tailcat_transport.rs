@@ -31,8 +31,22 @@ pub async fn open(address: &str, port: u16) -> Result<tokio::net::TcpStream, Str
     control.write_all(format!("OPEN {} {}\n", encoded, port).as_bytes()).await.map_err(|_| "Tailcat bridge control write failed".to_string())?;
     let mut line = String::new();
     BufReader::new(&mut control).read_line(&mut line).await.map_err(|_| "Tailcat bridge control read failed".to_string())?;
-    let local_port: u16 = line.strip_prefix("OK ").ok_or_else(|| "Tailcat bridge rejected the connection".to_string())?
-        .trim().parse().map_err(|_| "Tailcat bridge returned an invalid local port".to_string())?;
+    let response = line.trim();
+    let local_port: u16 = if let Some(port) = response.strip_prefix("OK ") {
+        port.trim().parse().map_err(|_| "Tailcat bridge returned an invalid local port".to_string())?
+    } else if let Some(stage) = response.strip_prefix("ERR ") {
+        let detail = match stage {
+            "BAD_REQUEST" => "received an invalid control request",
+            "INVALID_ADDRESS" => "could not parse the Tailcat address",
+            "INVALID_PORT" => "received an invalid SSH port",
+            "CLIENT_START_FAILED" => "could not create the native Tailcat client",
+            "FORWARD_OPEN_FAILED" => "could not open a native Tailcat forward",
+            _ => "rejected the connection",
+        };
+        return Err(format!("Tailcat bridge {detail}"));
+    } else {
+        return Err("Tailcat bridge returned an invalid response".to_string());
+    };
     let stream = tokio::time::timeout(std::time::Duration::from_secs(15), tokio::net::TcpStream::connect(("127.0.0.1", local_port)))
         .await.map_err(|_| "Tailcat connection timed out".to_string())?
         .map_err(|_| "Tailcat local forward closed before SSH could connect".to_string())?;

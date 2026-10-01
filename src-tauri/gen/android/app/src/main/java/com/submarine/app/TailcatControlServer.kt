@@ -36,19 +36,42 @@ object TailcatControlServer {
 
   private fun handle(socket: Socket) = socket.use { s ->
     val out = OutputStreamWriter(s.getOutputStream(), Charsets.UTF_8)
-    try {
-      val fields = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8)).readLine().trim().split(" ")
-      if (fields.size != 3 || fields[0] != "OPEN") throw IllegalArgumentException("bad request")
-      val address = String(Base64.getUrlDecoder().decode(fields[1]), Charsets.UTF_8)
-      if (!address.startsWith("tc")) throw IllegalArgumentException("bad Tailcat address")
-      val remotePort = fields[2].toInt().also { require(it in 1..65535) }
-      val handle = clients.computeIfAbsent(address) { Tailcatbridge.start(it) }
-      val localPort = Tailcatbridge.openForward(handle, remotePort.toLong())
-      out.write("OK $localPort\n")
-    } catch (_: Exception) {
-      // Deliberately generic: a Tailcat address may carry a PSK.
-      out.write("ERR Tailcat bridge request failed\n")
+    val fields = runCatching {
+      BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8)).readLine().trim().split(" ")
+    }.getOrNull()
+    if (fields == null || fields.size != 3 || fields[0] != "OPEN") {
+      out.write("ERR BAD_REQUEST\n")
+      out.flush()
+      return@use
     }
+    val address = runCatching {
+      String(Base64.getUrlDecoder().decode(fields[1]), Charsets.UTF_8).trim()
+    }.getOrNull()
+    if (address.isNullOrEmpty() || !address.startsWith("tc")) {
+      out.write("ERR INVALID_ADDRESS\n")
+      out.flush()
+      return@use
+    }
+    val remotePort = fields[2].toIntOrNull()?.takeIf { it in 1..65535 }
+    if (remotePort == null) {
+      out.write("ERR INVALID_PORT\n")
+      out.flush()
+      return@use
+    }
+    // Do not return exception messages: a Tailcat address can contain a PSK.
+    val handle = runCatching { clients.computeIfAbsent(address) { Tailcatbridge.start(it) } }
+      .getOrElse {
+        out.write("ERR CLIENT_START_FAILED\n")
+        out.flush()
+        return@use
+      }
+    val localPort = runCatching { Tailcatbridge.openForward(handle, remotePort.toLong()) }
+      .getOrElse {
+        out.write("ERR FORWARD_OPEN_FAILED\n")
+        out.flush()
+        return@use
+      }
+    out.write("OK $localPort\n")
     out.flush()
   }
 
