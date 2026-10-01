@@ -1,11 +1,13 @@
-# Native Tailcat transport (Android)
+# Native Tailcat transport
 
-Submarine's Tailcat transport is deliberately application-scoped. The Android
-APK packages a Go Mobile bridge containing Tailcat's userspace WireGuard,
-magicsock and DERP client. The bridge opens an ephemeral `127.0.0.1` listener
-for each SSH transport; Rust connects to it with Tokio and supplies that stream
-to existing `russh::client::connect_stream` code. It does not use Android
-`VpnService`, a TUN interface, or a separate Tailcat executable.
+Submarine's Tailcat transport is deliberately application-scoped on every
+platform. Rust connects an ephemeral loopback stream to its existing
+`russh::client::connect_stream` implementation. No user needs to install the
+Tailcat CLI, Tailscale, a VPN, or a system TUN interface.
+
+- Android packages the Go Mobile bridge in the APK.
+- Linux, macOS and Windows package the same Go bridge as a Tauri sidecar. It
+  is spawned privately by Submarine and exits when Submarine closes.
 
 ## Build the native dependency
 
@@ -34,3 +36,17 @@ field when transport is Tailcat. They are masked in backend logs and never
 become the SSH known-hosts key: Submarine uses `tailcat:` plus a SHA-256 prefix
 instead. SSH host-key verification and normal key/password/keyboard-interactive
 authentication remain enabled.
+
+## Desktop sidecars
+
+Before a desktop bundle, build the helper matching its Tauri target:
+
+```bash
+GO_BIN=/path/to/go tailcat-bridge/build-sidecars.sh x86_64-unknown-linux-gnu
+```
+
+Use `all` (the default) to prepare the currently supported Linux, macOS and
+Windows architectures. The generated files under `src-tauri/binaries/` are
+ignored build artifacts. Tauri's `bundle.externalBin` copies the matching
+helper into each installer/app bundle, so it is never a separate end-user
+installation.

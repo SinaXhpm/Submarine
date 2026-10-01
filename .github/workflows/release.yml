@@ -146,6 +146,11 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Install pinned Go for bundled Tailcat transport
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.1"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -177,6 +182,10 @@ jobs:
 
       - name: Install npm deps
         run: npm ci
+
+      - name: Build bundled Tailcat sidecar
+        shell: bash
+        run: tailcat-bridge/build-sidecars.sh ${{ matrix.rust_target }}
 
       # We deliberately do NOT run `npm run build` here — tauri-action
       # invokes the `beforeBuildCommand` defined in tauri.conf.json

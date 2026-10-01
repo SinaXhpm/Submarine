@@ -2,13 +2,13 @@
 //! magicsock and DERP; Rust only asks it for a loopback TCP forward and hands
 //! that ordinary byte stream to russh. No VPN, TUN, or system route is used.
 
-use sha2::{Digest, Sha256};
-#[cfg(target_os = "android")]
 use base64::Engine;
-#[cfg(target_os = "android")]
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(target_os = "android")]
 const CONTROL_ADDR: &str = "127.0.0.1:38491";
+#[cfg(not(target_os = "android"))]
+const CONTROL_ADDR: &str = "127.0.0.1:38492";
 
 /// Stable non-secret identity used for known_hosts and visible SSH prompts.
 /// Tailcat addresses may embed a PSK and must never become a log/DB key.
@@ -23,10 +23,20 @@ pub fn redact(address: &str) -> String {
 
 #[cfg(target_os = "android")]
 pub async fn open(address: &str, port: u16) -> Result<tokio::net::TcpStream, String> {
+    open_via_control(address, port).await
+}
+
+#[cfg(not(target_os = "android"))]
+pub async fn open(address: &str, port: u16) -> Result<tokio::net::TcpStream, String> {
+    ensure_desktop_sidecar()?;
+    open_via_control(address, port).await
+}
+
+async fn open_via_control(address: &str, port: u16) -> Result<tokio::net::TcpStream, String> {
     if !address.trim_start().starts_with("tc") { return Err("Tailcat address must start with tc".into()); }
     let mut control = tokio::time::timeout(std::time::Duration::from_secs(5), tokio::net::TcpStream::connect(CONTROL_ADDR))
         .await.map_err(|_| "Tailcat bridge did not start in time".to_string())?
-        .map_err(|_| "Tailcat bridge is unavailable; reinstall an Android build with the Tailcat native library".to_string())?;
+        .map_err(|_| "Tailcat bridge is unavailable; reinstall a Submarine build with the Tailcat transport".to_string())?;
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(address.trim().as_bytes());
     control.write_all(format!("OPEN {} {}\n", encoded, port).as_bytes()).await.map_err(|_| "Tailcat bridge control write failed".to_string())?;
     let mut line = String::new();
@@ -55,8 +65,60 @@ pub async fn open(address: &str, port: u16) -> Result<tokio::net::TcpStream, Str
 }
 
 #[cfg(not(target_os = "android"))]
-pub async fn open(_address: &str, _port: u16) -> Result<tokio::net::TcpStream, String> {
-    Err("Tailcat transport is currently packaged for Android only".into())
+fn ensure_desktop_sidecar() -> Result<(), String> {
+    use std::{
+        net::TcpStream,
+        process::{Child, Command, Stdio},
+        sync::{Mutex, OnceLock},
+        time::{Duration, Instant},
+    };
+
+    static SIDECAR: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+    if TcpStream::connect(CONTROL_ADDR).is_ok() {
+        return Ok(());
+    }
+    let mut child = SIDECAR.get_or_init(|| Mutex::new(None)).lock()
+        .map_err(|_| "Tailcat bridge lifecycle lock failed".to_string())?;
+    if TcpStream::connect(CONTROL_ADDR).is_ok() {
+        return Ok(());
+    }
+    if let Some(existing) = child.as_mut() {
+        if existing.try_wait().map_err(|_| "Tailcat bridge state check failed".to_string())?.is_none() {
+            return Err("Tailcat bridge started but its control socket is unavailable".into());
+        }
+    }
+    let executable = desktop_sidecar_path()?;
+    let spawned = Command::new(executable)
+        .args(["--listen", CONTROL_ADDR, "--exit-on-stdin-close"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Tailcat bridge could not start; reinstall Submarine".to_string())?;
+    *child = Some(spawned);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if TcpStream::connect(CONTROL_ADDR).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Err("Tailcat bridge did not start in time".into())
+}
+
+#[cfg(not(target_os = "android"))]
+fn desktop_sidecar_path() -> Result<std::path::PathBuf, String> {
+    if let Some(path) = std::env::var_os("SUBMARINE_TAILCAT_BRIDGE_PATH") {
+        return Ok(path.into());
+    }
+    let executable = std::env::current_exe().map_err(|_| "could not locate Submarine executable".to_string())?;
+    let name = if cfg!(target_os = "windows") { "tailcat-bridge.exe" } else { "tailcat-bridge" };
+    let path = executable.parent().ok_or_else(|| "could not locate Submarine executable directory".to_string())?.join(name);
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err("Tailcat bridge is missing from this Submarine installation; reinstall Submarine".into())
+    }
 }
 
 #[cfg(test)]
