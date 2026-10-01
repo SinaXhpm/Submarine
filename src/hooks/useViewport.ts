@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useState } from "react";
 
 // Live viewport-width hook with derived isNarrow / isCompact flags.
 
@@ -28,4 +28,23 @@ export function useIsNarrow(): boolean {
 /// view with a back-chip to swap.
 export function useIsCompact(): boolean {
   return useViewportWidth() < COMPACT_BREAKPOINT;
+}
+
+/// Live width of one element. For controls that sit in a resizable pane,
+/// where the viewport width says nothing about how much room they actually
+/// have. The first measure runs in a layout effect, so the first paint
+/// already uses the real width instead of a placeholder.
+export function useElementWidth(ref: RefObject<HTMLElement | null>): number {
+  const [w, setW] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Border box both times: the observer's contentRect leaves the padding out.
+    const measure = () => setW(Math.round(el.getBoundingClientRect().width));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return w;
 }

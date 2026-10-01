@@ -87,6 +87,11 @@ export interface OverwritePromptOptions {
   direction: "download" | "upload";
   /** Total number of items in the batch, so we can hide "all" when only one. */
   batchSize: number;
+  /**
+   * Closes the prompt with "skip" when aborted (the item was cancelled from
+   * the transfers bar while the prompt was open). Never a sticky choice.
+   */
+  signal?: AbortSignal;
 }
 
 // Themed replacement for browser-native `prompt()`. Tauri's Android WebView
@@ -113,7 +118,11 @@ const TextPromptContext = createContext<((opts: TextPromptOptions) => Promise<st
 
 export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => {
   const [state, setState] = useState<{ opts: ConfirmOptions; resolve: Resolver } | null>(null);
-  const [owState, setOwState] = useState<{ opts: OverwritePromptOptions; resolve: (c: OverwriteChoice) => void } | null>(null);
+  // Overwrite prompts are queued, not replaced: two batches can hit a
+  // conflict at once, and each waits on its own promise. The first entry is
+  // on screen; the next one shows when it is answered or aborted.
+  const [owQueue, setOwQueue] = useState<{ opts: OverwritePromptOptions; resolve: (c: OverwriteChoice) => void }[]>([]);
+  const owState = owQueue[0] ?? null;
   const [tpState, setTpState] = useState<{ opts: TextPromptOptions; resolve: (v: string | null) => void } | null>(null);
   const [tpValue, setTpValue] = useState("");
   const [tpError, setTpError] = useState<string | null>(null);
@@ -136,7 +145,15 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
 
   const overwritePrompt = useCallback((opts: OverwritePromptOptions) => {
     return new Promise<OverwriteChoice>((resolve) => {
-      setOwState({ opts, resolve });
+      const { signal } = opts;
+      if (signal?.aborted) { resolve("skip"); return; }
+      const entry = { opts, resolve };
+      setOwQueue((q) => [...q, entry]);
+      signal?.addEventListener("abort", () => {
+        // Remove only this prompt, whether it is on screen or still waiting.
+        setOwQueue((q) => q.filter((e) => e !== entry));
+        resolve("skip");
+      }, { once: true });
     });
   }, []);
 
@@ -153,8 +170,9 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
     setState(null);
   };
   const closeOverwrite = (choice: OverwriteChoice) => {
-    owState?.resolve(choice);
-    setOwState(null);
+    if (!owState) return;
+    owState.resolve(choice);
+    setOwQueue((q) => q.filter((e) => e !== owState));
   };
   const closeTextPrompt = (value: string | null) => {
     tpState?.resolve(value);

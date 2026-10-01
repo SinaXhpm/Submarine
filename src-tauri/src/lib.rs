@@ -4,7 +4,7 @@ use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use zeroize::{Zeroize, Zeroizing};
 use rand::Rng;
-use rusqlite::{ffi, Connection, DatabaseName};
+use rusqlite::{ffi, Connection, MAIN_DB};
 use rusqlite::serialize::OwnedData;
 use std::ptr::NonNull;
 use std::sync::Mutex as StdMutex;
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::fs;
 use tauri::Manager;
 use serde_json::json;
-use ssh_key::{private::Ed25519Keypair, rand_core::OsRng, PrivateKey};
+use ssh_key::{private::{Ed25519Keypair, Ed25519PrivateKey}, PrivateKey};
 mod ssh_manager;
 mod tunnel;
 mod monitor;
@@ -20,6 +20,7 @@ mod cloud;
 mod about;
 mod mirror;
 mod docker;
+mod archive;
 mod hlc;
 mod identity;
 use ssh_manager::SshState;
@@ -144,20 +145,17 @@ fn derive_key(password: &str, salt_bytes: &[u8]) -> Result<[u8; 32], String> {
 
 fn encrypt_with_key(plaintext: &[u8], key: &[u8; 32]) -> Result<(Vec<u8>, [u8; NONCE_LEN]), String> {
     let cipher = Aes256Gcm::new(key.into());
-    let nonce_bytes: [u8; NONCE_LEN] = rand::thread_rng().gen();
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, plaintext)
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let ciphertext = cipher.encrypt(&Nonce::from(nonce_bytes), plaintext)
         .map_err(|e| format!("[CRYPTO] ENCRYPT_FAILED: {}", e))?;
     Ok((ciphertext, nonce_bytes))
 }
 
 fn decrypt_with_key(ciphertext: &[u8], nonce_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    if nonce_bytes.len() != NONCE_LEN {
-        return Err("[CRYPTO] NONCE_LEN_INVALID".into());
-    }
+    let nonce = Nonce::try_from(nonce_bytes).map_err(|_| "[CRYPTO] NONCE_LEN_INVALID".to_string())?;
     let cipher = Aes256Gcm::new(key.into());
-    let nonce = Nonce::from_slice(nonce_bytes);
-    cipher.decrypt(nonce, ciphertext)
+    cipher.decrypt(&nonce, ciphertext)
         .map_err(|e| format!("[CRYPTO] DECRYPT_FAILURE: Possible wrong key or corrupted data. Details: {}", e))
 }
 
@@ -258,7 +256,7 @@ fn save_vault_blocking(
     salt: &[u8; SALT_LEN],
     path: &std::path::Path,
 ) -> Result<(), String> {
-    let serialized = conn.serialize(DatabaseName::Main)
+    let serialized = conn.serialize(MAIN_DB)
         .map_err(|e| format!("[DATABASE] SERIALIZE_FAILED: {}", e))?;
     // Compress-then-encrypt. Order matters: compressing AFTER encryption
     // is useless because AES-GCM ciphertext is indistinguishable from
@@ -302,7 +300,7 @@ const SYNCED_TABLES: &[&str] = &[
 /// (see `app_temp_root`).
 fn new_entity_uuid() -> String {
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -327,7 +325,7 @@ fn get_or_create_dek(conn: &Connection) -> Result<([u8; 32], bool), String> {
         // Malformed row (shouldn't happen) — fall through and mint a fresh one.
     }
     let mut d = [0u8; 32];
-    rand::thread_rng().fill(&mut d);
+    rand::rng().fill_bytes(&mut d);
     conn.execute(
         "INSERT INTO sync_meta(key,value) VALUES('dek',?1)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -346,7 +344,7 @@ fn sync_device_node_id(app: &tauri::AppHandle) -> String {
     use tauri::Manager as _;
     let fresh = || {
         let mut b = [0u8; 8];
-        rand::thread_rng().fill(&mut b);
+        rand::rng().fill_bytes(&mut b);
         hex::encode(b)
     };
     let Ok(dir) = app.path().app_data_dir() else { return fresh() };
@@ -1036,7 +1034,7 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
         params.push(Box::new(id));
     }
 
-    let placeholders = std::iter::repeat("?").take(columns.len()).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat_n("?", columns.len()).collect::<Vec<_>>().join(",");
     let update_set: Vec<String> = columns
         .iter()
         .filter(|c| c.as_str() != "uuid")
@@ -1561,7 +1559,7 @@ async fn setup_identity(
     }
     let kp = identity::generate_keypair();
     let mut salt = [0u8; 16];
-    rand::thread_rng().fill(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
     cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
     cloud.set_identity(kp.public, kp.secret).await;
@@ -1582,7 +1580,7 @@ async fn reset_identity(
     }
     let kp = identity::generate_keypair();
     let mut salt = [0u8; 16];
-    rand::thread_rng().fill(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
     cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
     cloud.set_identity(kp.public, kp.secret).await;
@@ -1983,7 +1981,7 @@ async fn rotate_share_dek(
 ) -> Result<(), String> {
     let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
     let mut fresh = [0u8; 32];
-    rand::thread_rng().fill(&mut fresh);
+    rand::rng().fill_bytes(&mut fresh);
 
     // Re-seal to the owner FIRST. If this is the step that fails, nobody's grant
     // has changed yet and the old key is still universally valid — a clean no-op
@@ -3227,7 +3225,7 @@ async fn setup_master_db_inner(
         conn = Connection::open_in_memory()
             .map_err(|e| format!("[DATABASE] MEM_INIT_FAILED: {}", e))?;
         let owned = to_sqlite_owned(&decrypted_data)?;
-        conn.deserialize(DatabaseName::Main, owned, false)
+        conn.deserialize(MAIN_DB, owned, false)
             .map_err(|e| format!("[DATABASE] DESERIALIZE_FAILED: {}", e))?;
         // Schema migration for vaults created before the Notes feature shipped.
         // Existing tables are untouched; only the new ones get materialised.
@@ -3387,7 +3385,7 @@ async fn setup_master_db_inner(
             return Err("[CRYPTO] WEAK_MASTER_PASSWORD: choose at least 8 characters — this password protects every saved credential.".into());
         }
         let mut fresh = [0u8; SALT_LEN];
-        rand::thread_rng().fill(&mut fresh);
+        rand::rng().fill_bytes(&mut fresh);
         salt_bytes = fresh;
         // Same reasoning as the unlock path above — keep the async runtime
         // unblocked during the Argon2 derivation on fresh-profile creation.
@@ -3549,7 +3547,7 @@ async fn create_profile(
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let mut pid = [0u8; 16];
-        rand::thread_rng().fill(&mut pid);
+        rand::rng().fill_bytes(&mut pid);
         let pid_hex = hex::encode(pid); // 32 hex chars — fits the server's 32-char partition column
         // DO NOTHING (never overwrite): a fresh vault has neither key, but this
         // must never repartition a profile if it somehow re-runs.
@@ -3570,7 +3568,9 @@ async fn create_profile(
 
 #[tauri::command]
 async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Result<(), String> {
-    let keypair = Ed25519Keypair::random(&mut OsRng);
+    let mut seed = [0u8; 32];
+    rand::rng().fill_bytes(&mut seed);
+    let keypair = Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&seed));
     let priv_key = PrivateKey::from(keypair);
     let pub_ssh = priv_key.public_key().to_openssh()
         .map_err(|e| format!("[SSH] PUB_EXPORT_FAILED: {}", e))?;
@@ -3593,18 +3593,9 @@ async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Res
 fn validate_ssh_private_key(private_key: &str) -> Result<(), String> {
     let trimmed = private_key.trim();
 
-    // PKCS#1 / PKCS#8 / SEC1 PEM headers. Whether we accept these depends on
-    // whether the build has russh's OpenSSL backend wired in — see the
-    // matching gate in the connect path.
+    // PKCS#1 RSA PEM is decoded by russh's pure-Rust backend in every build.
     if trimmed.starts_with("-----BEGIN RSA PRIVATE KEY-----") {
-        #[cfg(feature = "full-ssh-algos")]
-        {
-            return Ok(());
-        }
-        #[cfg(not(feature = "full-ssh-algos"))]
-        {
-            return Err("[SSH] UNSUPPORTED_KEY_FORMAT_DEV: RSA keys aren't available in this debug build. Either build with --features full-ssh-algos (requires Perl) or install a release build from GitHub — both support RSA. Ed25519 keys work everywhere.".into());
-        }
+        return Ok(());
     }
     if trimmed.starts_with("-----BEGIN DSA PRIVATE KEY-----")
         || trimmed.starts_with("-----BEGIN EC PRIVATE KEY-----")
@@ -3620,16 +3611,9 @@ fn validate_ssh_private_key(private_key: &str) -> Result<(), String> {
         // header is unencrypted even when the body is encrypted.
         if let Ok(parsed) = ssh_key::PrivateKey::from_openssh(trimmed) {
             match parsed.algorithm() {
-                ssh_key::Algorithm::Ed25519 => {}
-                ssh_key::Algorithm::Rsa { .. } | ssh_key::Algorithm::Ecdsa { .. } => {
-                    #[cfg(not(feature = "full-ssh-algos"))]
-                    {
-                        return Err(format!(
-                            "[SSH] UNSUPPORTED_KEY_TYPE_DEV: {} keys need a release build (or local build with --features full-ssh-algos). Ed25519 works everywhere.",
-                            parsed.algorithm().as_str()
-                        ));
-                    }
-                }
+                ssh_key::Algorithm::Ed25519
+                | ssh_key::Algorithm::Rsa { .. }
+                | ssh_key::Algorithm::Ecdsa { .. } => {}
                 other => {
                     return Err(format!(
                         "[SSH] UNSUPPORTED_KEY_TYPE: {} keys are not supported.",
@@ -4834,7 +4818,7 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
     loop {
         match resp {
             KeyboardInteractiveAuthResponse::Success => return Some(Ok(true)),
-            KeyboardInteractiveAuthResponse::Failure => {
+            KeyboardInteractiveAuthResponse::Failure { .. } => {
                 if !asked_anything {
                     // Server declined the method outright — not really offered.
                     return None;
@@ -4956,14 +4940,16 @@ fn build_ssh_client_config() -> russh::client::Config {
     // streams keep the BDP full on high-latency links.
     config.window_size = 8 * 1024 * 1024;
     config.maximum_packet_size = 65535;
-    // Widen the negotiation set to match OpenSSH — but only in builds that
-    // include the OpenSSL backend (release CI via `full-ssh-algos`). See the
-    // long rationale that used to sit inline: legacy DH groups, the full RSA
-    // host-key family, and HMAC-SHA1 MAC variants for older/embedded servers.
-    #[cfg(feature = "full-ssh-algos")]
+    // Widen the negotiation set to match OpenSSH: legacy DH groups, the full
+    // RSA host-key family, and HMAC-SHA1 MAC variants for older/embedded
+    // servers. russh >= 0.63 implements all of these in pure Rust, so the set
+    // is identical in debug and release builds (the old OpenSSL-backed
+    // `full-ssh-algos` feature is gone).
     {
+        use russh::keys::{Algorithm, EcdsaCurve, HashAlg};
+        use std::borrow::Cow;
         config.preferred = russh::Preferred {
-            kex: &[
+            kex: Cow::Borrowed(&[
                 russh::kex::CURVE25519,
                 russh::kex::CURVE25519_PRE_RFC_8731,
                 russh::kex::DH_G14_SHA256,
@@ -4971,30 +4957,35 @@ fn build_ssh_client_config() -> russh::client::Config {
                 russh::kex::DH_G1_SHA1,
                 russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
                 russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
-            ],
-            key: &[
-                russh_keys::key::ED25519,
-                russh_keys::key::ECDSA_SHA2_NISTP256,
-                russh_keys::key::RSA_SHA2_512,
-                russh_keys::key::RSA_SHA2_256,
-                russh_keys::key::SSH_RSA,
-            ],
-            cipher: &[
+            ]),
+            key: Cow::Borrowed(&[
+                Algorithm::Ed25519,
+                Algorithm::Ecdsa { curve: EcdsaCurve::NistP256 },
+                Algorithm::Rsa { hash: Some(HashAlg::Sha512) },
+                Algorithm::Rsa { hash: Some(HashAlg::Sha256) },
+                Algorithm::Rsa { hash: None },
+            ]),
+            host_key_certificates: Cow::Borrowed(&[]),
+            cipher: Cow::Borrowed(&[
                 russh::cipher::CHACHA20_POLY1305,
                 russh::cipher::AES_256_GCM,
                 russh::cipher::AES_256_CTR,
                 russh::cipher::AES_192_CTR,
                 russh::cipher::AES_128_CTR,
-            ],
-            mac: &[
+            ]),
+            mac: Cow::Borrowed(&[
                 russh::mac::HMAC_SHA512_ETM,
                 russh::mac::HMAC_SHA256_ETM,
                 russh::mac::HMAC_SHA512,
                 russh::mac::HMAC_SHA256,
                 russh::mac::HMAC_SHA1_ETM,
                 russh::mac::HMAC_SHA1,
-            ],
-            compression: &["zlib@openssh.com", "zlib", "none"],
+            ]),
+            compression: Cow::Borrowed(&[
+                russh::compression::ZLIB_LEGACY,
+                russh::compression::ZLIB,
+                russh::compression::NONE,
+            ]),
         };
     }
     config
@@ -5156,7 +5147,7 @@ async fn connect_jump_host(
     let (fp_tx, fp_rx) = tokio::sync::oneshot::channel();
     let jump_nonce: String = {
         let mut bytes = [0u8; 16];
-        rand::thread_rng().fill(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         hex::encode(bytes)
     };
     fp_txs.lock().await.insert(jump_nonce.clone(), fp_tx);
@@ -5195,13 +5186,13 @@ async fn connect_jump_host(
     let mut auth_res = if let Some((private_key, passphrase)) = key_data {
         log("Jump host: private key authentication...", "info");
         let normalized_key = private_key.replace("\r\n", "\n");
-        match russh_keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
-            Ok(keypair) => session.authenticate_publickey(&effective_user, std::sync::Arc::new(keypair)).await,
+        match russh::keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
+            Ok(keypair) => ssh_manager::authenticate_with_key(&mut session, &effective_user, keypair).await,
             Err(e) => Err(russh::Error::from(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))),
         }
     } else if let Some(pass) = password {
         log("Jump host: password authentication...", "info");
-        session.authenticate_password(&effective_user, pass).await
+        ssh_manager::authenticate_with_password(&mut session, &effective_user, &pass).await
     } else {
         Ok(false)
     };
@@ -5364,7 +5355,7 @@ async fn initiate_connection(
     // = 128 bits of entropy, plenty for a single-use guard.
     let connect_nonce: String = {
         let mut bytes = [0u8; 16];
-        rand::thread_rng().fill(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         hex::encode(bytes)
     };
     // NB: the fp_txs insert is deliberately deferred until AFTER the DB
@@ -5843,26 +5834,11 @@ async fn initiate_connection(
                 let mut auth_res = if let Some((private_key, passphrase)) = key_data {
                     emit_log("Attempting Private Key Authentication...", "info");
                     let normalized_key = private_key.replace("\r\n", "\n");
-                    match russh_keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
+                    match russh::keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
                         Ok(keypair) => {
-                            let key_arc = std::sync::Arc::new(keypair);
-                            session.authenticate_publickey(&effective_user, key_arc).await
+                            ssh_manager::authenticate_with_key(&mut session, &effective_user, keypair).await
                         }
                         Err(e) => {
-                            // RSA private keys only work in builds that include the
-                            // OpenSSL backend (release CI). Local debug builds skip
-                            // OpenSSL to stay Perl-free, so surface a targeted hint
-                            // instead of the raw "Unsupported key type rsa" string.
-                            #[cfg(not(feature = "full-ssh-algos"))]
-                            {
-                                let err_str = e.to_string();
-                                if err_str.contains("Unsupported key type rsa")
-                                    || err_str.contains("rsa")
-                                    || private_key.contains("RSA PRIVATE KEY")
-                                {
-                                    emit_log("RSA private keys aren't supported in this debug build — use Ed25519 for local testing, or grab a release build from GitHub for full RSA support.", "error");
-                                }
-                            }
                             emit_log(&format!("Failed to parse private key: {}", e), "error");
                             Err(russh::Error::from(std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
@@ -5872,7 +5848,7 @@ async fn initiate_connection(
                     }
                 } else if let Some(pass) = final_pass {
                     emit_log("Attempting Password Authentication...", "info");
-                    session.authenticate_password(&effective_user, pass).await
+                    ssh_manager::authenticate_with_password(&mut session, &effective_user, &pass).await
                 } else {
                     emit_log("Neither private key nor password auth credentials provided.", "error");
                     Ok(false)
@@ -6161,7 +6137,7 @@ async fn initiate_connection(
 
                                 let mut dead = is_closed;
 
-                                if !dead && tick % probe_every == 0 {
+                                if !dead && tick.is_multiple_of(probe_every) {
                                     // Active probe: hold the handle lock long
                                     // enough to start AND finish the round
                                     // trip — concurrent commands wait, but
@@ -6214,7 +6190,7 @@ async fn initiate_connection(
                                 // and the primary handle is the correct transport for
                                 // the default (shared) topology. Spawned so a slow
                                 // bind retry never delays death detection.
-                                if !dead && tick % 30 == 0 && !sid_w.contains("::") {
+                                if !dead && tick.is_multiple_of(30) && !sid_w.contains("::") {
                                     let specs = state_specs_w.lock().await.get(&sid_w).cloned().unwrap_or_default();
                                     if !specs.is_empty() {
                                         let app_r = app_w.clone();
@@ -6991,9 +6967,12 @@ async fn write_terminal_data(state: tauri::State<'_, SshState>, terminal_id: Str
     // experience because the shared map guard is a global gate.
     // mpsc::Sender is cheap to clone.
     let tx = state.terminal_txs.lock().await.get(&terminal_id).cloned();
-    if let Some(tx) = tx {
-        let _ = tx.send(TerminalCommand::Data(data)).await;
-    }
+    let Some(tx) = tx else {
+        return Err("Terminal is not connected".into());
+    };
+    tx.send(TerminalCommand::Data(data))
+        .await
+        .map_err(|_| "Terminal is not connected".to_string())?;
     Ok(())
 }
 
@@ -7631,6 +7610,9 @@ struct SftpFileEntry {
     uid: Option<u32>,
     gid: Option<u32>,
     modified: Option<u64>,
+    /// The entry itself is a symbolic link. Everything above is the link's
+    /// own lstat data; the target is resolved later by `sftp_resolve_links`.
+    is_symlink: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -7722,6 +7704,16 @@ async fn sftp_list_dir(
         if name == "." || name == ".." {
             continue;
         }
+        let entry_path = if canonical_path.ends_with('/') {
+            format!("{}{}", canonical_path, name)
+        } else {
+            format!("{}/{}", canonical_path, name)
+        };
+
+        // READDIR reports lstat attributes, so a link shows up as a link.
+        // Its target is not followed here: that costs round-trips per link
+        // and would hold the listing back. See `sftp_resolve_links`.
+        let is_symlink = entry.file_type().is_symlink();
         let is_dir = entry.file_type().is_dir();
         let metadata = entry.metadata();
         let size = metadata.size.unwrap_or(0);
@@ -7729,13 +7721,7 @@ async fn sftp_list_dir(
         let uid = metadata.uid;
         let gid = metadata.gid;
         let modified = metadata.mtime.map(|t| t as u64);
-        
-        let entry_path = if canonical_path.ends_with('/') {
-            format!("{}{}", canonical_path, name)
-        } else {
-            format!("{}/{}", canonical_path, name)
-        };
-        
+
         entries.push(SftpFileEntry {
             name,
             path: entry_path,
@@ -7745,6 +7731,7 @@ async fn sftp_list_dir(
             uid,
             gid,
             modified,
+            is_symlink,
         });
     }
     
@@ -7772,6 +7759,174 @@ async fn sftp_create_dir(
     let sftp = get_sftp_session(&state, &session_id).await?;
     sftp.create_dir(path).await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Empty regular file. EXCLUDE so an existing path is not truncated.
+#[tauri::command]
+async fn sftp_create_file(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    use russh_sftp::protocol::OpenFlags;
+    let sftp = get_sftp_session(&state, &session_id).await?;
+    let file = sftp
+        .open_with_flags(
+            path,
+            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    file.close().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// OpenSSH reads the first SSH_FXP_SYMLINK string as the target and the
+/// second as the new link. russh writes the first argument first.
+fn openssh_symlink_args(link_path: String, target: String) -> (String, String) {
+    (target, link_path)
+}
+
+/// `path` is the new link, `target` is what it points at.
+#[tauri::command]
+async fn sftp_create_symlink(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    path: String,
+    target: String,
+) -> Result<(), String> {
+    let sftp = get_sftp_session(&state, &session_id).await?;
+    let (first, second) = openssh_symlink_args(path, target);
+    sftp.symlink(first, second).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct SftpLinkInfo {
+    path: String,
+    /// "ok": target attributes below are valid. "broken": the target does
+    /// not exist or the chain loops. "error": STAT failed for another reason
+    /// (permissions, transport), so nothing is known about the target.
+    state: &'static str,
+    /// Raw READLINK text (may be relative).
+    target: Option<String>,
+    error: Option<String>,
+    /// Attributes of the target when followed, of the link itself (LSTAT)
+    /// otherwise, so a link that stopped resolving does not keep showing
+    /// the folder it used to point at.
+    is_dir: bool,
+    size: Option<u64>,
+    permissions: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    modified: Option<u64>,
+}
+
+/// OpenSSH maps ENOENT, ENOTDIR and ELOOP to SSH_FX_NO_SUCH_FILE. Only that
+/// status means the link is dangling; EACCES or a dropped channel must not.
+fn link_stat_failure_state(err: &russh_sftp::client::error::Error) -> &'static str {
+    use russh_sftp::client::error::Error;
+    use russh_sftp::protocol::StatusCode;
+    match err {
+        Error::Status(status) if status.status_code == StatusCode::NoSuchFile => "broken",
+        _ => "error",
+    }
+}
+
+async fn resolve_sftp_link(sftp: &russh_sftp::client::SftpSession, path: String) -> SftpLinkInfo {
+    let (target, stat) = tokio::join!(sftp.read_link(path.as_str()), sftp.metadata(path.as_str()));
+    let mut info = SftpLinkInfo {
+        path,
+        state: "ok",
+        target: target.ok(),
+        error: None,
+        is_dir: false,
+        size: None,
+        permissions: None,
+        uid: None,
+        gid: None,
+        modified: None,
+    };
+    let meta = match stat {
+        Ok(meta) => Some(meta),
+        Err(e) => {
+            info.state = link_stat_failure_state(&e);
+            info.error = Some(e.to_string());
+            sftp.symlink_metadata(info.path.as_str()).await.ok()
+        }
+    };
+    if let Some(meta) = meta {
+        info.is_dir = meta.file_type().is_dir();
+        info.size = meta.size;
+        info.permissions = meta.permissions;
+        info.uid = meta.uid;
+        info.gid = meta.gid;
+        info.modified = meta.mtime.map(|t| t as u64);
+    }
+    info
+}
+
+/// Follows the given symlinks (READLINK + STAT each). Called by the file pane
+/// after the directory is already on screen. Results carry their path, so
+/// the order is not significant.
+#[tauri::command]
+async fn sftp_resolve_links(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    paths: Vec<String>,
+) -> Result<Vec<SftpLinkInfo>, String> {
+    const CONCURRENCY: usize = 8;
+    let sftp = get_sftp_session(&state, &session_id).await?;
+    let mut out = Vec::with_capacity(paths.len());
+    for chunk in paths.chunks(CONCURRENCY) {
+        let mut set = tokio::task::JoinSet::new();
+        for path in chunk {
+            let sftp = Arc::clone(&sftp);
+            let path = path.clone();
+            set.spawn(async move { resolve_sftp_link(&sftp, path).await });
+        }
+        while let Some(joined) = set.join_next().await {
+            if let Ok(info) = joined {
+                out.push(info);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// REALPATH: absolute path with every symlink component resolved.
+#[tauri::command]
+async fn sftp_realpath(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    let sftp = get_sftp_session(&state, &session_id).await?;
+    sftp.canonicalize(path).await.map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+struct SftpStatResult {
+    permissions: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    size: Option<u64>,
+}
+
+#[tauri::command]
+async fn sftp_stat(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    path: String,
+) -> Result<SftpStatResult, String> {
+    let sftp = get_sftp_session(&state, &session_id).await?;
+    let meta = sftp.metadata(&path).await.map_err(|e| e.to_string())?;
+    Ok(SftpStatResult {
+        permissions: meta.permissions,
+        uid: meta.uid,
+        gid: meta.gid,
+        size: meta.size,
+    })
 }
 
 #[tauri::command]
@@ -7854,13 +8009,15 @@ async fn sftp_set_permissions(
     permissions: u32,
 ) -> Result<(), String> {
     let sftp = get_sftp_session(&state, &session_id).await?;
-    // Propagate metadata fetch errors instead of falling back to a zeroed
-    // FileAttributes. Without this, a transient network blip or a perms
-    // failure during read would have us send `set_metadata` with uid=gid
-    // =size=0 — silently clobbering ownership and other attributes.
-    let mut metadata = sftp.metadata(&path).await
-        .map_err(|e| format!("[SFTP] METADATA_READ_FAILED: {}", e))?;
-    metadata.permissions = Some(permissions);
+    // Send ONLY the permissions attribute. Echoing back the full stat result
+    // makes the server apply every field in it, and the size one turns into
+    // truncate(2) — which fails with EISDIR on a directory, surfacing as a
+    // bare SSH_FX_FAILURE. Omitted fields are left untouched by the server,
+    // so ownership and timestamps can't be clobbered either.
+    let metadata = russh_sftp::protocol::FileAttributes {
+        permissions: Some(permissions),
+        ..Default::default()
+    };
     sftp.set_metadata(path, metadata).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -7874,10 +8031,27 @@ async fn sftp_set_owner(
     gid: Option<u32>,
 ) -> Result<(), String> {
     let sftp = get_sftp_session(&state, &session_id).await?;
-    let mut metadata = sftp.metadata(&path).await
-        .map_err(|e| format!("[SFTP] METADATA_READ_FAILED: {}", e))?;
-    metadata.uid = uid;
-    metadata.gid = gid;
+    // uid and gid travel as a pair on the wire, so a missing half has to be
+    // filled from the current owner rather than defaulting to 0 (root).
+    // Propagate the stat error for the same reason.
+    let (uid, gid) = match (uid, gid) {
+        (Some(u), Some(g)) => (u, g),
+        _ => {
+            let current = sftp.metadata(&path).await
+                .map_err(|e| format!("[SFTP] METADATA_READ_FAILED: {}", e))?;
+            match (uid.or(current.uid), gid.or(current.gid)) {
+                (Some(u), Some(g)) => (u, g),
+                _ => return Err("[SFTP] METADATA_READ_FAILED: server did not report owner".into()),
+            }
+        }
+    };
+    // Only the owner fields — see sftp_set_permissions for why size must
+    // not be sent (truncate on a directory fails).
+    let metadata = russh_sftp::protocol::FileAttributes {
+        uid: Some(uid),
+        gid: Some(gid),
+        ..Default::default()
+    };
     sftp.set_metadata(path, metadata).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -7890,10 +8064,15 @@ async fn sftp_download_file(
     remote_path: String,
     local_path: String,
     overwrite: Option<bool>,
+    transfer_id: Option<String>,
 ) -> Result<(), String> {
     use tauri::Emitter;
     use tokio::io::AsyncReadExt;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
+
+    // A long download can be stopped from the UI; see register_transfer_cancel.
+    let id = transfer_id.unwrap_or_else(crate::transfer_id);
+    let (cancel, _guard) = register_transfer_cancel(&state, &id).await;
 
     // Overwrite protection: when the caller has NOT explicitly opted in
     // (overwrite==Some(true)), refuse to clobber an existing local file.
@@ -7911,6 +8090,13 @@ async fn sftp_download_file(
     // destination file is being created right now.
     let _guarded_local = guard_local_path(&local_path, true)?;
 
+    // Wait out an editor save, an open or the mirror on this remote file, so
+    // we never read it halfway through a rewrite, and on the local file, so
+    // the mirror cannot rename its copy over the one File::create is writing.
+    // Held until the download ends. Order: remote, then local.
+    let _file_lock = lock_remote_file_cancellable(&session_id, &remote_path, &cancel).await?;
+    let _local_lock = lock_local_file_cancellable(std::path::Path::new(&local_path), &cancel).await?;
+
     let sftp = get_sftp_session(&state, &session_id).await?;
 
     // Stat first so we can report a progress percentage. If the server doesn't
@@ -7925,7 +8111,6 @@ async fn sftp_download_file(
         .and_then(|n| n.to_str())
         .unwrap_or("file")
         .to_string();
-    let id = transfer_id();
     let event_name = format!("sftp-transfer-{}", session_id);
     let emit_progress = |bytes: u64, status: &str, error: Option<String>| {
         let _ = app.emit(
@@ -7938,27 +8123,12 @@ async fn sftp_download_file(
         );
     };
 
-    // Register a cancel flag the user can flip via `sftp_cancel_transfer`.
-    // RAII-removed at the end so the map doesn't pile up across many
-    // sequential transfers.
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancels_map = Arc::clone(&state.transfer_cancels);
-    cancels_map.lock().await.insert(id.clone(), Arc::clone(&cancel));
-    struct CancelGuard {
-        map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
-        id: String,
+    // Cancelled while starting: stop before File::create truncates a local
+    // file the user chose to overwrite.
+    if cancel.load(Ordering::Relaxed) {
+        emit_progress(0, "cancelled", None);
+        return Err("cancelled".into());
     }
-    impl Drop for CancelGuard {
-        fn drop(&mut self) {
-            // Best-effort cleanup; if the lock is contended we'd rather leak
-            // a slot than block the drop, but in practice this never blocks.
-            if let Ok(mut g) = self.map.try_lock() {
-                g.remove(&self.id);
-            }
-        }
-    }
-    let _guard = CancelGuard { map: Arc::clone(&cancels_map), id: id.clone() };
-
     emit_progress(0, "progress", None);
 
     let mut remote_file = sftp
@@ -8003,7 +8173,12 @@ async fn sftp_download_file(
             last_report = std::time::Instant::now();
         }
     }
-    local_file.flush().await.map_err(|e| format!("flush: {}", e))?;
+    // Every exit emits a terminal event; without one the transfers bar would
+    // show this download as running forever.
+    local_file
+        .flush()
+        .await
+        .map_err(|e| { emit_progress(transferred, "error", Some(e.to_string())); format!("flush: {}", e) })?;
     emit_progress(transferred, "done", None);
     Ok(())
 }
@@ -8022,10 +8197,16 @@ async fn sftp_download_dir(
     remote_path: String,
     local_path: String,
     overwrite: Option<bool>,
+    transfer_id: Option<String>,
 ) -> Result<(), String> {
     use tauri::Emitter;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
+
+    // Registered first so the user can abort while the transfer is starting
+    // and during the enumeration phase (slow on a deep tree with many dirs).
+    let id = transfer_id.unwrap_or_else(crate::transfer_id);
+    let (cancel, _guard) = register_transfer_cancel(&state, &id).await;
 
     // Destination is the PARENT directory. We'll create remote_path's
     // basename underneath it so the user gets `local/{folder}/...`,
@@ -8060,26 +8241,7 @@ async fn sftp_download_dir(
         .to_string();
     let folder_name = if folder_name.is_empty() { "folder".to_string() } else { folder_name };
 
-    let id = transfer_id();
     let event_name = format!("sftp-transfer-{}", session_id);
-
-    // Register cancel flag early so the user can abort even during the
-    // enumeration phase (which can be slow on a deep tree with many dirs).
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancels_map = Arc::clone(&state.transfer_cancels);
-    cancels_map.lock().await.insert(id.clone(), Arc::clone(&cancel));
-    struct CancelGuard {
-        map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
-        id: String,
-    }
-    impl Drop for CancelGuard {
-        fn drop(&mut self) {
-            if let Ok(mut g) = self.map.try_lock() {
-                g.remove(&self.id);
-            }
-        }
-    }
-    let _guard = CancelGuard { map: Arc::clone(&cancels_map), id: id.clone() };
 
     let id_for_emit = id.clone();
     let name_for_emit = folder_name.clone();
@@ -8186,6 +8348,29 @@ async fn sftp_download_dir(
             }
         }
 
+        // Per-file locks, like a single download (remote, then local): an
+        // editor save or the mirror waits for this file, and we wait for
+        // one of theirs that is running.
+        let _file_lock = match lock_remote_file_cancellable(&session_id, remote_file_path, &cancel).await {
+            Ok(guard) => guard,
+            Err(e) => {
+                emit_progress(transferred, total_bytes, "cancelled", None);
+                return Err(e);
+            }
+        };
+        let _local_lock = match lock_local_file_cancellable(&dest, &cancel).await {
+            Ok(guard) => guard,
+            Err(e) => {
+                emit_progress(transferred, total_bytes, "cancelled", None);
+                return Err(e);
+            }
+        };
+        // Last check before File::create below empties an existing file
+        // (overwrite is confirmed once for the whole folder).
+        if cancel.load(Ordering::Relaxed) {
+            emit_progress(transferred, total_bytes, "cancelled", None);
+            return Err("cancelled".into());
+        }
         let mut remote_file = match sftp.open(remote_file_path).await {
             Ok(f) => f,
             Err(e) => {
@@ -8229,7 +8414,10 @@ async fn sftp_download_dir(
                 last_report = std::time::Instant::now();
             }
         }
-        local_file.flush().await.map_err(|e| format!("flush {}: {}", dest.display(), e))?;
+        local_file.flush().await.map_err(|e| {
+            emit_progress(transferred, total_bytes, "error", Some(format!("flush {}: {}", dest.display(), e)));
+            format!("flush {}: {}", dest.display(), e)
+        })?;
     }
 
     emit_progress(transferred, total_bytes, "done", None);
@@ -8244,11 +8432,24 @@ async fn sftp_upload_file(
     local_path: String,
     remote_path: String,
     overwrite: Option<bool>,
+    transfer_id: Option<String>,
 ) -> Result<(), String> {
     use russh_sftp::protocol::OpenFlags;
     use tauri::Emitter;
     use tokio::io::AsyncWriteExt;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
+
+    // Symmetric to sftp_download_file: registered before the overwrite
+    // check, so a Cancel while the upload is starting is not lost.
+    let id = transfer_id.unwrap_or_else(crate::transfer_id);
+    let (cancel, _guard) = register_transfer_cancel(&state, &id).await;
+
+    // Held from the EXISTS check to the end of the write: an editor save or
+    // the mirror cannot write or replace this remote file alongside us, and
+    // the mirror cannot swap the local source mid-read. Order: remote, then
+    // local.
+    let _file_lock = lock_remote_file_cancellable(&session_id, &remote_path, &cancel).await?;
+    let _local_lock = lock_local_file_cancellable(std::path::Path::new(&local_path), &cancel).await?;
 
     // Overwrite protection: stat the remote target first; refuse if it
     // exists and the caller hasn't explicitly opted in. Same `EXISTS:<path>`
@@ -8273,7 +8474,6 @@ async fn sftp_upload_file(
         .and_then(|n| n.to_str())
         .unwrap_or("file")
         .to_string();
-    let id = transfer_id();
     let event_name = format!("sftp-transfer-{}", session_id);
     let emit_progress = |bytes: u64, status: &str, error: Option<String>| {
         let _ = app.emit(
@@ -8286,24 +8486,12 @@ async fn sftp_upload_file(
         );
     };
 
-    // Symmetric to sftp_download_file: register a cancel flag and clean it
-    // up via RAII so a long-running upload can be stopped from the UI.
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancels_map = Arc::clone(&state.transfer_cancels);
-    cancels_map.lock().await.insert(id.clone(), Arc::clone(&cancel));
-    struct CancelGuard {
-        map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
-        id: String,
+    // Cancelled while starting: stop before the truncating open below
+    // empties a remote file the user chose to overwrite.
+    if cancel.load(Ordering::Relaxed) {
+        emit_progress(0, "cancelled", None);
+        return Err("cancelled".into());
     }
-    impl Drop for CancelGuard {
-        fn drop(&mut self) {
-            if let Ok(mut g) = self.map.try_lock() {
-                g.remove(&self.id);
-            }
-        }
-    }
-    let _guard = CancelGuard { map: Arc::clone(&cancels_map), id: id.clone() };
-
     emit_progress(0, "progress", None);
 
     // Stream the file from disk in chunks rather than slurping the whole thing
@@ -8351,7 +8539,7 @@ async fn sftp_upload_file(
     remote_file
         .shutdown()
         .await
-        .map_err(|e| format!("Failed to close remote file: {}", e))?;
+        .map_err(|e| { emit_progress(transferred, "error", Some(e.to_string())); format!("Failed to close remote file: {}", e) })?;
     emit_progress(transferred, "done", None);
     Ok(())
 }
@@ -8369,11 +8557,17 @@ async fn sftp_upload_dir(
     local_path: String,
     remote_path: String,
     overwrite: Option<bool>,
+    transfer_id: Option<String>,
 ) -> Result<(), String> {
     use russh_sftp::protocol::OpenFlags;
     use tauri::Emitter;
     use tokio::io::AsyncWriteExt;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
+
+    // Registered first so the user can abort while the upload is starting
+    // and while we're walking a deep tree.
+    let id = transfer_id.unwrap_or_else(crate::transfer_id);
+    let (cancel, _guard) = register_transfer_cancel(&state, &id).await;
 
     // remote_path is the PARENT directory; we hang the basename of
     // local_path underneath it. Matches scp -r / sftp_download_dir.
@@ -8400,26 +8594,7 @@ async fn sftp_upload_dir(
         }
     }
 
-    let id = transfer_id();
     let event_name = format!("sftp-transfer-{}", session_id);
-
-    // Cancel flag registered before the slow enumeration so the user can
-    // abort even while we're walking a deep tree.
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancels_map = Arc::clone(&state.transfer_cancels);
-    cancels_map.lock().await.insert(id.clone(), Arc::clone(&cancel));
-    struct CancelGuard {
-        map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
-        id: String,
-    }
-    impl Drop for CancelGuard {
-        fn drop(&mut self) {
-            if let Ok(mut g) = self.map.try_lock() {
-                g.remove(&self.id);
-            }
-        }
-    }
-    let _guard = CancelGuard { map: Arc::clone(&cancels_map), id: id.clone() };
 
     let id_for_emit = id.clone();
     let name_for_emit = folder_name.clone();
@@ -8526,6 +8701,28 @@ async fn sftp_upload_dir(
         }
         let remote_full = format!("{}/{}", remote_root.trim_end_matches('/'), rel);
 
+        // Per-file locks, like a single upload (remote, then local): never
+        // TRUNCATE a file an editor save or the mirror is writing, and make
+        // theirs wait for ours.
+        let _file_lock = match lock_remote_file_cancellable(&session_id, &remote_full, &cancel).await {
+            Ok(guard) => guard,
+            Err(e) => {
+                emit_progress(transferred, total_bytes, "cancelled", None);
+                return Err(e);
+            }
+        };
+        let _local_lock = match lock_local_file_cancellable(local_file_path, &cancel).await {
+            Ok(guard) => guard,
+            Err(e) => {
+                emit_progress(transferred, total_bytes, "cancelled", None);
+                return Err(e);
+            }
+        };
+        // Last check before the TRUNCATE open below empties the remote file.
+        if cancel.load(Ordering::Relaxed) {
+            emit_progress(transferred, total_bytes, "cancelled", None);
+            return Err("cancelled".into());
+        }
         let mut local_file = match tokio::fs::File::open(local_file_path).await {
             Ok(f) => f,
             Err(e) => {
@@ -8571,8 +8768,10 @@ async fn sftp_upload_dir(
                 last_report = std::time::Instant::now();
             }
         }
-        remote_file.shutdown().await
-            .map_err(|e| format!("shutdown {}: {}", remote_full, e))?;
+        remote_file.shutdown().await.map_err(|e| {
+            emit_progress(transferred, total_bytes, "error", Some(format!("shutdown {}: {}", remote_full, e)));
+            format!("shutdown {}: {}", remote_full, e)
+        })?;
     }
 
     emit_progress(transferred, total_bytes, "done", None);
@@ -8581,17 +8780,17 @@ async fn sftp_upload_dir(
 
 /// Flip the cancel flag for an in-flight SFTP transfer. The download / upload
 /// loop polls the flag every chunk (every ~256 KiB) and exits with a
-/// "cancelled" status event as soon as it sees true. Unknown ids are a no-op
-/// — by the time the UI's stop button click reaches us the transfer may have
-/// already finished on its own.
+/// "cancelled" status event as soon as it sees true. An unknown id is
+/// remembered (see `early_cancels`): the command may not have registered
+/// yet, and the flag then starts out set. If the transfer had already
+/// finished, the entry just expires.
 #[tauri::command]
 async fn sftp_cancel_transfer(
     state: tauri::State<'_, SshState>,
     transfer_id: String,
 ) -> Result<(), String> {
-    if let Some(flag) = state.transfer_cancels.lock().await.get(&transfer_id) {
-        flag.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+    let registered = state.transfer_cancels.lock().await;
+    cancel_or_remember(&registered, &mut lock_early_cancels(), &transfer_id, std::time::Instant::now());
     Ok(())
 }
 
@@ -8641,9 +8840,7 @@ fn classify_russh_error(e: &russh::Error) -> ConnectErrorKind {
 
         // Algorithm negotiation — server's reachable, we just don't share
         // the cipher / KEX / etc. it asked for.
-        NoCommonCipher | NoCommonKexAlgo | NoCommonKeyAlgo
-        | NoCommonCompression | NoCommonMac
-        | UnknownAlgo | UnknownKey => ConnectErrorKind::Algorithm,
+        NoCommonAlgo { .. } | UnknownAlgo | UnknownKey => ConnectErrorKind::Algorithm,
 
         // Host-key flow: the server's signature didn't verify. KeyChanged
         // carries data so it falls through to the catch-all branch which
@@ -8654,7 +8851,7 @@ fn classify_russh_error(e: &russh::Error) -> ConnectErrorKind {
         IO(_) | HUP | Disconnect | SendError => ConnectErrorKind::Transport,
 
         // Explicit timeouts from russh.
-        ConnectionTimeout | Elapsed(_) => ConnectErrorKind::Timeout,
+        ConnectionTimeout | KeepaliveTimeout | InactivityTimeout | Elapsed(_) => ConnectErrorKind::Timeout,
 
         // Protocol disagreements that aren't algorithm- or auth-shaped:
         // version skew, packet integrity, decryption — surface as transport
@@ -8667,7 +8864,7 @@ fn classify_russh_error(e: &russh::Error) -> ConnectErrorKind {
 
         // Key-file problems (local cert can't be parsed). Tag as Auth-shaped
         // so the UI doesn't auto-retry a key that will keep failing.
-        CouldNotReadKey | Keys(_) => ConnectErrorKind::Auth,
+        CouldNotReadKey | Keys(_) | SshKey(_) | UnsupportedAuthMethod => ConnectErrorKind::Auth,
 
         // Last-resort string sniff for anything russh adds in future
         // versions or for io::Error subtypes the explicit arms above
@@ -8768,6 +8965,292 @@ fn transfer_id() -> String {
     format!("{}-{}", ts, seq)
 }
 
+/// Per-file locks, one per remote file (session + path) and one per local
+/// file. Everything that reads or writes a file takes the lock of each file
+/// it touches: manual uploads/downloads (also each file inside a folder
+/// transfer), the live-edit save (`upload_editor_copy`) and open, and the
+/// mirror's uploads, downloads and remote deletes (`mirror.rs`). The
+/// frontend's transfer slot only orders UI transfers; the others start in
+/// Rust. Without the lock an editor save could TRUNCATE and write a file a
+/// batch upload is writing (mixed chunks on the server), an open could read
+/// a file a batch is halfway through rewriting, and the mirror could swap
+/// its own copy in under the name a transfer is writing, on either side.
+/// Entries are weak, so a lock nobody holds or waits on is freed.
+///
+/// The locks follow the tree. Locking a path takes a shared (read) lock on
+/// every parent folder, root first, then the exclusive (write) lock on the
+/// path itself. So an operation on a folder (the mirror's soft delete
+/// renames a whole folder into its trash) waits until no transfer holds a
+/// file anywhere below it, and a transfer below it waits until that
+/// operation is done. Operations on siblings still run side by side.
+///
+/// Lock order, to rule out deadlock: live-edit entry, then the remote
+/// path's chain, then the local path's chain, each from the root down.
+/// Nothing takes them the other way round.
+type FileLock = Arc<tokio::sync::RwLock<()>>;
+
+/// Held for one path: shared locks on its parent folders and the exclusive
+/// lock on the path. The path's own lock is released first (field order).
+struct FileLockGuard {
+    _own: tokio::sync::OwnedRwLockWriteGuard<()>,
+    _parents: Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum FileLockKey {
+    Remote(String, String),
+    Local(String),
+}
+
+impl FileLockKey {
+    /// The keys of this path's parent folders, root first, then this key.
+    fn chain(&self) -> Vec<FileLockKey> {
+        match self {
+            FileLockKey::Remote(session, path) => path_prefixes(path)
+                .into_iter()
+                .map(|p| FileLockKey::Remote(session.clone(), p))
+                .collect(),
+            FileLockKey::Local(path) => path_prefixes(path).into_iter().map(FileLockKey::Local).collect(),
+        }
+    }
+}
+
+/// "/a/b/c" → ["/", "/a", "/a/b", "/a/b/c"]; "c:/w/f" → ["c:", "c:/w", "c:/w/f"].
+/// Expects a path from `collapse_slashes`.
+fn path_prefixes(path: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut acc = String::new();
+    if path.starts_with('/') {
+        acc.push('/');
+        out.push(acc.clone());
+    }
+    for seg in path.split('/').filter(|s| !s.is_empty()) {
+        if !acc.is_empty() && !acc.ends_with('/') {
+            acc.push('/');
+        }
+        acc.push_str(seg);
+        out.push(acc.clone());
+    }
+    if out.is_empty() {
+        out.push(path.to_string());
+    }
+    out
+}
+
+fn file_locks() -> &'static StdMutex<std::collections::HashMap<FileLockKey, std::sync::Weak<tokio::sync::RwLock<()>>>> {
+    static MAP: std::sync::OnceLock<StdMutex<std::collections::HashMap<FileLockKey, std::sync::Weak<tokio::sync::RwLock<()>>>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| StdMutex::new(std::collections::HashMap::new()))
+}
+
+/// Collapses repeated '/' and drops a trailing one (keeping a bare root).
+fn collapse_slashes(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for ch in path.chars() {
+        if ch == '/' && out.ends_with('/') {
+            continue;
+        }
+        out.push(ch);
+    }
+    while out.len() > 1 && out.ends_with('/') {
+        out.pop();
+    }
+    out
+}
+
+/// Same remote file, same key: repeated slashes and a trailing slash do not
+/// make a different lock.
+fn remote_lock_key(session_id: &str, remote_path: &str) -> FileLockKey {
+    FileLockKey::Remote(session_id.to_string(), collapse_slashes(remote_path))
+}
+
+/// Same local file, same key: either separator, repeated separators, and
+/// (on Windows, whose file names are case-insensitive) any letter case.
+fn local_lock_key(local_path: &std::path::Path) -> FileLockKey {
+    let path = collapse_slashes(&local_path.to_string_lossy().replace('\\', "/"));
+    FileLockKey::Local(if cfg!(windows) { path.to_lowercase() } else { path })
+}
+
+fn file_lock(key: FileLockKey) -> FileLock {
+    let mut map = file_locks().lock().unwrap_or_else(|err| err.into_inner());
+    map.retain(|_, weak| weak.strong_count() > 0);
+    if let Some(lock) = map.get(&key).and_then(|weak| weak.upgrade()) {
+        return lock;
+    }
+    let lock: FileLock = Arc::new(tokio::sync::RwLock::new(()));
+    map.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
+/// Takes the path's chain (see `FileLock`): shared on each parent, root
+/// first, then exclusive on the path. With `cancel`, gives up with
+/// "cancelled" when the flag is set while waiting.
+async fn acquire_file_lock(
+    key: FileLockKey,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<FileLockGuard, String> {
+    let chain = key.chain();
+    let (own_key, parent_keys) = chain.split_last().expect("a lock chain ends with its own key");
+    let mut parents = Vec::with_capacity(parent_keys.len());
+    for parent in parent_keys {
+        parents.push(until_cancelled(file_lock(parent.clone()).read_owned(), cancel).await?);
+    }
+    let own = until_cancelled(file_lock(own_key.clone()).write_owned(), cancel).await?;
+    Ok(FileLockGuard { _own: own, _parents: parents })
+}
+
+async fn until_cancelled<F: std::future::Future>(
+    fut: F,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<F::Output, String> {
+    let Some(cancel) = cancel else {
+        return Ok(fut.await);
+    };
+    let cancelled = || cancel.load(std::sync::atomic::Ordering::Relaxed);
+    if cancelled() {
+        return Err("cancelled".to_string());
+    }
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            out = &mut fut => {
+                // The flag is otherwise read only on the 100 ms tick. A
+                // Cancel that landed while we waited, with the lock handed
+                // over before the next tick, must still win: the caller's
+                // next step may be a TRUNCATE or File::create. Dropping
+                // `out` here releases what was just acquired.
+                if cancelled() {
+                    return Err("cancelled".to_string());
+                }
+                return Ok(out);
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                if cancelled() {
+                    return Err("cancelled".to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Waits for the remote path's lock. Used where there is no cancel button
+/// (editor save, mirror); it simply goes after whatever holds the path, a
+/// file below it, or a folder above it.
+async fn lock_remote_file(session_id: &str, remote_path: &str) -> FileLockGuard {
+    acquire_file_lock(remote_lock_key(session_id, remote_path), None)
+        .await
+        .expect("waiting without a cancel flag cannot be cancelled")
+}
+
+/// Waits for the local path's lock (see `lock_remote_file`).
+async fn lock_local_file(local_path: &std::path::Path) -> FileLockGuard {
+    acquire_file_lock(local_lock_key(local_path), None)
+        .await
+        .expect("waiting without a cancel flag cannot be cancelled")
+}
+
+/// Waits for the remote path's lock, giving up with "cancelled" when the
+/// transfer's cancel flag is set meanwhile (the row shows Starting while it
+/// waits, and its Cancel must still work).
+async fn lock_remote_file_cancellable(
+    session_id: &str,
+    remote_path: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<FileLockGuard, String> {
+    acquire_file_lock(remote_lock_key(session_id, remote_path), Some(cancel)).await
+}
+
+/// Local-path counterpart of `lock_remote_file_cancellable`.
+async fn lock_local_file_cancellable(
+    local_path: &std::path::Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<FileLockGuard, String> {
+    acquire_file_lock(local_lock_key(local_path), Some(cancel)).await
+}
+
+/// Removes a transfer's cancel flag from `transfer_cancels` when dropped.
+struct TransferCancelGuard {
+    map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    id: String,
+}
+
+impl Drop for TransferCancelGuard {
+    fn drop(&mut self) {
+        // Best-effort cleanup; if the lock is contended we'd rather leak a
+        // slot than block the drop, but in practice this never blocks.
+        if let Ok(mut g) = self.map.try_lock() {
+            g.remove(&self.id);
+        }
+    }
+}
+
+type TransferCancelMap = std::collections::HashMap<String, Arc<std::sync::atomic::AtomicBool>>;
+
+/// Cancels that arrived for an id no command has registered yet: the
+/// frontend creates the id and can send Cancel while the invoke is still on
+/// its way. The registering command picks the entry up. Entries whose
+/// command never comes (the batch skipped the item, or it had already
+/// finished) are pruned after `EARLY_CANCEL_TTL`.
+const EARLY_CANCEL_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn early_cancels() -> &'static StdMutex<std::collections::HashMap<String, std::time::Instant>> {
+    static MAP: std::sync::OnceLock<StdMutex<std::collections::HashMap<String, std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| StdMutex::new(std::collections::HashMap::new()))
+}
+
+/// Flip the flag of a registered transfer, or remember the cancel for when
+/// the command registers. Called with the `transfer_cancels` lock held, so
+/// it cannot interleave with `take_transfer_cancel`.
+fn cancel_or_remember(
+    registered: &TransferCancelMap,
+    early: &mut std::collections::HashMap<String, std::time::Instant>,
+    id: &str,
+    now: std::time::Instant,
+) {
+    early.retain(|_, at| now.duration_since(*at) < EARLY_CANCEL_TTL);
+    match registered.get(id) {
+        Some(flag) => flag.store(true, std::sync::atomic::Ordering::Relaxed),
+        None => {
+            early.insert(id.to_string(), now);
+        }
+    }
+}
+
+/// The flag a starting command registers: already `true` when a Cancel for
+/// this id came in first. Called with the `transfer_cancels` lock held.
+fn take_transfer_cancel(
+    registered: &mut TransferCancelMap,
+    early: &mut std::collections::HashMap<String, std::time::Instant>,
+    id: &str,
+) -> Arc<std::sync::atomic::AtomicBool> {
+    let cancelled = early.remove(id).is_some();
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(cancelled));
+    registered.insert(id.to_string(), Arc::clone(&flag));
+    flag
+}
+
+fn lock_early_cancels() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, std::time::Instant>> {
+    early_cancels().lock().unwrap_or_else(|err| err.into_inner())
+}
+
+/// Registers the cancel flag of one upload/download under `id`. The transfer
+/// commands call this before anything else (overwrite check, SFTP channel).
+/// The frontend passes its own id for batch items, so it can cancel an item
+/// before the first progress event arrives; a Cancel that beats this call
+/// is waiting in `early_cancels` and the flag starts out set.
+async fn register_transfer_cancel(
+    state: &SshState,
+    id: &str,
+) -> (Arc<std::sync::atomic::AtomicBool>, TransferCancelGuard) {
+    let map = Arc::clone(&state.transfer_cancels);
+    let cancel = {
+        let mut registered = map.lock().await;
+        take_transfer_cancel(&mut registered, &mut lock_early_cancels(), id)
+    };
+    (cancel, TransferCancelGuard { map, id: id.to_string() })
+}
+
 /// Process-global, UNPREDICTABLE temp root for SFTP live-edit / drag staging,
 /// created once with a random name (and 0700 on Unix). The old code used a
 /// fully predictable `submarine_sftp_<session_id>` directory directly in the
@@ -8780,7 +9263,7 @@ fn app_temp_root() -> &'static std::path::PathBuf {
     static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
         let mut bytes = [0u8; 12];
-        rand::thread_rng().fill(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         let root = std::env::temp_dir().join(format!("submarine-{}", hex::encode(bytes)));
         let _ = std::fs::create_dir_all(&root);
         #[cfg(unix)]
@@ -8821,30 +9304,499 @@ fn safe_temp_leaf_name(remote_path: &str) -> Result<String, String> {
     Ok(raw.to_string())
 }
 
+fn open_flight_key(session_id: &str, remote_path: &str) -> String {
+    format!("{session_id}\n{remote_path}")
+}
+
+/// `true` when this caller owns the slot. A second caller for the same
+/// session and remote path gets `false` and must not touch the temp file.
+fn claim_open_slot(slots: &mut std::collections::HashSet<String>, key: String) -> bool {
+    slots.insert(key)
+}
+
+fn open_in_flight() -> &'static StdMutex<std::collections::HashSet<String>> {
+    static SET: std::sync::OnceLock<StdMutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| StdMutex::new(std::collections::HashSet::new()))
+}
+
+fn lock_open_in_flight() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    open_in_flight().lock().unwrap_or_else(|err| err.into_inner())
+}
+
+/// One directory per remote path, never `session/<leaf>`, so two remote files
+/// with the same name do not share an editor copy.
+fn open_staging_file(session_dir: &std::path::Path, staging_name: &str, leaf: &str) -> std::path::PathBuf {
+    session_dir.join(staging_name).join(leaf)
+}
+
+fn discard_open_staging(file: &std::path::Path) {
+    let _ = std::fs::remove_file(file);
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
+/// Gate in front of `open::that`. Once this returns `Ok`, the editor launch
+/// is the next step; a cancel click before that must not start it.
+fn open_launch_permitted(cancelled: bool) -> Result<(), &'static str> {
+    if cancelled {
+        Err("cancelled")
+    } else {
+        Ok(())
+    }
+}
+
+/// Transfers-bar event for an open-in-editor download. It carries the
+/// command's transfer id, so the bar's Cancel reaches the open.
+/// `launching: true` (progress only) marks the editor launch: the bar labels
+/// the row as opening and hides Cancel, since the launch is committed.
+fn open_transfer_event(
+    transfer_id: &str,
+    name: &str,
+    bytes: u64,
+    total: u64,
+    status: &str,
+    error: Option<String>,
+    launching: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": transfer_id, "name": name, "kind": "download",
+        "bytes": bytes, "total": total,
+        "status": status, "error": error,
+        "launching": launching && status == "progress",
+    })
+}
+
+/// The single final status of an open: `done` only when the editor was
+/// launched, and any failure (watcher, launch included) is an `error`.
+fn open_final_status(result: &Result<(), String>) -> (&'static str, Option<String>) {
+    match result {
+        Ok(()) => ("done", None),
+        Err(e) if e == "cancelled" => ("cancelled", None),
+        Err(e) => ("error", Some(e.clone())),
+    }
+}
+
+/// State of an editor copy that has (or had) a save watcher. `synced` is the
+/// hash of the bytes last known to be on the server; the lock is held while
+/// the copy is uploaded or replaced, so the two never interleave.
+/// `interrupted` is set once an upload has truncated the remote file and is
+/// cleared only when that upload has finished, so the upload is repeated
+/// even if the copy equals `synced` again. It is not set while the remote
+/// file is still intact (local file missing, SFTP session not open).
+struct LiveEdit {
+    synced: [u8; 32],
+    interrupted: bool,
+    watching: bool,
+}
+
+impl LiveEdit {
+    /// The server now holds exactly `hash`: after a finished upload, or after
+    /// a download that was read completely and installed as the editor copy.
+    /// Either way an earlier interrupted upload no longer matters.
+    fn server_has(&mut self, hash: [u8; 32]) {
+        self.synced = hash;
+        self.interrupted = false;
+    }
+}
+
+type LiveEditEntry = Arc<tokio::sync::Mutex<LiveEdit>>;
+
+fn live_edits() -> &'static StdMutex<std::collections::HashMap<std::path::PathBuf, LiveEditEntry>> {
+    static MAP: std::sync::OnceLock<StdMutex<std::collections::HashMap<std::path::PathBuf, LiveEditEntry>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| StdMutex::new(std::collections::HashMap::new()))
+}
+
+fn lock_live_edits() -> std::sync::MutexGuard<'static, std::collections::HashMap<std::path::PathBuf, LiveEditEntry>> {
+    live_edits().lock().unwrap_or_else(|err| err.into_inner())
+}
+
+/// Overwrite the remote file in place, streaming from the editor copy.
+/// Truncating keeps the server's permissions/ownership and works when only
+/// the file (not its directory) is writable. After a finished upload the hash
+/// of the bytes that were sent goes to `edit.server_has`; nothing is returned.
+/// The local file is opened first, so an unreadable copy
+/// never truncates the remote file. `edit.interrupted` is raised right after
+/// the truncating open succeeds and lowered when the file is closed. Uses the shared cached SFTP session on
+/// purpose: requests are multiplexed by id, so a long write does not block
+/// other operations (see "Reviewed and rejected" in docs/agent/live-edit.md).
+/// `emit(bytes, total, status, error)` reports progress for the transfers
+/// bar, from the truncating open on; a failure before it reports nothing,
+/// since the server was not touched.
+async fn upload_editor_copy(
+    ssh: &SshState,
+    session_id: &str,
+    remote_path: &str,
+    live: &std::path::Path,
+    edit: &mut LiveEdit,
+    emit: &impl Fn(u64, u64, &str, Option<String>),
+) -> Result<(), String> {
+    use russh_sftp::protocol::OpenFlags;
+    use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut local = tokio::fs::File::open(live)
+        .await
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    // Size at the start of the upload. A save that lands meanwhile can make
+    // the stream longer; the bar then just sits at 100% until it ends.
+    let total = local.metadata().await.map(|m| m.len()).unwrap_or(0);
+    // A batch upload or download of this remote file goes first; the save
+    // waits for it instead of truncating the file under it.
+    let _file_lock = lock_remote_file(session_id, remote_path).await;
+    let sftp = get_sftp_session(ssh, session_id).await?;
+    let mut remote_file = sftp
+        .open_with_flags(remote_path, OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE)
+        .await
+        .map_err(|e| format!("Failed to open remote file: {}", e))?;
+    edit.interrupted = true;
+    emit(0, total, "progress", None);
+    let mut transferred: u64 = 0;
+    let result: Result<[u8; 32], String> = async {
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut last_report = std::time::Instant::now();
+        loop {
+            let n = local
+                .read(&mut buf)
+                .await
+                .map_err(|e| format!("Failed to read file: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            remote_file
+                .write_all(&buf[..n])
+                .await
+                .map_err(|e| format!("Failed to write to remote: {}", e))?;
+            hasher.update(&buf[..n]);
+            transferred += n as u64;
+            if last_report.elapsed() >= std::time::Duration::from_millis(100) {
+                emit(transferred, total, "progress", None);
+                last_report = std::time::Instant::now();
+            }
+        }
+        remote_file
+            .shutdown()
+            .await
+            .map_err(|e| format!("Failed to close remote file: {}", e))?;
+        Ok(hasher.finalize().into())
+    }
+    .await;
+    match result {
+        Ok(hash) => {
+            edit.server_has(hash);
+            emit(transferred, transferred.max(total), "done", None);
+            Ok(())
+        }
+        Err(e) => {
+            emit(transferred, total, "error", Some(e.clone()));
+            Err(e)
+        }
+    }
+}
+
+/// Hash of the editor copy, read in chunks. `None` when the name is
+/// momentarily absent (a save that replaces the file).
+async fn editor_copy_hash(live: &std::path::Path) -> Result<Option<[u8; 32]>, String> {
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncReadExt;
+    let mut file = match tokio::fs::File::open(live).await {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("Failed to read file: {}", e)),
+    };
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .await
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+        if n == 0 {
+            return Ok(Some(hasher.finalize().into()));
+        }
+        hasher.update(&buf[..n]);
+    }
+}
+
+/// Upload the editor copy if it differs from what the server has.
+/// `Ok(true)` when something was uploaded. The local copy is never touched.
+async fn sync_editor_copy(
+    ssh: &SshState,
+    session_id: &str,
+    remote_path: &str,
+    live: &std::path::Path,
+    edit: &mut LiveEdit,
+    emit: &impl Fn(u64, u64, &str, Option<String>),
+) -> Result<bool, String> {
+    if !upload_needed(editor_copy_hash(live).await?, edit)? {
+        return Ok(false);
+    }
+    upload_editor_copy(ssh, session_id, remote_path, live, edit, emit).await?;
+    Ok(true)
+}
+
+/// Whether the editor copy must be sent. After an interrupted upload it must,
+/// even when it equals `synced`; a missing copy then is an error so the retry
+/// goes on instead of looking finished.
+fn upload_needed(hash: Option<[u8; 32]>, edit: &LiveEdit) -> Result<bool, String> {
+    match hash {
+        Some(hash) => Ok(edit.interrupted || hash != edit.synced),
+        None if edit.interrupted => {
+            Err("The editor copy is missing and the last upload did not finish".to_string())
+        }
+        None => Ok(false),
+    }
+}
+
+/// True when the editor copy holds bytes the server does not have (or an
+/// upload of it did not finish). A copy that is gone has nothing to keep; one
+/// that exists but cannot be read is kept rather than assumed sent.
+async fn copy_has_unsent_changes(path: &std::path::Path, edit: &LiveEdit) -> bool {
+    match editor_copy_hash(path).await {
+        Ok(Some(hash)) => edit.interrupted || hash != edit.synced,
+        Ok(None) => false,
+        Err(_) => true,
+    }
+}
+
+/// A stream that ends before the size the server reported is cut short. One
+/// that is longer is fine: a log can grow while it is being read, and some
+/// files (`/proc`) report size 0.
+fn download_is_short(expected: u64, transferred: u64) -> bool {
+    transferred < expected
+}
+
+/// Stream the remote file into `part` and return its hash and size.
+/// A stream that ends before the size the server reported is an error, and a
+/// file whose size the server does not report is refused: the next save would
+/// truncate the remote file to whatever an unverified download delivered.
+/// `emit(bytes, total)` reports progress only; the caller sends the final status.
+async fn download_to_part(
+    sftp: &russh_sftp::client::SftpSession,
+    remote_path: &str,
+    part: &std::path::Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    emit: &impl Fn(u64, u64),
+) -> Result<([u8; 32], u64), String> {
+    use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use std::sync::atomic::Ordering;
+
+    let stat_size = sftp.metadata(remote_path).await.ok().and_then(|m| m.size);
+    let mut transferred: u64 = 0;
+    let result: Result<[u8; 32], String> = async {
+        let mut remote_file = sftp
+            .open(remote_path)
+            .await
+            .map_err(|e| format!("Failed to read remote file: {}", e))?;
+        // If the path stat gave no size, ask the open handle.
+        let expected = match stat_size {
+            Some(size) => size,
+            None => remote_file
+                .metadata()
+                .await
+                .ok()
+                .and_then(|m| m.size)
+                .ok_or("Remote file size is unavailable; refusing an unverified download")?,
+        };
+        emit(0, expected);
+        let mut local_file = tokio::fs::File::create(part)
+            .await
+            .map_err(|e| format!("Failed to write temporary file: {}", e))?;
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut hasher = Sha256::new();
+        let mut last_report = std::time::Instant::now();
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+            let n = remote_file
+                .read(&mut buf)
+                .await
+                .map_err(|e| format!("Failed to read remote file: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            local_file
+                .write_all(&buf[..n])
+                .await
+                .map_err(|e| format!("Failed to write temporary file: {}", e))?;
+            hasher.update(&buf[..n]);
+            transferred += n as u64;
+            if last_report.elapsed() >= std::time::Duration::from_millis(100) {
+                emit(transferred, expected);
+                last_report = std::time::Instant::now();
+            }
+        }
+        local_file
+            .flush()
+            .await
+            .map_err(|e| format!("Failed to write temporary file: {}", e))?;
+        if download_is_short(expected, transferred) {
+            return Err("Download ended before the whole remote file arrived".to_string());
+        }
+        Ok(hasher.finalize().into())
+    }
+    .await;
+    match result {
+        Ok(hash) => Ok((hash, transferred)),
+        Err(e) => {
+            discard_open_staging(part);
+            Err(e)
+        }
+    }
+}
+
+/// Watch the editor copy's directory rather than the file: an editor that
+/// saves by replacing the file, and our own re-download, swap the inode.
+/// The 750ms debounce coalesces those swaps into one event.
+fn watch_editor_copy(
+    live: &std::path::Path,
+) -> Result<
+    (
+        notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>,
+        tokio::sync::mpsc::Receiver<()>,
+    ),
+    String,
+> {
+    use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebouncedEventKind};
+    let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
+    let name = live.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    let mut debouncer = new_debouncer(
+        std::time::Duration::from_millis(750),
+        move |result: notify_debouncer_mini::DebounceEventResult| {
+            if let Ok(events) = result {
+                if events.iter().any(|ev| {
+                    matches!(ev.kind, DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous)
+                        && ev.path.file_name() == Some(name.as_os_str())
+                }) {
+                    let _ = tx.try_send(());
+                }
+            }
+        },
+    )
+    .map_err(|e| format!("Failed to watch editor file: {}", e))?;
+    debouncer
+        .watcher()
+        .watch(live.parent().unwrap_or(live), RecursiveMode::NonRecursive)
+        .map_err(|e| format!("Failed to watch editor file: {}", e))?;
+    Ok((debouncer, rx))
+}
+
+/// Download the remote file into the editor copy (replacing it if it exists,
+/// including any local change not yet sent) and open it. Saves in the editor
+/// are uploaded by a watcher on the local copy only; the server is never
+/// polled. Flow: `docs/agent/live-edit.md`.
 #[tauri::command]
 async fn sftp_open_remote_file(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
     session_id: String,
     remote_path: String,
+    transfer_id: String,
 ) -> Result<(), String> {
     use tauri::Emitter;
+    use std::sync::atomic::Ordering;
 
-    let sftp = get_sftp_session(&state, &session_id).await?;
+    // Register before any slow await so the transfers bar's Cancel can flip
+    // the flag while the SFTP channel is still coming up. A cancel that
+    // arrived even earlier is picked up (the flag starts out set).
+    let (cancel, _guard) = register_transfer_cancel(&state, &transfer_id).await;
+
+    let flight_key = open_flight_key(&session_id, &remote_path);
+    {
+        let mut slots = lock_open_in_flight();
+        if !claim_open_slot(&mut slots, flight_key.clone()) {
+            return Err("already downloading".into());
+        }
+    }
+    struct InFlightGuard { key: String }
+    impl Drop for InFlightGuard {
+        fn drop(&mut self) {
+            lock_open_in_flight().remove(&self.key);
+        }
+    }
+    let _in_flight = InFlightGuard { key: flight_key };
     let filename = safe_temp_leaf_name(&remote_path)?;
 
-    // Read file data
-    let data = sftp.read(&remote_path).await.map_err(|e| format!("Failed to read remote file: {}", e))?;
+    let event_name = format!("sftp-open-{}", session_id);
+    // Also sent like a manual download, so the open shows (and can be
+    // cancelled) in the transfers bar.
+    let transfer_event = format!("sftp-transfer-{}", session_id);
+    let last_bytes = std::sync::atomic::AtomicU64::new(0);
+    let last_total = std::sync::atomic::AtomicU64::new(0);
+    let launching = std::sync::atomic::AtomicBool::new(false);
+    let emit_status = |bytes: u64, total: u64, status: &str, error: Option<String>| {
+        last_bytes.store(bytes, Ordering::Relaxed);
+        last_total.store(total, Ordering::Relaxed);
+        let _ = app_handle.emit(
+            &event_name,
+            serde_json::json!({
+                "path": remote_path,
+                "bytes": bytes,
+                "total": total,
+                "status": status,
+            }),
+        );
+        let _ = app_handle.emit(
+            &transfer_event,
+            open_transfer_event(&transfer_id, &filename, bytes, total, status, error, launching.load(Ordering::Relaxed)),
+        );
+    };
+    // `is_launching`: the download is installed and the editor launch is
+    // committed, so Cancel no longer stops it.
+    let emit_progress = |bytes: u64, total: u64, is_launching: bool| {
+        launching.store(is_launching, Ordering::Relaxed);
+        emit_status(bytes, total, "progress", None);
+    };
+
+    // The bar row exists from here on, before the waits (live-edit mutex,
+    // file lock), so it can be cancelled while it waits. A Cancel during the
+    // SFTP channel setup takes effect once the channel is up.
+    // Every exit after this point sends exactly one final status.
+    emit_progress(0, 0, false);
+    let result =
+        download_and_open(&app_handle, &state, &session_id, &remote_path, &filename, &cancel, &emit_progress).await;
+    let (status, error) = open_final_status(&result);
+    emit_status(last_bytes.load(Ordering::Relaxed), last_total.load(Ordering::Relaxed), status, error);
+    result
+}
+
+/// Body of `sftp_open_remote_file` after its first progress event. `Ok` only
+/// once the editor has been launched.
+async fn download_and_open(
+    app_handle: &tauri::AppHandle,
+    state: &SshState,
+    session_id: &str,
+    remote_path: &str,
+    filename: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+    emit_progress: &impl Fn(u64, u64, bool),
+) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::Ordering;
+
+    let sftp = get_sftp_session(state, session_id).await?;
 
     // Per-session subdirectory so we can sweep everything cleanly on
-    // disconnect rather than leaving loose `submarine_sftp_*` files in the global
-    // temp dir. The directory is also a smaller blast radius for any path-
-    // related shenanigans (each editor sees only files from one session).
-    let session_temp_dir = session_sftp_dir(&session_id);
-    std::fs::create_dir_all(&session_temp_dir)
-        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
-    let temp_file_path = session_temp_dir.join(&filename);
-    std::fs::write(&temp_file_path, &data).map_err(|e| format!("Failed to write temporary file: {}", e))?;
+    // disconnect. One directory per remote path, so opening the same file
+    // again replaces the same editor copy.
+    let session_temp_dir = session_sftp_dir(session_id);
+    let mut path_key = hex::encode(Sha256::digest(remote_path.as_bytes()));
+    path_key.truncate(32);
+    let temp_file_path = open_staging_file(&session_temp_dir, &path_key, filename);
+    // The download lands here first, so a failed or cancelled download
+    // never touches the copy the editor has open.
+    let part_path = temp_file_path.with_file_name(format!("{filename}.part"));
+    if let Some(dir) = temp_file_path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".into());
+    }
 
     // Open local temp file in system default application. The whole
     // live-edit-in-default-editor feature is desktop-only — Android's
@@ -8853,158 +9805,173 @@ async fn sftp_open_remote_file(
     // depend on. Refuse cleanly so the UI can surface a polite message.
     #[cfg(target_os = "android")]
     {
-        let _ = &temp_file_path;
         return Err("Live edit in system editor is not available on Android.".into());
     }
     #[cfg(not(target_os = "android"))]
     {
-        let open_res = open::that(&temp_file_path);
-        if let Err(e) = open_res {
-            return Err(format!("Failed to open file: {}", e));
-        }
-    }
-
-    // Spawn modification watcher task in background
-    let connections_clone = Arc::clone(&state.connections);
-    let app_handle_clone = app_handle.clone();
-    let session_id_clone = session_id.clone();
-    let remote_path_clone = remote_path.clone();
-    let filename_clone = filename.clone();
-    let temp_file_path_clone = temp_file_path.clone();
-
-    tokio::spawn(async move {
-        // Notify-driven save detection instead of the old 1.5s poll. Wires
-        // the same `notify-debouncer-mini` crate the mirror module uses:
-        //   - std::mpsc::Sender feeds the debouncer (a blocking pool task
-        //     forwards into a tokio mpsc so this async loop can await it)
-        //   - 750ms debounce coalesces an editor's swap-then-rename
-        //     save pattern (vim, vscode) into one upload instead of
-        //     several. The previous polling burned a syscall every
-        //     1.5s for up to 4800 iterations per open file.
-        use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebouncedEventKind};
-        let (raw_tx, raw_rx) = std::sync::mpsc::channel();
-        let (tok_tx, mut tok_rx) = tokio::sync::mpsc::channel::<()>(8);
-        let mut debouncer = match new_debouncer(std::time::Duration::from_millis(750), raw_tx) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("[sftp-live-edit] debouncer init failed: {} — falling back to no autosync", e);
-                let _ = std::fs::remove_file(&temp_file_path_clone);
-                return;
+        let (entry, existed) = {
+            let mut edits = lock_live_edits();
+            match edits.get(&temp_file_path) {
+                Some(entry) => (Arc::clone(entry), true),
+                None => {
+                    let entry: LiveEditEntry =
+                        Arc::new(tokio::sync::Mutex::new(LiveEdit { synced: [0; 32], interrupted: false, watching: false }));
+                    edits.insert(temp_file_path.clone(), Arc::clone(&entry));
+                    (entry, false)
+                }
             }
         };
-        if let Err(e) = debouncer.watcher().watch(&temp_file_path_clone, RecursiveMode::NonRecursive) {
-            eprintln!("[sftp-live-edit] watch failed: {} — falling back to no autosync", e);
-            let _ = std::fs::remove_file(&temp_file_path_clone);
-            return;
+        // Reopening always takes the server's version. Local changes that were
+        // not sent yet are discarded by the replace below, by design.
+        let installed = async {
+            // A reopen waits here for an auto-sync upload; Cancel must still work.
+            let mut edit = until_cancelled(Arc::clone(&entry).lock_owned(), Some(cancel)).await?;
+            let had_copy = existed && temp_file_path.exists();
+            // Do not read the remote file while a batch upload rewrites it.
+            // Lock order is always live-edit entry, then remote file.
+            let _file_lock = lock_remote_file_cancellable(session_id, remote_path, cancel).await?;
+            let (hash, transferred) =
+                download_to_part(&sftp, remote_path, &part_path, cancel, &|bytes, total| emit_progress(bytes, total, false))
+                    .await?;
+            if open_launch_permitted(cancel.load(Ordering::Relaxed)).is_err() {
+                discard_open_staging(&part_path);
+                return Err("cancelled".to_string());
+            }
+            // Past the gate the launch goes ahead: the bar shows the row as
+            // opening in the editor, without Cancel.
+            emit_progress(transferred, transferred, true);
+            // On Windows the replace fails if the editor holds the file
+            // locked; the old copy stays.
+            if let Err(e) = std::fs::rename(&part_path, &temp_file_path) {
+                discard_open_staging(&part_path);
+                return Err(format!(
+                    "Failed to update the local copy (is it locked by the editor?): {}",
+                    e
+                ));
+            }
+            edit.server_has(hash);
+            Ok((edit, had_copy))
         }
-        // Forward bridge: std::mpsc::recv blocks, so it has to live on the
-        // blocking pool.
-        tokio::task::spawn_blocking(move || {
-            while let Ok(res) = raw_rx.recv() {
-                if let Ok(events) = res {
-                    if events.iter().any(|ev| matches!(ev.kind, DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous)) {
-                        if tok_tx.blocking_send(()).is_err() { break; }
+        .await;
+        let (mut edit, had_copy) = match installed {
+            Ok(installed) => installed,
+            Err(e) => {
+                if !existed {
+                    lock_live_edits().remove(&temp_file_path);
+                }
+                return Err(e);
+            }
+        };
+
+        let watcher = if edit.watching {
+            None
+        } else {
+            match watch_editor_copy(&temp_file_path) {
+                Ok(w) => Some(w),
+                Err(e) => {
+                    if !had_copy {
+                        lock_live_edits().remove(&temp_file_path);
+                        discard_open_staging(&temp_file_path);
                     }
+                    return Err(e);
                 }
             }
-        });
+        };
+        if let Err(e) = open::that(&temp_file_path) {
+            if !had_copy {
+                lock_live_edits().remove(&temp_file_path);
+                discard_open_staging(&temp_file_path);
+            }
+            return Err(format!("Failed to open file: {}", e));
+        }
+        let Some((debouncer, mut rx)) = watcher else {
+            return Ok(());
+        };
+        edit.watching = true;
+        drop(edit);
 
-        // Overall 2-hour ceiling so an editor left open forever doesn't
-        // keep the watcher alive past any reasonable session.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2 * 60 * 60);
-        loop {
-            let wait = tokio::time::sleep_until(deadline);
-            tokio::select! {
-                _ = wait => break,
-                maybe = tok_rx.recv() => {
-                    if maybe.is_none() { break; }
-                    if !temp_file_path_clone.exists() { break; }
-                    // Cheap pre-check: if the session is gone we exit the
-                    // watcher entirely instead of looping and spamming
-                    // "Auto-sync failed" toasts on every subsequent save.
-                    {
-                        let connections = connections_clone.lock().await;
-                        if !connections.contains_key(&session_id_clone) {
-                            let _ = app_handle_clone.emit(
-                                &format!("sftp-sync-status-{}", session_id_clone),
-                                serde_json::json!({
-                                    "status": "error",
-                                    "message": format!("Auto-sync stopped — session for {} is gone", filename_clone),
-                                }),
-                            );
-                            break;
+        let (session_id, remote_path, filename) = (session_id.to_string(), remote_path.to_string(), filename.to_string());
+        let connections_clone = Arc::clone(&state.connections);
+        let app_handle_clone = app_handle.clone();
+        tokio::spawn(async move {
+            let _debouncer = debouncer;
+            let status_event = format!("sftp-sync-status-{}", session_id);
+            let transfer_event = format!("sftp-transfer-{}", session_id);
+            let report = |status: &str, message: String| {
+                let _ = app_handle_clone.emit(
+                    &status_event,
+                    serde_json::json!({ "status": status, "message": message }),
+                );
+            };
+            // After a failed upload the save is retried until it succeeds.
+            let mut failed = false;
+            let mut last_error = String::new();
+            loop {
+                let trigger = tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(10)), if failed => Some(()),
+                    event = rx.recv() => event,
+                };
+                // A save that replaces the file removes its name for a moment,
+                // so a missing file is not a reason to stop. The watcher ends
+                // when the session is gone (disconnect and profile close also
+                // wipe the directory).
+                if trigger.is_none() {
+                    break;
+                }
+                if !connections_clone.lock().await.contains_key(&session_id) {
+                    report("error", format!("Auto-sync stopped: session for {} is gone", filename));
+                    break;
+                }
+                let ssh = app_handle_clone.state::<SshState>();
+                let mut edit = entry.lock().await;
+                // Same channel as manual uploads, so the save shows in the
+                // transfers bar. `source: "sync"` marks it as not cancellable:
+                // stopping after the truncate would only leave the remote
+                // file cut short until the retry.
+                let upload_id = transfer_id();
+                let emit_upload = |bytes: u64, total: u64, status: &str, error: Option<String>| {
+                    let _ = app_handle_clone.emit(
+                        &transfer_event,
+                        serde_json::json!({
+                            "id": upload_id, "name": filename, "kind": "upload", "source": "sync",
+                            "bytes": bytes, "total": total,
+                            "status": status, "error": error,
+                        }),
+                    );
+                };
+                match sync_editor_copy(&ssh, &session_id, &remote_path, &temp_file_path, &mut edit, &emit_upload).await {
+                    Ok(uploaded) => {
+                        failed = false;
+                        last_error.clear();
+                        if uploaded {
+                            report("success", format!("Auto-synced {}", filename));
                         }
                     }
-                    let upload_res = async {
-                    let session_arc = {
-                        let connections = connections_clone.lock().await;
-                        connections.get(&session_id_clone).map(|sess| Arc::clone(sess))
-                    };
-
-                    let session_arc = match session_arc {
-                        Some(sess) => sess,
-                        None => return Err("SSH session disconnected".to_string()),
-                    };
-
-                    // Open the SFTP subsystem, then IMMEDIATELY drop the
-                    // session mutex. Holding it across the whole write serialises
-                    // every open_terminal / cold-cache SFTP-bootstrap request on
-                    // the same session behind this one save — visible as a UI
-                    // freeze whenever the user Ctrl-S's a large remote file.
-                    let sftp = {
-                        let session = session_arc.lock().await;
-                        let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
-                        channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
-                        let s = russh_sftp::client::SftpSession::new(channel.into_stream()).await.map_err(|e| e.to_string())?;
-                        drop(session);
-                        s
-                    };
-
-                    use russh_sftp::protocol::OpenFlags;
-                    use tokio::io::AsyncWriteExt;
-                    let content = std::fs::read(&temp_file_path_clone).map_err(|e| format!("Failed to read file: {}", e))?;
-                    // Truncate so shortening the file doesn't leave the old
-                    // tail behind on the server.
-                    let mut remote_file = sftp
-                        .open_with_flags(
-                            &remote_path_clone,
-                            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-                        )
-                        .await
-                        .map_err(|e| format!("Failed to open remote file: {}", e))?;
-                    remote_file
-                        .write_all(&content)
-                        .await
-                        .map_err(|e| format!("Failed to write to remote: {}", e))?;
-                    remote_file
-                        .shutdown()
-                        .await
-                        .map_err(|e| format!("Failed to close remote file: {}", e))?;
-                    Ok::<(), String>(())
-                    }.await;
-
-                    if let Err(e) = upload_res {
-                        let _ = app_handle_clone.emit(
-                            &format!("sftp-sync-status-{}", session_id_clone),
-                            serde_json::json!({ "status": "error", "message": format!("Auto-sync failed: {}", e) })
-                        );
-                    } else {
-                        let _ = app_handle_clone.emit(
-                            &format!("sftp-sync-status-{}", session_id_clone),
-                            serde_json::json!({ "status": "success", "message": format!("Auto-synced {}", filename_clone) })
-                        );
+                    Err(e) => {
+                        failed = true;
+                        if e != last_error {
+                            report("error", format!("Auto-sync failed: {}", e));
+                            last_error = e;
+                        }
                     }
                 }
             }
-        }
-        // The watcher exited (timeout, file disappeared, or session gone).
-        // Wipe the temp file so the remote contents aren't left lying around
-        // in OS temp once editing is done. Errors are intentionally ignored
-        // — on Windows the editor may still hold a lock on the file, and the
-        // worst case is the file persists until the OS cleans temp.
-        drop(debouncer);
-        let _ = std::fs::remove_file(&temp_file_path_clone);
-    });
+            // The watcher exited (session gone). Wipe the copy so
+            // remote contents aren't left lying around, but never one that holds
+            // a save the server does not have.
+            let mut edit = entry.lock().await;
+            edit.watching = false;
+            if copy_has_unsent_changes(&temp_file_path, &edit).await {
+                report(
+                    "error",
+                    format!("Auto-sync stopped with unsent changes; kept at {}", temp_file_path.display()),
+                );
+            } else {
+                lock_live_edits().remove(&temp_file_path);
+                discard_open_staging(&temp_file_path);
+            }
+        });
+    }
 
     Ok(())
 }
@@ -9852,7 +10819,17 @@ async fn select_local_folder() -> Result<Option<String>, String> {
 
 #[tauri::command]
 async fn local_list_dir(path: String) -> Result<Vec<LocalFileEntry>, String> {
-    let safe = guard_local_path(&path, false)?;
+    // Listing is read-only, so the filesystem root (`/`, `C:\`) is allowed
+    // here even though `guard_local_path` refuses it for every other local
+    // command. Only a path that is literally a root skips the guard: it has
+    // no component that could be a symlink or `..`, so there is nothing to
+    // canonicalize. Anything else still goes through the guard.
+    let as_path = std::path::Path::new(&path);
+    let safe = if as_path.has_root() && as_path.parent().is_none() {
+        as_path.to_path_buf()
+    } else {
+        guard_local_path(&path, false)?
+    };
     if !safe.is_dir() {
         return Err("Path is not a directory".into());
     }
@@ -10522,10 +11499,11 @@ pub fn run() {
             android_quick_dirs, android_default_local_dir,
             parse_ssh_config,
             parse_client_import,
-            sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
+            sftp_list_dir, sftp_create_dir, sftp_create_file, sftp_create_symlink, sftp_resolve_links, sftp_realpath, sftp_stat, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
+            archive::local_archive, archive::local_extract, archive::sftp_archive, archive::sftp_extract,
             monitor_list, monitor_add, monitor_remove, monitor_set_metrics, monitor_set_custom_metrics,
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,
             monitor_get_settings, monitor_set_settings,
@@ -10538,6 +11516,302 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cancel_sent_before_the_command_registers_is_not_lost() {
+        use std::sync::atomic::Ordering;
+        let mut registered = TransferCancelMap::new();
+        let mut early = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+
+        // Cancel arrives first: remembered, and the registering command
+        // starts with its flag set.
+        cancel_or_remember(&registered, &mut early, "t1", now);
+        let flag = take_transfer_cancel(&mut registered, &mut early, "t1");
+        assert!(flag.load(Ordering::Relaxed));
+        assert!(early.is_empty());
+
+        // No cancel: the flag starts clear; a later cancel flips that flag.
+        let flag = take_transfer_cancel(&mut registered, &mut early, "t2");
+        assert!(!flag.load(Ordering::Relaxed));
+        cancel_or_remember(&registered, &mut early, "t2", now);
+        assert!(flag.load(Ordering::Relaxed));
+        assert!(!early.contains_key("t2"));
+    }
+
+    #[test]
+    fn one_remote_file_gets_one_lock_whatever_the_slashes() {
+        assert_eq!(remote_lock_key("s", "/var//www/app.log"), remote_lock_key("s", "/var/www/app.log"));
+        assert_eq!(remote_lock_key("s", "/var/www/"), remote_lock_key("s", "/var/www"));
+        assert_eq!(remote_lock_key("s", "/"), FileLockKey::Remote("s".into(), "/".into()));
+        assert_ne!(remote_lock_key("s1", "/a"), remote_lock_key("s2", "/a"));
+
+        // Local keys: separators and repeats do not matter; case only on Windows.
+        let p = std::path::Path::new;
+        assert_eq!(local_lock_key(p("C:\\Work\\\\app.log")), local_lock_key(p("C:/Work/app.log")));
+        assert_eq!(
+            local_lock_key(p("/home/u/App.log")) == local_lock_key(p("/home/u/app.log")),
+            cfg!(windows),
+        );
+        // A remote and a local path that spell the same never share a lock.
+        assert_ne!(remote_lock_key("s", "/tmp/a"), local_lock_key(p("/tmp/a")));
+    }
+
+    #[test]
+    fn a_lock_chain_runs_from_the_root_to_the_path() {
+        assert_eq!(path_prefixes("/a/b/c"), ["/", "/a", "/a/b", "/a/b/c"]);
+        assert_eq!(path_prefixes("/"), ["/"]);
+        assert_eq!(path_prefixes("c:/w/f"), ["c:", "c:/w", "c:/w/f"]);
+        assert_eq!(path_prefixes("rel/f"), ["rel", "rel/f"]);
+        assert_eq!(
+            remote_lock_key("s", "/a/b").chain(),
+            [
+                FileLockKey::Remote("s".into(), "/".into()),
+                FileLockKey::Remote("s".into(), "/a".into()),
+                FileLockKey::Remote("s".into(), "/a/b".into()),
+            ],
+        );
+    }
+
+    /// Whether `fut` is still waiting after a short while.
+    async fn still_waiting<F: std::future::Future>(fut: F) -> bool {
+        tokio::time::timeout(std::time::Duration::from_millis(150), fut).await.is_err()
+    }
+
+    #[tokio::test]
+    async fn a_folder_rename_waits_for_a_file_being_written_inside_it() {
+        let s = "lock-tree-test";
+        // A transfer is writing /srv/site/logs/app.log.
+        let writing = lock_remote_file(s, "/srv/site/logs/app.log").await;
+
+        // The mirror's soft delete of /srv/site (rename into the trash) and
+        // of /srv/site/logs must wait for it; so must the same file.
+        assert!(still_waiting(lock_remote_file(s, "/srv/site")).await);
+        assert!(still_waiting(lock_remote_file(s, "/srv/site/logs")).await);
+        assert!(still_waiting(lock_remote_file(s, "/srv//site/logs/app.log/")).await);
+        // A sibling file and another session are not blocked.
+        drop(lock_remote_file(s, "/srv/site/logs/other.log").await);
+        drop(lock_remote_file("another-session", "/srv/site").await);
+
+        drop(writing);
+        // Once the write is done, the folder can be renamed...
+        let renaming = lock_remote_file(s, "/srv/site").await;
+        // ...and while it is, nothing inside it can start.
+        assert!(still_waiting(lock_remote_file(s, "/srv/site/logs/app.log")).await);
+        assert!(still_waiting(lock_remote_file(s, "/srv/site/new.txt")).await);
+        drop(renaming);
+        drop(lock_remote_file(s, "/srv/site/logs/app.log").await);
+    }
+
+    #[tokio::test]
+    async fn local_folder_locks_follow_the_tree_too() {
+        let p = std::path::Path::new;
+        let writing = lock_local_file(p("/tmp/lock-tree-local/dir/file.bin")).await;
+        assert!(still_waiting(lock_local_file(p("/tmp/lock-tree-local/dir"))).await);
+        drop(lock_local_file(p("/tmp/lock-tree-local/sibling.bin")).await);
+        drop(writing);
+        drop(lock_local_file(p("/tmp/lock-tree-local/dir")).await);
+    }
+
+    #[tokio::test]
+    async fn a_free_lock_is_not_handed_to_a_cancelled_transfer() {
+        use std::sync::atomic::AtomicBool;
+        // Nothing holds the file, but the flag is already set: the caller
+        // must not get the lock (its next step would TRUNCATE the file).
+        let cancel = AtomicBool::new(true);
+        let res = lock_remote_file_cancellable("lock-race-free", "/srv/app.log", &cancel).await;
+        assert_eq!(res.err().as_deref(), Some("cancelled"));
+        let res = lock_local_file_cancellable(std::path::Path::new("/tmp/lock-race-free/f"), &cancel).await;
+        assert_eq!(res.err().as_deref(), Some("cancelled"));
+        // And the refused attempt left nothing held behind.
+        drop(lock_remote_file("lock-race-free", "/srv/app.log").await);
+    }
+
+    #[tokio::test]
+    async fn cancel_while_waiting_wins_even_if_the_lock_frees_before_the_next_tick() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let s = "lock-race-tick";
+        // The mirror (or an editor save) holds the folder's file.
+        let holder = lock_remote_file(s, "/site/app.log").await;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let cancel = Arc::clone(&cancel);
+            tokio::spawn(async move {
+                lock_remote_file_cancellable(s, "/site/app.log", &cancel).await.map(drop)
+            })
+        };
+        // Let the waiter get past one tick, then Cancel and release together,
+        // well inside the next 100 ms tick.
+        tokio::time::sleep(std::time::Duration::from_millis(130)).await;
+        cancel.store(true, Ordering::Relaxed);
+        drop(holder);
+        assert_eq!(waiter.await.unwrap().err().as_deref(), Some("cancelled"));
+        drop(lock_remote_file(s, "/site/app.log").await);
+    }
+
+    #[tokio::test]
+    async fn a_transfer_waiting_below_a_busy_folder_can_be_cancelled() {
+        use std::sync::atomic::AtomicBool;
+        let renaming = lock_remote_file("lock-tree-cancel", "/data").await;
+        let cancel = AtomicBool::new(true);
+        let res = lock_remote_file_cancellable("lock-tree-cancel", "/data/big.iso", &cancel).await;
+        assert_eq!(res.err().as_deref(), Some("cancelled"));
+        drop(renaming);
+    }
+
+    #[tokio::test]
+    async fn waiting_for_a_remote_file_lock_can_be_cancelled() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let holder = lock_remote_file("lock-cancel-test", "/busy").await;
+        let cancel = AtomicBool::new(false);
+        cancel.store(true, Ordering::Relaxed);
+        let res = lock_remote_file_cancellable("lock-cancel-test", "/busy", &cancel).await;
+        assert_eq!(res.err().as_deref(), Some("cancelled"));
+        drop(holder);
+        let free = AtomicBool::new(false);
+        assert!(lock_remote_file_cancellable("lock-cancel-test", "/busy", &free).await.is_ok());
+    }
+
+    #[test]
+    fn early_cancels_whose_command_never_comes_expire() {
+        let registered = TransferCancelMap::new();
+        let mut early = std::collections::HashMap::new();
+        let start = std::time::Instant::now();
+        cancel_or_remember(&registered, &mut early, "never-started", start);
+        assert!(early.contains_key("never-started"));
+        // The next cancel after the TTL prunes the stale entry.
+        cancel_or_remember(&registered, &mut early, "other", start + EARLY_CANCEL_TTL);
+        assert!(!early.contains_key("never-started"));
+        assert!(early.contains_key("other"));
+    }
+
+    #[test]
+    fn discard_open_staging_removes_the_dir_when_the_file_was_never_created() {
+        let root = std::env::temp_dir().join(format!("submarine-open-test-{}", std::process::id()));
+        let file = open_staging_file(&root, "staging", "laravel.log");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        assert!(file.parent().unwrap().is_dir());
+        discard_open_staging(&file);
+        assert!(!file.parent().unwrap().exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn second_open_of_the_same_path_is_rejected_while_the_first_is_in_flight() {
+        let mut slots = std::collections::HashSet::new();
+        let key = open_flight_key("session-1", "/var/log/laravel.log");
+        assert!(claim_open_slot(&mut slots, key.clone()));
+        assert!(!claim_open_slot(&mut slots, open_flight_key("session-1", "/var/log/laravel.log")));
+        // A different path, or the same path after the first slot is released, can proceed.
+        assert!(claim_open_slot(&mut slots, open_flight_key("session-1", "/var/log/other.log")));
+        slots.remove(&key);
+        assert!(claim_open_slot(&mut slots, key));
+    }
+
+    #[test]
+    fn open_staging_file_is_not_the_shared_leaf_path() {
+        let session = std::path::Path::new("session");
+        let staged = open_staging_file(session, "abc123", "laravel.log");
+        assert_eq!(staged, session.join("abc123").join("laravel.log"));
+        assert_ne!(staged, session.join("laravel.log"));
+    }
+
+    #[tokio::test]
+    async fn unsent_changes_are_detected_by_hash_and_a_missing_copy_has_none() {
+        use sha2::{Digest, Sha256};
+        let dir = std::env::temp_dir().join(format!("submarine-unsent-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"saved").unwrap();
+        let mut edit = LiveEdit { synced: Sha256::digest(b"saved").into(), interrupted: false, watching: false };
+        assert!(!copy_has_unsent_changes(&file, &edit).await);
+        std::fs::write(&file, b"edited").unwrap();
+        assert!(copy_has_unsent_changes(&file, &edit).await);
+        // Unreadable (a directory here) is kept, not treated as sent.
+        assert!(copy_has_unsent_changes(&dir, &edit).await);
+        // An upload that did not finish keeps the copy even when it equals `synced`.
+        std::fs::write(&file, b"saved").unwrap();
+        edit.interrupted = true;
+        assert!(copy_has_unsent_changes(&file, &edit).await);
+        std::fs::remove_file(&file).unwrap();
+        assert!(!copy_has_unsent_changes(&file, &edit).await);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_interrupted_upload_is_repeated_until_it_finishes() {
+        let synced = [1u8; 32];
+        let mut edit = LiveEdit { synced, interrupted: false, watching: false };
+        assert_eq!(upload_needed(Some(synced), &edit), Ok(false));
+        assert_eq!(upload_needed(Some([2u8; 32]), &edit), Ok(true));
+        assert_eq!(upload_needed(None, &edit), Ok(false));
+        edit.interrupted = true;
+        // The user reverted to the last synced bytes: the remote may be truncated, send anyway.
+        assert_eq!(upload_needed(Some(synced), &edit), Ok(true));
+        // The name is briefly absent: keep retrying instead of looking finished.
+        assert!(upload_needed(None, &edit).is_err());
+    }
+
+    #[test]
+    fn a_finished_upload_or_a_full_download_ends_the_interrupted_state() {
+        let mut edit = LiveEdit { synced: [1u8; 32], interrupted: true, watching: false };
+        edit.server_has([2u8; 32]);
+        assert!(!edit.interrupted);
+        assert_eq!(edit.synced, [2u8; 32]);
+        // The copy just installed from the server is not sent back.
+        assert_eq!(upload_needed(Some([2u8; 32]), &edit), Ok(false));
+    }
+
+    #[test]
+    fn a_known_size_rejects_a_short_download_but_not_a_longer_one() {
+        assert!(download_is_short(100, 40));
+        assert!(download_is_short(100, 0));
+        assert!(!download_is_short(100, 100));
+        assert!(!download_is_short(100, 130)); // log grew while reading
+        assert!(!download_is_short(0, 512)); // /proc style size 0
+    }
+
+    #[tokio::test]
+    async fn a_missing_editor_copy_is_not_an_error_and_has_no_hash() {
+        let dir = std::env::temp_dir().join(format!("submarine-hash-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        assert_eq!(editor_copy_hash(&file).await, Ok(None));
+        std::fs::write(&file, b"abc").unwrap();
+        assert!(matches!(editor_copy_hash(&file).await, Ok(Some(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancel_before_editor_launch_is_rejected() {
+        assert_eq!(open_launch_permitted(true), Err("cancelled"));
+        assert_eq!(open_launch_permitted(false), Ok(()));
+    }
+
+    #[test]
+    fn an_open_reports_to_the_transfers_bar_under_its_own_id() {
+        let event = open_transfer_event("open-1", "app.log", 10, 100, "progress", None, false);
+        assert_eq!(event["id"], "open-1");
+        assert_eq!(event["kind"], "download");
+        assert_eq!(event["name"], "app.log");
+        assert_eq!(event["total"], 100);
+        assert_eq!(event["launching"], false);
+        // The committed editor launch is its own phase in the bar.
+        let launching = open_transfer_event("open-1", "app.log", 100, 100, "progress", None, true);
+        assert_eq!(launching["launching"], true);
+        // A final status is never shown as launching.
+        let done = open_transfer_event("open-1", "app.log", 100, 100, "done", None, true);
+        assert_eq!(done["launching"], false);
+    }
+
+    #[test]
+    fn an_open_ends_done_only_when_launched_and_a_failure_carries_its_text() {
+        assert_eq!(open_final_status(&Ok(())), ("done", None));
+        assert_eq!(open_final_status(&Err("cancelled".into())), ("cancelled", None));
+        // Watcher or editor launch failing after the download is an error, not done.
+        let failed = Err("Failed to open file: no handler".to_string());
+        assert_eq!(open_final_status(&failed), ("error", Some("Failed to open file: no handler".to_string())));
+    }
 
     #[test]
     fn dir_entry_name_rejects_traversal_and_separators() {
@@ -10558,6 +11832,31 @@ mod tests {
     }
 
     #[test]
+    fn openssh_symlink_puts_target_on_the_wire_first() {
+        let (first, second) = super::openssh_symlink_args("/tmp/link".into(), "../target".into());
+        assert_eq!(first, "../target");
+        assert_eq!(second, "/tmp/link");
+    }
+
+    #[test]
+    fn only_a_missing_target_marks_a_link_broken() {
+        use russh_sftp::client::error::Error;
+        use russh_sftp::protocol::{Status, StatusCode};
+        let status = |status_code| {
+            Error::Status(Status {
+                id: 0,
+                status_code,
+                error_message: String::new(),
+                language_tag: String::new(),
+            })
+        };
+        assert_eq!(super::link_stat_failure_state(&status(StatusCode::NoSuchFile)), "broken");
+        assert_eq!(super::link_stat_failure_state(&status(StatusCode::PermissionDenied)), "error");
+        assert_eq!(super::link_stat_failure_state(&status(StatusCode::Failure)), "error");
+        assert_eq!(super::link_stat_failure_state(&Error::Timeout), "error");
+    }
+
+    #[test]
     fn dir_entry_name_accepts_plain_filenames() {
         // Legitimate names must still pass — including ones that merely
         // start with dots or contain colons/spaces (all legal on POSIX).
@@ -10573,4 +11872,4 @@ mod tests {
             assert!(is_safe_dir_entry_name(ok), "should accept {:?}", ok);
         }
     }
-}
+}
