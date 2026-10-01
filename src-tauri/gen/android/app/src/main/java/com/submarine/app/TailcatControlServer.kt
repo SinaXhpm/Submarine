@@ -43,7 +43,7 @@ object TailcatControlServer {
       if (!address.startsWith("tc")) throw IllegalArgumentException("bad Tailcat address")
       val remotePort = fields[2].toInt().also { require(it in 1..65535) }
       val handle = clients.computeIfAbsent(address) { Tailcatbridge.start(it) }
-      val localPort = Tailcatbridge.openForward(handle, remotePort)
+      val localPort = Tailcatbridge.openForward(handle, remotePort.toLong())
       out.write("OK $localPort\n")
     } catch (_: Exception) {
       // Deliberately generic: a Tailcat address may carry a PSK.
