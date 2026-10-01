@@ -33,7 +33,7 @@ class MainActivity : TauriActivity() {
   // backgrounds with #0d0d10 so the OS chrome blends into our titlebar.
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    TailcatControlServer.start()
+    TailcatControlServer.start(this)
 
     // Keep the OS from killing our process while the user is in another
     // app. All SSH state lives in the Rust backend in this same process,

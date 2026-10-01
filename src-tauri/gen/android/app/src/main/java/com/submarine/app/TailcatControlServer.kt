@@ -1,6 +1,9 @@
 package com.submarine.app
 
 import com.submarine.tailcatbridge.tailcatbridge.Tailcatbridge
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
@@ -11,6 +14,8 @@ import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Private same-process control plane for the Go Mobile Tailcat bridge. Rust
@@ -21,6 +26,7 @@ import kotlin.concurrent.thread
 object TailcatControlServer {
   private const val PORT = 38491
   private val clients = ConcurrentHashMap<String, Long>()
+  private lateinit var appContext: Context
   @Volatile private var started = false
 
   private fun addressIdentity(address: String): String = MessageDigest
@@ -29,7 +35,54 @@ object TailcatControlServer {
     .take(12)
     .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
-  fun start() {
+  // Go Mobile exceptions can include transport internals. Only return fixed
+  // classifications to Rust: a Tailcat address can contain a PSK.
+  private fun forwardErrorCode(error: Throwable): String = when {
+    error.message?.contains("fetching DERPMap") == true -> "DERP_MAP_UNAVAILABLE"
+    error.message?.contains("no DERP regions") == true -> "NO_DERP_REGION"
+    error.message?.contains("meow not sent") == true -> "RELAY_UNAVAILABLE"
+    error.message?.contains("context deadline exceeded") == true -> "RELAY_HANDSHAKE_TIMEOUT"
+    else -> "FORWARD_OPEN_FAILED"
+  }
+
+  // Android does not grant ordinary apps netlink route access. Supply the
+  // LinkProperties it does expose to the Go Tailcat engine instead. This is
+  // not VpnService and does not alter the device routing table.
+  private fun updateNativeNetworkState() {
+    val connectivity = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    val interfaces = JSONArray()
+    var defaultInterface = ""
+    for (network in connectivity.allNetworks) {
+      val capabilities = connectivity.getNetworkCapabilities(network) ?: continue
+      if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+      val properties = connectivity.getLinkProperties(network) ?: continue
+      val name = properties.interfaceName ?: continue
+      val addresses = JSONArray()
+      properties.linkAddresses.forEach { address ->
+        addresses.put("${address.address.hostAddress}/${address.prefixLength}")
+      }
+      if (addresses.length() == 0) continue
+      interfaces.put(JSONObject().apply {
+        put("name", name)
+        put("addresses", addresses)
+        put("mtu", properties.mtu)
+      })
+      if (defaultInterface.isEmpty() && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+        defaultInterface = name
+      }
+    }
+    if (defaultInterface.isEmpty() && interfaces.length() > 0) {
+      defaultInterface = interfaces.getJSONObject(0).getString("name")
+    }
+    Tailcatbridge.updateNetworkState(JSONObject().apply {
+      put("interfaces", interfaces)
+      put("defaultInterface", defaultInterface)
+    }.toString())
+  }
+
+  fun start(context: Context) {
+    appContext = context.applicationContext
     if (started) return
     synchronized(this) {
       if (started) return
@@ -66,7 +119,10 @@ object TailcatControlServer {
       return@use
     }
     // Do not return exception messages: a Tailcat address can contain a PSK.
-    val handle = runCatching { clients.computeIfAbsent(address) { Tailcatbridge.start(it) } }
+    val handle = runCatching {
+      updateNativeNetworkState()
+      clients.computeIfAbsent(address) { Tailcatbridge.start(it) }
+    }
       .getOrElse { error ->
         // Start only returns these fixed, non-secret validation messages. Do
         // not pass arbitrary JNI/Go exception text back to Rust.
@@ -82,8 +138,8 @@ object TailcatControlServer {
         return@use
       }
     val localPort = runCatching { Tailcatbridge.openForward(handle, remotePort.toLong()) }
-      .getOrElse {
-        out.write("ERR FORWARD_OPEN_FAILED\n")
+      .getOrElse { error ->
+        out.write("ERR ${forwardErrorCode(error)}\n")
         out.flush()
         return@use
       }

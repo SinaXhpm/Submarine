@@ -56,6 +56,10 @@ async fn open_via_control(address: &str, port: u16) -> Result<tokio::net::TcpStr
             }),
             "INVALID_PORT" => "received an invalid SSH port",
             "CLIENT_START_FAILED" => "could not create the native Tailcat client",
+            "DERP_MAP_UNAVAILABLE" => "could not fetch the Tailcat relay map",
+            "NO_DERP_REGION" => "address did not resolve to a Tailcat relay region",
+            "RELAY_UNAVAILABLE" => "could not send a Tailcat relay handshake",
+            "RELAY_HANDSHAKE_TIMEOUT" => "timed out waiting for the Tailcat relay handshake",
             "FORWARD_OPEN_FAILED" => "could not open a native Tailcat forward",
             _ => "rejected the connection",
         };

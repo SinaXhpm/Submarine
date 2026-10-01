@@ -5,6 +5,7 @@ set -euo pipefail
 # is deliberately ignored: CI/release builds it, verifies the JNI ABIs, then
 # places it in app/libs. Keeping it out of git avoids opaque binary churn.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT/tailcat-bridge"
 export GOTOOLCHAIN=go1.27.1
 if [[ -z "${JAVA_HOME:-}" || ! -x "$JAVA_HOME/bin/javac" ]]; then
   echo "JAVA_HOME must point to a JDK (not a JRE)" >&2

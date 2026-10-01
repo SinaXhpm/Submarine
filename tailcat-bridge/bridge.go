@@ -15,7 +15,7 @@ import (
 )
 
 type clientRef struct {
-	client *tailcat.Client
+	client  *tailcat.Client
 	address string
 	refs    int
 }
@@ -58,9 +58,11 @@ func Start(address string) (int64, error) {
 	return h, nil
 }
 
-// OpenForward binds a loopback-only ephemeral listener. Each accepted local
-// connection gets its own Tailcat TCP stream, which permits russh terminal,
-// SFTP and forwarding connections to share one Tailcat client safely.
+// OpenForward first establishes the Tailcat TCP stream, then binds a
+// loopback-only ephemeral listener. This makes a failed Tailcat dial visible
+// to the caller instead of looking like a successful SSH connection that is
+// immediately reset. The first local connection receives the pre-established
+// stream; later local connections get their own stream from the shared client.
 func OpenForward(handle int64, remotePort int) (int, error) {
 	if remotePort < 1 || remotePort > 65535 {
 		return 0, fmt.Errorf("invalid remote port")
@@ -71,26 +73,47 @@ func OpenForward(handle int64, remotePort int) (int, error) {
 	if ref == nil {
 		return 0, fmt.Errorf("Tailcat client is not running")
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil { return 0, err }
 	ctx, cancel := context.WithCancel(context.Background())
+	remote, err := ref.client.DialTCPPort(ctx, uint16(remotePort))
+	if err != nil {
+		cancel()
+		return 0, fmt.Errorf("Tailcat TCP dial failed: %w", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		_ = remote.Close()
+		cancel()
+		return 0, err
+	}
 	state.Lock()
 	fid := state.nextForward
 	state.nextForward++
 	state.forwards[fid] = &forward{listener: ln, cancel: cancel}
 	state.Unlock()
-	go acceptLoop(ctx, ln, ref.client, uint16(remotePort))
+	go acceptLoop(ctx, ln, ref.client, uint16(remotePort), remote)
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
-func acceptLoop(ctx context.Context, ln net.Listener, client *tailcat.Client, port uint16) {
+func acceptLoop(ctx context.Context, ln net.Listener, client *tailcat.Client, port uint16, first net.Conn) {
 	for {
 		local, err := ln.Accept()
-		if err != nil { return }
-		go func() {
+		if err != nil {
+			if first != nil {
+				_ = first.Close()
+			}
+			return
+		}
+		remote := first
+		first = nil
+		go func(remote net.Conn) {
 			defer local.Close()
-			remote, err := client.DialTCPPort(ctx, port)
-			if err != nil { return }
+			if remote == nil {
+				var err error
+				remote, err = client.DialTCPPort(ctx, port)
+				if err != nil {
+					return
+				}
+			}
 			defer remote.Close()
 			// Close either half when the opposite end exits. This keeps failed
 			// Tailcat dials/cancellations from leaving a local SSH socket stuck.
@@ -98,7 +121,7 @@ func acceptLoop(ctx context.Context, ln net.Listener, client *tailcat.Client, po
 			go func() { _, _ = io.Copy(remote, local); done <- struct{}{} }()
 			go func() { _, _ = io.Copy(local, remote); done <- struct{}{} }()
 			<-done
-		}()
+		}(remote)
 	}
 }
 
@@ -108,7 +131,9 @@ func StopForward(id int64) error {
 	f := state.forwards[id]
 	delete(state.forwards, id)
 	state.Unlock()
-	if f == nil { return nil }
+	if f == nil {
+		return nil
+	}
 	f.cancel()
 	return f.listener.Close()
 }
@@ -118,9 +143,15 @@ func StopForward(id int64) error {
 func Stop(handle int64) error {
 	state.Lock()
 	ref := state.clients[handle]
-	if ref == nil { state.Unlock(); return nil }
+	if ref == nil {
+		state.Unlock()
+		return nil
+	}
 	ref.refs--
-	if ref.refs > 0 { state.Unlock(); return nil }
+	if ref.refs > 0 {
+		state.Unlock()
+		return nil
+	}
 	delete(state.clients, handle)
 	delete(state.byAddress, ref.address)
 	state.Unlock()
