@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, memo } from "react";
+import { useState, useEffect, useRef, memo, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -9,24 +9,32 @@ import SftpWorkspace from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
 import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
-import { useIsCompact } from "../hooks/useViewport";
+import { useIsCompact, useViewportWidth } from "../hooks/useViewport";
+import { onRovingKeyDown } from "../ui/rovingKeys";
 
 // Compact "run this tab on its own dedicated SSH connection" toggle, shown in
 // the SFTP and Port-Forwarding tab headers. The status dot reflects the live
 // state of the dedicated connection: green = up, amber (pulsing) = opening /
 // applies-on-connect, red = couldn't be established (falling back to the main
 // session). No dot when the toggle is off.
-const SepToggle = ({ on, onToggle, status, title, onReconnect }: {
+const SepToggle = ({ on, onToggle, status, title, onReconnect, showLabel = true }: {
   on: boolean;
   onToggle: (v: boolean) => void;
   status: 'ready' | 'pending' | 'failed' | 'off';
   title: string;
   onReconnect?: () => void;
+  /** False in a narrow pane: just the box, the label moves to the tooltip. */
+  showLabel?: boolean;
 }) => (
   <span className="flex items-center gap-1.5">
-    <label className="flex items-center gap-1.5 text-[10px] text-zinc-400 hover:text-zinc-200 cursor-pointer select-none" title={title}>
-      <input type="checkbox" className="w-3 h-3 accent-primary" checked={on} onChange={(e) => onToggle(e.target.checked)} />
-      <span className="uppercase tracking-wider font-bold">Dedicated session</span>
+    <label className="group flex items-center gap-2 text-[13px] text-zinc-300 hover:text-white cursor-pointer select-none" title={title}>
+      <input type="checkbox" className="peer sr-only" aria-label="Dedicated session" checked={on} onChange={(e) => onToggle(e.target.checked)} />
+      <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-primary/50 ${
+        on ? 'bg-primary border-primary text-black' : 'border-zinc-500 group-hover:border-zinc-300'
+      }`}>
+        {on && <Check size={12} strokeWidth={3} />}
+      </span>
+      {showLabel && <span className="font-medium whitespace-nowrap">Dedicated session</span>}
       {on && (
         <span
           className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -45,11 +53,90 @@ const SepToggle = ({ on, onToggle, status, title, onReconnect }: {
         title="Reconnect the dedicated session"
         className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10 transition-colors"
       >
-        <RotateCw size={10} />
+        <RotateCw size={12} />
       </button>
     )}
   </span>
 );
+
+const TOOLS = [
+  { id: 'sftp',    icon: Folder,  label: 'SFTP',    hint: 'SFTP — file browser' },
+  { id: 'tunnels', icon: Network, label: 'Ports',   hint: 'Ports — port forwarding' },
+  { id: 'cmds',    icon: Library, label: 'Library', hint: 'Library — commands & notes' },
+  { id: 'info',    icon: Info,    label: 'Info',    hint: 'Info — server overview' },
+] as const;
+type ToolId = typeof TOOLS[number]['id'];
+
+// The open tool pane's header lives in the session toolbar, in the strip
+// above the pane, so it does not take a row of its own. It has two parts:
+// ToolTabs — the tools as tabs, rendered once by SessionView so focus and
+// the row survive a tool switch — and ToolPanelActions, the right-hand
+// cluster each pane portals in next to them (`slot`): its own controls
+// (Dedicated session, refresh), then the close button.
+const ToolTabs = ({ active, onSelect, showLabels }: {
+  active: ToolId;
+  onSelect: (id: ToolId) => void;
+  /** False when the pane is dragged narrow: icons only. */
+  showLabels: boolean;
+}) => {
+  // Arrows move focus without selecting, so the tab stop follows focus while
+  // it is inside the row (Shift+Tab then leaves the row instead of landing
+  // on the selected tab) and goes back to the selected tab once focus leaves.
+  const [focused, setFocused] = useState<ToolId | null>(null);
+  const stop = focused ?? active;
+  return (
+  <div
+    role="tablist"
+    aria-label="Session tools"
+    onKeyDown={(e) => onRovingKeyDown(e, false)}
+    onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setFocused(null); }}
+    className="flex items-stretch min-w-0 overflow-x-auto no-scrollbar"
+  >
+    {TOOLS.map(({ id, icon: Icon, label, hint }) => {
+      const on = active === id;
+      return (
+        <button
+          key={id}
+          role="tab"
+          aria-selected={on}
+          tabIndex={stop === id ? 0 : -1}
+          aria-label={hint}
+          title={hint}
+          onFocus={() => setFocused(id)}
+          onClick={() => onSelect(id)}
+          className={`relative shrink-0 px-3 flex items-center gap-2 text-[13px] transition-colors ${
+            on ? 'text-primary font-semibold' : 'text-zinc-400 font-medium hover:text-zinc-100'
+          }`}
+        >
+          <Icon size={16} className="shrink-0" />
+          {showLabels && <span>{label}</span>}
+          {on && <span className="absolute left-2 right-2 bottom-0 h-0.5 rounded-full bg-primary" />}
+        </button>
+      );
+    })}
+  </div>
+  );
+};
+
+const ToolPanelActions = ({ slot, onClose, children }: {
+  slot: HTMLElement | null;
+  onClose: () => void;
+  children?: ReactNode;
+}) => slot ? createPortal(
+  <>
+    {children}
+    {children && <span className="w-px h-6 bg-white/10" aria-hidden="true" />}
+    <button
+      onClick={onClose}
+      title="Close panel"
+      aria-label="Close panel"
+      className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/5 transition-colors"
+    >
+      <X size={16} />
+    </button>
+  </>,
+  slot
+) : null;
 
 const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
@@ -334,7 +421,9 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       onTerminalsChange(session.id, terminals, activeTab);
     }
   }, [session?.id, terminals, activeTab, onTerminalsChange]);
-  const [activeTool, setActiveTool] = useState<'sftp' | 'tunnels' | 'mirrors' | 'cmds' | 'info' | null>(null);
+  const [activeTool, setActiveTool] = useState<ToolId | null>(null);
+  // Right end of the tool tab row, where the open pane's ToolPanelActions portal in.
+  const [toolHeaderSlot, setToolHeaderSlot] = useState<HTMLDivElement | null>(null);
   // Split-pane state — an ORDERED array of terminal IDs that currently
   // share the main pane. `[]` or a single-id array means "no split, use
   // the usual absolute-overlap layout"; length ≥ 2 means the panes tile
@@ -368,6 +457,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // We collapse to a stacked single-pane view: when a tool is open, the
   // tool takes full width and the terminal is hidden behind a back-chip.
   const isCompact = useIsCompact();
+  const viewportWidth = useViewportWidth();
   // Width of the right-side tool pane in pixels. The divider drag updates this
   // and we sync it to localStorage so subsequent sessions remember the split.
   // First-time default is a quarter of the current window width — looks right
@@ -378,6 +468,11 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     const quarter = Math.round((window.innerWidth || 1440) / 4);
     return Math.max(240, Math.min(900, quarter));
   });
+  // Width of the tool tab row in the toolbar: it spans the pane plus the 4px
+  // resize divider, or the whole window on compact. Derived, not measured,
+  // so its labels are right on the first frame and track a drag exactly.
+  const toolBarWidth = isCompact ? viewportWidth : toolPanelWidth + 4;
+  const toolBarWide = toolBarWidth >= 580;
 
   const initiatedRef = useRef(false);
   // Guards the per-node "run on connect" commands to fire exactly once for
@@ -1038,9 +1133,9 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
           full chrome and 2-3 sessions side-by-side would fight for
           vertical space with duplicate toolbars. */}
       {!chromeless && (
-      <div className="h-12 border-b border-white/5 bg-[#121214]/50 flex items-center px-2 sm:px-4 shrink-0 justify-between gap-1">
+      <div className={`h-12 border-b border-white/5 bg-[#121214]/50 flex items-center shrink-0 justify-between gap-1 ${activeTool ? 'pl-2 sm:pl-4' : 'px-2 sm:px-4'}`}>
         <div
-          className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 mr-1 sm:mr-4 mask-fade-right"
+          className={`flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 mr-1 sm:mr-4 mask-fade-right ${activeTool && isCompact ? 'hidden' : ''}`}
           onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY; }}
         >
         {terminals.map(t => {
@@ -1152,34 +1247,36 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
         {/* Tool rail: icon + text label. The label collapses to icon-only on
             narrow viewports (below md) so the terminal tab strip keeps its
             horizontal real estate when space is tight; the full description
-            stays in the tooltip either way. */}
-        <div className="flex items-center gap-1 shrink-0 sm:border-l border-white/5 sm:pl-3 pl-1">
-          {([
-            { id: 'sftp',    icon: Folder,  label: 'SFTP',    hint: 'SFTP — file browser' },
-            { id: 'tunnels', icon: Network, label: 'Ports',   hint: 'Ports — port forwarding' },
-            { id: 'cmds',    icon: Library, label: 'Library', hint: 'Library — commands & notes' },
-            { id: 'info',    icon: Info,    label: 'Info',    hint: 'Info — server overview' },
-          ] as const).map(({ id, icon: Icon, label, hint }) => {
-            const on = activeTool === id;
-            return (
-              <button
-                key={id}
-                onClick={() => setActiveTool(on ? null : id)}
-                title={hint}
-                aria-label={hint}
-                aria-pressed={on}
-                className={`h-10 sm:h-8 px-2.5 rounded-lg flex items-center gap-1.5 transition-all ${
-                  on
-                    ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner'
-                    : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'
-                }`}
-              >
-                <Icon size={14} className="shrink-0" />
-                <span className="hidden md:inline text-[11px] font-semibold tracking-tight">{label}</span>
-              </button>
-            );
-          })}
+            stays in the tooltip either way. Only shown while the tool pane
+            is closed — an open pane puts the same tools here as tabs, lined
+            up over the pane: pane width plus the 4px resize divider. On
+            compact the pane is full width, so the tabs take the whole row. */}
+        {activeTool && (
+          <div
+            style={isCompact ? undefined : { width: `${toolBarWidth}px` }}
+            className={`self-stretch min-w-0 flex items-stretch gap-2 px-2 ${isCompact ? 'flex-1' : 'shrink-0 border-l border-white/5'}`}
+          >
+            <ToolTabs active={activeTool} onSelect={setActiveTool} showLabels={toolBarWidth >= 420} />
+            <div className="flex-1" />
+            <div ref={setToolHeaderSlot} className="flex items-center gap-3 shrink-0" />
+          </div>
+        )}
+        {!activeTool && (
+        <div className="flex items-center gap-0.5 shrink-0 sm:border-l border-white/5 sm:pl-2 pl-1">
+          {TOOLS.map(({ id, icon: Icon, label, hint }) => (
+            <button
+              key={id}
+              onClick={() => setActiveTool(id)}
+              title={hint}
+              aria-label={hint}
+              className="h-10 sm:h-9 px-3 rounded-lg flex items-center gap-2 text-[13px] font-medium text-zinc-400 hover:text-zinc-100 hover:bg-white/5 transition-colors"
+            >
+              <Icon size={16} className="shrink-0" />
+              <span className="hidden md:inline">{label}</span>
+            </button>
+          ))}
         </div>
+        )}
       </div>
       )}
 
@@ -1495,25 +1592,20 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
             don't carry live state worth preserving across switches. */}
         <div
           style={activeTool && !isCompact ? { width: `${toolPanelWidth}px` } : undefined}
-          className={`${activeTool ? (isCompact ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-[#121214]/95 flex flex-col h-full overflow-hidden ${activeTool ? 'animate-in slide-in-from-right duration-300' : ''}`}
+          className={`${activeTool ? (isCompact ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-[#121214]/95 flex flex-col h-full overflow-hidden ${activeTool ? 'animate-in' : ''}`}
         >
           {activeTool === 'sftp' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5">
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 shrink-0">SFTP File Browser</span>
-                  <SepToggle
-                    on={separateSftp}
-                    onToggle={toggleSeparateSftp}
-                    status={!separateSftp ? 'off' : sftpConnStatus === 'ready' ? 'ready' : sftpConnStatus === 'failed' ? 'failed' : 'pending'}
-                    title="Run SFTP over its own dedicated SSH connection instead of sharing the terminal's session"
-                    onReconnect={reconnectSftpConn}
-                  />
-                </div>
-                <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors shrink-0">
-                  <X size={14} />
-                </button>
-              </div>
+              <ToolPanelActions slot={toolHeaderSlot} onClose={() => setActiveTool(null)}>
+                <SepToggle
+                  on={separateSftp}
+                  onToggle={toggleSeparateSftp}
+                  status={!separateSftp ? 'off' : sftpConnStatus === 'ready' ? 'ready' : sftpConnStatus === 'failed' ? 'failed' : 'pending'}
+                  title="Run SFTP over its own dedicated SSH connection instead of sharing the terminal's session"
+                  onReconnect={reconnectSftpConn}
+                  showLabel={toolBarWide}
+                />
+              </ToolPanelActions>
               <div className="flex-1 overflow-hidden relative">
                 <SftpWorkspace
                   sessionId={session.id}
@@ -1522,6 +1614,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                   mirrorsConfig={(() => {
                     try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
                   })()}
+                  terminalId={activeTab}
+                  onRevealTerminal={isCompact ? () => setActiveTool(null) : undefined}
                 />
               </div>
             </div>
@@ -1529,21 +1623,16 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
 
           {activeTool === 'tunnels' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5">
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 shrink-0">Port Forwarding</span>
-                  <SepToggle
-                    on={separateFwd}
-                    onToggle={toggleSeparateFwd}
-                    status={!separateFwd ? 'off' : fwdConnStatus === 'ready' ? 'ready' : fwdConnStatus === 'failed' ? 'failed' : 'pending'}
-                    title="Run port-forwarding over its own dedicated SSH connection instead of sharing the terminal's session"
-                    onReconnect={reconnectFwdConn}
-                  />
-                </div>
-                <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors shrink-0">
-                  <X size={14} />
-                </button>
-              </div>
+              <ToolPanelActions slot={toolHeaderSlot} onClose={() => setActiveTool(null)}>
+                <SepToggle
+                  on={separateFwd}
+                  onToggle={toggleSeparateFwd}
+                  status={!separateFwd ? 'off' : fwdConnStatus === 'ready' ? 'ready' : fwdConnStatus === 'failed' ? 'failed' : 'pending'}
+                  title="Run port-forwarding over its own dedicated SSH connection instead of sharing the terminal's session"
+                  onReconnect={reconnectFwdConn}
+                  showLabel={toolBarWide}
+                />
+              </ToolPanelActions>
               <div className="flex-1 overflow-hidden relative">
                 <TunnelsPanel sessionId={session.id} serverId={session.serverId} disabled={status !== 'connected'} />
               </div>
@@ -1556,6 +1645,9 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               onClose={() => setActiveTool(null)}
               serverId={session.serverId}
               serverName={session.serverName}
+              renderHeader={({ actions, onClose }) => (
+                <ToolPanelActions slot={toolHeaderSlot} onClose={onClose}>{actions}</ToolPanelActions>
+              )}
             />
           )}
 
@@ -1564,12 +1656,9 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               explicitly asked for "cache while session is alive", and a
               fresh remount would re-fire the probe every tab swap. */}
           <div className={`flex-1 flex flex-col overflow-hidden ${activeTool === 'info' ? '' : 'hidden'}`}>
-            <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Server Info</span>
-              <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
-                <X size={14} />
-              </button>
-            </div>
+            {activeTool === 'info' && (
+              <ToolPanelActions slot={toolHeaderSlot} onClose={() => setActiveTool(null)} />
+            )}
             <InfoPanel
               sessionId={session.id}
               disabled={status !== 'connected'}
