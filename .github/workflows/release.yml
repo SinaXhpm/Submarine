@@ -495,11 +495,10 @@ jobs:
           echo "ANDROID_BUILD_PROFILE=release" >> "$GITHUB_ENV"
           echo "Release keystore materialized ($(wc -c < "$RUNNER_TEMP/signing/release.jks") bytes)."
 
-      # Universal APK — single .apk users sideload from GitHub. Split APKs
-      # were tried in v0.2.18/v0.2.19 but Android rejects them as "invalid
-      # package" when installed standalone because split APKs need their
-      # matching base.apk installed at the same time (the Play Store
-      # mechanism). For direct sideload only a universal APK works.
+      # Build two standalone, ABI-specific APKs. These are not Play Store
+      # split APKs: each is independently installable. Keeping arm64 and
+      # armv7 native libraries separate avoids making modern phones download
+      # a second copy of Rust and Go/Tailcat solely for legacy ARM devices.
       #
       # AAB was dropped in v0.2.30 — we don't ship through Google Play, so
       # the .aab artifact was dead weight (users can't sideload it) and
@@ -510,20 +509,26 @@ jobs:
         env:
           NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
-        run: npm run android:build
+        run: |
+          mkdir -p artifacts
+          npm run android:build:apk:arm64
+          arm64_apk="$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*-release*.apk' ! -name '*-unsigned.apk' | head -1)"
+          test -n "$arm64_apk"
+          cp "$arm64_apk" "artifacts/Submarine-v${VERSION}-android-arm64-v8a.apk"
+          npm run android:build:apk:armv7
+          armv7_apk="$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*-release*.apk' ! -name '*-unsigned.apk' | head -1)"
+          test -n "$armv7_apk"
+          cp "$armv7_apk" "artifacts/Submarine-v${VERSION}-android-armeabi-v7a.apk"
 
       - name: Stage Android artifacts
         shell: bash
         run: |
           mkdir -p artifacts
-          # APKs land under app/build/outputs/apk/<abi>/release/*.apk.
-          # Rename to include the version so release asset names are readable.
+          # The build step copied independently installable ABI APKs here.
           # Fork-validation artifacts are signed by a throwaway CI key.
           shopt -s nullglob
           found=0
-          for apk in $(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-release*.apk" ! -name "*-unsigned.apk"); do
-            base="$(basename "$apk" .apk)"
-            cp "$apk" "artifacts/Submarine-v${{ env.VERSION }}-${base}.apk"
+          for apk in artifacts/*-android-*.apk; do
             found=$((found + 1))
           done
           if [ "$found" -eq 0 ]; then
