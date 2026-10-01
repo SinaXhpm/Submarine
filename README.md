@@ -29,6 +29,7 @@
 - **Zero-knowledge cloud sync** — profiles are Argon2id + AES-256-GCM sealed on your device before upload; the server (and everyone else) only sees ciphertext. Browser dashboard at [`api.sinaxhpm.com/account`](https://api.sinaxhpm.com/account/) to manage your account and stored profiles
 - **Docker manager** — containers, logs (live tail), stats, prune, and `docker exec` shells as first-class session tabs
 - **Import from anywhere** — PuTTY `.reg`, MobaXterm `.mxtsessions`, OpenSSH config, and Submarine JSON exports all bulk-imported from the Servers page
+- **Native Tailcat transport** — connect to a `tc...` Tailcat address on Android, Windows, macOS, or Linux without installing Tailscale, OpenTailcat, or a separate Tailcat executable
 - **Secure by default** — TOFU host keys with per-connection nonce binding, strict CSP, minimal Tauri permission ACL, zeroized master key
 
 ## Screenshots
@@ -153,6 +154,18 @@ Manage Docker on any session host without typing a single `docker` command.
 - Dynamic supports **SOCKS4, SOCKS4a, SOCKS5, SOCKS5h, HTTP CONNECT, and plain HTTP proxy**
 - Each tunnel starts and stops independently, saved with the server profile
 
+### Tailcat transport
+
+Submarine can use [Tailcat](https://github.com/tailscale/tailcat) as the private TCP transport beneath its normal SSH client. This is useful when the SSH host is exposed with Tailcat rather than a public IP address.
+
+1. In a saved server or **Quick connect**, select **Tailcat** as the transport.
+2. Paste the complete `tc...` Tailcat address into **Tailcat address** and retain the normal SSH port, username, and authentication settings (port `22` by default).
+3. Connect normally — terminal, SFTP, monitoring, and other SSH connections use the same app-managed Tailcat client where appropriate.
+
+- **No system VPN.** Submarine packages a small Tailcat bridge for Android and desktop. It does not require Tailscale, OpenTailcat, a separate `tailcat` command, Android VPN permission, or a TUN interface.
+- **Keep the address secret.** A Tailcat address can contain a WireGuard pre-shared key. Submarine stores it in the encrypted vault, masks it in the UI, and redacts it from ordinary logs and errors.
+- **SSH verification remains enabled.** Tailcat transports TCP only; Submarine still performs its normal SSH host-key verification and uses your existing SSH key, password, or keyboard-interactive authentication.
+
 ### End-to-End Encrypted Profile Sync
 
 - Save servers once, access them on every machine you own
@@ -180,7 +193,7 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | Fedora / RHEL / openSUSE | `.rpm` — `sudo dnf install ./submarine-*.rpm` |
 | Arch / Manjaro / EndeavourOS | `.pkg.tar.zst` — `sudo pacman -U submarine-*.pkg.tar.zst` |
 | Any Linux | `.AppImage` — `chmod +x` and double-click |
-| Android 8.0+ | `.apk` — sideload, no Play Store required |
+| Android 8.0+ | `android-arm64-v8a.apk` for modern phones, or `android-armeabi-v7a.apk` for older 32-bit devices — sideload, no Play Store required |
 
 > Builds are currently **unsigned**. Windows SmartScreen will prompt — click "More info → Run anyway". On macOS you may need `xattr -d com.apple.quarantine /Applications/Submarine.app`. Android sideloading needs "Install unknown apps" enabled for the installer source.
 
@@ -195,6 +208,7 @@ Submarine on Android is a true native build of the same Rust core — same SSH s
 - **Port forwarding (SOCKS / local / remote)** runs as long as the app is open — handy for tunnelling a mobile browser through your home box.
 - **Touch-friendly Info / Docker tabs.** Same server inspection and container manager as desktop, with ≥32 px touch targets and full-bleed modals.
 - **Folder mirror is desktop-only for now** — Android's filesystem permissions don't map cleanly onto our watcher model.
+- **Tailcat transport** connects directly to Tailcat-exposed SSH services without granting Android VPN permission or installing a separate networking app.
 
 Tested on Android 8.0+ (API 26+). Phones, tablets, and Android-on-ChromeOS.
 
