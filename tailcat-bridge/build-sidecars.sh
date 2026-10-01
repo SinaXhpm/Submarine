@@ -31,6 +31,7 @@ case "${1:-all}" in
   x86_64-apple-darwin) build darwin amd64 "$1" ;;
   aarch64-apple-darwin) build darwin arm64 "$1" ;;
   x86_64-pc-windows-msvc) build windows amd64 "$1" .exe ;;
+  x86_64-pc-windows-gnu) build windows amd64 "$1" .exe ;;
   aarch64-pc-windows-msvc) build windows arm64 "$1" .exe ;;
   *) echo "unsupported Tauri target: $1" >&2; exit 2 ;;
 esac
