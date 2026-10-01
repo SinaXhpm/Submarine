@@ -7,6 +7,7 @@ import java.io.OutputStreamWriter
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
@@ -21,6 +22,12 @@ object TailcatControlServer {
   private const val PORT = 38491
   private val clients = ConcurrentHashMap<String, Long>()
   @Volatile private var started = false
+
+  private fun addressIdentity(address: String): String = MessageDigest
+    .getInstance("SHA-256")
+    .digest(address.toByteArray(Charsets.UTF_8))
+    .take(12)
+    .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
   fun start() {
     if (started) return
@@ -68,7 +75,9 @@ object TailcatControlServer {
         } else {
           "CLIENT_START_FAILED"
         }
-        out.write("ERR $code\n")
+        // Identity is a truncated SHA-256 digest, allowing support to compare
+        // a persisted profile with the server address without disclosing it.
+        out.write("ERR $code ${addressIdentity(address)}\n")
         out.flush()
         return@use
       }

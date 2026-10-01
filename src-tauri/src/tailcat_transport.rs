@@ -45,9 +45,15 @@ async fn open_via_control(address: &str, port: u16) -> Result<tokio::net::TcpStr
     let local_port: u16 = if let Some(port) = response.strip_prefix("OK ") {
         port.trim().parse().map_err(|_| "Tailcat bridge returned an invalid local port".to_string())?
     } else if let Some(stage) = response.strip_prefix("ERR ") {
-        let detail = match stage {
+        let mut fields = stage.split_ascii_whitespace();
+        let code = fields.next().unwrap_or_default();
+        let identity = fields.next().filter(|value| value.len() == 24 && value.chars().all(|c| c.is_ascii_hexdigit()));
+        let detail = match code {
             "BAD_REQUEST" => "received an invalid control request",
-            "INVALID_ADDRESS" => "could not parse the Tailcat address",
+            "INVALID_ADDRESS" => return Err(match identity {
+                Some(value) => format!("Tailcat bridge could not parse the Tailcat address (identity tailcat:{value})"),
+                None => "Tailcat bridge could not parse the Tailcat address".to_string(),
+            }),
             "INVALID_PORT" => "received an invalid SSH port",
             "CLIENT_START_FAILED" => "could not create the native Tailcat client",
             "FORWARD_OPEN_FAILED" => "could not open a native Tailcat forward",
