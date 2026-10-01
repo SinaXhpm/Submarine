@@ -425,10 +425,9 @@ jobs:
           ls -la "$NDK_BIN" | grep -E '(ranlib|ar|strip)$' | head -20
 
       - name: Build and verify Tailcat Go Mobile AAR
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
         run: |
-          tailcat-bridge/build-aar.sh
+          export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+          bash tailcat-bridge/build-aar.sh
           unzip -l src-tauri/gen/android/app/libs/tailcat-bridge.aar | \
             grep -E 'jni/(arm64-v8a|armeabi-v7a|x86_64)/libgojni.so'
 
