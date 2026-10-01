@@ -2,9 +2,11 @@
 // component is mounted twice — once with a LocalProvider and once with a
 // RemoteProvider — and dispatches all I/O through this interface.
 //
-// Cross-pane transfer is handled outside the provider (see `transfer.ts`) so
+// Cross-pane transfer is handled outside the provider (the panels' upload / download batches) so
 // each backend can keep its own fast path (e.g. `sftp_download_file` writes
 // directly to disk instead of round-tripping through a JS `Uint8Array`).
+
+import type { ArchiveFormat } from "./archive";
 
 export interface FileEntry {
   name: string;
@@ -15,6 +17,42 @@ export interface FileEntry {
   uid?: number;
   gid?: number;
   modified?: number; // unix timestamp (seconds)
+  /**
+   * The entry itself is a symbolic link. Anything that acts on the entry
+   * (delete, drag, download) must check this first: `isDir`
+   * describes the link's TARGET once resolved, and is only meant for the
+   * icon, the sort order, and opening.
+   */
+  isSymlink?: boolean;
+  /**
+   * "pending": listed, target not followed yet (attributes are the link's
+   * own). "ok": attributes and `isDir` are the target's. "broken": target
+   * missing or a loop. "error": the target could not be read (`linkError`).
+   */
+  linkState?: LinkState;
+  /** Link text as stored on disk, possibly relative to the link's directory. */
+  linkTarget?: string;
+  linkError?: string;
+  /**
+   * The link's own lstat mtime. Unlike `modified`, never replaced by the
+   * target's; it changes when the link is retargeted, which is when a
+   * resolved link has to be followed again.
+   */
+  linkModified?: number;
+  /**
+   * State carried over from an earlier listing of the same directory and
+   * not confirmed since. Shown as is, but followed again before any action
+   * relies on it: the target may have gone away meanwhile.
+   */
+  linkStale?: boolean;
+}
+
+export type LinkState = "pending" | "ok" | "broken" | "error";
+
+/** Result of following one symlink; merged over its `FileEntry`. */
+export interface LinkInfo {
+  path: string;
+  patch: Partial<FileEntry>;
 }
 
 export interface ListResult {
@@ -43,9 +81,28 @@ export interface FileProvider {
   remove(path: string, isDir: boolean): Promise<void>;
   rename(from: string, to: string): Promise<void>;
 
+  // ---- archives ------------------------------------------------------------
+  /**
+   * Packs `names` (entries of `dir`) into the archive at `dest`. Rejects with
+   * `EXISTS:<path>` when `dest` is already there and `overwrite` is false.
+   */
+  archive(dir: string, names: string[], dest: string, format: ArchiveFormat, overwrite: boolean): Promise<void>;
+  /**
+   * Unpacks the archive `name` of `dir` into `dir`, or into its subfolder
+   * `folder` (created if missing), replacing same-named files. `name` and
+   * `folder` are single path components; the backend refuses anything else.
+   */
+  extract(dir: string, name: string, folder: string | null): Promise<void>;
+
   // ---- optional unix-only operations --------------------------------------
   chmod?: (path: string, mode: number) => Promise<void>;
   chown?: (path: string, uid: number, gid: number) => Promise<void>;
+
+  // ---- optional symlink support -------------------------------------------
+  /** Follows the given links. Absent when the provider does not report links. */
+  resolveLinks?: (paths: string[]) => Promise<LinkInfo[]>;
+  /** Absolute path with every symlink component resolved. */
+  realPath?: (path: string) => Promise<string>;
 }
 
 /** Remote provider carries the SSH session id so transfer.ts can target it. */

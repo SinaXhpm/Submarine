@@ -25,7 +25,7 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
-use rand::RngCore;
+use rand::Rng;
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
 use zeroize::Zeroize;
@@ -44,7 +44,7 @@ pub struct Keypair {
 
 /// Generate a new account identity keypair.
 pub fn generate_keypair() -> Keypair {
-    let secret = StaticSecret::random_from_rng(rand::thread_rng());
+    let secret = StaticSecret::random_from_rng(&mut rand::rng());
     let public = PublicKey::from(&secret);
     Keypair {
         public: public.to_bytes(),
@@ -90,16 +90,16 @@ pub fn unwrap_secret(passphrase: &str, salt: &[u8], wrapped_hex: &str) -> Result
 /// Layout: `eph_pub(32) || nonce(12) || ciphertext`.
 pub fn seal_to(recipient_pub: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let recipient = PublicKey::from(*recipient_pub);
-    let eph = EphemeralSecret::random_from_rng(rand::thread_rng());
+    let eph = EphemeralSecret::random_from_rng(&mut rand::rng());
     let eph_pub = PublicKey::from(&eph);
     let shared = eph.diffie_hellman(&recipient);
     let mut key = derive_seal_key(shared.as_bytes(), &eph_pub.to_bytes(), recipient_pub)?;
     let cipher = Aes256Gcm::new((&key).into());
     key.zeroize();
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let ct = cipher
-        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext)
+        .encrypt(&Nonce::from(nonce_bytes), plaintext)
         .map_err(|_| "[SHARE] SEAL_ENCRYPT".to_string())?;
     let mut out = Vec::with_capacity(32 + NONCE_LEN + ct.len());
     out.extend_from_slice(&eph_pub.to_bytes());
@@ -115,7 +115,7 @@ pub fn unseal(recipient_secret: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, Strin
     }
     let mut eph = [0u8; 32];
     eph.copy_from_slice(&blob[..32]);
-    let nonce = &blob[32..32 + NONCE_LEN];
+    let nonce = Nonce::try_from(&blob[32..32 + NONCE_LEN]).map_err(|_| "[SHARE] BAD_NONCE".to_string())?;
     let ct = &blob[32 + NONCE_LEN..];
     let secret = StaticSecret::from(*recipient_secret);
     let recipient_pub = PublicKey::from(&secret).to_bytes();
@@ -124,7 +124,7 @@ pub fn unseal(recipient_secret: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, Strin
     let cipher = Aes256Gcm::new((&key).into());
     key.zeroize();
     cipher
-        .decrypt(Nonce::from_slice(nonce), ct)
+        .decrypt(&nonce, ct)
         .map_err(|_| "[SHARE] UNSEAL_DECRYPT".to_string())
 }
 
@@ -211,7 +211,7 @@ mod tests {
         let member = generate_keypair();
         let dek = {
             let mut d = [0u8; 32];
-            rand::thread_rng().fill_bytes(&mut d);
+            rand::rng().fill_bytes(&mut d);
             d
         };
         let blob = crate::encrypt_entity(b"{\"host\":\"10.0.0.1\"}", &dek).unwrap();

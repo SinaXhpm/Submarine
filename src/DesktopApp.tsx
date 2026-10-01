@@ -1805,6 +1805,7 @@ function DesktopApp() {
                           >
                             <SessionView
                               session={sess}
+                              profile={activeProfile}
                               onClose={getCloseHandler(sess.id)}
                               addLog={addLog}
                               onStatusChange={handleSessionStatus}
