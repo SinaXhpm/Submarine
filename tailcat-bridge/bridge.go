@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tailscale/tailcat"
 )
@@ -20,19 +21,12 @@ type clientRef struct {
 	refs    int
 }
 
-type forward struct {
-	listener net.Listener
-	cancel   context.CancelFunc
-}
-
 var state = struct {
 	sync.Mutex
-	nextHandle  int64
-	nextForward int64
-	clients     map[int64]*clientRef
-	byAddress   map[string]int64
-	forwards    map[int64]*forward
-}{nextHandle: 1, nextForward: 1, clients: map[int64]*clientRef{}, byAddress: map[string]int64{}, forwards: map[int64]*forward{}}
+	nextHandle int64
+	clients    map[int64]*clientRef
+	byAddress  map[string]int64
+}{nextHandle: 1, clients: map[int64]*clientRef{}, byAddress: map[string]int64{}}
 
 // Start validates address and returns a reusable client handle. Identical
 // addresses share one Tailcat WireGuard/magicsock client until every handle is
@@ -61,8 +55,10 @@ func Start(address string) (int64, error) {
 // OpenForward first establishes the Tailcat TCP stream, then binds a
 // loopback-only ephemeral listener. This makes a failed Tailcat dial visible
 // to the caller instead of looking like a successful SSH connection that is
-// immediately reset. The first local connection receives the pre-established
-// stream; later local connections get their own stream from the shared client.
+// immediately reset. Each forward is deliberately single-use: every SSH,
+// SFTP, monitor, or forwarding connection opens its own forward while sharing
+// the Tailcat client. The listener closes after its first accepted connection
+// (or after a short attachment deadline), so it cannot leak.
 func OpenForward(handle int64, remotePort int) (int, error) {
 	if remotePort < 1 || remotePort > 65535 {
 		return 0, fmt.Errorf("invalid remote port")
@@ -73,69 +69,39 @@ func OpenForward(handle int64, remotePort int) (int, error) {
 	if ref == nil {
 		return 0, fmt.Errorf("Tailcat client is not running")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	remote, err := ref.client.DialTCPPort(ctx, uint16(remotePort))
+	// DialTCPPort uses its context only while establishing the Tailcat
+	// connection. Keep the returned net.Conn independent of a cancellation
+	// scope so the SSH stream remains valid after this function returns.
+	remote, err := ref.client.DialTCPPort(context.Background(), uint16(remotePort))
 	if err != nil {
-		cancel()
 		return 0, fmt.Errorf("Tailcat TCP dial failed: %w", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = remote.Close()
-		cancel()
 		return 0, err
 	}
-	state.Lock()
-	fid := state.nextForward
-	state.nextForward++
-	state.forwards[fid] = &forward{listener: ln, cancel: cancel}
-	state.Unlock()
-	go acceptLoop(ctx, ln, ref.client, uint16(remotePort), remote)
+	go proxySingleConnection(ln, remote)
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
-func acceptLoop(ctx context.Context, ln net.Listener, client *tailcat.Client, port uint16, first net.Conn) {
-	for {
-		local, err := ln.Accept()
-		if err != nil {
-			if first != nil {
-				_ = first.Close()
-			}
-			return
-		}
-		remote := first
-		first = nil
-		go func(remote net.Conn) {
-			defer local.Close()
-			if remote == nil {
-				var err error
-				remote, err = client.DialTCPPort(ctx, port)
-				if err != nil {
-					return
-				}
-			}
-			defer remote.Close()
-			// Close either half when the opposite end exits. This keeps failed
-			// Tailcat dials/cancellations from leaving a local SSH socket stuck.
-			done := make(chan struct{}, 2)
-			go func() { _, _ = io.Copy(remote, local); done <- struct{}{} }()
-			go func() { _, _ = io.Copy(local, remote); done <- struct{}{} }()
-			<-done
-		}(remote)
+func proxySingleConnection(ln net.Listener, remote net.Conn) {
+	defer ln.Close()
+	defer remote.Close()
+	if tcp, ok := ln.(*net.TCPListener); ok {
+		_ = tcp.SetDeadline(time.Now().Add(15 * time.Second))
 	}
-}
-
-// StopForward immediately unblocks Accept and cancels in-flight dials.
-func StopForward(id int64) error {
-	state.Lock()
-	f := state.forwards[id]
-	delete(state.forwards, id)
-	state.Unlock()
-	if f == nil {
-		return nil
+	local, err := ln.Accept()
+	if err != nil {
+		return
 	}
-	f.cancel()
-	return f.listener.Close()
+	defer local.Close()
+	// Close either half when the opposite end exits. This keeps failed
+	// Tailcat dials/cancellations from leaving a local SSH socket stuck.
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(remote, local); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(local, remote); done <- struct{}{} }()
+	<-done
 }
 
 // Stop drops one logical user of a shared client. The underlying Tailcat

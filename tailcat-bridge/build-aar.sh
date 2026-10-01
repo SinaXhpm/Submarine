@@ -18,6 +18,6 @@ go install golang.org/x/mobile/cmd/gobind
 export PATH="$(go env GOPATH)/bin:$PATH"
 go run golang.org/x/mobile/cmd/gomobile init
 go run golang.org/x/mobile/cmd/gomobile bind \
-  -target=android/arm64,android/amd64 -androidapi=24 \
+  -target=android/arm64,android/arm,android/amd64 -androidapi=24 \
   -javapkg=com.submarine.tailcatbridge -o "$OUT" .
-unzip -l "$OUT" | grep -E 'jni/(arm64-v8a|x86_64)/libgojni.so' >/dev/null
+unzip -l "$OUT" | grep -E 'jni/(arm64-v8a|armeabi-v7a|x86_64)/libgojni.so' >/dev/null
