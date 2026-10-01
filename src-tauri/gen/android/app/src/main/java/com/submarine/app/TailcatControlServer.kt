@@ -60,8 +60,15 @@ object TailcatControlServer {
     }
     // Do not return exception messages: a Tailcat address can contain a PSK.
     val handle = runCatching { clients.computeIfAbsent(address) { Tailcatbridge.start(it) } }
-      .getOrElse {
-        out.write("ERR CLIENT_START_FAILED\n")
+      .getOrElse { error ->
+        // Start only returns these fixed, non-secret validation messages. Do
+        // not pass arbitrary JNI/Go exception text back to Rust.
+        val code = if (error.message == "invalid Tailcat address" || error.message == "Tailcat address must start with tc") {
+          "INVALID_ADDRESS"
+        } else {
+          "CLIENT_START_FAILED"
+        }
+        out.write("ERR $code\n")
         out.flush()
         return@use
       }
