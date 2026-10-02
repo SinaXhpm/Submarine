@@ -618,8 +618,8 @@ const TerminalView = ({
     // Right-click → paste clipboard into the PTY. preventDefault swallows the
     // platform context menu so the user gets the terminal-style behavior they
     // asked for. Disabled sessions silently drop the paste (matches onData).
-    const onContextMenu = async (ev: MouseEvent) => {
-      ev.preventDefault();
+    // Shared with the Ctrl+Shift+V / Ctrl+V keyboard shortcut below.
+    const pasteFromClipboard = async () => {
       if (disabledRef.current) return;
       let text = '';
       try { text = await navigator.clipboard.readText(); }
@@ -638,10 +638,38 @@ const TerminalView = ({
       }).catch(console.error);
       notify('Pasted');
     };
+    const onContextMenu = (ev: MouseEvent) => {
+      ev.preventDefault();
+      void pasteFromClipboard();
+    };
+    // Keyboard paste: Ctrl+Shift+V (classic terminal convention) and Ctrl+V
+    // (Windows Terminal default — also Cmd+V on macOS via metaKey). Plain
+    // Ctrl+C stays untouched: it must keep sending SIGINT to the shell, and
+    // copying is already covered by select-to-copy. preventDefault stops
+    // xterm forwarding the keystroke (Ctrl+V would otherwise arrive at the
+    // shell as a raw 0x16 byte). Skipped inside text inputs (search chip,
+    // history overlay) so native paste keeps working there — note xterm's
+    // own hidden textarea is the only TEXTAREA inside the terminal div, so
+    // gating on INPUT/SELECT/contentEditable is sufficient.
+    const onDocKeyDown = (ev: KeyboardEvent) => {
+      if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+      if (ev.key.toLowerCase() !== 'v') return;
+      const container = terminalRef.current;
+      if (!container) return;
+      const active = document.activeElement;
+      if (!(active instanceof Node) || !container.contains(active)) return;
+      if (active instanceof HTMLElement) {
+        const tag = active.tagName;
+        if (tag === 'INPUT' || tag === 'SELECT' || active.isContentEditable) return;
+      }
+      ev.preventDefault();
+      void pasteFromClipboard();
+    };
     terminalRef.current.addEventListener('mousedown', onMouseDown);
     document.addEventListener('mouseup', onDocMouseUp);
     window.addEventListener('blur', onWindowBlur);
     terminalRef.current.addEventListener('contextmenu', onContextMenu);
+    document.addEventListener('keydown', onDocKeyDown);
 
     // Handle Resize
     const onResizeDisposable = term.onResize(({ cols, rows }) => {
@@ -749,6 +777,7 @@ const TerminalView = ({
         container.removeEventListener('contextmenu', onContextMenu);
       }
       document.removeEventListener('mouseup', onDocMouseUp);
+      document.removeEventListener('keydown', onDocKeyDown);
       window.removeEventListener('blur', onWindowBlur);
       window.visualViewport?.removeEventListener('resize', onVvResize);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
