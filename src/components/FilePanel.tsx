@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Folder, File, ArrowUp, RefreshCw, Trash2, Edit3, Shield,
   X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch,
-  Download, Upload, ExternalLink, Move, CheckSquare, Square, Search,
+  Download, Upload, ExternalLink, Move, CheckSquare, Square, Search, Copy,
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
@@ -55,6 +55,16 @@ async function transferWithOverwriteCheck(
 // the same component renders either the local filesystem or the remote SFTP
 // tree. Drag-out and drop integration are handled by the parent workspace —
 // FilePanel just emits lifecycle callbacks.
+
+// Fire-and-forget clipboard copy. Silent catch: the clipboard can be
+// unavailable (permissions / headless webview) and a copy action must never
+// crash the menu — same pattern as the terminal's copy path.
+function copyText(t: string) {
+  try {
+    const p = navigator.clipboard?.writeText(t);
+    if (p && typeof (p as Promise<void>).catch === "function") (p as Promise<void>).catch(() => {});
+  } catch { /* clipboard unavailable — ignore */ }
+}
 
 type SortColumn = "name" | "size" | "modified" | "permissions";
 interface SortState { column: SortColumn; asc: boolean; }
@@ -1229,8 +1239,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
       {/* Context menu (portal) — bulk-aware. When the right-click anchor is
           part of a multi-selection, actions like Download / Move / Delete
-          apply to the whole set; per-item actions (Rename, Properties,
-          Edit) only show when exactly one row is selected. */}
+          apply to the whole set; per-item actions (Rename, Copy name/path,
+          Properties, Edit) only show when exactly one row is selected. */}
       {contextMenu && createPortal((() => {
         const selectedEntries = sortedEntries.filter(e => selected.has(e.path));
         const acting = selectedEntries.length > 0 ? selectedEntries : [contextMenu.entry];
@@ -1306,6 +1316,26 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
             <Move size={11} /><span>{multi ? `Move (${acting.length}) to…` : "Move to…"}</span>
           </button>
+          {/* Copy name / path. Single item copies just its own name or its
+              full path; a multi-selection copies all full paths,
+              newline-separated, for pasting into scripts or docs. */}
+          {!multi ? (
+            <>
+              <button onClick={() => { setContextMenu(null); copyText(contextMenu.entry.name); }}
+                className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+                <Copy size={11} /><span>Copy name</span>
+              </button>
+              <button onClick={() => { setContextMenu(null); copyText(contextMenu.entry.path); }}
+                className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+                <Copy size={11} /><span>Copy path</span>
+              </button>
+            </>
+          ) : (
+            <button onClick={() => { setContextMenu(null); copyText(acting.map(e => e.path).join("\n")); }}
+              className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+              <Copy size={11} /><span>{`Copy ${acting.length} paths`}</span>
+            </button>
+          )}
           {!multi && provider.chmod && (
             <button onClick={() => { setContextMenu(null); setModal({ type: "properties", entry: contextMenu.entry, v1: (contextMenu.entry.permissions ? (contextMenu.entry.permissions & 0o777).toString(8) : "755"), v2: contextMenu.entry.uid?.toString() }); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">

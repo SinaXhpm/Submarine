@@ -1,6 +1,19 @@
-import { Settings, Palette, RefreshCw, Pipette, List, Cloud } from "lucide-react";
+import { Settings, Palette, RefreshCw, Pipette, List, Cloud, History } from "lucide-react";
 
 const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
+  // Shared on/off switch for preference rows. One behavior contract
+  // (role + styling + knob position) so new toggles don't re-implement it.
+  const PrefToggle = ({ checked, onToggle, label }: { checked: boolean; onToggle: () => void; label: string }) => (
+    <button
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={onToggle}
+      className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${checked ? 'bg-primary' : 'bg-zinc-700'}`}
+    >
+      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${checked ? 'left-[22px]' : 'left-0.5'}`} />
+    </button>
+  );
   const accentColors = [
     { name: 'Light Blue', value: '#60a5fa' },
     { name: 'Sky', value: '#38bdf8' },
@@ -178,14 +191,11 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
                   profiles. Turn off to sync only with the manual button.
                 </p>
               </div>
-              <button
-                role="switch"
-                aria-checked={settings.autoSync !== false}
-                onClick={() => setSettings((s: any) => ({ ...s, autoSync: !(s.autoSync !== false) }))}
-                className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${settings.autoSync !== false ? 'bg-primary' : 'bg-zinc-700'}`}
-              >
-                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${settings.autoSync !== false ? 'left-[22px]' : 'left-0.5'}`} />
-              </button>
+              <PrefToggle
+                label="Auto-sync"
+                checked={settings.autoSync !== false}
+                onToggle={() => setSettings((s: any) => ({ ...s, autoSync: !(s.autoSync !== false) }))}
+              />
             </div>
 
             {settings.autoSync !== false && (
@@ -195,6 +205,33 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
                 on the Profile tab, next to Sync now.
               </div>
             )}
+          </div>
+        </section>
+
+        {/* Sessions Section — reopen last run's servers with their terminal
+            tabs (custom titles kept) and reconnect them on unlock. Snapshot
+            is per-profile in this machine's local storage; quick-connect
+            sessions can't be restored and are left out. */}
+        <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+            <History size={14} /> Sessions
+          </div>
+
+          <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-zinc-100">Restore previous sessions</div>
+                <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
+                  Reopen the servers and terminal tabs you had open and reconnect them when you
+                  unlock. Turn off for a clean slate on every launch (autostart servers still open).
+                </p>
+              </div>
+              <PrefToggle
+                label="Restore previous sessions"
+                checked={settings.restoreSessions !== false}
+                onToggle={() => setSettings((s: any) => ({ ...s, restoreSessions: !(s.restoreSessions !== false) }))}
+              />
+            </div>
           </div>
         </section>
 

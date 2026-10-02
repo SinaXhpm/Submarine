@@ -14,6 +14,9 @@ import logoUrl from "./assets/logo.png";
 import PasswordField from "./components/PasswordField";
 import QuickConnectModal, { QuickAuth } from "./components/QuickConnectModal";
 import { useConfirm, useTextPrompt } from "./ui/confirm";
+import { RenameInput } from "./ui/renameInput";
+import { buildSnapshot, parseSnapshot, snapshotKey } from "./sessionSnapshot";
+import type { SnapSession } from "./sessionSnapshot";
 import { useIsNarrow } from "./hooks/useViewport";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
@@ -31,7 +34,7 @@ const appWindow = getCurrentWindow();
 // connect (one-shot, `serverId === 0` and `quickAuth` populated). SessionView
 // forwards `quickAuth` to `initiate_connection` which uses it instead of
 // looking up the DB row.
-type Session = { id: string; serverId: number; serverName: string; mirrors?: string; runOnConnect?: string; quickAuth?: QuickAuth | null };
+  type Session = { id: string; serverId: number; serverName: string; mirrors?: string; runOnConnect?: string; quickAuth?: QuickAuth | null; initialTerminals?: { title: string; container?: { name: string; useSudo: boolean } }[]; initialActiveIndex?: number };
 
 const hexToRgb = (hex: string) => {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -66,6 +69,20 @@ function DesktopApp() {
   // Right-click menu pinned to a session tab. Closed by any click outside or
   // by choosing one of the menu items.
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
+  // Per-session custom tab labels set via "Rename tab". Keyed by session id
+  // (not server id) so two tabs on the same server can carry different
+  // names. Ephemeral like sessions themselves — cleared when a session is
+  // closed. Display-only: serverName stays the backend identity everywhere.
+  const [tabNames, setTabNames] = useState<Record<string, string>>({});
+  // Inline rename editor inside the tab menu. `value` is the draft while
+  // typing; committed to tabNames on Enter, discarded on Escape.
+  const [tabRename, setTabRename] = useState<{ sessionId: string; value: string } | null>(null);
+  const tabLabel = (s: Session) => tabNames[s.id] ?? s.serverName;
+  const clearTabName = (sid: string) => setTabNames(prev => { const { [sid]: _, ...rest } = prev; return rest; });
+  // Tab-strip element refs so the keyboard (F2) rename path can anchor its
+  // menu to the active session tab. Callback refs keep the map in sync
+  // across tab open/close without an extra effect.
+  const sessionTabRefs = useRef(new Map<string, HTMLDivElement>());
   // Sessions merged into the current session-view canvas. When a session
   // tab is being viewed and this set is non-empty, its SessionView renders
   // side-by-side with each merged partner instead of full-width. Used by
@@ -232,6 +249,10 @@ function DesktopApp() {
     // "pull collaborators' changes" timer — your own edits still push ~6s after
     // you stop typing regardless of this.
     syncIntervalMin: Math.max(1, parseInt(localStorage.getItem('submarine-sync-interval-min') || '5', 10) || 5),
+    // Reopen last run's servers + terminal tabs (with custom names) on
+    // unlock. Per-device like the other prefs. Disable for a clean slate
+    // on every launch (autostart-flagged servers still open).
+    restoreSessions: localStorage.getItem('submarine-restore-sessions') !== 'off',
   });
 
   useEffect(() => {
@@ -244,6 +265,7 @@ function DesktopApp() {
     localStorage.setItem('submarine-terminal-font-size', appSettings.terminalFontSize.toString());
     localStorage.setItem('submarine-auto-sync', appSettings.autoSync ? 'on' : 'off');
     localStorage.setItem('submarine-sync-interval-min', String(appSettings.syncIntervalMin));
+    localStorage.setItem('submarine-restore-sessions', appSettings.restoreSessions ? 'on' : 'off');
     // Tell already-mounted terminals to re-fit with the new font size.
     // Without this dispatch the listener in TerminalView is dead code and
     // users have to close+reopen every terminal to see a size change.
@@ -297,6 +319,7 @@ function DesktopApp() {
       h = () => {
         setSessions(prev => prev.filter(s => s.id !== sessId));
         setSessionStatuses(prev => { const { [sessId]: _, ...rest } = prev; return rest; });
+        clearTabName(sessId);
         setActiveView(prev => (prev === sessId ? "nodes" : prev));
         // Purge the closing session from broadcast state so a stale id doesn't
         // linger in the target set (would let a user re-enable broadcast and
@@ -543,6 +566,8 @@ function DesktopApp() {
   const handleProfileUnlocked = async (name: string) => {
     setActiveProfile(name);
     setIsUnlocked(true);
+    // Armed before the first await below — see restorePendingRef.
+    restorePendingRef.current = true;
     addLog(`Profile "${name}" unlocked.`, "success");
     refreshAll();
     // Attribute future edits to the signed-in cloud account so shared/multi-
@@ -551,30 +576,80 @@ function DesktopApp() {
     invoke<{ signed_in: boolean; email: string | null }>("cloud_status")
       .then((s) => invoke("set_editor_label", { label: s.signed_in && s.email ? s.email : "" }))
       .catch(() => {});
-    // Autostart sweep: load servers directly (refreshAll is also doing this
-    // in parallel, but its state update is async and we can't read `servers`
-    // back here without a stale-closure race), pick the ones flagged
-    // autostart, and stage them all into the sessions tab strip in one
-    // setSessions call. The user lands focused on the first autostart node;
-    // each new SessionView component then kicks off its own connect on mount.
+    // Autostart sweep + session restore: load servers directly (refreshAll
+    // is also doing this in parallel, but its state update is async and we
+    // can't read `servers` back here without a stale-closure race).
+    // Autostart-flagged servers always open; when the restore setting is on,
+    // whatever was open last run reopens too (servers, terminal tabs with
+    // custom titles, focused tab) — each new SessionView kicks off its own
+    // connect on mount. A server in both opens once, with its snapshotted
+    // tabs. Servers deleted since (or quick-connect entries) are skipped.
     try {
       const list = await invoke<any[]>("get_servers");
-      const toStart = list.filter((s) => s.autostart);
-      if (toStart.length === 0) return;
-      const newSessions = toStart.map((s) => ({
-        id: `session-${s.id}`,
-        serverId: s.id,
-        serverName: s.name,
-        mirrors: s.mirrors,
-      }));
+      const byId = new Map<number, any>(list.map((s: any) => [s.id, s]));
+      const autoIds = list.filter((s) => s.autostart).map((s) => s.id);
+      // Snapshot shape: { version, activeServerId, sessions: [{ serverId,
+      // customName, terminals: [{ title, container? }], activeIndex }] }.
+      // Anything off-shape is dropped — the snapshot is plain localStorage.
+      let parsed: ReturnType<typeof parseSnapshot> = { found: false, total: 0, savedIds: "[]", sessions: [], activeServerId: null };
+      if (appSettings.restoreSessions) {
+        try {
+          parsed = parseSnapshot(localStorage.getItem(snapshotKey(name)), (id) => byId.has(id));
+        } catch { /* storage unreadable or corrupt snapshot — autostart only */ }
+      }
+      const { sessions: snapSessions, activeServerId: snapActiveServerId, found: snapFound, total: snapTotal, savedIds: snapSavedIds } = parsed;
+      const wanted = new Map<number, 'auto' | SnapSession>();
+      autoIds.forEach((id: number) => { if (byId.has(id) && !wanted.has(id)) wanted.set(id, 'auto'); });
+      snapSessions.forEach((r) => wanted.set(r.serverId, r));
+      if (wanted.size === 0) {
+        if (!appSettings.restoreSessions) addLog("Session restore is off (Settings → Sessions) — starting clean.", "info");
+        else if (!snapFound) addLog("No saved sessions for this profile yet — servers you open now will reopen next launch.", "info");
+        else if (snapTotal === 0) addLog("Saved session snapshot is empty — servers you open now will reopen next launch.", "info");
+        else {
+          const liveIds = list.map((s: any) => s.id).join(",");
+          addLog(`Saved ${snapTotal} session(s) with server ids ${snapSavedIds}, but none match the current servers (live ids: [${liveIds}]) — starting clean.`, "info");
+        }
+        // Staging is over (nothing to stage) — resume snapshotting.
+        restorePendingRef.current = false;
+        return;
+      }
+      const newSessions: Session[] = [...wanted].map(([id, kind]) => {
+        const s = byId.get(id);
+        const base = { id: `session-${id}`, serverId: id, serverName: s.name, mirrors: s.mirrors };
+        if (kind === 'auto') return base;
+        const terms = Array.isArray(kind.terminals) ? kind.terminals.slice(0, 10) : [];
+        return {
+          ...base,
+          runOnConnect: s.run_on_connect || "",
+          ...(terms.length > 0
+            ? { initialTerminals: terms, initialActiveIndex: Math.min(Math.max(0, kind.activeIndex ?? 0), terms.length - 1) }
+            : {}),
+        };
+      });
       setSessions((prev: any[]) => {
         const seen = new Set(prev.map((p) => p.id));
         const fresh = newSessions.filter((n) => !seen.has(n.id));
         return [...prev, ...fresh];
       });
-      setActiveView(newSessions[0].id);
-      addLog(`Autostart: opened ${newSessions.length} node${newSessions.length === 1 ? "" : "s"}.`, "info");
+      const seeds: Record<string, string> = {};
+      snapSessions.forEach((r) => {
+        if (typeof r.customName === 'string' && r.customName.trim()) {
+          seeds[`session-${r.serverId}`] = r.customName.slice(0, 60);
+        }
+      });
+      if (Object.keys(seeds).length > 0) {
+        setTabNames((prev) => ({ ...prev, ...seeds }));
+      }
+      const focusId = (snapActiveServerId != null && wanted.has(snapActiveServerId))
+        ? `session-${snapActiveServerId}`
+        : newSessions[0].id;
+      setActiveView(focusId);
+      if (autoIds.length > 0) addLog(`Autostart: opened ${autoIds.length} node${autoIds.length === 1 ? "" : "s"}.`, "info");
+      if (snapSessions.length > 0) addLog(`Restored ${snapSessions.length} session${snapSessions.length === 1 ? "" : "s"} with terminal tabs.`, "info");
+      // Staging settled — resume snapshotting so later changes persist.
+      restorePendingRef.current = false;
     } catch (e) {
+      restorePendingRef.current = false;
       addLog(`AUTOSTART_LOAD_FAILED: ${e}`, "error");
     }
   };
@@ -588,6 +663,54 @@ function DesktopApp() {
   // the user opening/closing tabs and either over- or under-confirm.
   const sessionsRef = useRef(sessions);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  // True while an unlock is mid-restore (set synchronously at the top of
+  // handleProfileUnlocked, cleared when its staging finishes). The unlock
+  // handler awaits get_servers before staging sessions, and React renders
+  // the unlocked-but-still-empty state in between — without this guard the
+  // snapshot effect below would persist that empty list and wipe the very
+  // snapshot restore is about to read.
+  const restorePendingRef = useRef(false);
+
+  // F2 renames the focused tab: the active terminal tab when the focus sits
+  // inside a terminal, otherwise the active session tab. Ignored in text
+  // inputs and outside session views. Capture-phase so xterm never sees the
+  // keystroke (it would otherwise forward F2 to the shell as an escape
+  // sequence on top of opening the menu). Mirrors double-click for
+  // keyboard users.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'F2') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      if (!activeView.startsWith('session-')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (t && t.closest && t.closest('.xterm')) {
+        window.dispatchEvent(new CustomEvent('submarine-rename-terminal', { detail: activeView }));
+        return;
+      }
+      const rect = sessionTabRefs.current.get(activeView)?.getBoundingClientRect();
+      setTabMenu({ x: rect ? rect.left : window.innerWidth / 2, y: rect ? rect.bottom + 4 : 140, sessionId: activeView });
+      const sess = sessionsRef.current.find(s => s.id === activeView);
+      setTabRename({ sessionId: activeView, value: tabNames[activeView] ?? sess?.serverName ?? '' });
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [activeView, tabNames]);
+
+  // Open-session snapshot — rewritten whenever the session/tab layout
+  // changes so a restart, crash or accidental close can reopen everything
+  // (servers, terminal tabs with custom titles, focused tab). Skipped while
+  // locked so logout can never wipe the snapshot with an empty session
+  // list. Per-profile keyed. Quick-connect sessions (serverId 0) are left
+  // out — their credentials live only in memory and can't be re-dialled.
+  useEffect(() => {
+    if (!isUnlocked || !activeProfile || restorePendingRef.current) return;
+    try {
+      const snap = buildSnapshot({ sessions, terminalsBySession: sessionTerminals, activeTermBySession: sessionActiveTerm, tabNames, activeView });
+      localStorage.setItem(snapshotKey(activeProfile), JSON.stringify(snap));
+    } catch { /* quota / private mode — restore just won't happen */ }
+  }, [isUnlocked, activeProfile, sessions, sessionTerminals, sessionActiveTerm, tabNames, activeView]);
 
   // Intercept BOTH the in-app X button (which calls appWindow.close()) AND
   // OS-level closes (Alt+F4, taskbar context-menu close, system shutdown).
@@ -816,7 +939,7 @@ function DesktopApp() {
                     <span className="truncate flex-1 text-left text-[11px] font-bold">
                       {isWall
                         ? `Wall${wallItems.length > 0 ? ` · ${wallItems.length} pinned` : ''}`
-                        : cur ? cur.serverName : `${sessions.length} open session${sessions.length === 1 ? '' : 's'}`}
+                        : cur ? tabLabel(cur) : `${sessions.length} open session${sessions.length === 1 ? '' : 's'}`}
                     </span>
                     {mergedSessionIds.length > 0 && (
                       <span className="shrink-0 h-4 px-1 rounded-full bg-primary/25 text-primary text-[9px] font-bold flex items-center gap-0.5">
@@ -858,7 +981,7 @@ function DesktopApp() {
                           }`}
                         >
                           <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
-                          <span className="text-[12px] font-semibold truncate flex-1">{s.serverName}</span>
+                          <span className="text-[12px] font-semibold truncate flex-1">{tabLabel(s)}</span>
                           {isMerged && !isActive && (
                             <span className="text-[9px] font-bold uppercase tracking-wider text-primary/60">Split-in</span>
                           )}
@@ -899,6 +1022,7 @@ function DesktopApp() {
                             invoke('disconnect_session', { sessionId: sid }).catch(() => {});
                             setSessions(prev => prev.filter(x => x.id !== sid));
                             setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
+                            clearTabName(sid);
                             broadcast.removeSession(sid);
                             setMergedSessionIds(prev => {
                               const next = prev.filter(id => id !== sid);
@@ -982,6 +1106,7 @@ function DesktopApp() {
           return (
             <div
               key={s.id}
+              ref={(el) => { if (el) sessionTabRefs.current.set(s.id, el); else sessionTabRefs.current.delete(s.id); }}
               onClick={(e) => {
                 // Ctrl/⌘-click toggles this tab in the split beside the
                 // currently-active session view — a quick keyboard-free
@@ -1011,6 +1136,10 @@ function DesktopApp() {
                 e.preventDefault();
                 setTabMenu({ x: e.clientX, y: e.clientY, sessionId: s.id });
               }}
+              onDoubleClick={(e) => {
+                setTabMenu({ x: e.clientX, y: e.clientY, sessionId: s.id });
+                setTabRename({ sessionId: s.id, value: tabLabel(s) });
+              }}
               // No max-width / no truncate: the user explicitly wants full
               // node names visible even when many sessions are open. The tab
               // row itself is horizontally scrollable (overflow-x-auto +
@@ -1019,7 +1148,7 @@ function DesktopApp() {
               // `whitespace-nowrap` keeps long names on a single line; without
               // it a tab with a 30-char hostname would wrap into a two-line
               // pill and break the row's height.
-              title={isMergedTab ? `${s.serverName} · split beside current view (Ctrl-click to unpair)` : s.serverName}
+              title={isMergedTab ? `${tabLabel(s)} · split beside current view (Ctrl-click to unpair)` : tabLabel(s)}
               className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all shrink-0 mr-1 ${
                 activeView === s.id
                   ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10'
@@ -1050,7 +1179,7 @@ function DesktopApp() {
                   the same tab pill roughly 30% more legible characters per
                   pixel (uppercase is wider per glyph) without changing the
                   strip height, which stays h-7. */}
-              <span className="text-[11px] font-semibold whitespace-nowrap tracking-tight">{s.serverName}</span>
+              <span className="text-[11px] font-semibold whitespace-nowrap tracking-tight">{tabLabel(s)}</span>
               {/* Mobile-only actions trigger. On phone we surface the same
                   tabMenu (Reconnect / Disconnect / Close) here since there
                   is no right-click on touch — a single kebab is a cleaner
@@ -1258,7 +1387,7 @@ function DesktopApp() {
                           "bg-rose-500"
                         }`} />
                         <span className="truncate text-[11px] font-medium text-zinc-200 flex-1">
-                          {s.serverName}
+                          {tabLabel(s)}
                         </span>
                       </label>
                     );
@@ -1304,11 +1433,41 @@ function DesktopApp() {
         const others = sessions.filter(s => s.id !== targetId);
         return (
         <>
-          <div className="fixed inset-0 z-[60]" onClick={() => setTabMenu(null)} onContextMenu={(e) => { e.preventDefault(); setTabMenu(null); }} />
+          <div className="fixed inset-0 z-[60]" onClick={() => { setTabMenu(null); setTabRename(null); }} onContextMenu={(e) => { e.preventDefault(); setTabMenu(null); setTabRename(null); }} />
           <div
             className="fixed z-[70] bg-[#15151a] border border-white/10 rounded-md shadow-2xl py-1 min-w-[240px] text-[11px] no-drag"
             style={{ left: Math.min(tabMenu.x, window.innerWidth - 260), top: Math.min(tabMenu.y, window.innerHeight - 380) }}
           >
+            {/* Rename this tab. The editor stays inside the open menu so
+                Enter commits (empty text resets to the server name) and
+                Esc backs out without losing the menu. */}
+            {tabRename?.sessionId === targetId ? (
+              <RenameInput
+                initialValue={tabRename.value}
+                placeholder="Tab name… (empty resets)"
+                onCommit={(v) => {
+                  const t = v.trim();
+                  setTabNames(prev => {
+                    if (!t) {
+                      const { [targetId]: _, ...rest } = prev;
+                      return rest;
+                    }
+                    return { ...prev, [targetId]: t };
+                  });
+                  setTabRename(null);
+                  setTabMenu(null);
+                }}
+                onCancel={() => setTabRename(null)}
+              />
+            ) : (
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
+                onClick={() => {
+                  const sess = sessions.find(s => s.id === targetId);
+                  setTabRename({ sessionId: targetId, value: tabNames[targetId] ?? sess?.serverName ?? "" });
+                }}
+              >Rename tab</button>
+            )}
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
               onClick={() => {
@@ -1426,7 +1585,7 @@ function DesktopApp() {
                           "bg-rose-500"
                         }`} />
                         <span className="truncate text-[11px] font-medium text-zinc-200 flex-1">
-                          {s.serverName}
+                          {tabLabel(s)}
                         </span>
                       </label>
                     );
@@ -1443,6 +1602,7 @@ function DesktopApp() {
                 invoke("disconnect_session", { sessionId: sid }).catch(() => {});
                 setSessions(prev => prev.filter(sess => sess.id !== sid));
                 setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
+                clearTabName(sid);
                 broadcast.removeSession(sid);
                 setMergedSessionIds(prev => {
                   const next = prev.filter(id => id !== sid);
@@ -1778,7 +1938,7 @@ function DesktopApp() {
                                 'bg-rose-500'
                               }`} />
                               <span className="font-bold text-zinc-200 uppercase tracking-wider truncate flex-1">
-                                {sess.serverName}
+                                {tabLabel(sess)}
                               </span>
                               <button
                                 onClick={(e) => {
@@ -1797,7 +1957,7 @@ function DesktopApp() {
                             </div>
                           )}
                           <ErrorBoundary
-                            label={sess.serverName}
+                            label={tabLabel(sess)}
                             onReset={() => {
                               setSessions(prev => prev.filter(s => s.id !== sess.id));
                               if (activeView === sess.id) setActiveView("nodes");
@@ -1805,6 +1965,7 @@ function DesktopApp() {
                           >
                             <SessionView
                               session={sess}
+                              displayName={tabLabel(sess)}
                               onClose={getCloseHandler(sess.id)}
                               addLog={addLog}
                               onStatusChange={handleSessionStatus}
@@ -1915,7 +2076,7 @@ function DesktopApp() {
                             <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-[#141418] text-[10.5px] select-none">
                               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotTone}`} />
                               <span className="font-bold text-zinc-200 uppercase tracking-wider truncate">
-                                {sess.serverName}
+                                {tabLabel(sess)}
                               </span>
                               <span className="text-zinc-600">·</span>
                               <span className="text-zinc-400 truncate flex-1">
@@ -2003,7 +2164,7 @@ function DesktopApp() {
                                     'bg-rose-500'
                                   }`} />
                                   <span className="text-[11px] font-bold text-zinc-200 truncate flex-1">
-                                    {s.serverName}
+                                    {tabLabel(s)}
                                   </span>
                                   <span className="text-[9px] uppercase tracking-wider text-zinc-500">
                                     {terms.length} term{terms.length === 1 ? '' : 's'}

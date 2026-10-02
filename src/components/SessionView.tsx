@@ -9,6 +9,7 @@ import SftpWorkspace from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
 import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
+import { RenameInput } from "../ui/renameInput";
 import { useIsCompact } from "../hooks/useViewport";
 
 // Compact "run this tab on its own dedicated SSH connection" toggle, shown in
@@ -51,7 +52,7 @@ const SepToggle = ({ on, onToggle, status, title, onReconnect }: {
   </span>
 );
 
-const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange }: any) => {
+const SessionViewImpl = ({ session, displayName, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -303,8 +304,26 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // docker-exec session into a specific container (spawned from the Info
   // panel). Container slots stay otherwise identical — same xterm, same
   // events — they just point the backend at `open_container_terminal`.
+  // Relaunch seeds (see DesktopApp's session snapshot). A restored session
+  // object carries `initialTerminals` (+ optional `initialActiveIndex`);
+  // freshly opened sessions don't, so this applies exactly once per
+  // restore. Titles are capped and container shapes validated — the
+  // snapshot is plain localStorage and must never be trusted blindly.
+  const seedTerms = (() => {
+    const raw = session?.initialTerminals;
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+    const terms = raw.slice(0, 10).map((s: any, i: number) => ({
+      id: `${session.id}-term-${i}`,
+      title: typeof s?.title === 'string' && s.title.trim() ? s.title.slice(0, 60) : `${i + 1}`,
+      ...(s?.container && typeof s.container.name === 'string' && s.container.name
+        ? { container: { name: s.container.name.slice(0, 60), useSudo: !!s.container.useSudo } }
+        : {}),
+    }));
+    const idx = Math.min(Math.max(0, Number(session?.initialActiveIndex) || 0), terms.length - 1);
+    return { terms, activeId: terms[idx].id };
+  })();
   const [terminals, setTerminals] = useState<{id: string, title: string, container?: { name: string; useSudo: boolean }}[]>(() => {
-    return [{ id: `${session.id}-term-0`, title: '1' }];
+    return seedTerms?.terms ?? [{ id: `${session.id}-term-0`, title: '1' }];
   });
   // Bumped on every successful reconnect. TerminalView watches this prop
   // and re-opens its PTY on change WITHOUT disposing its xterm instance,
@@ -323,7 +342,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     setActiveTool(null);
   };
 
-  const [activeTab, setActiveTab] = useState<string>(`${session.id}-term-0`);
+  const [activeTab, setActiveTab] = useState<string>(() => seedTerms?.activeId ?? `${session.id}-term-0`);
   // Bubble our terminals + active-tab up to the parent (App) whenever
   // they change so the Wall pinboard and any other App-level consumers
   // don't have to duplicate the per-session terminal book-keeping.
@@ -364,6 +383,40 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // window-space, matching the pattern used by the session tab menu at
   // App level.
   const [plusMenu, setPlusMenu] = useState<{ x: number; y: number } | null>(null);
+  // Right-click menu on a terminal tab + its inline rename editor. Rename
+  // writes straight into `terminals` state (which is bubbled to App), so
+  // Wall tiles, the Wall picker and split panes all follow automatically.
+  // Empty text keeps the current title — retype the number / container
+  // name to go back to the default.
+  const [termMenu, setTermMenu] = useState<{ x: number; y: number; termId: string } | null>(null);
+  const [termRename, setTermRename] = useState<{ termId: string; value: string } | null>(null);
+  // Button refs for the terminal tabs so the keyboard (F2) rename path can
+  // anchor its menu to the active tab. Callback refs keep the map in sync
+  // across tab open/close without an extra effect.
+  const termTabRefs = useRef(new Map<string, HTMLButtonElement>());
+  // Open the rename menu + editor for a terminal tab. Shared by right-click,
+  // double-click and the F2 event (keyboard path passes explicit coords).
+  const openTermRename = (termId: string, x: number, y: number) => {
+    const term = terminals.find(t => t.id === termId);
+    if (!term) return;
+    setTermMenu({ x, y, termId });
+    setTermRename({ termId, value: term.title });
+  };
+  // Keyboard rename (F2) for the active terminal tab. DesktopApp routes a
+  // global F2 here when the focus sits inside a terminal; the menu anchors
+  // to the active tab's button rect. Scoped by session id because hidden
+  // (split-away) sessions stay mounted and must ignore the event.
+  useEffect(() => {
+    const onRenameRequest = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== session.id) return;
+      const term = terminals.find(t => t.id === activeTab) ?? terminals[0];
+      if (!term) return;
+      const rect = termTabRefs.current.get(term.id)?.getBoundingClientRect();
+      openTermRename(term.id, rect ? rect.left : window.innerWidth / 2, rect ? rect.bottom + 4 : 120);
+    };
+    window.addEventListener('submarine-rename-terminal', onRenameRequest);
+    return () => window.removeEventListener('submarine-rename-terminal', onRenameRequest);
+  }, [session.id, terminals, activeTab]);
   // On narrow viewports the side-by-side terminal+tool layout doesn't fit.
   // We collapse to a stacked single-pane view: when a tool is open, the
   // tool takes full width and the terminal is hidden behind a back-chip.
@@ -959,7 +1012,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4 sm:mb-6">
             <div>
               <h2 className="text-base sm:text-xl font-black uppercase tracking-wider sm:tracking-[0.2em] break-words">
-                {session.serverName}
+                {displayName || session.serverName}
               </h2>
               <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mt-1">
                 {status === 'connecting' ? 'Establishing Connection...' : 'Connection Failed'}
@@ -1050,8 +1103,15 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
           const isFocusedHalf = activeTab === t.id;
           const isSplitPartner = !!(splitTerminals.includes(t.id) && !isFocusedHalf);
           return (
-          <div key={t.id} className="group relative flex items-center">
+          <div key={t.id} className="group relative flex items-center"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setTermMenu({ x: e.clientX, y: e.clientY, termId: t.id });
+            }}
+            onDoubleClick={(e) => openTermRename(t.id, e.clientX, e.clientY)}
+          >
             <button
+              ref={(el) => { if (el) termTabRefs.current.set(t.id, el); else termTabRefs.current.delete(t.id); }}
               onClick={() => {
                 // Clicking a tab NOT participating in the current split
                 // exits split mode entirely — split is scoped to the
@@ -1251,6 +1311,52 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                 That way the picker is anchored to the tab it operates
                 on and users don't have to know two entry points for the
                 same feature. */}
+          </div>
+        </>,
+        document.body
+      )}
+
+      {/* Terminal-tab menu — right-click any terminal tab. Single item
+          today (Rename); the editor stays inside the open menu so Enter
+          commits and Esc backs out. Committed titles flow through
+          `terminals` state to Wall tiles, the Wall picker and splits. */}
+      {termMenu && createPortal(
+        <>
+          <div
+            className="fixed inset-0 z-[9998]"
+            onClick={() => { setTermMenu(null); setTermRename(null); }}
+            onContextMenu={(e) => { e.preventDefault(); setTermMenu(null); setTermRename(null); }}
+          />
+          <div
+            style={{ left: Math.min(termMenu.x, window.innerWidth - 240), top: Math.min(termMenu.y, window.innerHeight - 120) }}
+            className="fixed z-[9999] w-[220px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
+          >
+            {(() => {
+              const term = terminals.find(t => t.id === termMenu.termId);
+              if (!term) return null;
+              return termRename?.termId === term.id ? (
+                <RenameInput
+                  initialValue={termRename.value}
+                  placeholder="Tab title…"
+                  onCommit={(v) => {
+                    const t = v.trim();
+                    if (t) {
+                      setTerminals(prev => prev.map(x => x.id === term.id ? { ...x, title: t } : x));
+                    }
+                    setTermRename(null);
+                    setTermMenu(null);
+                  }}
+                  onCancel={() => setTermRename(null)}
+                />
+              ) : (
+                <button
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
+                  onClick={() => setTermRename({ termId: term.id, value: term.title })}
+                >
+                  <span className="flex-1">Rename tab</span>
+                </button>
+              );
+            })()}
           </div>
         </>,
         document.body
