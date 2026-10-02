@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import CloudPanel from "./CloudPanel";
 import AboutPanel from "./AboutPanel";
+import { bookmarksKeyPrefix } from "./SftpWorkspace";
 import logoUrl from "../assets/logo.png";
 import { IS_ANDROID } from "../util/platform";
 import { useTextPrompt, useConfirm } from "../ui/confirm";
@@ -271,6 +272,9 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     setBusy(true); setError(null);
     try {
       await invoke("delete_profile", { name });
+      // Server ids restart in a new profile of the same name; its servers must not inherit these.
+      const prefix = bookmarksKeyPrefix(name);
+      Object.keys(localStorage).filter((k) => k.startsWith(prefix)).forEach((k) => localStorage.removeItem(k));
       await reload();
       refreshCloud();
     } catch (e: any) {

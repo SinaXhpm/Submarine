@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { FileEntry, ListResult, RemoteFileProvider } from "./types";
+import { FileEntry, LinkInfo, ListResult, RemoteFileProvider } from "./types";
+import { linkInfoFromRaw, RawSftpLink } from "./dirContext";
 
 // SFTP provider. Wraps the existing `sftp_*` Tauri commands behind the
 // `FileProvider` interface so the same `FilePanel` UI can drive either side.
@@ -14,6 +15,7 @@ type RawSftpEntry = {
   uid?: number;
   gid?: number;
   modified?: number;
+  is_symlink?: boolean;
 };
 
 type RawSftpList = {
@@ -46,6 +48,9 @@ export function createRemoteProvider(sessionId: string): RemoteFileProvider {
         uid: r.uid,
         gid: r.gid,
         modified: r.modified,
+        isSymlink: !!r.is_symlink,
+        linkState: r.is_symlink ? "pending" : undefined,
+        linkModified: r.is_symlink ? r.modified : undefined,
       }));
       return { currentPath: raw.current_path, entries };
     },
@@ -74,12 +79,31 @@ export function createRemoteProvider(sessionId: string): RemoteFileProvider {
       await invoke("sftp_rename", { sessionId, oldpath: from, newpath: to });
     },
 
+    // Both run `tar` / `zip` / `unzip` on the server, so nothing is
+    // transferred; see `archive.rs`.
+    async archive(dir, names, dest, format, overwrite) {
+      await invoke("sftp_archive", { sessionId, dir, names, dest, format, overwrite });
+    },
+
+    async extract(dir: string, name: string, folder: string | null) {
+      await invoke("sftp_extract", { sessionId, dir, name, folder });
+    },
+
     async chmod(path: string, mode: number) {
       await invoke("sftp_set_permissions", { sessionId, path, permissions: mode });
     },
 
     async chown(path: string, uid: number, gid: number) {
       await invoke("sftp_set_owner", { sessionId, path, uid, gid });
+    },
+
+    async resolveLinks(paths: string[]): Promise<LinkInfo[]> {
+      const raw = await invoke<RawSftpLink[]>("sftp_resolve_links", { sessionId, paths });
+      return raw.map(linkInfoFromRaw);
+    },
+
+    async realPath(path: string) {
+      return invoke<string>("sftp_realpath", { sessionId, path });
     },
   };
 }

@@ -294,7 +294,14 @@ async fn sftp_remote_mtime(sftp: &SftpSession, path: &str) -> Option<u64> {
 /// truncated because TRUNCATE zeroed it at open time, and any consumer on
 /// the server would read a partial file until the next watcher event
 /// corrects it. The sibling `sftp_download_file` uses the same pattern.
-async fn sftp_upload_file(sftp: &SftpSession, local: &Path, remote: &str) -> Result<(), String> {
+///
+/// Holds the remote and local file locks (`crate::lock_remote_file`, same
+/// order as the transfer commands) for the whole write and the swap: a
+/// panel transfer or an editor save of the same file finishes first, and
+/// none of them can start while we remove + rename the destination name.
+async fn sftp_upload_file(session_id: &str, sftp: &SftpSession, local: &Path, remote: &str) -> Result<(), String> {
+    let _remote_lock = crate::lock_remote_file(session_id, remote).await;
+    let _local_lock = crate::lock_local_file(local).await;
     if let Some(parent) = std::path::Path::new(remote).parent() {
         let pstr = parent.to_string_lossy().replace('\\', "/");
         if !pstr.is_empty() && pstr != "/" {
@@ -344,12 +351,18 @@ async fn sftp_upload_file(sftp: &SftpSession, local: &Path, remote: &str) -> Res
 /// local file's mtime to match the remote's so the next dry-run doesn't
 /// see the local copy as "newer" (it was just created — wall-clock now —
 /// even though its contents are exactly the remote's older bytes).
+///
+/// Holds the remote and local file locks like `sftp_upload_file`, so the
+/// rename below never replaces a local file a panel download is writing.
 async fn sftp_download_file(
+    session_id: &str,
     sftp: &SftpSession,
     remote: &str,
     local: &Path,
     remote_mtime_secs: Option<u64>,
 ) -> Result<(), String> {
+    let _remote_lock = crate::lock_remote_file(session_id, remote).await;
+    let _local_lock = crate::lock_local_file(local).await;
     if let Some(parent) = local.parent() {
         tokio::fs::create_dir_all(parent).await
             .map_err(|e| format!("local mkdir {:?}: {}", parent, e))?;
@@ -404,7 +417,12 @@ async fn sftp_download_file(
 /// Move a remote path into `<remote_root>/.submarine-trash/<timestamp>/`
 /// preserving the relative layout. Cheaper than a full delete and lets the
 /// user recover from a bad local action without server-side support.
-async fn sftp_soft_delete(sftp: &SftpSession, remote_root: &str, target: &str) -> Result<(), String> {
+async fn sftp_soft_delete(session_id: &str, sftp: &SftpSession, remote_root: &str, target: &str) -> Result<(), String> {
+    // Not while a transfer or editor save is writing this file, or, when the
+    // target is a folder, any file below it: the rename would carry that
+    // write into the trash. The lock follows the tree (see `crate::FileLock`),
+    // and no new transfer below the target can start until we are done.
+    let _remote_lock = crate::lock_remote_file(session_id, target).await;
     let trash_root = format!("{}/.submarine-trash/{}", remote_root.trim_end_matches('/'), now_ms());
     sftp_mkdir_p(sftp, &trash_root).await?;
     let leaf = std::path::Path::new(target)
@@ -416,18 +434,18 @@ async fn sftp_soft_delete(sftp: &SftpSession, remote_root: &str, target: &str) -
     Ok(())
 }
 
-async fn sftp_hard_delete(sftp: &SftpSession, target: &str) -> Result<(), String> {
-    // Try as file, then as directory (russh-sftp doesn't expose stat-type
-    // cheaply; the two error paths are fast).
-    if let Err(e) = sftp.remove_file(target).await {
-        let msg = e.to_string().to_lowercase();
-        if msg.contains("directory") || msg.contains("isdir") {
-            sftp.remove_dir(target).await.map_err(|e| format!("rmdir {}: {}", target, e))?;
-        } else if !msg.contains("no such") && !msg.contains("does not exist") {
-            return Err(format!("rm {}: {}", target, e));
-        }
+async fn sftp_hard_delete(session_id: &str, sftp: &SftpSession, target: &str) -> Result<(), String> {
+    // Not while a transfer or editor save is writing this file (or, for a
+    // folder, a file below it; see `sftp_soft_delete`).
+    let _remote_lock = crate::lock_remote_file(session_id, target).await;
+    // LSTAT, not the REMOVE error text: OpenSSH reports a directory there as
+    // a bare "Failure" (Linux) or "Permission denied" (BSD).
+    match sftp.symlink_metadata(target).await {
+        Ok(meta) if meta.file_type().is_dir() => crate::sftp_remove_tree(sftp, target).await,
+        Ok(_) => sftp.remove_file(target).await.map_err(|e| format!("rm {}: {}", target, e)),
+        Err(e) if crate::is_no_such_file(&e) => Ok(()),
+        Err(e) => Err(format!("stat {}: {}", target, e)),
     }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -834,6 +852,7 @@ async fn run_mirror(
             let sftp = Arc::clone(&sftp);
             let local_root = local_root.clone();
             let remote_root = spec.remote.clone();
+            let session_id = session_id.clone();
             js.spawn(async move {
                 let local_path = local_root.join(entry.path.replace('/', std::path::MAIN_SEPARATOR_STR));
                 let remote_path = match local_to_remote(&local_path, &local_root, &remote_root) {
@@ -842,9 +861,9 @@ async fn run_mirror(
                 };
                 let res = if is_download {
                     let mt = sftp_remote_mtime(&*sftp, &remote_path).await;
-                    sftp_download_file(&*sftp, &remote_path, &local_path, mt).await
+                    sftp_download_file(&session_id, &*sftp, &remote_path, &local_path, mt).await
                 } else {
-                    sftp_upload_file(&*sftp, &local_path, &remote_path).await
+                    sftp_upload_file(&session_id, &*sftp, &local_path, &remote_path).await
                 };
                 (entry, res, is_download)
             });
@@ -1049,7 +1068,7 @@ async fn process_event(
             // Trust the watcher's event and just upload — sftp_upload_file
             // itself is a no-op on the byte level (TRUNCATE + write) so this
             // is cheap when the file truly didn't change.
-            match sftp_upload_file(sftp, path, &remote).await {
+            match sftp_upload_file(session_id, sftp, path, &remote).await {
                 Ok(_) => {
                     {
                         let mut s = status.lock().await;
@@ -1074,9 +1093,9 @@ async fn process_event(
             // if we lumped them together — an unrecoverable hard-rm when
             // spec.soft_delete=false.
             let res = if spec.soft_delete {
-                sftp_soft_delete(sftp, &spec.remote, &remote).await
+                sftp_soft_delete(session_id, sftp, &spec.remote, &remote).await
             } else {
-                sftp_hard_delete(sftp, &remote).await
+                sftp_hard_delete(session_id, sftp, &remote).await
             };
             match res {
                 Ok(_) => {
@@ -1101,5 +1120,20 @@ async fn process_event(
             emit_log(app, session_id, mirror_id, "warn", "stat-fail",
                      Some(rel), Some(e.to_string()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_sftp::{self, Node::*};
+
+    #[tokio::test]
+    async fn hard_delete_removes_a_folder_with_its_contents() {
+        let tree = test_sftp::tree(&[("/srv", Dir), ("/srv/old", Dir), ("/srv/old/f", File), ("/srv/keep", File)]);
+        let sftp = test_sftp::connect(tree.clone(), Default::default()).await;
+        super::sftp_hard_delete("mirror-hard-delete-test", &sftp, "/srv/old").await.unwrap();
+        let left: Vec<String> = tree.lock().unwrap().keys().cloned().collect();
+        assert_eq!(left, ["/srv", "/srv/keep"]);
+        super::sftp_hard_delete("mirror-hard-delete-test", &sftp, "/srv/old").await.expect("gone already is done");
     }
 }
