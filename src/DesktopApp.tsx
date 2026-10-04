@@ -15,6 +15,7 @@ import PasswordField from "./components/PasswordField";
 import QuickConnectModal, { QuickAuth } from "./components/QuickConnectModal";
 import { useConfirm, useTextPrompt } from "./ui/confirm";
 import { useIsNarrow } from "./hooks/useViewport";
+import { FONT_FAMILY_KEY, FONT_SIZE_KEY, readFontFamily, readFontSize } from "./util/terminalFont";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
 import AddNodePanel from "./components/AddNodePanel";
@@ -225,7 +226,9 @@ function DesktopApp() {
   const [appSettings, setAppSettings] = useState({
     primaryColor: localStorage.getItem('submarine-primary-color') || '#60a5fa',
     backgroundColor: localStorage.getItem('submarine-bg-color') || '#0a0a0c',
-    terminalFontSize: parseInt(localStorage.getItem('submarine-terminal-font-size') || '14'),
+    terminalFontSize: readFontSize(),
+    // '' = the built-in cross-platform monospace stack (see util/terminalFont).
+    terminalFontFamily: readFontFamily(),
     // Auto-sync defaults ON. Per-device (localStorage), like the other prefs.
     autoSync: localStorage.getItem('submarine-auto-sync') !== 'off',
     // Background pull cadence in minutes (min 1). Only gates the periodic
@@ -241,10 +244,11 @@ function DesktopApp() {
     document.documentElement.style.setProperty('--background', appSettings.backgroundColor);
     localStorage.setItem('submarine-primary-color', appSettings.primaryColor);
     localStorage.setItem('submarine-bg-color', appSettings.backgroundColor);
-    localStorage.setItem('submarine-terminal-font-size', appSettings.terminalFontSize.toString());
+    localStorage.setItem(FONT_SIZE_KEY, appSettings.terminalFontSize.toString());
+    localStorage.setItem(FONT_FAMILY_KEY, appSettings.terminalFontFamily);
     localStorage.setItem('submarine-auto-sync', appSettings.autoSync ? 'on' : 'off');
     localStorage.setItem('submarine-sync-interval-min', String(appSettings.syncIntervalMin));
-    // Tell already-mounted terminals to re-fit with the new font size.
+    // Tell already-mounted terminals to re-fit with the new font size / face.
     // Without this dispatch the listener in TerminalView is dead code and
     // users have to close+reopen every terminal to see a size change.
     window.dispatchEvent(new CustomEvent('submarine-settings-changed'));

@@ -10,6 +10,7 @@ import TunnelsPanel from "./TunnelsPanel";
 import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
+import { fontFamilyCss, readFontFamily, readFontSize } from "../util/terminalFont";
 
 // Compact "run this tab on its own dedicated SSH connection" toggle, shown in
 // the SFTP and Port-Forwarding tab headers. The status dot reflects the live
@@ -86,11 +87,13 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // The connect-time log box mirrors the terminal font-size setting, so the
   // user's chosen size applies to the startup logs too — not just the shell.
   // `submarine-settings-changed` (dispatched by Settings on save) keeps it live.
-  const readLogFontSize = () =>
-    Math.max(1, parseInt(localStorage.getItem('submarine-terminal-font-size') || '14') || 14);
-  const [logFontSize, setLogFontSize] = useState(readLogFontSize);
+  const [logFontSize, setLogFontSize] = useState(readFontSize);
+  const [logFontFamily, setLogFontFamily] = useState(() => fontFamilyCss(readFontFamily()));
   useEffect(() => {
-    const sync = () => setLogFontSize(readLogFontSize());
+    const sync = () => {
+      setLogFontSize(readFontSize());
+      setLogFontFamily(fontFamilyCss(readFontFamily()));
+    };
     window.addEventListener('submarine-settings-changed', sync);
     return () => window.removeEventListener('submarine-settings-changed', sync);
   }, []);
@@ -999,7 +1002,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               WebkitOverflowScrolling gives older Android WebViews momentum. */}
           <div
             className="flex-1 min-h-0 bg-[#121214] border border-white/5 rounded-2xl p-4 font-mono overflow-y-auto overscroll-contain custom-scrollbar shadow-inner relative select-text cursor-text"
-            style={{ WebkitOverflowScrolling: 'touch', fontSize: logFontSize, lineHeight: 1.5 }}
+            style={{ WebkitOverflowScrolling: 'touch', fontSize: logFontSize, fontFamily: logFontFamily, lineHeight: 1.5 }}
           >
             {logs.map((l, i) => (
               <div key={i} className={`mb-2 ${l.type === 'error' ? 'text-red-400' : l.type === 'success' ? 'text-primary' : 'text-zinc-400'}`}>
