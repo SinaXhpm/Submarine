@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Plus, Trash2, X, AlertTriangle, ArrowRight, Download, Upload,
-  CheckCircle2, Cloud, CloudOff, HardDrive, ChevronDown, RefreshCw, ArrowUpCircle, Heart,
+  CheckCircle2, Cloud, CloudOff, HardDrive, ChevronDown, RefreshCw, ArrowUpCircle,
 } from "lucide-react";
 import CloudPanel from "./CloudPanel";
 import AboutPanel from "./AboutPanel";
@@ -130,12 +130,6 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
 
   const openReleaseNotes = () => {
     if (update?.release_url) invoke("open_external_url", { url: update.release_url }).catch(() => {});
-  };
-  // Donate → the project's GitHub, anchored at #donate (placeholder section the
-  // owner fills in later). Goes through the backend URL-opener like every other
-  // external link so the CSP stays tight.
-  const openDonate = () => {
-    invoke("open_external_url", { url: "https://github.com/SinaXhpm/submarine#donate" }).catch(() => {});
   };
 
   // When the expanded row changes, reset + focus the password so opening a
@@ -587,8 +581,8 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
             link; signed-in shows the account email + a way into Manage. */}
         <CloudBar status={cloudStatus} busy={busy} onManage={() => setCloudOpen(true)} />
 
-        {/* About + Donate — a matched pair of pills, with a live "new version"
-            notice underneath when one is available. */}
+        {/* About pill, with a live "new version" notice underneath when one
+            is available. */}
         <div className="mt-4 flex flex-col items-center gap-2.5">
           <div className="flex items-center gap-2">
             <button
@@ -596,13 +590,6 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
               className="h-8 px-4 rounded-lg text-[12.5px] font-bold text-zinc-200 bg-white/[0.04] border border-white/10 hover:bg-white/[0.09] hover:text-white transition-colors"
             >
               About
-            </button>
-            <button
-              onClick={openDonate}
-              title="Support Submarine on GitHub"
-              className="h-8 px-4 rounded-lg text-[12.5px] font-bold text-rose-200 bg-rose-500/10 border border-rose-500/25 hover:bg-rose-500/20 hover:text-rose-100 transition-colors flex items-center gap-1.5"
-            >
-              <Heart size={13} className="fill-rose-400/40" /> Donate
             </button>
           </div>
           {update?.has_update && update.latest && (
