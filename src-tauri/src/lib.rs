@@ -3034,13 +3034,17 @@ async fn export_profile(
         return Err(format!("Profile '{}' not found on disk", name));
     }
 
-    // Native file dialogs are desktop-only. On Android we'd hit the SAF
-    // intent system via a Tauri plugin instead, but profile export from
-    // the mobile UI isn't a wired feature yet, so the command just refuses.
+    // Android has no native save dialog: drop the (still encrypted) file into
+    // the first shared folder we can write to — Download, then Documents,
+    // then app storage — and report the exact path so the user can find it.
     #[cfg(target_os = "android")]
     {
-        let _ = src;
-        return Err("Profile export is not available on Android.".into());
+        let dir = android_export_dir(&app_handle)
+            .ok_or_else(|| "No writable folder found for the export.".to_string())?;
+        let dst = unique_file_path(&dir, &name, "submarine");
+        fs::copy(&src, &dst)
+            .map_err(|e| format!("[FILE] EXPORT_COPY_FAILED to {:?}: {}", dst, e))?;
+        return Ok(Some(dst.to_string_lossy().to_string()));
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -3120,6 +3124,124 @@ async fn import_profile_pick() -> Result<Option<(String, String)>, String> {
             .unwrap_or_else(|| "imported".to_string());
 
         Ok(Some((path.to_string_lossy().to_string(), suggested)))
+    }
+}
+
+/// Header + minimum-size check for an exported vault (no decryption — that
+/// needs the profile password, entered later at unlock).
+fn validate_vault_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() < 5 || &bytes[..4] != VAULT_MAGIC {
+        return Err("The selected file is not a Submarine profile.".into());
+    }
+    if bytes[4] != VAULT_VERSION {
+        return Err(format!(
+            "Profile uses an unsupported vault version ({}). Update Submarine first.",
+            bytes[4]
+        ));
+    }
+    if bytes.len() < HEADER_LEN + NONCE_LEN + 16 {
+        return Err("The file is truncated: the header is valid but the body is too small.".into());
+    }
+    Ok(())
+}
+
+/// `<dir>/<stem>.<ext>`, or `<stem> (2).<ext>`, `(3)`… if that name is taken,
+/// so an export never overwrites an earlier one.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn unique_file_path(dir: &std::path::Path, stem: &str, ext: &str) -> PathBuf {
+    let first = dir.join(format!("{}.{}", stem, ext));
+    if !first.exists() {
+        return first;
+    }
+    for n in 2..1000 {
+        let candidate = dir.join(format!("{} ({}).{}", stem, n, ext));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    first
+}
+
+/// First shared folder the app can write to, for Android exports.
+#[cfg(target_os = "android")]
+fn android_export_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from("/storage/emulated/0/Download"),
+        PathBuf::from("/storage/emulated/0/Documents"),
+    ];
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        candidates.push(dir);
+    }
+    candidates.into_iter().find(|p| is_dir_writable(p))
+}
+
+/// Import from bytes — the Android path: the WebView's system file picker
+/// hands the file to the page, which sends it here (base64). Same checks as
+/// `import_profile_save`, and it never overwrites an existing profile.
+#[tauri::command]
+async fn import_profile_bytes(
+    app_handle: tauri::AppHandle,
+    name: String,
+    data: String,
+) -> Result<(), String> {
+    use base64::Engine as _;
+    validate_profile_name(&name)?;
+    // Real vaults are a few MB at most; refuse anything absurd before
+    // allocating for it.
+    const MAX_VAULT_BYTES: usize = 256 * 1024 * 1024;
+    if data.len() / 4 * 3 > MAX_VAULT_BYTES {
+        return Err("The file is too large to be a Submarine profile.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|_| "Couldn't read the selected file.".to_string())?;
+    validate_vault_bytes(&bytes)?;
+
+    let dir = profiles_dir(&app_handle)?;
+    fs::create_dir_all(&dir).map_err(|e| format!("[FILE] MKDIR_FAILED: {}", e))?;
+    let dst = profile_path(&app_handle, &name)?;
+    if dst.exists() {
+        return Err(format!("Profile '{}' already exists", name));
+    }
+    fs::write(&dst, &bytes).map_err(|e| format!("[FILE] IMPORT_WRITE_FAILED to {:?}: {}", dst, e))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod profile_import_tests {
+    use super::*;
+
+    fn fake_vault(len: usize) -> Vec<u8> {
+        let mut v = vec![0u8; len];
+        v[..4].copy_from_slice(VAULT_MAGIC);
+        v[4] = VAULT_VERSION;
+        v
+    }
+
+    #[test]
+    fn a_well_formed_vault_header_passes() {
+        assert!(validate_vault_bytes(&fake_vault(HEADER_LEN + NONCE_LEN + 64)).is_ok());
+    }
+
+    #[test]
+    fn junk_wrong_version_and_truncated_files_are_rejected() {
+        assert!(validate_vault_bytes(b"PK\x03\x04 not a vault").is_err());
+        let mut v = fake_vault(HEADER_LEN + NONCE_LEN + 64);
+        v[4] = VAULT_VERSION + 1;
+        assert!(validate_vault_bytes(&v).is_err());
+        assert!(validate_vault_bytes(&fake_vault(HEADER_LEN + 3)).is_err());
+    }
+
+    #[test]
+    fn exports_never_overwrite() {
+        let dir = std::env::temp_dir().join(format!("submarine-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = unique_file_path(&dir, "work", "submarine");
+        assert_eq!(first.file_name().unwrap(), "work.submarine");
+        std::fs::write(&first, b"x").unwrap();
+        let second = unique_file_path(&dir, "work", "submarine");
+        assert_eq!(second.file_name().unwrap(), "work (2).submarine");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -11093,7 +11215,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             check_db_exists, setup_master_db, persist_vault,
             list_profiles, cloud_list_sync_profiles, cloud_delete_profile, force_push_profile, select_profile, create_profile, delete_profile, close_profile,
-            export_profile, import_profile_pick, import_profile_save,
+            export_profile, import_profile_pick, import_profile_save, import_profile_bytes,
             cloud::cloud_status, cloud::cloud_signup, cloud::cloud_consume_verify_link,
             cloud::cloud_set_password, cloud::cloud_login, cloud::cloud_logout,
             cloud::cloud_request_password_reset, cloud::cloud_reset_password,
