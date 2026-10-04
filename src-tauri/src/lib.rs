@@ -2938,6 +2938,7 @@ async fn close_profile(
         tunnel::stop_all_for_session(&ssh.tunnels, sid).await;
         ssh.forwarded_targets.lock().await.remove(sid);
         ssh.sftp_sessions.lock().await.remove(sid);
+        ssh.sftp_elevation.lock().await.remove(sid);
         ssh.connections.lock().await.remove(sid);
         let temp = session_sftp_dir(sid);
         if temp.exists() {
@@ -2978,6 +2979,7 @@ async fn close_profile(
     ssh.tunnels.lock().await.clear();
     ssh.forwarded_targets.lock().await.clear();
     ssh.sftp_sessions.lock().await.clear();
+    ssh.sftp_elevation.lock().await.clear();
     ssh.connections.lock().await.clear();
     ssh.jump_connections.lock().await.clear();
     ssh.fp_txs.lock().await.clear();
@@ -7377,8 +7379,10 @@ async fn disconnect_session(
     // try to push uploads through a dead SSH handle otherwise.
     mirror::stop_all_for_session(&mirrors, &session_id).await;
     // Drop SFTP first so the channel it holds is freed before we tear down the
-    // underlying SSH handle.
+    // underlying SSH handle. The tab is gone, so is its root (sudo) mode and
+    // the in-memory sudo password.
     state.sftp_sessions.lock().await.remove(&session_id);
+    state.sftp_elevation.lock().await.remove(&session_id);
     state.connections.lock().await.remove(&session_id);
     // Drop any ProxyJump bastion handle for this session — closes the jump
     // connection once the target it was carrying is gone.
@@ -8133,6 +8137,347 @@ struct SftpListResult {
     entries: Vec<SftpFileEntry>,
 }
 
+// ---------------------------------------------------------------------------
+// Elevated SFTP ("run file operations as root" via sudo)
+// ---------------------------------------------------------------------------
+//
+// Instead of the plain `sftp` subsystem, the channel runs `sudo <sftp-server>`
+// and russh-sftp speaks the protocol over its stdin/stdout. Two modes:
+//   - passwordless: `sudo -n` (NOPASSWD rule, possibly scoped to sftp-server)
+//   - password:     `sudo -S -k`, the password written as the first stdin line
+// A probe runs first (as the login user) to find sftp-server and check that
+// sudo will allow exactly that command, so failures come back as precise
+// errors instead of a broken SFTP stream.
+
+type SessionHandleArc = Arc<tokio::sync::Mutex<russh::client::Handle<ssh_manager::ClientHandler>>>;
+
+const SUDO_NEED_PASSWORD: &str = "[SUDO] NEED_PASSWORD";
+const SUDO_WRONG_PASSWORD: &str = "[SUDO] WRONG_PASSWORD";
+const SUDO_NOT_ALLOWED: &str = "[SUDO] NOT_ALLOWED";
+const SUDO_REQUIRETTY: &str = "[SUDO] REQUIRETTY";
+const SUDO_NO_SUDO: &str = "[SUDO] NO_SUDO";
+const SUDO_NO_SFTP_SERVER: &str = "[SUDO] NO_SFTP_SERVER";
+const SUDO_FAILED: &str = "[SUDO] FAILED";
+const ELEVATED_SFTP_READY: &str = "__SUB_SUDO_READY__";
+
+// POSIX sh, run as `sh -c '<script>'`: no single quotes inside, and no `!`
+// (tcsh history expansion) so it survives any login shell. `SUB_MODE=pw`
+// makes sudo read the password from stdin; `-k` ignores a cached ticket so
+// the password is really checked. `sudo -l <cmd>` tests the exact command
+// we will run, which also works for sudoers rules scoped to sftp-server.
+const SUDO_SFTP_PROBE: &str = r#"S=
+for p in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server /usr/libexec/sftp-server /usr/lib/sftp-server /usr/local/libexec/sftp-server /usr/local/lib/sftp-server /usr/lib64/misc/sftp-server; do
+  if [ -x "$p" ]; then S=$p; break; fi
+done
+if [ -z "$S" ] && [ -r /etc/ssh/sshd_config ]; then
+  while read -r k n v rest; do
+    case "$k" in [Ss]ubsystem) if [ "$n" = sftp ]; then case "$v" in /*) if [ -x "$v" ]; then S=$v; fi;; esac; fi;; esac
+  done < /etc/ssh/sshd_config
+fi
+if [ -z "$S" ]; then echo __SUB_SUDO:NO_SFTP_SERVER; exit 0; fi
+echo "__SUB_SUDO:PATH:$S"
+if command -v sudo >/dev/null 2>&1; then :; else echo __SUB_SUDO:NO_SUDO; exit 0; fi
+if [ "$SUB_MODE" = pw ]; then OUT=$(sudo -S -k -p "" -l "$S" 2>&1); else OUT=$(sudo -n -l "$S" 2>&1); fi
+if [ $? -eq 0 ]; then echo __SUB_SUDO:OK; else echo "__SUB_SUDO:FAIL:$(printf %s "$OUT" | tr "\n" " ")"; fi"#;
+
+/// Only plain absolute paths are ever interpolated into a remote command.
+fn is_safe_remote_exec_path(p: &str) -> bool {
+    p.starts_with('/')
+        && p.len() < 256
+        && p.chars().all(|c| c.is_ascii_alphanumeric() || "/._+-".contains(c))
+}
+
+/// Map sudo's stderr to a stable code the UI can explain.
+fn classify_sudo_failure(msg: &str) -> String {
+    let m = msg.to_ascii_lowercase();
+    if m.contains("password is required") {
+        SUDO_NEED_PASSWORD.into()
+    } else if m.contains("incorrect password")
+        || m.contains("sorry, try again")
+        || m.contains("authentication failure")
+        || m.contains("no password was provided")
+    {
+        SUDO_WRONG_PASSWORD.into()
+    } else if m.contains("must have a tty") || m.contains("no tty present") {
+        SUDO_REQUIRETTY.into()
+    } else if m.trim().is_empty() || m.contains("not in the sudoers") || m.contains("not allowed") {
+        SUDO_NOT_ALLOWED.into()
+    } else {
+        format!("{}: {}", SUDO_FAILED, msg.trim())
+    }
+}
+
+/// Run a command on its own exec channel, optionally feeding stdin, and
+/// collect stdout+stderr until the channel closes.
+async fn exec_with_stdin_capture(
+    session_arc: &SessionHandleArc,
+    cmd: &str,
+    stdin: Option<&[u8]>,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    use russh::ChannelMsg;
+    let mut channel = {
+        let session = session_arc.lock().await;
+        session.channel_open_session().await.map_err(|e| e.to_string())?
+    };
+    channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
+    if let Some(input) = stdin {
+        channel.data(input).await.map_err(|e| e.to_string())?;
+    }
+    channel.eof().await.map_err(|e| e.to_string())?;
+    let mut out: Vec<u8> = Vec::new();
+    let collect = async {
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                ChannelMsg::Data { ref data } | ChannelMsg::ExtendedData { ref data, .. } => {
+                    if out.len() < 64 * 1024 {
+                        out.extend_from_slice(data);
+                    }
+                }
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), collect)
+        .await
+        .map_err(|_| format!("exec timed out after {}s", timeout_secs))?;
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Find sftp-server and check sudo for it. Returns the sftp-server path.
+async fn probe_sudo_sftp(session_arc: &SessionHandleArc, password: Option<&str>) -> Result<String, String> {
+    let mode = if password.is_some() { "pw" } else { "n" };
+    let cmd = format!("env SUB_MODE={} sh -c '{}'", mode, SUDO_SFTP_PROBE);
+    let stdin = password.map(|p| zeroize::Zeroizing::new(format!("{}\n", p)));
+    let out = exec_with_stdin_capture(session_arc, &cmd, stdin.as_ref().map(|s| s.as_bytes()), 25).await?;
+    let mut path: Option<String> = None;
+    for line in out.lines() {
+        let Some(rest) = line.trim().strip_prefix("__SUB_SUDO:") else { continue };
+        if let Some(p) = rest.strip_prefix("PATH:") {
+            path = Some(p.trim().to_string());
+            continue;
+        }
+        if let Some(msg) = rest.strip_prefix("FAIL:") {
+            return Err(classify_sudo_failure(msg));
+        }
+        match rest {
+            "NO_SFTP_SERVER" => return Err(SUDO_NO_SFTP_SERVER.into()),
+            "NO_SUDO" => return Err(SUDO_NO_SUDO.into()),
+            "OK" => {
+                let p = path.ok_or_else(|| format!("{}: sftp-server path missing", SUDO_FAILED))?;
+                if !is_safe_remote_exec_path(&p) {
+                    return Err(format!("{}: unusual sftp-server path", SUDO_FAILED));
+                }
+                return Ok(p);
+            }
+            _ => {}
+        }
+    }
+    Err(format!("{}: unexpected reply from the server", SUDO_FAILED))
+}
+
+/// Start `sudo <sftp-server>` on a fresh exec channel and hand the stream to
+/// russh-sftp. The shell echoes a ready marker first; anything a noisy shell
+/// rc prints before it is skipped. In password mode sudo always prompts
+/// (`-k`), so it consumes exactly the password line and the SFTP bytes that
+/// follow go to sftp-server.
+async fn open_elevated_sftp(
+    session_arc: &SessionHandleArc,
+    elevation: &ssh_manager::SftpElevation,
+) -> Result<russh_sftp::client::SftpSession, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if !is_safe_remote_exec_path(&elevation.server_path) {
+        return Err(format!("{}: unusual sftp-server path", SUDO_FAILED));
+    }
+    let sudo = if elevation.password.is_some() { "sudo -S -k -p ''" } else { "sudo -n" };
+    let cmd = format!("echo {}; exec {} {}", ELEVATED_SFTP_READY, sudo, elevation.server_path);
+    let channel = {
+        let session = session_arc.lock().await;
+        session.channel_open_session().await.map_err(|e| e.to_string())?
+    };
+    channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
+    let mut stream = channel.into_stream();
+    if let Some(pw) = &elevation.password {
+        let mut line = zeroize::Zeroizing::new(Vec::with_capacity(pw.len() + 1));
+        line.extend_from_slice(pw.as_bytes());
+        line.push(b'\n');
+        stream.write_all(&line).await.map_err(|e| e.to_string())?;
+        stream.flush().await.map_err(|e| e.to_string())?;
+    }
+    let wait_ready = async {
+        let mut line: Vec<u8> = Vec::new();
+        let mut byte = [0u8; 1];
+        let mut seen = 0usize;
+        loop {
+            let n = stream.read(&mut byte).await.map_err(|e| e.to_string())?;
+            if n == 0 {
+                return Err(format!("{}: sudo closed the channel", SUDO_FAILED));
+            }
+            seen += 1;
+            if seen > 64 * 1024 {
+                return Err(format!("{}: no ready marker from the server", SUDO_FAILED));
+            }
+            if byte[0] == b'\n' {
+                let l = line.strip_suffix(b"\r").unwrap_or(&line);
+                if l == ELEVATED_SFTP_READY.as_bytes() {
+                    return Ok(());
+                }
+                line.clear();
+            } else {
+                line.push(byte[0]);
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(20), wait_ready)
+        .await
+        .map_err(|_| format!("{}: timed out starting sftp-server via sudo", SUDO_FAILED))??;
+    russh_sftp::client::SftpSession::new(stream)
+        .await
+        .map_err(|e| format!("{}: {}", SUDO_FAILED, e))
+}
+
+#[cfg(test)]
+mod elevated_sftp_tests {
+    use super::*;
+
+    #[test]
+    fn sudo_errors_map_to_stable_codes() {
+        assert_eq!(classify_sudo_failure("sudo: a password is required"), SUDO_NEED_PASSWORD);
+        assert_eq!(classify_sudo_failure("Sorry, try again. sudo: no password was provided"), SUDO_WRONG_PASSWORD);
+        assert_eq!(classify_sudo_failure("sudo: 1 incorrect password attempt"), SUDO_WRONG_PASSWORD);
+        assert_eq!(classify_sudo_failure("sudo: sorry, you must have a tty to run sudo"), SUDO_REQUIRETTY);
+        assert_eq!(classify_sudo_failure("bob is not in the sudoers file."), SUDO_NOT_ALLOWED);
+        assert_eq!(classify_sudo_failure(""), SUDO_NOT_ALLOWED);
+        assert!(classify_sudo_failure("sudo: something odd").starts_with(SUDO_FAILED));
+    }
+
+    #[test]
+    fn only_plain_absolute_paths_reach_the_remote_shell() {
+        assert!(is_safe_remote_exec_path("/usr/lib/openssh/sftp-server"));
+        assert!(is_safe_remote_exec_path("/usr/libexec/openssh/sftp-server"));
+        assert!(!is_safe_remote_exec_path("sftp-server"));
+        assert!(!is_safe_remote_exec_path("/usr/lib/sftp-server; rm -rf /"));
+        assert!(!is_safe_remote_exec_path("/opt/my sftp/sftp-server"));
+        assert!(!is_safe_remote_exec_path("/usr/lib/$(id)/sftp-server"));
+    }
+
+    #[test]
+    fn probe_script_survives_single_quote_wrapping_in_any_shell() {
+        // It is sent as `sh -c '<script>'`: a single quote would end the
+        // argument early, and `!` triggers history expansion in tcsh.
+        assert!(!SUDO_SFTP_PROBE.contains('\''));
+        assert!(!SUDO_SFTP_PROBE.contains('!'));
+    }
+}
+
+/// Which connection SFTP rides for a session: the dedicated `::sftp` one when
+/// the tab has it, otherwise the primary.
+async fn sftp_transport(state: &SshState, session_id: &str) -> Result<(String, SessionHandleArc), String> {
+    let connections = state.connections.lock().await;
+    let dedicated_key = format!("{}::sftp", session_id);
+    if !session_id.contains("::") && connections.contains_key(&dedicated_key) {
+        Ok((dedicated_key.clone(), Arc::clone(connections.get(&dedicated_key).unwrap())))
+    } else if let Some(sess) = connections.get(session_id) {
+        Ok((session_id.to_string(), Arc::clone(sess)))
+    } else {
+        Err("Session not connected".into())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct SftpElevationStatus {
+    elevated: bool,
+    /// True when sudo let us in without a password (NOPASSWD rule).
+    passwordless: bool,
+}
+
+/// The user file operations run as when NOT elevated (`id -un` on the SFTP
+/// transport) — lets the pane flag a direct root login too.
+#[tauri::command]
+async fn sftp_login_user(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+) -> Result<String, String> {
+    let (_, session_arc) = sftp_transport(&state, &session_id).await?;
+    let out = exec_with_stdin_capture(&session_arc, "id -un", None, 10).await?;
+    Ok(out.lines().next().unwrap_or("").trim().to_string())
+}
+
+#[tauri::command]
+async fn sftp_elevation_status(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+) -> Result<SftpElevationStatus, String> {
+    Ok(match state.sftp_elevation.lock().await.get(&session_id) {
+        Some(e) => SftpElevationStatus { elevated: true, passwordless: e.password.is_none() },
+        None => SftpElevationStatus { elevated: false, passwordless: false },
+    })
+}
+
+/// Switch this tab's file operations to root (sudo) or back. Tries
+/// passwordless sudo first and only uses `password` when sudo asks for one;
+/// returns `[SUDO] NEED_PASSWORD` so the UI can prompt.
+#[tauri::command]
+async fn sftp_set_elevated(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    enabled: bool,
+    password: Option<String>,
+) -> Result<SftpElevationStatus, String> {
+    if !enabled {
+        set_sftp_mode(&state, &session_id, None).await;
+        return Ok(SftpElevationStatus { elevated: false, passwordless: false });
+    }
+    let password = password.map(zeroize::Zeroizing::new).filter(|p| !p.is_empty());
+    if let Some(p) = &password {
+        if p.contains(['\n', '\r', '\0']) {
+            return Err(format!("{}: the password contains a line break", SUDO_FAILED));
+        }
+    }
+    let (_, session_arc) = sftp_transport(&state, &session_id).await?;
+    let (server_path, used_password) = match probe_sudo_sftp(&session_arc, None).await {
+        Ok(path) => (path, None),
+        Err(e) if e == SUDO_NEED_PASSWORD => {
+            let Some(pw) = password else { return Err(e) };
+            let path = probe_sudo_sftp(&session_arc, Some(pw.as_str())).await?;
+            (path, Some(pw))
+        }
+        Err(e) => return Err(e),
+    };
+    let passwordless = used_password.is_none();
+    set_sftp_mode(
+        &state,
+        &session_id,
+        Some(ssh_manager::SftpElevation { server_path, password: used_password }),
+    )
+    .await;
+    // Open it right away so a failure shows up here, not on the next click.
+    if let Err(e) = get_sftp_session(&state, &session_id).await {
+        set_sftp_mode(&state, &session_id, None).await;
+        return Err(e);
+    }
+    Ok(SftpElevationStatus { elevated: true, passwordless })
+}
+
+/// Switch a tab's SFTP privilege mode and drop its cached session in one
+/// step. Lock order is sftp_sessions, then sftp_elevation — the same order
+/// get_sftp_session checks the mode in before caching — so a session opened
+/// in the old mode can never be cached after the switch.
+async fn set_sftp_mode(state: &SshState, session_id: &str, elevation: Option<ssh_manager::SftpElevation>) {
+    let mut cache = state.sftp_sessions.lock().await;
+    let mut modes = state.sftp_elevation.lock().await;
+    match elevation {
+        Some(e) => {
+            modes.insert(session_id.to_string(), e);
+        }
+        None => {
+            modes.remove(session_id);
+        }
+    }
+    cache.remove(session_id);
+}
+
 pub async fn get_sftp_session(
     state: &SshState,
     session_id: &str,
@@ -8150,25 +8495,29 @@ pub async fn get_sftp_session(
     // is a pure transport: it appearing/disappearing just invalidates this
     // cache (see the `::sftp` lifecycle hooks) and the next file operation
     // re-opens the subsystem on whatever transport is available.
-    let (transport_key, session_arc) = {
-        let connections = state.connections.lock().await;
-        let dedicated_key = format!("{}::sftp", session_id);
-        if !session_id.contains("::") && connections.contains_key(&dedicated_key) {
-            (dedicated_key.clone(), Arc::clone(connections.get(&dedicated_key).unwrap()))
-        } else if let Some(sess) = connections.get(session_id) {
-            (session_id.to_string(), Arc::clone(sess))
-        } else {
-            return Err("Session not connected".into());
+    let (transport_key, session_arc) = sftp_transport(state, session_id).await?;
+
+    // Elevated tabs get `sudo <sftp-server>` instead of the plain subsystem.
+    let elevation = state.sftp_elevation.lock().await.get(session_id).cloned();
+    let was_elevated = elevation.is_some();
+    let sftp = match elevation {
+        Some(elev) => open_elevated_sftp(&session_arc, &elev).await?,
+        None => {
+            let session = session_arc.lock().await;
+            let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
+            channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
+            russh_sftp::client::SftpSession::new(channel.into_stream()).await.map_err(|e| e.to_string())?
         }
     };
-
-    let session = session_arc.lock().await;
-    let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
-    channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
-    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream()).await.map_err(|e| e.to_string())?;
     let arc = Arc::new(sftp);
 
     let mut cache = state.sftp_sessions.lock().await;
+    // The privilege mode flipped while we were opening: never cache a session
+    // of the wrong level. Checked under the cache lock, which set_sftp_mode
+    // also holds while it switches, so the two can't interleave.
+    if state.sftp_elevation.lock().await.contains_key(session_id) != was_elevated {
+        return Err("File access mode changed while opening SFTP — try again".into());
+    }
     if let Some(existing) = cache.get(session_id) {
         // Another caller raced us; keep the existing one and drop ours.
         return Ok(Arc::clone(existing));
@@ -9419,6 +9768,7 @@ async fn sftp_open_remote_file(
 
     // Spawn modification watcher task in background
     let connections_clone = Arc::clone(&state.connections);
+    let elevation_clone = Arc::clone(&state.sftp_elevation);
     let app_handle_clone = app_handle.clone();
     let session_id_clone = session_id.clone();
     let remote_path_clone = remote_path.clone();
@@ -9504,7 +9854,12 @@ async fn sftp_open_remote_file(
                     // every open_terminal / cold-cache SFTP-bootstrap request on
                     // the same session behind this one save — visible as a UI
                     // freeze whenever the user Ctrl-S's a large remote file.
-                    let sftp = {
+                    // An elevated tab (file ops as root via sudo) must save
+                    // back the same way, or root-owned files can't be written.
+                    let elevation = elevation_clone.lock().await.get(&session_id_clone).cloned();
+                    let sftp = if let Some(elev) = elevation {
+                        open_elevated_sftp(&session_arc, &elev).await?
+                    } else {
                         let session = session_arc.lock().await;
                         let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
                         channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
@@ -11266,6 +11621,7 @@ pub fn run() {
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,
+            sftp_set_elevated, sftp_elevation_status, sftp_login_user,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
             monitor_list, monitor_add, monitor_remove, monitor_set_metrics, monitor_set_custom_metrics,
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,

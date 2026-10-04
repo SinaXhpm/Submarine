@@ -103,6 +103,8 @@ export interface TextPromptOptions {
   cancelLabel?: string;
   /** Mask the input (passwords / passphrases). */
   password?: boolean;
+  /** Return the input untrimmed (secrets where spaces are significant). */
+  keepWhitespace?: boolean;
   /** Return an error string to block OK; return null to allow. */
   validate?: (v: string) => string | null;
 }
@@ -162,7 +164,9 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   };
   const submitTextPrompt = () => {
     if (!tpState) return;
-    const v = tpValue.trim();
+    // `keepWhitespace` returns the input exactly as typed (e.g. a sudo
+    // password, where leading/trailing spaces are part of the secret).
+    const v = tpState.opts.keepWhitespace ? tpValue : tpValue.trim();
     const err = tpState.opts.validate?.(v) ?? null;
     if (err) { setTpError(err); return; }
     closeTextPrompt(v);

@@ -365,6 +365,22 @@ pub struct SshState {
     /// double-firing `session-disconnected-{id}` after the user has
     /// already reconnected.
     pub session_generation: Arc<Mutex<HashMap<String, u64>>>,
+    /// Per-tab "file operations run as root" setting: SFTP is served by
+    /// `sudo <sftp-server>` instead of the plain subsystem. Survives reconnects
+    /// of the same tab (the next SFTP op re-elevates) and is dropped when the
+    /// tab closes.
+    pub sftp_elevation: Arc<Mutex<HashMap<String, SftpElevation>>>,
+}
+
+/// How an elevated SFTP channel is started. The sudo password (if any) lives
+/// only here, in memory, zeroised on drop — never persisted, never logged,
+/// never on a command line (it is written to sudo's stdin).
+#[derive(Clone)]
+pub struct SftpElevation {
+    /// Absolute path of the server's sftp-server binary (probed once).
+    pub server_path: String,
+    /// `None` = passwordless sudo (`sudo -n`).
+    pub password: Option<zeroize::Zeroizing<String>>,
 }
 
 impl SshState {
@@ -382,6 +398,7 @@ impl SshState {
             transfer_cancels: Arc::new(Mutex::new(HashMap::new())),
             session_tunnel_specs: Arc::new(Mutex::new(HashMap::new())),
             session_generation: Arc::new(Mutex::new(HashMap::new())),
+            sftp_elevation: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

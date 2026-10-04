@@ -89,6 +89,10 @@ export interface FilePanelProps {
    * download lands there directly instead of popping a folder picker.
    */
   getOppositeDir?: () => string | undefined;
+  /** Extra controls rendered next to the pane label (remote: the root/sudo badge). */
+  headerExtra?: React.ReactNode;
+  /** File operations in this pane run as root — tint the header so it's unmistakable. */
+  rootMode?: boolean;
 }
 
 export interface FilePanelHandle {
@@ -104,6 +108,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   initialPath,
   onPathChange,
   getOppositeDir,
+  headerExtra,
+  rootMode = false,
 }, ref) => {
   const [currentPath, setCurrentPath] = useState("");
   // Last five distinct directories visited in this panel, MRU first. Lives
@@ -818,10 +824,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       )}
 
       {/* Header */}
-      <div className="w-full flex items-center justify-between gap-1.5 p-1.5 bg-[#121214] border border-white/5 rounded-lg shrink-0 shadow-lg">
+      <div className={`w-full flex items-center justify-between gap-1.5 p-1.5 border rounded-lg shrink-0 shadow-lg ${
+        rootMode ? "bg-rose-950/30 border-rose-500/40" : "bg-[#121214] border-white/5"
+      }`}>
         <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300 px-1.5 shrink-0">
           {provider.label}
         </span>
+        {headerExtra}
         <div className="h-5 w-px bg-white/10 shrink-0" />
         <div className="flex-1 flex items-center gap-1.5 min-w-0 relative">
           <button onClick={goUp} title="Up" className="p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 shrink-0">
