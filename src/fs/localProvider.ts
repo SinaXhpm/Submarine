@@ -11,6 +11,8 @@ type RawLocalEntry = {
   is_dir: boolean;
   size: number;
   modified?: number;
+  is_symlink?: boolean;
+  broken_link?: boolean;
 };
 
 const isWindowsLike = (p: string) => /^[a-zA-Z]:[\\/]/.test(p) || p.includes("\\");
@@ -66,6 +68,8 @@ export function createLocalProvider(): LocalFileProvider {
         isDir: r.is_dir,
         size: r.size,
         modified: r.modified,
+        isSymlink: !!r.is_symlink,
+        brokenLink: !!r.broken_link,
       }));
       if (entries.length > 0) inferSep(entries[0].path);
       return { currentPath: path, entries };
@@ -93,6 +97,7 @@ export function createLocalProvider(): LocalFileProvider {
     },
 
     async remove(path: string, isDir: boolean) {
+      // The backend checks the on-disk type itself and only unlinks links.
       await invoke("local_remove", { path, isDir });
     },
 

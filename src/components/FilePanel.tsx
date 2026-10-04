@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Folder, File, ArrowUp, RefreshCw, Trash2, Edit3, Shield,
   X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch,
-  Download, Upload, ExternalLink, Move, CheckSquare, Square, Search,
+  Download, Upload, ExternalLink, Move, CheckSquare, Square, Search, Link2,
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
@@ -157,13 +157,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     setTimeout(() => setNotification(null), 4000);
   };
 
-  const formatRights = (isDir: boolean, perm?: number) => {
-    if (perm === undefined) return isDir ? "d---------" : "----------";
+  const formatRights = (isDir: boolean, perm?: number, isSymlink?: boolean) => {
+    const kind = isSymlink ? "l" : isDir ? "d" : "-";
+    if (perm === undefined) return kind + "---------";
     const r = (v: number) => (v & 4 ? "r" : "-");
     const w = (v: number) => (v & 2 ? "w" : "-");
     const x = (v: number) => (v & 1 ? "x" : "-");
     const u = (perm >> 6) & 7, g = (perm >> 3) & 7, o = perm & 7;
-    return (isDir ? "d" : "-") + r(u) + w(u) + x(u) + r(g) + w(g) + x(g) + r(o) + w(o) + x(o);
+    return kind + r(u) + w(u) + x(u) + r(g) + w(g) + x(g) + r(o) + w(o) + x(o);
   };
 
   const formatTime = (ts?: number) => {
@@ -556,17 +557,19 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const ok = await confirmDialog({
       title: items.length === 1 ? "Delete item" : `Delete ${items.length} items`,
       message: items.length === 1
-        ? (items[0].isDir
+        ? (items[0].isSymlink
+            ? `Delete the link “${items[0].name}”? Only the link is removed; what it points to is not touched.`
+            : items[0].isDir
             ? `Permanently delete folder “${items[0].name}” and everything inside?`
             : `Permanently delete “${items[0].name}”?`)
-        : `Permanently delete ${items.length} items? Folders include their contents.`,
+        : `Permanently delete ${items.length} items? Folders include their contents; links are removed without touching what they point to.`,
       okLabel: "Delete",
       destructive: true,
     });
     if (!ok) return;
     let count = 0;
     for (const it of items) {
-      try { await provider.remove(it.path, it.isDir); count++; }
+      try { await provider.remove(it.path, it.isDir, it.isSymlink); count++; }
       catch (err: any) { notify(`Delete failed for ${it.name}: ${err}`, "error"); }
     }
     if (count > 0) {
@@ -1141,6 +1144,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 onClick={(e) => onRowClick(e, entry, sortedEntries)}
                 onDoubleClick={() => {
                   if (entry.isDir) { fetch(entry.path); return; }
+                  if (entry.brokenLink) { notify(`“${entry.name}” is a broken link: its target is missing or not accessible.`, "error"); return; }
                   // For files: remote → live-edit (download + open editor +
                   // auto-upload on save); local → open in the OS default app.
                   // Both are desktop-only — on Android a double-tap on a file
@@ -1187,11 +1191,22 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                     : <Square size={12} className="text-zinc-500 hover:text-zinc-300" />}
                 </div>
                 <div className="flex items-center gap-2 min-w-0 pr-1">
-                  {entry.isDir
-                    ? <Folder size={12} className="text-indigo-300 shrink-0" />
-                    : <File size={12} className="text-zinc-500 shrink-0" />}
+                  <span
+                    className="relative inline-flex shrink-0"
+                    title={entry.isSymlink ? (entry.brokenLink ? "Broken link: target is missing or not accessible" : "Symbolic link") : undefined}
+                  >
+                    {entry.isDir
+                      ? <Folder size={12} className="text-indigo-300" />
+                      : <File size={12} className={entry.brokenLink ? "text-rose-400/70" : "text-zinc-500"} />}
+                    {entry.isSymlink && (
+                      <Link2
+                        size={8}
+                        className={`absolute -bottom-1 -right-1.5 rounded-sm bg-zinc-950 ${entry.brokenLink ? "text-rose-400" : "text-sky-300"}`}
+                      />
+                    )}
+                  </span>
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-zinc-100 text-[11px]">{entry.name}</div>
+                    <div className={`truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
                     {/* Narrow-viewport subline: on < sm the SIZE / CHANGED /
                         RIGHTS cells are display:none (so they don't force
                         horizontal scroll), and their info collapses into
@@ -1200,7 +1215,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                       {[
                         entry.isDir ? null : formatSize(entry.size),
                         formatTime(entry.modified),
-                        showPerms ? formatRights(entry.isDir, entry.permissions) : null,
+                        showPerms ? formatRights(entry.isDir, entry.permissions, entry.isSymlink) : null,
                       ].filter(Boolean).join(" · ")}
                     </div>
                   </div>
@@ -1213,7 +1228,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 </div>
                 {showPerms && (
                   <div className="hidden sm:flex text-right text-[10.5px] text-zinc-300 font-mono opacity-90 items-center justify-end gap-1">
-                    <span className="truncate">{formatRights(entry.isDir, entry.permissions)}</span>
+                    <span className="truncate">{formatRights(entry.isDir, entry.permissions, entry.isSymlink)}</span>
                     <button onClick={(e) => openMenu(e, entry)} title="Options"
                       className="opacity-60 hover:opacity-100 p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-white shrink-0">
                       <MoreVertical size={11} />

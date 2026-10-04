@@ -14,6 +14,8 @@ type RawSftpEntry = {
   uid?: number;
   gid?: number;
   modified?: number;
+  is_symlink?: boolean;
+  broken_link?: boolean;
 };
 
 type RawSftpList = {
@@ -46,6 +48,8 @@ export function createRemoteProvider(sessionId: string): RemoteFileProvider {
         uid: r.uid,
         gid: r.gid,
         modified: r.modified,
+        isSymlink: !!r.is_symlink,
+        brokenLink: !!r.broken_link,
       }));
       return { currentPath: raw.current_path, entries };
     },
@@ -65,8 +69,9 @@ export function createRemoteProvider(sessionId: string): RemoteFileProvider {
       await invoke("sftp_create_dir", { sessionId, path });
     },
 
-    async remove(path: string, isDir: boolean) {
-      if (isDir) await invoke("sftp_remove_dir", { sessionId, path });
+    async remove(path: string, isDir: boolean, isSymlink?: boolean) {
+      // A link to a folder is unlinked like a file; the backend double-checks.
+      if (isDir && !isSymlink) await invoke("sftp_remove_dir", { sessionId, path });
       else await invoke("sftp_remove_file", { sessionId, path });
     },
 
