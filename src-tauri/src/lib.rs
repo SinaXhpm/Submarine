@@ -11535,6 +11535,11 @@ pub fn run() {
     // not us, and the plugin's crate isn't compiled into the Android target.
     #[cfg(not(target_os = "android"))]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
+    // Enumerate installed families for the desktop terminal font picker.
+    // This plugin has no Android implementation and is excluded from that
+    // target in Cargo.toml.
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_system_fonts::init());
     // Cross-platform URL opener — Android (Intent.ACTION_VIEW), Windows
     // (start), macOS (open), Linux (xdg-open). about.rs's open_external_url
     // dispatches through this so the same code path works in the desktop

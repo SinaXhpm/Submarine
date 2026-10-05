@@ -5,6 +5,7 @@
   "windows": ["*"],
   "platforms": ["linux", "macOS", "windows"],
   "permissions": [
-    "window-state:default"
+    "window-state:default",
+    "system-fonts:default"
   ]
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Settings, Palette, RefreshCw, List, Cloud, Minus, Plus } from "lucide-react";
+import { getSystemFonts } from "tauri-plugin-system-fonts-api";
 import {
   FONT_PRESETS, MAX_FONT_SIZE, MIN_FONT_SIZE, clampFontSize, fontFamilyCss,
   isFontAvailable, primaryFontName, sanitizeFontFamily,
@@ -24,6 +25,30 @@ function TerminalFontSettings({ settings, setSettings }: any) {
 
   const [familyDraft, setFamilyDraft] = useState(family);
   useEffect(() => setFamilyDraft(family), [family]);
+  const [systemFontFamilies, setSystemFontFamilies] = useState<string[]>([]);
+  const [systemFontEnumerationSucceeded, setSystemFontEnumerationSucceeded] = useState(false);
+  const [systemFontEnumerationFinished, setSystemFontEnumerationFinished] = useState(false);
+  useEffect(() => {
+    let active = true;
+    getSystemFonts()
+      .then((fonts) => {
+        if (!active) return;
+        const names = [...new Set(fonts.map((font) => font.name.trim()).filter(Boolean))]
+          .sort((a, b) => a.localeCompare(b));
+        setSystemFontFamilies(names);
+        setSystemFontEnumerationSucceeded(true);
+        setSystemFontEnumerationFinished(true);
+      })
+      .catch(() => {
+        // Android and non-Tauri previews do not expose this desktop plugin.
+        // Keep the typed font field and bundled suggestions available there.
+        if (active) {
+          setSystemFontFamilies([]);
+          setSystemFontEnumerationFinished(true);
+        }
+      });
+    return () => { active = false; };
+  }, []);
   const commitTimer = useRef<number | null>(null);
   useEffect(() => () => { if (commitTimer.current) window.clearTimeout(commitTimer.current); }, []);
   const commitFamily = (v: string) => {
@@ -37,7 +62,16 @@ function TerminalFontSettings({ settings, setSettings }: any) {
     commitTimer.current = window.setTimeout(() => commitFamily(v), 500);
   };
 
-  const installed = useMemo(() => isFontAvailable(familyDraft), [familyDraft]);
+  const installed = useMemo(() => {
+    if (!familyDraft.trim()) return true;
+    if (systemFontEnumerationSucceeded) {
+      const selected = primaryFontName(familyDraft).toLocaleLowerCase();
+      return systemFontFamilies.some((name) => name.toLocaleLowerCase() === selected);
+    }
+    // Keep the existing behavior on Android, where this desktop-only plugin
+    // is unavailable.
+    return isFontAvailable(familyDraft);
+  }, [familyDraft, systemFontEnumerationSucceeded, systemFontFamilies]);
   const previewFamily = fontFamilyCss(familyDraft);
 
   return (
@@ -70,15 +104,18 @@ function TerminalFontSettings({ settings, setSettings }: any) {
           className="w-full h-9 bg-black border border-white/10 rounded-lg px-3 text-[12.5px] text-white placeholder:text-zinc-600 focus:border-primary/50 outline-none"
         />
         <datalist id="term-font-presets">
-          {FONT_PRESETS.map((f) => <option key={f} value={f} />)}
+          {[...new Set([...systemFontFamilies, ...FONT_PRESETS])].map((f) => <option key={f} value={f} />)}
         </datalist>
-        {!installed && (
+        {systemFontEnumerationFinished && !installed && (
           <p className="text-[11.5px] text-amber-400/90">
             "{primaryFontName(familyDraft)}" doesn't seem to be installed on this device, so the default font is used instead.
           </p>
         )}
         <p className="text-[11.5px] text-zinc-500 leading-relaxed">
-          Any font installed on this device works, including Nerd Fonts for starship / powerline prompts. On Android only the system fonts are available.
+          {systemFontEnumerationSucceeded
+            ? `${systemFontFamilies.length} installed font families are available in the suggestions. `
+            : "Any font installed on this device works. "}
+          Nerd Fonts work for starship / powerline prompts. On Android only the system fonts are available.
         </p>
       </div>
 

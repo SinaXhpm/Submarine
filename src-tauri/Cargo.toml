@@ -136,7 +136,10 @@ zeroize = { version = "1.8", features = ["zeroize_derive"] }
 # wrapped in `#[cfg(not(target_os = "android"))]`, so the Android build
 # doesn't need any of these to compile.
 # ---------------------------------------------------------------------------
-[target.'cfg(not(target_os = "android"))'.dependencies]
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 tauri-plugin-window-state = "2"
+# Installed font enumeration is desktop-only. Android keeps its existing
+# system-font behavior and does not compile this unsupported plugin.
+tauri-plugin-system-fonts = "2.0.2"
 rfd = "0.17"
 open = "5.1"
