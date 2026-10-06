@@ -20,7 +20,10 @@ const loadInstalledFonts = () => {
 
 type Row = { key: string; family: string; label: string; monospace?: boolean };
 
-const SAMPLE = "Aa 0O 1lI {}";
+// Each row previews its face as a shell prompt — what it'll look like in the
+// terminal. (The live preview under the picker shows 0O / 1lI for telling
+// look-alike glyphs apart.)
+const SAMPLE = "root@localhost:~$";
 
 // Terminal font picker: "Default", then the fonts shipped with the app, a
 // divider, then every font installed on this device. Typing filters both
