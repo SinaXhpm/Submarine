@@ -7812,11 +7812,22 @@ async fn initiate_connection(
                         // real auth failure — everything else gets routed
                         // through `classify_russh_error` so a network drop
                         // or host-key timeout never gets relabelled as one.
-                        emit_log("Authentication rejected by server.", "error");
+                        // A cancelled (or timed-out) connect-time prompt is the
+                        // user's choice, not a rejection — say so. Still an
+                        // auth error so auto-reconnect stays off.
+                        let (log_msg, reason) = if prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                            ("Login cancelled.", "Login cancelled. Reconnect to try again.")
+                        } else {
+                            (
+                                "Authentication rejected by server.",
+                                "Authentication rejected by server (wrong password, missing key, or account locked).",
+                            )
+                        };
+                        emit_log(log_msg, "error");
                         let _ = app.emit(
                             &format!("connection-failed-{}", session_id_clone),
                             serde_json::json!({
-                                "reason": "Authentication rejected by server (wrong password, missing key, or account locked).",
+                                "reason": reason,
                                 "is_auth_error": true,
                             }),
                         );
@@ -7824,7 +7835,13 @@ async fn initiate_connection(
                     Err(e) => {
                         let kind = classify_russh_error(&e);
                         let target = format!("{}:{}", host, port);
-                        let reason = describe_error_kind(kind, &target);
+                        // A cancelled passphrase prompt surfaces here as
+                        // KeyIsEncrypted (an auth-kind error); name it plainly.
+                        let reason = if prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                            "Login cancelled. Reconnect to try again.".to_string()
+                        } else {
+                            describe_error_kind(kind, &target)
+                        };
                         emit_log(&format!("{} (raw: {})", reason, e), "error");
                         let _ = app.emit(
                             &format!("connection-failed-{}", session_id_clone),
