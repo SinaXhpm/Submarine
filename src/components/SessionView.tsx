@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, memo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, memo } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -76,6 +76,18 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       ? [...prev.slice(prev.length - LOG_CAP + 1), stamped]
       : [...prev, stamped]);
   };
+  // The connect-time log box follows new lines — kept scrolled to the bottom —
+  // while the user is at the bottom. Scrolling up to read pauses that until
+  // they scroll back down; a new attempt (logs cleared) follows again. Without
+  // it the latest line, i.e. what the connection is doing right now, sat below
+  // the fold on a short window. Layout effect so it lands before paint.
+  const logBoxRef = useRef<HTMLDivElement>(null);
+  const logFollowRef = useRef(true);
+  useLayoutEffect(() => {
+    if (logs.length === 0) logFollowRef.current = true;
+    const el = logBoxRef.current;
+    if (el && logFollowRef.current) el.scrollTop = el.scrollHeight;
+  }, [logs]);
   const [fingerprintPrompt, setFingerprintPrompt] = useState<any>(null);
   // Keyboard-interactive (2FA / verification-code) prompt. `kbiPrompt` holds
   // the backend payload ({ nonce, name, instructions, prompts:[{prompt,echo}] });
@@ -1001,6 +1013,13 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               overscroll-contain keeps a flick from scrolling the page behind it;
               WebkitOverflowScrolling gives older Android WebViews momentum. */}
           <div
+            ref={logBoxRef}
+            onScroll={(e) => {
+              // Follow only while (nearly) at the bottom — a few px of slack
+              // for sub-pixel rounding after our own scroll.
+              const el = e.currentTarget;
+              logFollowRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+            }}
             className="flex-1 min-h-0 bg-[#121214] border border-white/5 rounded-2xl p-4 font-mono overflow-y-auto overscroll-contain custom-scrollbar shadow-inner relative select-text cursor-text"
             style={{ WebkitOverflowScrolling: 'touch', fontSize: logFontSize, fontFamily: logFontFamily, lineHeight: 1.5 }}
           >
