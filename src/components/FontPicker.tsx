@@ -78,8 +78,12 @@ export default function FontPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [installed, q],
   );
+  // Monospace families first — the ones whose columns line up in a terminal,
+  // usually a handful among a hundred or more — then everything else.
+  const installedMono = installedRows.filter((r) => r.monospace);
+  const installedProp = installedRows.filter((r) => !r.monospace);
   const defaultRow: Row | null = !q ? { key: "default", family: "", label: "Default (system monospace)" } : null;
-  const rows: Row[] = [...(defaultRow ? [defaultRow] : []), ...builtInRows, ...installedRows];
+  const rows: Row[] = [...(defaultRow ? [defaultRow] : []), ...builtInRows, ...installedMono, ...installedProp];
 
   const close = (keepTyped: boolean) => {
     setOpen(false);
@@ -136,9 +140,6 @@ export default function FontPicker({
         } ${selected ? "text-primary" : "text-zinc-200"}`}
       >
         <span className="truncate flex-1">{row.label}</span>
-        {row.family && row.monospace === false && (
-          <span className="shrink-0 text-[10px] text-zinc-500" title="Not monospace — columns may not line up in a terminal">proportional</span>
-        )}
         {row.family && (
           <span
             className="shrink-0 text-[12px] text-zinc-400 whitespace-pre"
@@ -219,9 +220,16 @@ export default function FontPicker({
               Installed fonts can't be listed on this device — the built-in fonts above work everywhere.
             </div>
           )}
-          {installed && installed.length > 0 && (installedRows.length ? installedRows.map((r) => renderRow(r, index++)) : (
+          {installed && installed.length > 0 && !installedRows.length && (
             <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">No match</div>
-          ))}
+          )}
+          {installedMono.map((r) => renderRow(r, index++))}
+          {installedProp.length > 0 && (
+            <div className="px-3 pt-2.5 pb-1 text-[10px] font-semibold text-zinc-600">
+              Proportional — columns may not line up in a terminal
+            </div>
+          )}
+          {installedProp.map((r) => renderRow(r, index++))}
         </div>
       )}
     </div>
