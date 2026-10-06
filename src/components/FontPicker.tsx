@@ -20,13 +20,15 @@ const loadInstalledFonts = () => {
 
 type Row = { key: string; family: string; label: string; monospace?: boolean };
 
+const BUNDLED_KEYS = new Set(BUNDLED_FONTS.map((f) => f.toLowerCase()));
+
 // Each row previews its face as a shell prompt — what it'll look like in the
 // terminal. (The live preview under the picker shows 0O / 1lI for telling
 // look-alike glyphs apart.)
 const SAMPLE = "root@localhost:~$";
 
 // Terminal font picker: "Default", then the fonts shipped with the app, a
-// divider, then every font installed on this device. Typing filters both
+// divider, then every other font installed on this device. Typing filters both
 // lists; Enter on typed text uses it as-is (any family, or a CSS list).
 export default function FontPicker({
   value,
@@ -76,10 +78,17 @@ export default function FontPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [q],
   );
+  // A family the app ships (Cascadia Code comes with Windows 11, too) is
+  // listed once, under Built-in: the bundled @font-face shadows an installed
+  // font of the same name, so both rows would render the same face anyway.
+  const installedOnly = useMemo(
+    () => (installed ?? []).filter((f) => !BUNDLED_KEYS.has(f.family.toLowerCase())),
+    [installed],
+  );
   const installedRows: Row[] = useMemo(
-    () => (installed ?? []).filter((f) => match(f.family)).map((f) => ({ key: `i:${f.family}`, family: f.family, label: f.family, monospace: f.monospace })),
+    () => installedOnly.filter((f) => match(f.family)).map((f) => ({ key: `i:${f.family}`, family: f.family, label: f.family, monospace: f.monospace })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [installed, q],
+    [installedOnly, q],
   );
   // Monospace families first — the ones whose columns line up in a terminal,
   // usually a handful among a hundred or more — then everything else.
@@ -210,7 +219,7 @@ export default function FontPicker({
           <div className="my-1.5 border-t border-white/10" role="separator" />
 
           <div className="px-3 pt-1 pb-1 text-[10px] font-black text-zinc-500 uppercase tracking-wider">
-            Installed on this device{installed && installed.length ? ` · ${installed.length}` : ""}
+            Installed on this device{installedOnly.length ? ` · ${installedOnly.length}` : ""}
           </div>
           {installed === null && !loadError && (
             <div className="px-3 py-1.5 text-[11.5px] text-zinc-500">Reading installed fonts…</div>
@@ -223,7 +232,7 @@ export default function FontPicker({
               Installed fonts can't be listed on this device — the built-in fonts above work everywhere.
             </div>
           )}
-          {installed && installed.length > 0 && !installedRows.length && (
+          {installedOnly.length > 0 && !installedRows.length && (
             <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">No match</div>
           )}
           {installedMono.map((r) => renderRow(r, index++))}
