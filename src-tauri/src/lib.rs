@@ -5236,12 +5236,18 @@ pub(crate) fn decode_private_key(
         // password at all.
         Err(russh::keys::Error::KeyIsEncrypted) => Err(KeyDecodeError::NeedsPassphrase),
         Err(e) => {
-            // Decode failed with a passphrase in hand. If the key still parses
-            // structurally as an encrypted OpenSSH key, the passphrase was
-            // wrong; otherwise it is a genuinely unusable key.
-            let encrypted = ssh_key::PrivateKey::from_openssh(normalized.trim())
-                .map(|k| k.is_encrypted())
-                .unwrap_or(false);
+            // Decode failed with a passphrase in hand. If the key is an
+            // encrypted one, the passphrase was wrong; otherwise it is a
+            // genuinely unusable key. Encrypted means either an OpenSSH key
+            // whose header says so, or a legacy PKCS#1 PEM key encrypted the
+            // PKCS#5 way (`Proc-Type: 4,ENCRYPTED`, which russh decrypts) —
+            // a wrong passphrase there fails deep in the RSA decode, not with
+            // KeyIsEncrypted, so without this check a typo ended the attempt
+            // as "failed to parse" instead of asking again.
+            let encrypted = normalized.contains("Proc-Type: 4,ENCRYPTED")
+                || ssh_key::PrivateKey::from_openssh(normalized.trim())
+                    .map(|k| k.is_encrypted())
+                    .unwrap_or(false);
             if encrypted {
                 Err(KeyDecodeError::NeedsPassphrase)
             } else {
@@ -5625,6 +5631,44 @@ mod secret_prompt_tests {
             decode_private_key(ENC_KEY, Some("not the passphrase")),
             Err(KeyDecodeError::NeedsPassphrase)
         ));
+    }
+
+    // Throwaway 1024-bit RSA key in legacy PKCS#1 PEM, encrypted the PKCS#5
+    // way (`openssl genrsa -traditional -aes128`) with PEM_PASSPHRASE.
+    const PEM_PASSPHRASE: &str = "right-pass";
+    const PEM_ENC_KEY: &str = concat!(
+        "-----BEGIN RSA PRIVATE KEY-----", "\n",
+        "Proc-Type: 4,ENCRYPTED", "\n",
+        "DEK-Info: AES-128-CBC,BB76307096C12231EAB52A979EA86901", "\n",
+        "", "\n",
+        "KoULx8jVcG6IX1pGQ6dLYH3/cpMG27IecsxDmCbGVQkdhbqwF2pBIxa/Tx07bmSs", "\n",
+        "q1OKYTf9NScezY9Lhe10EOEtOmZ186rGQxDfxnv5crWfrMey+eMCeOLlFtRLP8J1", "\n",
+        "flCs6oR1NAlvnlPW6rbv9XxjoZplnylu9GtHOkCb0cAYZQbwVO0v/FVJ73D2b1p+", "\n",
+        "eg8ijRh67Oji0gADWKFf7baYUnMRrW5UaabsMUjYXgPnYbE9wabd53MM5yRMqr+H", "\n",
+        "A3lMNPXnh1erNfRTZswYZgg4fO1rtpuHKw3EJROqHjqAeXxbd5YUOgHEOhot2kn4", "\n",
+        "HhNCEBWe+1JTUo594kiVx0lu+wp2BINq2ak+sFogrqevW/2F28qtJ5fM57YHhL/5", "\n",
+        "blErH52LsivGMCh2UGEUBpDPNIRyDAMOuA/f2UviXGCjv88Qkf38JV+sZY84zZ0+", "\n",
+        "7OFWs2alsVv7J/3kmR/Zmh34YBG31Pw447HZUqvD9Ve75bjO2/lDV6m9xnHyzQir", "\n",
+        "s6K11+R54cr92HzwlIP1W0cjczrJ/UIVDYnl5y3rkNYSkvW0vY0bVk20Ul4iD6va", "\n",
+        "tOsQ7TH09QumYeLsU1mts//BeS+CoiWTiFm5CwX+IEgkm/nXqCAuLzj6Bz7dr6/r", "\n",
+        "vexWuNnpuWIJ3z9ZEX0EtFNeqECakxw1jJrL7fx8LXeD75Lb1rpscOphN1t9NYrO", "\n",
+        "TAxHSbEkODA6JJcG6WNotvmMHKOM+kIGd7u5dzHwKN1ndWGsLpcMowhsTZxhfwdb", "\n",
+        "LboMbHudt2MWS9BFU1yG95YGUoUFg25hwKPd4xxXvV+0OJj9g1u55KtzezWbAmc/", "\n",
+        "-----END RSA PRIVATE KEY-----", "\n",
+    );
+
+    #[test]
+    fn decode_handles_a_legacy_encrypted_pem_key() {
+        // No passphrase: russh says KeyIsEncrypted.
+        assert!(matches!(decode_private_key(PEM_ENC_KEY, None), Err(KeyDecodeError::NeedsPassphrase)));
+        // Wrong passphrase: the PKCS#5 decrypt yields garbage and the RSA
+        // decode fails — still "needs a passphrase", so the user is re-asked
+        // instead of the attempt ending as a malformed key.
+        assert!(matches!(
+            decode_private_key(PEM_ENC_KEY, Some("not the passphrase")),
+            Err(KeyDecodeError::NeedsPassphrase)
+        ));
+        assert!(decode_private_key(PEM_ENC_KEY, Some(PEM_PASSPHRASE)).is_ok());
     }
 
     #[test]
