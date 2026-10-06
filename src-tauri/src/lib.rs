@@ -5354,6 +5354,12 @@ struct SecretPromptCtx<'a> {
     cache: &'a PromptedSecretsMap,
     base: &'a str,
     allow_prompt: bool,
+    /// Set when the user cancels one of our prompts (or lets it time out).
+    /// The caller then skips the keyboard-interactive fallback: on a typical
+    /// OpenSSH + PAM server that fallback would immediately show the server's
+    /// own "Password:" box, i.e. ask again for what the user just declined.
+    /// Atomic because the context is borrowed across awaits in a spawned task.
+    cancelled: std::sync::atomic::AtomicBool,
 }
 
 impl SecretPromptCtx<'_> {
@@ -5400,7 +5406,10 @@ async fn prompt_for_secret(
             Some(zeroize::Zeroizing::new(first))
         }
         // Cancelled (None), timed out, or the sender was dropped.
-        _ => None,
+        _ => {
+            ctx.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
     };
     ctx.kbi_txs.lock().await.remove(ctx.nonce);
     let _ = ctx.app.emit(&format!("kbi-prompt-dismiss-{}", ctx.session_id), serde_json::json!({}));
@@ -6596,6 +6605,7 @@ async fn connect_jump_host(
         cache,
         base: &base_id,
         allow_prompt,
+        cancelled: std::sync::atomic::AtomicBool::new(false),
     };
     let mut auth_res = if let Some((private_key, passphrase, key_name)) = key_data {
         log("Jump host: private key authentication...", "info");
@@ -6626,7 +6636,8 @@ async fn connect_jump_host(
         .await
     };
 
-    if !matches!(auth_res, Ok(true)) {
+    // A declined prompt ends the hop — don't fall back to asking again.
+    if !matches!(auth_res, Ok(true)) && !prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
         if let Some(kbi_res) =
             run_keyboard_interactive(&mut session, &effective_user, app, session_id, &jump_nonce, kbi_txs).await
         {
@@ -7296,6 +7307,7 @@ async fn initiate_connection(
                     cache: &prompted_secrets_clone,
                     base: &base_id,
                     allow_prompt: allow_kbi,
+                    cancelled: std::sync::atomic::AtomicBool::new(false),
                 };
 
                 let mut auth_res = if let Some((private_key, passphrase, key_name)) = key_data {
@@ -7339,7 +7351,13 @@ async fn initiate_connection(
                 // the UI, collect the user's answers, and send them back. If
                 // the server doesn't offer it, `run_keyboard_interactive`
                 // returns None and we keep the original auth result untouched.
-                if allow_kbi && !matches!(auth_res, Ok(true)) {
+                // If the user just cancelled our password / passphrase prompt,
+                // stop here: the fallback would only ask again (the server's own
+                // "Password:" box on a typical PAM setup).
+                if allow_kbi
+                    && !matches!(auth_res, Ok(true))
+                    && !prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed)
+                {
                     if let Some(kbi_res) = run_keyboard_interactive(
                         &mut session,
                         &effective_user,
