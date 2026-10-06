@@ -43,7 +43,11 @@ opt-level = 3
 opt-level = 3
 
 [dependencies]
-tauri = { version = "2.1", features = [] }
+# 2.12 is the first release with `app > appDirectoriesOverride`, which portable
+# mode uses to re-root every app directory — and, through app_local_data_dir,
+# the webview's data folder — into `submarine-data` (see src/portable.rs). This
+# is already the version resolved in Cargo.lock, so it only raises the floor.
+tauri = { version = "2.12", features = [] }
 # tauri-plugin-opener replaces the `open` crate for URL opening — the latter
 # is excluded on Android (no equivalent crate), so before this plugin the
 # About-panel "open repo / website" buttons returned a literal "external
