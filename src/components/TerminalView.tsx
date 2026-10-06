@@ -626,17 +626,17 @@ const TerminalView = ({
       try { text = await navigator.clipboard.readText(); }
       catch { notify('Clipboard read denied', 'err'); return; }
       if (!text) return;
-      // Normalize line endings the way xterm and OpenSSH do: collapse
-      // CRLF / lone LF to a single CR. A Windows-style clipboard pastes
-      // `\r\n` per line — the PTY sees CR (Enter) followed by LF (Enter
-      // again), and the shell runs the previous command twice and inserts
-      // a blank line between every pair. Stripping LF puts paste back on
-      // the standard terminal contract: one Enter per line break.
-      const normalized = text.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
-      invoke('write_terminal_data', {
-        terminalId,
-        data: Array.from(new TextEncoder().encode(normalized)),
-      }).catch(console.error);
+      // Hand the text to xterm's own paste path instead of writing it raw to
+      // the PTY. xterm collapses CRLF / lone LF to a single CR (one Enter per
+      // line break — a Windows clipboard's `\r\n` would otherwise be two) and,
+      // when the remote program has turned on bracketed-paste mode (vim,
+      // bash ≥ 5.1, zsh, …), wraps the text in ESC[200~ … ESC[201~ so the
+      // program knows it was pasted. The raw write skipped those brackets, so
+      // vim treated every pasted line as typed input and auto-indented each
+      // one on top of the previous (#56), and a shell ran each pasted line the
+      // moment it arrived. Going through xterm also routes the paste through
+      // onData like every other input, so broadcast and history see it too.
+      term.paste(text);
       notify('Pasted');
     };
     terminalRef.current.addEventListener('mousedown', onMouseDown);
