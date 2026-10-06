@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
@@ -146,6 +147,14 @@ function DesktopApp() {
   }, []);
   const toggleMaximize = useCallback(() => {
     appWindow.toggleMaximize().catch(console.error);
+  }, []);
+
+  // App version for the title bar, pulled from Tauri (tauri.conf.json) rather
+  // than hardcoded so it can never drift from the real build. Shown faded next
+  // to the brand name; stays empty (renders nothing) if the call ever fails.
+  const [appVersion, setAppVersion] = useState<string>("");
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
   }, []);
 
   // Persist the user's current folder across NodeGrid unmount/remount cycles.
@@ -779,6 +788,9 @@ function DesktopApp() {
       <div className="hidden sm:flex items-center gap-2 pr-4 pl-[75px] md:pl-2" data-tauri-drag-region>
         <img src={logoUrl} alt="" draggable={false} className="h-6 w-auto max-w-[24px] object-contain select-none" />
         <span className="text-[12px] font-bold text-white tracking-tight">Submarine</span>
+        {appVersion && (
+          <span className="text-[11px] text-zinc-500/60 tracking-tight tabular-nums">v{appVersion}</span>
+        )}
       </div>
 
       {/* Mobile session picker — replaces the horizontal tab strip on
