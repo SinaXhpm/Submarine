@@ -6885,12 +6885,24 @@ async fn initiate_connection(
                             //     the transport socket carries OS TCP keepalive
                             //     (see apply_tcp_keepalive) — kernel-detected
                             //     dead peers during long idle.
-                            //   - Slow active probe: open a tiny SSH channel to
-                            //     force a real round-trip, catching black-holes
-                            //     the kernel hasn't flagged yet. Primary every
+                            //   - Slow active probe: a `keepalive@openssh.com`
+                            //     global request with want-reply, forcing a real
+                            //     round-trip to catch black-holes the kernel
+                            //     hasn't flagged yet (what OpenSSH's
+                            //     ServerAliveInterval sends). Primary every
                             //     ~30s, dedicated `::sftp`/`::fwd` secondaries
                             //     every ~60s (they matter less urgently and the
                             //     probes multiply per-session overhead).
+                            //     It must NOT be a channel open: that takes one
+                            //     of the server's MaxSessions slots, so on a
+                            //     hardened server (MaxSessions 1-4) or a busy
+                            //     connection (tabs + SFTP + logs at the default
+                            //     10) the server refused the probe — and a
+                            //     refusal was counted as a dead connection, so
+                            //     a healthy session was torn down every ~30s
+                            //     (#29). A global request uses no slot, and any
+                            //     reply, success or failure, proves the server
+                            //     and the transport are alive.
                             //     TWO consecutive probe failures are required
                             //     before declaring death: on poor networks a
                             //     single 10s latency spike is common, and the
@@ -6941,32 +6953,34 @@ async fn initiate_connection(
                                     // anyway. 10s timeout: generous enough
                                     // that a congested-but-alive link doesn't
                                     // strike out spuriously.
-                                    let probe = {
+                                    let alive = {
                                         let h = handle_arc.lock().await;
-                                        tokio::time::timeout(
+                                        match tokio::time::timeout(
                                             Duration::from_secs(10),
-                                            h.channel_open_session(),
-                                        ).await
-                                    };
-                                    match probe {
-                                        Ok(Ok(ch)) => {
-                                            probe_strikes = 0;
-                                            // Close cleanly so the server
-                                            // doesn't log a stuck session.
-                                            let _ = ch.close().await;
+                                            h.send_ping(),
+                                        ).await {
+                                            // send_ping resolves on the
+                                            // server's reply — and also when
+                                            // the session dies mid-ping (the
+                                            // reply channel is dropped), so
+                                            // confirm the handle is still open.
+                                            Ok(Ok(())) => !h.is_closed(),
+                                            _ => false,
                                         }
-                                        _ => {
-                                            probe_strikes += 1;
-                                            if probe_strikes >= 2 {
-                                                dead = true;
-                                            } else {
-                                                // One strike: re-probe on the
-                                                // next 2s tick instead of a
-                                                // full interval away, so a
-                                                // real death still surfaces
-                                                // promptly.
-                                                tick = probe_every.wrapping_sub(1);
-                                            }
+                                    };
+                                    if alive {
+                                        probe_strikes = 0;
+                                    } else {
+                                        probe_strikes += 1;
+                                        if probe_strikes >= 2 {
+                                            dead = true;
+                                        } else {
+                                            // One strike: re-probe on the
+                                            // next 2s tick instead of a
+                                            // full interval away, so a
+                                            // real death still surfaces
+                                            // promptly.
+                                            tick = probe_every.wrapping_sub(1);
                                         }
                                     }
                                 }
