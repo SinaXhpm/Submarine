@@ -1,6 +1,7 @@
 // Terminal font preferences — per-device (localStorage), shared by the
 // Settings panel, every TerminalView and the connect-log box so they can
 // never disagree about the size or face.
+import { BUNDLED_FONTS } from "./bundledFonts";
 
 export const FONT_SIZE_KEY = "submarine-terminal-font-size";
 export const FONT_FAMILY_KEY = "submarine-terminal-font-family";
@@ -18,28 +19,12 @@ export const DEFAULT_FONT_STACK =
   'Consolas, ui-monospace, Menlo, Monaco, "Cascadia Mono", "DejaVu Sans Mono", ' +
   '"Ubuntu Mono", "Liberation Mono", "Noto Sans Mono", "Droid Sans Mono", "Courier New", monospace';
 
-// Suggestions for the font picker. Any installed font name works; these are
-// just the common terminal faces (incl. Nerd Font builds for starship/p10k).
-export const FONT_PRESETS = [
-  "Cascadia Code",
-  "Cascadia Mono",
-  "Consolas",
-  "JetBrains Mono",
-  "Fira Code",
-  "Hack",
-  "Source Code Pro",
-  "MesloLGS NF",
-  "MesloLGS Nerd Font",
-  "FiraCode Nerd Font",
-  "JetBrainsMono Nerd Font",
-  "SF Mono",
-  "Menlo",
-  "Monaco",
-  "Ubuntu Mono",
-  "DejaVu Sans Mono",
-  "Noto Sans Mono",
-  "Courier New",
-];
+// Fonts shipped with the app (always available, on every device). The picker
+// lists these first, then every font installed on this device.
+export { BUNDLED_FONTS };
+
+const isBundled = (name: string) =>
+  BUNDLED_FONTS.some((f) => f.toLowerCase() === name.toLowerCase());
 
 export function clampFontSize(v: unknown): number {
   const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10);
@@ -97,6 +82,9 @@ export function isFontAvailable(name: string): boolean {
   const n = primaryFontName(name);
   if (!n) return true;
   if (["monospace", "serif", "sans-serif", "ui-monospace", "system-ui"].includes(n.toLowerCase())) return true;
+  // A bundled font is always available — and the canvas probe below would
+  // wrongly say "missing" until the webview has fetched it the first time.
+  if (isBundled(n)) return true;
   try {
     const ctx = document.createElement("canvas").getContext("2d");
     if (!ctx) return true;

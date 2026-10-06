@@ -9,7 +9,7 @@ import { useIsNarrow } from '../hooks/useViewport';
 import { MobileKeyBar, ModifiersState, ModKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
-import { fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
+import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
 import { IS_ANDROID } from '../util/platform';
 
 // Does the recent remote OUTPUT look like a no-echo password / passphrase
@@ -441,7 +441,12 @@ const TerminalView = ({
     const term = new Terminal({
       cursorBlink: true,
       fontSize: readFontSize(),
-      fontFamily: fontFamilyCss(readFontFamily()),
+      // Start on the always-installed fallback stack; the chosen face is
+      // switched in below once it has loaded (handleSettingsChange). A bundled
+      // font isn't loaded yet at this point, and xterm measures its cell size
+      // from whatever face renders first — measuring the fallback and then
+      // drawing the real font would leave gaps or overlapping glyphs.
+      fontFamily: DEFAULT_FONT_STACK,
       theme: {
         background: '#09090b',
         foreground: '#e4e4e7',
@@ -816,6 +821,8 @@ const TerminalView = ({
       else apply();
     };
     window.addEventListener('submarine-settings-changed', handleSettingsChange);
+    // Apply the saved face now (no-op when it's the default stack).
+    handleSettingsChange();
 
     // ── Mobile QoL ───────────────────────────────────────────────────────────
     // Capture the container ref here so the listener add/remove calls and the

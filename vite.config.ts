@@ -5,8 +5,21 @@ import react from "@vitejs/plugin-react";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
+// The bundled terminal fonts (@fontsource/*) list a `.woff` fallback after each
+// `.woff2` source. Every webview we run in (WebView2, WebKitGTK, WKWebView,
+// Android WebView) reads woff2, so the fallback would only double the size of
+// the fonts shipped in the app. Drop it before Vite resolves the url()s.
+const fontsourceWoff2Only = {
+  name: "fontsource-woff2-only",
+  enforce: "pre" as const,
+  transform(code: string, id: string) {
+    if (!/[\\/]@fontsource[\\/].+\.css$/.test(id)) return null;
+    return code.replace(/,\s*url\([^)]*\.woff\)\s*format\(['"]woff['"]\)/g, "");
+  },
+};
+
 export default defineConfig(async () => ({
-  plugins: [react()],
+  plugins: [react(), fontsourceWoff2Only],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

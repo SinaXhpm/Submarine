@@ -23,6 +23,7 @@ mod docker;
 mod hlc;
 mod identity;
 mod portable;
+mod fonts;
 mod webkit_sandbox;
 #[cfg(test)]
 mod ssh_test_server;
@@ -12948,7 +12949,8 @@ pub fn run() {
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,
             monitor_get_settings, monitor_set_settings,
             about::app_info, about::check_for_updates, about::open_external_url,
-            portable::get_storage_info
+            portable::get_storage_info,
+            fonts::list_system_fonts
         ])
         .run(context)
         .expect("error while running tauri application");
