@@ -5474,6 +5474,180 @@ fn build_ssh_client_config() -> russh::client::Config {
     config
 }
 
+/// Timing caps for the connect driver's prompt-aware handshake timeout.
+#[derive(Clone, Copy)]
+struct ConnectTimeoutCaps {
+    /// The transport + key-exchange handshake must reach a host-key prompt
+    /// (or finish outright) within this window. A server that never completes
+    /// kex and never prompts is a genuine stall once it elapses.
+    handshake: std::time::Duration,
+    /// Absolute backstop once a fingerprint prompt is pending. Covers
+    /// `ClientHandler::check_server_key`'s own 90s human window (which starts
+    /// up to `handshake` seconds into the connect) plus a small teardown
+    /// margin, so that 90s wait — not this cap — normally governs a prompt.
+    hard: std::time::Duration,
+}
+
+/// Production caps: 15s of handshake before a prompt, then the 90s human
+/// window plus a 5s teardown margin (15 + 90 + 5 = 110s) as the hard cap.
+const CONNECT_TIMEOUT_CAPS: ConnectTimeoutCaps = ConnectTimeoutCaps {
+    handshake: std::time::Duration::from_secs(15),
+    hard: std::time::Duration::from_secs(15 + 90 + 5),
+};
+
+/// Which way the connect driver's deadline falls at a given elapsed time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectDeadline {
+    /// Keep awaiting the handshake.
+    Continue,
+    /// Past the handshake cap with no prompt shown — a genuine stall.
+    HandshakeStall,
+    /// A prompt was pending but even the hard cap elapsed — a wedged prompt.
+    PromptHardCap,
+}
+
+/// Pure timeout decision for the connect driver, factored out so it can be
+/// unit-tested without a runtime. `prompt_pending` means a host-key prompt has
+/// been shown for this attempt (latched by the caller — see `ClientHandler::
+/// prompt_pending`): before any prompt the handshake is held to `caps.handshake`
+/// and a stall is reported once it elapses; once a prompt is pending the wait
+/// extends to `caps.hard` so the human approval window governs instead.
+fn connect_deadline_elapsed(
+    prompt_pending: bool,
+    elapsed: std::time::Duration,
+    caps: ConnectTimeoutCaps,
+) -> ConnectDeadline {
+    if !prompt_pending {
+        if elapsed >= caps.handshake {
+            ConnectDeadline::HandshakeStall
+        } else {
+            ConnectDeadline::Continue
+        }
+    } else if elapsed >= caps.hard {
+        ConnectDeadline::PromptHardCap
+    } else {
+        ConnectDeadline::Continue
+    }
+}
+
+/// Why the connect driver stopped awaiting the handshake without a result.
+enum ConnectTimeout {
+    /// Handshake never reached a host-key prompt within the handshake cap.
+    HandshakeStall,
+    /// A prompt was pending but the hard cap elapsed before it resolved.
+    PromptHardCap,
+}
+
+/// Drive `connect_stream` under a prompt-aware deadline. The `handshake` cap
+/// bounds only the transport+kex phase BEFORE a host-key fingerprint prompt is
+/// shown; the moment `prompt_pending` goes true the wait extends to the hard
+/// cap so `check_server_key`'s 90s human window — not a 15s handshake timer —
+/// decides a first-time key approval. Returns `Ok(output)` when the handshake
+/// future resolves (success OR a russh error), or `Err` on a timeout.
+///
+/// `prompt_pending` is re-read on a coarse ticker (no busy-spin) and latched:
+/// once a prompt has been seen the handshake cap no longer applies for the rest
+/// of the attempt, so a user who answers just after the 15s mark — briefly
+/// clearing the flag while the handshake finishes — is never mistaken for a
+/// stall that would tear down their just-approved connection.
+async fn drive_connect_with_prompt_timeout<F, T>(
+    connect_future: F,
+    prompt_pending: &std::sync::atomic::AtomicBool,
+    caps: ConnectTimeoutCaps,
+) -> Result<T, ConnectTimeout>
+where
+    F: std::future::Future<Output = T>,
+{
+    use std::sync::atomic::Ordering;
+    tokio::pin!(connect_future);
+    let start = tokio::time::Instant::now();
+    // 250ms is far finer than any cap, yet idle between ticks.
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await; // the first tick is immediate — consume it
+    let mut prompt_seen = false;
+    loop {
+        tokio::select! {
+            // Biased: always prefer a resolved handshake over a tick, so a
+            // connection that completes at the same instant a deadline tick
+            // fires is never discarded in favour of a timeout.
+            biased;
+            out = &mut connect_future => return Ok(out),
+            _ = ticker.tick() => {
+                prompt_seen |= prompt_pending.load(Ordering::SeqCst);
+                match connect_deadline_elapsed(prompt_seen, start.elapsed(), caps) {
+                    ConnectDeadline::Continue => {}
+                    ConnectDeadline::HandshakeStall => return Err(ConnectTimeout::HandshakeStall),
+                    ConnectDeadline::PromptHardCap => return Err(ConnectTimeout::PromptHardCap),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod connect_timeout_tests {
+    use super::{connect_deadline_elapsed, ConnectDeadline, ConnectTimeoutCaps};
+    use std::time::Duration;
+
+    // 15s handshake cap, 15 + 90 + 5 = 110s hard cap — the production values.
+    const CAPS: ConnectTimeoutCaps = ConnectTimeoutCaps {
+        handshake: Duration::from_secs(15),
+        hard: Duration::from_secs(110),
+    };
+
+    #[test]
+    fn no_prompt_holds_the_handshake_cap() {
+        // Before 15s: keep waiting when no prompt has shown.
+        assert_eq!(
+            connect_deadline_elapsed(false, Duration::from_secs(14), CAPS),
+            ConnectDeadline::Continue
+        );
+        // At/after 15s with no prompt → genuine handshake stall.
+        assert_eq!(
+            connect_deadline_elapsed(false, Duration::from_secs(15), CAPS),
+            ConnectDeadline::HandshakeStall
+        );
+        assert_eq!(
+            connect_deadline_elapsed(false, Duration::from_secs(60), CAPS),
+            ConnectDeadline::HandshakeStall
+        );
+    }
+
+    #[test]
+    fn pending_prompt_extends_past_the_handshake_cap() {
+        // A pending prompt is NOT a stall at the 15s mark — the 90s human
+        // window runs on.
+        assert_eq!(
+            connect_deadline_elapsed(true, Duration::from_secs(15), CAPS),
+            ConnectDeadline::Continue
+        );
+        assert_eq!(
+            connect_deadline_elapsed(true, Duration::from_secs(109), CAPS),
+            ConnectDeadline::Continue
+        );
+        // A prompt shown early (fast kex) is likewise well within the hard cap.
+        assert_eq!(
+            connect_deadline_elapsed(true, Duration::from_secs(2), CAPS),
+            ConnectDeadline::Continue
+        );
+    }
+
+    #[test]
+    fn pending_prompt_trips_only_the_hard_cap() {
+        // Only once the hard cap elapses does a pending prompt time out — and
+        // as PromptHardCap (host-key message), never HandshakeStall.
+        assert_eq!(
+            connect_deadline_elapsed(true, Duration::from_secs(110), CAPS),
+            ConnectDeadline::PromptHardCap
+        );
+        assert_eq!(
+            connect_deadline_elapsed(true, Duration::from_secs(200), CAPS),
+            ConnectDeadline::PromptHardCap
+        );
+    }
+}
+
 #[cfg(test)]
 mod ssh_config_tests {
     use super::{build_ssh_client_config, ssh_preferred_algorithms};
@@ -5741,6 +5915,10 @@ async fn connect_jump_host(
     };
     fp_txs.lock().await.insert(jump_nonce.clone(), fp_tx);
     let fp_outcome = std::sync::Arc::new(std::sync::atomic::AtomicI8::new(-1));
+    // Shared with the connect driver so the 15s handshake cap doesn't kill a
+    // first-time key prompt on the bastion — see the direct path's rationale.
+    let prompt_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let prompt_pending_for_driver = std::sync::Arc::clone(&prompt_pending);
 
     let handler = ssh_manager::ClientHandler {
         app: app.clone(),
@@ -5752,14 +5930,19 @@ async fn connect_jump_host(
         fp_rx: Some(fp_rx),
         forwarded_targets: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         fp_outcome,
+        prompt_pending,
     };
 
     // 4. Handshake.
     let config = std::sync::Arc::new(build_ssh_client_config());
     log("Jump host: SSH handshake...", "info");
-    let connect_res = tokio::time::timeout(
-        Duration::from_secs(15),
+    // The 15s handshake cap bounds only the pre-prompt transport+kex phase;
+    // once check_server_key shows a first-time fingerprint prompt the wait
+    // extends to the hard cap so the 90s human window — not this timer — rules.
+    let connect_res = drive_connect_with_prompt_timeout(
         russh::client::connect_stream(config, tcp, handler),
+        &prompt_pending_for_driver,
+        CONNECT_TIMEOUT_CAPS,
     )
     .await;
     // The host-key prompt (if any) is resolved by now — drop the sender.
@@ -5768,7 +5951,10 @@ async fn connect_jump_host(
     let mut session = match connect_res {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => return Err(format!("jump host handshake failed: {}", e)),
-        Err(_) => return Err("jump host handshake timed out".into()),
+        Err(ConnectTimeout::HandshakeStall) => return Err("jump host handshake timed out".into()),
+        Err(ConnectTimeout::PromptHardCap) => {
+            return Err("jump host host-key prompt timed out — reconnect and approve the fingerprint within 90 seconds".into())
+        }
     };
 
     // 5. Auth ladder: key → password → keyboard-interactive.
@@ -6149,6 +6335,11 @@ async fn initiate_connection(
     // ClientHandler::fp_outcome for the meaning of the values.
     let fp_outcome = std::sync::Arc::new(std::sync::atomic::AtomicI8::new(-1));
     let fp_outcome_for_driver = std::sync::Arc::clone(&fp_outcome);
+    // Shared the same way as fp_outcome: the handler flips it while a host-key
+    // prompt is pending so the connect driver can extend its 15s handshake cap
+    // to cover the human approval window instead of killing the prompt.
+    let prompt_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let prompt_pending_for_driver = std::sync::Arc::clone(&prompt_pending);
 
     let handler = ssh_manager::ClientHandler {
         app: app.clone(),
@@ -6160,6 +6351,7 @@ async fn initiate_connection(
         fp_rx: Some(fp_rx),
         forwarded_targets: Arc::clone(&session_forwarded_targets),
         fp_outcome: std::sync::Arc::clone(&fp_outcome),
+        prompt_pending: std::sync::Arc::clone(&prompt_pending),
     };
 
     let cleanup_nonce = connect_nonce.clone();
@@ -6421,7 +6613,10 @@ async fn initiate_connection(
 
         let connect_future = client::connect_stream(config, StreamWrapper(stream), handler);
 
-        match tokio::time::timeout(Duration::from_secs(15), connect_future).await {
+        // 15s bounds only the pre-prompt handshake; a pending first-time
+        // fingerprint prompt extends the wait to the hard cap (see
+        // drive_connect_with_prompt_timeout) so the 90s human window governs.
+        match drive_connect_with_prompt_timeout(connect_future, &prompt_pending_for_driver, CONNECT_TIMEOUT_CAPS).await {
             Ok(Ok(mut session)) => {
                 emit_log("SSH Handshake complete. Authenticating user...", "info");
                 
@@ -6930,10 +7125,11 @@ async fn initiate_connection(
                     }),
                 );
             },
-            Err(_) => {
-                // 15s wall-clock on connect_stream — the TCP socket is up
-                // but the SSH handshake never completed. Distinct enough
-                // from the auth path to deserve its own message.
+            Err(ConnectTimeout::HandshakeStall) => {
+                // 15s wall-clock on connect_stream with NO host-key prompt
+                // pending — the TCP socket is up but the SSH handshake never
+                // completed. Distinct enough from the auth path to deserve its
+                // own message.
                 let msg = format!(
                     "{}:{} did not finish SSH handshake within 15 seconds — host may be filtering SSH or running a non-SSH service on this port.",
                     host, port
@@ -6944,6 +7140,23 @@ async fn initiate_connection(
                     serde_json::json!({
                         "reason": msg,
                         "is_auth_error": false,
+                    }),
+                );
+            },
+            Err(ConnectTimeout::PromptHardCap) => {
+                // A fingerprint prompt was still pending when even the hard cap
+                // (handshake + the 90s human window + margin) elapsed — the
+                // prompt is wedged. Surface the same host-key message as a
+                // check_server_key prompt-timeout (fp_outcome == 2) instead of
+                // the misleading "handshake stalled" one.
+                let reason =
+                    "Host key prompt timed out — Reconnect and approve the fingerprint within 90 seconds.".to_string();
+                emit_log(&reason, "error");
+                let _ = app.emit(
+                    &format!("connection-failed-{}", session_id_clone),
+                    serde_json::json!({
+                        "reason": reason,
+                        "is_auth_error": ConnectErrorKind::HostKey.is_auth(),
                     }),
                 );
             }
