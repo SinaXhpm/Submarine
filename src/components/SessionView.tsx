@@ -1010,9 +1010,24 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                 {l.msg}
               </div>
             ))}
-
-            {authPrompts}
           </div>
+
+          {/* Host-key fingerprint / 2FA keyboard-interactive prompts float over
+              the whole screen via a portal, rather than being appended to the
+              bottom of the scroll-box above. Inside the box a short window — or a
+              server that emits a long keyboard-interactive instructions banner
+              before the code prompt — pushed the input below the fold with no
+              auto-scroll, so the connection looked "stuck at 2FA" with no visible
+              way to enter the code (#27). The portal centers it and scrolls on
+              its own, matching the auto-reconnect path in the connected view. */}
+          {(fingerprintPrompt || kbiPrompt) && createPortal(
+            <div className="fixed inset-0 z-[200] flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto">
+              <div className="max-w-2xl w-full mt-6 sm:mt-12">
+                {authPrompts}
+              </div>
+            </div>,
+            document.body
+          )}
         </div>
       </div>
     );
