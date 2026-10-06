@@ -407,6 +407,11 @@ pub struct PromptedSecrets {
     pub jump_password: Option<zeroize::Zeroizing<String>>,
     /// Accepted passphrase that decrypted the ProxyJump bastion's key.
     pub jump_passphrase: Option<zeroize::Zeroizing<String>>,
+    /// Login name typed at connect time for a node saved without one
+    /// (issue #54); kept once that login succeeded.
+    pub username: Option<zeroize::Zeroizing<String>>,
+    /// Same, for the ProxyJump bastion.
+    pub jump_username: Option<zeroize::Zeroizing<String>>,
 }
 
 impl SshState {

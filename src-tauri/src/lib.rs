@@ -4205,10 +4205,9 @@ async fn save_quick_connect_node(
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
 
-    let username = {
-        let t = auth.username.trim();
-        if t.is_empty() { "root".to_string() } else { t.to_string() }
-    };
+    // A blank username stays blank: the saved node then asks for it at
+    // connect time too (issue #54), exactly like the live session does.
+    let username = auth.username.trim().to_string();
 
     // Dedup against existing, non-deleted ROOT nodes with the same identity so
     // the grid doesn't fill with duplicates on repeated quick connects.
@@ -4223,7 +4222,11 @@ async fn save_quick_connect_node(
         Err(e) => return Err(format!("[DATABASE] QUICK_NODE_LOOKUP_FAILED: {}", e)),
     }
 
-    let name = format!("{}@{}", username, auth.host);
+    let name = if username.is_empty() {
+        auth.host.clone()
+    } else {
+        format!("{}@{}", username, auth.host)
+    };
 
     // A private key wins over a password if both somehow arrived.
     let (auth_type, db_password, db_key_id): (&str, Option<String>, Option<i64>) =
@@ -5195,6 +5198,8 @@ enum SecretSlot {
     Passphrase,
     JumpPassword,
     JumpPassphrase,
+    Username,
+    JumpUsername,
 }
 
 /// The tab a connection belongs to. A dedicated `::sftp` / `::fwd` secondary
@@ -5279,6 +5284,8 @@ fn prompted_secret_slot(
         SecretSlot::Passphrase => &mut secrets.passphrase,
         SecretSlot::JumpPassword => &mut secrets.jump_password,
         SecretSlot::JumpPassphrase => &mut secrets.jump_passphrase,
+        SecretSlot::Username => &mut secrets.username,
+        SecretSlot::JumpUsername => &mut secrets.jump_username,
     }
 }
 
@@ -5388,16 +5395,18 @@ impl SecretPromptCtx<'_> {
     }
 }
 
-/// Ask the user for ONE secret (a password or a key passphrase) at connect
-/// time, reusing the keyboard-interactive prompt channel + modal. Emits a
-/// single masked prompt under `kbi-prompt-{session_id}`, waits on `kbi_txs`
-/// keyed by `nonce` (the same 120s budget as a real 2FA prompt), dismisses the
-/// modal, and returns the typed secret (zeroised) or `None` on cancel / timeout
-/// / dropped channel. The secret is never logged or persisted.
+/// Ask the user for ONE value at connect time — a password or key passphrase
+/// (`echo` false: masked), or a login name (`echo` true) — reusing the
+/// keyboard-interactive prompt channel + modal. Emits a single prompt under
+/// `kbi-prompt-{session_id}`, waits on `kbi_txs` keyed by `nonce` (the same
+/// 120s budget as a real 2FA prompt), dismisses the modal, and returns the
+/// typed value (zeroised) or `None` on cancel / timeout / dropped channel. The
+/// value is never logged or persisted.
 async fn prompt_for_secret(
     ctx: &SecretPromptCtx<'_>,
     label: &str,
     instructions: &str,
+    echo: bool,
 ) -> Option<zeroize::Zeroizing<String>> {
     use tauri::Emitter;
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<Vec<String>>>();
@@ -5410,7 +5419,7 @@ async fn prompt_for_secret(
             // the meaning. Instructions only explain a retry.
             "name": "",
             "instructions": instructions,
-            "prompts": [{ "prompt": label, "echo": false }],
+            "prompts": [{ "prompt": label, "echo": echo }],
         }),
     );
     let answer = match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
@@ -5428,6 +5437,57 @@ async fn prompt_for_secret(
     ctx.kbi_txs.lock().await.remove(ctx.nonce);
     let _ = ctx.app.emit(&format!("kbi-prompt-dismiss-{}", ctx.session_id), serde_json::json!({}));
     answer
+}
+
+/// The login name for a typed "Login as" answer: trimmed, and empty means
+/// `root` — the long-standing default for a node saved without a username, so
+/// pressing Enter logs in exactly as before.
+fn login_user_from_answer(answer: &str) -> zeroize::Zeroizing<String> {
+    let name = answer.trim();
+    zeroize::Zeroizing::new(if name.is_empty() { "root".to_string() } else { name.to_string() })
+}
+
+/// The login name for a connection whose saved username may be blank (issue
+/// #54). A saved name is used as-is. A blank one is taken from what the user
+/// typed earlier in this tab, else asked for — "Login as", visible like
+/// PuTTY's — on a primary connection. A dedicated `::sftp` / `::fwd`
+/// connection never asks; with nothing cached it keeps the old `root` default.
+///
+/// Returns the name and whether it was typed just now (the caller caches a
+/// typed name only once the login succeeds), or `None` when the prompt was
+/// cancelled or timed out (`ctx.cancelled` is then set, so the attempt ends as
+/// "Login cancelled"). The name is held in `Zeroizing` memory throughout.
+async fn resolve_login_user(
+    saved: &str,
+    host: &str,
+    slot: SecretSlot,
+    ctx: &SecretPromptCtx<'_>,
+) -> Option<(zeroize::Zeroizing<String>, bool)> {
+    let saved = saved.trim();
+    if !saved.is_empty() {
+        return Some((zeroize::Zeroizing::new(saved.to_string()), false));
+    }
+    if let Some(cached) = cache_get_secret(ctx.cache, ctx.base, slot).await.filter(|u| !u.is_empty()) {
+        return Some((cached, false));
+    }
+    if !ctx.allow_prompt {
+        return Some((zeroize::Zeroizing::new("root".to_string()), false));
+    }
+    ctx.log("No saved username — asking for it.", "info");
+    let typed = prompt_for_secret(
+        ctx,
+        &format!("Login as (on {})", host),
+        "Leave it empty to log in as root.",
+        true,
+    )
+    .await;
+    match typed {
+        Some(answer) => Some((login_user_from_answer(&answer), true)),
+        None => {
+            ctx.log("Username prompt cancelled or timed out.", "error");
+            None
+        }
+    }
 }
 
 /// Password authentication for a login whose password may not be saved (issue
@@ -5490,7 +5550,7 @@ async fn authenticate_password_prompting<H: russh::client::Handler>(
                     );
                 }
                 let instructions = if rejected { "The password was rejected. Please try again." } else { "" };
-                match prompt_for_secret(ctx, &format!("Password for {}@{}", user, host), instructions).await {
+                match prompt_for_secret(ctx, &format!("Password for {}@{}", user, host), instructions, false).await {
                     Some(typed) => {
                         prompts_used += 1;
                         (typed, SecretSource::Prompt)
@@ -5601,7 +5661,7 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
                     );
                 }
                 let instructions = if rejected { "The passphrase didn't unlock the key. Please try again." } else { "" };
-                match prompt_for_secret(ctx, &format!("Passphrase for key '{}'", key_label), instructions).await {
+                match prompt_for_secret(ctx, &format!("Passphrase for key '{}'", key_label), instructions, false).await {
                     Some(typed) => {
                         prompts_used += 1;
                         attempt = Some((typed, SecretSource::Prompt));
@@ -5813,6 +5873,27 @@ mod secret_prompt_tests {
         assert_eq!(plain(cache_get_secret(&cache, base, SecretSlot::Password).await), Some("pw".into()));
         // A different tab is isolated.
         assert!(cache_get_secret(&cache, "other", SecretSlot::Password).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn username_slots_are_separate_from_the_secrets() {
+        let cache = empty_cache();
+        cache_store_secret(&cache, "tab", SecretSlot::Username, zeroize::Zeroizing::new("alice".into())).await;
+        cache_store_secret(&cache, "tab", SecretSlot::JumpUsername, zeroize::Zeroizing::new("jump".into())).await;
+        assert_eq!(plain(cache_get_secret(&cache, "tab", SecretSlot::Username).await), Some("alice".into()));
+        assert_eq!(plain(cache_get_secret(&cache, "tab", SecretSlot::JumpUsername).await), Some("jump".into()));
+        assert!(cache_get_secret(&cache, "tab", SecretSlot::Password).await.is_none());
+        // Secondaries reuse the tab's typed name.
+        let base = base_session_id("tab::fwd");
+        assert_eq!(plain(cache_get_secret(&cache, base, SecretSlot::Username).await), Some("alice".into()));
+    }
+
+    #[test]
+    fn login_answer_is_trimmed_and_empty_means_root() {
+        assert_eq!(login_user_from_answer("alice").as_str(), "alice");
+        assert_eq!(login_user_from_answer("  bob \t").as_str(), "bob");
+        assert_eq!(login_user_from_answer("").as_str(), "root");
+        assert_eq!(login_user_from_answer("   ").as_str(), "root");
     }
 
     #[tokio::test]
@@ -6561,11 +6642,8 @@ async fn connect_jump_host(
             None => return Err("jump host not found".into()),
         }
     };
-    let effective_user = if user.trim().is_empty() {
-        "root".to_string()
-    } else {
-        user.trim().to_string()
-    };
+    // A blank bastion username is resolved after the handshake (issue #54).
+    let saved_user = user.trim().to_string();
 
     // 2. Direct TCP to the bastion.
     log(&format!("Connecting to jump host {}:{}...", host, port), "info");
@@ -6660,11 +6738,18 @@ async fn connect_jump_host(
         allow_prompt,
         cancelled: std::sync::atomic::AtomicBool::new(false),
     };
-    let mut auth_res = if let Some((private_key, passphrase, key_name)) = key_data {
+    let (effective_user, user_prompted, login_cancelled) =
+        match resolve_login_user(&saved_user, &host, SecretSlot::JumpUsername, &prompt_ctx).await {
+            Some((name, typed)) => (name, typed, false),
+            None => (Zeroizing::new(String::new()), false, true),
+        };
+    let mut auth_res = if login_cancelled {
+        Ok(false)
+    } else if let Some((private_key, passphrase, key_name)) = key_data {
         log("Jump host: private key authentication...", "info");
         let key_label = key_name
             .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| format!("{}@{}", effective_user, host));
+            .unwrap_or_else(|| format!("{}@{}", effective_user.as_str(), host));
         authenticate_key_prompting(
             &mut session,
             &effective_user,
@@ -6700,10 +6785,18 @@ async fn connect_jump_host(
     // Belt-and-suspenders: no dangling interactive sender for this hop.
     kbi_txs.lock().await.remove(&jump_nonce);
 
+    if user_prompted && matches!(auth_res, Ok(true)) {
+        cache_store_secret(cache, &base_id, SecretSlot::JumpUsername, effective_user.clone()).await;
+    }
+
     match auth_res {
         Ok(true) => {
             log("Jump host authenticated.", "success");
             Ok(session)
+        }
+        Ok(false) if prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) => {
+            auth_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            Err("jump host login cancelled".into())
         }
         Ok(false) => {
             auth_failed.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -7141,13 +7234,18 @@ async fn initiate_connection(
         };
 
         emit_log("Initializing SSH connection process...", "info");
-        let effective_user = if user.trim().is_empty() {
-            emit_log("Username is empty. Defaulting to 'root'.", "info");
-            "root".to_string()
-        } else {
-            user.trim().to_string()
-        };
-        emit_log(&format!("Server Details -> Host: {}, Port: {}, User: {}", host, port, effective_user), "info");
+        // A blank username is resolved after the handshake (issue #54): from
+        // this tab's cache, or asked for — see resolve_login_user.
+        let saved_user = user.trim().to_string();
+        emit_log(
+            &format!(
+                "Server Details -> Host: {}, Port: {}, User: {}",
+                host,
+                port,
+                if saved_user.is_empty() { "(asked when connecting)" } else { saved_user.as_str() },
+            ),
+            "info",
+        );
         emit_log(&format!("[DEBUG] Server Auth Method: {}", server_auth_type), "info");
         if server_auth_type == "vault" {
             emit_log(&format!("[DEBUG] Vault Identity Auth Type: {:?}", cred_auth_type), "info");
@@ -7392,11 +7490,25 @@ async fn initiate_connection(
                     cancelled: std::sync::atomic::AtomicBool::new(false),
                 };
 
-                let mut auth_res = if let Some((private_key, passphrase, key_name)) = key_data {
+                let (effective_user, user_prompted, login_cancelled) =
+                    match resolve_login_user(&saved_user, &host, SecretSlot::Username, &prompt_ctx).await {
+                        Some((name, typed)) => (name, typed, false),
+                        None => (Zeroizing::new(String::new()), false, true),
+                    };
+                if user_prompted {
+                    emit_log(&format!("Logging in as {}.", effective_user.as_str()), "info");
+                }
+
+                let mut auth_res = if login_cancelled {
+                    // "Login as" was cancelled — nothing to try. The prompt set
+                    // prompt_ctx.cancelled, so this ends as "Login cancelled"
+                    // and skips the keyboard-interactive fallback.
+                    Ok(false)
+                } else if let Some((private_key, passphrase, key_name)) = key_data {
                     emit_log("Attempting Private Key Authentication...", "info");
                     let key_label = key_name
                         .filter(|n| !n.trim().is_empty())
-                        .unwrap_or_else(|| format!("{}@{}", effective_user, host));
+                        .unwrap_or_else(|| format!("{}@{}", effective_user.as_str(), host));
                     authenticate_key_prompting(
                         &mut session,
                         &effective_user,
@@ -7452,6 +7564,12 @@ async fn initiate_connection(
                     {
                         auth_res = kbi_res;
                     }
+                }
+
+                // A typed "Login as" name is kept for this tab only once it has
+                // logged in, so a typo isn't silently reused on reconnect.
+                if user_prompted && matches!(auth_res, Ok(true)) {
+                    cache_store_secret(&prompted_secrets_clone, &base_id, SecretSlot::Username, effective_user.clone()).await;
                 }
 
                 match auth_res {

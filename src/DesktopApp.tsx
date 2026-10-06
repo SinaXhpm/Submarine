@@ -706,7 +706,10 @@ function DesktopApp() {
   // best-effort side effect the backend dedups by (host, port, username).
   const openQuickConnect = (auth: QuickAuth) => {
     const sessionId = `session-quick-${Date.now()}`;
-    const displayName = `${auth.username}@${auth.host}:${auth.port}`;
+    // No `user@` when the username is left blank (asked at connect, #54).
+    const displayName = auth.username
+      ? `${auth.username}@${auth.host}:${auth.port}`
+      : `${auth.host}:${auth.port}`;
     setSessions((prev: Session[]) => [...prev, {
       id: sessionId,
       serverId: 0,
@@ -2575,7 +2578,7 @@ function DesktopApp() {
             </div>
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Username</label>
-              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="root" value={editCredData.username} onChange={e => setEditCredData({ ...editCredData, username: e.target.value })} />
+              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="Ask when connecting" value={editCredData.username} onChange={e => setEditCredData({ ...editCredData, username: e.target.value })} />
             </div>
             <div className="space-y-4 pt-2">
               <div className="flex justify-between items-center">

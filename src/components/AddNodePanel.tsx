@@ -461,7 +461,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               <div className="space-y-3 animate-in fade-in">
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-bold text-zinc-400 ml-1">Username</label>
-                  <input type="text" placeholder="root" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
+                  <input type="text" placeholder="Ask when connecting" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-bold text-zinc-400 ml-1">Password</label>
@@ -480,7 +480,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               <div className="space-y-3 animate-in fade-in">
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-bold text-zinc-400 ml-1">Username</label>
-                  <input type="text" placeholder="root" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
+                  <input type="text" placeholder="Ask when connecting" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
                 </div>
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between ml-1">
