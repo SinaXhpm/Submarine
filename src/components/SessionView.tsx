@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw } from "lucide-react";
+import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2 } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
@@ -966,43 +966,66 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     return (
       <div className="flex-1 flex flex-col p-4 sm:p-8 bg-[#0a0a0c] text-white overflow-hidden">
         <div className="max-w-2xl w-full mx-auto flex-1 flex flex-col min-h-0">
-          {/* Header: on desktop, title row keeps title + actions side-by-side.
-              On phone, wide letter-spacing on the title wraps "0-1 AMIR" onto
-              three lines and the Reconnect / Close buttons get pushed past
-              the viewport. We stack vertically and trim the typography so
-              the whole header fits in two compact rows at any width. */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4 sm:mb-6">
-            <div>
-              <h2 className="text-base sm:text-xl font-black uppercase tracking-wider sm:tracking-[0.2em] break-words">
+          {/* Header: status chip + server name on the left, actions on the
+              right — one row at every width. The name is regular-case text
+              that truncates instead of wrapping (a long user@host used to
+              wrap and push the buttons onto their own line), and on phones
+              the buttons collapse to icons. Close is there while connecting
+              too, so a hung attempt can be abandoned from this screen. */}
+          <div className="flex items-center gap-3 mb-3 sm:mb-4">
+            <div
+              className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center ${
+                status === 'failed' ? 'bg-red-500/10 text-red-400' : 'bg-primary/10 text-primary'
+              }`}
+              aria-hidden="true"
+            >
+              {status === 'connecting' ? <Loader2 size={16} className="animate-spin" /> : <AlertTriangle size={16} />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold text-zinc-100 truncate" title={session.serverName}>
                 {session.serverName}
               </h2>
-              <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mt-1">
-                {status === 'connecting' ? 'Establishing Connection...' : 'Connection Failed'}
+              <p className={`text-[11px] mt-0.5 ${status === 'failed' ? 'text-red-400/90' : 'text-zinc-500'}`}>
+                {status === 'connecting' ? 'Connecting…' : 'Connection failed'}
               </p>
             </div>
-            {status === 'failed' && (
-              <div className="flex flex-wrap gap-2 items-center">
-                {isAuthError && (
-                  <input
-                    type="password"
-                    placeholder="Password..."
-                    className="h-8 flex-1 min-w-0 sm:flex-none bg-[#1a1a1e] rounded-lg px-3 text-xs text-white border border-white/10 outline-none focus:border-primary/50"
-                    value={customPassword}
-                    onChange={e => setCustomPassword(e.target.value)}
-                    onKeyDown={e => {
-                      if(e.key === 'Enter') reconnect();
-                    }}
-                  />
-                )}
-                <button onClick={reconnect} className="flex-1 sm:flex-none px-4 py-2 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors">
-                  Reconnect
+            <div className="shrink-0 flex items-center gap-2">
+              {status === 'failed' && (
+                <button
+                  onClick={reconnect}
+                  title="Reconnect"
+                  aria-label="Reconnect"
+                  className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 text-xs font-semibold transition-colors"
+                >
+                  <RotateCw size={13} /><span className="hidden sm:inline">Reconnect</span>
                 </button>
-                <button onClick={onClose} className="flex-1 sm:flex-none px-4 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors">
-                  Close Session
-                </button>
-              </div>
-            )}
+              )}
+              <button
+                onClick={onClose}
+                title="Close session"
+                aria-label="Close session"
+                className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-white/5 text-zinc-300 hover:bg-red-500/15 hover:text-red-300 text-xs font-semibold transition-colors"
+              >
+                <X size={13} /><span className="hidden sm:inline">Close</span>
+              </button>
+            </div>
           </div>
+
+          {/* Auth failed: try another password without leaving the screen. Its
+              own row, so it never squeezes the header. Enter reconnects. */}
+          {status === 'failed' && isAuthError && (
+            <input
+              type="password"
+              aria-label="Password"
+              placeholder="Try another password — press Enter to reconnect"
+              className="h-8 w-full mb-3 sm:mb-4 bg-[#1a1a1e] rounded-lg px-3 text-xs text-white border border-white/10 outline-none focus:border-primary/50"
+              value={customPassword}
+              onChange={e => setCustomPassword(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') reconnect();
+              }}
+            />
+          )}
 
           {/* Log Window. `min-h-0` is what makes it actually scroll: a flex
               child defaults to min-height:auto (its content height), so without
