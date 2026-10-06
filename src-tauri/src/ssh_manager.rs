@@ -370,6 +370,11 @@ pub struct SshState {
     /// of the same tab (the next SFTP op re-elevates) and is dropped when the
     /// tab closes.
     pub sftp_elevation: Arc<Mutex<HashMap<String, SftpElevation>>>,
+    /// Secrets the user typed at connect time when the saved node / login / key
+    /// had none (issue #30), keyed by the BASE session id (the tab). A reconnect
+    /// or a dedicated `::sftp` / `::fwd` secondary reuses what the user already
+    /// supplied instead of prompting again. See `PromptedSecrets`.
+    pub prompted_secrets: Arc<Mutex<HashMap<String, PromptedSecrets>>>,
 }
 
 /// How an elevated SFTP channel is started. The sudo password (if any) lives
@@ -381,6 +386,27 @@ pub struct SftpElevation {
     pub server_path: String,
     /// `None` = passwordless sudo (`sudo -n`).
     pub password: Option<zeroize::Zeroizing<String>>,
+}
+
+/// Connect-time secrets the user typed when a saved node / login / key had none
+/// (issue #30). Held only in memory in `SshState::prompted_secrets`, keyed by
+/// the BASE session id (the tab), so a reconnect or a dedicated `::sftp` /
+/// `::fwd` secondary reuses what the user already supplied instead of asking
+/// again. Every field is `Zeroizing`, so the plaintext is wiped on drop. Never
+/// persisted, logged, emitted or synced. The whole entry is dropped when its
+/// tab is disconnected or the profile closes (reaping a `::sftp` / `::fwd`
+/// secondary keeps it — the tab is still alive), and a single secret is
+/// cleared as soon as the server rejects it.
+#[derive(Clone, Default)]
+pub struct PromptedSecrets {
+    /// Accepted password for the node's own login.
+    pub password: Option<zeroize::Zeroizing<String>>,
+    /// Accepted passphrase that decrypted the node's own key.
+    pub passphrase: Option<zeroize::Zeroizing<String>>,
+    /// Accepted password for the ProxyJump bastion's login.
+    pub jump_password: Option<zeroize::Zeroizing<String>>,
+    /// Accepted passphrase that decrypted the ProxyJump bastion's key.
+    pub jump_passphrase: Option<zeroize::Zeroizing<String>>,
 }
 
 impl SshState {
@@ -399,6 +425,7 @@ impl SshState {
             session_tunnel_specs: Arc::new(Mutex::new(HashMap::new())),
             session_generation: Arc::new(Mutex::new(HashMap::new())),
             sftp_elevation: Arc::new(Mutex::new(HashMap::new())),
+            prompted_secrets: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

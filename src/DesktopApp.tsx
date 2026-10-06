@@ -2612,6 +2612,7 @@ function DesktopApp() {
                   onChange={(v) => setEditCredData({ ...editCredData, password: v })}
                   className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner"
                 />
+                <p className="text-[11px] text-zinc-500 ml-1">Leave empty to be asked when connecting.</p>
               </div>
             )}
           </div>
@@ -2696,7 +2697,7 @@ function DesktopApp() {
                   });
                   addLog(
                     loaded.encrypted
-                      ? "Key loaded — it's passphrase-protected, so fill in the passphrase below."
+                      ? "Key loaded — it's passphrase-protected. Fill in the passphrase below, or leave it empty to be asked when connecting."
                       : "Key loaded from file.",
                     loaded.encrypted ? "info" : "success",
                   );
@@ -2729,6 +2730,7 @@ function DesktopApp() {
                 onChange={(v) => setEditKeyData({ ...editKeyData, passphrase: v })}
                 className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner"
               />
+              <p className="text-[11px] text-zinc-500 ml-1">For an encrypted key, leave empty to be asked when connecting.</p>
             </div>
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">

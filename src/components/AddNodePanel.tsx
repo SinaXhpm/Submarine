@@ -251,14 +251,14 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     if (keysAttached > 0 && refreshSshKeys) {
       try { await refreshSshKeys(); } catch { /* same — the list refreshes on next open */ }
     }
-    // A passphrase-protected key can't be used until the user supplies the
-    // passphrase, which isn't anywhere in the config file. Closing the modal
-    // on a silent success would leave them with servers that look configured
-    // and fail on first connect, so hold it open and say so.
+    // A passphrase-protected key's passphrase isn't anywhere in the config
+    // file. The user can add it under Settings › SSH keys, or leave it and be
+    // asked at connect time (issue #30) — either way, hold the modal open and
+    // point it out so the import isn't silently half-finished.
     if (keysNeedingPassphrase > 0) {
       setImportNotice(
         `${ok} imported, ${keysAttached} SSH key${keysAttached === 1 ? "" : "s"} attached. ` +
-        `${keysNeedingPassphrase} of them need a passphrase — add it under Settings › SSH keys.`,
+        `${keysNeedingPassphrase} of them need a passphrase — add it under Settings › SSH keys, or leave it empty to be asked when connecting.`,
       );
       return;
     }
@@ -283,7 +283,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
       setNewNode({ ...newNode, keyId: key.id.toString() });
       setKeyBrowseNote(
         key.encrypted
-          ? `Loaded "${key.name}" — it's passphrase-protected, so add the passphrase under Settings › SSH keys before connecting.`
+          ? `Loaded "${key.name}" — it's passphrase-protected. Add the passphrase under Settings › SSH keys, or leave it empty to be asked when connecting.`
           : key.reused
             ? `"${key.name}" was already in your vault — selected it.`
             : `Loaded "${key.name}" into your vault.`,
@@ -471,6 +471,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner"
                     placeholder="••••••"
                   />
+                  <p className="text-[10px] text-zinc-500 ml-1">Leave empty to be asked when connecting.</p>
                 </div>
               </div>
             )}
