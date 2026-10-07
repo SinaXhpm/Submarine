@@ -706,7 +706,10 @@ function DesktopApp() {
   // best-effort side effect the backend dedups by (host, port, username).
   const openQuickConnect = (auth: QuickAuth) => {
     const sessionId = `session-quick-${Date.now()}`;
-    const displayName = `${auth.username}@${auth.host}:${auth.port}`;
+    // No `user@` when the username is left blank (asked at connect, #54).
+    const displayName = auth.username
+      ? `${auth.username}@${auth.host}:${auth.port}`
+      : `${auth.host}:${auth.port}`;
     setSessions((prev: Session[]) => [...prev, {
       id: sessionId,
       serverId: 0,
@@ -2374,9 +2377,9 @@ function DesktopApp() {
               name: newNode.name,
               host: newNode.host,
               port: newNode.port,
-              username: isInline
-                ? (newNode.username?.trim() ? newNode.username.trim() : "root")
-                : null,
+              // A blank username stays blank: the connection asks for it
+              // ("Login as", issue #54).
+              username: isInline ? (newNode.username?.trim() || null) : null,
               password: newNode.authType === "custom_pass" ? (newNode.password || null) : null,
               credentialId: (newNode.authType === "vault" && newNode.credentialId) ? parseInt(newNode.credentialId) : null,
               folderId: newNode.folderId ? parseInt(newNode.folderId) : null,
@@ -2575,7 +2578,7 @@ function DesktopApp() {
             </div>
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Username</label>
-              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="root" value={editCredData.username} onChange={e => setEditCredData({ ...editCredData, username: e.target.value })} />
+              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="Ask when connecting" value={editCredData.username} onChange={e => setEditCredData({ ...editCredData, username: e.target.value })} />
             </div>
             <div className="space-y-4 pt-2">
               <div className="flex justify-between items-center">
@@ -2633,7 +2636,8 @@ function DesktopApp() {
                   const payload = {
                     name: editCredData.name,
                     authType: editCredData.auth_type || "password",
-                    username: editCredData.username?.trim() ? editCredData.username.trim() : "root",
+                    // Blank = asked when connecting (issue #54).
+                    username: editCredData.username?.trim() ?? "",
                     password: editCredData.auth_type === "key" ? null : (editCredData.password || null),
                     keyId: editCredData.auth_type === "key" ? (editCredData.key_id ? parseInt(editCredData.key_id.toString()) : null) : null
                   };
