@@ -3784,46 +3784,80 @@ async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Res
     Ok(())
 }
 
+/// The `-----BEGIN … PRIVATE KEY-----` line of a PEM key, skipping anything
+/// before it (`openssl ecparam -genkey` writes an `EC PARAMETERS` block first).
+/// Empty when there is none.
+fn pem_private_key_header(text: &str) -> &str {
+    text.lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("-----BEGIN ") && l.ends_with(" PRIVATE KEY-----"))
+        .unwrap_or("")
+}
+
+/// An ECDSA key in SEC1 PEM encrypted the legacy way (`Proc-Type:
+/// 4,ENCRYPTED`). russh decrypts that encryption only for RSA keys, so no
+/// passphrase can unlock it here.
+fn is_legacy_encrypted_ec_pem(text: &str) -> bool {
+    pem_private_key_header(text) == "-----BEGIN EC PRIVATE KEY-----"
+        && text.contains("Proc-Type: 4,ENCRYPTED")
+}
+
+/// Whether a private key is passphrase-protected, judged from the key text
+/// alone: an OpenSSH key whose header says so, a legacy PEM key encrypted the
+/// PKCS#5 way (`Proc-Type: 4,ENCRYPTED`), or an encrypted PKCS#8 key.
+fn private_key_is_encrypted(text: &str) -> bool {
+    text.contains("Proc-Type: 4,ENCRYPTED")
+        || pem_private_key_header(text) == "-----BEGIN ENCRYPTED PRIVATE KEY-----"
+        || ssh_key::PrivateKey::from_openssh(text.trim())
+            .map(|k| k.is_encrypted())
+            .unwrap_or(false)
+}
+
+/// Key types the connect path can sign with.
+fn check_key_algorithm(algorithm: &ssh_key::Algorithm) -> Result<(), String> {
+    match algorithm {
+        ssh_key::Algorithm::Ed25519 | ssh_key::Algorithm::Rsa { .. } | ssh_key::Algorithm::Ecdsa { .. } => Ok(()),
+        other => Err(format!("[SSH] UNSUPPORTED_KEY_TYPE: {} keys are not supported.", other.as_str())),
+    }
+}
+
 /// Reject key formats the SSH client cannot use, so failures surface when the
 /// user enters the key rather than when they try to connect.
 fn validate_ssh_private_key(private_key: &str) -> Result<(), String> {
     let trimmed = private_key.trim();
 
-    // PKCS#1 RSA PEM is decoded by russh's pure-Rust backend in every build.
-    if trimmed.starts_with("-----BEGIN RSA PRIVATE KEY-----") {
-        return Ok(());
-    }
-    if trimmed.starts_with("-----BEGIN DSA PRIVATE KEY-----")
-        || trimmed.starts_with("-----BEGIN EC PRIVATE KEY-----")
-    {
-        // DSA is dead; ECDSA in PEM (SEC1) needs an extra conversion russh
-        // doesn't do for us. Tell the user to convert and retry rather than
-        // pretending the format is fine.
-        return Err("[SSH] UNSUPPORTED_KEY_FORMAT: DSA / SEC1 ECDSA PEM keys aren't supported. Convert to OpenSSH format with `ssh-keygen -p -m PEM -f <file>` and re-import, or generate a fresh Ed25519 key.".into());
-    }
-
-    if trimmed.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
-        // Inspect the algorithm without requiring the passphrase — the algorithm
-        // header is unencrypted even when the body is encrypted.
-        if let Ok(parsed) = ssh_key::PrivateKey::from_openssh(trimmed) {
-            match parsed.algorithm() {
-                ssh_key::Algorithm::Ed25519
-                | ssh_key::Algorithm::Rsa { .. }
-                | ssh_key::Algorithm::Ecdsa { .. } => {}
-                other => {
-                    return Err(format!(
-                        "[SSH] UNSUPPORTED_KEY_TYPE: {} keys are not supported.",
-                        other.as_str()
-                    ));
-                }
+    match pem_private_key_header(trimmed) {
+        // PKCS#1 RSA PEM is decoded by russh's pure-Rust backend in every build.
+        "-----BEGIN RSA PRIVATE KEY-----" => Ok(()),
+        "-----BEGIN DSA PRIVATE KEY-----" => Err(
+            "[SSH] UNSUPPORTED_KEY_TYPE: DSA keys aren't supported. Generate a new key, e.g. with `ssh-keygen -t ed25519`.".into(),
+        ),
+        "-----BEGIN EC PRIVATE KEY-----" if is_legacy_encrypted_ec_pem(trimmed) => Err(
+            "[SSH] UNSUPPORTED_KEY_FORMAT: This ECDSA key uses the legacy PEM encryption, which Submarine can only read for RSA keys. Re-save it in OpenSSH format with `ssh-keygen -p -f <file>` and import it again.".into(),
+        ),
+        // ECDSA in SEC1 PEM (any curve russh signs with: P-256, P-384, P-521)
+        // and PKCS#8 (ECDSA, Ed25519 or RSA). Unencrypted, so read it now.
+        "-----BEGIN EC PRIVATE KEY-----" | "-----BEGIN PRIVATE KEY-----" => {
+            match russh::keys::decode_secret_key(trimmed, None) {
+                Ok(key) => check_key_algorithm(&key.algorithm()),
+                Err(e) => Err(format!("[SSH] UNREADABLE_KEY: This key couldn't be read: {}", e)),
             }
         }
-        // If parsing fails entirely (unexpected header layout), let it through;
-        // the connect path will surface a clearer error.
-        return Ok(());
+        // Encrypted PKCS#8 can't be opened without its passphrase, which is
+        // saved with the key or asked for when connecting.
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----" => Ok(()),
+        "-----BEGIN OPENSSH PRIVATE KEY-----" => {
+            // Inspect the algorithm without requiring the passphrase — the
+            // algorithm header is unencrypted even when the body is encrypted.
+            // If parsing fails entirely (unexpected header layout), let it
+            // through; the connect path will surface a clearer error.
+            match ssh_key::PrivateKey::from_openssh(trimmed) {
+                Ok(parsed) => check_key_algorithm(&parsed.algorithm()),
+                Err(_) => Ok(()),
+            }
+        }
+        _ => Err("[SSH] UNRECOGNIZED_KEY_FORMAT: Expected a private key in OpenSSH format (begins with -----BEGIN OPENSSH PRIVATE KEY-----) or PEM / PKCS#8 (-----BEGIN RSA PRIVATE KEY-----, -----BEGIN EC PRIVATE KEY-----, -----BEGIN PRIVATE KEY-----).".into()),
     }
-
-    Err("[SSH] UNRECOGNIZED_KEY_FORMAT: Expected an OpenSSH-format private key (begins with -----BEGIN OPENSSH PRIVATE KEY-----) or RSA PEM.".into())
 }
 
 #[tauri::command]
@@ -3913,10 +3947,11 @@ struct LoadedSshKey {
     suggested_name: String,
     private_key: String,
     /// OpenSSH stores the public half in cleartext even in an encrypted key
-    /// file, so this is usually derivable from the private key alone. For an
-    /// RSA PEM (no embedded public half) we fall back to a sibling `<file>.pub`
-    /// and, failing that, leave it empty — nothing in the connect path needs
-    /// it, it's here so the user can copy it into an `authorized_keys`.
+    /// file, and an unencrypted PEM / PKCS#8 key can be decoded for it, so this
+    /// is usually derivable from the private key alone. For an encrypted PEM /
+    /// PKCS#8 key we fall back to a sibling `<file>.pub` and, failing that,
+    /// leave it empty — nothing in the connect path needs it, it's here so the
+    /// user can copy it into an `authorized_keys`.
     public_key: String,
     /// Whether the key is passphrase-protected. The passphrase itself is never
     /// on disk, so the UI has to ask for it separately before the key will
@@ -3947,8 +3982,17 @@ fn load_key_from_disk(path: &std::path::Path) -> Result<LoadedSshKey, String> {
     })?;
     validate_ssh_private_key(&private_key)?;
 
-    let parsed = ssh_key::PrivateKey::from_openssh(private_key.trim()).ok();
-    let encrypted = parsed.as_ref().map(|p| p.is_encrypted()).unwrap_or(false);
+    let encrypted = private_key_is_encrypted(&private_key);
+    // The public half: an OpenSSH key carries it in cleartext even when
+    // encrypted, and an unencrypted PEM / PKCS#8 key yields it once decoded.
+    let normalized = private_key.replace("\r\n", "\n");
+    let readable = ssh_key::PrivateKey::from_openssh(normalized.trim()).ok().or_else(|| {
+        if encrypted {
+            None
+        } else {
+            russh::keys::decode_secret_key(&normalized, None).ok()
+        }
+    });
     // `with_extension` would turn `key.pem` into `key.pub`; the convention is
     // to append, so `id_ed25519` → `id_ed25519.pub` and `key.pem` → `key.pem.pub`.
     let sibling_pub = {
@@ -3956,7 +4000,7 @@ fn load_key_from_disk(path: &std::path::Path) -> Result<LoadedSshKey, String> {
         s.push(".pub");
         PathBuf::from(s)
     };
-    let public_key = parsed
+    let public_key = readable
         .as_ref()
         .and_then(|p| p.public_key().to_openssh().ok())
         .or_else(|| fs::read_to_string(&sibling_pub).ok())
@@ -5226,16 +5270,26 @@ pub(crate) enum KeyDecodeError {
 
 /// Decode `private_key` with `passphrase`, classifying any failure. `\r\n` is
 /// normalised first (keys pasted on Windows) and an empty passphrase is treated
-/// as none. "Is the key encrypted?" is answered with
-/// `ssh_key::PrivateKey::from_openssh(..).is_encrypted()` — the same check
-/// `load_key_from_disk` uses — so a wrong passphrase on an OpenSSH key is
-/// reported as `NeedsPassphrase` rather than `Malformed`.
+/// as none. "Is the key encrypted?" is answered from the key itself (the
+/// OpenSSH header's `is_encrypted()`, a legacy `Proc-Type: 4,ENCRYPTED` PEM, or
+/// an encrypted PKCS#8 one) — the same checks `load_key_from_disk` uses — so a
+/// wrong passphrase is reported as `NeedsPassphrase` rather than `Malformed`.
 pub(crate) fn decode_private_key(
     private_key: &str,
     passphrase: Option<&str>,
 ) -> Result<russh::keys::PrivateKey, KeyDecodeError> {
     let normalized = private_key.replace("\r\n", "\n");
     let passphrase = passphrase.filter(|p| !p.is_empty());
+    // russh decrypts the legacy PEM encryption only for RSA keys: an ECDSA key
+    // encrypted that way decrypts and then fails the RSA decode whatever the
+    // passphrase, so say so instead of asking for one three times.
+    if is_legacy_encrypted_ec_pem(&normalized) {
+        return Err(KeyDecodeError::Malformed(
+            "this ECDSA key uses the legacy PEM encryption, which Submarine can only read for RSA keys; \
+             re-save it in OpenSSH format with `ssh-keygen -p -f <keyfile>`"
+                .into(),
+        ));
+    }
     // russh decrypts a legacy PKCS#1 PEM key encrypted the PKCS#5 way only with
     // AES-128-CBC. Another cipher — DES-EDE3 (PuTTYgen's OpenSSH export,
     // `openssl -des3`) or AES-256 — can't be read whatever the passphrase, so
@@ -5247,6 +5301,12 @@ pub(crate) fn decode_private_key(
                 .into(),
         ));
     }
+    // An unencrypted SEC1 / PKCS#8 key is read without the passphrase: russh's
+    // PKCS#8 reader takes any passphrase it is handed to mean "this key is
+    // encrypted" and fails, so one saved with such a key would break it.
+    let header = pem_private_key_header(&normalized);
+    let plain_pem = header == "-----BEGIN PRIVATE KEY-----" || header == "-----BEGIN EC PRIVATE KEY-----";
+    let passphrase = if plain_pem { None } else { passphrase };
     match russh::keys::decode_secret_key(&normalized, passphrase) {
         Ok(key) => Ok(key),
         // The OpenSSH decoder reports this when an encrypted key is handed no
@@ -5255,17 +5315,14 @@ pub(crate) fn decode_private_key(
         Err(e) => {
             // Decode failed with a passphrase in hand. If the key is an
             // encrypted one, the passphrase was wrong; otherwise it is a
-            // genuinely unusable key. Encrypted means either an OpenSSH key
-            // whose header says so, or a legacy PKCS#1 PEM key encrypted the
-            // PKCS#5 way (`Proc-Type: 4,ENCRYPTED`, which russh decrypts) —
-            // a wrong passphrase there fails deep in the RSA decode, not with
+            // genuinely unusable key. Encrypted means an OpenSSH key whose
+            // header says so, a legacy PKCS#1 PEM key encrypted the PKCS#5 way
+            // (`Proc-Type: 4,ENCRYPTED`, which russh decrypts) — a wrong
+            // passphrase there fails deep in the RSA decode, not with
             // KeyIsEncrypted, so without this check a typo ended the attempt
-            // as "failed to parse" instead of asking again.
-            let encrypted = normalized.contains("Proc-Type: 4,ENCRYPTED")
-                || ssh_key::PrivateKey::from_openssh(normalized.trim())
-                    .map(|k| k.is_encrypted())
-                    .unwrap_or(false);
-            if encrypted {
+            // as "failed to parse" instead of asking again — or an encrypted
+            // PKCS#8 key, which fails the same way with no passphrase at all.
+            if private_key_is_encrypted(&normalized) {
                 Err(KeyDecodeError::NeedsPassphrase)
             } else {
                 Err(KeyDecodeError::Malformed(e.to_string()))
@@ -5698,6 +5755,184 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
                     msg,
                 )));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod key_format_tests {
+    use super::*;
+
+    // Throwaway ECDSA P-521 key (`openssl ecparam -name secp521r1 -genkey
+    // -noout`) in SEC1 PEM; the same key as PKCS#8 (`openssl pkcs8 -topk8
+    // -nocrypt`), as PKCS#8 encrypted with P521_PKCS8_PASSPHRASE (`-v2
+    // aes-256-cbc`) and as SEC1 under the legacy PEM encryption (`openssl ec
+    // -aes128`). P521_PUBLIC is its public half from `ssh-keygen -y`.
+    const P521_SEC1: &str = concat!(
+        "-----BEGIN EC PRIVATE KEY-----", "\n",
+        "MIHcAgEBBEIAdufERUG0oeJ10N+Bv+X90N7yFqYVBx/b1zxWDFy7IenBbH3m19ZI", "\n",
+        "eS7CX304BsDAg7qsfA297eVCJbgAs2PHHMqgBwYFK4EEACOhgYkDgYYABAFcBODy", "\n",
+        "J0wHcbjtkyXarPWtaIpAw2TeU3I1KUpgQGmyg3oUjWPtf9E9a9dGSJUhRGmE9ipw", "\n",
+        "cQMWhP7kybfpf7a8kwCeXAhkPVAU++V1ZNvb3j/WADXg/1XQUgPGoxTAANxrTVJx", "\n",
+        "WQiIlFyELpoRIRG7ScgSAxUfuh7o0yXfIi47DpIEoA==", "\n",
+        "-----END EC PRIVATE KEY-----", "\n",
+    );
+    const P521_PKCS8: &str = concat!(
+        "-----BEGIN PRIVATE KEY-----", "\n",
+        "MIHuAgEAMBAGByqGSM49AgEGBSuBBAAjBIHWMIHTAgEBBEIAdufERUG0oeJ10N+B", "\n",
+        "v+X90N7yFqYVBx/b1zxWDFy7IenBbH3m19ZIeS7CX304BsDAg7qsfA297eVCJbgA", "\n",
+        "s2PHHMqhgYkDgYYABAFcBODyJ0wHcbjtkyXarPWtaIpAw2TeU3I1KUpgQGmyg3oU", "\n",
+        "jWPtf9E9a9dGSJUhRGmE9ipwcQMWhP7kybfpf7a8kwCeXAhkPVAU++V1ZNvb3j/W", "\n",
+        "ADXg/1XQUgPGoxTAANxrTVJxWQiIlFyELpoRIRG7ScgSAxUfuh7o0yXfIi47DpIE", "\n",
+        "oA==", "\n",
+        "-----END PRIVATE KEY-----", "\n",
+    );
+    const P521_PKCS8_PASSPHRASE: &str = "pkcs8-pass";
+    const P521_PKCS8_ENC: &str = concat!(
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----", "\n",
+        "MIIBZTBfBgkqhkiG9w0BBQ0wUjAxBgkqhkiG9w0BBQwwJAQQUb69XfifBahYHZCi", "\n",
+        "T3/dNQICCAAwDAYIKoZIhvcNAgkFADAdBglghkgBZQMEASoEEFEFBT5lelHs0Ikf", "\n",
+        "rOQHsd8EggEA72Iuk/XfL+B1ztGKnuwSUuHkDIfqrugpnnipFX3uqnNfrKCq4cgV", "\n",
+        "CLa8mxag99CaeUNLeRf1q51qSCkJDXlp72Iln78pGFV2KfcOtkJyg2J2H7/YyS0J", "\n",
+        "l5F7FthjQFe5oAMAy7J+ZvccAPOjxRkq4+UUvSD0L5CZ8Ana1lt47zU5T+F+ChqU", "\n",
+        "qucZoyUozaRbnLX1HwwFaGj1GWezN1Tb4+m7HgBq9efhf9sBlXAaoaOmOGpzPYr9", "\n",
+        "xVTuTZ4D9tEvOHv/RFOZsZ6jSGan2JFHPttjCuDdYAUv7td4QDL2+WpsoGPYYlNt", "\n",
+        "zVtMBi0HWOfN/g1USthtX64Rt7YupWd+jQ==", "\n",
+        "-----END ENCRYPTED PRIVATE KEY-----", "\n",
+    );
+    const P521_SEC1_LEGACY_ENC: &str = concat!(
+        "-----BEGIN EC PRIVATE KEY-----", "\n",
+        "Proc-Type: 4,ENCRYPTED", "\n",
+        "DEK-Info: AES-128-CBC,6AAE92543490CD1C0CC1379C8F41D8BC", "\n",
+        "", "\n",
+        "QdVrrcbttQm+FA+zAVdBsg8P27+fvItEE21uI1EcL3+iYzuvPdG3UxPCV7XvqA0H", "\n",
+        "QYw4rpmVz4t31gokcOYQHCtaOcNpQ5j4f8gC29w2E4uObL+Rj0IlmwAvNjKI84fb", "\n",
+        "t30+KLuzm+yzcgQIJhU5lv87q0qVpGTOYL3RFs0DdJIBUxXmX187CXzuhEeuG1uz", "\n",
+        "IIlyvlGWsUpld6yYnn6pdKFpW2YjsiUSPtCUtZj/C5vxJKz68NftkstD2UWzqx5f", "\n",
+        "lYt7UrW77+lzY3DWKcb3aoXlvDljQdFEfm/+bkVwjOE=", "\n",
+        "-----END EC PRIVATE KEY-----", "\n",
+    );
+    const P521_PUBLIC: &str = concat!(
+        "ecdsa-sha2-nistp521 AAAAE2VjZHNhLXNoYTItbmlzdHA1MjEAAAAIbmlzdHA1MjEAAACFBAFcBODyJ0wHcbjtkyXarPWtaIpAw2T",
+        "eU3I1KUpgQGmyg3oUjWPtf9E9a9dGSJUhRGmE9ipwcQMWhP7kybfpf7a8kwCeXAhkPVAU++V1ZNvb3j/WADXg/1XQUgPGoxTAANxrT",
+        "VJxWQiIlFyELpoRIRG7ScgSAxUfuh7o0yXfIi47DpIEoA==",
+    );
+    // Throwaway P-521 key in OpenSSH format (`ssh-keygen -t ecdsa -b 521`),
+    // the format of the key in issue #77, and its public half.
+    const P521_OPENSSH: &str = concat!(
+        "-----BEGIN OPENSSH PRIVATE KEY-----", "\n",
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAArAAAABNlY2RzYS", "\n",
+        "1zaGEyLW5pc3RwNTIxAAAACG5pc3RwNTIxAAAAhQQAvtzl7GYNWH8JocIhNsPAHacrittx", "\n",
+        "6PEMIxtc239ZfSlHcSfbZXr3lRhCEfbPmKzdEEVTnCFS/9e7AlkCWdgXGMwAyEi97CdaDJ", "\n",
+        "pAod7gqwA2MkzZmKtmsG+EV3aFXQlpvTPu8UJMqWRMhUHMDypin+Z02TIOkengiNIKTdfy", "\n",
+        "Q6c9UpwAAAEI3dqG893ahvMAAAATZWNkc2Etc2hhMi1uaXN0cDUyMQAAAAhuaXN0cDUyMQ", "\n",
+        "AAAIUEAL7c5exmDVh/CaHCITbDwB2nK4rbcejxDCMbXNt/WX0pR3En22V695UYQhH2z5is", "\n",
+        "3RBFU5whUv/XuwJZAlnYFxjMAMhIvewnWgyaQKHe4KsANjJM2ZirZrBvhFd2hV0Jab0z7v", "\n",
+        "FCTKlkTIVBzA8qYp/mdNkyDpHp4IjSCk3X8kOnPVKcAAAAQgDJNX554jkZlm78+fi0Gj3p", "\n",
+        "FJjvZRUBqKF8RgsIq5C3kB/7QMbH/r2IDidtUmNjCVGCkodiUt5QS5H3pWfZHX9aBwAAAA", "\n",
+        "dmaXh0dXJlAQID", "\n",
+        "-----END OPENSSH PRIVATE KEY-----", "\n",
+    );
+    const P521_OPENSSH_PUBLIC: &str = concat!(
+        "ecdsa-sha2-nistp521 AAAAE2VjZHNhLXNoYTItbmlzdHA1MjEAAAAIbmlzdHA1MjEAAACFBAC+3OXsZg1YfwmhwiE2w8AdpyuK23H",
+        "o8QwjG1zbf1l9KUdxJ9tleveVGEIR9s+YrN0QRVOcIVL/17sCWQJZ2BcYzADISL3sJ1oMmkCh3uCrADYyTNmYq2awb4RXdoVdCWm9M+",
+        "7xQkypZEyFQcwPKmKf5nTZMg6R6eCI0gpN1/JDpz1SnA==",
+    );
+    // Throwaway Ed25519 key in PKCS#8 (`openssl genpkey -algorithm ed25519`).
+    const ED25519_PKCS8: &str = concat!(
+        "-----BEGIN PRIVATE KEY-----", "\n",
+        "MC4CAQAwBQYDK2VwBCIEIBXcUxGTvHbBFb3vzUra7Hz27fwFi5UPhlO4bFnIYHCr", "\n",
+        "-----END PRIVATE KEY-----", "\n",
+    );
+    const ED25519_PKCS8_PUBLIC: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHPgjDe6mnhOGK+sb3jOSE1cI6AyAn+uDTumwl5/xBEG";
+
+    /// `<algorithm> <base64>` of a key's public half, comment dropped.
+    fn public_of(key: &russh::keys::PrivateKey) -> String {
+        let line = key.public_key().to_openssh().expect("encodes");
+        line.split_whitespace().take(2).collect::<Vec<_>>().join(" ")
+    }
+
+    fn decoded(pem: &str, passphrase: Option<&str>) -> russh::keys::PrivateKey {
+        match decode_private_key(pem, passphrase) {
+            Ok(key) => key,
+            Err(KeyDecodeError::NeedsPassphrase) => panic!("asked for a passphrase"),
+            Err(KeyDecodeError::Malformed(m)) => panic!("refused: {m}"),
+        }
+    }
+
+    #[test]
+    fn p521_keys_decode_in_every_format_russh_reads() {
+        assert_eq!(public_of(&decoded(P521_OPENSSH, None)), P521_OPENSSH_PUBLIC);
+        assert_eq!(public_of(&decoded(P521_SEC1, None)), P521_PUBLIC);
+        assert_eq!(public_of(&decoded(P521_PKCS8, None)), P521_PUBLIC);
+        assert_eq!(public_of(&decoded(P521_PKCS8_ENC, Some(P521_PKCS8_PASSPHRASE))), P521_PUBLIC);
+        assert_eq!(public_of(&decoded(ED25519_PKCS8, None)), ED25519_PKCS8_PUBLIC);
+    }
+
+    #[test]
+    fn a_p521_key_signs_and_its_public_half_verifies() {
+        for key in [decoded(P521_OPENSSH, None), decoded(P521_SEC1, None)] {
+            let sig = key.sign("submarine-test", ssh_key::HashAlg::Sha512, b"hello").expect("signs");
+            key.public_key().verify("submarine-test", b"hello", &sig).expect("verifies");
+        }
+    }
+
+    #[test]
+    fn an_encrypted_pkcs8_key_asks_for_its_passphrase() {
+        assert!(matches!(decode_private_key(P521_PKCS8_ENC, None), Err(KeyDecodeError::NeedsPassphrase)));
+        assert!(matches!(
+            decode_private_key(P521_PKCS8_ENC, Some("not the passphrase")),
+            Err(KeyDecodeError::NeedsPassphrase)
+        ));
+    }
+
+    #[test]
+    fn a_passphrase_saved_with_an_unencrypted_pem_key_is_ignored() {
+        assert_eq!(public_of(&decoded(P521_PKCS8, Some("stray"))), P521_PUBLIC);
+        assert_eq!(public_of(&decoded(P521_SEC1, Some("stray"))), P521_PUBLIC);
+    }
+
+    #[test]
+    fn a_legacy_encrypted_ecdsa_pem_key_is_refused_with_a_way_out() {
+        for passphrase in [None, Some("pem-pass")] {
+            match decode_private_key(P521_SEC1_LEGACY_ENC, passphrase) {
+                Err(KeyDecodeError::Malformed(msg)) => assert!(msg.contains("ssh-keygen -p -f"), "{msg}"),
+                _ => panic!("expected a refusal, not a passphrase prompt"),
+            }
+        }
+        let err = validate_ssh_private_key(P521_SEC1_LEGACY_ENC).unwrap_err();
+        assert!(err.contains("ssh-keygen -p -f"), "{err}");
+    }
+
+    #[test]
+    fn validation_accepts_every_format_the_connect_path_reads() {
+        for pem in [P521_OPENSSH, P521_SEC1, P521_PKCS8, P521_PKCS8_ENC, ED25519_PKCS8] {
+            assert_eq!(validate_ssh_private_key(pem), Ok(()), "{}", pem_private_key_header(pem));
+        }
+        // `openssl ecparam -genkey` without -noout writes the curve first.
+        let with_params =
+            format!("-----BEGIN EC PARAMETERS-----\nBgUrgQQAIw==\n-----END EC PARAMETERS-----\n{P521_SEC1}");
+        assert_eq!(validate_ssh_private_key(&with_params), Ok(()));
+        assert_eq!(public_of(&decoded(&with_params, None)), P521_PUBLIC);
+    }
+
+    #[test]
+    fn validation_still_refuses_what_cannot_connect() {
+        let dsa = "-----BEGIN DSA PRIVATE KEY-----\nAAAA\n-----END DSA PRIVATE KEY-----\n";
+        assert!(validate_ssh_private_key(dsa).unwrap_err().contains("DSA keys aren't supported"));
+        assert!(validate_ssh_private_key("not a key").unwrap_err().contains("UNRECOGNIZED_KEY_FORMAT"));
+        // A damaged PKCS#8 body is caught when the key is entered, not later.
+        let damaged = P521_PKCS8.replace("MIHuAgEAMBAG", "MIHuAgEAMBAA");
+        assert!(validate_ssh_private_key(&damaged).unwrap_err().contains("UNREADABLE_KEY"));
+    }
+
+    #[test]
+    fn encrypted_keys_are_recognised_from_the_text_alone() {
+        assert!(private_key_is_encrypted(P521_PKCS8_ENC));
+        assert!(private_key_is_encrypted(P521_SEC1_LEGACY_ENC));
+        for plain in [P521_OPENSSH, P521_SEC1, P521_PKCS8, ED25519_PKCS8] {
+            assert!(!private_key_is_encrypted(plain));
         }
     }
 }
