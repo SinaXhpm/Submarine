@@ -1,22 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown } from "lucide-react";
 import { BUNDLED_FONTS, fontFamilyCss } from "../util/terminalFont";
-
-type SystemFont = { family: string; monospace: boolean };
-
-// The installed-font list is read from the OS font folders once per run and
-// shared by every picker (it takes a moment on machines with many fonts).
-let installedFontsPromise: Promise<SystemFont[]> | null = null;
-const loadInstalledFonts = () => {
-  if (!installedFontsPromise) {
-    installedFontsPromise = invoke<SystemFont[]>("list_system_fonts").catch((e) => {
-      installedFontsPromise = null; // let a later open retry
-      throw e;
-    });
-  }
-  return installedFontsPromise;
-};
+import { loadInstalledFonts, SystemFont } from "../util/systemFonts";
 
 type Row = { key: string; family: string; label: string; monospace?: boolean };
 
