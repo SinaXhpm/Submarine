@@ -439,6 +439,11 @@ pub struct ClientHandler {
     /// extends to cover the human window instead of killing the prompt with a
     /// misleading "handshake stalled" error. See `drive_connect_with_prompt_timeout`.
     pub prompt_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// False for the dedicated `::sftp` / `::fwd` connections: the tab only
+    /// shows the primary connection's fingerprint prompt, so they refuse an
+    /// unknown or changed key at once instead of waiting on a prompt nobody
+    /// can see.
+    pub prompt_allowed: bool,
 }
 
 impl client::Handler for ClientHandler {
@@ -546,6 +551,23 @@ impl client::Handler for ClientHandler {
             // downstream error.
             self.fp_outcome.store(1, std::sync::atomic::Ordering::SeqCst);
             return Ok(true);
+        }
+
+        if !self.prompt_allowed {
+            // A dedicated SFTP / port-forwarding connection can't show a
+            // prompt. The primary connection normally verifies the host just
+            // before, so this only happens when the two reach hosts with
+            // different keys (e.g. behind a load balancer) — refuse.
+            let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
+                "msg": if mismatch {
+                    "⚠ The host key has CHANGED — this connection was refused. Reconnect the session to review the key."
+                } else {
+                    "The host key isn't trusted yet and this connection can't ask — refused. Reconnect the session to review the key."
+                },
+                "type": "error"
+            }));
+            self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
+            return Ok(false);
         }
 
         if mismatch {

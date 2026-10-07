@@ -5931,6 +5931,9 @@ async fn connect_jump_host(
         forwarded_targets: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         fp_outcome,
         prompt_pending,
+        // Dedicated `::sftp` / `::fwd` connections carry a `::` suffix and
+        // have no prompt of their own (see ClientHandler::prompt_allowed).
+        prompt_allowed: !session_id.contains("::"),
     };
 
     // 4. Handshake.
@@ -6352,6 +6355,7 @@ async fn initiate_connection(
         forwarded_targets: Arc::clone(&session_forwarded_targets),
         fp_outcome: std::sync::Arc::clone(&fp_outcome),
         prompt_pending: std::sync::Arc::clone(&prompt_pending),
+        prompt_allowed: !is_secondary,
     };
 
     let cleanup_nonce = connect_nonce.clone();
