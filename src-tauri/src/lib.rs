@@ -5376,6 +5376,9 @@ struct SecretPromptCtx<'a> {
     cache: &'a PromptedSecretsMap,
     base: &'a str,
     allow_prompt: bool,
+    /// The connect attempt asking. A prompt is only shown while it's current
+    /// (see ssh_manager::ConnectAttempt).
+    attempt: &'a ssh_manager::ConnectAttempt,
     /// Set when the user cancels one of our prompts (or lets it time out).
     /// The caller then skips the keyboard-interactive fallback: on a typical
     /// OpenSSH + PAM server that fallback would immediately show the server's
@@ -5410,6 +5413,12 @@ async fn prompt_for_secret(
     echo: bool,
 ) -> Option<zeroize::Zeroizing<String>> {
     use tauri::Emitter;
+    // Superseded or abandoned attempt: never show its prompt over a newer
+    // one. It ends the same way a cancelled prompt does.
+    if !ctx.attempt.may_prompt().await {
+        ctx.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        return None;
+    }
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<Vec<String>>>();
     ctx.kbi_txs.lock().await.insert(ctx.nonce.to_string(), tx);
     let _ = ctx.app.emit(
@@ -5436,7 +5445,11 @@ async fn prompt_for_secret(
         }
     };
     ctx.kbi_txs.lock().await.remove(ctx.nonce);
-    let _ = ctx.app.emit(&format!("kbi-prompt-dismiss-{}", ctx.session_id), serde_json::json!({}));
+    // The nonce lets the tab ignore this if a newer prompt is already showing.
+    let _ = ctx.app.emit(
+        &format!("kbi-prompt-dismiss-{}", ctx.session_id),
+        serde_json::json!({ "nonce": ctx.nonce }),
+    );
     answer
 }
 
@@ -5929,6 +5942,24 @@ mod secret_prompt_tests {
 ///                         original, more meaningful auth result instead of
 ///                         masking it with a generic interactive failure.
 ///
+/// Report a failed connect attempt to its tab — unless a newer attempt has
+/// started or the tab disconnected since. A late report from an attempt the
+/// user already replaced (Reconnect, or closing and reopening the tab) would
+/// flip the tab that has moved on back to "Connection failed".
+async fn emit_connection_failed(
+    app: &tauri::AppHandle,
+    attempt: &ssh_manager::ConnectAttempt,
+    session_id: &str,
+    payload: serde_json::Value,
+) {
+    use tauri::Emitter;
+    if attempt.is_current().await {
+        let _ = app.emit(&format!("connection-failed-{}", session_id), payload);
+    } else {
+        println!("[BACKEND] {}: dropped the failure report of a superseded connect attempt", session_id);
+    }
+}
+
 /// Generic over the handler so both the primary connection (`ClientHandler`)
 /// and a ProxyJump intermediate hop can reuse it.
 async fn run_keyboard_interactive<H: russh::client::Handler>(
@@ -5942,6 +5973,9 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
             std::collections::HashMap<String, tokio::sync::oneshot::Sender<Option<Vec<String>>>>,
         >,
     >,
+    // The connect attempt asking — its prompts are only shown while it's
+    // current (see ssh_manager::ConnectAttempt).
+    attempt: &ssh_manager::ConnectAttempt,
 ) -> Option<Result<bool, russh::Error>> {
     use russh::client::KeyboardInteractiveAuthResponse;
     use tauri::Emitter;
@@ -5998,6 +6032,12 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                 }
                 asked_anything = true;
 
+                // A superseded or abandoned attempt doesn't put its prompt over
+                // a newer one; it ends like a cancelled prompt.
+                if !attempt.may_prompt().await {
+                    return Some(Ok(false));
+                }
+
                 // Fresh oneshot each round — a server may issue several
                 // sequential InfoRequests within one auth exchange.
                 let (tx, rx) = tokio::sync::oneshot::channel::<Option<Vec<String>>>();
@@ -6030,7 +6070,7 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                         kbi_txs.lock().await.remove(nonce);
                         let _ = app.emit(
                             &format!("kbi-prompt-dismiss-{}", session_id),
-                            serde_json::json!({}),
+                            serde_json::json!({ "nonce": nonce }),
                         );
                         log("Verification prompt cancelled or timed out.", "error");
                         return Some(Ok(false));
@@ -6038,7 +6078,7 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                 };
                 let _ = app.emit(
                     &format!("kbi-prompt-dismiss-{}", session_id),
-                    serde_json::json!({}),
+                    serde_json::json!({ "nonce": nonce }),
                 );
 
                 // The protocol requires exactly one response per prompt.
@@ -6617,6 +6657,8 @@ async fn connect_jump_host(
     // caller reports an auth error — auto-reconnect then stops instead of
     // re-prompting every few seconds.
     auth_failed: &std::sync::atomic::AtomicBool,
+    // The target session's connect attempt; the bastion's prompts belong to it.
+    attempt: &ssh_manager::ConnectAttempt,
     session_id: &str,
     jump_server_id: i32,
 ) -> Result<russh::client::Handle<ssh_manager::ClientHandler>, String> {
@@ -6691,6 +6733,7 @@ async fn connect_jump_host(
         // Dedicated `::sftp` / `::fwd` connections carry a `::` suffix and
         // have no prompt of their own (see ClientHandler::prompt_allowed).
         prompt_allowed: !session_id.contains("::"),
+        attempt: attempt.clone(),
     };
 
     // 4. Handshake.
@@ -6705,6 +6748,11 @@ async fn connect_jump_host(
         CONNECT_TIMEOUT_CAPS,
     )
     .await;
+    // Given up on: russh's handshake task may still reach the host-key check
+    // later, and must not prompt for an attempt nobody is waiting on.
+    if connect_res.is_err() {
+        attempt.abandon();
+    }
     // The host-key prompt (if any) is resolved by now — drop the sender.
     fp_txs.lock().await.remove(&jump_nonce);
 
@@ -6737,6 +6785,7 @@ async fn connect_jump_host(
         cache,
         base: &base_id,
         allow_prompt,
+        attempt,
         cancelled: std::sync::atomic::AtomicBool::new(false),
     };
     let (effective_user, user_prompted, login_cancelled) =
@@ -6778,7 +6827,7 @@ async fn connect_jump_host(
     // A declined prompt ends the hop — don't fall back to asking again.
     if !matches!(auth_res, Ok(true)) && !prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
         if let Some(kbi_res) =
-            run_keyboard_interactive(&mut session, &effective_user, app, session_id, &jump_nonce, kbi_txs).await
+            run_keyboard_interactive(&mut session, &effective_user, app, session_id, &jump_nonce, kbi_txs, attempt).await
         {
             auth_res = kbi_res;
         }
@@ -6941,6 +6990,13 @@ async fn initiate_connection(
         g.insert(session_id.clone(), next);
         next
     };
+    // This attempt, as its prompts and failure report see it: once a newer
+    // attempt starts (or the tab disconnects) they stay quiet.
+    let attempt = ssh_manager::ConnectAttempt::new(
+        Arc::clone(&state.session_generation),
+        session_id.clone(),
+        connect_generation,
+    );
 
     println!("[BACKEND] No duplicates found. Registering oneshot channel and spawning connection worker...");
     let (fp_tx, fp_rx) = tokio::sync::oneshot::channel();
@@ -7189,6 +7245,7 @@ async fn initiate_connection(
         fp_outcome: std::sync::Arc::clone(&fp_outcome),
         prompt_pending: std::sync::Arc::clone(&prompt_pending),
         prompt_allowed: !is_secondary,
+        attempt: attempt.clone(),
     };
 
     let cleanup_nonce = connect_nonce.clone();
@@ -7299,7 +7356,7 @@ async fn initiate_connection(
         let jump_auth_failed = std::sync::atomic::AtomicBool::new(false);
         let stream_res: Result<Box<dyn AsyncStream>, String> = if let Some(jid) = jump_host_id {
             emit_log(&format!("ProxyJump: routing through jump host (server id {})...", jid), "info");
-            match connect_jump_host(&app, &db_for_jump, &fp_txs_clone, &kbi_txs_clone, &prompted_secrets_clone, allow_kbi, &jump_auth_failed, &session_id_clone, jid).await {
+            match connect_jump_host(&app, &db_for_jump, &fp_txs_clone, &kbi_txs_clone, &prompted_secrets_clone, allow_kbi, &jump_auth_failed, &attempt, &session_id_clone, jid).await {
                 Ok(jump_handle) => {
                     // Originator address is cosmetic (logged by the bastion); the
                     // pair below is what OpenSSH sends for a -J hop.
@@ -7337,7 +7394,7 @@ async fn initiate_connection(
                         let err_msg = "SOCKS5 Proxy Host is empty";
                         emit_log(&format!("Error: {}", err_msg), "error");
                         cleanup().await;
-                        let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": err_msg}));
+                        emit_connection_failed(&app, &attempt, &session_id_clone, serde_json::json!({"reason": err_msg})).await;
                         return;
                     }
                 };
@@ -7371,7 +7428,7 @@ async fn initiate_connection(
                         let err_msg = "HTTP Proxy Host is empty";
                         emit_log(&format!("Error: {}", err_msg), "error");
                         cleanup().await;
-                        let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": err_msg}));
+                        emit_connection_failed(&app, &attempt, &session_id_clone, serde_json::json!({"reason": err_msg})).await;
                         return;
                     }
                 };
@@ -7448,13 +7505,16 @@ async fn initiate_connection(
                 // A failed (or cancelled) bastion login is an auth error like
                 // the target's own, so auto-reconnect stops instead of asking
                 // again every few seconds.
-                let _ = app.emit(
-                    &format!("connection-failed-{}", session_id_clone),
+                emit_connection_failed(
+                    &app,
+                    &attempt,
+                    &session_id_clone,
                     serde_json::json!({
                         "reason": e,
                         "is_auth_error": jump_auth_failed.load(std::sync::atomic::Ordering::Relaxed),
                     }),
-                );
+                )
+                .await;
                 return;
             }
         };
@@ -7488,6 +7548,7 @@ async fn initiate_connection(
                     cache: &prompted_secrets_clone,
                     base: &base_id,
                     allow_prompt: allow_kbi,
+                    attempt: &attempt,
                     cancelled: std::sync::atomic::AtomicBool::new(false),
                 };
 
@@ -7560,6 +7621,7 @@ async fn initiate_connection(
                         &session_id_clone,
                         &connect_nonce,
                         &kbi_txs_clone,
+                        &attempt,
                     )
                     .await
                     {
@@ -8025,13 +8087,16 @@ async fn initiate_connection(
                             )
                         };
                         emit_log(log_msg, "error");
-                        let _ = app.emit(
-                            &format!("connection-failed-{}", session_id_clone),
+                        emit_connection_failed(
+                            &app,
+                            &attempt,
+                            &session_id_clone,
                             serde_json::json!({
                                 "reason": reason,
                                 "is_auth_error": true,
                             }),
-                        );
+                        )
+                        .await;
                     },
                     Err(e) => {
                         let kind = classify_russh_error(&e);
@@ -8044,13 +8109,16 @@ async fn initiate_connection(
                             describe_error_kind(kind, &target)
                         };
                         emit_log(&format!("{} (raw: {})", reason, e), "error");
-                        let _ = app.emit(
-                            &format!("connection-failed-{}", session_id_clone),
+                        emit_connection_failed(
+                            &app,
+                            &attempt,
+                            &session_id_clone,
                             serde_json::json!({
                                 "reason": reason,
                                 "is_auth_error": kind.is_auth(),
                             }),
-                        );
+                        )
+                        .await;
                     }
                 }
             },
@@ -8078,15 +8146,21 @@ async fn initiate_connection(
                     }
                 };
                 emit_log(&format!("{} (raw: {})", reason, e), "error");
-                let _ = app.emit(
-                    &format!("connection-failed-{}", session_id_clone),
+                emit_connection_failed(
+                    &app,
+                    &attempt,
+                    &session_id_clone,
                     serde_json::json!({
                         "reason": reason,
                         "is_auth_error": kind.is_auth(),
                     }),
-                );
+                )
+                .await;
             },
             Err(ConnectTimeout::HandshakeStall) => {
+                // russh's handshake task may still reach the host-key check
+                // later; nobody is waiting, so it mustn't prompt.
+                attempt.abandon();
                 // 15s wall-clock on connect_stream with NO host-key prompt
                 // pending — the TCP socket is up but the SSH handshake never
                 // completed. Distinct enough from the auth path to deserve its
@@ -8096,15 +8170,19 @@ async fn initiate_connection(
                     host, port
                 );
                 emit_log(&msg, "error");
-                let _ = app.emit(
-                    &format!("connection-failed-{}", session_id_clone),
+                emit_connection_failed(
+                    &app,
+                    &attempt,
+                    &session_id_clone,
                     serde_json::json!({
                         "reason": msg,
                         "is_auth_error": false,
                     }),
-                );
+                )
+                .await;
             },
             Err(ConnectTimeout::PromptHardCap) => {
+                attempt.abandon();
                 // A fingerprint prompt was still pending when even the hard cap
                 // (handshake + the 90s human window + margin) elapsed — the
                 // prompt is wedged. Surface the same host-key message as a
@@ -8113,13 +8191,16 @@ async fn initiate_connection(
                 let reason =
                     "Host key prompt timed out — Reconnect and approve the fingerprint within 90 seconds.".to_string();
                 emit_log(&reason, "error");
-                let _ = app.emit(
-                    &format!("connection-failed-{}", session_id_clone),
+                emit_connection_failed(
+                    &app,
+                    &attempt,
+                    &session_id_clone,
                     serde_json::json!({
                         "reason": reason,
                         "is_auth_error": ConnectErrorKind::HostKey.is_auth(),
                     }),
-                );
+                )
+                .await;
             }
         }
 

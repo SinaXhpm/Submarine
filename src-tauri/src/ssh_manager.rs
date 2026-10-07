@@ -476,6 +476,51 @@ pub struct ClientHandler {
     /// unknown or changed key at once instead of waiting on a prompt nobody
     /// can see.
     pub prompt_allowed: bool,
+    /// The connect attempt this handler belongs to. A fingerprint prompt from
+    /// an attempt that's no longer current (or that its driver gave up on) is
+    /// refused silently instead of appearing over a newer attempt's.
+    pub attempt: ConnectAttempt,
+}
+
+/// One connect attempt of a session: its id, the session generation it started
+/// under (bumped by every new attempt and by `disconnect_session`) and whether
+/// its connect driver has given up on it. A prompt from an attempt that's no
+/// longer current would land on top of — or be answered instead of — a newer
+/// attempt's prompt, and its failure report would flip a tab that has since
+/// connected back to "failed", so both are dropped.
+#[derive(Clone)]
+pub struct ConnectAttempt {
+    generations: Arc<Mutex<HashMap<String, u64>>>,
+    session_id: String,
+    generation: u64,
+    abandoned: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ConnectAttempt {
+    pub fn new(generations: Arc<Mutex<HashMap<String, u64>>>, session_id: String, generation: u64) -> Self {
+        Self {
+            generations,
+            session_id,
+            generation,
+            abandoned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// No newer attempt has started for the session, and it wasn't disconnected.
+    pub async fn is_current(&self) -> bool {
+        self.generations.lock().await.get(&self.session_id).copied().unwrap_or(0) == self.generation
+    }
+
+    /// The connect driver stopped waiting on this attempt (its handshake timed
+    /// out), so nothing would act on an answer any more.
+    pub fn abandon(&self) {
+        self.abandoned.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether it still makes sense to ask the user anything for this attempt.
+    pub async fn may_prompt(&self) -> bool {
+        !self.abandoned.load(std::sync::atomic::Ordering::SeqCst) && self.is_current().await
+    }
 }
 
 impl client::Handler for ClientHandler {
@@ -602,6 +647,13 @@ impl client::Handler for ClientHandler {
             return Ok(false);
         }
 
+        // A newer attempt has started (or the tab disconnected, or the driver
+        // gave up): this one's prompt would only cover the current one's.
+        if !self.attempt.may_prompt().await {
+            self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
+            return Ok(false);
+        }
+
         if mismatch {
             // Loud, distinct log line for the activity panel — this is the
             // SSH "REMOTE HOST IDENTIFICATION HAS CHANGED" moment.
@@ -670,7 +722,7 @@ impl client::Handler for ClientHandler {
                         "msg": "Host key rejected by user.",
                         "type": "error"
                     }));
-                    let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({}));
+                    let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({ "nonce": self.connect_nonce }));
                     self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
                     Ok(false)
                 }
@@ -679,7 +731,7 @@ impl client::Handler for ClientHandler {
                         "msg": "Host key verification timed out (no response from user within 90 seconds).",
                         "type": "error"
                     }));
-                    let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({}));
+                    let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({ "nonce": self.connect_nonce }));
                     self.fp_outcome.store(2, std::sync::atomic::Ordering::SeqCst);
                     Ok(false)
                 }
@@ -688,7 +740,7 @@ impl client::Handler for ClientHandler {
                         "msg": "Host key verification aborted.",
                         "type": "error"
                     }));
-                    let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({}));
+                    let _ = self.app.emit(&format!("fingerprint-prompt-dismiss-{}", self.session_id), serde_json::json!({ "nonce": self.connect_nonce }));
                     self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
                     Ok(false)
                 }

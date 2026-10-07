@@ -104,6 +104,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // `kbiValues` mirrors one editable answer per prompt.
   const [kbiPrompt, setKbiPrompt] = useState<any>(null);
   const [kbiValues, setKbiValues] = useState<string[]>([]);
+  // Nonce of the prompt on screen, read synchronously by the dismiss
+  // listeners — state would lag a render behind a dismiss that races in.
+  const fpNonceRef = useRef<string | null>(null);
+  const kbiNonceRef = useRef<string | null>(null);
   // The prompt's answer field takes the caret only while this session is on
   // screen: when the prompt appears with the tab in front, or when the user
   // switches to a tab whose prompt is waiting. A hidden tab's prompt must not
@@ -498,20 +502,30 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     });
 
     const unlistenPrompt = listen(`fingerprint-prompt-${session.id}`, (event: any) => {
+      fpNonceRef.current = event.payload?.nonce ?? null;
       setFingerprintPrompt(event.payload);
     });
 
-    const unlistenPromptDismiss = listen(`fingerprint-prompt-dismiss-${session.id}`, () => {
+    // A dismiss names the prompt it closes (its nonce): one left over from an
+    // older connect attempt mustn't close the prompt that's showing now.
+    const unlistenPromptDismiss = listen(`fingerprint-prompt-dismiss-${session.id}`, (event: any) => {
+      const nonce = event.payload?.nonce;
+      if (nonce && fpNonceRef.current && nonce !== fpNonceRef.current) return;
+      fpNonceRef.current = null;
       setFingerprintPrompt(null);
     });
 
     const unlistenKbi = listen(`kbi-prompt-${session.id}`, (event: any) => {
       const p = event.payload;
+      kbiNonceRef.current = p?.nonce ?? null;
       setKbiPrompt(p);
       setKbiValues(Array.isArray(p?.prompts) ? p.prompts.map(() => "") : []);
     });
 
-    const unlistenKbiDismiss = listen(`kbi-prompt-dismiss-${session.id}`, () => {
+    const unlistenKbiDismiss = listen(`kbi-prompt-dismiss-${session.id}`, (event: any) => {
+      const nonce = event.payload?.nonce;
+      if (nonce && kbiNonceRef.current && nonce !== kbiNonceRef.current) return;
+      kbiNonceRef.current = null;
       setKbiPrompt(null);
       setKbiValues([]);
     });
@@ -730,6 +744,13 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     setStatus('connecting');
     setLogs([]);
     setIsAuthError(false);
+    // A prompt still showing belongs to the attempt being replaced; the
+    // backend stops it from prompting or reporting once this one starts.
+    fpNonceRef.current = null;
+    kbiNonceRef.current = null;
+    setFingerprintPrompt(null);
+    setKbiPrompt(null);
+    setKbiValues([]);
     setDisconnectReason("");
     resetSecondaryStatus();
     primarySeparateRef.current = separateFwdRef.current;
@@ -847,6 +868,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     // (or a hostile script that knows only the session id) can't accept
     // a fingerprint on the user's behalf.
     const nonce = fingerprintPrompt?.nonce;
+    fpNonceRef.current = null;
     setFingerprintPrompt(null);
     if (!nonce) return;
     try {
@@ -863,6 +885,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   const handleKbiSubmit = async () => {
     const nonce = kbiPrompt?.nonce;
     const responses = kbiValues;
+    kbiNonceRef.current = null;
     setKbiPrompt(null);
     setKbiValues([]);
     if (!nonce) return;
@@ -875,6 +898,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
 
   const handleKbiCancel = async () => {
     const nonce = kbiPrompt?.nonce;
+    kbiNonceRef.current = null;
     setKbiPrompt(null);
     setKbiValues([]);
     if (!nonce) return;
