@@ -269,6 +269,24 @@ jobs:
           Get-ChildItem -Path "src-tauri/target/${{ matrix.rust_target }}/release/bundle" -Recurse -Include *.msi,*.exe |
             Copy-Item -Destination artifacts/
 
+      # Portable build (#35): the bare exe alongside an empty submarine-data
+      # folder — that folder is the switch that makes Submarine keep all of its
+      # data there instead of %APPDATA% (see src-tauri/src/portable.rs). .NET's
+      # ZipFile records the empty folder as an entry, so it survives the round
+      # trip and the extracted copy is portable out of the box.
+      - name: Zip Windows portable build
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          $stage = New-Item -ItemType Directory -Force -Path portable-build
+          New-Item -ItemType Directory -Force -Path (Join-Path $stage.FullName submarine-data) | Out-Null
+          Copy-Item "src-tauri/target/${{ matrix.rust_target }}/release/submarine.exe" $stage.FullName
+          Copy-Item packaging/windows/README-portable.txt (Join-Path $stage.FullName README.txt)
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = Join-Path (Resolve-Path artifacts).Path "Submarine-v${{ env.VERSION }}-windows-x64-portable.zip"
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($stage.FullName, $zip)
+
       - name: Stage artifacts (macOS)
         if: startsWith(matrix.os_name, 'macos')
         run: |
@@ -531,7 +549,7 @@ jobs:
         run: |
           mkdir -p release-files
           find dist -type f \( \
-            -name "*.msi" -o -name "*.exe" \
+            -name "*.msi" -o -name "*.exe" -o -name "*-portable.zip" \
             -o -name "*.dmg" -o -name "*.app.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \
             -o -name "*.pkg.tar.zst" \

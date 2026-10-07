@@ -4,6 +4,17 @@ import {
   FONT_PRESETS, MAX_FONT_SIZE, MIN_FONT_SIZE, clampFontSize, fontFamilyCss,
   isFontAvailable, primaryFontName, sanitizeFontFamily,
 } from "../util/terminalFont";
+import { invoke } from "@tauri-apps/api/core";
+import CopyValue from "./CopyValue";
+
+// Where this install keeps its data (see src-tauri/src/portable.rs). `portable`
+// means a `submarine-data` folder next to the executable is in use; `warning`
+// is set when such a folder exists but couldn't be written to.
+interface StorageInfo {
+  portable: boolean;
+  data_dir: string;
+  warning: string | null;
+}
 
 // Slider covers the everyday range; the number field takes anything 1–99.
 const SLIDER_MAX = 40;
@@ -165,6 +176,13 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
     { name: 'Dark Gray', value: '#1a1a1a' },
     { name: 'Deep Space', value: '#0d0d10' },
   ];
+
+  // Read-only storage summary from the backend: where data lives and whether
+  // a `submarine-data` folder next to the exe (portable mode) is in use.
+  const [storage, setStorage] = useState<StorageInfo | null>(null);
+  useEffect(() => {
+    invoke<StorageInfo>("get_storage_info").then(setStorage).catch(() => setStorage(null));
+  }, []);
 
   return (
     <div className="flex-1 p-4 sm:p-10 overflow-y-auto custom-scrollbar animate-in">
@@ -332,6 +350,24 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
           </div>
 
           <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
+            {storage && (
+              <div className="space-y-1.5 pb-4 border-b border-white/5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">Data folder</span>
+                  {storage.portable && (
+                    <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider text-primary bg-primary/10 border border-primary/30">
+                      Portable
+                    </span>
+                  )}
+                </div>
+                <CopyValue value={storage.data_dir} className="max-w-full text-zinc-300">
+                  <span className="font-mono text-[11.5px] break-all select-text">{storage.data_dir}</span>
+                </CopyValue>
+                {storage.warning && (
+                  <p className="text-[11.5px] text-amber-400/90 leading-relaxed">{storage.warning}</p>
+                )}
+              </div>
+            )}
             <p className="text-sm text-zinc-400 leading-relaxed">
               These preferences are persisted in your local environment. Resetting will revert all UI aesthetics to factory defaults.
             </p>
