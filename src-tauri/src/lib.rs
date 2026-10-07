@@ -6099,9 +6099,9 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
     }
 }
 
-/// OS-level TCP keepalive on an SSH transport socket. Complements the SSH
-/// protocol keepalive (`keepalive_interval` below): russh's `keepalive_max`
-/// is deliberately 0 (off), so an unanswered protocol keepalive never tears the
+/// OS-level TCP keepalive on an SSH transport socket. Complements the session
+/// watcher's keepalive pings (russh's own protocol keepalive is off — see
+/// build_ssh_client_config): no unanswered SSH-level keepalive ever tears the
 /// connection down — but with TCP keepalive the kernel itself probes an idle
 /// peer (30s idle, then every 10s) and errors the socket when the peer is
 /// truly gone, which russh's run loop surfaces as `is_closed()`. That gives
@@ -6241,12 +6241,16 @@ async fn probe_with_channel<H: russh::client::Handler>(h: &russh::client::Handle
 /// hop, so both negotiate an identical algorithm set. Extracted verbatim from
 /// the inline block `initiate_connection` used to carry.
 fn build_ssh_client_config() -> russh::client::Config {
-    use tokio::time::Duration;
     let mut config = russh::client::Config::default();
-    // SSH keepalive every 20s. The shorter interval matters because most
-    // consumer routers drop idle NAT mappings around the 2-minute mark, and
-    // many corporate firewalls are stricter still.
-    config.keepalive_interval = Some(Duration::from_secs(20));
+    // No russh protocol keepalive. Its timer is only re-armed once something
+    // is sent or received, and before login completes it sends nothing — so
+    // ~20s into a host-key / password / 2FA prompt the session task spun a CPU
+    // core until the prompt was answered. Idle traffic is covered without it:
+    // the session watcher pings every 30s (60s on the dedicated `::sftp` /
+    // `::fwd` connections) end to end — well inside the ~2-minute idle limit of
+    // consumer NAT and most firewalls — and OS TCP keepalive (see
+    // apply_tcp_keepalive) probes the first hop after 30s of silence.
+    config.keepalive_interval = None;
     // russh closes the connection after `keepalive_max` unanswered keepalives
     // (default 3, i.e. ~80s of server silence). Kept OFF: liveness is decided
     // by the session watcher (`is_closed()` + its two-strike active probe) and
@@ -6453,6 +6457,9 @@ mod ssh_config_tests {
         let config = build_ssh_client_config();
         // S1: no keepalive-count disconnect.
         assert_eq!(config.keepalive_max, 0);
+        // No russh keepalive timer: before login it spins a CPU core while a
+        // prompt waits (see build_ssh_client_config).
+        assert!(config.keepalive_interval.is_none());
         // #33: 2048-bit DH-GEX groups accepted, 8192 preferred.
         assert_eq!(config.gex.min_group_size(), 2048);
         assert_eq!(config.gex.preferred_group_size(), 8192);
