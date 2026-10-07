@@ -577,6 +577,13 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       const wasReconnect = reconnectAttemptRef.current > 0 || prevStatus === 'disconnected' || prevStatus === 'failed';
       setStatus('connected');
       cancelReconnect();
+      // Whatever got this connection in — the password typed into the failed
+      // screen, or one asked for — is in the tab's cache now, so forget the
+      // typed override before the secondaries below start: a mistyped one
+      // would otherwise be tried first on every reconnect and secondary
+      // connection, a failed login each time.
+      customPasswordRef.current = "";
+      setCustomPassword("");
       // On a successful RECONNECT we bump connectionEpoch instead of
       // replacing the terminals array. The terminal_id stays the same
       // (so the existing event listener keeps catching output), the

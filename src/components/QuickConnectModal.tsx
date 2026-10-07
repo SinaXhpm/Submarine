@@ -47,16 +47,16 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
   const connect = () => {
     setErr(null);
     if (!host.trim()) { setErr("Host is required"); return; }
-    if (!username.trim()) { setErr("Username is required"); return; }
     if (!port || port < 1 || port > 65535) { setErr("Port must be 1–65535"); return; }
-    if (authMode === "password" && !password) { setErr("Password is required"); return; }
     if (authMode === "key" && !privateKey.trim()) { setErr("Private key body is required"); return; }
 
+    // A blank username means root, as everywhere else (issue #54); an empty
+    // password is asked for when connecting (issue #30).
     const auth: QuickAuth = {
       host: host.trim(),
       port,
-      username: username.trim(),
-      password: authMode === "password" ? password : null,
+      username: username.trim() || "root",
+      password: authMode === "password" && password ? password : null,
       private_key: authMode === "key" ? privateKey : null,
       passphrase: authMode === "key" && passphrase ? passphrase : null,
     };
@@ -152,6 +152,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                 onKeyDown={(e: any) => e.key === "Enter" && connect()}
                 className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-primary outline-none focus:border-primary/50"
               />
+              <p className="text-[10px] text-zinc-500 ml-0.5">Leave empty to be asked when connecting.</p>
             </div>
           ) : (
             <div className="space-y-2 animate-in fade-in">
@@ -173,6 +174,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                   placeholder="leave empty if unencrypted"
                   className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-zinc-50 outline-none focus:border-primary/50"
                 />
+                <p className="text-[10px] text-zinc-500 ml-0.5">For an encrypted key, leave empty to be asked when connecting.</p>
               </div>
             </div>
           )}

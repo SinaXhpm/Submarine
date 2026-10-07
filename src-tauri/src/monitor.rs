@@ -758,8 +758,10 @@ fn classify_auth(auth: &NodeAuth) -> Result<(Option<(String, Option<String>)>, O
         .filter(|p| !p.is_empty())
         .cloned();
     if key.is_none() && pass.is_none() {
+        // A node saved without its password is asked for it at connect time
+        // (issue #30), but monitoring has no UI to ask on.
         return Err(
-            "No credential available — vault entry has neither a key nor a password".into(),
+            "No saved password or key for this node — monitoring can't ask for one; save the password to monitor it".into(),
         );
     }
     Ok((key, pass))
@@ -825,7 +827,7 @@ async fn connect_for_monitor(
     let mut accepted = false;
 
     if let Some((pem, passphrase)) = key_pair.as_ref() {
-        match russh::keys::decode_secret_key(pem, passphrase.as_deref()) {
+        match crate::decode_private_key(pem, passphrase.as_deref()) {
             Ok(kp) => {
                 match crate::ssh_manager::authenticate_with_key(&mut session, &auth.username, kp)
                     .await
@@ -838,11 +840,25 @@ async fn connect_for_monitor(
                     Err(e) => last_err = Some(format!("publickey: {}", e)),
                 }
             }
-            Err(e) => {
-                last_err = Some(format!(
-                    "Could not decode private key (wrong passphrase or unsupported format): {}",
-                    e
-                ));
+            // Monitoring has no UI to prompt on (issue #30), so a key that needs
+            // a passphrase we don't have is a clear, actionable error — not a
+            // hang. The user saves the passphrase on the key to monitor it.
+            Err(crate::KeyDecodeError::NeedsPassphrase) => {
+                let saved = passphrase.as_deref().is_some_and(|p| !p.is_empty());
+                last_err = Some(if saved {
+                    format!(
+                        "the saved passphrase doesn't unlock the SSH key for {}@{}",
+                        auth.username, auth.host,
+                    )
+                } else {
+                    format!(
+                        "the SSH key for {}@{} is passphrase-protected but no passphrase is saved; monitoring can't ask for one — save it under Settings › SSH keys",
+                        auth.username, auth.host,
+                    )
+                });
+            }
+            Err(crate::KeyDecodeError::Malformed(m)) => {
+                last_err = Some(format!("could not decode private key: {}", m));
             }
         }
     }
