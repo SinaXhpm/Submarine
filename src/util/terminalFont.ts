@@ -1,6 +1,7 @@
 // Terminal font preferences — per-device (localStorage), shared by the
 // Settings panel, every TerminalView and the connect-log box so they can
 // never disagree about the size or face.
+import { BUNDLED_FONTS } from "./bundledFonts";
 
 export const FONT_SIZE_KEY = "submarine-terminal-font-size";
 export const FONT_FAMILY_KEY = "submarine-terminal-font-family";
@@ -18,28 +19,12 @@ export const DEFAULT_FONT_STACK =
   'Consolas, ui-monospace, Menlo, Monaco, "Cascadia Mono", "DejaVu Sans Mono", ' +
   '"Ubuntu Mono", "Liberation Mono", "Noto Sans Mono", "Droid Sans Mono", "Courier New", monospace';
 
-// Suggestions for the font picker. Any installed font name works; these are
-// just the common terminal faces (incl. Nerd Font builds for starship/p10k).
-export const FONT_PRESETS = [
-  "Cascadia Code",
-  "Cascadia Mono",
-  "Consolas",
-  "JetBrains Mono",
-  "Fira Code",
-  "Hack",
-  "Source Code Pro",
-  "MesloLGS NF",
-  "MesloLGS Nerd Font",
-  "FiraCode Nerd Font",
-  "JetBrainsMono Nerd Font",
-  "SF Mono",
-  "Menlo",
-  "Monaco",
-  "Ubuntu Mono",
-  "DejaVu Sans Mono",
-  "Noto Sans Mono",
-  "Courier New",
-];
+// Fonts shipped with the app (always available, on every device). The picker
+// lists these first, then every font installed on this device.
+export { BUNDLED_FONTS };
+
+const isBundled = (name: string) =>
+  BUNDLED_FONTS.some((f) => f.toLowerCase() === name.toLowerCase());
 
 export function clampFontSize(v: unknown): number {
   const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10);
@@ -48,24 +33,48 @@ export function clampFontSize(v: unknown): number {
 }
 
 // Keep only what a CSS font-family list can contain. The value only ever
-// lands in a font-family property, but stripping `;{}()<>\` etc. keeps a
-// pasted oddity from producing an invalid declaration.
+// lands in a font-family property, but stripping `;{}<>\` etc. keeps a pasted
+// oddity from producing an invalid declaration. `+ & ( ) !` stay: real family
+// names use them ("M+ 1mn"), and fontFamilyCss quotes every name.
 export function sanitizeFontFamily(raw: string): string {
   return (raw || "")
-    .replace(/[^\p{L}\p{N} _.,'"-]/gu, "")
+    .replace(/[^\p{L}\p{N} _.,'"+&()!-]/gu, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 200);
 }
 
-// User value → CSS font-family. A bare name gets quoted ("Fira Code"); a
-// value that already looks like a list is used as typed. The default stack
-// always follows as the fallback.
+// The private name a bundled font's own copy is registered under (see the
+// @fontsource transform in vite.config.ts), or null for any other font.
+export function bundledAlias(name: string): string | null {
+  const hit = BUNDLED_FONTS.find((f) => f.toLowerCase() === name.trim().toLowerCase());
+  return hit ? `Submarine ${hit}` : null;
+}
+
+const GENERIC_FAMILIES = new Set([
+  "monospace", "serif", "sans-serif", "ui-monospace", "system-ui", "cursive", "fantasy",
+]);
+
+// User value → CSS font-family: every name quoted ("Fira Code"), generic
+// families left bare, and a bundled font followed by its bundled copy — so an
+// installed copy of it wins (often the fuller one, with box drawing and
+// Powerline glyphs) and the bundled one fills in when it isn't installed. The
+// default stack always follows as the fallback.
 export function fontFamilyCss(custom: string): string {
   const v = sanitizeFontFamily(custom);
-  if (!v) return DEFAULT_FONT_STACK;
-  const head = v.includes(",") || /^["']/.test(v) ? v : `"${v.replace(/["']/g, "")}"`;
-  return `${head}, ${DEFAULT_FONT_STACK}`;
+  const parts: string[] = [];
+  for (const token of v.split(",")) {
+    const name = token.replace(/["']/g, "").trim();
+    if (!name) continue;
+    if (GENERIC_FAMILIES.has(name.toLowerCase())) {
+      parts.push(name.toLowerCase());
+      continue;
+    }
+    parts.push(`"${name}"`);
+    const alias = bundledAlias(name);
+    if (alias) parts.push(`"${alias}"`);
+  }
+  return parts.length ? `${parts.join(", ")}, ${DEFAULT_FONT_STACK}` : DEFAULT_FONT_STACK;
 }
 
 export function readFontSize(): number {
@@ -97,6 +106,9 @@ export function isFontAvailable(name: string): boolean {
   const n = primaryFontName(name);
   if (!n) return true;
   if (["monospace", "serif", "sans-serif", "ui-monospace", "system-ui"].includes(n.toLowerCase())) return true;
+  // A bundled font is always available — and the canvas probe below would
+  // wrongly say "missing" until the webview has fetched it the first time.
+  if (isBundled(n)) return true;
   try {
     const ctx = document.createElement("canvas").getContext("2d");
     if (!ctx) return true;

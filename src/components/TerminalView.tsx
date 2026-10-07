@@ -9,7 +9,7 @@ import { useIsNarrow } from '../hooks/useViewport';
 import { MobileKeyBar, ModifiersState, ModKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
-import { fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
+import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
 import { IS_ANDROID } from '../util/platform';
 
 // Does the recent remote OUTPUT look like a no-echo password / passphrase
@@ -441,7 +441,12 @@ const TerminalView = ({
     const term = new Terminal({
       cursorBlink: true,
       fontSize: readFontSize(),
-      fontFamily: fontFamilyCss(readFontFamily()),
+      // Start on the always-installed fallback stack; the chosen face is
+      // switched in below once it has loaded (handleSettingsChange). A bundled
+      // font isn't loaded yet at this point, and xterm measures its cell size
+      // from whatever face renders first — measuring the fallback and then
+      // drawing the real font would leave gaps or overlapping glyphs.
+      fontFamily: DEFAULT_FONT_STACK,
       theme: {
         background: '#09090b',
         foreground: '#e4e4e7',
@@ -473,6 +478,12 @@ const TerminalView = ({
         // shell. Same xterm wiring, different backend command — the
         // PTY/data/resize event topology is identical so xterm doesn't
         // notice the difference.
+        // The backend only takes resizes once the shell is up, so a refit
+        // that landed while it was starting (e.g. the chosen font finished
+        // loading and changed the cell size) is sent again once it's open.
+        const syncSize = () => {
+          invoke('resize_terminal', { terminalId, cols: term.cols, rows: term.rows }).catch(() => {});
+        };
         if (containerExec) {
           invoke('open_container_terminal', {
             sessionId,
@@ -481,7 +492,7 @@ const TerminalView = ({
             cols: term.cols || 80,
             rows: term.rows || 24,
             useSudo: containerExec.useSudo,
-          }).catch(e => {
+          }).then(syncSize, e => {
             term.writeln(`\x1b[31mFailed to attach to container: ${e}\x1b[0m`);
           });
         } else {
@@ -490,7 +501,7 @@ const TerminalView = ({
             terminalId,
             cols: term.cols || 80,
             rows: term.rows || 24
-          }).catch(e => {
+          }).then(syncSize, e => {
             term.writeln(`\x1b[31mFailed to open terminal: ${e}\x1b[0m`);
           });
         }
@@ -802,6 +813,9 @@ const TerminalView = ({
       if (term.options.fontSize === size && term.options.fontFamily === family) return;
       const apply = () => {
         if (fontDisposed) return;
+        // A newer change may have loaded first — never let this older one
+        // overwrite it.
+        if (readFontSize() !== size || fontFamilyCss(readFontFamily()) !== family) return;
         term.options.fontSize = size;
         term.options.fontFamily = family;
         try {
@@ -816,6 +830,8 @@ const TerminalView = ({
       else apply();
     };
     window.addEventListener('submarine-settings-changed', handleSettingsChange);
+    // Apply the saved face now (no-op when it's the default stack).
+    handleSettingsChange();
 
     // ── Mobile QoL ───────────────────────────────────────────────────────────
     // Capture the container ref here so the listener add/remove calls and the

@@ -144,3 +144,9 @@ zeroize = { version = "1.8", features = ["zeroize_derive"] }
 tauri-plugin-window-state = "2"
 rfd = "0.17"
 open = "5.1"
+# Lists the fonts installed on this device for the terminal font picker. A
+# webview can't enumerate system fonts (the Local Font Access API pops a
+# permission prompt and doesn't exist on WebKitGTK or Android), so we read the
+# OS font folders ourselves. Pure Rust: it only parses font name tables. Not
+# on Android, which lists no installed fonts (see fonts.rs).
+fontdb = "0.24"
