@@ -5448,6 +5448,22 @@ pub(crate) fn ssh_gex_params() -> russh::client::GexParams {
     russh::client::GexParams::new(2048, 8192, 8192).unwrap_or_default()
 }
 
+/// The health watcher's fallback liveness check, for servers that don't answer
+/// keepalive@openssh.com: open a session channel and close it again. Any answer
+/// counts as alive — a refusal too, since a MaxSessions-limited server refuses
+/// (#29); only a timeout or a dead connection doesn't.
+async fn probe_with_channel<H: russh::client::Handler>(h: &russh::client::Handle<H>) -> bool {
+    match tokio::time::timeout(std::time::Duration::from_secs(10), h.channel_open_session()).await {
+        Ok(Ok(ch)) => {
+            // Close cleanly so the server doesn't log a stuck session.
+            let _ = ch.close().await;
+            true
+        }
+        Ok(Err(russh::Error::ChannelOpenFailure(_))) => true,
+        _ => false,
+    }
+}
+
 /// The russh client config shared by the primary connection and any ProxyJump
 /// hop, so both negotiate an identical algorithm set. Extracted verbatim from
 /// the inline block `initiate_connection` used to carry.
@@ -6912,6 +6928,9 @@ async fn initiate_connection(
                             let probe_every: u32 = if sid_w.contains("::") { 30 } else { 15 };
                             let mut tick: u32 = 0;
                             let mut probe_strikes: u8 = 0;
+                            // Set once this server has left a keepalive unanswered but answered
+                            // a channel open: probe it that way from then on.
+                            let mut ping_unanswered = false;
                             loop {
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 tick = tick.wrapping_add(1);
@@ -6955,17 +6974,39 @@ async fn initiate_connection(
                                     // strike out spuriously.
                                     let alive = {
                                         let h = handle_arc.lock().await;
-                                        match tokio::time::timeout(
-                                            Duration::from_secs(10),
-                                            h.send_ping(),
-                                        ).await {
-                                            // send_ping resolves on the
-                                            // server's reply — and also when
-                                            // the session dies mid-ping (the
-                                            // reply channel is dropped), so
-                                            // confirm the handle is still open.
-                                            Ok(Ok(())) => !h.is_closed(),
-                                            _ => false,
+                                        if ping_unanswered {
+                                            probe_with_channel(&h).await
+                                        } else {
+                                            match tokio::time::timeout(
+                                                Duration::from_secs(10),
+                                                h.send_ping(),
+                                            ).await {
+                                                // send_ping resolves on the
+                                                // server's reply — and also
+                                                // when the session dies
+                                                // mid-ping (the reply channel
+                                                // is dropped), so confirm the
+                                                // handle is still open.
+                                                Ok(Ok(())) => !h.is_closed(),
+                                                Ok(Err(_)) => false,
+                                                Err(_) if h.is_closed() => false,
+                                                // No reply in time. A few
+                                                // servers never answer
+                                                // keepalive@openssh.com (or
+                                                // answer UNIMPLEMENTED, which
+                                                // russh drops), so ask the old
+                                                // way. If that gets an answer,
+                                                // keep probing this server that
+                                                // way rather than waiting out
+                                                // the ping on every probe.
+                                                Err(_) => {
+                                                    let up = probe_with_channel(&h).await;
+                                                    if up {
+                                                        ping_unanswered = true;
+                                                    }
+                                                    up
+                                                }
+                                            }
                                         }
                                     };
                                     if alive {
