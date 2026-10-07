@@ -297,7 +297,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
       if (t.status === "done" || t.status === "error" || t.status === "cancelled") {
         // Leave the final state visible briefly before clearing the card so
         // the user sees the success tick / failure colour / cancel notice.
-        const linger = t.status === "error" ? 6000 : t.status === "cancelled" ? 3000 : 1800;
+        const linger = t.status === "error" || t.error ? 6000 : t.status === "cancelled" ? 3000 : 1800;
         setTimeout(() => {
           setTransfers((prev) => {
             const { [t.id]: _, ...rest } = prev;
@@ -607,6 +607,11 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
                 )}
                 {t.status === "error" && t.error && (
                   <div className="text-[9.5px] opacity-80 truncate" title={t.error}>{t.error}</div>
+                )}
+                {/* A finished folder download can carry a note, e.g. names
+                    this computer can't store were skipped. */}
+                {t.status === "done" && t.error && (
+                  <div className="text-[9.5px] text-amber-300/90 truncate" title={t.error}>{t.error}</div>
                 )}
               </div>
             );
