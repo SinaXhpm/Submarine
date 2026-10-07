@@ -140,7 +140,9 @@ fn packaged_runtime() -> bool {
 /// Create and delete a probe file. Read-only media, restrictive ACLs and a
 /// write-protected USB stick don't all show up in metadata, and the vault save
 /// needs both operations anyway (it writes a temp file and renames it over the
-/// vault), so the probe exercises the real thing.
+/// vault), so the probe exercises the real thing. The delete is retried
+/// briefly: antivirus or a sync client can hold a just-closed file for a
+/// moment, and that alone mustn't send this launch to the per-user folders.
 fn probe_writable(dir: &Path) -> Result<(), String> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -152,7 +154,17 @@ fn probe_writable(dir: &Path) -> Result<(), String> {
         .create_new(true)
         .open(&probe)
         .map_err(|e| e.to_string())?;
-    std::fs::remove_file(&probe).map_err(|e| e.to_string())
+    let mut attempt = 0;
+    loop {
+        match std::fs::remove_file(&probe) {
+            Ok(()) => return Ok(()),
+            Err(_) if attempt < 5 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(40));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
 }
 
 static DECISION: OnceLock<Decision> = OnceLock::new();

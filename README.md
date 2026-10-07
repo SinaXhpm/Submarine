@@ -188,7 +188,12 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 
 Submarine can keep all of its data next to the executable instead of in your user profile — on a USB stick, say. Create an empty folder named `submarine-data` beside `submarine.exe` and start the app; the `-portable.zip` release asset is already laid out that way. Profiles, the cloud sign-in, the window position and the UI preferences then live in `submarine-data`, and **Settings → Maintenance** shows the folder in use.
 
-A first portable launch starts with no profiles. To carry existing data over, close Submarine and copy the contents of `%APPDATA%\com.submarine.app` into `submarine-data`, except `sync_device.json` — it identifies each install to cloud sync, and the portable copy creates its own. (UI preferences are kept by WebView2 in `%LOCALAPPDATA%\com.submarine.app\EBWebView`; copy that folder in too if you want them.) `submarine-data` then holds your encrypted profiles and your cloud sign-in token, so keep it somewhere only you can read.
+A first portable launch starts with no profiles. To carry existing data over, close Submarine and copy two things into `submarine-data`:
+
+- the contents of `%APPDATA%\com.submarine.app`, except `sync_device.json` — it identifies each install to cloud sync, and the portable copy creates its own;
+- the folder `%LOCALAPPDATA%\com.submarine.app\EBWebView`. It holds the app's settings, including **Auto-sync**. Without it Auto-sync starts out on, and the first profile you open is uploaded to your cloud — so if you skip this folder, turn Auto-sync off in Settings before opening a profile you keep only on this computer.
+
+`submarine-data` then holds your encrypted profiles and your cloud sign-in token, so keep it somewhere only you can read.
 
 Not portable: the Microsoft Edge WebView2 runtime (a Windows system component, preinstalled on Windows 11 and current Windows 10) and the short-lived temp files used while editing or dragging remote files. If `submarine-data` can't be written to, Submarine falls back to the usual per-user folders and says so in Settings. (A plain, non-packaged Linux build works the same way — it just doesn't ship a prebuilt zip.)
 
@@ -272,7 +277,7 @@ No. Distribution is via sideloadable APK from the [releases page](https://github
 
 ## Build from Source
 
-Requirements: Node 20+, Rust 1.89+, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS. The SSH stack is pure Rust, so no OpenSSL or Perl is needed on any platform.
+Requirements: Node 20+, Rust 1.90+, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS. The SSH stack is pure Rust, so no OpenSSL or Perl is needed on any platform.
 
 ```bash
 git clone https://github.com/sinaxhpm/submarine

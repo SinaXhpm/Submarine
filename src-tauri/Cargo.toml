@@ -5,7 +5,7 @@ description = "Submarine SSH Client"
 authors = ["Sina Xhpm (sinaxhpm.com)"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.90"
 
 # Library + binary dual target. The Tauri Builder, command registry, and
 # state setup live in `src/lib.rs::run()`. The bin entry point (`src/main.rs`)
