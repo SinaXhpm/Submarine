@@ -32,6 +32,28 @@ export default defineConfig(async () => ({
           port: 1421,
         }
       : undefined,
+    // The dev server binds to all interfaces (above) so Tauri Android dev and
+    // adb-reverse can reach it, which also makes it reachable by anyone on the
+    // same LAN while `tauri dev` runs. By default Vite serves any file under
+    // the project root, so serve only what the app is built from; everything
+    // else that lives in or beside the repo (local config, tool folders, logs,
+    // build output, signing material) answers 403.
+    fs: {
+      strict: true,
+      allow: ["index.html", "src", "public", "node_modules"],
+      // A second net, should the allow list ever widen. This replaces Vite's
+      // default deny list, so its `.env` / `*.{crt,pem}` entries are repeated.
+      deny: [
+        ".env",
+        ".env.*",
+        "*.{crt,pem}",
+        "**/.git/**",
+        "**/mock-api/**",
+        "**/keystore.properties",
+        "**/*.{jks,keystore}",
+        "**/src-tauri/gen/**",
+      ],
+    },
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
