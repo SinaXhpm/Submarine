@@ -12387,7 +12387,9 @@ fn resolve_node_auth_for_monitor(
     Ok(monitor::NodeAuth {
         host,
         port: port as u16,
-        username: if username.trim().is_empty() { "root".into() } else { username },
+        // Blank stays blank: connect_for_monitor reports it instead of
+        // guessing root (#54).
+        username,
         password,
         private_key,
         passphrase,

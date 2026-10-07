@@ -792,7 +792,12 @@ async fn connect_for_monitor(
     connect_timeout: Duration,
 ) -> Result<russh::client::Handle<MonitorHandler>, String> {
     if auth.username.trim().is_empty() {
-        return Err("Username is empty".into());
+        // A node saved without a username is asked "Login as" when a terminal
+        // connects (issue #54); monitoring can't ask, and falling back to root
+        // would send this node's password to the wrong account.
+        return Err(
+            "No username is saved for this node — monitoring can't ask for one; save the username to monitor it".into(),
+        );
     }
     let (key_pair, password) = classify_auth(auth)?;
 

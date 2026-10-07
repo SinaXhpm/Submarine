@@ -2377,9 +2377,9 @@ function DesktopApp() {
               name: newNode.name,
               host: newNode.host,
               port: newNode.port,
-              username: isInline
-                ? (newNode.username?.trim() ? newNode.username.trim() : "root")
-                : null,
+              // A blank username stays blank: the connection asks for it
+              // ("Login as", issue #54).
+              username: isInline ? (newNode.username?.trim() || null) : null,
               password: newNode.authType === "custom_pass" ? (newNode.password || null) : null,
               credentialId: (newNode.authType === "vault" && newNode.credentialId) ? parseInt(newNode.credentialId) : null,
               folderId: newNode.folderId ? parseInt(newNode.folderId) : null,
@@ -2636,7 +2636,8 @@ function DesktopApp() {
                   const payload = {
                     name: editCredData.name,
                     authType: editCredData.auth_type || "password",
-                    username: editCredData.username?.trim() ? editCredData.username.trim() : "root",
+                    // Blank = asked when connecting (issue #54).
+                    username: editCredData.username?.trim() ?? "",
                     password: editCredData.auth_type === "key" ? null : (editCredData.password || null),
                     keyId: editCredData.auth_type === "key" ? (editCredData.key_id ? parseInt(editCredData.key_id.toString()) : null) : null
                   };
