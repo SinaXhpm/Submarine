@@ -33,24 +33,48 @@ export function clampFontSize(v: unknown): number {
 }
 
 // Keep only what a CSS font-family list can contain. The value only ever
-// lands in a font-family property, but stripping `;{}()<>\` etc. keeps a
-// pasted oddity from producing an invalid declaration.
+// lands in a font-family property, but stripping `;{}<>\` etc. keeps a pasted
+// oddity from producing an invalid declaration. `+ & ( ) !` stay: real family
+// names use them ("M+ 1mn"), and fontFamilyCss quotes every name.
 export function sanitizeFontFamily(raw: string): string {
   return (raw || "")
-    .replace(/[^\p{L}\p{N} _.,'"-]/gu, "")
+    .replace(/[^\p{L}\p{N} _.,'"+&()!-]/gu, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 200);
 }
 
-// User value → CSS font-family. A bare name gets quoted ("Fira Code"); a
-// value that already looks like a list is used as typed. The default stack
-// always follows as the fallback.
+// The private name a bundled font's own copy is registered under (see the
+// @fontsource transform in vite.config.ts), or null for any other font.
+export function bundledAlias(name: string): string | null {
+  const hit = BUNDLED_FONTS.find((f) => f.toLowerCase() === name.trim().toLowerCase());
+  return hit ? `Submarine ${hit}` : null;
+}
+
+const GENERIC_FAMILIES = new Set([
+  "monospace", "serif", "sans-serif", "ui-monospace", "system-ui", "cursive", "fantasy",
+]);
+
+// User value → CSS font-family: every name quoted ("Fira Code"), generic
+// families left bare, and a bundled font followed by its bundled copy — so an
+// installed copy of it wins (often the fuller one, with box drawing and
+// Powerline glyphs) and the bundled one fills in when it isn't installed. The
+// default stack always follows as the fallback.
 export function fontFamilyCss(custom: string): string {
   const v = sanitizeFontFamily(custom);
-  if (!v) return DEFAULT_FONT_STACK;
-  const head = v.includes(",") || /^["']/.test(v) ? v : `"${v.replace(/["']/g, "")}"`;
-  return `${head}, ${DEFAULT_FONT_STACK}`;
+  const parts: string[] = [];
+  for (const token of v.split(",")) {
+    const name = token.replace(/["']/g, "").trim();
+    if (!name) continue;
+    if (GENERIC_FAMILIES.has(name.toLowerCase())) {
+      parts.push(name.toLowerCase());
+      continue;
+    }
+    parts.push(`"${name}"`);
+    const alias = bundledAlias(name);
+    if (alias) parts.push(`"${alias}"`);
+  }
+  return parts.length ? `${parts.join(", ")}, ${DEFAULT_FONT_STACK}` : DEFAULT_FONT_STACK;
 }
 
 export function readFontSize(): number {

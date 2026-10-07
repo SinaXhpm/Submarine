@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown } from "lucide-react";
-import { BUNDLED_FONTS } from "../util/terminalFont";
+import { BUNDLED_FONTS, fontFamilyCss } from "../util/terminalFont";
 
 type SystemFont = { family: string; monospace: boolean };
 
@@ -79,8 +79,8 @@ export default function FontPicker({
     [q],
   );
   // A family the app ships (Cascadia Code comes with Windows 11, too) is
-  // listed once, under Built-in: the bundled @font-face shadows an installed
-  // font of the same name, so both rows would render the same face anyway.
+  // listed once, under Built-in: that row already uses the installed copy when
+  // there is one (see bundledAlias), so both rows would be the same face.
   const installedOnly = useMemo(
     () => (installed ?? []).filter((f) => !BUNDLED_KEYS.has(f.family.toLowerCase())),
     [installed],
@@ -155,7 +155,8 @@ export default function FontPicker({
         {row.family && (
           <span
             className="shrink-0 text-[12px] text-zinc-400 whitespace-pre"
-            style={{ fontFamily: `"${row.family.replace(/["\\]/g, "")}", monospace` }}
+            // The same stack the terminal would use for this row.
+            style={{ fontFamily: fontFamilyCss(row.family) }}
           >
             {SAMPLE}
           </span>

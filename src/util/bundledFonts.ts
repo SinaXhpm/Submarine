@@ -22,7 +22,9 @@ import "@fontsource/ibm-plex-mono/700.css";
 import "@fontsource/inconsolata/400.css";
 import "@fontsource/inconsolata/700.css";
 
-/** Family names exactly as the bundled @font-face rules register them. */
+/** The fonts' real family names. Their bundled @font-face copies are
+ *  registered as "Submarine <name>" so they never hide an installed copy —
+ *  see bundledAlias in terminalFont.ts. */
 export const BUNDLED_FONTS: readonly string[] = [
   "JetBrains Mono",
   "Fira Code",
