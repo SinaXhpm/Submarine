@@ -8565,6 +8565,9 @@ async fn sftp_list_dir(
         if name == "." || name == ".." {
             continue;
         }
+        // Every other name is listed as-is, even one this OS can't store
+        // (`a:b` on Windows): the remote file is still there to open, rename
+        // or delete. The download commands check the name before writing.
         let is_dir = entry.file_type().is_dir();
         let metadata = entry.metadata();
         let is_symlink = metadata.is_symlink();
@@ -8799,6 +8802,11 @@ async fn sftp_download_file(
     use tokio::io::AsyncReadExt;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    // The file name is the one part of the destination the server controls
+    // (the frontend joins `<chosen folder><sep><remote name>`), so check it
+    // before anything touches the path — see validate_download_target.
+    validate_download_target(&local_path, &remote_path)?;
+
     // Overwrite protection: when the caller has NOT explicitly opted in
     // (overwrite==Some(true)), refuse to clobber an existing local file.
     // The sentinel error string `EXISTS:<path>` lets the frontend tell
@@ -8809,10 +8817,9 @@ async fn sftp_download_file(
     }
 
     // Validate the destination BEFORE touching the network. A compromised
-    // renderer (or a malicious SFTP server name in the UI) could otherwise
-    // request a download into a system directory like `/etc` or
-    // `C:\Windows\System32\…`. allow_nonexistent=true because the
-    // destination file is being created right now.
+    // renderer could otherwise request a download into a system directory
+    // like `/etc` or `C:\Windows\System32\…`. allow_nonexistent=true because
+    // the destination file is being created right now.
     let _guarded_local = guard_local_path(&local_path, true)?;
 
     let sftp = get_sftp_session(&state, &session_id).await?;
@@ -8933,8 +8940,29 @@ async fn sftp_download_dir(
 
     // Destination is the PARENT directory. We'll create remote_path's
     // basename underneath it so the user gets `local/{folder}/...`,
-    // matching scp -r and rsync semantics.
+    // matching scp -r and rsync semantics. That parent is the user's own
+    // folder (picker or pane); everything the server names below it is
+    // checked one component at a time.
     let _guarded_local = guard_local_path(&local_path, true)?;
+
+    // The folder name is the basename of a server-controlled remote path, and
+    // it's the first path component we join onto local_path. On a Windows
+    // client a basename like `C:` is drive-relative (join discards local_path);
+    // `..` would climb out. Reject anything that isn't a single safe component
+    // up front so the whole tree stays under the chosen destination.
+    {
+        let folder_name = remote_path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("");
+        if !folder_name.is_empty() && !is_safe_dir_entry_name(folder_name) {
+            return Err(format!(
+                "Refusing to download a folder whose name isn't a safe local filename: {:?}",
+                folder_name
+            ));
+        }
+    }
 
     // Overwrite protection for the destination folder: if the target
     // `local_path/{folder}` already exists, refuse unless explicitly
@@ -9010,6 +9038,7 @@ async fn sftp_download_dir(
     let remote_root = remote_path.trim_end_matches('/').to_string();
     let mut files: Vec<(String, String, u64)> = Vec::new(); // (remote, rel, size)
     let mut total_bytes: u64 = 0;
+    let mut skipped_names: u64 = 0;
     let mut stack: Vec<String> = vec![remote_root.clone()];
 
     while let Some(dir) = stack.pop() {
@@ -9026,11 +9055,17 @@ async fn sftp_download_dir(
         };
         for entry in read {
             let name = entry.file_name();
-            // Skip any entry whose name isn't a single plain component. A
-            // hostile SFTP server can return `../../x` or `..\x` here; joining
-            // that onto local_root below would escape the chosen folder
-            // (zip-slip → arbitrary local write). See is_safe_dir_entry_name.
-            if !is_safe_dir_entry_name(&name) { continue; }
+            if name == "." || name == ".." { continue; }
+            // Skip any entry whose name isn't a single plain component this OS
+            // can store. A hostile SFTP server can return `../../x` or `..\x`
+            // here; joining that onto local_root below would escape the chosen
+            // folder. Ordinary names Windows can't store (`a:b`) are skipped
+            // too — counted, so the user hears about them instead of a quietly
+            // incomplete copy. See is_safe_dir_entry_name.
+            if !is_safe_dir_entry_name(&name) {
+                skipped_names = skipped_names.saturating_add(1);
+                continue;
+            }
             let full = format!("{}/{}", dir.trim_end_matches('/'), name);
             if entry.file_type().is_dir() {
                 stack.push(full);
@@ -9047,12 +9082,15 @@ async fn sftp_download_dir(
         }
     }
 
+    // Shown on the finished transfer card when the walk skipped names.
+    let skipped_note = skipped_names_note(skipped_names);
+
     if files.is_empty() {
         // Still create the (empty) destination folder so the UI sees the
         // shape — otherwise the user sees "done" with nothing to show for it.
         let local_root = std::path::PathBuf::from(&local_path).join(&folder_name);
         let _ = tokio::fs::create_dir_all(&local_root).await;
-        emit_progress(0, 0, "done", None);
+        emit_progress(0, 0, "done", skipped_note);
         return Ok(());
     }
 
@@ -9082,6 +9120,19 @@ async fn sftp_download_dir(
         // containing slashes.
         let rel_local = if cfg!(windows) { rel.replace('/', "\\") } else { rel.clone() };
         let dest = local_root.join(&rel_local);
+        // Defense in depth: every component of `rel` was checked with
+        // is_safe_dir_entry_name during the walk, so this can't fail for a
+        // well-behaved tree — but check before we create or open anything
+        // that the relative part is plain names only (no root, prefix or
+        // `..`), so the join can only land under the destination root.
+        let rel_is_plain = std::path::Path::new(&rel_local)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !rel_is_plain || !dest.starts_with(&local_root) {
+            emit_progress(transferred, total_bytes, "error",
+                Some(format!("unsafe path escaped destination: {}", dest.display())));
+            return Err(format!("unsafe path escaped destination: {}", dest.display()));
+        }
         if let Some(parent) = dest.parent() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
                 emit_progress(transferred, total_bytes, "error",
@@ -9136,7 +9187,7 @@ async fn sftp_download_dir(
         local_file.flush().await.map_err(|e| format!("flush {}: {}", dest.display(), e))?;
     }
 
-    emit_progress(transferred, total_bytes, "done", None);
+    emit_progress(transferred, total_bytes, "done", skipped_note);
     Ok(())
 }
 
@@ -10600,13 +10651,6 @@ fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
     Ok(out)
 }
 
-/// Defense-in-depth guard for the local-FS commands the frontend can invoke.
-/// We can't lock everything down to a sandbox (the local file browser
-/// legitimately needs to roam the user's disk to pick uploads), but we CAN
-/// refuse the obviously destructive cases: the filesystem root, OS system
-/// directories, and unresolvable paths. If the renderer is ever compromised
-/// (XSS via terminal output, a future feature, etc.) this stops
-/// `local_remove("C:\\")` cold.
 /// True when a single SFTP directory-entry name is a plain, safe filename —
 /// i.e. one that can be joined onto a local root without escaping it.
 ///
@@ -10615,20 +10659,102 @@ fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
 /// (e.g. `../../../.config/autostart/x.desktop`, or `..\..\Startup\x.bat`).
 /// Joining such a name onto the download root resolves OUTSIDE it — a zip-slip
 /// arbitrary-write primitive. A genuine filesystem entry name is always a
-/// single component: it never contains `/` (the POSIX/SFTP separator), `\` (a
-/// separator once the rel path is split for a Windows client), or a NUL, and is
-/// never `.`/`..`. Rejecting anything else costs nothing on a well-behaved
-/// server and stops the traversal at the point the untrusted name first enters
-/// our local-path building. Callers skip (or abort on) a rejected entry.
+/// single component: it never contains `/` (the POSIX/SFTP separator) or a
+/// NUL, and is never `.`/`..`. Callers skip (or refuse) a rejected entry.
+///
+/// On a WINDOWS client more names escape or misbehave, because Win32
+/// reinterprets them:
+///   * `\` is a path separator there (a POSIX name may legally contain it).
+///   * a drive marker — `C:evil` is drive-RELATIVE, so `root.join("C:evil")`
+///     discards `root` and resolves against the process CWD; `a:b` likewise.
+///     (A `:` elsewhere also opens an NTFS alternate data stream.)
+///   * reserved device names (`CON`, `NUL`, `COM1`, `LPT1`, `CONIN$`, …, with
+///     or without an extension) open a device, not a file under `root`.
+///   * a trailing `.` or space is silently stripped, aliasing one name to
+///     another and defeating an exact-name overwrite check.
+///
+/// These are all legal in a POSIX filename, so they are only barred when this
+/// build is the Windows client that would misinterpret them — a POSIX client
+/// downloading a file literally named `a:b` or `a\b` is fine.
 pub(crate) fn is_safe_dir_entry_name(name: &str) -> bool {
-    !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains('/')
-        && !name.contains('\\')
-        && !name.contains('\0')
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\0')
+    {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        if name.contains('\\') || name.contains(':') {
+            return false;
+        }
+        if matches!(name.chars().last(), Some('.') | Some(' ')) {
+            return false;
+        }
+        // Compare the part before the first dot (spaces before the dot are
+        // dropped too) against the reserved set, case-insensitively: `NUL`,
+        // `nul.txt`, `COM1.log` and `AUX .c` are all devices.
+        let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+        const RESERVED: &[&str] = &[
+            "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
+            "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "COM¹", "COM²", "COM³",
+            "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+            "LPT¹", "LPT²", "LPT³",
+        ];
+        if RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r)) {
+            return false;
+        }
+    }
+    true
 }
 
+/// Check a single-file download destination before anything touches it. The
+/// frontend builds `local_path` as `<chosen folder><sep><remote name>`, and the
+/// remote name is the only part the server controls: it must be one plain
+/// component this OS can store, and really be the last component of
+/// `local_path`. Everything before it is the user's own folder, so a `..` they
+/// typed there is fine — guard_local_path resolves it.
+fn validate_download_target(local_path: &str, remote_path: &str) -> Result<(), String> {
+    let name = remote_path.rsplit('/').next().unwrap_or("");
+    if !is_safe_dir_entry_name(name) {
+        return Err(format!(
+            "\"{}\" can't be saved here: its name isn't a valid file name on this computer.",
+            name
+        ));
+    }
+    let last = std::path::Path::new(local_path).file_name().and_then(|n| n.to_str());
+    if last != Some(name) {
+        return Err(format!(
+            "Refusing a download destination that doesn't end in the file's name: {}",
+            local_path
+        ));
+    }
+    Ok(())
+}
+
+/// The note on a finished folder-download card when the walk skipped names
+/// this computer can't store (see is_safe_dir_entry_name).
+fn skipped_names_note(skipped: u64) -> Option<String> {
+    match skipped {
+        0 => None,
+        1 => Some("1 item skipped: its name isn't a valid file name on this computer".into()),
+        n => Some(format!(
+            "{} items skipped: their names aren't valid file names on this computer",
+            n
+        )),
+    }
+}
+
+/// Defense-in-depth guard for the local-FS commands the frontend can invoke.
+/// We can't lock everything down to a sandbox (the local file browser
+/// legitimately needs to roam the user's disk to pick uploads), but we CAN
+/// refuse the obviously destructive cases: the filesystem root, OS system
+/// directories, and unresolvable paths. If the renderer is ever compromised
+/// (XSS via terminal output, a future feature, etc.) this stops
+/// `local_remove("C:\\")` cold.
 fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::PathBuf, String> {
     let p = std::path::Path::new(path);
     let canonical = match p.canonicalize() {
@@ -11644,30 +11770,97 @@ mod tests {
             ".",
             "..",
             "../../etc/passwd",
-            "..\\..\\Startup\\x.bat",
             "a/b",
-            "a\\b",
             "/etc/passwd",
             "with\0nul",
         ] {
             assert!(!is_safe_dir_entry_name(bad), "should reject {:?}", bad);
+        }
+        // `\` separates components only on Windows; on a POSIX client it's an
+        // ordinary byte (systemd unit names like `mnt-data\x2d1.mount`).
+        for name in ["..\\..\\Startup\\x.bat", "a\\b", "mnt-data\\x2d1.mount"] {
+            assert_eq!(is_safe_dir_entry_name(name), !cfg!(windows), "{:?}", name);
         }
     }
 
     #[test]
     fn dir_entry_name_accepts_plain_filenames() {
         // Legitimate names must still pass — including ones that merely
-        // start with dots or contain colons/spaces (all legal on POSIX).
+        // start with dots.
         for ok in [
             "file.txt",
             "notes 2024.md",
             ".bashrc",
             "..foo",
-            "2024:01:01.log",
             "release-v0.2.37",
             "Ω_unicode_名前",
         ] {
             assert!(is_safe_dir_entry_name(ok), "should accept {:?}", ok);
         }
+        // `:` is a legal POSIX filename byte — accepted on a POSIX client,
+        // rejected on a Windows one (it's a drive marker / ADS there).
+        #[cfg(not(windows))]
+        assert!(is_safe_dir_entry_name("2024:01:01.log"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dir_entry_name_rejects_windows_specials() {
+        // Drive-relative markers (join discards the root) and NTFS ADS.
+        for bad in ["C:", "C:evil", "a:b", "file.txt:stream"] {
+            assert!(!is_safe_dir_entry_name(bad), "should reject {:?}", bad);
+        }
+        // Reserved device names, with and without an extension, any case.
+        for bad in [
+            "CON", "nul", "NUL.txt", "com1", "COM9", "LPT1", "lpt9.log", "aux", "Prn",
+            "COM0", "lpt0.txt", "COM¹", "LPT³.log", "CONIN$", "conout$", "AUX .c",
+        ] {
+            assert!(!is_safe_dir_entry_name(bad), "should reject {:?}", bad);
+        }
+        // Trailing dot/space are silently stripped by Win32.
+        for bad in ["name.", "name ", "trailingdot."] {
+            assert!(!is_safe_dir_entry_name(bad), "should reject {:?}", bad);
+        }
+        // But a reserved stem as a substring of a longer name is fine.
+        for ok in ["console.log", "communications", "nulled.txt", "lpt10"] {
+            assert!(is_safe_dir_entry_name(ok), "should accept {:?}", ok);
+        }
+    }
+
+    #[test]
+    fn download_target_checks_only_the_server_named_part() {
+        let dir = if cfg!(windows) { "C:\\Users\\u\\Downloads" } else { "/home/u/Downloads" };
+        let sep = if cfg!(windows) { "\\" } else { "/" };
+        let dest = |name: &str| format!("{}{}{}", dir, sep, name);
+
+        assert!(validate_download_target(&dest("report.txt"), "/srv/report.txt").is_ok());
+        assert!(validate_download_target(&dest(".bashrc"), "/home/x/.bashrc").is_ok());
+        // A `..` the user typed in their own folder is fine; only the name is
+        // the server's.
+        let typed = format!("{}{}..{}Desktop{}report.txt", dir, sep, sep, sep);
+        assert!(validate_download_target(&typed, "/srv/report.txt").is_ok());
+
+        // The destination must end in exactly the remote file's name.
+        assert!(validate_download_target(&dest("other.txt"), "/srv/report.txt").is_err());
+        // No name at all, or `..` as the name.
+        assert!(validate_download_target(&dest(""), "/srv/").is_err());
+        assert!(validate_download_target(&dest(".."), "/srv/..").is_err());
+
+        // A name that climbs out on Windows is refused there; on POSIX it's
+        // one literal (odd) file name that stays in the folder.
+        let climb = "..\\..\\Startup\\x.bat";
+        assert_eq!(
+            validate_download_target(&dest(climb), &format!("/srv/{}", climb)).is_ok(),
+            !cfg!(windows)
+        );
+        #[cfg(windows)]
+        assert!(validate_download_target(&dest("a:b"), "/srv/a:b").is_err());
+    }
+
+    #[test]
+    fn skipped_names_note_counts() {
+        assert_eq!(skipped_names_note(0), None);
+        assert!(skipped_names_note(1).unwrap().starts_with("1 item skipped"));
+        assert!(skipped_names_note(7).unwrap().starts_with("7 items skipped"));
     }
 }
