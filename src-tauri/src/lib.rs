@@ -5230,6 +5230,17 @@ pub(crate) fn decode_private_key(
 ) -> Result<russh::keys::PrivateKey, KeyDecodeError> {
     let normalized = private_key.replace("\r\n", "\n");
     let passphrase = passphrase.filter(|p| !p.is_empty());
+    // russh decrypts a legacy PKCS#1 PEM key encrypted the PKCS#5 way only with
+    // AES-128-CBC. Another cipher — DES-EDE3 (PuTTYgen's OpenSSH export,
+    // `openssl -des3`) or AES-256 — can't be read whatever the passphrase, so
+    // say so instead of asking for one three times.
+    if normalized.contains("Proc-Type: 4,ENCRYPTED") && !normalized.contains("DEK-Info: AES-128-CBC,") {
+        return Err(KeyDecodeError::Malformed(
+            "this key uses a legacy PEM encryption Submarine can't read (only AES-128-CBC); \
+             re-save it in OpenSSH format with `ssh-keygen -p -f <keyfile>`"
+                .into(),
+        ));
+    }
     match russh::keys::decode_secret_key(&normalized, passphrase) {
         Ok(key) => Ok(key),
         // The OpenSSH decoder reports this when an encrypted key is handed no
@@ -5310,12 +5321,15 @@ async fn cache_clear_secret(cache: &PromptedSecretsMap, base: &str, slot: Secret
 }
 
 /// Where a connect-time secret came from, which decides what happens to it once
-/// the server answers: a `Given` one (the failed-screen override or the saved
-/// value) is never cached; a `Cache` one is stored again on success and dropped
-/// on rejection; a `Prompt` one is stored once accepted.
+/// the server answers: a `Given` one (the saved value) is never cached; a
+/// `Cache` one is stored again on success and dropped on rejection; a `Prompt`
+/// one — or the failed-screen `Override` — is stored once accepted. Caching an
+/// accepted override is what lets the screen forget it after a successful
+/// connect, so a mistyped one isn't sent first on every later attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SecretSource {
     Given,
+    Override,
     Cache,
     Prompt,
 }
@@ -5332,7 +5346,7 @@ fn secret_candidates(
     saved: Option<zeroize::Zeroizing<String>>,
 ) -> Vec<(zeroize::Zeroizing<String>, SecretSource)> {
     [
-        (override_secret, SecretSource::Given),
+        (override_secret, SecretSource::Override),
         (cached, SecretSource::Cache),
         (saved, SecretSource::Given),
     ]
@@ -5451,6 +5465,11 @@ async fn authenticate_password_prompting<H: russh::client::Handler>(
         }
         match session.authenticate_none(user).await? {
             russh::client::AuthResult::Success => return Ok(true),
+            // russh also reports a dropped connection as a Failure (with no
+            // methods left): that's a transport error, not "no passwords".
+            russh::client::AuthResult::Failure { .. } if session.is_closed() => {
+                return Err(russh::Error::Disconnect);
+            }
             russh::client::AuthResult::Failure { remaining_methods, .. } => {
                 password_offered = remaining_methods.contains(&russh::MethodKind::Password);
             }
@@ -5489,6 +5508,12 @@ async fn authenticate_password_prompting<H: russh::client::Handler>(
                     cache_store_secret(ctx.cache, ctx.base, slot, password).await;
                 }
                 return Ok(true);
+            }
+            // The connection dropped while the password was in flight — russh
+            // reports that as a Failure too. Not a rejection: keep the cached
+            // password and let the caller treat it as a transport error.
+            russh::client::AuthResult::Failure { .. } if session.is_closed() => {
+                return Err(russh::Error::Disconnect);
             }
             russh::client::AuthResult::Failure { remaining_methods, partial_success } => {
                 if partial_success {
@@ -5681,6 +5706,22 @@ mod secret_prompt_tests {
     }
 
     #[test]
+    fn decode_refuses_a_legacy_pem_cipher_russh_cannot_read() {
+        // DES-EDE3 (PuTTYgen's OpenSSH export, `openssl -des3`): no passphrase
+        // could ever unlock it here, so it's reported, not asked for.
+        let des3 = PEM_ENC_KEY.replace(
+            "DEK-Info: AES-128-CBC,BB76307096C12231EAB52A979EA86901",
+            "DEK-Info: DES-EDE3-CBC,BB76307096C12231",
+        );
+        for passphrase in [None, Some(PEM_PASSPHRASE)] {
+            match decode_private_key(&des3, passphrase) {
+                Err(KeyDecodeError::Malformed(msg)) => assert!(msg.contains("AES-128-CBC"), "{msg}"),
+                _ => panic!("expected an unsupported-cipher error"),
+            }
+        }
+    }
+
+    #[test]
     fn decode_accepts_the_right_passphrase_and_any_plain_key() {
         assert!(decode_private_key(ENC_KEY, Some(ENC_PASSPHRASE)).is_ok());
         assert!(decode_private_key(PLAIN_KEY, None).is_ok());
@@ -5736,7 +5777,7 @@ mod secret_prompt_tests {
         assert_eq!(
             plain_order(secret_candidates(z("typed"), z("cached"), z("saved"))),
             vec![
-                ("typed".to_string(), SecretSource::Given),
+                ("typed".to_string(), SecretSource::Override),
                 ("cached".to_string(), SecretSource::Cache),
                 ("saved".to_string(), SecretSource::Given),
             ]
@@ -6490,6 +6531,10 @@ async fn connect_jump_host(
     // (true only for a primary target; secondaries reuse the cache). Issue #30.
     cache: &PromptedSecretsMap,
     allow_prompt: bool,
+    // Set when the bastion login itself failed (rejected or cancelled), so the
+    // caller reports an auth error — auto-reconnect then stops instead of
+    // re-prompting every few seconds.
+    auth_failed: &std::sync::atomic::AtomicBool,
     session_id: &str,
     jump_server_id: i32,
 ) -> Result<russh::client::Handle<ssh_manager::ClientHandler>, String> {
@@ -6595,8 +6640,16 @@ async fn connect_jump_host(
 
     // 5. Auth ladder: key → password → keyboard-interactive. A bastion saved
     //    with no secret is prompted for here too (primary target only), cached
-    //    under the target tab's JumpPassword / JumpPassphrase slot (issue #30).
-    let base_id = base_session_id(session_id).to_string();
+    //    under the target tab's JumpPassword / JumpPassphrase slot (issue #30),
+    //    keyed by this bastion so its secrets never reach another host.
+    let base_id = format!(
+        "{}|jump{}|{}:{}|{}",
+        base_session_id(session_id),
+        jump_server_id,
+        host,
+        port,
+        user.trim()
+    );
     let prompt_ctx = SecretPromptCtx {
         app,
         session_id,
@@ -6652,8 +6705,16 @@ async fn connect_jump_host(
             log("Jump host authenticated.", "success");
             Ok(session)
         }
-        Ok(false) => Err("jump host authentication failed".into()),
-        Err(e) => Err(format!("jump host auth error: {}", e)),
+        Ok(false) => {
+            auth_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            Err("jump host authentication failed".into())
+        }
+        Err(e) => {
+            if classify_russh_error(&e).is_auth() {
+                auth_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(format!("jump host auth error: {}", e))
+        }
     }
 }
 
@@ -7002,6 +7063,15 @@ async fn initiate_connection(
     // entry is removed even on the failure paths.
     state.fp_txs.lock().await.insert(connect_nonce.clone(), fp_tx);
 
+    // What this connection logs in to, as part of its prompted-secret cache
+    // key (issue #30): a password or passphrase typed for one target is never
+    // offered to another. Editing an open tab's host, user, key or bastion — or
+    // another profile reusing the same tab id — starts from an empty entry.
+    let secrets_target = format!(
+        "{}:{}|{}|{}|{:?}|{:?}",
+        host, port, user.trim(), server_auth_type, effective_key_id, jump_host_id
+    );
+
     // Shared between the handler and the connect driver so we can tell host-
     // key timeouts apart from real auth errors on the failure path. See
     // ClientHandler::fp_outcome for the meaning of the values.
@@ -7126,9 +7196,11 @@ async fn initiate_connection(
         // in `jump_handle_holder` so it lives through the target handshake; on
         // success it moves into `state_jump_connections` for the session's life.
         let mut jump_handle_holder: Option<russh::client::Handle<ssh_manager::ClientHandler>> = None;
+        // Set by connect_jump_host when the bastion login itself failed.
+        let jump_auth_failed = std::sync::atomic::AtomicBool::new(false);
         let stream_res: Result<Box<dyn AsyncStream>, String> = if let Some(jid) = jump_host_id {
             emit_log(&format!("ProxyJump: routing through jump host (server id {})...", jid), "info");
-            match connect_jump_host(&app, &db_for_jump, &fp_txs_clone, &kbi_txs_clone, &prompted_secrets_clone, allow_kbi, &session_id_clone, jid).await {
+            match connect_jump_host(&app, &db_for_jump, &fp_txs_clone, &kbi_txs_clone, &prompted_secrets_clone, allow_kbi, &jump_auth_failed, &session_id_clone, jid).await {
                 Ok(jump_handle) => {
                     // Originator address is cosmetic (logged by the bastion); the
                     // pair below is what OpenSSH sends for a -J hop.
@@ -7274,7 +7346,16 @@ async fn initiate_connection(
             Err(e) => {
                 emit_log(&e, "error");
                 cleanup().await;
-                let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": e}));
+                // A failed (or cancelled) bastion login is an auth error like
+                // the target's own, so auto-reconnect stops instead of asking
+                // again every few seconds.
+                let _ = app.emit(
+                    &format!("connection-failed-{}", session_id_clone),
+                    serde_json::json!({
+                        "reason": e,
+                        "is_auth_error": jump_auth_failed.load(std::sync::atomic::Ordering::Relaxed),
+                    }),
+                );
                 return;
             }
         };
@@ -7297,8 +7378,9 @@ async fn initiate_connection(
                 // doesn't save (issue #30). It uses this tab's keyboard-
                 // interactive modal, and accepted secrets are cached under the
                 // base tab id so reconnects and `::sftp` / `::fwd` secondaries
-                // reuse them; only the primary ever prompts.
-                let base_id = base_session_id(&session_id_clone).to_string();
+                // reuse them; only the primary ever prompts. The key also names
+                // the target (see secrets_target).
+                let base_id = format!("{}|{}", base_session_id(&session_id_clone), secrets_target);
                 let prompt_ctx = SecretPromptCtx {
                     app: &app,
                     session_id: &session_id_clone,
@@ -8388,8 +8470,14 @@ async fn disconnect_session(
         // Explicitly disconnecting a whole tab also forgets any connect-time
         // secret the user typed for it (issue #30) — a fresh connect re-asks.
         // Gated to a base id so toggling a `::sftp` / `::fwd` secondary off
-        // keeps the still-live primary's cache intact.
-        state.prompted_secrets.lock().await.remove(&session_id);
+        // keeps the still-live primary's cache intact. Entries are keyed
+        // `<tab>|<target>` (see secrets_target), so drop every one of the tab's.
+        let tab_prefix = format!("{}|", session_id);
+        state
+            .prompted_secrets
+            .lock()
+            .await
+            .retain(|key, _| key != &session_id && !key.starts_with(&tab_prefix));
     }
     // Tell the UI so the tab status dot flips to red. `user_initiated` keeps
     // SessionView from kicking off an auto-reconnect cycle for an intentional
