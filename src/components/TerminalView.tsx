@@ -10,6 +10,7 @@ import { MobileKeyBar, ModifiersState, ModKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
 import { fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
+import { IS_ANDROID } from '../util/platform';
 
 // Does the recent remote OUTPUT look like a no-echo password / passphrase
 // prompt? Used to skip command-history capture so typed secrets (sudo, su,
@@ -56,6 +57,8 @@ const TerminalView = ({
   terminalId,
   disabled = false,
   isActive = true,
+  isActiveView = false,
+  focusSignal = 0,
   containerExec,
   connectionEpoch = 0,
   serverId = 0,
@@ -79,6 +82,18 @@ const TerminalView = ({
   /// the parent's display/opacity change and the prompt appears garbled
   /// until the user types something.
   isActive?: boolean;
+  /// True only when this terminal's SessionView is the frontmost server
+  /// tab (DesktopApp's active view). Auto-focus is gated on this so a
+  /// background session — or an attach-only Wall mirror — never steals the
+  /// keyboard while the user is typing in the visible one.
+  isActiveView?: boolean;
+  /// Monotonic counter the parent SessionView bumps to pull keyboard focus
+  /// into the active terminal for selections that DON'T change which
+  /// terminal is active (re-clicking the current tab, re-selecting this
+  /// server tab, or clicking a tab while focus sat in a tool pane). A
+  /// change — not the value — triggers the focus; only the active terminal
+  /// reacts.
+  focusSignal?: number;
   /// When set, this terminal runs `docker exec -it <container> <shell>`
   /// on the SSH host instead of the user's login shell. Used by the
   /// Docker tab in InfoPanel to open an interactive session inside a
@@ -121,6 +136,10 @@ const TerminalView = ({
   useEffect(() => {
     isActiveRef.current = isActive;
   }, [isActive]);
+  // Mirror of isActiveView, read inside focusTerminal's rAF / signal
+  // callbacks (which would otherwise close over a stale value).
+  const isActiveViewRef = useRef(isActiveView);
+  useEffect(() => { isActiveViewRef.current = isActiveView; }, [isActiveView]);
   // Mirror of containerExec for the reconnect effect — same reason as
   // isActiveRef. The reconnect effect is keyed on `connectionEpoch`
   // alone (the parent re-creates the containerExec object every render
@@ -277,6 +296,42 @@ const TerminalView = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionEpoch]);
 
+  // Move keyboard focus into this terminal's xterm. Shared by the
+  // become-active effect and the parent-driven focus signal below, so the
+  // user can type the moment a terminal tab (or its server tab) is selected
+  // — issue #51. Bails in every situation where grabbing focus is wrong:
+  //   • touch devices — focusing xterm pops the soft keyboard unasked;
+  //   • a terminal whose SessionView isn't the frontmost server tab, or an
+  //     attach-only Wall mirror (isActiveView=false) — never steal from the
+  //     session the user is actually looking at;
+  //   • a disconnected / not-yet-connected terminal (dead PTY; the reconnect
+  //     banner or the connect-log view owns the screen). This also covers
+  //     the fingerprint / 2FA prompts, which only appear while disabled;
+  //   • the user is typing in a real input (SFTP path box, settings, the
+  //     auth-retry password, the in-terminal Find box). xterm's own hidden
+  //     <textarea> lives inside `.xterm`, so moving focus BETWEEN terminals
+  //     is still allowed;
+  //   • a modal dialog is open — confirm / overwrite / text-prompt all carry
+  //     aria-modal.
+  const focusTerminal = () => {
+    const coarsePointer =
+      typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
+    if (IS_ANDROID || coarsePointer) return;
+    if (!isActiveViewRef.current) return;
+    if (disabledRef.current) return;
+    const term = xtermRef.current;
+    if (!term) return;
+    const active = document.activeElement as HTMLElement | null;
+    if (active) {
+      const tag = active.tagName;
+      const isField =
+        tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || active.isContentEditable;
+      if (isField && !active.closest(".xterm")) return;
+    }
+    if (document.querySelector('[aria-modal="true"]')) return;
+    term.focus();
+  };
+
   // Repaint when this terminal becomes the active one. The parent uses
   // opacity (within a session) or display:none (across sessions/tabs) to
   // swap visible terminals — neither triggers xterm's internal redraw, so
@@ -292,9 +347,28 @@ const TerminalView = ({
         const t = xtermRef.current;
         if (t) t.refresh(0, Math.max(0, t.rows - 1));
       } catch { /* terminal not ready yet — next tick will catch it */ }
+      // Layout has settled and this is now the visible terminal: land the
+      // caret in it so the user can type without a second click (#51).
+      focusTerminal();
     });
     return () => cancelAnimationFrame(id);
   }, [isActive]);
+
+  // Parent-driven re-focus. The effect above only fires when the ACTIVE
+  // terminal CHANGES (isActive false→true); this handles the selections
+  // that don't — re-clicking the current tab, re-selecting this server tab,
+  // or clicking a tab while focus was in a tool pane — by reacting to a
+  // bumped `focusSignal`. The signal is shared by all of a session's
+  // terminals, so gate on isActiveRef: only the active one should grab it.
+  const focusSignalRef = useRef(focusSignal);
+  useEffect(() => {
+    if (focusSignal === focusSignalRef.current) return; // mount / no real change
+    focusSignalRef.current = focusSignal;
+    const id = requestAnimationFrame(() => {
+      if (isActiveRef.current) focusTerminal();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [focusSignal]);
 
   // Ctrl+F / Cmd+F opens the search chip — but only when the user is
   // focused inside this terminal's DOM subtree. Document-level listener is

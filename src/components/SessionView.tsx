@@ -374,6 +374,31 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       onTerminalsChange(session.id, terminals, activeTab);
     }
   }, [session?.id, terminals, activeTab, onTerminalsChange]);
+
+  // ── Focus the terminal when its tab (or this session's server tab) is
+  // selected ── issue #51. We don't reach into xterm from here; we bump a
+  // monotonic signal that TerminalView watches, and the terminal that is
+  // currently active focuses itself (with its own touch / input / dialog
+  // guards). `requestTerminalFocus` is the single entry point so the
+  // "don't fight an open auth prompt" rule lives in one place.
+  const [focusTick, setFocusTick] = useState(0);
+  const requestTerminalFocus = () => {
+    // A fingerprint / 2FA prompt owns the keyboard while it's up — don't
+    // yank focus out from under the user answering it. (TerminalView also
+    // refuses focus while disabled, which it is during these prompts.)
+    if (fingerprintPrompt || kbiPrompt) return;
+    setFocusTick(t => t + 1);
+  };
+  // When this SessionView becomes the frontmost server tab, pull focus into
+  // its active terminal so switching servers lets you type right away.
+  const prevActiveViewRef = useRef(isActiveView);
+  useEffect(() => {
+    const was = prevActiveViewRef.current;
+    prevActiveViewRef.current = isActiveView;
+    if (isActiveView && !was) requestTerminalFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActiveView]);
+
   const [activeTool, setActiveTool] = useState<'sftp' | 'tunnels' | 'mirrors' | 'cmds' | 'info' | null>(null);
   // Split-pane state — an ORDERED array of terminal IDs that currently
   // share the main pane. `[]` or a single-id array means "no split, use
@@ -1152,6 +1177,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                   setSplitRatios([]);
                 }
                 setActiveTab(t.id);
+                // Land the caret in the terminal even when the active one
+                // didn't change (re-clicking the current tab, or focus was in
+                // a tool pane / another input) — issue #51.
+                requestTerminalFocus();
               }}
               title={t.container ? `Container: ${t.container.name}` : undefined}
               className={`h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-8' : ''} rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${
@@ -1437,6 +1466,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                       terminalId={t.id}
                       disabled={status !== 'connected'}
                       isActive={isFocused && !(activeTool && isCompact)}
+                      isActiveView={isActiveView}
+                      focusSignal={focusTick}
                       containerExec={t.container ? { container: t.container.name, useSudo: t.container.useSudo } : undefined}
                       connectionEpoch={connectionEpoch}
                       serverId={session.serverId}
@@ -1558,6 +1589,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                   terminalId={t.id}
                   disabled={status !== 'connected'}
                   isActive={activeTab === t.id && !(activeTool && isCompact)}
+                  isActiveView={isActiveView}
+                  focusSignal={focusTick}
                   containerExec={t.container ? { container: t.container.name, useSudo: t.container.useSudo } : undefined}
                   connectionEpoch={connectionEpoch}
                   serverId={session.serverId}
