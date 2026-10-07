@@ -10,6 +10,7 @@ import {
 import { FileEntry, FileProvider } from "../fs/types";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
 import { IS_ANDROID } from "../util/platform";
+import { nameFilterMatcher } from "../util/nameFilter";
 
 // Batch overwrite state shared across items in a single download/upload run.
 // Once the user picks "Overwrite all" or "Skip all" the kind is sticky and we
@@ -131,8 +132,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const [tempInput, setTempInput] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
-  // Name filter applied AFTER sort — substring, case-insensitive. Kept
-  // separate from the path bar so the user can leave a filter active while
+  // Name filter applied AFTER sort — case-insensitive substring, or a `*` /
+  // `?` wildcard pattern for the whole name (util/nameFilter). Kept separate
+  // from the path bar so the user can leave a filter active while
   // typing into the path. Sticky across `cd` so a quick filter session can
   // span sibling dirs; the X button or Escape on the input clears it.
   const [nameFilter, setNameFilter] = useState("");
@@ -739,9 +741,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       if (va > vb) return sort.asc ? 1 : -1;
       return 0;
     });
-    const needle = nameFilter.trim().toLowerCase();
-    if (!needle) return sorted;
-    return sorted.filter(e => e.name.toLowerCase().includes(needle));
+    const matches = nameFilterMatcher(nameFilter);
+    return matches ? sorted.filter(e => matches(e.name)) : sorted;
   })();
   const filteredOut = nameFilter.trim() ? entries.length - sortedEntries.length : 0;
 
@@ -1007,6 +1008,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           onChange={(e) => setNameFilter(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Escape") { setNameFilter(""); (e.currentTarget as HTMLInputElement).blur(); } }}
           placeholder="Filter by name…"
+          title="Filter by name. Wildcards match the whole name: * any characters, ? one character (e.g. *.sh)"
           className="flex-1 min-w-0 h-5 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
         />
         {nameFilter && (
@@ -1141,7 +1143,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           {loading && sortedEntries.length === 0 ? (
             <div className="text-center py-14 text-zinc-400">Loading…</div>
           ) : sortedEntries.length === 0 ? (
-            <div className="text-center py-14 text-zinc-500">Empty</div>
+            <div className="text-center py-14 px-3 text-zinc-500 break-words">
+              {filteredOut ? `No names match “${nameFilter.trim()}”` : "Empty"}
+            </div>
           ) : (
             sortedEntries.map((entry) => {
               const isSel = selected.has(entry.path);
