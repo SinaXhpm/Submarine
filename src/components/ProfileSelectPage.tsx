@@ -36,6 +36,8 @@ interface CloudProfile { profile: string; name: string; records: number; live_re
 interface UpdateInfo { current: string; latest: string | null; has_update: boolean; release_url: string | null; }
 // The running version and the project's GitHub page (backend: about::app_info).
 interface AppInfo { version: string; github_repo_url: string; }
+// The GitHub link's fallback, should app_info ever fail (about::GITHUB_REPO).
+const REPO_URL = "https://github.com/SinaXhpm/Submarine";
 
 // The picker's unit of display: one profile, wherever it lives. `local` = an
 // on-disk vault exists here; `cloud` = the matching cloud partition (or null).
@@ -151,17 +153,23 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       .catch(() => {});
   }, []);
 
+  // A link that can't be opened (no browser / URL handler on this device)
+  // says so under the footer row instead of doing nothing.
+  const [linkError, setLinkError] = useState("");
+  const openLink = (url: string) => {
+    setLinkError("");
+    invoke("open_external_url", { url }).catch((e) => setLinkError(`Couldn't open the link: ${cleanErr(e)}`));
+  };
+
   const openReleaseNotes = () => {
-    if (update?.release_url) invoke("open_external_url", { url: update.release_url }).catch(() => {});
+    if (update?.release_url) openLink(update.release_url);
   };
 
   useEffect(() => {
     invoke<AppInfo>("app_info").then(setAppInfo).catch(() => {});
   }, []);
 
-  const openRepo = () => {
-    if (appInfo) invoke("open_external_url", { url: appInfo.github_repo_url }).catch(() => {});
-  };
+  const openRepo = () => openLink(appInfo?.github_repo_url ?? REPO_URL);
 
   // The footer's "Check for updates". Unlike the silent check above it reports
   // every outcome; a newer release lands in `update`, so the same notice
@@ -680,7 +688,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
             with a live "new version" notice underneath when one is available
             (the check steps aside then — the notice says it all). */}
         <div className="mt-4 flex flex-col items-center gap-2.5">
-          <div className="flex flex-wrap items-center justify-center gap-1 text-[11.5px]">
+          <div aria-live="polite" className="flex flex-wrap items-center justify-center gap-1 text-[11.5px]">
             <FooterButton onClick={openRepo} title="Open Submarine on GitHub" icon={<Github size={12} />} label="GitHub" />
             {!update && (
               <>
@@ -702,6 +710,13 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
               </>
             )}
           </div>
+          {/* Why a check or a link failed — as text, since a phone can't
+              hover the tooltip. */}
+          {(linkError || (check === "error" && checkError)) && (
+            <p role="status" className="max-w-[320px] text-center text-[10.5px] leading-snug text-amber-400/80 break-words">
+              {linkError || `Couldn't reach GitHub: ${checkError}`}
+            </p>
+          )}
           {update?.has_update && update.latest && (
             <button
               onClick={openReleaseNotes}
