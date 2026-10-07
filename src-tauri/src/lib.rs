@@ -5388,10 +5388,15 @@ struct SecretPromptCtx<'a> {
 }
 
 impl SecretPromptCtx<'_> {
-    /// Activity-log line for this connection. Never given a secret.
+    /// Activity-log line for this connection. Never given a secret. A
+    /// superseded attempt stays out of the tab's log (it would read as the
+    /// newer attempt's).
     fn log(&self, msg: &str, ty: &str) {
         use tauri::Emitter;
         println!("[LOG-{}] {}", self.session_id, msg);
+        if !self.attempt.is_current_now() {
+            return;
+        }
         let _ = self.app.emit(
             &format!("session-log-{}", self.session_id),
             serde_json::json!({"msg": msg, "type": ty}),
@@ -5982,6 +5987,10 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
 
     let log = |msg: &str, ty: &str| {
         println!("[LOG-{}] {}", session_id, msg);
+        // A superseded attempt stays out of the tab's log.
+        if !attempt.is_current_now() {
+            return;
+        }
         let _ = app.emit(
             &format!("session-log-{}", session_id),
             serde_json::json!({"msg": msg, "type": ty}),
@@ -6674,6 +6683,10 @@ async fn connect_jump_host(
 
     let log = |msg: &str, ty: &str| {
         println!("[LOG-{}] [jump] {}", session_id, msg);
+        // A superseded attempt stays out of the tab's log.
+        if !attempt.is_current_now() {
+            return;
+        }
         let _ = app.emit(
             &format!("session-log-{}", session_id),
             serde_json::json!({"msg": msg, "type": ty}),
@@ -7290,6 +7303,11 @@ async fn initiate_connection(
 
         let emit_log = |msg: &str, log_type: &str| {
             println!("[LOG-{}] {}", session_id_clone, msg);
+            // Once a newer attempt (or a disconnect) has replaced this one,
+            // its lines would read as the newer attempt's — keep them out.
+            if !attempt.is_current_now() {
+                return;
+            }
             let _ = app.emit(&format!("session-log-{}", session_id_clone), serde_json::json!({"msg": msg, "type": log_type}));
         };
 

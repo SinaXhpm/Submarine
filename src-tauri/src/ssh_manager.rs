@@ -511,6 +511,16 @@ impl ConnectAttempt {
         self.generations.lock().await.get(&self.session_id).copied().unwrap_or(0) == self.generation
     }
 
+    /// `is_current` for synchronous callers — the attempt's log lines. If the
+    /// generation map happens to be locked at this instant, say current: an
+    /// extra log line is harmless, blocking a logger isn't.
+    pub fn is_current_now(&self) -> bool {
+        self.generations
+            .try_lock()
+            .map(|g| g.get(&self.session_id).copied().unwrap_or(0) == self.generation)
+            .unwrap_or(true)
+    }
+
     /// The connect driver stopped waiting on this attempt (its handshake timed
     /// out), so nothing would act on an answer any more.
     pub fn abandon(&self) {
@@ -527,6 +537,14 @@ impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
     async fn check_server_key(&mut self, offered: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+        // An attempt that's been superseded (a newer attempt or a disconnect)
+        // or that its driver gave up on ends here, quietly: its log lines
+        // would land in the newer attempt's log, its prompt over the newer
+        // attempt's — and nothing would use the connection anyway.
+        if !self.attempt.may_prompt().await {
+            self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
+            return Ok(false);
+        }
         let Some(server_public_key) = plain_host_key(offered) else {
             let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
                 "msg": "Server presented an SSH host CERTIFICATE. Host certificates can't be verified yet (no trusted CA is configured), so the connection was refused.",
@@ -647,8 +665,9 @@ impl client::Handler for ClientHandler {
             return Ok(false);
         }
 
-        // A newer attempt has started (or the tab disconnected, or the driver
-        // gave up): this one's prompt would only cover the current one's.
+        // Re-checked right before prompting: the key lookup above can take a
+        // moment, and a prompt from a superseded attempt would only cover the
+        // current one's.
         if !self.attempt.may_prompt().await {
             self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
             return Ok(false);
