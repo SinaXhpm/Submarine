@@ -131,6 +131,20 @@ function DesktopApp() {
     setSessionStatuses((prev) => (prev[sessionId] === status ? prev : { ...prev, [sessionId]: status }));
   }, []);
 
+  // Sessions whose connect is waiting on the user (host-key, 2FA or login
+  // prompt). A background tab's prompt is hidden along with the tab, so the
+  // tab strip marks it instead.
+  const [promptSessions, setPromptSessions] = useState<Set<string>>(() => new Set());
+  const handlePromptChange = useCallback((sessionId: string, waiting: boolean) => {
+    setPromptSessions((prev) => {
+      if (prev.has(sessionId) === waiting) return prev;
+      const next = new Set(prev);
+      if (waiting) next.add(sessionId);
+      else next.delete(sessionId);
+      return next;
+    });
+  }, []);
+
   // Maximize state mirrored from the OS window so the title-bar button can
   // swap its icon (single square = maximize, overlapping squares = restore)
   // and so the double-click drag-region handler always knows the correct
@@ -789,7 +803,7 @@ function DesktopApp() {
         <img src={logoUrl} alt="" draggable={false} className="h-6 w-auto max-w-[24px] object-contain select-none" />
         <span className="text-[12px] font-bold text-white tracking-tight">Submarine</span>
         {appVersion && (
-          <span className="text-[11px] text-zinc-500/60 tracking-tight tabular-nums">v{appVersion}</span>
+          <span data-tauri-drag-region className="text-[11px] text-zinc-500/60 tracking-tight tabular-nums">v{appVersion}</span>
         )}
       </div>
 
@@ -819,6 +833,7 @@ function DesktopApp() {
                 const cur = sessions.find(s => s.id === activeView);
                 const st = cur ? (sessionStatuses[cur.id] ?? 'connecting') : null;
                 const dotTone =
+                  cur && promptSessions.has(cur.id) ? 'bg-primary animate-pulse' :
                   st === 'connected'    ? 'bg-emerald-400' :
                   st === 'connecting'   ? 'bg-amber-400 animate-pulse' :
                   st === 'failed'       ? 'bg-rose-500' :
@@ -854,6 +869,7 @@ function DesktopApp() {
                   {sessions.map(s => {
                     const st = sessionStatuses[s.id] ?? 'connecting';
                     const dot =
+                      promptSessions.has(s.id) ? 'bg-primary animate-pulse' :
                       st === 'connected'    ? 'bg-emerald-400' :
                       st === 'connecting'   ? 'bg-amber-400 animate-pulse' :
                       'bg-rose-500';
@@ -977,13 +993,18 @@ function DesktopApp() {
           // Dot palette: green = connected, amber = connecting, red = failed
           // or disconnected. The pulse animation only runs while connecting
           // so a steady-state tab doesn't draw the eye every half second.
+          // A prompt waiting on the user (host key, 2FA, login) outranks the
+          // status: the dot pulses in the accent colour until it's answered.
+          const waiting = promptSessions.has(s.id);
           const dotTone =
+            waiting               ? "bg-primary animate-pulse" :
             st === "connected"    ? "bg-emerald-400" :
             st === "connecting"   ? "bg-amber-400 animate-pulse" :
             st === "failed"       ? "bg-rose-500" :
             st === "disconnected" ? "bg-rose-500" :
                                     "bg-zinc-500";
           const dotTitle =
+            waiting               ? "Waiting for you — open this tab to answer" :
             st === "connected"    ? "Connected" :
             st === "connecting"   ? "Connecting…" :
             st === "failed"       ? "Connection failed" :
@@ -1826,6 +1847,8 @@ function DesktopApp() {
                               onStatusChange={handleSessionStatus}
                               onTerminalsChange={handleTerminalsChange}
                               chromeless={isVisible && isTiled && !isFocused}
+                              isActiveView={isFocused}
+                              onPromptChange={handlePromptChange}
                             />
                           </ErrorBoundary>
                         </div>

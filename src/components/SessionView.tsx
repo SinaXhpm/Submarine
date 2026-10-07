@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, memo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -52,7 +52,7 @@ const SepToggle = ({ on, onToggle, status, title, onReconnect }: {
   </span>
 );
 
-const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange }: any) => {
+const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, isActiveView = false, onPromptChange }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -81,19 +81,44 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // they scroll back down; a new attempt (logs cleared) follows again. Without
   // it the latest line, i.e. what the connection is doing right now, sat below
   // the fold on a short window. Layout effect so it lands before paint.
-  const logBoxRef = useRef<HTMLDivElement>(null);
+  const logBoxRef = useRef<HTMLDivElement | null>(null);
   const logFollowRef = useRef(true);
   useLayoutEffect(() => {
     if (logs.length === 0) logFollowRef.current = true;
     const el = logBoxRef.current;
     if (el && logFollowRef.current) el.scrollTop = el.scrollHeight;
   }, [logs]);
+  // The box only exists on the connect screen. Whenever it (re)appears —
+  // e.g. after the reconnect banner was cancelled, with lines already in it —
+  // start at the newest line and follow again.
+  const attachLogBox = useCallback((el: HTMLDivElement | null) => {
+    logBoxRef.current = el;
+    if (el) {
+      logFollowRef.current = true;
+      el.scrollTop = el.scrollHeight;
+    }
+  }, []);
   const [fingerprintPrompt, setFingerprintPrompt] = useState<any>(null);
   // Keyboard-interactive (2FA / verification-code) prompt. `kbiPrompt` holds
   // the backend payload ({ nonce, name, instructions, prompts:[{prompt,echo}] });
   // `kbiValues` mirrors one editable answer per prompt.
   const [kbiPrompt, setKbiPrompt] = useState<any>(null);
   const [kbiValues, setKbiValues] = useState<string[]>([]);
+  // The prompt's answer field takes the caret only while this session is on
+  // screen: when the prompt appears with the tab in front, or when the user
+  // switches to a tab whose prompt is waiting. A hidden tab's prompt must not
+  // swallow what's typed into the visible one.
+  const kbiFirstInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (kbiPrompt && isActiveView) kbiFirstInputRef.current?.focus();
+  }, [kbiPrompt, isActiveView]);
+  // Tell the tab strip while a prompt waits on the user — a background tab's
+  // prompt is hidden along with its tab, so the tab is marked instead.
+  const promptWaiting = !!(fingerprintPrompt || kbiPrompt);
+  useEffect(() => {
+    onPromptChange?.(session.id, promptWaiting);
+  }, [onPromptChange, session.id, promptWaiting]);
+  useEffect(() => () => onPromptChange?.(session.id, false), [onPromptChange, session.id]);
   const [isAuthError, setIsAuthError] = useState(false);
   const [customPassword, setCustomPassword] = useState("");
   // The connect-time log box mirrors the terminal font-size setting, so the
@@ -910,6 +935,11 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               <h3 className="text-sm font-bold text-primary uppercase tracking-widest">
                 {kbiPrompt.name && String(kbiPrompt.name).trim() ? kbiPrompt.name : "Verification required"}
               </h3>
+              {/* Which server is asking — the server's own wording rarely
+                  says, and several tabs can be connecting at once. */}
+              <p className="mt-0.5 text-[11.5px] text-zinc-500 truncate" title={session.serverName}>
+                {session.serverName}
+              </p>
               {kbiPrompt.instructions && String(kbiPrompt.instructions).trim() && (
                 <p className="text-zinc-400 mt-2 leading-relaxed whitespace-pre-wrap break-words">
                   {kbiPrompt.instructions}
@@ -923,7 +953,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                     </label>
                     <input
                       type={p?.echo ? "text" : "password"}
-                      autoFocus={i === 0}
+                      ref={i === 0 ? kbiFirstInputRef : undefined}
                       className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-sm text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all"
                       value={kbiValues[i] ?? ""}
                       onChange={e => setKbiValues(vals => {
@@ -959,12 +989,30 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     </>
   );
 
+  // Host-key / 2FA / login prompts float over THIS session's area — centered
+  // and scrolling on their own, whatever the log's scroll — but never over the
+  // title bar, another tab or another split pane, and below the app's own
+  // dialogs. A background tab's prompt stays hidden with its tab (the tab
+  // strip marks it via onPromptChange), so it can't pop up over whatever the
+  // user is doing. No aria-modal: it only blocks this session.
+  const promptOverlay = (
+    <div
+      role="dialog"
+      aria-label={`Connection prompt for ${session.serverName}`}
+      className="absolute inset-0 z-40 flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto"
+    >
+      <div className="max-w-2xl w-full mt-6 sm:mt-12">
+        {authPrompts}
+      </div>
+    </div>
+  );
+
   // Only render the full-screen log view for the FIRST connection — once an
   // auto-reconnect cycle is running, the user's terminal output and SFTP
   // state stay visible behind a slim banner.
   if (reconnectAttempt === 0 && (status === 'connecting' || status === 'failed')) {
     return (
-      <div className="flex-1 flex flex-col p-4 sm:p-8 bg-[#0a0a0c] text-white overflow-hidden">
+      <div className="relative flex-1 flex flex-col p-4 sm:p-8 bg-[#0a0a0c] text-white overflow-hidden">
         <div className="max-w-2xl w-full mx-auto flex-1 flex flex-col min-h-0">
           {/* Header: status chip + server name on the left, actions on the
               right — one row at every width. The name is regular-case text
@@ -1036,7 +1084,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               overscroll-contain keeps a flick from scrolling the page behind it;
               WebkitOverflowScrolling gives older Android WebViews momentum. */}
           <div
-            ref={logBoxRef}
+            ref={attachLogBox}
             onScroll={(e) => {
               // Follow only while (nearly) at the bottom — a few px of slack
               // for sub-pixel rounding after our own scroll.
@@ -1054,22 +1102,12 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
             ))}
           </div>
 
-          {/* Host-key fingerprint / 2FA keyboard-interactive prompts float over
-              the whole screen via a portal, rather than being appended to the
-              bottom of the scroll-box above. Inside the box a short window — or a
-              server that emits a long keyboard-interactive instructions banner
-              before the code prompt — pushed the input below the fold with no
-              auto-scroll, so the connection looked "stuck at 2FA" with no visible
-              way to enter the code (#27). The portal centers it and scrolls on
-              its own, matching the auto-reconnect path in the connected view. */}
-          {(fingerprintPrompt || kbiPrompt) && createPortal(
-            <div className="fixed inset-0 z-[200] flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto">
-              <div className="max-w-2xl w-full mt-6 sm:mt-12">
-                {authPrompts}
-              </div>
-            </div>,
-            document.body
-          )}
+          {/* The prompt floats over this session instead of being appended to
+              the bottom of the scroll-box above, where a short window — or a
+              long keyboard-interactive banner before the code prompt — pushed
+              the input below the fold and the connection looked "stuck at
+              2FA" (#27). See promptOverlay. */}
+          {promptWaiting && promptOverlay}
         </div>
       </div>
     );
@@ -1077,20 +1115,12 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
 
   // Connected State with Nested Tabs
   return (
-    <div className="flex-1 flex flex-col bg-background overflow-hidden animate-in fade-in">
+    <div className="relative flex-1 flex flex-col bg-background overflow-hidden animate-in fade-in">
       {/* Auth prompts during an AUTO-RECONNECT. The full-screen view above only
           renders on the first connect (reconnectAttempt===0); once a reconnect
-          cycle is running we show the terminal behind a slim banner, so a
-          fingerprint / 2FA prompt fired mid-reconnect would otherwise be
-          invisible and unanswerable. Float it over everything via a portal. */}
-      {(fingerprintPrompt || kbiPrompt) && createPortal(
-        <div className="fixed inset-0 z-[200] flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto">
-          <div className="max-w-2xl w-full mt-6 sm:mt-12">
-            {authPrompts}
-          </div>
-        </div>,
-        document.body
-      )}
+          cycle is running we show the terminal behind a slim banner, so the
+          prompt floats over it — see promptOverlay. */}
+      {promptWaiting && promptOverlay}
       {/* Nested Tab Bar — hidden in `chromeless` mode. Chromeless is
           used by the App-level Split-view tiling: merged (non-focused)
           panes show only the active terminal, no per-session tab strip
