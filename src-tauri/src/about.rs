@@ -1,7 +1,7 @@
 //! App-info + update-check + safe URL opener.
 //!
-//! Tiny module: just enough to render the About panel and let the user
-//! see whether a newer release exists on GitHub. The actual download
+//! Tiny module: the version and GitHub link on the profile screen, and a
+//! check for whether a newer release exists on GitHub. The actual download
 //! is intentionally NOT automated — we surface the release URL and let
 //! the user pick whether to grab it (auto-update infrastructure is a
 //! separate, bigger problem involving signed updates).
@@ -12,15 +12,11 @@ use serde::Serialize;
 /// for the releases query and the user-facing repo URL.
 pub const GITHUB_REPO: &str = "SinaXhpm/Submarine";
 
-/// Marketing site / project page. Surfaced in the About panel.
-pub const WEBSITE_URL: &str = "https://sinaxhpm.com";
-
 #[derive(Debug, Clone, Serialize)]
 pub struct AppInfo {
     pub version: String,
     pub github_repo_url: String,
     pub github_releases_url: String,
-    pub website_url: String,
 }
 
 /// Static info bundled with the binary. Version comes from CARGO_PKG_VERSION
@@ -31,7 +27,6 @@ pub fn app_info() -> AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         github_repo_url: format!("https://github.com/{}", GITHUB_REPO),
         github_releases_url: format!("https://github.com/{}/releases", GITHUB_REPO),
-        website_url: WEBSITE_URL.to_string(),
     }
 }
 
@@ -75,7 +70,7 @@ struct GhRelease {
 /// Instead we scan every published, non-prerelease release and pick the highest
 /// SEMVER ourselves, then compare that to `current`. Anonymous calls are rate-
 /// limited to ~60/hour per IP — fine for an occasional check. The timeout is
-/// short so a hung connection can't freeze the About modal.
+/// short so a hung connection can't leave the check spinning.
 #[tauri::command]
 pub async fn check_for_updates() -> Result<UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();

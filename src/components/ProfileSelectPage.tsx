@@ -2,10 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Plus, Trash2, X, AlertTriangle, ArrowRight, Download, Upload,
-  CheckCircle2, Cloud, CloudOff, HardDrive, ChevronDown, RefreshCw, ArrowUpCircle,
+  CheckCircle2, Cloud, CloudOff, HardDrive, ChevronDown, RefreshCw, ArrowUpCircle, Github,
 } from "lucide-react";
 import CloudPanel from "./CloudPanel";
-import AboutPanel from "./AboutPanel";
 import logoUrl from "../assets/logo.png";
 import { IS_ANDROID } from "../util/platform";
 import { useTextPrompt, useConfirm } from "../ui/confirm";
@@ -33,8 +32,12 @@ interface CloudStatus { signed_in: boolean; email: string | null; }
 interface CloudProfile { profile: string; name: string; records: number; live_records: number; last_updated: string; }
 // Result of the GitHub release check (backend: about::check_for_updates).
 // `has_update` is true only when `latest` is a strictly newer semver than the
-// running build. Mirrors the shape AboutPanel already consumes.
+// running build.
 interface UpdateInfo { current: string; latest: string | null; has_update: boolean; release_url: string | null; }
+// The running version and the project's GitHub page (backend: about::app_info).
+interface AppInfo { version: string; github_repo_url: string; }
+// The GitHub link's fallback, should app_info ever fail (about::GITHUB_REPO).
+const REPO_URL = "https://github.com/SinaXhpm/Submarine";
 
 // The picker's unit of display: one profile, wherever it lives. `local` = an
 // on-disk vault exists here; `cloud` = the matching cloud partition (or null).
@@ -72,7 +75,6 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   const [importStaged, setImportStaged] = useState<{ sourcePath?: string; bytesB64?: string; name: string } | null>(null);
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const [cloudOpen, setCloudOpen] = useState(false);
-  const [aboutOpen, setAboutOpen] = useState(false);
 
   // Cloud status surfaced directly on this page so the user doesn't have
   // to open the modal just to know if sync is connected or pending.
@@ -82,9 +84,14 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   // them remember and type a name. Empty until signed in (or on network error).
   const [cloudProfiles, setCloudProfiles] = useState<CloudProfile[]>([]);
   // A newer published release than the running build, if any. Set only when
-  // one actually exists, so the notice by "About" appears solely when there's
-  // something to announce.
+  // one actually exists, so the notice under the footer appears solely when
+  // there's something to announce.
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  // Footer: the version + GitHub link, and how the last "Check for updates"
+  // click went.
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const [check, setCheck] = useState<"idle" | "checking" | "latest" | "none" | "error">("idle");
+  const [checkError, setCheckError] = useState("");
 
   const textPrompt = useTextPrompt();
   const confirm = useConfirm();
@@ -146,8 +153,42 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       .catch(() => {});
   }, []);
 
+  // A link that can't be opened (no browser / URL handler on this device)
+  // says so under the footer row instead of doing nothing.
+  const [linkError, setLinkError] = useState("");
+  const openLink = (url: string) => {
+    setLinkError("");
+    invoke("open_external_url", { url }).catch((e) => setLinkError(`Couldn't open the link: ${cleanErr(e)}`));
+  };
+
   const openReleaseNotes = () => {
-    if (update?.release_url) invoke("open_external_url", { url: update.release_url }).catch(() => {});
+    if (update?.release_url) openLink(update.release_url);
+  };
+
+  useEffect(() => {
+    invoke<AppInfo>("app_info").then(setAppInfo).catch(() => {});
+  }, []);
+
+  const openRepo = () => openLink(appInfo?.github_repo_url ?? REPO_URL);
+
+  // The footer's "Check for updates". Unlike the silent check above it reports
+  // every outcome; a newer release lands in `update`, so the same notice
+  // announces it.
+  const checkForUpdates = async () => {
+    if (check === "checking") return;
+    setCheck("checking");
+    try {
+      const u = await invoke<UpdateInfo>("check_for_updates");
+      if (u.has_update && u.latest) {
+        setUpdate(u);
+        setCheck("idle");
+      } else {
+        setCheck(u.latest ? "latest" : "none");
+      }
+    } catch (e) {
+      setCheckError(cleanErr(e));
+      setCheck("error");
+    }
   };
 
   // When the expanded row changes, reset + focus the password so opening a
@@ -380,6 +421,15 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   // on a fresh device (cloud profiles, no local) still sees the list so they
   // can Get them. `creating` is the explicit "New profile" toggle.
   const showCreate = creating || (!loading && profiles.length === 0 && cloudProfiles.length === 0);
+
+  // What the footer's update item shows for each outcome of the manual check.
+  const checkItem = {
+    idle: { label: "Check for updates", icon: <RefreshCw size={12} />, tone: undefined },
+    checking: { label: "Checking…", icon: <RefreshCw size={12} className="animate-spin" />, tone: undefined },
+    latest: { label: "Up to date", icon: <CheckCircle2 size={12} />, tone: "text-emerald-400/90 hover:text-emerald-300" },
+    none: { label: "No releases yet", icon: <RefreshCw size={12} />, tone: undefined },
+    error: { label: "Couldn't check", icon: <AlertTriangle size={12} />, tone: "text-amber-400/90 hover:text-amber-300" },
+  }[check];
 
   return (
     // Scrolls when the content is taller than the screen (phones with the
@@ -634,17 +684,39 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
             link; signed-in shows the account email + a way into Manage. */}
         <CloudBar status={cloudStatus} busy={busy} onManage={() => setCloudOpen(true)} />
 
-        {/* About pill, with a live "new version" notice underneath when one
-            is available. */}
+        {/* GitHub, the update check and the running version side by side,
+            with a live "new version" notice underneath when one is available
+            (the check steps aside then — the notice says it all). */}
         <div className="mt-4 flex flex-col items-center gap-2.5">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setAboutOpen(true)}
-              className="h-8 px-4 rounded-lg text-[12.5px] font-bold text-zinc-200 bg-white/[0.04] border border-white/10 hover:bg-white/[0.09] hover:text-white transition-colors"
-            >
-              About
-            </button>
+          <div aria-live="polite" className="flex flex-wrap items-center justify-center gap-1 text-[11.5px]">
+            <FooterButton onClick={openRepo} title="Open Submarine on GitHub" icon={<Github size={12} />} label="GitHub" />
+            {!update && (
+              <>
+                <FooterDot />
+                <FooterButton
+                  onClick={checkForUpdates}
+                  disabled={check === "checking"}
+                  title={check === "error" ? `Couldn't reach GitHub: ${checkError}` : "Look for a newer release on GitHub"}
+                  icon={checkItem.icon}
+                  label={checkItem.label}
+                  tone={checkItem.tone}
+                />
+              </>
+            )}
+            {appInfo && (
+              <>
+                <FooterDot />
+                <span className="px-1.5 font-mono text-[11px] text-zinc-600 select-text">v{appInfo.version}</span>
+              </>
+            )}
           </div>
+          {/* Why a check or a link failed — as text, since a phone can't
+              hover the tooltip. */}
+          {(linkError || (check === "error" && checkError)) && (
+            <p role="status" className="max-w-[320px] text-center text-[10.5px] leading-snug text-amber-400/80 break-words">
+              {linkError || `Couldn't reach GitHub: ${checkError}`}
+            </p>
+          )}
           {update?.has_update && update.latest && (
             <button
               onClick={openReleaseNotes}
@@ -674,8 +746,6 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
         }}
         onLocalProfilesChanged={reload}
       />
-
-      <AboutPanel isOpen={aboutOpen} onClose={() => setAboutOpen(false)} />
     </div>
   );
 };
@@ -709,6 +779,26 @@ const RowAction = ({
     {icon} {label}
   </button>
 );
+
+// A low-key text button for the footer row under the cloud bar.
+const FooterButton = ({
+  onClick, disabled, title, icon, label, tone,
+}: {
+  onClick: () => void; disabled?: boolean; title: string; icon: React.ReactNode; label: string; tone?: string;
+}) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    title={title}
+    className={`h-7 px-2 rounded-md flex items-center gap-1.5 transition-colors hover:bg-white/[0.05] disabled:cursor-default disabled:hover:bg-transparent ${
+      tone || "text-zinc-500 hover:text-zinc-200"
+    }`}
+  >
+    {icon} {label}
+  </button>
+);
+
+const FooterDot = () => <span aria-hidden className="text-zinc-700 select-none">·</span>;
 
 const CloudBar = ({
   status, busy, onManage,
