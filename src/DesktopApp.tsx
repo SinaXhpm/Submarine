@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
@@ -278,39 +278,14 @@ function DesktopApp() {
   }, [appSettings]);
 
   useEffect(() => {
-    const init = async () => {
-      try {
-        // Restore window size
-        const savedW = localStorage.getItem('submarine-window-width');
-        const savedH = localStorage.getItem('submarine-window-height');
-        if (savedW && savedH) {
-          try {
-            await appWindow.setSize(new LogicalSize(parseInt(savedW), parseInt(savedH)));
-          } catch(e) { console.error("Window resize failed", e); }
-        }
-
-        // Listen for resize (only for persistence, not for mobile detection)
-        await appWindow.onResized(async () => {
-          const size = await appWindow.innerSize();
-          const logical = size.toLogical(await appWindow.scaleFactor());
-          localStorage.setItem('submarine-window-width', logical.width.toString());
-          localStorage.setItem('submarine-window-height', logical.height.toString());
-        });
-
-        // `isMobile` is now driven by `useIsNarrow()` (live viewport hook)
-        // — no one-shot UA detection here anymore.
-
-        // Profile picker comes first now — we no longer probe a single
-        // global vault file. `dbExists` is set inside `handleProfileSelected`
-        // when the user picks a profile.
-      } catch (e) {
-        console.error("Initialization error", e);
-        addLog(`INIT_EXCEPTION: ${e}`, "error"); 
-      } finally { 
-        setLoading(false); 
-      }
-    };
-    init();
+    // Nothing to set up before the first screen:
+    //  - The window's size and position are restored natively by the
+    //    window-state plugin. The page never resizes the window.
+    //  - `isMobile` is driven by `useIsNarrow()` (live viewport hook).
+    //  - The profile picker comes first, so no vault is probed here;
+    //    `dbExists` is set inside `handleProfileSelected` when the user picks
+    //    a profile.
+    setLoading(false);
   }, []);
 
   // Stable per-session close handler. Allocated once per (sess.id) pair so
