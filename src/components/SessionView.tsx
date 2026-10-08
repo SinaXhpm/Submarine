@@ -2,7 +2,6 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from 
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, PanelRight, PanelLeft, PanelBottom, PanelTop } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
@@ -824,60 +823,16 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     return () => window.removeEventListener(evt, onReconnect);
   }, [session.id, customPassword]);
 
-  // ---- Tool pane sizing + window growth ------------------------------------
-  // Philosophy: the terminal column is sacred. Opening a tool pane or
-  // dragging the divider grows or shrinks the OS window in lockstep so the
-  // terminal's pixel width never changes underneath the user.
-
-  const appWindow = getCurrentWindow();
-  const toolWidthRef = useRef(toolPanelWidth);
-  useEffect(() => { toolWidthRef.current = toolPanelWidth; }, [toolPanelWidth]);
-
-  const adjustWindowWidth = async (deltaPx: number) => {
-    try {
-      const size = await appWindow.outerSize();
-      const scale = await appWindow.scaleFactor();
-      const logical = size.toLogical(scale);
-      const next = Math.max(640, Math.round(logical.width + deltaPx));
-      await appWindow.setSize(new LogicalSize(next, Math.round(logical.height)));
-    } catch (e) {
-      console.error("window resize failed", e);
-    }
-  };
-
-  // Grow the window when a tool pane docked left or right opens, so the
-  // terminal keeps its width, and shrink it again when the pane closes or
-  // moves above/below the terminal (where it takes height, not width).
-  // The +4 accounts for the resize divider itself.
-  const windowGrownRef = useRef(false);
-  useEffect(() => {
-    const want = !!activeTool && !dockTopBottom;
-    if (want && !windowGrownRef.current) {
-      windowGrownRef.current = true;
-      adjustWindowWidth(toolWidthRef.current + 4);
-    } else if (!want && windowGrownRef.current) {
-      windowGrownRef.current = false;
-      adjustWindowWidth(-(toolWidthRef.current + 4));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTool, dockTopBottom]);
-
-  // If the user closes the session tab while a tool is open, give the
-  // window space back rather than leaving it stretched.
-  useEffect(() => {
-    return () => {
-      if (windowGrownRef.current) {
-        adjustWindowWidth(-(toolWidthRef.current + 4));
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // ---- Tool pane sizing ----------------------------------------------------
+  // The pane and the terminal share the window: opening the pane or dragging
+  // its divider sizes the two against each other. The window itself is never
+  // resized from here. Its size belongs to the user, and the window-state
+  // plugin restores it.
 
   const startToolResize = (e: React.MouseEvent) => {
     e.preventDefault();
     if (dockTopBottom) {
-      // Above/below the terminal only the split moves; the window keeps its
-      // size. Dragging toward the terminal grows the pane.
+      // Dragging toward the terminal grows the pane.
       const startY = e.clientY;
       const area = mainAreaRef.current?.clientHeight ?? window.innerHeight;
       const maxHeight = Math.max(MIN_TOOL_HEIGHT, area - MIN_TERMINAL_HEIGHT - 4);
@@ -901,39 +856,21 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       return;
     }
     const startX = e.clientX;
-    const startWidth = toolWidthRef.current;
-    let lastCommittedWidth = startWidth;
-    let pendingWidth = startWidth;
-    let frameRequested = false;
+    const startWidth = toolPanelWidth;
+    let latest = startWidth;
 
     const onMove = (ev: MouseEvent) => {
       // Dragging toward the terminal widens the tool pane: left for a pane
       // on the right, right for a pane on the left.
       const pulled = toolDock === "left" ? ev.clientX - startX : startX - ev.clientX;
-      const next = Math.max(240, Math.min(900, startWidth + pulled));
-      pendingWidth = next;
-      setToolPanelWidth(next);
-      // Throttle window resizes to one per animation frame. setSize crosses an
-      // IPC boundary and dispatching it on every mousemove makes the drag feel
-      // laggy. We batch by recomputing the delta against last-committed width
-      // inside the frame, so no mouse movement is dropped.
-      if (!frameRequested) {
-        frameRequested = true;
-        requestAnimationFrame(() => {
-          frameRequested = false;
-          const delta = pendingWidth - lastCommittedWidth;
-          if (delta !== 0) {
-            lastCommittedWidth = pendingWidth;
-            adjustWindowWidth(delta);
-          }
-        });
-      }
+      latest = Math.max(240, Math.min(900, startWidth + pulled));
+      setToolPanelWidth(latest);
     };
 
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      try { localStorage.setItem("submarine-tool-panel-width", String(toolWidthRef.current)); }
+      try { localStorage.setItem("submarine-tool-panel-width", String(latest)); }
       catch { /* ignore */ }
     };
 
