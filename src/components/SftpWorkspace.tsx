@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle }
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { File as FileIcon, Download, Upload, AlertTriangle, Check, X, Ban, Folder, FolderUp, Rows, LayoutPanelTop, Shield, ShieldAlert } from "lucide-react";
+import { File as FileIcon, Download, Upload, AlertTriangle, Check, X, Ban, Folder, Rows, Columns, LayoutPanelTop, Shield, ShieldAlert } from "lucide-react";
 import FilePanel, { ActiveDrag, FilePanelHandle } from "./FilePanel";
 import MirrorsPanel from "./MirrorsPanel";
 import { createLocalProvider } from "../fs/localProvider";
 import { createRemoteProvider } from "../fs/remoteProvider";
 import { transferFile } from "../fs/transfer";
 import { useOverwritePrompt, useTextPrompt } from "../ui/confirm";
+import { useIsNarrow } from "../hooks/useViewport";
 
 // Root (sudo) mode for the remote pane — see `sftp_set_elevated` in lib.rs.
 type ElevationStatus = { elevated: boolean; passwordless: boolean };
@@ -32,21 +33,31 @@ const describeSudoError = (raw: string) => {
 // into a `transferFile` call. The panels themselves stay agnostic — they only
 // know how to drive their own provider.
 
+export type SftpView = "files" | "mirror";
+
 interface SftpWorkspaceProps {
   sessionId: string;
   disabled?: boolean;
   // Mirror config from the parent session — both pieces are needed by the
-  // (now-nested) MirrorsPanel sub-tab. Passing them through here lets us
-  // collapse the previously-separate Mirror toolbar entry into one SFTP
-  // umbrella ("Files" vs "Mirror" sub-tabs), so the session toolbar has
-  // one fewer item to fit on phones.
+  // nested MirrorsPanel. Passing them through here keeps Mirror inside the
+  // SFTP tool instead of a separate toolbar entry, so the session toolbar
+  // has one fewer item to fit on phones.
   serverId?: number;
   mirrorsConfig?: any[];
+  // Files or Mirror. The switch is the Mirror button in the SFTP panel's
+  // title bar (SessionView), which leaves this panel all its height.
+  view?: SftpView;
 }
-
-type SftpView = "files" | "mirror";
-type FilesLayout = "tabs" | "split";
+// "split" is Local above Remote; the name predates "side" and stays because
+// it is what earlier versions saved.
+type FilesLayout = "tabs" | "split" | "side";
 type FilesSide = "local" | "remote";
+
+const LAYOUT_OPTIONS: { id: FilesLayout; title: string; Icon: typeof Rows }[] = [
+  { id: "tabs", title: "One panel at a time", Icon: LayoutPanelTop },
+  { id: "split", title: "Both panels, Local above Remote (drag-drop between them)", Icon: Rows },
+  { id: "side", title: "Both panels side by side (drag-drop between them)", Icon: Columns },
+];
 
 // Cursor-following drag ghost, isolated into its own component so that the
 // per-mousemove position updates re-render ONLY this tiny node — not the whole
@@ -86,21 +97,24 @@ const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
 });
 DragGhost.displayName = "DragGhost";
 
-const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [] }: SftpWorkspaceProps) => {
-  // Active sub-tab. Files is the default (the common workflow); Mirror is
-  // for the per-server one-way replication setup.
-  const [view, setView] = useState<SftpView>("files");
+const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files" }: SftpWorkspaceProps) => {
+  // Mirror needs a saved server; without one the files always show.
+  const shownView: SftpView = view === "mirror" && serverId ? "mirror" : "files";
   // Files layout: "tabs" (one side full height) is the default because the
   // side panel is narrow on most desktop setups and "split" squeezed each
-  // FilePanel into 5-6 rows. "split" stays available for users who want
-  // simultaneous Local+Remote visibility (drag-drop still works there).
+  // FilePanel into 5-6 rows. "split" and "side" stay available for users who
+  // want simultaneous Local+Remote visibility (drag-drop still works there).
   // Persisted globally (not per-session) — pure layout preference.
   const [layout, setLayout] = useState<FilesLayout>(() => {
     try {
       const v = localStorage.getItem("submarine-sftp-layout");
-      return v === "split" ? "split" : "tabs";
+      return v === "split" || v === "side" ? v : "tabs";
     } catch { return "tabs"; }
   });
+  // Two lists side by side don't fit a phone-width window: there "side" shows
+  // as "split", and the saved choice comes back once the window is wider.
+  const isNarrow = useIsNarrow();
+  const shownLayout: FilesLayout = layout === "side" && isNarrow ? "split" : layout;
   const setLayoutPersisted = (l: FilesLayout) => {
     setLayout(l);
     try { localStorage.setItem("submarine-sftp-layout", l); } catch { /* quota — ignore */ }
@@ -403,49 +417,17 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#0a0a0c] relative">
-      {/* Sub-tab strip — Files vs Mirror, replacing the standalone Mirror
-          toolbar button that used to live next to SFTP / Ports / Library. The
-          Mirror panel keeps state across tab switches via CSS hidden (same
-          mounted-but-invisible pattern the parent SessionView used before)
-          so the live worker's counters and rolling log survive a switch back
-          to Files. */}
-      <div className="shrink-0 grid grid-cols-2 border-b border-white/5 bg-black/20">
-        <button
-          onClick={() => setView("files")}
-          className={`h-9 flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider transition-all ${
-            view === "files"
-              ? "text-primary bg-primary/5 border-b border-primary"
-              : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
-          }`}
-        >
-          <Folder size={12} /> Files
-        </button>
-        <button
-          onClick={() => setView("mirror")}
-          disabled={!serverId}
-          title={!serverId ? "Mirror needs a saved server" : undefined}
-          className={`h-9 flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
-            view === "mirror"
-              ? "text-primary bg-primary/5 border-b border-primary"
-              : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
-          }`}
-        >
-          <FolderUp size={12} /> Mirror
-        </button>
-      </div>
-
       {/* Files view — dual-pane browser. Stays mounted when Mirror is on top
           so directory state and selection don't reset across tab toggles.
           Both FilePanels are ALWAYS mounted (one is just CSS-hidden in
           tabs mode) so cd state, scroll position, and selection survive a
           tab toggle. */}
-      <div className={`${view === "files" ? "flex-1 flex flex-col min-h-0" : "hidden"}`}>
+      <div className={`${shownView === "files" ? "flex-1 flex flex-col min-h-0" : "hidden"}`}>
         {/* Layout toolbar: Local|Remote pills in tabs mode (or a static
-            label in split mode), plus the global layout toggle on the
-            right. The toggle's label is the DESTINATION mode so the
-            user can predict what clicking will do. */}
+            label when both panels show), plus the global layout picker on
+            the right. */}
         <div className="shrink-0 h-10 sm:h-8 flex items-stretch border-b border-white/5 bg-black/20">
-          {layout === "tabs" ? (
+          {shownLayout === "tabs" ? (
             <div className="flex-1 grid grid-cols-2">
               <button
                 onClick={() => setActiveSidePersisted("local")}
@@ -473,66 +455,81 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               Local + Remote
             </div>
           )}
-          <button
-            onClick={() => setLayoutPersisted(layout === "tabs" ? "split" : "tabs")}
-            title={layout === "tabs" ? "Show both panels stacked (drag-drop between them)" : "Switch to tabbed view (one panel at full height)"}
-            className="px-3 border-l border-white/5 text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:bg-white/5 hover:text-white flex items-center gap-1.5 transition-all shrink-0"
-          >
-            {layout === "tabs"
-              ? <><Rows size={11} /> Split</>
-              : <><LayoutPanelTop size={11} /> Tabs</>
-            }
-          </button>
+          <div role="group" aria-label="Files layout" className="flex items-stretch border-l border-white/5 shrink-0">
+            {LAYOUT_OPTIONS.filter((o) => o.id !== "side" || !isNarrow).map(({ id, title, Icon }) => (
+              <button
+                key={id}
+                onClick={() => setLayoutPersisted(id)}
+                title={title}
+                aria-pressed={shownLayout === id}
+                className={`w-9 sm:w-7 flex items-center justify-center transition-all ${
+                  shownLayout === id
+                    ? "text-primary bg-primary/10"
+                    : "text-zinc-500 hover:bg-white/5 hover:text-white"
+                }`}
+              >
+                <Icon size={12} />
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Local panel — visible in split mode (top), or in tabs mode when
-            Local is the active side. Hidden via CSS (not unmounted) when
-            on the inactive tab so its directory and provider state
-            survive a side-swap. */}
-        <div className={
-          layout === "split"
-            ? "flex-1 min-h-0 border-b border-white/10"
-            : activeSide === "local" ? "flex-1 min-h-0" : "hidden"
-        }>
-          <FilePanel
-            ref={localRef}
-            provider={localProvider}
-            // The local pane also needs sessionId so its bulk-upload button can
-            // invoke sftp_upload_file / sftp_upload_dir on the right session.
-            // Without this the Upload button silently no-ops on the first
-            // guard (`if (!sessionId) return`).
-            sessionId={sessionId}
-            disabled={disabled}
-            onDragMove={handleDragMove}
-            initialPath={savedDirsRef.current.local}
-            onPathChange={(p) => saveDir("local", p)}
-            getOppositeDir={() => remoteRef.current?.currentDir()}
-          />
-        </div>
-        <div className={
-          layout === "split"
-            ? "flex-1 min-h-0"
-            : activeSide === "remote" ? "flex-1 min-h-0" : "hidden"
-        }>
-          <FilePanel
-            ref={remoteRef}
-            provider={remoteProvider}
-            sessionId={sessionId}
-            disabled={disabled}
-            onDragMove={handleDragMove}
-            initialPath={savedDirsRef.current.remote}
-            onPathChange={(p) => saveDir("remote", p)}
-            getOppositeDir={() => localRef.current?.currentDir()}
-            headerExtra={elevationControl}
-            rootMode={elevation.elevated || rootByLogin}
-          />
+        {/* Both panels share one box: a column for tabs and split, a row
+            for side by side. */}
+        <div className={`flex-1 min-h-0 flex ${shownLayout === "side" ? "flex-row" : "flex-col"}`}>
+          {/* Local panel — visible in split mode (top), side mode (left), or
+              in tabs mode when Local is the active side. Hidden via CSS (not
+              unmounted) when on the inactive tab so its directory and
+              provider state survive a side-swap. */}
+          <div className={
+            shownLayout === "split"
+              ? "flex-1 min-h-0 border-b border-white/10"
+              : shownLayout === "side"
+                ? "flex-1 min-w-0 min-h-0 border-r border-white/10"
+                : activeSide === "local" ? "flex-1 min-h-0" : "hidden"
+          }>
+            <FilePanel
+              ref={localRef}
+              provider={localProvider}
+              // The local pane also needs sessionId so its bulk-upload button can
+              // invoke sftp_upload_file / sftp_upload_dir on the right session.
+              // Without this the Upload button silently no-ops on the first
+              // guard (`if (!sessionId) return`).
+              sessionId={sessionId}
+              disabled={disabled}
+              onDragMove={handleDragMove}
+              initialPath={savedDirsRef.current.local}
+              onPathChange={(p) => saveDir("local", p)}
+              getOppositeDir={() => remoteRef.current?.currentDir()}
+            />
+          </div>
+          <div className={
+            shownLayout === "split"
+              ? "flex-1 min-h-0"
+              : shownLayout === "side"
+                ? "flex-1 min-w-0 min-h-0"
+                : activeSide === "remote" ? "flex-1 min-h-0" : "hidden"
+          }>
+            <FilePanel
+              ref={remoteRef}
+              provider={remoteProvider}
+              sessionId={sessionId}
+              disabled={disabled}
+              onDragMove={handleDragMove}
+              initialPath={savedDirsRef.current.remote}
+              onPathChange={(p) => saveDir("remote", p)}
+              getOppositeDir={() => localRef.current?.currentDir()}
+              headerExtra={elevationControl}
+              rootMode={elevation.elevated || rootByLogin}
+            />
+          </div>
         </div>
       </div>
 
       {/* Mirror view — kept MOUNTED (CSS hidden) so the live worker's logs
           and progress counters survive when the user pops back to Files. */}
       {!!serverId && (
-        <div className={`${view === "mirror" ? "flex-1 flex flex-col min-h-0" : "hidden"}`}>
+        <div className={`${shownView === "mirror" ? "flex-1 flex flex-col min-h-0" : "hidden"}`}>
           <MirrorsPanel
             sessionId={sessionId}
             serverId={serverId}
