@@ -187,7 +187,7 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 
 | OS | File |
 |---|---|
-| Windows 10 / 11 | `.exe` installer or `.msi` |
+| Windows 10 / 11 | `.exe` installer or `.msi`, or the [portable](#portable-mode-windows) `.zip` |
 | macOS (Apple Silicon, or Intel via Rosetta) | `.dmg` or `.app.zip` |
 | Debian / Ubuntu / Mint | `.deb` — `sudo apt install ./submarine_*.deb` |
 | Fedora / RHEL / openSUSE | `.rpm` — `sudo dnf install ./submarine-*.rpm` |
@@ -196,6 +196,19 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | Android 8.0+ | `android-arm64-v8a.apk` for modern phones, or `android-armeabi-v7a.apk` for older 32-bit devices — sideload, no Play Store required |
 
 > Builds are currently **unsigned**. Windows SmartScreen will prompt — click "More info → Run anyway". On macOS you may need `xattr -d com.apple.quarantine /Applications/Submarine.app`. Android sideloading needs "Install unknown apps" enabled for the installer source.
+
+### Portable mode (Windows)
+
+Submarine can keep all of its data next to the executable instead of in your user profile — on a USB stick, say. Create an empty folder named `submarine-data` beside `submarine.exe` and start the app; the `-portable.zip` release asset is already laid out that way. Profiles, the cloud sign-in, the window position and the UI preferences then live in `submarine-data`, and **Settings → Maintenance** shows the folder in use.
+
+A first portable launch starts with no profiles. To carry existing data over, close Submarine and copy two things into `submarine-data`:
+
+- the contents of `%APPDATA%\com.submarine.app`, except `sync_device.json` — it identifies each install to cloud sync, and the portable copy creates its own;
+- the folder `%LOCALAPPDATA%\com.submarine.app\EBWebView`. It holds the app's settings, including **Auto-sync**. Without it Auto-sync starts out on, and the first profile you open is uploaded to your cloud — so if you skip this folder, turn Auto-sync off in Settings before opening a profile you keep only on this computer.
+
+`submarine-data` then holds your encrypted profiles and your cloud sign-in token, so keep it somewhere only you can read.
+
+Not portable: the Microsoft Edge WebView2 runtime (a Windows system component, preinstalled on Windows 11 and current Windows 10) and the short-lived temp files used while editing or dragging remote files. If `submarine-data` can't be written to, Submarine falls back to the usual per-user folders and says so in Settings. (A plain, non-packaged Linux build works the same way — it just doesn't ship a prebuilt zip.)
 
 ### Android
 
@@ -262,7 +275,7 @@ Smaller installer (around 10 MB vs ~100 MB for an Electron equivalent), lower RA
 
 ### Where are my profiles stored?
 
-In a single encrypted file under your OS app-data directory. Nothing in plaintext. Nothing in a global Keychain or registry hive.
+In a single encrypted file under your OS app-data directory — or in the `submarine-data` folder when you run in [portable mode](#portable-mode-windows). Nothing in plaintext. Nothing in a global Keychain or registry hive.
 
 ### Does Submarine collect telemetry or analytics?
 
@@ -278,7 +291,7 @@ No. Distribution is via sideloadable APK from the [releases page](https://github
 
 ## Build from Source
 
-Requirements: Node 20+, Rust stable, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS. Windows additionally needs **Strawberry Perl** for the vendored OpenSSL build (`winget install StrawberryPerl.StrawberryPerl`).
+Requirements: Node 20+, Rust 1.90+, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS. The SSH stack is pure Rust, so no OpenSSL or Perl is needed on any platform.
 
 ```bash
 git clone https://github.com/sinaxhpm/submarine
@@ -290,7 +303,7 @@ npm run tauri build        # build release bundle
 
 ### Android build
 
-Extra requirements: Android SDK + Platform-Tools, NDK 27, and JDK 17. `scripts/android-env.ps1` sets `JAVA_HOME`, `ANDROID_HOME`, and `NDK_HOME` for the current PowerShell session.
+Extra requirements: Android SDK + Platform-Tools, NDK 27, and JDK 17. `scripts/android-env.ps1` sets `JAVA_HOME`, `ANDROID_HOME`, and `NDK_HOME` for the current PowerShell session. It finds the SDK through `ANDROID_HOME` or `ANDROID_SDK_ROOT`, or in Android Studio's default folder (`%LOCALAPPDATA%\Android\Sdk`).
 
 ```powershell
 . .\scripts\android-env.ps1

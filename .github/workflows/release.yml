@@ -195,13 +195,12 @@ jobs:
       - name: Build Tauri bundles
         # Pinned to v0 (major) — Tauri maintainers move that tag in lockstep
         # with stable releases. For tighter reproducibility pin to a SHA.
-        # `--features full-ssh-algos` enables the OpenSSL-backed russh
-        # backend so release binaries can talk to RSA-host-key servers
-        # (the bulk of older Linux + shared hosts). Default `cargo build`
-        # locally stays Perl-free; only CI pulls in OpenSSL.
+        # russh >= 0.63 implements RSA / legacy DH / SHA-1 MACs in pure
+        # Rust, so release and local builds share one algorithm set and no
+        # OpenSSL (or Perl) is needed anymore.
         uses: tauri-apps/tauri-action@v0
         with:
-          args: --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }} --features full-ssh-algos
+          args: --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
 
       # Arch: Tauri's bundler has no native pacman backend, so we run
       # makepkg ourselves inside an `archlinux:latest` container. The
@@ -278,6 +277,24 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Get-ChildItem -Path "src-tauri/target/${{ matrix.rust_target }}/release/bundle" -Recurse -Include *.msi,*.exe |
             Copy-Item -Destination artifacts/
+
+      # Portable build (#35): the bare exe alongside an empty submarine-data
+      # folder — that folder is the switch that makes Submarine keep all of its
+      # data there instead of %APPDATA% (see src-tauri/src/portable.rs). .NET's
+      # ZipFile records the empty folder as an entry, so it survives the round
+      # trip and the extracted copy is portable out of the box.
+      - name: Zip Windows portable build
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          $stage = New-Item -ItemType Directory -Force -Path portable-build
+          New-Item -ItemType Directory -Force -Path (Join-Path $stage.FullName submarine-data) | Out-Null
+          Copy-Item "src-tauri/target/${{ matrix.rust_target }}/release/submarine.exe" $stage.FullName
+          Copy-Item packaging/windows/README-portable.txt (Join-Path $stage.FullName README.txt)
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = Join-Path (Resolve-Path artifacts).Path "Submarine-v${{ env.VERSION }}-windows-x64-portable.zip"
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($stage.FullName, $zip)
 
       - name: Stage artifacts (macOS)
         if: startsWith(matrix.os_name, 'macos')
@@ -385,27 +402,17 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      # openssl-sys's `vendored` feature pulls in openssl-src which builds
-      # OpenSSL from C source. For native Linux/macOS/Windows that's fully
-      # automatic, but cross-compiling to Android needs Perl + make + the
-      # NDK's clang/ar reachable via $PATH. Ubuntu runners ship Perl + make
-      # already; this step just makes sure (apt-get is a no-op if installed).
-      - name: Install OpenSSL build deps for Android cross-compile
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y perl make build-essential
-
-      # openssl-src's Makefile invokes binutils via the legacy
-      # `<target>-ranlib` / `<target>-ar` / `<target>-strip` names. NDK 27
-      # ships only the unprefixed `llvm-ranlib` / `llvm-ar` (the prefixed
-      # symlinks were dropped around NDK 23). Without these, the OpenSSL
-      # cross-build for aarch64 / armv7 fails at the install step with
-      # "aarch64-linux-android-ranlib: not found" and make exits 127.
+      # Some C build scripts in the tree (cc-rs driven, e.g. ring / zstd /
+      # sqlite) may spawn binutils via the legacy `<target>-ranlib` /
+      # `<target>-ar` / `<target>-strip` names. NDK 27 ships only the
+      # unprefixed `llvm-ranlib` / `llvm-ar` (the prefixed symlinks were
+      # dropped around NDK 23), which surfaces as "<target>-ranlib: not
+      # found" and make exiting 127.
       #
       # Create the missing prefixed symlinks inside the NDK's bin dir, then
-      # add that dir to $GITHUB_PATH so openssl-src and any sibling
-      # cc-rs-driven build can spawn them by name. Both Rust targets
-      # (aarch64-linux-android, armv7-linux-androideabi) get their full set.
+      # add that dir to $GITHUB_PATH so any cc-rs-driven build can spawn
+      # them by name. Both Rust targets (aarch64-linux-android,
+      # armv7-linux-androideabi) get their full set.
       - name: Symlink legacy binutils names for NDK cross-compile
         run: |
           NDK_BIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -586,7 +593,7 @@ jobs:
         run: |
           mkdir -p release-files
           find dist -type f \( \
-            -name "*.msi" -o -name "*.exe" \
+            -name "*.msi" -o -name "*.exe" -o -name "*-portable.zip" \
             -o -name "*.dmg" -o -name "*.app.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \
             -o -name "*.pkg.tar.zst" \

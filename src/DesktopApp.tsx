@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
@@ -15,6 +16,7 @@ import PasswordField from "./components/PasswordField";
 import QuickConnectModal, { QuickAuth } from "./components/QuickConnectModal";
 import { useConfirm, useTextPrompt } from "./ui/confirm";
 import { useIsNarrow } from "./hooks/useViewport";
+import { FONT_FAMILY_KEY, FONT_SIZE_KEY, readFontFamily, readFontSize } from "./util/terminalFont";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
 import AddNodePanel from "./components/AddNodePanel";
@@ -129,6 +131,20 @@ function DesktopApp() {
     setSessionStatuses((prev) => (prev[sessionId] === status ? prev : { ...prev, [sessionId]: status }));
   }, []);
 
+  // Sessions whose connect is waiting on the user (host-key, 2FA or login
+  // prompt). A background tab's prompt is hidden along with the tab, so the
+  // tab strip marks it instead.
+  const [promptSessions, setPromptSessions] = useState<Set<string>>(() => new Set());
+  const handlePromptChange = useCallback((sessionId: string, waiting: boolean) => {
+    setPromptSessions((prev) => {
+      if (prev.has(sessionId) === waiting) return prev;
+      const next = new Set(prev);
+      if (waiting) next.add(sessionId);
+      else next.delete(sessionId);
+      return next;
+    });
+  }, []);
+
   // Maximize state mirrored from the OS window so the title-bar button can
   // swap its icon (single square = maximize, overlapping squares = restore)
   // and so the double-click drag-region handler always knows the correct
@@ -145,6 +161,14 @@ function DesktopApp() {
   }, []);
   const toggleMaximize = useCallback(() => {
     appWindow.toggleMaximize().catch(console.error);
+  }, []);
+
+  // App version for the title bar, pulled from Tauri (tauri.conf.json) rather
+  // than hardcoded so it can never drift from the real build. Shown faded next
+  // to the brand name; stays empty (renders nothing) if the call ever fails.
+  const [appVersion, setAppVersion] = useState<string>("");
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
   }, []);
 
   // Persist the user's current folder across NodeGrid unmount/remount cycles.
@@ -225,7 +249,9 @@ function DesktopApp() {
   const [appSettings, setAppSettings] = useState({
     primaryColor: localStorage.getItem('submarine-primary-color') || '#60a5fa',
     backgroundColor: localStorage.getItem('submarine-bg-color') || '#0a0a0c',
-    terminalFontSize: parseInt(localStorage.getItem('submarine-terminal-font-size') || '14'),
+    terminalFontSize: readFontSize(),
+    // '' = the built-in cross-platform monospace stack (see util/terminalFont).
+    terminalFontFamily: readFontFamily(),
     // Auto-sync defaults ON. Per-device (localStorage), like the other prefs.
     autoSync: localStorage.getItem('submarine-auto-sync') !== 'off',
     // Background pull cadence in minutes (min 1). Only gates the periodic
@@ -241,10 +267,11 @@ function DesktopApp() {
     document.documentElement.style.setProperty('--background', appSettings.backgroundColor);
     localStorage.setItem('submarine-primary-color', appSettings.primaryColor);
     localStorage.setItem('submarine-bg-color', appSettings.backgroundColor);
-    localStorage.setItem('submarine-terminal-font-size', appSettings.terminalFontSize.toString());
+    localStorage.setItem(FONT_SIZE_KEY, appSettings.terminalFontSize.toString());
+    localStorage.setItem(FONT_FAMILY_KEY, appSettings.terminalFontFamily);
     localStorage.setItem('submarine-auto-sync', appSettings.autoSync ? 'on' : 'off');
     localStorage.setItem('submarine-sync-interval-min', String(appSettings.syncIntervalMin));
-    // Tell already-mounted terminals to re-fit with the new font size.
+    // Tell already-mounted terminals to re-fit with the new font size / face.
     // Without this dispatch the listener in TerminalView is dead code and
     // users have to close+reopen every terminal to see a size change.
     window.dispatchEvent(new CustomEvent('submarine-settings-changed'));
@@ -679,7 +706,10 @@ function DesktopApp() {
   // best-effort side effect the backend dedups by (host, port, username).
   const openQuickConnect = (auth: QuickAuth) => {
     const sessionId = `session-quick-${Date.now()}`;
-    const displayName = `${auth.username}@${auth.host}:${auth.port}`;
+    // No `user@` when the username is left blank (asked at connect, #54).
+    const displayName = auth.username
+      ? `${auth.username}@${auth.host}:${auth.port}`
+      : `${auth.host}:${auth.port}`;
     setSessions((prev: Session[]) => [...prev, {
       id: sessionId,
       serverId: 0,
@@ -775,6 +805,9 @@ function DesktopApp() {
       <div className="hidden sm:flex items-center gap-2 pr-4 pl-[75px] md:pl-2" data-tauri-drag-region>
         <img src={logoUrl} alt="" draggable={false} className="h-6 w-auto max-w-[24px] object-contain select-none" />
         <span className="text-[12px] font-bold text-white tracking-tight">Submarine</span>
+        {appVersion && (
+          <span data-tauri-drag-region className="text-[11px] text-zinc-500/60 tracking-tight tabular-nums">v{appVersion}</span>
+        )}
       </div>
 
       {/* Mobile session picker — replaces the horizontal tab strip on
@@ -803,6 +836,7 @@ function DesktopApp() {
                 const cur = sessions.find(s => s.id === activeView);
                 const st = cur ? (sessionStatuses[cur.id] ?? 'connecting') : null;
                 const dotTone =
+                  cur && promptSessions.has(cur.id) ? 'bg-primary animate-pulse' :
                   st === 'connected'    ? 'bg-emerald-400' :
                   st === 'connecting'   ? 'bg-amber-400 animate-pulse' :
                   st === 'failed'       ? 'bg-rose-500' :
@@ -838,6 +872,7 @@ function DesktopApp() {
                   {sessions.map(s => {
                     const st = sessionStatuses[s.id] ?? 'connecting';
                     const dot =
+                      promptSessions.has(s.id) ? 'bg-primary animate-pulse' :
                       st === 'connected'    ? 'bg-emerald-400' :
                       st === 'connecting'   ? 'bg-amber-400 animate-pulse' :
                       'bg-rose-500';
@@ -961,13 +996,18 @@ function DesktopApp() {
           // Dot palette: green = connected, amber = connecting, red = failed
           // or disconnected. The pulse animation only runs while connecting
           // so a steady-state tab doesn't draw the eye every half second.
+          // A prompt waiting on the user (host key, 2FA, login) outranks the
+          // status: the dot pulses in the accent colour until it's answered.
+          const waiting = promptSessions.has(s.id);
           const dotTone =
+            waiting               ? "bg-primary animate-pulse" :
             st === "connected"    ? "bg-emerald-400" :
             st === "connecting"   ? "bg-amber-400 animate-pulse" :
             st === "failed"       ? "bg-rose-500" :
             st === "disconnected" ? "bg-rose-500" :
                                     "bg-zinc-500";
           const dotTitle =
+            waiting               ? "Waiting for you — open this tab to answer" :
             st === "connected"    ? "Connected" :
             st === "connecting"   ? "Connecting…" :
             st === "failed"       ? "Connection failed" :
@@ -1810,6 +1850,8 @@ function DesktopApp() {
                               onStatusChange={handleSessionStatus}
                               onTerminalsChange={handleTerminalsChange}
                               chromeless={isVisible && isTiled && !isFocused}
+                              isActiveView={isFocused}
+                              onPromptChange={handlePromptChange}
                             />
                           </ErrorBoundary>
                         </div>
@@ -2335,9 +2377,9 @@ function DesktopApp() {
               name: newNode.name,
               host: newNode.host,
               port: newNode.port,
-              username: isInline
-                ? (newNode.username?.trim() ? newNode.username.trim() : "root")
-                : null,
+              // A blank username stays blank: the connection asks for it
+              // ("Login as", issue #54).
+              username: isInline ? (newNode.username?.trim() || null) : null,
               password: newNode.authType === "custom_pass" ? (newNode.password || null) : null,
               credentialId: (newNode.authType === "vault" && newNode.credentialId) ? parseInt(newNode.credentialId) : null,
               folderId: newNode.folderId ? parseInt(newNode.folderId) : null,
@@ -2402,7 +2444,7 @@ function DesktopApp() {
           }
         }}
         formError={formError}
-        credentials={credentials} sshKeys={sshKeys} folders={folders} refreshFolders={refreshFolders}
+        credentials={credentials} sshKeys={sshKeys} refreshSshKeys={refreshSshKeys} folders={folders} refreshFolders={refreshFolders}
         refreshServers={refreshServers}
         servers={servers}
         isMobile={isMobile}
@@ -2536,7 +2578,7 @@ function DesktopApp() {
             </div>
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Username</label>
-              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="root" value={editCredData.username} onChange={e => setEditCredData({ ...editCredData, username: e.target.value })} />
+              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="Ask when connecting" value={editCredData.username} onChange={e => setEditCredData({ ...editCredData, username: e.target.value })} />
             </div>
             <div className="space-y-4 pt-2">
               <div className="flex justify-between items-center">
@@ -2573,6 +2615,7 @@ function DesktopApp() {
                   onChange={(v) => setEditCredData({ ...editCredData, password: v })}
                   className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner"
                 />
+                <p className="text-[11px] text-zinc-500 ml-1">Leave empty to be asked when connecting.</p>
               </div>
             )}
           </div>
@@ -2593,7 +2636,8 @@ function DesktopApp() {
                   const payload = {
                     name: editCredData.name,
                     authType: editCredData.auth_type || "password",
-                    username: editCredData.username?.trim() ? editCredData.username.trim() : "root",
+                    // Blank = asked when connecting (issue #54).
+                    username: editCredData.username?.trim() ?? "",
                     password: editCredData.auth_type === "key" ? null : (editCredData.password || null),
                     keyId: editCredData.auth_type === "key" ? (editCredData.key_id ? parseInt(editCredData.key_id.toString()) : null) : null
                   };
@@ -2631,6 +2675,46 @@ function DesktopApp() {
           </div>
           <div className="p-6 flex-1 overflow-y-auto space-y-6">
             {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+            {/* Reading the key out of ~/.ssh beats making the user cat it in a
+                terminal and paste two multi-line blobs. Fields are filled in
+                rather than saved outright — the name is a guess from the
+                filename, and a passphrase-protected key still needs its
+                passphrase, so the user reviews before saving. */}
+            <button
+              type="button"
+              onClick={async () => {
+                setFormError("");
+                try {
+                  const path = await invoke<string | null>("pick_ssh_key_file");
+                  if (!path) return;
+                  const loaded = await invoke<{
+                    suggested_name: string;
+                    private_key: string;
+                    public_key: string;
+                    encrypted: boolean;
+                  }>("read_ssh_key_file", { path });
+                  setEditKeyData({
+                    ...editKeyData,
+                    name: editKeyData.name || loaded.suggested_name,
+                    public_key: loaded.public_key,
+                    private_key: loaded.private_key,
+                  });
+                  addLog(
+                    loaded.encrypted
+                      ? "Key loaded — it's passphrase-protected. Fill in the passphrase below, or leave it empty to be asked when connecting."
+                      : "Key loaded from file.",
+                    loaded.encrypted ? "info" : "success",
+                  );
+                } catch (e) {
+                  setFormError(`Couldn't read that key file: ${e}`);
+                  addLog(`KEY_FILE_READ_ERROR: ${e}`, "error");
+                }
+              }}
+              className="w-full h-9 flex items-center justify-center gap-2 text-[12px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 rounded-lg transition-all"
+            >
+              <Key size={13} />
+              Load from a key file
+            </button>
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Name</label>
               <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. My laptop key" value={editKeyData.name} onChange={e => setEditKeyData({ ...editKeyData, name: e.target.value })} />
@@ -2650,6 +2734,7 @@ function DesktopApp() {
                 onChange={(v) => setEditKeyData({ ...editKeyData, passphrase: v })}
                 className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner"
               />
+              <p className="text-[11px] text-zinc-500 ml-1">For an encrypted key, leave empty to be asked when connecting.</p>
             </div>
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">

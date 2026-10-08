@@ -2,13 +2,27 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Plus, Trash2, X, AlertTriangle, ArrowRight, Download, Upload,
-  CheckCircle2, Cloud, CloudOff, HardDrive, ChevronDown, RefreshCw, ArrowUpCircle, Heart,
+  CheckCircle2, Cloud, CloudOff, HardDrive, ChevronDown, RefreshCw, ArrowUpCircle, Github,
 } from "lucide-react";
 import CloudPanel from "./CloudPanel";
-import AboutPanel from "./AboutPanel";
 import logoUrl from "../assets/logo.png";
 import { IS_ANDROID } from "../util/platform";
 import { useTextPrompt, useConfirm } from "../ui/confirm";
+
+// Vault file header (lib.rs VAULT_MAGIC / VAULT_VERSION) — checked up front on
+// Android imports so a wrong file fails before the user picks a name.
+const VAULT_MAGIC = "OMNV";
+const VAULT_VERSION = 1;
+
+// Base64 in 32 KB chunks: spreading a large Uint8Array into one
+// String.fromCharCode call would overflow the call stack.
+const bytesToBase64 = (bytes: Uint8Array) => {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+};
 
 interface CloudStatus { signed_in: boolean; email: string | null; }
 // One personal profile as reported by the cloud (GET /sync/profiles). Names +
@@ -18,8 +32,12 @@ interface CloudStatus { signed_in: boolean; email: string | null; }
 interface CloudProfile { profile: string; name: string; records: number; live_records: number; last_updated: string; }
 // Result of the GitHub release check (backend: about::check_for_updates).
 // `has_update` is true only when `latest` is a strictly newer semver than the
-// running build. Mirrors the shape AboutPanel already consumes.
+// running build.
 interface UpdateInfo { current: string; latest: string | null; has_update: boolean; release_url: string | null; }
+// The running version and the project's GitHub page (backend: about::app_info).
+interface AppInfo { version: string; github_repo_url: string; }
+// The GitHub link's fallback, should app_info ever fail (about::GITHUB_REPO).
+const REPO_URL = "https://github.com/SinaXhpm/Submarine";
 
 // The picker's unit of display: one profile, wherever it lives. `local` = an
 // on-disk vault exists here; `cloud` = the matching cloud partition (or null).
@@ -52,9 +70,11 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   // Import is a two-step flow: pick file (backend validates header) → prompt
   // for the profile name to save it under. We keep the picked path here so
   // the second step can pass it back to Rust on commit.
-  const [importStaged, setImportStaged] = useState<{ sourcePath: string; name: string } | null>(null);
+  // Desktop stages a file path (native dialog); Android stages the file's
+  // bytes (base64) read from the system file picker via <input type="file">.
+  const [importStaged, setImportStaged] = useState<{ sourcePath?: string; bytesB64?: string; name: string } | null>(null);
+  const importFileRef = useRef<HTMLInputElement | null>(null);
   const [cloudOpen, setCloudOpen] = useState(false);
-  const [aboutOpen, setAboutOpen] = useState(false);
 
   // Cloud status surfaced directly on this page so the user doesn't have
   // to open the modal just to know if sync is connected or pending.
@@ -64,9 +84,14 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   // them remember and type a name. Empty until signed in (or on network error).
   const [cloudProfiles, setCloudProfiles] = useState<CloudProfile[]>([]);
   // A newer published release than the running build, if any. Set only when
-  // one actually exists, so the notice by "About" appears solely when there's
-  // something to announce.
+  // one actually exists, so the notice under the footer appears solely when
+  // there's something to announce.
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  // Footer: the version + GitHub link, and how the last "Check for updates"
+  // click went.
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const [check, setCheck] = useState<"idle" | "checking" | "latest" | "none" | "error">("idle");
+  const [checkError, setCheckError] = useState("");
 
   const textPrompt = useTextPrompt();
   const confirm = useConfirm();
@@ -128,14 +153,42 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       .catch(() => {});
   }, []);
 
-  const openReleaseNotes = () => {
-    if (update?.release_url) invoke("open_external_url", { url: update.release_url }).catch(() => {});
+  // A link that can't be opened (no browser / URL handler on this device)
+  // says so under the footer row instead of doing nothing.
+  const [linkError, setLinkError] = useState("");
+  const openLink = (url: string) => {
+    setLinkError("");
+    invoke("open_external_url", { url }).catch((e) => setLinkError(`Couldn't open the link: ${cleanErr(e)}`));
   };
-  // Donate → the project's GitHub, anchored at #donate (placeholder section the
-  // owner fills in later). Goes through the backend URL-opener like every other
-  // external link so the CSP stays tight.
-  const openDonate = () => {
-    invoke("open_external_url", { url: "https://github.com/SinaXhpm/submarine#donate" }).catch(() => {});
+
+  const openReleaseNotes = () => {
+    if (update?.release_url) openLink(update.release_url);
+  };
+
+  useEffect(() => {
+    invoke<AppInfo>("app_info").then(setAppInfo).catch(() => {});
+  }, []);
+
+  const openRepo = () => openLink(appInfo?.github_repo_url ?? REPO_URL);
+
+  // The footer's "Check for updates". Unlike the silent check above it reports
+  // every outcome; a newer release lands in `update`, so the same notice
+  // announces it.
+  const checkForUpdates = async () => {
+    if (check === "checking") return;
+    setCheck("checking");
+    try {
+      const u = await invoke<UpdateInfo>("check_for_updates");
+      if (u.has_update && u.latest) {
+        setUpdate(u);
+        setCheck("idle");
+      } else {
+        setCheck(u.latest ? "latest" : "none");
+      }
+    } catch (e) {
+      setCheckError(cleanErr(e));
+      setCheck("error");
+    }
   };
 
   // When the expanded row changes, reset + focus the password so opening a
@@ -222,6 +275,9 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
 
   const startImport = async () => {
     setError(null); setInfo(null);
+    // Android: no native dialog — the WebView's file input opens the system
+    // picker (Downloads, Drive, messengers…) and hands us the file.
+    if (IS_ANDROID) { importFileRef.current?.click(); return; }
     setBusy(true);
     try {
       const picked = await invoke<[string, string] | null>("import_profile_pick");
@@ -236,13 +292,37 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     }
   };
 
+  const onImportFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the same file be picked again later
+    if (!file) return;
+    setError(null); setInfo(null);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      // Same quick header check the backend does, for instant feedback.
+      if (bytes.length < 5 || String.fromCharCode(...bytes.subarray(0, 4)) !== VAULT_MAGIC || bytes[4] !== VAULT_VERSION) {
+        setError("That file isn't a Submarine profile.");
+        return;
+      }
+      const suggested = file.name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 32) || "imported";
+      setImportStaged({ bytesB64: bytesToBase64(bytes), name: suggested });
+      requestAnimationFrame(() => importNameRef.current?.select());
+    } catch (err: any) {
+      setError(cleanErr(err));
+    }
+  };
+
   const commitImport = async () => {
     if (!importStaged) return;
     const trimmed = importStaged.name.trim();
     if (!trimmed) { setError("Pick a name for the imported profile."); return; }
     setBusy(true); setError(null);
     try {
-      await invoke("import_profile_save", { sourcePath: importStaged.sourcePath, name: trimmed });
+      if (importStaged.bytesB64) {
+        await invoke("import_profile_bytes", { name: trimmed, data: importStaged.bytesB64 });
+      } else {
+        await invoke("import_profile_save", { sourcePath: importStaged.sourcePath, name: trimmed });
+      }
       setImportStaged(null);
       setInfo(`Imported as "${trimmed}". Open it with the original password.`);
       await reload();
@@ -342,9 +422,27 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   // can Get them. `creating` is the explicit "New profile" toggle.
   const showCreate = creating || (!loading && profiles.length === 0 && cloudProfiles.length === 0);
 
+  // What the footer's update item shows for each outcome of the manual check.
+  const checkItem = {
+    idle: { label: "Check for updates", icon: <RefreshCw size={12} />, tone: undefined },
+    checking: { label: "Checking…", icon: <RefreshCw size={12} className="animate-spin" />, tone: undefined },
+    latest: { label: "Up to date", icon: <CheckCircle2 size={12} />, tone: "text-emerald-400/90 hover:text-emerald-300" },
+    none: { label: "No releases yet", icon: <RefreshCw size={12} />, tone: undefined },
+    error: { label: "Couldn't check", icon: <AlertTriangle size={12} />, tone: "text-amber-400/90 hover:text-amber-300" },
+  }[check];
+
   return (
-    <div className="flex-1 flex items-center justify-center px-6 py-10 bg-background">
-      <div className="w-full max-w-[340px] flex flex-col">
+    // Scrolls when the content is taller than the screen (phones with the
+    // keyboard open); `m-auto` still centres it when there's room — plain
+    // items-center would clip the top out of reach instead.
+    <div className="flex-1 min-h-0 overflow-y-auto flex flex-col px-5 sm:px-6 py-8 sm:py-10 bg-background">
+      <input
+        ref={importFileRef}
+        type="file"
+        className="hidden"
+        onChange={onImportFilePicked}
+      />
+      <div className="w-full max-w-[340px] m-auto flex flex-col">
         {/* Brand */}
         <div className="flex flex-col items-center mb-8 select-none">
           <img
@@ -367,14 +465,16 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
         </div>
 
         {error && (
-          <div className="mb-3 px-3 py-2 bg-rose-500/10 border border-rose-500/20 rounded-lg text-rose-200 text-[12.5px] flex items-center gap-2">
-            <AlertTriangle size={13} className="shrink-0" /> {error}
+          <div className="mb-3 px-3 py-2 bg-rose-500/10 border border-rose-500/20 rounded-lg text-rose-200 text-[12.5px] flex items-start gap-2">
+            <AlertTriangle size={13} className="shrink-0 mt-0.5" /> <span className="min-w-0 break-words">{error}</span>
           </div>
         )}
 
         {info && !error && (
-          <div className="mb-3 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-emerald-100 text-[12.5px] flex items-center gap-2">
-            <CheckCircle2 size={13} className="shrink-0" /> <span className="truncate flex-1">{info}</span>
+          <div className="mb-3 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-emerald-100 text-[12.5px] flex items-start gap-2">
+            {/* Wraps instead of truncating: an Android export path is long and
+                the user needs all of it to find the file. */}
+            <CheckCircle2 size={13} className="shrink-0 mt-0.5" /> <span className="flex-1 min-w-0 break-words">{info}</span>
             <button onClick={() => setInfo(null)} className="text-emerald-200/70 hover:text-white shrink-0"><X size={13} /></button>
           </div>
         )}
@@ -454,16 +554,14 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                   <X size={12} /> Cancel
                 </button>
               )}
-              {!IS_ANDROID && (
-                <button
-                  onClick={startImport}
-                  disabled={busy}
-                  title="Import an exported .submarine file"
-                  className="flex-1 h-9 rounded-lg bg-white/[0.02] border border-white/5 hover:bg-white/5 hover:border-white/10 text-zinc-400 hover:text-zinc-100 text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
-                >
-                  <Upload size={12} /> Import
-                </button>
-              )}
+              <button
+                onClick={startImport}
+                disabled={busy}
+                title="Import an exported .submarine file"
+                className="flex-1 h-9 rounded-lg bg-white/[0.02] border border-white/5 hover:bg-white/5 hover:border-white/10 text-zinc-400 hover:text-zinc-100 text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                <Upload size={12} /> Import
+              </button>
             </div>
 
             <p className="text-[11.5px] text-zinc-500 leading-relaxed text-center px-2 pt-1">
@@ -516,7 +614,10 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
                                 onKeyDown={(e) => e.key === "Enter" && unlockSelected()}
-                                className="flex-1 h-10 px-3.5 bg-zinc-900/50 border border-white/5 rounded-lg text-[13.5px] text-zinc-50 placeholder:text-zinc-600 outline-none focus:border-primary/50 transition-colors"
+                                // min-w-0: an <input> won't shrink below its
+                                // intrinsic ~20ch width by default, which pushed
+                                // the Open button out of the card on phones.
+                                className="flex-1 min-w-0 w-full h-10 px-3.5 bg-zinc-900/50 border border-white/5 rounded-lg text-[13.5px] text-zinc-50 placeholder:text-zinc-600 outline-none focus:border-primary/50 transition-colors"
                               />
                               <button
                                 onClick={unlockSelected}
@@ -528,9 +629,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                               </button>
                             </div>
                             <div className="flex flex-wrap items-center gap-1.5">
-                              {!IS_ANDROID && (
-                                <RowAction onClick={() => exportProfile(row.name)} disabled={busy} icon={<Download size={12} />} label="Export" />
-                              )}
+                              <RowAction onClick={() => exportProfile(row.name)} disabled={busy} icon={<Download size={12} />} label="Export" />
                               <RowAction onClick={() => removeLocal(row.name)} disabled={busy} icon={<Trash2 size={12} />} label="Remove local" danger />
                               {row.cloud && (
                                 <RowAction onClick={() => deleteFromCloud(row)} disabled={busy} icon={<CloudOff size={12} />} label="Delete from cloud" danger />
@@ -569,16 +668,14 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
               >
                 <Plus size={12} /> New profile
               </button>
-              {!IS_ANDROID && (
-                <button
-                  onClick={startImport}
-                  disabled={busy}
-                  title="Import an exported .submarine file"
-                  className="flex-1 h-9 rounded-lg bg-white/[0.02] border border-white/5 hover:bg-white/5 hover:border-white/10 text-zinc-400 hover:text-zinc-100 text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
-                >
-                  <Upload size={12} /> Import
-                </button>
-              )}
+              <button
+                onClick={startImport}
+                disabled={busy}
+                title="Import an exported .submarine file"
+                className="flex-1 h-9 rounded-lg bg-white/[0.02] border border-white/5 hover:bg-white/5 hover:border-white/10 text-zinc-400 hover:text-zinc-100 text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                <Upload size={12} /> Import
+              </button>
             </div>
           </div>
         )}
@@ -587,24 +684,39 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
             link; signed-in shows the account email + a way into Manage. */}
         <CloudBar status={cloudStatus} busy={busy} onManage={() => setCloudOpen(true)} />
 
-        {/* About + Donate — a matched pair of pills, with a live "new version"
-            notice underneath when one is available. */}
+        {/* GitHub, the update check and the running version side by side,
+            with a live "new version" notice underneath when one is available
+            (the check steps aside then — the notice says it all). */}
         <div className="mt-4 flex flex-col items-center gap-2.5">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setAboutOpen(true)}
-              className="h-8 px-4 rounded-lg text-[12.5px] font-bold text-zinc-200 bg-white/[0.04] border border-white/10 hover:bg-white/[0.09] hover:text-white transition-colors"
-            >
-              About
-            </button>
-            <button
-              onClick={openDonate}
-              title="Support Submarine on GitHub"
-              className="h-8 px-4 rounded-lg text-[12.5px] font-bold text-rose-200 bg-rose-500/10 border border-rose-500/25 hover:bg-rose-500/20 hover:text-rose-100 transition-colors flex items-center gap-1.5"
-            >
-              <Heart size={13} className="fill-rose-400/40" /> Donate
-            </button>
+          <div aria-live="polite" className="flex flex-wrap items-center justify-center gap-1 text-[11.5px]">
+            <FooterButton onClick={openRepo} title="Open Submarine on GitHub" icon={<Github size={12} />} label="GitHub" />
+            {!update && (
+              <>
+                <FooterDot />
+                <FooterButton
+                  onClick={checkForUpdates}
+                  disabled={check === "checking"}
+                  title={check === "error" ? `Couldn't reach GitHub: ${checkError}` : "Look for a newer release on GitHub"}
+                  icon={checkItem.icon}
+                  label={checkItem.label}
+                  tone={checkItem.tone}
+                />
+              </>
+            )}
+            {appInfo && (
+              <>
+                <FooterDot />
+                <span className="px-1.5 font-mono text-[11px] text-zinc-600 select-text">v{appInfo.version}</span>
+              </>
+            )}
           </div>
+          {/* Why a check or a link failed — as text, since a phone can't
+              hover the tooltip. */}
+          {(linkError || (check === "error" && checkError)) && (
+            <p role="status" className="max-w-[320px] text-center text-[10.5px] leading-snug text-amber-400/80 break-words">
+              {linkError || `Couldn't reach GitHub: ${checkError}`}
+            </p>
+          )}
           {update?.has_update && update.latest && (
             <button
               onClick={openReleaseNotes}
@@ -634,8 +746,6 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
         }}
         onLocalProfilesChanged={reload}
       />
-
-      <AboutPanel isOpen={aboutOpen} onClose={() => setAboutOpen(false)} />
     </div>
   );
 };
@@ -669,6 +779,26 @@ const RowAction = ({
     {icon} {label}
   </button>
 );
+
+// A low-key text button for the footer row under the cloud bar.
+const FooterButton = ({
+  onClick, disabled, title, icon, label, tone,
+}: {
+  onClick: () => void; disabled?: boolean; title: string; icon: React.ReactNode; label: string; tone?: string;
+}) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    title={title}
+    className={`h-7 px-2 rounded-md flex items-center gap-1.5 transition-colors hover:bg-white/[0.05] disabled:cursor-default disabled:hover:bg-transparent ${
+      tone || "text-zinc-500 hover:text-zinc-200"
+    }`}
+  >
+    {icon} {label}
+  </button>
+);
+
+const FooterDot = () => <span aria-hidden className="text-zinc-700 select-none">·</span>;
 
 const CloudBar = ({
   status, busy, onManage,

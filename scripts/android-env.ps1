@@ -3,9 +3,16 @@
 #     npm run android:init    # one-time scaffold
 #     npm run android:dev     # build + install on connected phone
 #
-# All paths are hard-coded to this machine; edit if you move the SDK/NDK.
+# The SDK is the first of ANDROID_HOME, ANDROID_SDK_ROOT and Android Studio's
+# default location (%LOCALAPPDATA%\Android\Sdk) that exists.
 
-$SDK = 'G:\0098\phack\Main\atich\behzadpax-mix\sdk'
+$SDK = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT, (Join-Path $env:LOCALAPPDATA 'Android\Sdk')) |
+       Where-Object { $_ -and (Test-Path $_) } |
+       Select-Object -First 1
+if (-not $SDK) {
+    Write-Error 'Android SDK not found. Set ANDROID_HOME to the SDK folder, then source this script again.'
+    return
+}
 
 # Auto-pick the NEWEST NDK directory under $SDK\ndk. NDK 25/26/27 are all
 # supported by Tauri 2.1 + cargo-ndk; we just want the latest one you have

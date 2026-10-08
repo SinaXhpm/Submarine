@@ -5,11 +5,12 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Folder, File, ArrowUp, RefreshCw, Trash2, Edit3, Shield,
   X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch,
-  Download, Upload, ExternalLink, Move, CheckSquare, Square, Search,
+  Download, Upload, ExternalLink, Move, CheckSquare, Square, Search, Link2,
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
 import { IS_ANDROID } from "../util/platform";
+import { nameFilterMatcher } from "../util/nameFilter";
 
 // Batch overwrite state shared across items in a single download/upload run.
 // Once the user picks "Overwrite all" or "Skip all" the kind is sticky and we
@@ -89,6 +90,10 @@ export interface FilePanelProps {
    * download lands there directly instead of popping a folder picker.
    */
   getOppositeDir?: () => string | undefined;
+  /** Extra controls rendered next to the pane label (remote: the root/sudo badge). */
+  headerExtra?: React.ReactNode;
+  /** File operations in this pane run as root — tint the header so it's unmistakable. */
+  rootMode?: boolean;
 }
 
 export interface FilePanelHandle {
@@ -104,6 +109,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   initialPath,
   onPathChange,
   getOppositeDir,
+  headerExtra,
+  rootMode = false,
 }, ref) => {
   const [currentPath, setCurrentPath] = useState("");
   // Last five distinct directories visited in this panel, MRU first. Lives
@@ -125,14 +132,17 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const [tempInput, setTempInput] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
-  // Name filter applied AFTER sort — substring, case-insensitive. Kept
-  // separate from the path bar so the user can leave a filter active while
+  // Name filter applied AFTER sort — case-insensitive substring, or a `*` /
+  // `?` wildcard pattern for the whole name (util/nameFilter). Kept separate
+  // from the path bar so the user can leave a filter active while
   // typing into the path. Sticky across `cd` so a quick filter session can
   // span sibling dirs; the X button or Escape on the input clears it.
   const [nameFilter, setNameFilter] = useState("");
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
-  const [modal, setModal] = useState<{ type: "rename" | "mkdir" | "properties" | "move" | "move-bulk"; entry?: FileEntry; v1?: string; v2?: string } | null>(null);
+  // `orig`: the mode and owner the Properties dialog opened with, so Save
+  // only sends what the user changed.
+  const [modal, setModal] = useState<{ type: "rename" | "mkdir" | "properties" | "move" | "move-bulk"; entry?: FileEntry; v1?: string; v2?: string; orig?: { mode: number; uid?: number } } | null>(null);
   const [notification, setNotification] = useState<{ msg: string; type: "info" | "success" | "error" } | null>(null);
 
   const [dragOver, setDragOver] = useState(false);
@@ -157,13 +167,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     setTimeout(() => setNotification(null), 4000);
   };
 
-  const formatRights = (isDir: boolean, perm?: number) => {
-    if (perm === undefined) return isDir ? "d---------" : "----------";
+  const formatRights = (isDir: boolean, perm?: number, isSymlink?: boolean) => {
+    const kind = isSymlink ? "l" : isDir ? "d" : "-";
+    if (perm === undefined) return kind + "---------";
     const r = (v: number) => (v & 4 ? "r" : "-");
     const w = (v: number) => (v & 2 ? "w" : "-");
     const x = (v: number) => (v & 1 ? "x" : "-");
     const u = (perm >> 6) & 7, g = (perm >> 3) & 7, o = perm & 7;
-    return (isDir ? "d" : "-") + r(u) + w(u) + x(u) + r(g) + w(g) + x(g) + r(o) + w(o) + x(o);
+    return kind + r(u) + w(u) + x(u) + r(g) + w(g) + x(g) + r(o) + w(o) + x(o);
   };
 
   const formatTime = (ts?: number) => {
@@ -443,9 +454,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // Tauri 2 routes OS file drops through `tauri://drag-drop`; HTML5 drop events
   // fire too but their `File.path` is empty inside Tauri. We listen globally and
   // dispatch only when the cursor landed inside our root.
+  //
+  // Only the remote pane takes OS drops (they're uploads). The local pane is
+  // given a sessionId too, for its Upload button, so checking that alone made
+  // a drop on the local pane upload the files to `<local folder>/<name>` on
+  // the server.
 
   useEffect(() => {
-    if (!sessionId) return; // local pane doesn't need this
+    if (!sessionId || provider.id !== "remote") return;
     let unlisten: (() => void) | null = null;
     listen<{ paths: string[]; position: { x: number; y: number } }>(
       "tauri://drag-drop",
@@ -479,9 +495,29 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     ).then((fn) => { unlisten = fn; });
     return () => { if (unlisten) unlisten(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [sessionId, provider.id]);
 
   // ---- modals -----------------------------------------------------------------
+
+  // Properties shows the path's current mode and owner, read fresh and
+  // following symlinks: chmod/chown on a link change its target, and the
+  // listing only has the link's own mode (777). The setuid/setgid/sticky
+  // bits are kept so Save can't drop them.
+  const openProperties = async (entry: FileEntry) => {
+    setContextMenu(null);
+    let permissions = entry.permissions;
+    let uid = entry.uid;
+    if (provider.stat) {
+      try {
+        ({ permissions, uid } = await provider.stat(entry.path));
+      } catch (err: any) {
+        notify(`Properties: ${err}`, "error");
+        return;
+      }
+    }
+    const mode = permissions !== undefined ? permissions & 0o7777 : 0o755;
+    setModal({ type: "properties", entry, v1: mode.toString(8).padStart(3, "0"), v2: uid?.toString(), orig: { mode, uid } });
+  };
 
   const submitModal = async () => {
     if (!modal) return;
@@ -526,13 +562,21 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         notify(`Created ${v1}`, "success");
       } else if (type === "properties" && entry && v1 && provider.chmod) {
         const mode = parseInt(v1, 8);
-        if (isNaN(mode)) throw new Error("Invalid octal mode");
-        await provider.chmod(entry.path, mode);
+        if (isNaN(mode) || mode < 0 || mode > 0o7777) throw new Error("Invalid octal mode");
+        const orig = modal.orig;
+        // Only what changed. Owner first: Linux clears setuid/setgid on a
+        // chown, so the mode goes on after it (again, if it has those bits).
+        let chowned = false;
         if (v2 && provider.chown) {
           const uid = parseInt(v2);
-          if (!isNaN(uid)) await provider.chown(entry.path, uid, entry.gid ?? 0);
+          if (!isNaN(uid) && uid !== orig?.uid) {
+            await provider.chown(entry.path, uid, null); // null: keep the group
+            chowned = true;
+          }
         }
-        notify("Properties updated", "success");
+        const chmodded = mode !== orig?.mode || (chowned && (mode & 0o6000) !== 0);
+        if (chmodded) await provider.chmod(entry.path, mode);
+        notify(chowned || chmodded ? "Properties updated" : "Nothing changed", chowned || chmodded ? "success" : "info");
       }
       await fetch(currentPath);
     } catch (err: any) {
@@ -556,17 +600,19 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const ok = await confirmDialog({
       title: items.length === 1 ? "Delete item" : `Delete ${items.length} items`,
       message: items.length === 1
-        ? (items[0].isDir
+        ? (items[0].isSymlink
+            ? `Delete the link “${items[0].name}”? Only the link is removed; what it points to is not touched.`
+            : items[0].isDir
             ? `Permanently delete folder “${items[0].name}” and everything inside?`
             : `Permanently delete “${items[0].name}”?`)
-        : `Permanently delete ${items.length} items? Folders include their contents.`,
+        : `Permanently delete ${items.length} items? Folders include their contents; links are removed without touching what they point to.`,
       okLabel: "Delete",
       destructive: true,
     });
     if (!ok) return;
     let count = 0;
     for (const it of items) {
-      try { await provider.remove(it.path, it.isDir); count++; }
+      try { await provider.remove(it.path, it.isDir, it.isSymlink); count++; }
       catch (err: any) { notify(`Delete failed for ${it.name}: ${err}`, "error"); }
     }
     if (count > 0) {
@@ -730,9 +776,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       if (va > vb) return sort.asc ? 1 : -1;
       return 0;
     });
-    const needle = nameFilter.trim().toLowerCase();
-    if (!needle) return sorted;
-    return sorted.filter(e => e.name.toLowerCase().includes(needle));
+    const matches = nameFilterMatcher(nameFilter);
+    return matches ? sorted.filter(e => matches(e.name)) : sorted;
   })();
   const filteredOut = nameFilter.trim() ? entries.length - sortedEntries.length : 0;
 
@@ -781,8 +826,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   };
 
   // ---- HTML5 dragover for visual feedback during OS-level drop ----------------
+  // Only the remote pane takes the drop (see the tauri://drag-drop listener);
+  // over the local pane the cursor says so instead of a highlight.
 
-  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); setDragOver(true); };
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (provider.id === "remote") setDragOver(true);
+    else e.dataTransfer.dropEffect = "none";
+  };
   const onDragLeave = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); };
   const onDrop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); };
 
@@ -815,10 +866,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       )}
 
       {/* Header */}
-      <div className="w-full flex items-center justify-between gap-1.5 p-1.5 bg-[#121214] border border-white/5 rounded-lg shrink-0 shadow-lg">
+      <div className={`w-full flex items-center justify-between gap-1.5 p-1.5 border rounded-lg shrink-0 shadow-lg ${
+        rootMode ? "bg-rose-950/30 border-rose-500/40" : "bg-[#121214] border-white/5"
+      }`}>
         <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300 px-1.5 shrink-0">
           {provider.label}
         </span>
+        {headerExtra}
         <div className="h-5 w-px bg-white/10 shrink-0" />
         <div className="flex-1 flex items-center gap-1.5 min-w-0 relative">
           <button onClick={goUp} title="Up" className="p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 shrink-0">
@@ -995,6 +1049,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           onChange={(e) => setNameFilter(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Escape") { setNameFilter(""); (e.currentTarget as HTMLInputElement).blur(); } }}
           placeholder="Filter by name…"
+          title="Filter by name. Wildcards match the whole name: * any characters, ? one character (e.g. *.sh)"
           className="flex-1 min-w-0 h-5 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
         />
         {nameFilter && (
@@ -1129,7 +1184,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           {loading && sortedEntries.length === 0 ? (
             <div className="text-center py-14 text-zinc-400">Loading…</div>
           ) : sortedEntries.length === 0 ? (
-            <div className="text-center py-14 text-zinc-500">Empty</div>
+            <div className="text-center py-14 px-3 text-zinc-500 break-words">
+              {filteredOut ? `No names match “${nameFilter.trim()}”` : "Empty"}
+            </div>
           ) : (
             sortedEntries.map((entry) => {
               const isSel = selected.has(entry.path);
@@ -1141,6 +1198,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 onClick={(e) => onRowClick(e, entry, sortedEntries)}
                 onDoubleClick={() => {
                   if (entry.isDir) { fetch(entry.path); return; }
+                  if (entry.brokenLink) { notify(`“${entry.name}” is a broken link: its target is missing or not accessible.`, "error"); return; }
                   // For files: remote → live-edit (download + open editor +
                   // auto-upload on save); local → open in the OS default app.
                   // Both are desktop-only — on Android a double-tap on a file
@@ -1187,11 +1245,22 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                     : <Square size={12} className="text-zinc-500 hover:text-zinc-300" />}
                 </div>
                 <div className="flex items-center gap-2 min-w-0 pr-1">
-                  {entry.isDir
-                    ? <Folder size={12} className="text-indigo-300 shrink-0" />
-                    : <File size={12} className="text-zinc-500 shrink-0" />}
+                  <span
+                    className="relative inline-flex shrink-0"
+                    title={entry.isSymlink ? (entry.brokenLink ? "Broken link: target is missing or not accessible" : "Symbolic link") : undefined}
+                  >
+                    {entry.isDir
+                      ? <Folder size={12} className="text-indigo-300" />
+                      : <File size={12} className={entry.brokenLink ? "text-rose-400/70" : "text-zinc-500"} />}
+                    {entry.isSymlink && (
+                      <Link2
+                        size={8}
+                        className={`absolute -bottom-1 -right-1.5 rounded-sm bg-zinc-950 ${entry.brokenLink ? "text-rose-400" : "text-sky-300"}`}
+                      />
+                    )}
+                  </span>
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-zinc-100 text-[11px]">{entry.name}</div>
+                    <div className={`truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
                     {/* Narrow-viewport subline: on < sm the SIZE / CHANGED /
                         RIGHTS cells are display:none (so they don't force
                         horizontal scroll), and their info collapses into
@@ -1200,7 +1269,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                       {[
                         entry.isDir ? null : formatSize(entry.size),
                         formatTime(entry.modified),
-                        showPerms ? formatRights(entry.isDir, entry.permissions) : null,
+                        showPerms ? formatRights(entry.isDir, entry.permissions, entry.isSymlink) : null,
                       ].filter(Boolean).join(" · ")}
                     </div>
                   </div>
@@ -1213,7 +1282,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 </div>
                 {showPerms && (
                   <div className="hidden sm:flex text-right text-[10.5px] text-zinc-300 font-mono opacity-90 items-center justify-end gap-1">
-                    <span className="truncate">{formatRights(entry.isDir, entry.permissions)}</span>
+                    <span className="truncate">{formatRights(entry.isDir, entry.permissions, entry.isSymlink)}</span>
                     <button onClick={(e) => openMenu(e, entry)} title="Options"
                       className="opacity-60 hover:opacity-100 p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-white shrink-0">
                       <MoreVertical size={11} />
@@ -1307,7 +1376,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <Move size={11} /><span>{multi ? `Move (${acting.length}) to…` : "Move to…"}</span>
           </button>
           {!multi && provider.chmod && (
-            <button onClick={() => { setContextMenu(null); setModal({ type: "properties", entry: contextMenu.entry, v1: (contextMenu.entry.permissions ? (contextMenu.entry.permissions & 0o777).toString(8) : "755"), v2: contextMenu.entry.uid?.toString() }); }}
+            <button onClick={() => openProperties(contextMenu.entry)}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <Shield size={11} /><span>Properties</span>
             </button>
@@ -1343,13 +1412,21 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 <>
                   <div>Name: <span className="text-zinc-100 font-bold">{modal.entry?.name}</span></div>
                   <div>Path: <span className="text-zinc-400 text-[10px] block truncate">{modal.entry?.path}</span></div>
+                  {modal.entry?.isSymlink && (
+                    <div className="text-[10px] text-amber-300/80">
+                      This is a link: these are the settings of the file it points to, and changes apply to that file.
+                    </div>
+                  )}
 
                   {/* RWX matrix — owner/group/other × read/write/execute. The
                       checkbox grid is the source of truth; the octal input
-                      below mirrors it and accepts manual edits both ways. */}
+                      below mirrors it and accepts manual edits both ways.
+                      setuid/setgid/sticky (the 4th octal digit) aren't on the
+                      grid but ride along untouched. */}
                   {(() => {
                     const parsed = parseInt(modal.v1 || "0", 8);
-                    const mode = isNaN(parsed) ? 0 : parsed & 0o777;
+                    const full = isNaN(parsed) ? 0 : parsed & 0o7777;
+                    const mode = full & 0o777;
                     const roles: { key: "owner" | "group" | "other"; label: string; shift: number }[] = [
                       { key: "owner", label: "Owner", shift: 6 },
                       { key: "group", label: "Group", shift: 3 },
@@ -1361,8 +1438,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                       { key: "x", label: "X", bit: 1 },
                     ];
                     const toggle = (shift: number, bit: number) => {
-                      const next = mode ^ (bit << shift);
-                      setModal({ ...modal, v1: (next & 0o777).toString(8).padStart(3, "0") });
+                      const next = full ^ (bit << shift);
+                      setModal({ ...modal, v1: next.toString(8).padStart(3, "0") });
                     };
                     return (
                       <div className="pt-1">
@@ -1402,9 +1479,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                       <label className="text-[10px] text-zinc-400 block mb-1">Octal</label>
                       <input type="text" value={modal.v1 || ""}
                         onChange={(e) => {
-                          // Only accept 0–3 digits, each 0–7 — anything else is
-                          // ignored so the checkbox grid never sees garbage.
-                          const v = e.target.value.replace(/[^0-7]/g, "").slice(0, 3);
+                          // Only accept up to 4 digits (setuid/setgid/sticky
+                          // first), each 0–7 — anything else is ignored so
+                          // the checkbox grid never sees garbage.
+                          const v = e.target.value.replace(/[^0-7]/g, "").slice(0, 4);
                           setModal({ ...modal, v1: v });
                         }}
                         className="w-full h-7 px-2 bg-white/5 border border-white/5 rounded text-zinc-200 focus:outline-none focus:border-indigo-400/40 text-[11.5px] font-mono" />

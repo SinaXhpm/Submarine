@@ -4,7 +4,7 @@ use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use zeroize::{Zeroize, Zeroizing};
 use rand::Rng;
-use rusqlite::{ffi, Connection, DatabaseName};
+use rusqlite::{ffi, Connection, MAIN_DB};
 use rusqlite::serialize::OwnedData;
 use std::ptr::NonNull;
 use std::sync::Mutex as StdMutex;
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::fs;
 use tauri::Manager;
 use serde_json::json;
-use ssh_key::{private::Ed25519Keypair, rand_core::OsRng, PrivateKey};
+use ssh_key::{private::{Ed25519Keypair, Ed25519PrivateKey}, PrivateKey};
 mod ssh_manager;
 mod tunnel;
 mod monitor;
@@ -23,6 +23,11 @@ mod docker;
 mod hlc;
 mod identity;
 mod tailcat_transport;
+mod portable;
+mod fonts;
+mod webkit_sandbox;
+#[cfg(test)]
+mod ssh_test_server;
 use ssh_manager::SshState;
 use monitor::{MonitorMap, SharedSettings};
 use mirror::MirrorMap;
@@ -145,20 +150,17 @@ fn derive_key(password: &str, salt_bytes: &[u8]) -> Result<[u8; 32], String> {
 
 fn encrypt_with_key(plaintext: &[u8], key: &[u8; 32]) -> Result<(Vec<u8>, [u8; NONCE_LEN]), String> {
     let cipher = Aes256Gcm::new(key.into());
-    let nonce_bytes: [u8; NONCE_LEN] = rand::thread_rng().gen();
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, plaintext)
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let ciphertext = cipher.encrypt(&Nonce::from(nonce_bytes), plaintext)
         .map_err(|e| format!("[CRYPTO] ENCRYPT_FAILED: {}", e))?;
     Ok((ciphertext, nonce_bytes))
 }
 
 fn decrypt_with_key(ciphertext: &[u8], nonce_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    if nonce_bytes.len() != NONCE_LEN {
-        return Err("[CRYPTO] NONCE_LEN_INVALID".into());
-    }
+    let nonce = Nonce::try_from(nonce_bytes).map_err(|_| "[CRYPTO] NONCE_LEN_INVALID".to_string())?;
     let cipher = Aes256Gcm::new(key.into());
-    let nonce = Nonce::from_slice(nonce_bytes);
-    cipher.decrypt(nonce, ciphertext)
+    cipher.decrypt(&nonce, ciphertext)
         .map_err(|e| format!("[CRYPTO] DECRYPT_FAILURE: Possible wrong key or corrupted data. Details: {}", e))
 }
 
@@ -259,7 +261,7 @@ fn save_vault_blocking(
     salt: &[u8; SALT_LEN],
     path: &std::path::Path,
 ) -> Result<(), String> {
-    let serialized = conn.serialize(DatabaseName::Main)
+    let serialized = conn.serialize(MAIN_DB)
         .map_err(|e| format!("[DATABASE] SERIALIZE_FAILED: {}", e))?;
     // Compress-then-encrypt. Order matters: compressing AFTER encryption
     // is useless because AES-GCM ciphertext is indistinguishable from
@@ -274,7 +276,26 @@ fn save_vault_blocking(
     let tmp_path = path.with_extension("submarine.tmp");
     {
         use std::io::Write as _;
-        let mut f = fs::File::create(&tmp_path)
+        // Drop any tmp left behind by a crashed save. Without this the
+        // OpenOptions below would reopen that file, and `mode` only applies
+        // to a file this call actually creates — so a stale tmp written by
+        // an older build would keep its umask-derived permissions forever.
+        let _ = fs::remove_file(&tmp_path);
+        // Mode is set at open time, not with a set_permissions call after
+        // creating the file. The gap between those two would be enough for
+        // another account on a multi-user host to open the vault while it
+        // still carried the process umask (0644 on most distros) — and this
+        // is the file every private key and password in the app lives in.
+        // Same idiom as the cloud bearer token in cloud.rs; on Windows the
+        // user-only ACL is inherited from app_data_dir.
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp_path)
             .map_err(|e| format!("[FILE] VAULT_TMP_CREATE_FAILED at {:?}: {}", tmp_path, e))?;
         f.write_all(&blob)
             .map_err(|e| format!("[FILE] VAULT_TMP_WRITE_FAILED at {:?}: {}", tmp_path, e))?;
@@ -303,7 +324,7 @@ const SYNCED_TABLES: &[&str] = &[
 /// (see `app_temp_root`).
 fn new_entity_uuid() -> String {
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -328,7 +349,7 @@ fn get_or_create_dek(conn: &Connection) -> Result<([u8; 32], bool), String> {
         // Malformed row (shouldn't happen) — fall through and mint a fresh one.
     }
     let mut d = [0u8; 32];
-    rand::thread_rng().fill(&mut d);
+    rand::rng().fill_bytes(&mut d);
     conn.execute(
         "INSERT INTO sync_meta(key,value) VALUES('dek',?1)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -347,7 +368,7 @@ fn sync_device_node_id(app: &tauri::AppHandle) -> String {
     use tauri::Manager as _;
     let fresh = || {
         let mut b = [0u8; 8];
-        rand::thread_rng().fill(&mut b);
+        rand::rng().fill_bytes(&mut b);
         hex::encode(b)
     };
     let Ok(dir) = app.path().app_data_dir() else { return fresh() };
@@ -1037,7 +1058,7 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
         params.push(Box::new(id));
     }
 
-    let placeholders = std::iter::repeat("?").take(columns.len()).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat_n("?", columns.len()).collect::<Vec<_>>().join(",");
     let update_set: Vec<String> = columns
         .iter()
         .filter(|c| c.as_str() != "uuid")
@@ -1562,7 +1583,7 @@ async fn setup_identity(
     }
     let kp = identity::generate_keypair();
     let mut salt = [0u8; 16];
-    rand::thread_rng().fill(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
     cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
     cloud.set_identity(kp.public, kp.secret).await;
@@ -1583,7 +1604,7 @@ async fn reset_identity(
     }
     let kp = identity::generate_keypair();
     let mut salt = [0u8; 16];
-    rand::thread_rng().fill(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
     cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
     cloud.set_identity(kp.public, kp.secret).await;
@@ -1984,7 +2005,7 @@ async fn rotate_share_dek(
 ) -> Result<(), String> {
     let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
     let mut fresh = [0u8; 32];
-    rand::thread_rng().fill(&mut fresh);
+    rand::rng().fill_bytes(&mut fresh);
 
     // Re-seal to the owner FIRST. If this is the step that fails, nobody's grant
     // has changed yet and the old key is still universally valid — a clean no-op
@@ -2920,6 +2941,7 @@ async fn close_profile(
         tunnel::stop_all_for_session(&ssh.tunnels, sid).await;
         ssh.forwarded_targets.lock().await.remove(sid);
         ssh.sftp_sessions.lock().await.remove(sid);
+        ssh.sftp_elevation.lock().await.remove(sid);
         ssh.connections.lock().await.remove(sid);
         let temp = session_sftp_dir(sid);
         if temp.exists() {
@@ -2960,6 +2982,9 @@ async fn close_profile(
     ssh.tunnels.lock().await.clear();
     ssh.forwarded_targets.lock().await.clear();
     ssh.sftp_sessions.lock().await.clear();
+    ssh.sftp_elevation.lock().await.clear();
+    // Wipe every connect-time secret the user typed this profile (issue #30).
+    ssh.prompted_secrets.lock().await.clear();
     ssh.connections.lock().await.clear();
     ssh.jump_connections.lock().await.clear();
     ssh.fp_txs.lock().await.clear();
@@ -2988,6 +3013,14 @@ async fn delete_profile(app_handle: tauri::AppHandle, name: String) -> Result<()
         fs::remove_file(&path)
             .map_err(|e| format!("[FILE] DELETE_PROFILE_FAILED at {:?}: {}", path, e))?;
     }
+    // A save that died between writing the tmp and renaming it leaves a
+    // `<name>.submarine.tmp` holding a complete vault. `list_profiles` filters
+    // on the `.submarine` extension so nothing ever surfaces it, which means
+    // deleting the profile would otherwise leave the user's keys on disk
+    // indefinitely with no way to see or remove them from the UI. Best-effort:
+    // the profile itself is already gone, so a locked tmp shouldn't fail the
+    // delete the user asked for.
+    let _ = fs::remove_file(path.with_extension("submarine.tmp"));
     Ok(())
 }
 
@@ -3008,13 +3041,17 @@ async fn export_profile(
         return Err(format!("Profile '{}' not found on disk", name));
     }
 
-    // Native file dialogs are desktop-only. On Android we'd hit the SAF
-    // intent system via a Tauri plugin instead, but profile export from
-    // the mobile UI isn't a wired feature yet, so the command just refuses.
+    // Android has no native save dialog: drop the (still encrypted) file into
+    // the first shared folder we can write to — Download, then Documents,
+    // then app storage — and report the exact path so the user can find it.
     #[cfg(target_os = "android")]
     {
-        let _ = src;
-        return Err("Profile export is not available on Android.".into());
+        let dir = android_export_dir(&app_handle)
+            .ok_or_else(|| "No writable folder found for the export.".to_string())?;
+        let dst = unique_file_path(&dir, &name, "submarine");
+        fs::copy(&src, &dst)
+            .map_err(|e| format!("[FILE] EXPORT_COPY_FAILED to {:?}: {}", dst, e))?;
+        return Ok(Some(dst.to_string_lossy().to_string()));
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -3094,6 +3131,124 @@ async fn import_profile_pick() -> Result<Option<(String, String)>, String> {
             .unwrap_or_else(|| "imported".to_string());
 
         Ok(Some((path.to_string_lossy().to_string(), suggested)))
+    }
+}
+
+/// Header + minimum-size check for an exported vault (no decryption — that
+/// needs the profile password, entered later at unlock).
+fn validate_vault_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() < 5 || &bytes[..4] != VAULT_MAGIC {
+        return Err("The selected file is not a Submarine profile.".into());
+    }
+    if bytes[4] != VAULT_VERSION {
+        return Err(format!(
+            "Profile uses an unsupported vault version ({}). Update Submarine first.",
+            bytes[4]
+        ));
+    }
+    if bytes.len() < HEADER_LEN + NONCE_LEN + 16 {
+        return Err("The file is truncated: the header is valid but the body is too small.".into());
+    }
+    Ok(())
+}
+
+/// `<dir>/<stem>.<ext>`, or `<stem> (2).<ext>`, `(3)`… if that name is taken,
+/// so an export never overwrites an earlier one.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn unique_file_path(dir: &std::path::Path, stem: &str, ext: &str) -> PathBuf {
+    let first = dir.join(format!("{}.{}", stem, ext));
+    if !first.exists() {
+        return first;
+    }
+    for n in 2..1000 {
+        let candidate = dir.join(format!("{} ({}).{}", stem, n, ext));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    first
+}
+
+/// First shared folder the app can write to, for Android exports.
+#[cfg(target_os = "android")]
+fn android_export_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from("/storage/emulated/0/Download"),
+        PathBuf::from("/storage/emulated/0/Documents"),
+    ];
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        candidates.push(dir);
+    }
+    candidates.into_iter().find(|p| is_dir_writable(p))
+}
+
+/// Import from bytes — the Android path: the WebView's system file picker
+/// hands the file to the page, which sends it here (base64). Same checks as
+/// `import_profile_save`, and it never overwrites an existing profile.
+#[tauri::command]
+async fn import_profile_bytes(
+    app_handle: tauri::AppHandle,
+    name: String,
+    data: String,
+) -> Result<(), String> {
+    use base64::Engine as _;
+    validate_profile_name(&name)?;
+    // Real vaults are a few MB at most; refuse anything absurd before
+    // allocating for it.
+    const MAX_VAULT_BYTES: usize = 256 * 1024 * 1024;
+    if data.len() / 4 * 3 > MAX_VAULT_BYTES {
+        return Err("The file is too large to be a Submarine profile.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|_| "Couldn't read the selected file.".to_string())?;
+    validate_vault_bytes(&bytes)?;
+
+    let dir = profiles_dir(&app_handle)?;
+    fs::create_dir_all(&dir).map_err(|e| format!("[FILE] MKDIR_FAILED: {}", e))?;
+    let dst = profile_path(&app_handle, &name)?;
+    if dst.exists() {
+        return Err(format!("Profile '{}' already exists", name));
+    }
+    fs::write(&dst, &bytes).map_err(|e| format!("[FILE] IMPORT_WRITE_FAILED to {:?}: {}", dst, e))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod profile_import_tests {
+    use super::*;
+
+    fn fake_vault(len: usize) -> Vec<u8> {
+        let mut v = vec![0u8; len];
+        v[..4].copy_from_slice(VAULT_MAGIC);
+        v[4] = VAULT_VERSION;
+        v
+    }
+
+    #[test]
+    fn a_well_formed_vault_header_passes() {
+        assert!(validate_vault_bytes(&fake_vault(HEADER_LEN + NONCE_LEN + 64)).is_ok());
+    }
+
+    #[test]
+    fn junk_wrong_version_and_truncated_files_are_rejected() {
+        assert!(validate_vault_bytes(b"PK\x03\x04 not a vault").is_err());
+        let mut v = fake_vault(HEADER_LEN + NONCE_LEN + 64);
+        v[4] = VAULT_VERSION + 1;
+        assert!(validate_vault_bytes(&v).is_err());
+        assert!(validate_vault_bytes(&fake_vault(HEADER_LEN + 3)).is_err());
+    }
+
+    #[test]
+    fn exports_never_overwrite() {
+        let dir = std::env::temp_dir().join(format!("submarine-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = unique_file_path(&dir, "work", "submarine");
+        assert_eq!(first.file_name().unwrap(), "work.submarine");
+        std::fs::write(&first, b"x").unwrap();
+        let second = unique_file_path(&dir, "work", "submarine");
+        assert_eq!(second.file_name().unwrap(), "work (2).submarine");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -3228,7 +3383,7 @@ async fn setup_master_db_inner(
         conn = Connection::open_in_memory()
             .map_err(|e| format!("[DATABASE] MEM_INIT_FAILED: {}", e))?;
         let owned = to_sqlite_owned(&decrypted_data)?;
-        conn.deserialize(DatabaseName::Main, owned, false)
+        conn.deserialize(MAIN_DB, owned, false)
             .map_err(|e| format!("[DATABASE] DESERIALIZE_FAILED: {}", e))?;
         // Schema migration for vaults created before the Notes feature shipped.
         // Existing tables are untouched; only the new ones get materialised.
@@ -3388,7 +3543,7 @@ async fn setup_master_db_inner(
             return Err("[CRYPTO] WEAK_MASTER_PASSWORD: choose at least 8 characters — this password protects every saved credential.".into());
         }
         let mut fresh = [0u8; SALT_LEN];
-        rand::thread_rng().fill(&mut fresh);
+        rand::rng().fill_bytes(&mut fresh);
         salt_bytes = fresh;
         // Same reasoning as the unlock path above — keep the async runtime
         // unblocked during the Argon2 derivation on fresh-profile creation.
@@ -3423,6 +3578,45 @@ async fn setup_master_db_inner(
     }
 
     conn.execute("PRAGMA foreign_keys = ON", []).map_err(|e| format!("[DATABASE] PRAGMA_FAILED: {}", e))?;
+
+    // Deleting a key or credential frees its SQLite page but leaves the bytes
+    // sitting there, and `conn.serialize()` copies free pages too — so the
+    // private key the user deleted last month is still inside every vault
+    // snapshot written since, and inside every per-entity sync blob derived
+    // from one. secure_delete zeroes the vacated bytes at DELETE/UPDATE time
+    // instead. `execute_batch` rather than `execute` because assigning this
+    // pragma reports the resulting value as a row, which `execute` rejects.
+    conn.execute_batch("PRAGMA secure_delete = ON;")
+        .map_err(|e| format!("[DATABASE] PRAGMA_FAILED: {}", e))?;
+
+    // secure_delete only governs deletes from here on. A vault that has been
+    // in use since before this build still carries whatever its old frees
+    // left behind, so purge that history once: VACUUM rebuilds the database
+    // with no free pages at all. Marked in schema_meta so it costs one
+    // rebuild per vault rather than one per launch. Best-effort — a vault
+    // that can't be vacuumed is still perfectly usable, just not scrubbed,
+    // and failing to open it over that would be a bad trade.
+    let scrubbed: bool = conn
+        .query_row(
+            "SELECT 1 FROM schema_meta WHERE key = 'free_pages_scrubbed'",
+            [],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if !scrubbed {
+        match conn.execute_batch("VACUUM;") {
+            Ok(()) => {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('free_pages_scrubbed', '1')",
+                    [],
+                );
+                needs_resave = true;
+            }
+            Err(e) => {
+                eprintln!("[DATABASE] VACUUM_SKIPPED: {}", e);
+            }
+        }
+    }
 
     // ---- Per-entity sync instrumentation (schema v6) ----
     // A per-profile Hybrid Logical Clock backs the `hlc_now()` SQL function so
@@ -3550,7 +3744,7 @@ async fn create_profile(
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let mut pid = [0u8; 16];
-        rand::thread_rng().fill(&mut pid);
+        rand::rng().fill_bytes(&mut pid);
         let pid_hex = hex::encode(pid); // 32 hex chars — fits the server's 32-char partition column
         // DO NOTHING (never overwrite): a fresh vault has neither key, but this
         // must never repartition a profile if it somehow re-runs.
@@ -3569,9 +3763,19 @@ async fn create_profile(
     Ok(())
 }
 
+/// What `generate_ssh_key` made: its row id (so the server form can select
+/// it) and the public half to put in the server's authorized_keys.
+#[derive(serde::Serialize)]
+struct GeneratedSshKey {
+    id: i64,
+    public_key: String,
+}
+
 #[tauri::command]
-async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Result<(), String> {
-    let keypair = Ed25519Keypair::random(&mut OsRng);
+async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Result<GeneratedSshKey, String> {
+    let mut seed = [0u8; 32];
+    rand::rng().fill_bytes(&mut seed);
+    let keypair = Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&seed));
     let priv_key = PrivateKey::from(keypair);
     let pub_ssh = priv_key.public_key().to_openssh()
         .map_err(|e| format!("[SSH] PUB_EXPORT_FAILED: {}", e))?;
@@ -3583,10 +3787,48 @@ async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Res
     
     conn.execute("INSERT INTO ssh_keys (name, public_key, private_key) VALUES (?1, ?2, ?3)", rusqlite::params![name, pub_ssh, priv_ssh])
         .map_err(|e| format!("[DATABASE] KEY_INSERT_FAILED: {}", e))?;
-    
+    let id = conn.last_insert_rowid();
+
     drop(conn_guard);
     save_vault_internal(&state)?;
-    Ok(())
+    Ok(GeneratedSshKey { id, public_key: pub_ssh })
+}
+
+/// The `-----BEGIN … PRIVATE KEY-----` line of a PEM key, skipping anything
+/// before it (`openssl ecparam -genkey` writes an `EC PARAMETERS` block first).
+/// Empty when there is none.
+fn pem_private_key_header(text: &str) -> &str {
+    text.lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("-----BEGIN ") && l.ends_with(" PRIVATE KEY-----"))
+        .unwrap_or("")
+}
+
+/// An ECDSA key in SEC1 PEM encrypted the legacy way (`Proc-Type:
+/// 4,ENCRYPTED`). russh decrypts that encryption only for RSA keys, so no
+/// passphrase can unlock it here.
+fn is_legacy_encrypted_ec_pem(text: &str) -> bool {
+    pem_private_key_header(text) == "-----BEGIN EC PRIVATE KEY-----"
+        && text.contains("Proc-Type: 4,ENCRYPTED")
+}
+
+/// Whether a private key is passphrase-protected, judged from the key text
+/// alone: an OpenSSH key whose header says so, a legacy PEM key encrypted the
+/// PKCS#5 way (`Proc-Type: 4,ENCRYPTED`), or an encrypted PKCS#8 key.
+fn private_key_is_encrypted(text: &str) -> bool {
+    text.contains("Proc-Type: 4,ENCRYPTED")
+        || pem_private_key_header(text) == "-----BEGIN ENCRYPTED PRIVATE KEY-----"
+        || ssh_key::PrivateKey::from_openssh(text.trim())
+            .map(|k| k.is_encrypted())
+            .unwrap_or(false)
+}
+
+/// Key types the connect path can sign with.
+fn check_key_algorithm(algorithm: &ssh_key::Algorithm) -> Result<(), String> {
+    match algorithm {
+        ssh_key::Algorithm::Ed25519 | ssh_key::Algorithm::Rsa { .. } | ssh_key::Algorithm::Ecdsa { .. } => Ok(()),
+        other => Err(format!("[SSH] UNSUPPORTED_KEY_TYPE: {} keys are not supported.", other.as_str())),
+    }
 }
 
 /// Reject key formats the SSH client cannot use, so failures surface when the
@@ -3594,57 +3836,38 @@ async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Res
 fn validate_ssh_private_key(private_key: &str) -> Result<(), String> {
     let trimmed = private_key.trim();
 
-    // PKCS#1 / PKCS#8 / SEC1 PEM headers. Whether we accept these depends on
-    // whether the build has russh's OpenSSL backend wired in — see the
-    // matching gate in the connect path.
-    if trimmed.starts_with("-----BEGIN RSA PRIVATE KEY-----") {
-        #[cfg(feature = "full-ssh-algos")]
-        {
-            return Ok(());
-        }
-        #[cfg(not(feature = "full-ssh-algos"))]
-        {
-            return Err("[SSH] UNSUPPORTED_KEY_FORMAT_DEV: RSA keys aren't available in this debug build. Either build with --features full-ssh-algos (requires Perl) or install a release build from GitHub — both support RSA. Ed25519 keys work everywhere.".into());
-        }
-    }
-    if trimmed.starts_with("-----BEGIN DSA PRIVATE KEY-----")
-        || trimmed.starts_with("-----BEGIN EC PRIVATE KEY-----")
-    {
-        // DSA is dead; ECDSA in PEM (SEC1) needs an extra conversion russh
-        // doesn't do for us. Tell the user to convert and retry rather than
-        // pretending the format is fine.
-        return Err("[SSH] UNSUPPORTED_KEY_FORMAT: DSA / SEC1 ECDSA PEM keys aren't supported. Convert to OpenSSH format with `ssh-keygen -p -m PEM -f <file>` and re-import, or generate a fresh Ed25519 key.".into());
-    }
-
-    if trimmed.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
-        // Inspect the algorithm without requiring the passphrase — the algorithm
-        // header is unencrypted even when the body is encrypted.
-        if let Ok(parsed) = ssh_key::PrivateKey::from_openssh(trimmed) {
-            match parsed.algorithm() {
-                ssh_key::Algorithm::Ed25519 => {}
-                ssh_key::Algorithm::Rsa { .. } | ssh_key::Algorithm::Ecdsa { .. } => {
-                    #[cfg(not(feature = "full-ssh-algos"))]
-                    {
-                        return Err(format!(
-                            "[SSH] UNSUPPORTED_KEY_TYPE_DEV: {} keys need a release build (or local build with --features full-ssh-algos). Ed25519 works everywhere.",
-                            parsed.algorithm().as_str()
-                        ));
-                    }
-                }
-                other => {
-                    return Err(format!(
-                        "[SSH] UNSUPPORTED_KEY_TYPE: {} keys are not supported.",
-                        other.as_str()
-                    ));
-                }
+    match pem_private_key_header(trimmed) {
+        // PKCS#1 RSA PEM is decoded by russh's pure-Rust backend in every build.
+        "-----BEGIN RSA PRIVATE KEY-----" => Ok(()),
+        "-----BEGIN DSA PRIVATE KEY-----" => Err(
+            "[SSH] UNSUPPORTED_KEY_TYPE: DSA keys aren't supported. Generate a new key, e.g. with `ssh-keygen -t ed25519`.".into(),
+        ),
+        "-----BEGIN EC PRIVATE KEY-----" if is_legacy_encrypted_ec_pem(trimmed) => Err(
+            "[SSH] UNSUPPORTED_KEY_FORMAT: This ECDSA key uses the legacy PEM encryption, which Submarine can only read for RSA keys. Re-save it in OpenSSH format with `ssh-keygen -p -f <file>` and import it again.".into(),
+        ),
+        // ECDSA in SEC1 PEM (any curve russh signs with: P-256, P-384, P-521)
+        // and PKCS#8 (ECDSA, Ed25519 or RSA). Unencrypted, so read it now.
+        "-----BEGIN EC PRIVATE KEY-----" | "-----BEGIN PRIVATE KEY-----" => {
+            match russh::keys::decode_secret_key(trimmed, None) {
+                Ok(key) => check_key_algorithm(&key.algorithm()),
+                Err(e) => Err(format!("[SSH] UNREADABLE_KEY: This key couldn't be read: {}", e)),
             }
         }
-        // If parsing fails entirely (unexpected header layout), let it through;
-        // the connect path will surface a clearer error.
-        return Ok(());
+        // Encrypted PKCS#8 can't be opened without its passphrase, which is
+        // saved with the key or asked for when connecting.
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----" => Ok(()),
+        "-----BEGIN OPENSSH PRIVATE KEY-----" => {
+            // Inspect the algorithm without requiring the passphrase — the
+            // algorithm header is unencrypted even when the body is encrypted.
+            // If parsing fails entirely (unexpected header layout), let it
+            // through; the connect path will surface a clearer error.
+            match ssh_key::PrivateKey::from_openssh(trimmed) {
+                Ok(parsed) => check_key_algorithm(&parsed.algorithm()),
+                Err(_) => Ok(()),
+            }
+        }
+        _ => Err("[SSH] UNRECOGNIZED_KEY_FORMAT: Expected a private key in OpenSSH format (begins with -----BEGIN OPENSSH PRIVATE KEY-----) or PEM / PKCS#8 (-----BEGIN RSA PRIVATE KEY-----, -----BEGIN EC PRIVATE KEY-----, -----BEGIN PRIVATE KEY-----).".into()),
     }
-
-    Err("[SSH] UNRECOGNIZED_KEY_FORMAT: Expected an OpenSSH-format private key (begins with -----BEGIN OPENSSH PRIVATE KEY-----) or RSA PEM.".into())
 }
 
 #[tauri::command]
@@ -3684,10 +3907,248 @@ async fn delete_ssh_key(state: tauri::State<'_, DbState>, id: i32) -> Result<(),
     
     conn.execute("DELETE FROM ssh_keys WHERE id=?1", rusqlite::params![id])
         .map_err(|e| format!("[DATABASE] KEY_DELETE_FAILED: {}", e))?;
-    
+
     drop(conn_guard);
     save_vault_internal(&state)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Loading an SSH key off the filesystem
+// ---------------------------------------------------------------------------
+//
+// Keys reach the vault two ways here: the user browsing to one by hand, and
+// `IdentityFile` picked up while importing an OpenSSH config. Both land on
+// `load_key_from_disk`, so a key sourced either way is validated identically
+// and the file is read exactly once.
+
+/// Ceiling on how much of a chosen file we'll read. A private key is a couple
+/// of kilobytes; past this it isn't one, and reading the whole thing only to
+/// reject it would let a mis-click pull an ISO into memory.
+const SSH_KEY_MAX_BYTES: u64 = 512 * 1024;
+
+/// Expand a leading `~` the way OpenSSH does when it resolves `IdentityFile`.
+/// `~user/…` is left alone: it needs a passwd lookup, and a personal config
+/// pointing at another account's key isn't a case worth supporting.
+fn expand_home(raw: &str) -> PathBuf {
+    let trimmed = raw.trim().trim_matches('"');
+    let rest = match trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
+        Some(r) => r,
+        None => return PathBuf::from(trimmed),
+    };
+    match directories::UserDirs::new() {
+        Some(dirs) => dirs.home_dir().join(rest),
+        // No home directory to expand against — hand back the literal path so
+        // the caller reports "not found" on something the user can recognise,
+        // rather than a path with a silently-dropped tilde.
+        None => PathBuf::from(trimmed),
+    }
+}
+
+/// A key file read from disk, with everything we can determine without asking
+/// the user for a passphrase.
+#[derive(serde::Serialize)]
+struct LoadedSshKey {
+    /// Absolute path we actually read, after `~` expansion. Echoed back so the
+    /// UI can show what it picked up and pass it to `import_ssh_key_file`
+    /// without re-deriving it.
+    path: String,
+    /// Name to pre-fill, taken from the file stem (`id_ed25519`).
+    suggested_name: String,
+    private_key: String,
+    /// OpenSSH stores the public half in cleartext even in an encrypted key
+    /// file, and an unencrypted PEM / PKCS#8 key can be decoded for it, so this
+    /// is usually derivable from the private key alone. For an encrypted PEM /
+    /// PKCS#8 key we fall back to a sibling `<file>.pub` and, failing that,
+    /// leave it empty — nothing in the connect path needs it, it's here so the
+    /// user can copy it into an `authorized_keys`.
+    public_key: String,
+    /// Whether the key is passphrase-protected. The passphrase itself is never
+    /// on disk, so the UI has to ask for it separately before the key will
+    /// connect.
+    encrypted: bool,
+}
+
+/// Read and validate a private key file. Shared by the browse flow and the
+/// SSH-config import.
+fn load_key_from_disk(path: &std::path::Path) -> Result<LoadedSshKey, String> {
+    let meta = fs::metadata(path)
+        .map_err(|e| format!("[SSH] KEY_FILE_UNREADABLE at {}: {}", path.display(), e))?;
+    if !meta.is_file() {
+        return Err(format!("[SSH] KEY_FILE_NOT_A_FILE: {}", path.display()));
+    }
+    if meta.len() > SSH_KEY_MAX_BYTES {
+        return Err(format!(
+            "[SSH] KEY_FILE_TOO_LARGE: {} is {} bytes — that isn't a private key.",
+            path.display(),
+            meta.len()
+        ));
+    }
+
+    // A key file is text; a binary one (say, a PuTTY .ppk mistaken for an
+    // OpenSSH key) fails here with a clearer message than the validator's.
+    let private_key = fs::read_to_string(path).map_err(|e| {
+        format!("[SSH] KEY_FILE_NOT_TEXT at {}: {}", path.display(), e)
+    })?;
+    validate_ssh_private_key(&private_key)?;
+
+    let encrypted = private_key_is_encrypted(&private_key);
+    // The public half: an OpenSSH key carries it in cleartext even when
+    // encrypted, and an unencrypted PEM / PKCS#8 key yields it once decoded.
+    let normalized = private_key.replace("\r\n", "\n");
+    let readable = ssh_key::PrivateKey::from_openssh(normalized.trim()).ok().or_else(|| {
+        if encrypted {
+            None
+        } else {
+            russh::keys::decode_secret_key(&normalized, None).ok()
+        }
+    });
+    // `with_extension` would turn `key.pem` into `key.pub`; the convention is
+    // to append, so `id_ed25519` → `id_ed25519.pub` and `key.pem` → `key.pem.pub`.
+    let sibling_pub = {
+        let mut s = path.as_os_str().to_os_string();
+        s.push(".pub");
+        PathBuf::from(s)
+    };
+    let public_key = readable
+        .as_ref()
+        .and_then(|p| p.public_key().to_openssh().ok())
+        .or_else(|| fs::read_to_string(&sibling_pub).ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let suggested_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Imported key")
+        .to_string();
+
+    Ok(LoadedSshKey {
+        path: path.to_string_lossy().into_owned(),
+        suggested_name,
+        private_key,
+        public_key,
+        encrypted,
+    })
+}
+
+/// Open a native picker for a private key file and return the chosen path, or
+/// `None` if the user cancelled. Only the path crosses IPC — the file isn't
+/// read until the caller asks for it by name, so cancelling costs nothing and
+/// the key never travels for a dialog the user backed out of.
+///
+/// `async` for the same reason `export_profile` is: rfd's blocking dialog must
+/// not run on the main thread on macOS, and a sync Tauri command does.
+#[tauri::command]
+async fn pick_ssh_key_file() -> Result<Option<String>, String> {
+    // Native dialogs are desktop-only, same as profile export/import above.
+    #[cfg(target_os = "android")]
+    {
+        Err("Browsing for a key file isn't available on Android — paste the key instead.".into())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let mut dialog = rfd::FileDialog::new().set_title("Choose an SSH private key");
+        // Start where the keys almost always are. Key files are conventionally
+        // extensionless (`id_ed25519`), which no filter can express, so the
+        // picker stays unfiltered and `load_key_from_disk` does the rejecting.
+        if let Some(dirs) = directories::UserDirs::new() {
+            let ssh_dir = dirs.home_dir().join(".ssh");
+            if ssh_dir.is_dir() {
+                dialog = dialog.set_directory(&ssh_dir);
+            }
+        }
+        Ok(dialog.pick_file().map(|p| p.to_string_lossy().into_owned()))
+    }
+}
+
+/// Read a key file the user already chose, for the "fill in the new-key form"
+/// flow. Nothing is written to the vault — the user still reviews the name and
+/// supplies a passphrase before saving.
+#[tauri::command]
+fn read_ssh_key_file(path: String) -> Result<LoadedSshKey, String> {
+    load_key_from_disk(&expand_home(&path))
+}
+
+/// A key that `import_ssh_key_file` put in the vault (or found already there).
+#[derive(serde::Serialize)]
+struct ImportedSshKey {
+    id: i64,
+    name: String,
+    /// True when we matched an existing row instead of inserting one. Lets the
+    /// importer tell the user "attached your existing key" rather than
+    /// implying it created a duplicate.
+    reused: bool,
+    /// Carried through from the file so the caller can warn that this key
+    /// won't connect until its passphrase is filled in.
+    encrypted: bool,
+}
+
+/// Read a key file straight into the vault and hand back the row to link a
+/// server against. Used by the SSH-config import (one call per distinct
+/// `IdentityFile`) and by the browse button on the server sheet.
+///
+/// Re-importing the same file is idempotent: identity is the private key's
+/// own bytes, so a second run over an unchanged `~/.ssh/config` attaches the
+/// keys already in the vault instead of piling up copies of them.
+#[tauri::command]
+async fn import_ssh_key_file(
+    state: tauri::State<'_, DbState>,
+    path: String,
+    name: Option<String>,
+) -> Result<ImportedSshKey, String> {
+    let loaded = load_key_from_disk(&expand_home(&path))?;
+    let encrypted = loaded.encrypted;
+    // The key content only ever lives in this function, so keep it wiped on
+    // the way out rather than leaving it in a heap block for the allocator to
+    // hand to something else.
+    let private_key = Zeroizing::new(loaded.private_key);
+    let requested = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or(loaded.suggested_name);
+
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+
+    if let Ok((id, existing_name)) = conn.query_row(
+        "SELECT id, name FROM ssh_keys WHERE private_key = ?1 LIMIT 1",
+        rusqlite::params![private_key.as_str()],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    ) {
+        return Ok(ImportedSshKey { id, name: existing_name, reused: true, encrypted });
+    }
+
+    // Names aren't unique in the schema, but two rows called `id_ed25519` are
+    // indistinguishable in the key dropdown, so suffix a fresh import whose
+    // name some other key already holds.
+    let mut final_name = requested.clone();
+    for suffix in 2..100 {
+        let taken: bool = conn
+            .query_row(
+                "SELECT 1 FROM ssh_keys WHERE name = ?1",
+                rusqlite::params![final_name],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if !taken {
+            break;
+        }
+        final_name = format!("{} ({})", requested, suffix);
+    }
+
+    conn.execute(
+        "INSERT INTO ssh_keys (name, public_key, private_key) VALUES (?1, ?2, ?3)",
+        rusqlite::params![final_name, loaded.public_key, private_key.as_str()],
+    )
+    .map_err(|e| format!("[DATABASE] KEY_INSERT_FAILED: {}", e))?;
+    let id = conn.last_insert_rowid();
+
+    drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(ImportedSshKey { id, name: final_name, reused: false, encrypted })
 }
 
 /// Canonicalize a node row's identity fields based on the chosen auth_type.
@@ -3799,10 +4260,9 @@ async fn save_quick_connect_node(
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
 
-    let username = {
-        let t = auth.username.trim();
-        if t.is_empty() { "root".to_string() } else { t.to_string() }
-    };
+    // A blank username stays blank: the saved node then asks for it at
+    // connect time too (issue #54), exactly like the live session does.
+    let username = auth.username.trim().to_string();
 
     // Dedup against existing, non-deleted ROOT nodes with the same identity so
     // the grid doesn't fill with duplicates on repeated quick connects.
@@ -3817,7 +4277,11 @@ async fn save_quick_connect_node(
         Err(e) => return Err(format!("[DATABASE] QUICK_NODE_LOOKUP_FAILED: {}", e)),
     }
 
-    let name = format!("{}@{}", username, auth.host);
+    let name = if username.is_empty() {
+        auth.host.clone()
+    } else {
+        format!("{}@{}", username, auth.host)
+    };
 
     // A private key wins over a password if both somehow arrived.
     let (auth_type, db_password, db_key_id): (&str, Option<String>, Option<i64>) =
@@ -4779,6 +5243,941 @@ struct QuickAuth {
     transport: Option<String>,
 }
 
+/// Largest number of connect-time secret prompts (a missing password or key
+/// passphrase) shown before giving up on an auth method, per issue #30.
+const MAX_SECRET_PROMPTS: u32 = 3;
+
+/// Which field of the per-tab `ssh_manager::PromptedSecrets` cache a prompting
+/// auth call reads and writes.
+#[derive(Clone, Copy)]
+enum SecretSlot {
+    Password,
+    Passphrase,
+    JumpPassword,
+    JumpPassphrase,
+    Username,
+    JumpUsername,
+}
+
+/// The tab a connection belongs to. A dedicated `::sftp` / `::fwd` secondary
+/// shares its parent tab's prompted-secret cache, so the suffix is stripped to
+/// key the cache by the base session id. A plain primary id is returned as-is.
+fn base_session_id(session_id: &str) -> &str {
+    session_id
+        .strip_suffix("::sftp")
+        .or_else(|| session_id.strip_suffix("::fwd"))
+        .unwrap_or(session_id)
+}
+
+/// Why turning a stored private key into a usable keypair failed, split so the
+/// connect path can tell a key that merely needs a passphrase we don't have
+/// (worth asking the user for) from one that is broken regardless (no prompt
+/// will fix it).
+pub(crate) enum KeyDecodeError {
+    /// Encrypted key whose supplied passphrase was missing, empty or wrong.
+    NeedsPassphrase,
+    /// Unparseable or unsupported key — the wrapped string is a human message.
+    Malformed(String),
+}
+
+/// Decode `private_key` with `passphrase`, classifying any failure. `\r\n` is
+/// normalised first (keys pasted on Windows) and an empty passphrase is treated
+/// as none. "Is the key encrypted?" is answered from the key itself (the
+/// OpenSSH header's `is_encrypted()`, a legacy `Proc-Type: 4,ENCRYPTED` PEM, or
+/// an encrypted PKCS#8 one) — the same checks `load_key_from_disk` uses — so a
+/// wrong passphrase is reported as `NeedsPassphrase` rather than `Malformed`.
+pub(crate) fn decode_private_key(
+    private_key: &str,
+    passphrase: Option<&str>,
+) -> Result<russh::keys::PrivateKey, KeyDecodeError> {
+    let normalized = private_key.replace("\r\n", "\n");
+    let passphrase = passphrase.filter(|p| !p.is_empty());
+    // russh decrypts the legacy PEM encryption only for RSA keys: an ECDSA key
+    // encrypted that way decrypts and then fails the RSA decode whatever the
+    // passphrase, so say so instead of asking for one three times.
+    if is_legacy_encrypted_ec_pem(&normalized) {
+        return Err(KeyDecodeError::Malformed(
+            "this ECDSA key uses the legacy PEM encryption, which Submarine can only read for RSA keys; \
+             re-save it in OpenSSH format with `ssh-keygen -p -f <keyfile>`"
+                .into(),
+        ));
+    }
+    // russh decrypts a legacy PKCS#1 PEM key encrypted the PKCS#5 way only with
+    // AES-128-CBC. Another cipher — DES-EDE3 (PuTTYgen's OpenSSH export,
+    // `openssl -des3`) or AES-256 — can't be read whatever the passphrase, so
+    // say so instead of asking for one three times.
+    if normalized.contains("Proc-Type: 4,ENCRYPTED") && !normalized.contains("DEK-Info: AES-128-CBC,") {
+        return Err(KeyDecodeError::Malformed(
+            "this key uses a legacy PEM encryption Submarine can't read (only AES-128-CBC); \
+             re-save it in OpenSSH format with `ssh-keygen -p -f <keyfile>`"
+                .into(),
+        ));
+    }
+    // An unencrypted SEC1 / PKCS#8 key is read without the passphrase: russh's
+    // PKCS#8 reader takes any passphrase it is handed to mean "this key is
+    // encrypted" and fails, so one saved with such a key would break it.
+    let header = pem_private_key_header(&normalized);
+    let plain_pem = header == "-----BEGIN PRIVATE KEY-----" || header == "-----BEGIN EC PRIVATE KEY-----";
+    let passphrase = if plain_pem { None } else { passphrase };
+    match russh::keys::decode_secret_key(&normalized, passphrase) {
+        Ok(key) => Ok(key),
+        // The OpenSSH decoder reports this when an encrypted key is handed no
+        // password at all.
+        Err(russh::keys::Error::KeyIsEncrypted) => Err(KeyDecodeError::NeedsPassphrase),
+        Err(e) => {
+            // Decode failed with a passphrase in hand. If the key is an
+            // encrypted one, the passphrase was wrong; otherwise it is a
+            // genuinely unusable key. Encrypted means an OpenSSH key whose
+            // header says so, a legacy PKCS#1 PEM key encrypted the PKCS#5 way
+            // (`Proc-Type: 4,ENCRYPTED`, which russh decrypts) — a wrong
+            // passphrase there fails deep in the RSA decode, not with
+            // KeyIsEncrypted, so without this check a typo ended the attempt
+            // as "failed to parse" instead of asking again — or an encrypted
+            // PKCS#8 key, which fails the same way with no passphrase at all.
+            if private_key_is_encrypted(&normalized) {
+                Err(KeyDecodeError::NeedsPassphrase)
+            } else {
+                Err(KeyDecodeError::Malformed(e.to_string()))
+            }
+        }
+    }
+}
+
+/// `&mut` accessor for one slot of a `PromptedSecrets`, so the cache get/set/
+/// clear helpers don't each repeat the match.
+fn prompted_secret_slot(
+    secrets: &mut ssh_manager::PromptedSecrets,
+    slot: SecretSlot,
+) -> &mut Option<zeroize::Zeroizing<String>> {
+    match slot {
+        SecretSlot::Password => &mut secrets.password,
+        SecretSlot::Passphrase => &mut secrets.passphrase,
+        SecretSlot::JumpPassword => &mut secrets.jump_password,
+        SecretSlot::JumpPassphrase => &mut secrets.jump_passphrase,
+        SecretSlot::Username => &mut secrets.username,
+        SecretSlot::JumpUsername => &mut secrets.jump_username,
+    }
+}
+
+type PromptedSecretsMap =
+    std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, ssh_manager::PromptedSecrets>>>;
+type KbiTxs = std::sync::Arc<
+    tokio::sync::Mutex<
+        std::collections::HashMap<String, tokio::sync::oneshot::Sender<Option<Vec<String>>>>,
+    >,
+>;
+
+/// A copy of one cached secret for `base`, or `None` when absent.
+async fn cache_get_secret(
+    cache: &PromptedSecretsMap,
+    base: &str,
+    slot: SecretSlot,
+) -> Option<zeroize::Zeroizing<String>> {
+    let mut map = cache.lock().await;
+    map.get_mut(base).and_then(|s| prompted_secret_slot(s, slot).clone())
+}
+
+/// Remember an accepted secret for `base` so reconnects / secondaries reuse it.
+async fn cache_store_secret(
+    cache: &PromptedSecretsMap,
+    base: &str,
+    slot: SecretSlot,
+    value: zeroize::Zeroizing<String>,
+) {
+    let mut map = cache.lock().await;
+    let entry = map.entry(base.to_string()).or_default();
+    *prompted_secret_slot(entry, slot) = Some(value);
+}
+
+/// Forget one cached secret for `base` (e.g. the server just rejected it).
+async fn cache_clear_secret(cache: &PromptedSecretsMap, base: &str, slot: SecretSlot) {
+    let mut map = cache.lock().await;
+    if let Some(entry) = map.get_mut(base) {
+        *prompted_secret_slot(entry, slot) = None;
+    }
+}
+
+/// Where a connect-time secret came from, which decides what happens to it once
+/// the server answers: a `Given` one (the saved value) is never cached; a
+/// `Cache` one is stored again on success and dropped on rejection; a `Prompt`
+/// one — or the failed-screen `Override` — is stored once accepted. Caching an
+/// accepted override is what lets the screen forget it after a successful
+/// connect, so a mistyped one isn't sent first on every later attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SecretSource {
+    Given,
+    Override,
+    Cache,
+    Prompt,
+}
+
+/// The secrets already in hand for one auth method, in the order they are
+/// tried: the per-connect override (failed-screen box), then what the user
+/// typed earlier this tab (cache), then the saved value. A cached value beats
+/// the saved one: it only exists because the saved one was missing or rejected
+/// earlier this tab. Empty values are dropped — an empty saved secret means
+/// "ask when connecting".
+fn secret_candidates(
+    override_secret: Option<zeroize::Zeroizing<String>>,
+    cached: Option<zeroize::Zeroizing<String>>,
+    saved: Option<zeroize::Zeroizing<String>>,
+) -> Vec<(zeroize::Zeroizing<String>, SecretSource)> {
+    [
+        (override_secret, SecretSource::Override),
+        (cached, SecretSource::Cache),
+        (saved, SecretSource::Given),
+    ]
+    .into_iter()
+    .filter_map(|(secret, source)| secret.filter(|s| !s.is_empty()).map(|s| (s, source)))
+    .collect()
+}
+
+/// Everything a connect-time secret prompt needs besides the SSH session: where
+/// to show it (the keyboard-interactive modal of `session_id`, answered under
+/// `nonce`) and where accepted secrets live (`cache`, under the tab's `base`
+/// id). `allow_prompt` is false for the dedicated `::sftp` / `::fwd`
+/// secondaries, which only ever reuse what the primary cached.
+struct SecretPromptCtx<'a> {
+    app: &'a tauri::AppHandle,
+    session_id: &'a str,
+    nonce: &'a str,
+    kbi_txs: &'a KbiTxs,
+    cache: &'a PromptedSecretsMap,
+    base: &'a str,
+    allow_prompt: bool,
+    /// The connect attempt asking. A prompt is only shown while it's current
+    /// (see ssh_manager::ConnectAttempt).
+    attempt: &'a ssh_manager::ConnectAttempt,
+    /// Set when the user cancels one of our prompts (or lets it time out).
+    /// The caller then skips the keyboard-interactive fallback: on a typical
+    /// OpenSSH + PAM server that fallback would immediately show the server's
+    /// own "Password:" box, i.e. ask again for what the user just declined.
+    /// Atomic because the context is borrowed across awaits in a spawned task.
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+impl SecretPromptCtx<'_> {
+    /// Activity-log line for this connection. Never given a secret. A
+    /// superseded attempt stays out of the tab's log (it would read as the
+    /// newer attempt's).
+    fn log(&self, msg: &str, ty: &str) {
+        use tauri::Emitter;
+        println!("[LOG-{}] {}", self.session_id, msg);
+        if !self.attempt.is_current_now() {
+            return;
+        }
+        let _ = self.app.emit(
+            &format!("session-log-{}", self.session_id),
+            serde_json::json!({"msg": msg, "type": ty}),
+        );
+    }
+}
+
+/// Ask the user for ONE value at connect time — a password or key passphrase
+/// (`echo` false: masked), or a login name (`echo` true) — reusing the
+/// keyboard-interactive prompt channel + modal. Emits a single prompt under
+/// `kbi-prompt-{session_id}`, waits on `kbi_txs` keyed by `nonce` (the same
+/// 120s budget as a real 2FA prompt), dismisses the modal, and returns the
+/// typed value (zeroised) or `None` on cancel / timeout / dropped channel. The
+/// value is never logged or persisted.
+async fn prompt_for_secret(
+    ctx: &SecretPromptCtx<'_>,
+    label: &str,
+    instructions: &str,
+    echo: bool,
+) -> Option<zeroize::Zeroizing<String>> {
+    use tauri::Emitter;
+    // Superseded or abandoned attempt: never show its prompt over a newer
+    // one. It ends the same way a cancelled prompt does.
+    if !ctx.attempt.may_prompt().await {
+        ctx.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        return None;
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<Vec<String>>>();
+    ctx.kbi_txs.lock().await.insert(ctx.nonce.to_string(), tx);
+    let _ = ctx.app.emit(
+        &format!("kbi-prompt-{}", ctx.session_id),
+        serde_json::json!({
+            "nonce": ctx.nonce,
+            // Blank name keeps the modal's generic heading; the label carries
+            // the meaning. Instructions only explain a retry.
+            "name": "",
+            "instructions": instructions,
+            "prompts": [{ "prompt": label, "echo": echo }],
+        }),
+    );
+    let answer = match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
+        Ok(Ok(Some(mut answers))) => {
+            // One prompt → one answer; ignore extras, treat a missing one as "".
+            let first = if answers.is_empty() { String::new() } else { answers.swap_remove(0) };
+            Some(zeroize::Zeroizing::new(first))
+        }
+        // Cancelled (None), timed out, or the sender was dropped.
+        _ => {
+            ctx.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
+    };
+    ctx.kbi_txs.lock().await.remove(ctx.nonce);
+    // The nonce lets the tab ignore this if a newer prompt is already showing.
+    let _ = ctx.app.emit(
+        &format!("kbi-prompt-dismiss-{}", ctx.session_id),
+        serde_json::json!({ "nonce": ctx.nonce }),
+    );
+    answer
+}
+
+/// The login name for a typed "Login as" answer: trimmed, and empty means
+/// `root` — the long-standing default for a node saved without a username, so
+/// pressing Enter logs in exactly as before.
+fn login_user_from_answer(answer: &str) -> zeroize::Zeroizing<String> {
+    let name = answer.trim();
+    zeroize::Zeroizing::new(if name.is_empty() { "root".to_string() } else { name.to_string() })
+}
+
+/// The login name for a connection whose saved username may be blank (issue
+/// #54). A saved name is used as-is. A blank one is taken from what the user
+/// typed earlier in this tab, else asked for — "Login as", visible like
+/// PuTTY's — on a primary connection. A dedicated `::sftp` / `::fwd`
+/// connection never asks; with nothing cached it keeps the old `root` default.
+///
+/// Returns the name and whether it was typed just now (the caller caches a
+/// typed name only once the login succeeds), or `None` when the prompt was
+/// cancelled or timed out (`ctx.cancelled` is then set, so the attempt ends as
+/// "Login cancelled"). The name is held in `Zeroizing` memory throughout.
+async fn resolve_login_user(
+    saved: &str,
+    host: &str,
+    slot: SecretSlot,
+    ctx: &SecretPromptCtx<'_>,
+) -> Option<(zeroize::Zeroizing<String>, bool)> {
+    let saved = saved.trim();
+    if !saved.is_empty() {
+        return Some((zeroize::Zeroizing::new(saved.to_string()), false));
+    }
+    if let Some(cached) = cache_get_secret(ctx.cache, ctx.base, slot).await.filter(|u| !u.is_empty()) {
+        return Some((cached, false));
+    }
+    if !ctx.allow_prompt {
+        return Some((zeroize::Zeroizing::new("root".to_string()), false));
+    }
+    ctx.log("No saved username — asking for it.", "info");
+    let typed = prompt_for_secret(
+        ctx,
+        &format!("Login as (on {})", host),
+        "Leave it empty to log in as root.",
+        true,
+    )
+    .await;
+    match typed {
+        Some(answer) => Some((login_user_from_answer(&answer), true)),
+        None => {
+            ctx.log("Username prompt cancelled or timed out.", "error");
+            None
+        }
+    }
+}
+
+/// Password authentication for a login whose password may not be saved (issue
+/// #30). Tries the passwords already in hand (`secret_candidates`), then — on a
+/// primary connection, while the server still offers password auth — asks the
+/// user, re-asking on rejection for up to `MAX_SECRET_PROMPTS` prompts. A typed
+/// or cached password that is accepted is kept in the tab's cache under `slot`;
+/// a cached one that is rejected is dropped.
+///
+/// With nothing in hand, a `none` probe first checks that the server offers
+/// password auth at all, so a keyboard-interactive-only (2FA) server shows no
+/// password box. `Ok(false)` — password not offered, prompt cancelled or timed
+/// out, or prompts used up — leaves the caller's keyboard-interactive fallback
+/// to run exactly as before.
+async fn authenticate_password_prompting<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    host: &str,
+    override_password: Option<zeroize::Zeroizing<String>>,
+    saved_password: Option<zeroize::Zeroizing<String>>,
+    slot: SecretSlot,
+    ctx: &SecretPromptCtx<'_>,
+) -> Result<bool, russh::Error> {
+    let cached = cache_get_secret(ctx.cache, ctx.base, slot).await;
+    let candidates = secret_candidates(override_password, cached, saved_password);
+    let nothing_in_hand = candidates.is_empty();
+    let mut candidates = candidates.into_iter();
+    let mut password_offered = true;
+    let mut rejected = false;
+    let mut prompts_used: u32 = 0;
+
+    if nothing_in_hand {
+        if !ctx.allow_prompt {
+            return Ok(false);
+        }
+        match session.authenticate_none(user).await? {
+            russh::client::AuthResult::Success => return Ok(true),
+            // russh also reports a dropped connection as a Failure (with no
+            // methods left): that's a transport error, not "no passwords".
+            russh::client::AuthResult::Failure { .. } if session.is_closed() => {
+                return Err(russh::Error::Disconnect);
+            }
+            russh::client::AuthResult::Failure { remaining_methods, .. } => {
+                password_offered = remaining_methods.contains(&russh::MethodKind::Password);
+            }
+        }
+    }
+
+    loop {
+        let (password, source) = match candidates.next() {
+            Some(candidate) => candidate,
+            None => {
+                if !ctx.allow_prompt || !password_offered || prompts_used >= MAX_SECRET_PROMPTS {
+                    return Ok(false);
+                }
+                if prompts_used == 0 {
+                    ctx.log(
+                        if rejected { "Password rejected — asking for it." } else { "No saved password — asking for it." },
+                        "info",
+                    );
+                }
+                let instructions = if rejected { "The password was rejected. Please try again." } else { "" };
+                match prompt_for_secret(ctx, &format!("Password for {}@{}", user, host), instructions, false).await {
+                    Some(typed) => {
+                        prompts_used += 1;
+                        (typed, SecretSource::Prompt)
+                    }
+                    None => {
+                        ctx.log("Password prompt cancelled or timed out.", "error");
+                        return Ok(false);
+                    }
+                }
+            }
+        };
+        match session.authenticate_password(user, password.as_str()).await? {
+            russh::client::AuthResult::Success => {
+                if source != SecretSource::Given {
+                    cache_store_secret(ctx.cache, ctx.base, slot, password).await;
+                }
+                return Ok(true);
+            }
+            // The connection dropped while the password was in flight — russh
+            // reports that as a Failure too. Not a rejection: keep the cached
+            // password and let the caller treat it as a transport error.
+            russh::client::AuthResult::Failure { .. } if session.is_closed() => {
+                return Err(russh::Error::Disconnect);
+            }
+            russh::client::AuthResult::Failure { remaining_methods, partial_success } => {
+                if partial_success {
+                    // Password accepted, but the server wants another factor
+                    // (keyboard-interactive): keep it for reconnects and let the
+                    // caller's 2FA fallback finish the login.
+                    if source != SecretSource::Given {
+                        cache_store_secret(ctx.cache, ctx.base, slot, password).await;
+                    }
+                    return Ok(false);
+                }
+                if source == SecretSource::Cache {
+                    cache_clear_secret(ctx.cache, ctx.base, slot).await;
+                }
+                password_offered = remaining_methods.contains(&russh::MethodKind::Password);
+                rejected = true;
+            }
+        }
+    }
+}
+
+/// Private-key authentication for a key whose passphrase may not be saved
+/// (issue #30). Decodes with the passphrases already in hand
+/// (`secret_candidates`) — or with none, when there are none, since a plain
+/// key needs none — then, on a primary connection, asks the user, re-asking
+/// for up to `MAX_SECRET_PROMPTS` prompts while the passphrase doesn't decrypt
+/// the key. Decrypting the key is the acceptance: a typed or cached passphrase
+/// that does is kept in the tab's cache under `slot`; a cached one that
+/// doesn't is dropped.
+///
+/// Without a usable passphrase (prompt cancelled or timed out, prompts used up,
+/// or prompting not allowed) it returns `keys::Error::KeyIsEncrypted`, which
+/// `classify_russh_error` buckets as an auth failure — so an auto-reconnect
+/// stops instead of looping straight back into the prompt. A malformed or
+/// unsupported key keeps the error shape the old inline decode produced. Either
+/// way the caller's keyboard-interactive fallback still runs.
+async fn authenticate_key_prompting<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    private_key: &str,
+    key_label: &str,
+    saved_passphrase: Option<zeroize::Zeroizing<String>>,
+    slot: SecretSlot,
+    ctx: &SecretPromptCtx<'_>,
+) -> Result<bool, russh::Error> {
+    let cached = cache_get_secret(ctx.cache, ctx.base, slot).await;
+    let mut candidates = secret_candidates(None, cached, saved_passphrase).into_iter();
+    let mut attempt = candidates.next();
+    let mut rejected = false;
+    let mut prompts_used: u32 = 0;
+
+    loop {
+        match decode_private_key(private_key, attempt.as_ref().map(|(p, _)| p.as_str())) {
+            Ok(keypair) => {
+                if let Some((passphrase, source)) = attempt {
+                    if source != SecretSource::Given {
+                        cache_store_secret(ctx.cache, ctx.base, slot, passphrase).await;
+                    }
+                }
+                return ssh_manager::authenticate_with_key(session, user, keypair).await;
+            }
+            Err(KeyDecodeError::NeedsPassphrase) => {
+                if let Some((_, source)) = &attempt {
+                    if *source == SecretSource::Cache {
+                        cache_clear_secret(ctx.cache, ctx.base, slot).await;
+                    }
+                    rejected = true;
+                }
+                if let Some(next) = candidates.next() {
+                    attempt = Some(next);
+                    continue;
+                }
+                if !ctx.allow_prompt || prompts_used >= MAX_SECRET_PROMPTS {
+                    ctx.log("Key is passphrase-protected and no correct passphrase was supplied.", "error");
+                    return Err(russh::Error::from(russh::keys::Error::KeyIsEncrypted));
+                }
+                if prompts_used == 0 {
+                    ctx.log(
+                        if rejected {
+                            "Passphrase didn't unlock the key — asking for it."
+                        } else {
+                            "Key is passphrase-protected — asking for the passphrase."
+                        },
+                        "info",
+                    );
+                }
+                let instructions = if rejected { "The passphrase didn't unlock the key. Please try again." } else { "" };
+                match prompt_for_secret(ctx, &format!("Passphrase for key '{}'", key_label), instructions, false).await {
+                    Some(typed) => {
+                        prompts_used += 1;
+                        attempt = Some((typed, SecretSource::Prompt));
+                    }
+                    None => {
+                        ctx.log("Passphrase prompt cancelled or timed out.", "error");
+                        return Err(russh::Error::from(russh::keys::Error::KeyIsEncrypted));
+                    }
+                }
+            }
+            Err(KeyDecodeError::Malformed(msg)) => {
+                ctx.log(&format!("Failed to parse private key: {}", msg), "error");
+                return Err(russh::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    msg,
+                )));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod key_format_tests {
+    use super::*;
+
+    // Throwaway ECDSA P-521 key (`openssl ecparam -name secp521r1 -genkey
+    // -noout`) in SEC1 PEM; the same key as PKCS#8 (`openssl pkcs8 -topk8
+    // -nocrypt`), as PKCS#8 encrypted with P521_PKCS8_PASSPHRASE (`-v2
+    // aes-256-cbc`) and as SEC1 under the legacy PEM encryption (`openssl ec
+    // -aes128`). P521_PUBLIC is its public half from `ssh-keygen -y`.
+    const P521_SEC1: &str = concat!(
+        "-----BEGIN EC PRIVATE KEY-----", "\n",
+        "MIHcAgEBBEIAdufERUG0oeJ10N+Bv+X90N7yFqYVBx/b1zxWDFy7IenBbH3m19ZI", "\n",
+        "eS7CX304BsDAg7qsfA297eVCJbgAs2PHHMqgBwYFK4EEACOhgYkDgYYABAFcBODy", "\n",
+        "J0wHcbjtkyXarPWtaIpAw2TeU3I1KUpgQGmyg3oUjWPtf9E9a9dGSJUhRGmE9ipw", "\n",
+        "cQMWhP7kybfpf7a8kwCeXAhkPVAU++V1ZNvb3j/WADXg/1XQUgPGoxTAANxrTVJx", "\n",
+        "WQiIlFyELpoRIRG7ScgSAxUfuh7o0yXfIi47DpIEoA==", "\n",
+        "-----END EC PRIVATE KEY-----", "\n",
+    );
+    const P521_PKCS8: &str = concat!(
+        "-----BEGIN PRIVATE KEY-----", "\n",
+        "MIHuAgEAMBAGByqGSM49AgEGBSuBBAAjBIHWMIHTAgEBBEIAdufERUG0oeJ10N+B", "\n",
+        "v+X90N7yFqYVBx/b1zxWDFy7IenBbH3m19ZIeS7CX304BsDAg7qsfA297eVCJbgA", "\n",
+        "s2PHHMqhgYkDgYYABAFcBODyJ0wHcbjtkyXarPWtaIpAw2TeU3I1KUpgQGmyg3oU", "\n",
+        "jWPtf9E9a9dGSJUhRGmE9ipwcQMWhP7kybfpf7a8kwCeXAhkPVAU++V1ZNvb3j/W", "\n",
+        "ADXg/1XQUgPGoxTAANxrTVJxWQiIlFyELpoRIRG7ScgSAxUfuh7o0yXfIi47DpIE", "\n",
+        "oA==", "\n",
+        "-----END PRIVATE KEY-----", "\n",
+    );
+    const P521_PKCS8_PASSPHRASE: &str = "pkcs8-pass";
+    const P521_PKCS8_ENC: &str = concat!(
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----", "\n",
+        "MIIBZTBfBgkqhkiG9w0BBQ0wUjAxBgkqhkiG9w0BBQwwJAQQUb69XfifBahYHZCi", "\n",
+        "T3/dNQICCAAwDAYIKoZIhvcNAgkFADAdBglghkgBZQMEASoEEFEFBT5lelHs0Ikf", "\n",
+        "rOQHsd8EggEA72Iuk/XfL+B1ztGKnuwSUuHkDIfqrugpnnipFX3uqnNfrKCq4cgV", "\n",
+        "CLa8mxag99CaeUNLeRf1q51qSCkJDXlp72Iln78pGFV2KfcOtkJyg2J2H7/YyS0J", "\n",
+        "l5F7FthjQFe5oAMAy7J+ZvccAPOjxRkq4+UUvSD0L5CZ8Ana1lt47zU5T+F+ChqU", "\n",
+        "qucZoyUozaRbnLX1HwwFaGj1GWezN1Tb4+m7HgBq9efhf9sBlXAaoaOmOGpzPYr9", "\n",
+        "xVTuTZ4D9tEvOHv/RFOZsZ6jSGan2JFHPttjCuDdYAUv7td4QDL2+WpsoGPYYlNt", "\n",
+        "zVtMBi0HWOfN/g1USthtX64Rt7YupWd+jQ==", "\n",
+        "-----END ENCRYPTED PRIVATE KEY-----", "\n",
+    );
+    const P521_SEC1_LEGACY_ENC: &str = concat!(
+        "-----BEGIN EC PRIVATE KEY-----", "\n",
+        "Proc-Type: 4,ENCRYPTED", "\n",
+        "DEK-Info: AES-128-CBC,6AAE92543490CD1C0CC1379C8F41D8BC", "\n",
+        "", "\n",
+        "QdVrrcbttQm+FA+zAVdBsg8P27+fvItEE21uI1EcL3+iYzuvPdG3UxPCV7XvqA0H", "\n",
+        "QYw4rpmVz4t31gokcOYQHCtaOcNpQ5j4f8gC29w2E4uObL+Rj0IlmwAvNjKI84fb", "\n",
+        "t30+KLuzm+yzcgQIJhU5lv87q0qVpGTOYL3RFs0DdJIBUxXmX187CXzuhEeuG1uz", "\n",
+        "IIlyvlGWsUpld6yYnn6pdKFpW2YjsiUSPtCUtZj/C5vxJKz68NftkstD2UWzqx5f", "\n",
+        "lYt7UrW77+lzY3DWKcb3aoXlvDljQdFEfm/+bkVwjOE=", "\n",
+        "-----END EC PRIVATE KEY-----", "\n",
+    );
+    const P521_PUBLIC: &str = concat!(
+        "ecdsa-sha2-nistp521 AAAAE2VjZHNhLXNoYTItbmlzdHA1MjEAAAAIbmlzdHA1MjEAAACFBAFcBODyJ0wHcbjtkyXarPWtaIpAw2T",
+        "eU3I1KUpgQGmyg3oUjWPtf9E9a9dGSJUhRGmE9ipwcQMWhP7kybfpf7a8kwCeXAhkPVAU++V1ZNvb3j/WADXg/1XQUgPGoxTAANxrT",
+        "VJxWQiIlFyELpoRIRG7ScgSAxUfuh7o0yXfIi47DpIEoA==",
+    );
+    // Throwaway P-521 key in OpenSSH format (`ssh-keygen -t ecdsa -b 521`),
+    // the format of the key in issue #77, and its public half.
+    const P521_OPENSSH: &str = concat!(
+        "-----BEGIN OPENSSH PRIVATE KEY-----", "\n",
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAArAAAABNlY2RzYS", "\n",
+        "1zaGEyLW5pc3RwNTIxAAAACG5pc3RwNTIxAAAAhQQAvtzl7GYNWH8JocIhNsPAHacrittx", "\n",
+        "6PEMIxtc239ZfSlHcSfbZXr3lRhCEfbPmKzdEEVTnCFS/9e7AlkCWdgXGMwAyEi97CdaDJ", "\n",
+        "pAod7gqwA2MkzZmKtmsG+EV3aFXQlpvTPu8UJMqWRMhUHMDypin+Z02TIOkengiNIKTdfy", "\n",
+        "Q6c9UpwAAAEI3dqG893ahvMAAAATZWNkc2Etc2hhMi1uaXN0cDUyMQAAAAhuaXN0cDUyMQ", "\n",
+        "AAAIUEAL7c5exmDVh/CaHCITbDwB2nK4rbcejxDCMbXNt/WX0pR3En22V695UYQhH2z5is", "\n",
+        "3RBFU5whUv/XuwJZAlnYFxjMAMhIvewnWgyaQKHe4KsANjJM2ZirZrBvhFd2hV0Jab0z7v", "\n",
+        "FCTKlkTIVBzA8qYp/mdNkyDpHp4IjSCk3X8kOnPVKcAAAAQgDJNX554jkZlm78+fi0Gj3p", "\n",
+        "FJjvZRUBqKF8RgsIq5C3kB/7QMbH/r2IDidtUmNjCVGCkodiUt5QS5H3pWfZHX9aBwAAAA", "\n",
+        "dmaXh0dXJlAQID", "\n",
+        "-----END OPENSSH PRIVATE KEY-----", "\n",
+    );
+    const P521_OPENSSH_PUBLIC: &str = concat!(
+        "ecdsa-sha2-nistp521 AAAAE2VjZHNhLXNoYTItbmlzdHA1MjEAAAAIbmlzdHA1MjEAAACFBAC+3OXsZg1YfwmhwiE2w8AdpyuK23H",
+        "o8QwjG1zbf1l9KUdxJ9tleveVGEIR9s+YrN0QRVOcIVL/17sCWQJZ2BcYzADISL3sJ1oMmkCh3uCrADYyTNmYq2awb4RXdoVdCWm9M+",
+        "7xQkypZEyFQcwPKmKf5nTZMg6R6eCI0gpN1/JDpz1SnA==",
+    );
+    // Throwaway Ed25519 key in PKCS#8 (`openssl genpkey -algorithm ed25519`).
+    const ED25519_PKCS8: &str = concat!(
+        "-----BEGIN PRIVATE KEY-----", "\n",
+        "MC4CAQAwBQYDK2VwBCIEIBXcUxGTvHbBFb3vzUra7Hz27fwFi5UPhlO4bFnIYHCr", "\n",
+        "-----END PRIVATE KEY-----", "\n",
+    );
+    const ED25519_PKCS8_PUBLIC: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHPgjDe6mnhOGK+sb3jOSE1cI6AyAn+uDTumwl5/xBEG";
+
+    /// `<algorithm> <base64>` of a key's public half, comment dropped.
+    fn public_of(key: &russh::keys::PrivateKey) -> String {
+        let line = key.public_key().to_openssh().expect("encodes");
+        line.split_whitespace().take(2).collect::<Vec<_>>().join(" ")
+    }
+
+    fn decoded(pem: &str, passphrase: Option<&str>) -> russh::keys::PrivateKey {
+        match decode_private_key(pem, passphrase) {
+            Ok(key) => key,
+            Err(KeyDecodeError::NeedsPassphrase) => panic!("asked for a passphrase"),
+            Err(KeyDecodeError::Malformed(m)) => panic!("refused: {m}"),
+        }
+    }
+
+    #[test]
+    fn p521_keys_decode_in_every_format_russh_reads() {
+        assert_eq!(public_of(&decoded(P521_OPENSSH, None)), P521_OPENSSH_PUBLIC);
+        assert_eq!(public_of(&decoded(P521_SEC1, None)), P521_PUBLIC);
+        assert_eq!(public_of(&decoded(P521_PKCS8, None)), P521_PUBLIC);
+        assert_eq!(public_of(&decoded(P521_PKCS8_ENC, Some(P521_PKCS8_PASSPHRASE))), P521_PUBLIC);
+        assert_eq!(public_of(&decoded(ED25519_PKCS8, None)), ED25519_PKCS8_PUBLIC);
+    }
+
+    #[test]
+    fn a_p521_key_signs_and_its_public_half_verifies() {
+        for key in [decoded(P521_OPENSSH, None), decoded(P521_SEC1, None)] {
+            let sig = key.sign("submarine-test", ssh_key::HashAlg::Sha512, b"hello").expect("signs");
+            key.public_key().verify("submarine-test", b"hello", &sig).expect("verifies");
+        }
+    }
+
+    #[test]
+    fn an_encrypted_pkcs8_key_asks_for_its_passphrase() {
+        assert!(matches!(decode_private_key(P521_PKCS8_ENC, None), Err(KeyDecodeError::NeedsPassphrase)));
+        assert!(matches!(
+            decode_private_key(P521_PKCS8_ENC, Some("not the passphrase")),
+            Err(KeyDecodeError::NeedsPassphrase)
+        ));
+    }
+
+    #[test]
+    fn a_passphrase_saved_with_an_unencrypted_pem_key_is_ignored() {
+        assert_eq!(public_of(&decoded(P521_PKCS8, Some("stray"))), P521_PUBLIC);
+        assert_eq!(public_of(&decoded(P521_SEC1, Some("stray"))), P521_PUBLIC);
+    }
+
+    #[test]
+    fn a_legacy_encrypted_ecdsa_pem_key_is_refused_with_a_way_out() {
+        for passphrase in [None, Some("pem-pass")] {
+            match decode_private_key(P521_SEC1_LEGACY_ENC, passphrase) {
+                Err(KeyDecodeError::Malformed(msg)) => assert!(msg.contains("ssh-keygen -p -f"), "{msg}"),
+                _ => panic!("expected a refusal, not a passphrase prompt"),
+            }
+        }
+        let err = validate_ssh_private_key(P521_SEC1_LEGACY_ENC).unwrap_err();
+        assert!(err.contains("ssh-keygen -p -f"), "{err}");
+    }
+
+    #[test]
+    fn validation_accepts_every_format_the_connect_path_reads() {
+        for pem in [P521_OPENSSH, P521_SEC1, P521_PKCS8, P521_PKCS8_ENC, ED25519_PKCS8] {
+            assert_eq!(validate_ssh_private_key(pem), Ok(()), "{}", pem_private_key_header(pem));
+        }
+        // `openssl ecparam -genkey` without -noout writes the curve first.
+        let with_params =
+            format!("-----BEGIN EC PARAMETERS-----\nBgUrgQQAIw==\n-----END EC PARAMETERS-----\n{P521_SEC1}");
+        assert_eq!(validate_ssh_private_key(&with_params), Ok(()));
+        assert_eq!(public_of(&decoded(&with_params, None)), P521_PUBLIC);
+    }
+
+    #[test]
+    fn validation_still_refuses_what_cannot_connect() {
+        let dsa = "-----BEGIN DSA PRIVATE KEY-----\nAAAA\n-----END DSA PRIVATE KEY-----\n";
+        assert!(validate_ssh_private_key(dsa).unwrap_err().contains("DSA keys aren't supported"));
+        assert!(validate_ssh_private_key("not a key").unwrap_err().contains("UNRECOGNIZED_KEY_FORMAT"));
+        // A damaged PKCS#8 body is caught when the key is entered, not later.
+        let damaged = P521_PKCS8.replace("MIHuAgEAMBAG", "MIHuAgEAMBAA");
+        assert!(validate_ssh_private_key(&damaged).unwrap_err().contains("UNREADABLE_KEY"));
+    }
+
+    #[test]
+    fn encrypted_keys_are_recognised_from_the_text_alone() {
+        assert!(private_key_is_encrypted(P521_PKCS8_ENC));
+        assert!(private_key_is_encrypted(P521_SEC1_LEGACY_ENC));
+        for plain in [P521_OPENSSH, P521_SEC1, P521_PKCS8, ED25519_PKCS8] {
+            assert!(!private_key_is_encrypted(plain));
+        }
+    }
+}
+
+#[cfg(test)]
+mod secret_prompt_tests {
+    use super::*;
+
+    // Ed25519 OpenSSH keys made with `ssh-keygen -t ed25519`. ENC_KEY is
+    // encrypted (aes256-ctr / bcrypt) with ENC_PASSPHRASE; PLAIN_KEY has none.
+    const ENC_PASSPHRASE: &str = "correct horse";
+    const ENC_KEY: &str = concat!(
+        "-----BEGIN OPENSSH PRIVATE KEY-----", "\n",
+        "b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABDE7RDhqs", "\n",
+        "hjetAzLiugxZpKAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIMcnclCWDFavhUYR", "\n",
+        "5zNFTSffQrWc+YsqM4sKKcQpomAWAAAAkAKhRIln427oNRf0UR+Gx0Ph0KbwN8eqNn+GYI", "\n",
+        "dcWUkBqq0x5hOwGasu4h9L4gMjUC/vbAjFFF6fmMidUq2w93yvf+ksagU3bR0RBkJZY2L6", "\n",
+        "mviz2RgokhaQVhtuT2nh7/54QtQLd3Y6zhn1oqW1XXWzzUMA/diArEO6mGB+mQq33rziRS", "\n",
+        "cPG9v4ahpJmDDpkw==", "\n",
+        "-----END OPENSSH PRIVATE KEY-----", "\n",
+    );
+    const PLAIN_KEY: &str = concat!(
+        "-----BEGIN OPENSSH PRIVATE KEY-----", "\n",
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW", "\n",
+        "QyNTUxOQAAACA/EA8yXS689fAo/F6QVpxLRJG8HiBKbnEvWz/YZ2lMZgAAAJCg+R4QoPke", "\n",
+        "EAAAAAtzc2gtZWQyNTUxOQAAACA/EA8yXS689fAo/F6QVpxLRJG8HiBKbnEvWz/YZ2lMZg", "\n",
+        "AAAEDHfBKInOfdnPFdnNPKorc16nvh3XNwnPYBxUAlKR4dkj8QDzJdLrz18Cj8XpBWnEtE", "\n",
+        "kbweIEpucS9bP9hnaUxmAAAADXBsYWluLWZpeHR1cmU=", "\n",
+        "-----END OPENSSH PRIVATE KEY-----", "\n",
+    );
+
+    // --- decode_private_key error classification (issue #30) ----------------
+
+    #[test]
+    fn decode_flags_encrypted_key_without_passphrase_as_needing_one() {
+        assert!(matches!(decode_private_key(ENC_KEY, None), Err(KeyDecodeError::NeedsPassphrase)));
+        // An empty passphrase is treated as "none", not an attempt.
+        assert!(matches!(decode_private_key(ENC_KEY, Some("")), Err(KeyDecodeError::NeedsPassphrase)));
+    }
+
+    #[test]
+    fn decode_flags_wrong_passphrase_as_needing_one_not_malformed() {
+        assert!(matches!(
+            decode_private_key(ENC_KEY, Some("not the passphrase")),
+            Err(KeyDecodeError::NeedsPassphrase)
+        ));
+    }
+
+    // Throwaway 1024-bit RSA key in legacy PKCS#1 PEM, encrypted the PKCS#5
+    // way (`openssl genrsa -traditional -aes128`) with PEM_PASSPHRASE.
+    const PEM_PASSPHRASE: &str = "right-pass";
+    const PEM_ENC_KEY: &str = concat!(
+        "-----BEGIN RSA PRIVATE KEY-----", "\n",
+        "Proc-Type: 4,ENCRYPTED", "\n",
+        "DEK-Info: AES-128-CBC,BB76307096C12231EAB52A979EA86901", "\n",
+        "", "\n",
+        "KoULx8jVcG6IX1pGQ6dLYH3/cpMG27IecsxDmCbGVQkdhbqwF2pBIxa/Tx07bmSs", "\n",
+        "q1OKYTf9NScezY9Lhe10EOEtOmZ186rGQxDfxnv5crWfrMey+eMCeOLlFtRLP8J1", "\n",
+        "flCs6oR1NAlvnlPW6rbv9XxjoZplnylu9GtHOkCb0cAYZQbwVO0v/FVJ73D2b1p+", "\n",
+        "eg8ijRh67Oji0gADWKFf7baYUnMRrW5UaabsMUjYXgPnYbE9wabd53MM5yRMqr+H", "\n",
+        "A3lMNPXnh1erNfRTZswYZgg4fO1rtpuHKw3EJROqHjqAeXxbd5YUOgHEOhot2kn4", "\n",
+        "HhNCEBWe+1JTUo594kiVx0lu+wp2BINq2ak+sFogrqevW/2F28qtJ5fM57YHhL/5", "\n",
+        "blErH52LsivGMCh2UGEUBpDPNIRyDAMOuA/f2UviXGCjv88Qkf38JV+sZY84zZ0+", "\n",
+        "7OFWs2alsVv7J/3kmR/Zmh34YBG31Pw447HZUqvD9Ve75bjO2/lDV6m9xnHyzQir", "\n",
+        "s6K11+R54cr92HzwlIP1W0cjczrJ/UIVDYnl5y3rkNYSkvW0vY0bVk20Ul4iD6va", "\n",
+        "tOsQ7TH09QumYeLsU1mts//BeS+CoiWTiFm5CwX+IEgkm/nXqCAuLzj6Bz7dr6/r", "\n",
+        "vexWuNnpuWIJ3z9ZEX0EtFNeqECakxw1jJrL7fx8LXeD75Lb1rpscOphN1t9NYrO", "\n",
+        "TAxHSbEkODA6JJcG6WNotvmMHKOM+kIGd7u5dzHwKN1ndWGsLpcMowhsTZxhfwdb", "\n",
+        "LboMbHudt2MWS9BFU1yG95YGUoUFg25hwKPd4xxXvV+0OJj9g1u55KtzezWbAmc/", "\n",
+        "-----END RSA PRIVATE KEY-----", "\n",
+    );
+
+    #[test]
+    fn decode_handles_a_legacy_encrypted_pem_key() {
+        // No passphrase: russh says KeyIsEncrypted.
+        assert!(matches!(decode_private_key(PEM_ENC_KEY, None), Err(KeyDecodeError::NeedsPassphrase)));
+        // Wrong passphrase: the PKCS#5 decrypt yields garbage and the RSA
+        // decode fails — still "needs a passphrase", so the user is re-asked
+        // instead of the attempt ending as a malformed key.
+        assert!(matches!(
+            decode_private_key(PEM_ENC_KEY, Some("not the passphrase")),
+            Err(KeyDecodeError::NeedsPassphrase)
+        ));
+        assert!(decode_private_key(PEM_ENC_KEY, Some(PEM_PASSPHRASE)).is_ok());
+    }
+
+    #[test]
+    fn decode_refuses_a_legacy_pem_cipher_russh_cannot_read() {
+        // DES-EDE3 (PuTTYgen's OpenSSH export, `openssl -des3`): no passphrase
+        // could ever unlock it here, so it's reported, not asked for.
+        let des3 = PEM_ENC_KEY.replace(
+            "DEK-Info: AES-128-CBC,BB76307096C12231EAB52A979EA86901",
+            "DEK-Info: DES-EDE3-CBC,BB76307096C12231",
+        );
+        for passphrase in [None, Some(PEM_PASSPHRASE)] {
+            match decode_private_key(&des3, passphrase) {
+                Err(KeyDecodeError::Malformed(msg)) => assert!(msg.contains("AES-128-CBC"), "{msg}"),
+                _ => panic!("expected an unsupported-cipher error"),
+            }
+        }
+    }
+
+    #[test]
+    fn decode_accepts_the_right_passphrase_and_any_plain_key() {
+        assert!(decode_private_key(ENC_KEY, Some(ENC_PASSPHRASE)).is_ok());
+        assert!(decode_private_key(PLAIN_KEY, None).is_ok());
+        // A passphrase is ignored for an unencrypted key.
+        assert!(decode_private_key(PLAIN_KEY, Some("ignored")).is_ok());
+    }
+
+    #[test]
+    fn decode_reports_unparseable_input_as_malformed() {
+        assert!(matches!(
+            decode_private_key("definitely not a key", None),
+            Err(KeyDecodeError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn decode_normalizes_windows_line_endings() {
+        let crlf = PLAIN_KEY.replace('\n', "\r\n");
+        assert!(decode_private_key(&crlf, None).is_ok());
+    }
+
+    /// The key path's "no usable passphrase" outcome (cancel / timeout / out of
+    /// attempts) must classify as an AUTH failure, so an auto-reconnect stops
+    /// instead of looping straight back into the passphrase prompt.
+    #[test]
+    fn missing_passphrase_error_is_auth_shaped() {
+        let e = russh::Error::from(russh::keys::Error::KeyIsEncrypted);
+        assert!(classify_russh_error(&e).is_auth());
+    }
+
+    // --- base session id (cache key) ----------------------------------------
+
+    #[test]
+    fn base_session_id_strips_dedicated_transport_suffixes() {
+        assert_eq!(base_session_id("tab-1"), "tab-1");
+        assert_eq!(base_session_id("tab-1::sftp"), "tab-1");
+        assert_eq!(base_session_id("tab-1::fwd"), "tab-1");
+        // Anything else is left intact.
+        assert_eq!(base_session_id("tab-1::other"), "tab-1::other");
+    }
+
+    // --- candidate order --------------------------------------------------
+
+    /// The per-connect override goes first, then what the user typed earlier
+    /// this tab, then the saved value — so a stale saved password can't shadow
+    /// the cached one on reconnect. Empty values mean "ask", so they're dropped.
+    #[test]
+    fn candidates_try_override_then_cache_then_saved_skipping_empties() {
+        let z = |s: &str| Some(zeroize::Zeroizing::new(s.to_string()));
+        let plain_order = |c: Vec<(zeroize::Zeroizing<String>, SecretSource)>| {
+            c.into_iter().map(|(s, src)| (s.to_string(), src)).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            plain_order(secret_candidates(z("typed"), z("cached"), z("saved"))),
+            vec![
+                ("typed".to_string(), SecretSource::Override),
+                ("cached".to_string(), SecretSource::Cache),
+                ("saved".to_string(), SecretSource::Given),
+            ]
+        );
+        assert_eq!(
+            plain_order(secret_candidates(None, z("cached"), z(""))),
+            vec![("cached".to_string(), SecretSource::Cache)]
+        );
+        assert!(secret_candidates(z(""), None, z("")).is_empty());
+    }
+
+    // --- prompted-secret cache: round-trip + clear-on-reject ----------------
+
+    fn empty_cache() -> PromptedSecretsMap {
+        std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))
+    }
+    fn plain(o: Option<zeroize::Zeroizing<String>>) -> Option<String> {
+        o.map(|z| z.to_string())
+    }
+
+    #[tokio::test]
+    async fn cache_round_trips_per_slot_and_is_shared_by_secondaries() {
+        let cache = empty_cache();
+        assert!(cache_get_secret(&cache, "tab", SecretSlot::Password).await.is_none());
+
+        cache_store_secret(&cache, "tab", SecretSlot::Password, zeroize::Zeroizing::new("pw".into())).await;
+        cache_store_secret(&cache, "tab", SecretSlot::Passphrase, zeroize::Zeroizing::new("pp".into())).await;
+
+        assert_eq!(plain(cache_get_secret(&cache, "tab", SecretSlot::Password).await), Some("pw".into()));
+        assert_eq!(plain(cache_get_secret(&cache, "tab", SecretSlot::Passphrase).await), Some("pp".into()));
+        // A dedicated `::sftp` / `::fwd` secondary reads the base tab's entry.
+        let base = base_session_id("tab::sftp");
+        assert_eq!(plain(cache_get_secret(&cache, base, SecretSlot::Password).await), Some("pw".into()));
+        // A different tab is isolated.
+        assert!(cache_get_secret(&cache, "other", SecretSlot::Password).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn username_slots_are_separate_from_the_secrets() {
+        let cache = empty_cache();
+        cache_store_secret(&cache, "tab", SecretSlot::Username, zeroize::Zeroizing::new("alice".into())).await;
+        cache_store_secret(&cache, "tab", SecretSlot::JumpUsername, zeroize::Zeroizing::new("jump".into())).await;
+        assert_eq!(plain(cache_get_secret(&cache, "tab", SecretSlot::Username).await), Some("alice".into()));
+        assert_eq!(plain(cache_get_secret(&cache, "tab", SecretSlot::JumpUsername).await), Some("jump".into()));
+        assert!(cache_get_secret(&cache, "tab", SecretSlot::Password).await.is_none());
+        // Secondaries reuse the tab's typed name.
+        let base = base_session_id("tab::fwd");
+        assert_eq!(plain(cache_get_secret(&cache, base, SecretSlot::Username).await), Some("alice".into()));
+    }
+
+    #[test]
+    fn login_answer_is_trimmed_and_empty_means_root() {
+        assert_eq!(login_user_from_answer("alice").as_str(), "alice");
+        assert_eq!(login_user_from_answer("  bob \t").as_str(), "bob");
+        assert_eq!(login_user_from_answer("").as_str(), "root");
+        assert_eq!(login_user_from_answer("   ").as_str(), "root");
+    }
+
+    #[tokio::test]
+    async fn cache_clear_on_reject_removes_only_that_slot() {
+        let cache = empty_cache();
+        cache_store_secret(&cache, "tab", SecretSlot::Password, zeroize::Zeroizing::new("pw".into())).await;
+        cache_store_secret(&cache, "tab", SecretSlot::JumpPassword, zeroize::Zeroizing::new("jpw".into())).await;
+
+        cache_clear_secret(&cache, "tab", SecretSlot::Password).await;
+
+        assert!(cache_get_secret(&cache, "tab", SecretSlot::Password).await.is_none());
+        // Other slots on the same tab are untouched.
+        assert_eq!(plain(cache_get_secret(&cache, "tab", SecretSlot::JumpPassword).await), Some("jpw".into()));
+        // Clearing an unknown tab is a no-op.
+        cache_clear_secret(&cache, "nope", SecretSlot::Password).await;
+    }
+}
+
 /// Drive keyboard-interactive (RFC 4256) authentication — the method behind
 /// most SSH "verification code" / 2FA / OTP setups. The server sends a
 /// sequence of `InfoRequest`s (each a set of prompts like "Verification
@@ -4795,6 +6194,24 @@ struct QuickAuth {
 ///                         original, more meaningful auth result instead of
 ///                         masking it with a generic interactive failure.
 ///
+/// Report a failed connect attempt to its tab — unless a newer attempt has
+/// started or the tab disconnected since. A late report from an attempt the
+/// user already replaced (Reconnect, or closing and reopening the tab) would
+/// flip the tab that has moved on back to "Connection failed".
+async fn emit_connection_failed(
+    app: &tauri::AppHandle,
+    attempt: &ssh_manager::ConnectAttempt,
+    session_id: &str,
+    payload: serde_json::Value,
+) {
+    use tauri::Emitter;
+    if attempt.is_current().await {
+        let _ = app.emit(&format!("connection-failed-{}", session_id), payload);
+    } else {
+        println!("[BACKEND] {}: dropped the failure report of a superseded connect attempt", session_id);
+    }
+}
+
 /// Generic over the handler so both the primary connection (`ClientHandler`)
 /// and a ProxyJump intermediate hop can reuse it.
 async fn run_keyboard_interactive<H: russh::client::Handler>(
@@ -4808,12 +6225,19 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
             std::collections::HashMap<String, tokio::sync::oneshot::Sender<Option<Vec<String>>>>,
         >,
     >,
+    // The connect attempt asking — its prompts are only shown while it's
+    // current (see ssh_manager::ConnectAttempt).
+    attempt: &ssh_manager::ConnectAttempt,
 ) -> Option<Result<bool, russh::Error>> {
     use russh::client::KeyboardInteractiveAuthResponse;
     use tauri::Emitter;
 
     let log = |msg: &str, ty: &str| {
         println!("[LOG-{}] {}", session_id, msg);
+        // A superseded attempt stays out of the tab's log.
+        if !attempt.is_current_now() {
+            return;
+        }
         let _ = app.emit(
             &format!("session-log-{}", session_id),
             serde_json::json!({"msg": msg, "type": ty}),
@@ -4837,7 +6261,7 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
     loop {
         match resp {
             KeyboardInteractiveAuthResponse::Success => return Some(Ok(true)),
-            KeyboardInteractiveAuthResponse::Failure => {
+            KeyboardInteractiveAuthResponse::Failure { .. } => {
                 if !asked_anything {
                     // Server declined the method outright — not really offered.
                     return None;
@@ -4863,6 +6287,12 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                     continue;
                 }
                 asked_anything = true;
+
+                // A superseded or abandoned attempt doesn't put its prompt over
+                // a newer one; it ends like a cancelled prompt.
+                if !attempt.may_prompt().await {
+                    return Some(Ok(false));
+                }
 
                 // Fresh oneshot each round — a server may issue several
                 // sequential InfoRequests within one auth exchange.
@@ -4896,7 +6326,7 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                         kbi_txs.lock().await.remove(nonce);
                         let _ = app.emit(
                             &format!("kbi-prompt-dismiss-{}", session_id),
-                            serde_json::json!({}),
+                            serde_json::json!({ "nonce": nonce }),
                         );
                         log("Verification prompt cancelled or timed out.", "error");
                         return Some(Ok(false));
@@ -4904,7 +6334,7 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                 };
                 let _ = app.emit(
                     &format!("kbi-prompt-dismiss-{}", session_id),
-                    serde_json::json!({}),
+                    serde_json::json!({ "nonce": nonce }),
                 );
 
                 // The protocol requires exactly one response per prompt.
@@ -4925,9 +6355,9 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
     }
 }
 
-/// OS-level TCP keepalive on an SSH transport socket. Complements the SSH
-/// protocol keepalive (`keepalive_interval` below): russh 0.40 has no
-/// `keepalive_max`, so an unanswered protocol keepalive never tears the
+/// OS-level TCP keepalive on an SSH transport socket. Complements the session
+/// watcher's keepalive pings (russh's own protocol keepalive is off — see
+/// build_ssh_client_config): no unanswered SSH-level keepalive ever tears the
 /// connection down — but with TCP keepalive the kernel itself probes an idle
 /// peer (30s idle, then every 10s) and errors the socket when the peer is
 /// truly gone, which russh's run loop surfaces as `is_closed()`. That gives
@@ -4943,64 +6373,437 @@ fn apply_tcp_keepalive(stream: &tokio::net::TcpStream) {
     let _ = SockRef::from(stream).set_tcp_keepalive(&ka);
 }
 
+/// Algorithm negotiation lists shared by EVERY SSH connection the app makes —
+/// the primary session, its `::sftp` / `::fwd` secondaries and ProxyJump hops
+/// (all via `build_ssh_client_config`) and the resource monitor
+/// (`monitor::monitor_client_config`) — so they all negotiate the same
+/// host-key type. The monitor depends on that: it only trusts a fingerprint
+/// the interactive session already stored.
+///
+/// Everything here is pure Rust in russh 0.63, so the set is identical in
+/// debug, release and Android builds (the old OpenSSL-backed `full-ssh-algos`
+/// feature is gone). Order = preference: modern first; the legacy entries
+/// (ssh-rsa/SHA-1 host keys, DH group14/group1 SHA-1 KEX, HMAC-SHA1) stay
+/// last, purely for old/embedded servers that offer nothing better.
+pub(crate) fn ssh_preferred_algorithms() -> russh::Preferred {
+    use russh::keys::{Algorithm, EcdsaCurve, HashAlg};
+    use russh::{cipher, compression, kex, mac};
+    use std::borrow::Cow;
+
+    const KEX: &[kex::Name] = &[
+        kex::MLKEM768X25519_SHA256, // hybrid post-quantum (OpenSSH 9.9+; its default since 10.0)
+        kex::CURVE25519,
+        kex::CURVE25519_PRE_RFC_8731,
+        // Group exchange (issue #33): the only KEX some hardened / appliance
+        // servers enable. Bounds in ssh_gex_params.
+        kex::DH_GEX_SHA256,
+        kex::DH_G18_SHA512,
+        kex::DH_G17_SHA512,
+        kex::DH_G16_SHA512,
+        kex::DH_G15_SHA512,
+        kex::DH_G14_SHA256,
+        // Legacy, last resort for old servers.
+        kex::DH_G14_SHA1,
+        kex::DH_G1_SHA1,
+        // Pseudo-algorithms, never selected as the KEX: RFC 8308 ext-info
+        // (server-sig-algs → RSA SHA-2 user auth) and OpenSSH strict KEX
+        // (Terrapin mitigation).
+        kex::EXTENSION_SUPPORT_AS_CLIENT,
+        kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
+    ];
+    // The first five are exactly the pre-0.63 release order, so every server
+    // that build could reach negotiates the same host-key type — and its
+    // pinned fingerprint keeps matching. ECDSA P-384 / P-521 are appended
+    // AFTER them for the same reason: they only come into play on servers
+    // whose sole host keys use those curves (which could not connect before).
+    const KEY: &[Algorithm] = &[
+        Algorithm::Ed25519,
+        Algorithm::Ecdsa { curve: EcdsaCurve::NistP256 },
+        Algorithm::Rsa { hash: Some(HashAlg::Sha512) }, // rsa-sha2-512
+        Algorithm::Rsa { hash: Some(HashAlg::Sha256) }, // rsa-sha2-256
+        Algorithm::Rsa { hash: None },                  // ssh-rsa (SHA-1), legacy
+        Algorithm::Ecdsa { curve: EcdsaCurve::NistP384 },
+        Algorithm::Ecdsa { curve: EcdsaCurve::NistP521 },
+    ];
+    const CIPHER: &[cipher::Name] = &[
+        cipher::CHACHA20_POLY1305,
+        cipher::AES_256_GCM,
+        cipher::AES_256_CTR,
+        cipher::AES_192_CTR,
+        cipher::AES_128_CTR,
+    ];
+    const MAC: &[mac::Name] = &[
+        mac::HMAC_SHA512_ETM,
+        mac::HMAC_SHA256_ETM,
+        mac::HMAC_SHA512,
+        mac::HMAC_SHA256,
+        // Legacy, last resort for old servers.
+        mac::HMAC_SHA1_ETM,
+        mac::HMAC_SHA1,
+    ];
+    // No compression preferred (issue #34 — SFTP uploads dropped the session
+    // under russh 0.40's zlib; fixed upstream, but compression still only
+    // costs CPU on fast links and on already-compressed payloads). zlib stays
+    // negotiable for a server that insists on it.
+    const COMPRESSION: &[compression::Name] = &[
+        compression::NONE,
+        compression::ZLIB_LEGACY, // zlib@openssh.com
+        compression::ZLIB,
+    ];
+
+    russh::Preferred {
+        kex: Cow::Borrowed(KEX),
+        key: Cow::Borrowed(KEY),
+        // Never advertise `*-cert-v01@openssh.com` host-key algorithms: there
+        // is no CA trust store, so servers must present their plain host key
+        // (TOFU via known_hosts). See ssh_manager::plain_host_key.
+        host_key_certificates: Cow::Borrowed(&[]),
+        cipher: Cow::Borrowed(CIPHER),
+        mac: Cow::Borrowed(MAC),
+        compression: Cow::Borrowed(COMPRESSION),
+    }
+}
+
+/// Bounds for `diffie-hellman-group-exchange-sha256` (issue #33), shared like
+/// `ssh_preferred_algorithms`. russh's default minimum is 3072 bits, which
+/// aborts the handshake with servers whose moduli (or appliance firmware)
+/// only offer 2048-bit groups — typical for DH-GEX-only boxes. OpenSSH's own
+/// client accepts 2048 (its DH_GRP_MIN), so we do too, while still asking for
+/// 8192 so a server with bigger groups uses one.
+pub(crate) fn ssh_gex_params() -> russh::client::GexParams {
+    // `new` only rejects min < 2048 or an unordered triple — neither applies
+    // (pinned by a unit test); fall back to russh's default rather than panic
+    // in the connect path.
+    russh::client::GexParams::new(2048, 8192, 8192).unwrap_or_default()
+}
+
+/// The health watcher's fallback liveness check, for servers that don't answer
+/// keepalive@openssh.com: open a session channel and close it again. Any answer
+/// counts as alive — a refusal too, since a MaxSessions-limited server refuses
+/// (#29); only a timeout or a dead connection doesn't.
+async fn probe_with_channel<H: russh::client::Handler>(h: &russh::client::Handle<H>) -> bool {
+    match tokio::time::timeout(std::time::Duration::from_secs(10), h.channel_open_session()).await {
+        Ok(Ok(ch)) => {
+            // Close cleanly so the server doesn't log a stuck session.
+            let _ = ch.close().await;
+            true
+        }
+        Ok(Err(russh::Error::ChannelOpenFailure(_))) => true,
+        _ => false,
+    }
+}
+
 /// The russh client config shared by the primary connection and any ProxyJump
 /// hop, so both negotiate an identical algorithm set. Extracted verbatim from
 /// the inline block `initiate_connection` used to carry.
 fn build_ssh_client_config() -> russh::client::Config {
-    use tokio::time::Duration;
     let mut config = russh::client::Config::default();
-    // SSH keepalive every 20s. The shorter interval matters because most
-    // consumer routers drop idle NAT mappings around the 2-minute mark, and
-    // many corporate firewalls are stricter still. russh 0.40 has no
-    // `keepalive_max` knob, so the watcher loop relies on `is_closed()` to
-    // surface drops within a couple of seconds.
-    config.keepalive_interval = Some(Duration::from_secs(20));
+    // No russh protocol keepalive. Its timer is only re-armed once something
+    // is sent or received, and before login completes it sends nothing — so
+    // ~20s into a host-key / password / 2FA prompt the session task spun a CPU
+    // core until the prompt was answered. Idle traffic is covered without it:
+    // the session watcher pings every 30s (60s on the dedicated `::sftp` /
+    // `::fwd` connections) end to end — well inside the ~2-minute idle limit of
+    // consumer NAT and most firewalls — and OS TCP keepalive (see
+    // apply_tcp_keepalive) probes the first hop after 30s of silence.
+    config.keepalive_interval = None;
+    // russh closes the connection after `keepalive_max` unanswered keepalives
+    // (default 3, i.e. ~80s of server silence). Kept OFF: liveness is decided
+    // by the session watcher (`is_closed()` + its two-strike active probe) and
+    // OS TCP keepalive (apply_tcp_keepalive), which are deliberately tolerant
+    // of the long latency spikes of poor links.
+    config.keepalive_max = 0;
     // Bigger receive window + max-allowed packet size: lets SFTP/tunnel
     // streams keep the BDP full on high-latency links.
     config.window_size = 8 * 1024 * 1024;
     config.maximum_packet_size = 65535;
-    // Widen the negotiation set to match OpenSSH — but only in builds that
-    // include the OpenSSL backend (release CI via `full-ssh-algos`). See the
-    // long rationale that used to sit inline: legacy DH groups, the full RSA
-    // host-key family, and HMAC-SHA1 MAC variants for older/embedded servers.
-    #[cfg(feature = "full-ssh-algos")]
-    {
-        config.preferred = russh::Preferred {
-            kex: &[
-                russh::kex::CURVE25519,
-                russh::kex::CURVE25519_PRE_RFC_8731,
-                russh::kex::DH_G14_SHA256,
-                russh::kex::DH_G14_SHA1,
-                russh::kex::DH_G1_SHA1,
-                russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
-                russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
-            ],
-            key: &[
-                russh_keys::key::ED25519,
-                russh_keys::key::ECDSA_SHA2_NISTP256,
-                russh_keys::key::RSA_SHA2_512,
-                russh_keys::key::RSA_SHA2_256,
-                russh_keys::key::SSH_RSA,
-            ],
-            cipher: &[
-                russh::cipher::CHACHA20_POLY1305,
-                russh::cipher::AES_256_GCM,
-                russh::cipher::AES_256_CTR,
-                russh::cipher::AES_192_CTR,
-                russh::cipher::AES_128_CTR,
-            ],
-            mac: &[
-                russh::mac::HMAC_SHA512_ETM,
-                russh::mac::HMAC_SHA256_ETM,
-                russh::mac::HMAC_SHA512,
-                russh::mac::HMAC_SHA256,
-                russh::mac::HMAC_SHA1_ETM,
-                russh::mac::HMAC_SHA1,
-            ],
-            compression: &["zlib@openssh.com", "zlib", "none"],
-        };
-    }
+    // Full algorithm set + DH group-exchange bounds, shared with the monitor.
+    config.preferred = ssh_preferred_algorithms();
+    config.gex = ssh_gex_params();
     config
+}
+
+/// Timing caps for the connect driver's prompt-aware handshake timeout.
+#[derive(Clone, Copy)]
+struct ConnectTimeoutCaps {
+    /// The transport + key-exchange handshake must reach a host-key prompt
+    /// (or finish outright) within this window. A server that never completes
+    /// kex and never prompts is a genuine stall once it elapses.
+    handshake: std::time::Duration,
+    /// Absolute backstop once a fingerprint prompt is pending. Covers
+    /// `ClientHandler::check_server_key`'s own 90s human window (which starts
+    /// up to `handshake` seconds into the connect) plus a small teardown
+    /// margin, so that 90s wait — not this cap — normally governs a prompt.
+    hard: std::time::Duration,
+}
+
+/// Production caps: 15s of handshake before a prompt, then the 90s human
+/// window plus a 5s teardown margin (15 + 90 + 5 = 110s) as the hard cap.
+const CONNECT_TIMEOUT_CAPS: ConnectTimeoutCaps = ConnectTimeoutCaps {
+    handshake: std::time::Duration::from_secs(15),
+    hard: std::time::Duration::from_secs(15 + 90 + 5),
+};
+
+/// Which way the connect driver's deadline falls at a given elapsed time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectDeadline {
+    /// Keep awaiting the handshake.
+    Continue,
+    /// Past the handshake cap with no prompt shown — a genuine stall.
+    HandshakeStall,
+    /// A prompt was pending but even the hard cap elapsed — a wedged prompt.
+    PromptHardCap,
+}
+
+/// Pure timeout decision for the connect driver, factored out so it can be
+/// unit-tested without a runtime. `prompt_pending` means a host-key prompt has
+/// been shown for this attempt (latched by the caller — see `ClientHandler::
+/// prompt_pending`): before any prompt the handshake is held to `caps.handshake`
+/// and a stall is reported once it elapses; once a prompt is pending the wait
+/// extends to `caps.hard` so the human approval window governs instead.
+fn connect_deadline_elapsed(
+    prompt_pending: bool,
+    elapsed: std::time::Duration,
+    caps: ConnectTimeoutCaps,
+) -> ConnectDeadline {
+    if !prompt_pending {
+        if elapsed >= caps.handshake {
+            ConnectDeadline::HandshakeStall
+        } else {
+            ConnectDeadline::Continue
+        }
+    } else if elapsed >= caps.hard {
+        ConnectDeadline::PromptHardCap
+    } else {
+        ConnectDeadline::Continue
+    }
+}
+
+/// Why the connect driver stopped awaiting the handshake without a result.
+enum ConnectTimeout {
+    /// Handshake never reached a host-key prompt within the handshake cap.
+    HandshakeStall,
+    /// A prompt was pending but the hard cap elapsed before it resolved.
+    PromptHardCap,
+}
+
+/// Drive `connect_stream` under a prompt-aware deadline. The `handshake` cap
+/// bounds only the transport+kex phase BEFORE a host-key fingerprint prompt is
+/// shown; the moment `prompt_pending` goes true the wait extends to the hard
+/// cap so `check_server_key`'s 90s human window — not a 15s handshake timer —
+/// decides a first-time key approval. Returns `Ok(output)` when the handshake
+/// future resolves (success OR a russh error), or `Err` on a timeout.
+///
+/// `prompt_pending` is re-read on a coarse ticker (no busy-spin) and latched:
+/// once a prompt has been seen the handshake cap no longer applies for the rest
+/// of the attempt, so a user who answers just after the 15s mark — briefly
+/// clearing the flag while the handshake finishes — is never mistaken for a
+/// stall that would tear down their just-approved connection.
+async fn drive_connect_with_prompt_timeout<F, T>(
+    connect_future: F,
+    prompt_pending: &std::sync::atomic::AtomicBool,
+    caps: ConnectTimeoutCaps,
+) -> Result<T, ConnectTimeout>
+where
+    F: std::future::Future<Output = T>,
+{
+    use std::sync::atomic::Ordering;
+    tokio::pin!(connect_future);
+    let start = tokio::time::Instant::now();
+    // 250ms is far finer than any cap, yet idle between ticks.
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await; // the first tick is immediate — consume it
+    let mut prompt_seen = false;
+    loop {
+        tokio::select! {
+            // Biased: always prefer a resolved handshake over a tick, so a
+            // connection that completes at the same instant a deadline tick
+            // fires is never discarded in favour of a timeout.
+            biased;
+            out = &mut connect_future => return Ok(out),
+            _ = ticker.tick() => {
+                prompt_seen |= prompt_pending.load(Ordering::SeqCst);
+                match connect_deadline_elapsed(prompt_seen, start.elapsed(), caps) {
+                    ConnectDeadline::Continue => {}
+                    ConnectDeadline::HandshakeStall => return Err(ConnectTimeout::HandshakeStall),
+                    ConnectDeadline::PromptHardCap => return Err(ConnectTimeout::PromptHardCap),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod connect_timeout_tests {
+    use super::{connect_deadline_elapsed, ConnectDeadline, ConnectTimeoutCaps};
+    use std::time::Duration;
+
+    // 15s handshake cap, 15 + 90 + 5 = 110s hard cap — the production values.
+    const CAPS: ConnectTimeoutCaps = ConnectTimeoutCaps {
+        handshake: Duration::from_secs(15),
+        hard: Duration::from_secs(110),
+    };
+
+    #[test]
+    fn no_prompt_holds_the_handshake_cap() {
+        // Before 15s: keep waiting when no prompt has shown.
+        assert_eq!(
+            connect_deadline_elapsed(false, Duration::from_secs(14), CAPS),
+            ConnectDeadline::Continue
+        );
+        // At/after 15s with no prompt → genuine handshake stall.
+        assert_eq!(
+            connect_deadline_elapsed(false, Duration::from_secs(15), CAPS),
+            ConnectDeadline::HandshakeStall
+        );
+        assert_eq!(
+            connect_deadline_elapsed(false, Duration::from_secs(60), CAPS),
+            ConnectDeadline::HandshakeStall
+        );
+    }
+
+    #[test]
+    fn pending_prompt_extends_past_the_handshake_cap() {
+        // A pending prompt is NOT a stall at the 15s mark — the 90s human
+        // window runs on.
+        assert_eq!(
+            connect_deadline_elapsed(true, Duration::from_secs(15), CAPS),
+            ConnectDeadline::Continue
+        );
+        assert_eq!(
+            connect_deadline_elapsed(true, Duration::from_secs(109), CAPS),
+            ConnectDeadline::Continue
+        );
+        // A prompt shown early (fast kex) is likewise well within the hard cap.
+        assert_eq!(
+            connect_deadline_elapsed(true, Duration::from_secs(2), CAPS),
+            ConnectDeadline::Continue
+        );
+    }
+
+    #[test]
+    fn pending_prompt_trips_only_the_hard_cap() {
+        // Only once the hard cap elapses does a pending prompt time out — and
+        // as PromptHardCap (host-key message), never HandshakeStall.
+        assert_eq!(
+            connect_deadline_elapsed(true, Duration::from_secs(110), CAPS),
+            ConnectDeadline::PromptHardCap
+        );
+        assert_eq!(
+            connect_deadline_elapsed(true, Duration::from_secs(200), CAPS),
+            ConnectDeadline::PromptHardCap
+        );
+    }
+}
+
+#[cfg(test)]
+mod ssh_config_tests {
+    use super::{build_ssh_client_config, ssh_preferred_algorithms};
+    use crate::ssh_test_server::{connect, connect_with_client, TestClient, TestServer};
+    use std::borrow::Cow;
+    use std::sync::Arc;
+
+    fn names<T: AsRef<str>>(list: &[T]) -> Vec<String> {
+        list.iter().map(|n| n.as_ref().to_string()).collect()
+    }
+
+    #[test]
+    fn client_config_policy() {
+        let config = build_ssh_client_config();
+        // S1: no keepalive-count disconnect.
+        assert_eq!(config.keepalive_max, 0);
+        // No russh keepalive timer: before login it spins a CPU core while a
+        // prompt waits (see build_ssh_client_config).
+        assert!(config.keepalive_interval.is_none());
+        // #33: 2048-bit DH-GEX groups accepted, 8192 preferred.
+        assert_eq!(config.gex.min_group_size(), 2048);
+        assert_eq!(config.gex.preferred_group_size(), 8192);
+        assert_eq!(config.gex.max_group_size(), 8192);
+        // #34: no compression preferred.
+        assert_eq!(names(&config.preferred.compression), ["none", "zlib@openssh.com", "zlib"]);
+    }
+
+    #[test]
+    fn algorithm_preferences() {
+        let p = ssh_preferred_algorithms();
+        let kex = names(&p.kex);
+        let pos = |n: &str| kex.iter().position(|k| k == n).unwrap_or_else(|| panic!("{n} missing"));
+        let gex = pos("diffie-hellman-group-exchange-sha256");
+        assert!(pos("mlkem768x25519-sha256") < gex && pos("curve25519-sha256") < gex);
+        assert!(gex < pos("diffie-hellman-group14-sha256"));
+        // Host keys: the pre-0.63 release order first, so already-pinned hosts
+        // keep negotiating the key type whose fingerprint is on file.
+        let keys: Vec<String> = p.key.iter().map(|a| a.to_string()).collect();
+        assert_eq!(
+            keys[..5],
+            ["ssh-ed25519", "ecdsa-sha2-nistp256", "rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"]
+        );
+        // No host certificates advertised (no CA trust store).
+        assert!(p.host_key_certificates.is_empty());
+    }
+
+    /// Against a real (in-process) server that PREFERS zlib: the client's
+    /// order decides, so the connection runs uncompressed (#34); the modern
+    /// hybrid KEX is picked when both sides have it.
+    #[tokio::test]
+    async fn negotiates_no_compression_even_when_the_server_prefers_zlib() {
+        use russh::compression::{NONE, ZLIB, ZLIB_LEGACY};
+        let client = TestClient::default();
+        let negotiated = Arc::clone(&client.negotiated);
+        let _session = connect_with_client(
+            TestServer::default(),
+            |c| {
+                c.preferred = russh::Preferred {
+                    compression: Cow::Borrowed(&[ZLIB_LEGACY, ZLIB, NONE]),
+                    ..russh::Preferred::default()
+                };
+            },
+            build_ssh_client_config(),
+            client,
+        )
+        .await
+        .expect("in-process SSH connection");
+        let names = negotiated.lock().unwrap().clone().expect("kex done");
+        assert_eq!(format!("{:?}", names.client_compression), "None");
+        assert_eq!(format!("{:?}", names.server_compression), "None");
+        assert_eq!(names.kex.as_ref(), "mlkem768x25519-sha256");
+    }
+
+    /// #33: a server that ONLY does diffie-hellman-group-exchange-sha256 and
+    /// only has 2048-bit groups. russh's stock bounds (min 3072) refuse it;
+    /// ours connect.
+    #[tokio::test]
+    async fn dh_gex_only_server_with_2048_bit_groups_connects() {
+        let dh_gex_only = |c: &mut russh::server::Config| {
+            c.preferred = russh::Preferred {
+                kex: Cow::Borrowed(&[russh::kex::DH_GEX_SHA256]),
+                ..russh::Preferred::default()
+            };
+        };
+        let server = TestServer::with_gex_group(russh::kex::dh::groups::DH_GROUP14);
+        let client = TestClient::default();
+        let negotiated = Arc::clone(&client.negotiated);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            connect_with_client(server.clone(), dh_gex_only, build_ssh_client_config(), client),
+        )
+        .await
+        .expect("handshake must finish")
+        .expect("DH-GEX with a 2048-bit group must be accepted");
+        let names = negotiated.lock().unwrap().clone().expect("kex done");
+        assert_eq!(names.kex.as_ref(), "diffie-hellman-group-exchange-sha256");
+
+        let mut stock = build_ssh_client_config();
+        stock.gex = russh::client::GexParams::default();
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            connect(server, dh_gex_only, stock),
+        )
+        .await
+        .expect("handshake must finish");
+        assert!(refused.is_err(), "control: russh's default 3072-bit minimum refuses this server");
+    }
 }
 
 /// Minimal auth/identity resolver for a ProxyJump bastion. Mirrors the
@@ -5017,7 +6820,8 @@ fn resolve_jump_auth(
     conn: &rusqlite::Connection,
     server_id: i32,
 ) -> Result<
-    Option<(String, i32, String, Option<String>, Option<(String, Option<String>)>)>,
+    // host, port, user, password, (private_key, passphrase, key_name)
+    Option<(String, i32, String, Option<String>, Option<(String, Option<String>, Option<String>)>)>,
     String,
 > {
     let mut stmt = conn
@@ -5067,13 +6871,14 @@ fn resolve_jump_auth(
     };
     let key_data = if let Some(kid) = effective_key_id {
         let mut key_stmt = conn
-            .prepare("SELECT private_key, passphrase FROM ssh_keys WHERE id = ?1")
+            .prepare("SELECT private_key, passphrase, name FROM ssh_keys WHERE id = ?1")
             .map_err(|e| e.to_string())?;
         let mut key_rows = key_stmt.query([kid]).map_err(|e| e.to_string())?;
         if let Some(key_row) = key_rows.next().map_err(|e| e.to_string())? {
             let private_key: String = key_row.get::<_, String>(0).map_err(|e| e.to_string())?;
             let passphrase: Option<String> = key_row.get::<_, Option<String>>(1).map_err(|e| e.to_string())?;
-            Some((private_key, passphrase))
+            let key_name: Option<String> = key_row.get::<_, Option<String>>(2).unwrap_or_default();
+            Some((private_key, passphrase, key_name))
         } else {
             None
         }
@@ -5095,6 +6900,7 @@ fn resolve_jump_auth(
 /// is verified through the SAME frontend prompt as the target (events emitted
 /// under the target's `session_id`, keyed by a distinct nonce), and it supports
 /// the full key → password → keyboard-interactive auth ladder.
+#[allow(clippy::too_many_arguments)]
 async fn connect_jump_host(
     app: &tauri::AppHandle,
     db: &std::sync::Arc<std::sync::Mutex<Option<rusqlite::Connection>>>,
@@ -5106,6 +6912,16 @@ async fn connect_jump_host(
             std::collections::HashMap<String, tokio::sync::oneshot::Sender<Option<Vec<String>>>>,
         >,
     >,
+    // Per-tab prompted-secret cache + whether this connection may prompt at all
+    // (true only for a primary target; secondaries reuse the cache). Issue #30.
+    cache: &PromptedSecretsMap,
+    allow_prompt: bool,
+    // Set when the bastion login itself failed (rejected or cancelled), so the
+    // caller reports an auth error — auto-reconnect then stops instead of
+    // re-prompting every few seconds.
+    auth_failed: &std::sync::atomic::AtomicBool,
+    // The target session's connect attempt; the bastion's prompts belong to it.
+    attempt: &ssh_manager::ConnectAttempt,
     session_id: &str,
     jump_server_id: i32,
 ) -> Result<russh::client::Handle<ssh_manager::ClientHandler>, String> {
@@ -5114,6 +6930,10 @@ async fn connect_jump_host(
 
     let log = |msg: &str, ty: &str| {
         println!("[LOG-{}] [jump] {}", session_id, msg);
+        // A superseded attempt stays out of the tab's log.
+        if !attempt.is_current_now() {
+            return;
+        }
         let _ = app.emit(
             &format!("session-log-{}", session_id),
             serde_json::json!({"msg": msg, "type": ty}),
@@ -5132,11 +6952,8 @@ async fn connect_jump_host(
             None => return Err("jump host not found".into()),
         }
     };
-    let effective_user = if user.trim().is_empty() {
-        "root".to_string()
-    } else {
-        user.trim().to_string()
-    };
+    // A blank bastion username is resolved after the handshake (issue #54).
+    let saved_user = user.trim().to_string();
 
     // 2. Direct TCP to the bastion.
     log(&format!("Connecting to jump host {}:{}...", host, port), "info");
@@ -5159,11 +6976,15 @@ async fn connect_jump_host(
     let (fp_tx, fp_rx) = tokio::sync::oneshot::channel();
     let jump_nonce: String = {
         let mut bytes = [0u8; 16];
-        rand::thread_rng().fill(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         hex::encode(bytes)
     };
     fp_txs.lock().await.insert(jump_nonce.clone(), fp_tx);
     let fp_outcome = std::sync::Arc::new(std::sync::atomic::AtomicI8::new(-1));
+    // Shared with the connect driver so the 15s handshake cap doesn't kill a
+    // first-time key prompt on the bastion — see the direct path's rationale.
+    let prompt_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let prompt_pending_for_driver = std::sync::Arc::clone(&prompt_pending);
 
     let handler = ssh_manager::ClientHandler {
         app: app.clone(),
@@ -5175,43 +6996,107 @@ async fn connect_jump_host(
         fp_rx: Some(fp_rx),
         forwarded_targets: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         fp_outcome,
+        prompt_pending,
+        // Dedicated `::sftp` / `::fwd` connections carry a `::` suffix and
+        // have no prompt of their own (see ClientHandler::prompt_allowed).
+        prompt_allowed: !session_id.contains("::"),
+        attempt: attempt.clone(),
+        // The watcher probes the session, not the bastion hop.
+        last_heard: ssh_manager::LastHeard::default(),
     };
 
     // 4. Handshake.
     let config = std::sync::Arc::new(build_ssh_client_config());
     log("Jump host: SSH handshake...", "info");
-    let connect_res = tokio::time::timeout(
-        Duration::from_secs(15),
+    // The 15s handshake cap bounds only the pre-prompt transport+kex phase;
+    // once check_server_key shows a first-time fingerprint prompt the wait
+    // extends to the hard cap so the 90s human window — not this timer — rules.
+    let connect_res = drive_connect_with_prompt_timeout(
         russh::client::connect_stream(config, tcp, handler),
+        &prompt_pending_for_driver,
+        CONNECT_TIMEOUT_CAPS,
     )
     .await;
+    // Given up on: russh's handshake task may still reach the host-key check
+    // later, and must not prompt for an attempt nobody is waiting on.
+    if connect_res.is_err() {
+        attempt.abandon();
+    }
     // The host-key prompt (if any) is resolved by now — drop the sender.
     fp_txs.lock().await.remove(&jump_nonce);
 
     let mut session = match connect_res {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => return Err(format!("jump host handshake failed: {}", e)),
-        Err(_) => return Err("jump host handshake timed out".into()),
-    };
-
-    // 5. Auth ladder: key → password → keyboard-interactive.
-    let mut auth_res = if let Some((private_key, passphrase)) = key_data {
-        log("Jump host: private key authentication...", "info");
-        let normalized_key = private_key.replace("\r\n", "\n");
-        match russh_keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
-            Ok(keypair) => session.authenticate_publickey(&effective_user, std::sync::Arc::new(keypair)).await,
-            Err(e) => Err(russh::Error::from(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))),
+        Err(ConnectTimeout::HandshakeStall) => return Err("jump host handshake timed out".into()),
+        Err(ConnectTimeout::PromptHardCap) => {
+            return Err("jump host host-key prompt timed out — reconnect and approve the fingerprint within 90 seconds".into())
         }
-    } else if let Some(pass) = password {
-        log("Jump host: password authentication...", "info");
-        session.authenticate_password(&effective_user, pass).await
-    } else {
-        Ok(false)
     };
 
-    if !matches!(auth_res, Ok(true)) {
+    // 5. Auth ladder: key → password → keyboard-interactive. A bastion saved
+    //    with no secret is prompted for here too (primary target only), cached
+    //    under the target tab's JumpPassword / JumpPassphrase slot (issue #30),
+    //    keyed by this bastion so its secrets never reach another host.
+    let base_id = format!(
+        "{}|jump{}|{}:{}|{}",
+        base_session_id(session_id),
+        jump_server_id,
+        host,
+        port,
+        user.trim()
+    );
+    let prompt_ctx = SecretPromptCtx {
+        app,
+        session_id,
+        nonce: &jump_nonce,
+        kbi_txs,
+        cache,
+        base: &base_id,
+        allow_prompt,
+        attempt,
+        cancelled: std::sync::atomic::AtomicBool::new(false),
+    };
+    let (effective_user, user_prompted, login_cancelled) =
+        match resolve_login_user(&saved_user, &host, SecretSlot::JumpUsername, &prompt_ctx).await {
+            Some((name, typed)) => (name, typed, false),
+            None => (Zeroizing::new(String::new()), false, true),
+        };
+    let mut auth_res = if login_cancelled {
+        Ok(false)
+    } else if let Some((private_key, passphrase, key_name)) = key_data {
+        log("Jump host: private key authentication...", "info");
+        let key_label = key_name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| format!("{}@{}", effective_user.as_str(), host));
+        authenticate_key_prompting(
+            &mut session,
+            &effective_user,
+            &private_key,
+            &key_label,
+            passphrase.map(Zeroizing::new),
+            SecretSlot::JumpPassphrase,
+            &prompt_ctx,
+        )
+        .await
+    } else {
+        log("Jump host: password authentication...", "info");
+        authenticate_password_prompting(
+            &mut session,
+            &effective_user,
+            &host,
+            None,
+            password.map(Zeroizing::new),
+            SecretSlot::JumpPassword,
+            &prompt_ctx,
+        )
+        .await
+    };
+
+    // A declined prompt ends the hop — don't fall back to asking again.
+    if !matches!(auth_res, Ok(true)) && !prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
         if let Some(kbi_res) =
-            run_keyboard_interactive(&mut session, &effective_user, app, session_id, &jump_nonce, kbi_txs).await
+            run_keyboard_interactive(&mut session, &effective_user, app, session_id, &jump_nonce, kbi_txs, attempt).await
         {
             auth_res = kbi_res;
         }
@@ -5219,13 +7104,29 @@ async fn connect_jump_host(
     // Belt-and-suspenders: no dangling interactive sender for this hop.
     kbi_txs.lock().await.remove(&jump_nonce);
 
+    if user_prompted && matches!(auth_res, Ok(true)) {
+        cache_store_secret(cache, &base_id, SecretSlot::JumpUsername, effective_user.clone()).await;
+    }
+
     match auth_res {
         Ok(true) => {
             log("Jump host authenticated.", "success");
             Ok(session)
         }
-        Ok(false) => Err("jump host authentication failed".into()),
-        Err(e) => Err(format!("jump host auth error: {}", e)),
+        Ok(false) if prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) => {
+            auth_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            Err("jump host login cancelled".into())
+        }
+        Ok(false) => {
+            auth_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            Err("jump host authentication failed".into())
+        }
+        Err(e) => {
+            if classify_russh_error(&e).is_auth() {
+                auth_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(format!("jump host auth error: {}", e))
+        }
     }
 }
 
@@ -5358,6 +7259,13 @@ async fn initiate_connection(
         g.insert(session_id.clone(), next);
         next
     };
+    // This attempt, as its prompts and failure report see it: once a newer
+    // attempt starts (or the tab disconnects) they stay quiet.
+    let attempt = ssh_manager::ConnectAttempt::new(
+        Arc::clone(&state.session_generation),
+        session_id.clone(),
+        connect_generation,
+    );
 
     println!("[BACKEND] No duplicates found. Registering oneshot channel and spawning connection worker...");
     let (fp_tx, fp_rx) = tokio::sync::oneshot::channel();
@@ -5367,7 +7275,7 @@ async fn initiate_connection(
     // = 128 bits of entropy, plenty for a single-use guard.
     let connect_nonce: String = {
         let mut bytes = [0u8; 16];
-        rand::thread_rng().fill(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         hex::encode(bytes)
     };
     // NB: the fp_txs insert is deliberately deferred until AFTER the DB
@@ -5383,6 +7291,9 @@ async fn initiate_connection(
     let state_session_generation = Arc::clone(&state.session_generation);
     let fp_txs_clone = Arc::clone(&state.fp_txs);
     let kbi_txs_clone = Arc::clone(&state.kbi_txs);
+    // Per-tab cache of secrets the user types at connect time (issue #30), so a
+    // reconnect / dedicated secondary reuses them without re-prompting.
+    let prompted_secrets_clone = Arc::clone(&state.prompted_secrets);
     let state_jump_connections = Arc::clone(&state.jump_connections);
     // Second Arc into the DB for the ProxyJump hop — the handler below moves
     // the primary `db_conn_shared`, and the spawned worker needs its own owned
@@ -5446,7 +7357,9 @@ async fn initiate_connection(
         let key_data = q.private_key
             .clone()
             .filter(|s| !s.trim().is_empty())
-            .map(|pk| (pk, q.passphrase.clone()));
+            // Third element is the key name for the passphrase prompt label —
+            // Quick Connect keys are nameless, so None.
+            .map(|pk| (pk, q.passphrase.clone(), None::<String>));
         let auth_type = if key_data.is_some() { "custom_key" } else { "custom_pass" };
         Some((
             q.host.clone(),
@@ -5535,12 +7448,14 @@ async fn initiate_connection(
 
             // Fetch key details if a key is needed
             let key_data = if let Some(kid) = effective_key_id {
-                let mut key_stmt = conn.prepare("SELECT private_key, passphrase FROM ssh_keys WHERE id = ?1").map_err(|e| e.to_string())?;
+                let mut key_stmt = conn.prepare("SELECT private_key, passphrase, name FROM ssh_keys WHERE id = ?1").map_err(|e| e.to_string())?;
                 let mut key_rows = key_stmt.query([kid]).map_err(|e| e.to_string())?;
                 if let Some(key_row) = key_rows.next().map_err(|e| e.to_string())? {
                     let private_key: String = key_row.get::<_, String>(0).map_err(|e| e.to_string())?;
                     let passphrase: Option<String> = key_row.get::<_, Option<String>>(1).map_err(|e| e.to_string())?;
-                    Some((private_key, passphrase))
+                    // Name is for the "Passphrase for key '<name>'" prompt label.
+                    let key_name: Option<String> = key_row.get::<_, Option<String>>(2).unwrap_or_default();
+                    Some((private_key, passphrase, key_name))
                 } else {
                     None
                 }
@@ -5567,11 +7482,28 @@ async fn initiate_connection(
     // entry is removed even on the failure paths.
     state.fp_txs.lock().await.insert(connect_nonce.clone(), fp_tx);
 
+    // What this connection logs in to, as part of its prompted-secret cache
+    // key (issue #30): a password or passphrase typed for one target is never
+    // offered to another. Editing an open tab's host, user, key or bastion — or
+    // another profile reusing the same tab id — starts from an empty entry.
+    let secrets_target = format!(
+        "{}:{}|{}|{}|{:?}|{:?}",
+        host, port, user.trim(), server_auth_type, effective_key_id, jump_host_id
+    );
+
     // Shared between the handler and the connect driver so we can tell host-
     // key timeouts apart from real auth errors on the failure path. See
     // ClientHandler::fp_outcome for the meaning of the values.
     let fp_outcome = std::sync::Arc::new(std::sync::atomic::AtomicI8::new(-1));
     let fp_outcome_for_driver = std::sync::Arc::clone(&fp_outcome);
+    // Shared the same way as fp_outcome: the handler flips it while a host-key
+    // prompt is pending so the connect driver can extend its 15s handshake cap
+    // to cover the human approval window instead of killing the prompt.
+    let prompt_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let prompt_pending_for_driver = std::sync::Arc::clone(&prompt_pending);
+    // Stamped by the handler whenever the server sends something; read by the
+    // session watcher below.
+    let last_heard = ssh_manager::LastHeard::default();
 
     let handler = ssh_manager::ClientHandler {
         app: app.clone(),
@@ -5583,6 +7515,10 @@ async fn initiate_connection(
         fp_rx: Some(fp_rx),
         forwarded_targets: Arc::clone(&session_forwarded_targets),
         fp_outcome: std::sync::Arc::clone(&fp_outcome),
+        prompt_pending: std::sync::Arc::clone(&prompt_pending),
+        prompt_allowed: !is_secondary,
+        attempt: attempt.clone(),
+        last_heard: last_heard.clone(),
     };
 
     let cleanup_nonce = connect_nonce.clone();
@@ -5620,6 +7556,11 @@ async fn initiate_connection(
 
         let emit_log = |msg: &str, log_type: &str| {
             println!("[LOG-{}] {}", session_id_clone, msg);
+            // Once a newer attempt (or a disconnect) has replaced this one,
+            // its lines would read as the newer attempt's — keep them out.
+            if !attempt.is_current_now() {
+                return;
+            }
             let _ = app.emit(&format!("session-log-{}", session_id_clone), serde_json::json!({"msg": msg, "type": log_type}));
         };
 
@@ -5629,21 +7570,30 @@ async fn initiate_connection(
         };
 
         emit_log("Initializing SSH connection process...", "info");
-        let effective_user = if user.trim().is_empty() {
-            emit_log("Username is empty. Defaulting to 'root'.", "info");
-            "root".to_string()
+        // A blank username is resolved after the handshake (issue #54): from
+        // this tab's cache, or asked for — see resolve_login_user.
+        let saved_user = user.trim().to_string();
+        let display_host = if proxy_type == "tailcat" {
+            tailcat_transport::redact(&host)
         } else {
-            user.trim().to_string()
+            host.clone()
         };
-        let display_host = if proxy_type == "tailcat" { tailcat_transport::redact(&host) } else { host.clone() };
-        emit_log(&format!("Server Details -> Host: {}, Port: {}, User: {}", display_host, port, effective_user), "info");
+        emit_log(
+            &format!(
+                "Server Details -> Host: {}, Port: {}, User: {}",
+                display_host,
+                port,
+                if saved_user.is_empty() { "(asked when connecting)" } else { saved_user.as_str() },
+            ),
+            "info",
+        );
         emit_log(&format!("[DEBUG] Server Auth Method: {}", server_auth_type), "info");
         if server_auth_type == "vault" {
             emit_log(&format!("[DEBUG] Vault Identity Auth Type: {:?}", cred_auth_type), "info");
         }
         emit_log(&format!("[DEBUG] SQLite DB key_id: {:?}", db_key_id), "info");
         emit_log(&format!("[DEBUG] effective_key_id determined: {:?}", effective_key_id), "info");
-        if let Some((ref priv_key, ref passphrase)) = key_data {
+        if let Some((ref priv_key, ref passphrase, _)) = key_data {
             emit_log(&format!("[DEBUG] SSH Key loaded from DB. Private Key length: {} chars, Has Passphrase: {}", priv_key.len(), passphrase.is_some()), "info");
             if priv_key.trim().is_empty() {
                 emit_log("[DEBUG] WARNING: SSH Key content is EMPTY!", "error");
@@ -5685,9 +7635,11 @@ async fn initiate_connection(
         // in `jump_handle_holder` so it lives through the target handshake; on
         // success it moves into `state_jump_connections` for the session's life.
         let mut jump_handle_holder: Option<russh::client::Handle<ssh_manager::ClientHandler>> = None;
+        // Set by connect_jump_host when the bastion login itself failed.
+        let jump_auth_failed = std::sync::atomic::AtomicBool::new(false);
         let stream_res: Result<Box<dyn AsyncStream>, String> = if let Some(jid) = jump_host_id {
             emit_log(&format!("ProxyJump: routing through jump host (server id {})...", jid), "info");
-            match connect_jump_host(&app, &db_for_jump, &fp_txs_clone, &kbi_txs_clone, &session_id_clone, jid).await {
+            match connect_jump_host(&app, &db_for_jump, &fp_txs_clone, &kbi_txs_clone, &prompted_secrets_clone, allow_kbi, &jump_auth_failed, &attempt, &session_id_clone, jid).await {
                 Ok(jump_handle) => {
                     // Originator address is cosmetic (logged by the bastion); the
                     // pair below is what OpenSSH sends for a -J hop.
@@ -5697,7 +7649,14 @@ async fn initiate_connection(
                     {
                         Ok(channel) => {
                             emit_log(&format!("ProxyJump: opened tunnel to {}:{} through the jump host.", host, port), "success");
-                            let boxed: Box<dyn AsyncStream> = Box::new(channel.into_stream());
+                            // Always-drained (see tunnel::DrainedChannelStream):
+                            // the target session's protocol task stops reading its
+                            // transport while a write waits for the bastion's
+                            // window. A plain ChannelStream would then fill this
+                            // channel's queue, block the bastion connection's
+                            // protocol task — which is what delivers that window
+                            // adjust — and deadlock the whole ProxyJump session.
+                            let boxed: Box<dyn AsyncStream> = Box::new(crate::tunnel::drained_stream(channel));
                             jump_handle_holder = Some(jump_handle);
                             Ok(boxed)
                         }
@@ -5725,7 +7684,7 @@ async fn initiate_connection(
                         let err_msg = "SOCKS5 Proxy Host is empty";
                         emit_log(&format!("Error: {}", err_msg), "error");
                         cleanup().await;
-                        let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": err_msg}));
+                        emit_connection_failed(&app, &attempt, &session_id_clone, serde_json::json!({"reason": err_msg})).await;
                         return;
                     }
                 };
@@ -5759,7 +7718,7 @@ async fn initiate_connection(
                         let err_msg = "HTTP Proxy Host is empty";
                         emit_log(&format!("Error: {}", err_msg), "error");
                         cleanup().await;
-                        let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": err_msg}));
+                        emit_connection_failed(&app, &attempt, &session_id_clone, serde_json::json!({"reason": err_msg})).await;
                         return;
                     }
                 };
@@ -5833,7 +7792,19 @@ async fn initiate_connection(
             Err(e) => {
                 emit_log(&e, "error");
                 cleanup().await;
-                let _ = app.emit(&format!("connection-failed-{}", session_id_clone), serde_json::json!({"reason": e}));
+                // A failed (or cancelled) bastion login is an auth error like
+                // the target's own, so auto-reconnect stops instead of asking
+                // again every few seconds.
+                emit_connection_failed(
+                    &app,
+                    &attempt,
+                    &session_id_clone,
+                    serde_json::json!({
+                        "reason": e,
+                        "is_auth_error": jump_auth_failed.load(std::sync::atomic::Ordering::Relaxed),
+                    }),
+                )
+                .await;
                 return;
             }
         };
@@ -5845,48 +7816,77 @@ async fn initiate_connection(
 
         let connect_future = client::connect_stream(config, StreamWrapper(stream), handler);
 
-        match tokio::time::timeout(Duration::from_secs(15), connect_future).await {
+        // 15s bounds only the pre-prompt handshake; a pending first-time
+        // fingerprint prompt extends the wait to the hard cap (see
+        // drive_connect_with_prompt_timeout) so the 90s human window governs.
+        match drive_connect_with_prompt_timeout(connect_future, &prompt_pending_for_driver, CONNECT_TIMEOUT_CAPS).await {
             Ok(Ok(mut session)) => {
                 emit_log("SSH Handshake complete. Authenticating user...", "info");
                 
-                let final_pass = custom_password.or(password);
-                
-                let mut auth_res = if let Some((private_key, passphrase)) = key_data {
-                    emit_log("Attempting Private Key Authentication...", "info");
-                    let normalized_key = private_key.replace("\r\n", "\n");
-                    match russh_keys::decode_secret_key(&normalized_key, passphrase.as_deref()) {
-                        Ok(keypair) => {
-                            let key_arc = std::sync::Arc::new(keypair);
-                            session.authenticate_publickey(&effective_user, key_arc).await
-                        }
-                        Err(e) => {
-                            // RSA private keys only work in builds that include the
-                            // OpenSSL backend (release CI). Local debug builds skip
-                            // OpenSSL to stay Perl-free, so surface a targeted hint
-                            // instead of the raw "Unsupported key type rsa" string.
-                            #[cfg(not(feature = "full-ssh-algos"))]
-                            {
-                                let err_str = e.to_string();
-                                if err_str.contains("Unsupported key type rsa")
-                                    || err_str.contains("rsa")
-                                    || private_key.contains("RSA PRIVATE KEY")
-                                {
-                                    emit_log("RSA private keys aren't supported in this debug build — use Ed25519 for local testing, or grab a release build from GitHub for full RSA support.", "error");
-                                }
-                            }
-                            emit_log(&format!("Failed to parse private key: {}", e), "error");
-                            Err(russh::Error::from(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                e.to_string(),
-                            )))
-                        }
-                    }
-                } else if let Some(pass) = final_pass {
-                    emit_log("Attempting Password Authentication...", "info");
-                    session.authenticate_password(&effective_user, pass).await
-                } else {
-                    emit_log("Neither private key nor password auth credentials provided.", "error");
+                // Connect-time prompting for a secret the node / login / key
+                // doesn't save (issue #30). It uses this tab's keyboard-
+                // interactive modal, and accepted secrets are cached under the
+                // base tab id so reconnects and `::sftp` / `::fwd` secondaries
+                // reuse them; only the primary ever prompts. The key also names
+                // the target (see secrets_target).
+                let base_id = format!("{}|{}", base_session_id(&session_id_clone), secrets_target);
+                let prompt_ctx = SecretPromptCtx {
+                    app: &app,
+                    session_id: &session_id_clone,
+                    nonce: &connect_nonce,
+                    kbi_txs: &kbi_txs_clone,
+                    cache: &prompted_secrets_clone,
+                    base: &base_id,
+                    allow_prompt: allow_kbi,
+                    attempt: &attempt,
+                    cancelled: std::sync::atomic::AtomicBool::new(false),
+                };
+
+                let (effective_user, user_prompted, login_cancelled) =
+                    match resolve_login_user(&saved_user, &host, SecretSlot::Username, &prompt_ctx).await {
+                        Some((name, typed)) => (name, typed, false),
+                        None => (Zeroizing::new(String::new()), false, true),
+                    };
+                if user_prompted {
+                    emit_log(&format!("Logging in as {}.", effective_user.as_str()), "info");
+                }
+
+                let mut auth_res = if login_cancelled {
+                    // "Login as" was cancelled — nothing to try. The prompt set
+                    // prompt_ctx.cancelled, so this ends as "Login cancelled"
+                    // and skips the keyboard-interactive fallback.
                     Ok(false)
+                } else if let Some((private_key, passphrase, key_name)) = key_data {
+                    emit_log("Attempting Private Key Authentication...", "info");
+                    let key_label = key_name
+                        .filter(|n| !n.trim().is_empty())
+                        .unwrap_or_else(|| format!("{}@{}", effective_user.as_str(), host));
+                    authenticate_key_prompting(
+                        &mut session,
+                        &effective_user,
+                        &private_key,
+                        &key_label,
+                        passphrase.map(Zeroizing::new),
+                        SecretSlot::Passphrase,
+                        &prompt_ctx,
+                    )
+                    .await
+                } else {
+                    emit_log("Attempting Password Authentication...", "info");
+                    // The failed-screen override (if any) is tried first, then
+                    // the cache, then the saved password; with none of them the
+                    // user is asked — unless the server doesn't take passwords,
+                    // in which case keyboard-interactive below runs as before.
+                    authenticate_password_prompting(
+                        &mut session,
+                        &effective_user,
+                        &host,
+                        custom_password.map(Zeroizing::new),
+                        password.map(Zeroizing::new),
+                        SecretSlot::Password,
+                        &prompt_ctx,
+                    )
+                    .await
                 };
 
                 // Keyboard-interactive (2FA / verification-code) fallback. Many
@@ -5897,7 +7897,13 @@ async fn initiate_connection(
                 // the UI, collect the user's answers, and send them back. If
                 // the server doesn't offer it, `run_keyboard_interactive`
                 // returns None and we keep the original auth result untouched.
-                if allow_kbi && !matches!(auth_res, Ok(true)) {
+                // If the user just cancelled our password / passphrase prompt,
+                // stop here: the fallback would only ask again (the server's own
+                // "Password:" box on a typical PAM setup).
+                if allow_kbi
+                    && !matches!(auth_res, Ok(true))
+                    && !prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed)
+                {
                     if let Some(kbi_res) = run_keyboard_interactive(
                         &mut session,
                         &effective_user,
@@ -5905,11 +7911,18 @@ async fn initiate_connection(
                         &session_id_clone,
                         &connect_nonce,
                         &kbi_txs_clone,
+                        &attempt,
                     )
                     .await
                     {
                         auth_res = kbi_res;
                     }
+                }
+
+                // A typed "Login as" name is kept for this tab only once it has
+                // logged in, so a typo isn't silently reused on reconnect.
+                if user_prompted && matches!(auth_res, Ok(true)) {
+                    cache_store_secret(&prompted_secrets_clone, &base_id, SecretSlot::Username, effective_user.clone()).await;
                 }
 
                 match auth_res {
@@ -6117,6 +8130,7 @@ async fn initiate_connection(
                         // stays alive (see the retry block in the loop below).
                         let state_specs_w = Arc::clone(&state_session_tunnel_specs);
                         let targets_w = Arc::clone(&session_forwarded_targets);
+                        let last_heard_w = last_heard.clone();
                         let my_gen = connect_generation;
                         tauri::async_runtime::spawn(async move {
                             // Two-tier liveness check:
@@ -6125,21 +8139,41 @@ async fn initiate_connection(
                             //     the transport socket carries OS TCP keepalive
                             //     (see apply_tcp_keepalive) — kernel-detected
                             //     dead peers during long idle.
-                            //   - Slow active probe: open a tiny SSH channel to
-                            //     force a real round-trip, catching black-holes
-                            //     the kernel hasn't flagged yet. Primary every
+                            //   - Slow active probe: a `keepalive@openssh.com`
+                            //     global request with want-reply, forcing a real
+                            //     round-trip to catch black-holes the kernel
+                            //     hasn't flagged yet (what OpenSSH's
+                            //     ServerAliveInterval sends). Primary every
                             //     ~30s, dedicated `::sftp`/`::fwd` secondaries
                             //     every ~60s (they matter less urgently and the
                             //     probes multiply per-session overhead).
+                            //     It must NOT be a channel open: that takes one
+                            //     of the server's MaxSessions slots, so on a
+                            //     hardened server (MaxSessions 1-4) or a busy
+                            //     connection (tabs + SFTP + logs at the default
+                            //     10) the server refused the probe — and a
+                            //     refusal was counted as a dead connection, so
+                            //     a healthy session was torn down every ~30s
+                            //     (#29). A global request uses no slot, and any
+                            //     reply, success or failure, proves the server
+                            //     and the transport are alive.
                             //     TWO consecutive probe failures are required
                             //     before declaring death: on poor networks a
                             //     single 10s latency spike is common, and the
                             //     old one-strike/5s-timeout probe tore down
                             //     perfectly recoverable sessions — the exact
                             //     opposite of what a flaky link needs.
+                            //     And a probe left unanswered while the server
+                            //     kept sending (LastHeard) isn't a failure: on
+                            //     a slow uplink an SFTP upload queues the
+                            //     keepalive behind its own data for longer
+                            //     than the probe waits.
                             let probe_every: u32 = if sid_w.contains("::") { 30 } else { 15 };
                             let mut tick: u32 = 0;
                             let mut probe_strikes: u8 = 0;
+                            // Set once this server has left a keepalive unanswered but answered
+                            // a channel open: probe it that way from then on.
+                            let mut ping_unanswered = false;
                             loop {
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 tick = tick.wrapping_add(1);
@@ -6172,7 +8206,7 @@ async fn initiate_connection(
 
                                 let mut dead = is_closed;
 
-                                if !dead && tick % probe_every == 0 {
+                                if !dead && tick.is_multiple_of(probe_every) {
                                     // Active probe: hold the handle lock long
                                     // enough to start AND finish the round
                                     // trip — concurrent commands wait, but
@@ -6181,32 +8215,70 @@ async fn initiate_connection(
                                     // anyway. 10s timeout: generous enough
                                     // that a congested-but-alive link doesn't
                                     // strike out spuriously.
-                                    let probe = {
+                                    let asked_at = ssh_manager::LastHeard::now();
+                                    let alive = {
                                         let h = handle_arc.lock().await;
-                                        tokio::time::timeout(
-                                            Duration::from_secs(10),
-                                            h.channel_open_session(),
-                                        ).await
-                                    };
-                                    match probe {
-                                        Ok(Ok(ch)) => {
-                                            probe_strikes = 0;
-                                            // Close cleanly so the server
-                                            // doesn't log a stuck session.
-                                            let _ = ch.close().await;
-                                        }
-                                        _ => {
-                                            probe_strikes += 1;
-                                            if probe_strikes >= 2 {
-                                                dead = true;
-                                            } else {
-                                                // One strike: re-probe on the
-                                                // next 2s tick instead of a
-                                                // full interval away, so a
-                                                // real death still surfaces
-                                                // promptly.
-                                                tick = probe_every.wrapping_sub(1);
+                                        let answered = if ping_unanswered {
+                                            probe_with_channel(&h).await
+                                        } else {
+                                            match tokio::time::timeout(
+                                                Duration::from_secs(10),
+                                                h.send_ping(),
+                                            ).await {
+                                                // send_ping resolves on the
+                                                // server's reply — and also
+                                                // when the session dies
+                                                // mid-ping (the reply channel
+                                                // is dropped), so confirm the
+                                                // handle is still open.
+                                                Ok(Ok(())) => !h.is_closed(),
+                                                Ok(Err(_)) => false,
+                                                Err(_) if h.is_closed() => false,
+                                                // No reply in time, but the
+                                                // server kept sending: the
+                                                // reply is queued behind a
+                                                // busy channel's data (an
+                                                // upload on a slow uplink).
+                                                // Not a server that ignores
+                                                // keepalives, so no fallback.
+                                                Err(_) if last_heard_w.heard_since(asked_at) => true,
+                                                // No reply in time. A few
+                                                // servers never answer
+                                                // keepalive@openssh.com (or
+                                                // answer UNIMPLEMENTED, which
+                                                // russh drops), so ask the old
+                                                // way. If that gets an answer,
+                                                // keep probing this server that
+                                                // way rather than waiting out
+                                                // the ping on every probe.
+                                                Err(_) => {
+                                                    let up = probe_with_channel(&h).await;
+                                                    if up {
+                                                        ping_unanswered = true;
+                                                    }
+                                                    up
+                                                }
                                             }
+                                        };
+                                        // Same for a channel-open probe that
+                                        // timed out: anything the server sent
+                                        // while we waited proves it's alive,
+                                        // as long as the connection is open.
+                                        answered || (last_heard_w.heard_since(asked_at) && !h.is_closed())
+                                    };
+                                    if alive {
+                                        probe_strikes = 0;
+                                    } else {
+                                        probe_strikes += 1;
+                                        if probe_strikes >= 2 {
+                                            dead = true;
+                                        } else {
+                                            // One strike: re-probe on the
+                                            // next 2s tick instead of a
+                                            // full interval away, so a
+                                            // real death still surfaces
+                                            // promptly.
+                                            tick = probe_every.wrapping_sub(1);
                                         }
                                     }
                                 }
@@ -6225,7 +8297,7 @@ async fn initiate_connection(
                                 // and the primary handle is the correct transport for
                                 // the default (shared) topology. Spawned so a slow
                                 // bind retry never delays death detection.
-                                if !dead && tick % 30 == 0 && !sid_w.contains("::") {
+                                if !dead && tick.is_multiple_of(30) && !sid_w.contains("::") {
                                     let specs = state_specs_w.lock().await.get(&sid_w).cloned().unwrap_or_default();
                                     if !specs.is_empty() {
                                         let app_r = app_w.clone();
@@ -6265,7 +8337,17 @@ async fn initiate_connection(
                                             _ => break, // superseded by a fresh connection — leave it be
                                         }
                                     }
-                                    state_sftp_w.lock().await.remove(&sid_w);
+                                    // Close the SFTP session too, not just
+                                    // drop it from the cache: a transfer holds
+                                    // its own Arc to it, and its pending
+                                    // requests would otherwise wait out their
+                                    // 240s deadline (sftp_client_config) on a
+                                    // link that is gone. close() only signals
+                                    // russh-sftp's own task; nothing is sent.
+                                    let dead_sftp = state_sftp_w.lock().await.remove(&sid_w);
+                                    if let Some(sftp) = dead_sftp {
+                                        let _ = sftp.close().await;
+                                    }
                                     // Tear down all tunnels bound to this
                                     // session so their listeners release the
                                     // local ports + bridge tasks exit. Without
@@ -6289,7 +8371,10 @@ async fn initiate_connection(
                                         tunnel::stop_all_for_session(&state_tunnels_w, base).await;
                                     }
                                     if let Some(base) = sid_w.strip_suffix("::sftp") {
-                                        state_sftp_w.lock().await.remove(base);
+                                        let dead_sftp = state_sftp_w.lock().await.remove(base);
+                                        if let Some(sftp) = dead_sftp {
+                                            let _ = sftp.close().await;
+                                        }
                                     }
                                     // Stop any mirrors bound to this session too — otherwise the
                                     // mirror worker keeps its own Arc<SftpSession> pointing at
@@ -6313,27 +8398,50 @@ async fn initiate_connection(
                         // real auth failure — everything else gets routed
                         // through `classify_russh_error` so a network drop
                         // or host-key timeout never gets relabelled as one.
-                        emit_log("Authentication rejected by server.", "error");
-                        let _ = app.emit(
-                            &format!("connection-failed-{}", session_id_clone),
+                        // A cancelled (or timed-out) connect-time prompt is the
+                        // user's choice, not a rejection — say so. Still an
+                        // auth error so auto-reconnect stays off.
+                        let (log_msg, reason) = if prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                            ("Login cancelled.", "Login cancelled. Reconnect to try again.")
+                        } else {
+                            (
+                                "Authentication rejected by server.",
+                                "Authentication rejected by server (wrong password, missing key, or account locked).",
+                            )
+                        };
+                        emit_log(log_msg, "error");
+                        emit_connection_failed(
+                            &app,
+                            &attempt,
+                            &session_id_clone,
                             serde_json::json!({
-                                "reason": "Authentication rejected by server (wrong password, missing key, or account locked).",
+                                "reason": reason,
                                 "is_auth_error": true,
                             }),
-                        );
+                        )
+                        .await;
                     },
                     Err(e) => {
                         let kind = classify_russh_error(&e);
                         let target = format!("{}:{}", host, port);
-                        let reason = describe_error_kind(kind, &target);
+                        // A cancelled passphrase prompt surfaces here as
+                        // KeyIsEncrypted (an auth-kind error); name it plainly.
+                        let reason = if prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                            "Login cancelled. Reconnect to try again.".to_string()
+                        } else {
+                            describe_error_kind(kind, &target)
+                        };
                         emit_log(&format!("{} (raw: {})", reason, e), "error");
-                        let _ = app.emit(
-                            &format!("connection-failed-{}", session_id_clone),
+                        emit_connection_failed(
+                            &app,
+                            &attempt,
+                            &session_id_clone,
                             serde_json::json!({
                                 "reason": reason,
                                 "is_auth_error": kind.is_auth(),
                             }),
-                        );
+                        )
+                        .await;
                     }
                 }
             },
@@ -6361,30 +8469,61 @@ async fn initiate_connection(
                     }
                 };
                 emit_log(&format!("{} (raw: {})", reason, e), "error");
-                let _ = app.emit(
-                    &format!("connection-failed-{}", session_id_clone),
+                emit_connection_failed(
+                    &app,
+                    &attempt,
+                    &session_id_clone,
                     serde_json::json!({
                         "reason": reason,
                         "is_auth_error": kind.is_auth(),
                     }),
-                );
+                )
+                .await;
             },
-            Err(_) => {
-                // 15s wall-clock on connect_stream — the TCP socket is up
-                // but the SSH handshake never completed. Distinct enough
-                // from the auth path to deserve its own message.
+            Err(ConnectTimeout::HandshakeStall) => {
+                // russh's handshake task may still reach the host-key check
+                // later; nobody is waiting, so it mustn't prompt.
+                attempt.abandon();
+                // 15s wall-clock on connect_stream with NO host-key prompt
+                // pending — the TCP socket is up but the SSH handshake never
+                // completed. Distinct enough from the auth path to deserve its
+                // own message.
                 let msg = format!(
                     "{}:{} did not finish SSH handshake within 15 seconds — host may be filtering SSH or running a non-SSH service on this port.",
                     host, port
                 );
                 emit_log(&msg, "error");
-                let _ = app.emit(
-                    &format!("connection-failed-{}", session_id_clone),
+                emit_connection_failed(
+                    &app,
+                    &attempt,
+                    &session_id_clone,
                     serde_json::json!({
                         "reason": msg,
                         "is_auth_error": false,
                     }),
-                );
+                )
+                .await;
+            },
+            Err(ConnectTimeout::PromptHardCap) => {
+                attempt.abandon();
+                // A fingerprint prompt was still pending when even the hard cap
+                // (handshake + the 90s human window + margin) elapsed — the
+                // prompt is wedged. Surface the same host-key message as a
+                // check_server_key prompt-timeout (fp_outcome == 2) instead of
+                // the misleading "handshake stalled" one.
+                let reason =
+                    "Host key prompt timed out — Reconnect and approve the fingerprint within 90 seconds.".to_string();
+                emit_log(&reason, "error");
+                emit_connection_failed(
+                    &app,
+                    &attempt,
+                    &session_id_clone,
+                    serde_json::json!({
+                        "reason": reason,
+                        "is_auth_error": ConnectErrorKind::HostKey.is_auth(),
+                    }),
+                )
+                .await;
             }
         }
 
@@ -6818,8 +8957,10 @@ async fn disconnect_session(
     // try to push uploads through a dead SSH handle otherwise.
     mirror::stop_all_for_session(&mirrors, &session_id).await;
     // Drop SFTP first so the channel it holds is freed before we tear down the
-    // underlying SSH handle.
+    // underlying SSH handle. The tab is gone, so is its root (sudo) mode and
+    // the in-memory sudo password.
     state.sftp_sessions.lock().await.remove(&session_id);
+    state.sftp_elevation.lock().await.remove(&session_id);
     state.connections.lock().await.remove(&session_id);
     // Drop any ProxyJump bastion handle for this session — closes the jump
     // connection once the target it was carrying is gone.
@@ -6849,6 +8990,17 @@ async fn disconnect_session(
     if !session_id.contains("::") {
         teardown_connection_key(state.inner(), mirrors.inner(), &format!("{}::sftp", session_id)).await;
         teardown_connection_key(state.inner(), mirrors.inner(), &format!("{}::fwd", session_id)).await;
+        // Explicitly disconnecting a whole tab also forgets any connect-time
+        // secret the user typed for it (issue #30) — a fresh connect re-asks.
+        // Gated to a base id so toggling a `::sftp` / `::fwd` secondary off
+        // keeps the still-live primary's cache intact. Entries are keyed
+        // `<tab>|<target>` (see secrets_target), so drop every one of the tab's.
+        let tab_prefix = format!("{}|", session_id);
+        state
+            .prompted_secrets
+            .lock()
+            .await
+            .retain(|key, _| key != &session_id && !key.starts_with(&tab_prefix));
     }
     // Tell the UI so the tab status dot flips to red. `user_initiated` keeps
     // SessionView from kicking off an auto-reconnect cycle for an intentional
@@ -6866,8 +9018,6 @@ async fn disconnect_session(
 
 #[tauri::command]
 async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>, session_id: String, terminal_id: String, cols: u32, rows: u32) -> Result<(), String> {
-    use russh::ChannelMsg;
-    use tauri::Emitter;
     use std::sync::Arc;
     use crate::ssh_manager::TerminalCommand;
 
@@ -6881,113 +9031,34 @@ async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>,
     };
 
     let session = session_arc.lock().await;
-    let mut channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
-    
+    let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
+
     // Request PTY
     channel.request_pty(false, "xterm-256color", cols, rows, 0, 0, &[]).await.map_err(|e| e.to_string())?;
     channel.request_shell(true).await.map_err(|e| e.to_string())?;
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<TerminalCommand>(32);
+    let (tx, rx) = tokio::sync::mpsc::channel::<TerminalCommand>(32);
     // Last-wins watch channel for PTY resizes. The PTY task selects on
     // changes; bursty resize events (e.g. window drag) collapse to the
     // final value rather than competing with keystrokes on the data
     // mpsc. Seed with the initial size so the watch is always populated.
-    let (resize_tx, mut resize_rx) = tokio::sync::watch::channel(
+    let (resize_tx, resize_rx) = tokio::sync::watch::channel(
         crate::ssh_manager::PtySize { cols, rows },
     );
     state.terminal_txs.lock().await.insert(terminal_id.clone(), tx);
     state.resize_txs.lock().await.insert(terminal_id.clone(), resize_tx);
 
-    let terminal_id_clone = terminal_id.clone();
-    let app_clone = app.clone();
-
-    tauri::async_runtime::spawn(async move {
-        use crate::ssh_manager::emit_terminal_batch;
-        // Coalesce PTY output: accumulate channel bytes and flush at most every
-        // ~8ms, or sooner once a burst passes FLUSH_CAP. Emitting one event per
-        // SSH packet (each a ~4x-bloated JSON byte array) flooded the WebView
-        // main thread on large output and froze the whole tab; batching + the
-        // base64 payload in emit_terminal_batch keeps the UI responsive under a
-        // firehose. 8ms is imperceptible for interactive echo.
-        const FLUSH_CAP: usize = 256 * 1024;
-        // Flush at most every 8ms measured FROM THE FIRST buffered byte —
-        // imperceptible for interactive echo, but enough to collapse a firehose
-        // into a handful of events.
-        const FLUSH_WINDOW: std::time::Duration = std::time::Duration::from_millis(8);
-        let mut out_buf: Vec<u8> = Vec::new();
-        // A flush timer armed ONLY while bytes are buffered. When the buffer is
-        // empty its deadline is parked far in the future, so an open-but-idle
-        // terminal wakes this task zero times (a free-running interval would fire
-        // ~125x/sec doing nothing). The buffer going empty -> non-empty re-arms
-        // it to now + FLUSH_WINDOW; a flush parks it again.
-        let park = || tokio::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
-        let flush_timer = tokio::time::sleep_until(park());
-        tokio::pin!(flush_timer);
-        loop {
-            tokio::select! {
-                msg_opt = channel.wait() => {
-                    match msg_opt {
-                        Some(ChannelMsg::Data { ref data }) => {
-                            let was_empty = out_buf.is_empty();
-                            out_buf.extend_from_slice(data);
-                            if out_buf.len() >= FLUSH_CAP {
-                                emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
-                            } else if was_empty {
-                                flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
-                            }
-                        },
-                        Some(ChannelMsg::ExtendedData { ref data, ext: _ }) => {
-                            let was_empty = out_buf.is_empty();
-                            out_buf.extend_from_slice(data);
-                            if out_buf.len() >= FLUSH_CAP {
-                                emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
-                            } else if was_empty {
-                                flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
-                            }
-                        },
-                        // Flush whatever's buffered before the terminal goes away
-                        // so the last screenful isn't lost.
-                        Some(ChannelMsg::Eof) => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; },
-                        Some(ChannelMsg::Close) => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; },
-                        Some(_) => {},
-                        None => { emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf); break; }, // channel closed (e.g. after disconnect_session)
-                    }
-                },
-                _ = &mut flush_timer => {
-                    emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
-                    // Park until the next buffered byte re-arms the timer.
-                    flush_timer.as_mut().reset(park());
-                },
-                opt_cmd = rx.recv() => {
-                    match opt_cmd {
-                        Some(cmd) => match cmd {
-                            TerminalCommand::Data(data) => {
-                                if channel.data(&data[..]).await.is_err() {
-                                    // Flush the last buffered output before bailing on
-                                    // a dead transport — the terminal UI is still mounted.
-                                    emit_terminal_batch(&app_clone, &terminal_id_clone, &mut out_buf);
-                                    break;
-                                }
-                            }
-                        },
-                        None => {
-                            let _ = channel.close().await;
-                            break;
-                        }
-                    }
-                },
-                // `changed().await` resolves on every Sender::send(). We
-                // then read the LATEST value with .borrow() so coalesced
-                // bursts collapse to one window_change call.
-                changed = resize_rx.changed() => {
-                    if changed.is_err() { break; } // all senders dropped
-                    let size = *resize_rx.borrow();
-                    let _ = channel.window_change(size.cols, size.rows, 0, 0).await;
-                }
-            }
-        }
-        let _ = app_clone.emit(&format!("terminal-closed-{}", terminal_id_clone), serde_json::json!({}));
-    });
+    // Output coalescing, keystroke / resize forwarding and the split,
+    // always-draining read/write pump (required by russh's channel
+    // backpressure) live in ssh_manager::run_pty_pump — shared with the
+    // docker exec terminal.
+    tauri::async_runtime::spawn(crate::ssh_manager::run_pty_pump(
+        app.clone(),
+        terminal_id.clone(),
+        channel,
+        rx,
+        resize_rx,
+    ));
 
     Ok(())
 }
@@ -7636,18 +9707,410 @@ async fn ssh_kill_process(
 struct SftpFileEntry {
     name: String,
     path: String,
+    /// For a symlink this describes the TARGET, so links to folders open like
+    /// folders. `is_symlink` is what delete/rename must look at.
     is_dir: bool,
     size: u64,
     permissions: Option<u32>,
     uid: Option<u32>,
     gid: Option<u32>,
     modified: Option<u64>,
+    is_symlink: bool,
+    /// Symlink whose target is missing or not accessible.
+    broken_link: bool,
 }
 
 #[derive(serde::Serialize)]
 struct SftpListResult {
     current_path: String,
     entries: Vec<SftpFileEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// Elevated SFTP ("run file operations as root" via sudo)
+// ---------------------------------------------------------------------------
+//
+// Instead of the plain `sftp` subsystem, the channel runs `sudo <sftp-server>`
+// and russh-sftp speaks the protocol over its stdin/stdout. Two modes:
+//   - passwordless: `sudo -n` (NOPASSWD rule, possibly scoped to sftp-server)
+//   - password:     `sudo -S -k`, the password written as the first stdin line
+// A probe runs first (as the login user) to find sftp-server and check that
+// sudo will allow exactly that command, so failures come back as precise
+// errors instead of a broken SFTP stream.
+
+type SessionHandleArc = Arc<tokio::sync::Mutex<russh::client::Handle<ssh_manager::ClientHandler>>>;
+
+const SUDO_NEED_PASSWORD: &str = "[SUDO] NEED_PASSWORD";
+const SUDO_WRONG_PASSWORD: &str = "[SUDO] WRONG_PASSWORD";
+const SUDO_NOT_ALLOWED: &str = "[SUDO] NOT_ALLOWED";
+const SUDO_REQUIRETTY: &str = "[SUDO] REQUIRETTY";
+const SUDO_NO_SUDO: &str = "[SUDO] NO_SUDO";
+const SUDO_NO_SFTP_SERVER: &str = "[SUDO] NO_SFTP_SERVER";
+const SUDO_FAILED: &str = "[SUDO] FAILED";
+const ELEVATED_SFTP_READY: &str = "__SUB_SUDO_READY__";
+
+// POSIX sh, run as `sh -c '<script>'`: no single quotes inside, and no `!`
+// (tcsh history expansion) so it survives any login shell. `SUB_MODE=pw`
+// makes sudo read the password from stdin; `-k` ignores a cached ticket so
+// the password is really checked. `sudo -l <cmd>` tests the exact command
+// we will run, which also works for sudoers rules scoped to sftp-server.
+const SUDO_SFTP_PROBE: &str = r#"S=
+for p in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server /usr/libexec/sftp-server /usr/lib/sftp-server /usr/local/libexec/sftp-server /usr/local/lib/sftp-server /usr/lib64/misc/sftp-server; do
+  if [ -x "$p" ]; then S=$p; break; fi
+done
+if [ -z "$S" ] && [ -r /etc/ssh/sshd_config ]; then
+  while read -r k n v rest; do
+    case "$k" in [Ss]ubsystem) if [ "$n" = sftp ]; then case "$v" in /*) if [ -x "$v" ]; then S=$v; fi;; esac; fi;; esac
+  done < /etc/ssh/sshd_config
+fi
+if [ -z "$S" ]; then echo __SUB_SUDO:NO_SFTP_SERVER; exit 0; fi
+echo "__SUB_SUDO:PATH:$S"
+if command -v sudo >/dev/null 2>&1; then :; else echo __SUB_SUDO:NO_SUDO; exit 0; fi
+if [ "$SUB_MODE" = pw ]; then OUT=$(sudo -S -k -p "" -l "$S" 2>&1); else OUT=$(sudo -n -l "$S" 2>&1); fi
+if [ $? -eq 0 ]; then echo __SUB_SUDO:OK; else echo "__SUB_SUDO:FAIL:$(printf %s "$OUT" | tr "\n" " ")"; fi"#;
+
+/// Only plain absolute paths are ever interpolated into a remote command.
+fn is_safe_remote_exec_path(p: &str) -> bool {
+    p.starts_with('/')
+        && p.len() < 256
+        && p.chars().all(|c| c.is_ascii_alphanumeric() || "/._+-".contains(c))
+}
+
+/// Map sudo's stderr to a stable code the UI can explain.
+fn classify_sudo_failure(msg: &str) -> String {
+    let m = msg.to_ascii_lowercase();
+    if m.contains("password is required") {
+        SUDO_NEED_PASSWORD.into()
+    } else if m.contains("incorrect password")
+        || m.contains("sorry, try again")
+        || m.contains("authentication failure")
+        || m.contains("no password was provided")
+    {
+        SUDO_WRONG_PASSWORD.into()
+    } else if m.contains("must have a tty") || m.contains("no tty present") {
+        SUDO_REQUIRETTY.into()
+    } else if m.trim().is_empty() || m.contains("not in the sudoers") || m.contains("not allowed") {
+        SUDO_NOT_ALLOWED.into()
+    } else {
+        format!("{}: {}", SUDO_FAILED, msg.trim())
+    }
+}
+
+/// Run a command on its own exec channel, optionally feeding stdin, and
+/// collect stdout+stderr until the channel closes.
+async fn exec_with_stdin_capture(
+    session_arc: &SessionHandleArc,
+    cmd: &str,
+    stdin: Option<&[u8]>,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    use russh::ChannelMsg;
+    let mut channel = {
+        let session = session_arc.lock().await;
+        session.channel_open_session().await.map_err(|e| e.to_string())?
+    };
+    channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
+    if let Some(input) = stdin {
+        channel.data(input).await.map_err(|e| e.to_string())?;
+    }
+    channel.eof().await.map_err(|e| e.to_string())?;
+    let mut out: Vec<u8> = Vec::new();
+    let collect = async {
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                ChannelMsg::Data { ref data } | ChannelMsg::ExtendedData { ref data, .. } => {
+                    if out.len() < 64 * 1024 {
+                        out.extend_from_slice(data);
+                    }
+                }
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), collect)
+        .await
+        .map_err(|_| format!("exec timed out after {}s", timeout_secs))?;
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Find sftp-server and check sudo for it. Returns the sftp-server path.
+async fn probe_sudo_sftp(session_arc: &SessionHandleArc, password: Option<&str>) -> Result<String, String> {
+    let mode = if password.is_some() { "pw" } else { "n" };
+    let cmd = format!("env SUB_MODE={} sh -c '{}'", mode, SUDO_SFTP_PROBE);
+    let stdin = password.map(|p| zeroize::Zeroizing::new(format!("{}\n", p)));
+    let out = exec_with_stdin_capture(session_arc, &cmd, stdin.as_ref().map(|s| s.as_bytes()), 25).await?;
+    let mut path: Option<String> = None;
+    for line in out.lines() {
+        let Some(rest) = line.trim().strip_prefix("__SUB_SUDO:") else { continue };
+        if let Some(p) = rest.strip_prefix("PATH:") {
+            path = Some(p.trim().to_string());
+            continue;
+        }
+        if let Some(msg) = rest.strip_prefix("FAIL:") {
+            return Err(classify_sudo_failure(msg));
+        }
+        match rest {
+            "NO_SFTP_SERVER" => return Err(SUDO_NO_SFTP_SERVER.into()),
+            "NO_SUDO" => return Err(SUDO_NO_SUDO.into()),
+            "OK" => {
+                let p = path.ok_or_else(|| format!("{}: sftp-server path missing", SUDO_FAILED))?;
+                if !is_safe_remote_exec_path(&p) {
+                    return Err(format!("{}: unusual sftp-server path", SUDO_FAILED));
+                }
+                return Ok(p);
+            }
+            _ => {}
+        }
+    }
+    Err(format!("{}: unexpected reply from the server", SUDO_FAILED))
+}
+
+/// Settings for every SFTP session the app opens: file browser, transfers,
+/// sudo sessions and mirrors.
+///
+/// russh-sftp gives each request a deadline that starts when it's sent, and
+/// keeps several requests in flight, so on a slow link the last one queued
+/// waits for the others and can run out of time while the transfer is still
+/// moving. With the default 10 s, a download (16 reads of up to 255 KiB = 4 MiB
+/// in flight) failed with "Timeout" on anything under ~3 Mbit/s, and an upload
+/// (16 writes of 32 KiB) under ~420 kbit/s. The same goes for a directory
+/// listing queued behind a running transfer.
+///
+/// 240 s per request carries downloads down to ~140 kbit/s and uploads down to
+/// ~17 kbit/s, and keeps the 16 reads in flight that fast high-latency links
+/// need. It doesn't make a dead connection hang: the session watcher closes
+/// the SFTP session when it gives up on the connection, and the requests still
+/// pending fail with it. The deadline is only for a server that stops
+/// answering on a connection that is still up.
+pub(crate) fn sftp_client_config() -> russh_sftp::client::Config {
+    russh_sftp::client::Config {
+        request_timeout_secs: 240,
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod sftp_config_tests {
+    use super::sftp_client_config;
+
+    /// What OpenSSH's sftp-server reports in limits@openssh.com as its
+    /// maximum read length (256 KiB message minus 1 KiB of headroom).
+    const OPENSSH_READ_LEN: u64 = 256 * 1024 - 1024;
+
+    #[test]
+    fn the_last_request_in_flight_beats_its_deadline_on_slow_links() {
+        let cfg = sftp_client_config();
+        let reads_in_flight = cfg.max_concurrent_reads as u64 * OPENSSH_READ_LEN;
+        let writes_in_flight = cfg.max_concurrent_writes as u64 * cfg.max_write_packet_len as u64;
+        // Bytes per second the link needs so the request queued behind all
+        // the others still gets its reply in time.
+        let download_floor = reads_in_flight / cfg.request_timeout_secs;
+        let upload_floor = writes_in_flight / cfg.request_timeout_secs;
+        assert!(download_floor <= 150_000 / 8, "downloads need {download_floor} B/s");
+        assert!(upload_floor <= 40_000 / 8, "uploads need {upload_floor} B/s");
+    }
+}
+
+/// Start `sudo <sftp-server>` on a fresh exec channel and hand the stream to
+/// russh-sftp. The shell echoes a ready marker first; anything a noisy shell
+/// rc prints before it is skipped. In password mode sudo always prompts
+/// (`-k`), so it consumes exactly the password line and the SFTP bytes that
+/// follow go to sftp-server.
+async fn open_elevated_sftp(
+    session_arc: &SessionHandleArc,
+    elevation: &ssh_manager::SftpElevation,
+) -> Result<russh_sftp::client::SftpSession, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if !is_safe_remote_exec_path(&elevation.server_path) {
+        return Err(format!("{}: unusual sftp-server path", SUDO_FAILED));
+    }
+    let sudo = if elevation.password.is_some() { "sudo -S -k -p ''" } else { "sudo -n" };
+    let cmd = format!("echo {}; exec {} {}", ELEVATED_SFTP_READY, sudo, elevation.server_path);
+    let channel = {
+        let session = session_arc.lock().await;
+        session.channel_open_session().await.map_err(|e| e.to_string())?
+    };
+    channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
+    let mut stream = channel.into_stream();
+    if let Some(pw) = &elevation.password {
+        let mut line = zeroize::Zeroizing::new(Vec::with_capacity(pw.len() + 1));
+        line.extend_from_slice(pw.as_bytes());
+        line.push(b'\n');
+        stream.write_all(&line).await.map_err(|e| e.to_string())?;
+        stream.flush().await.map_err(|e| e.to_string())?;
+    }
+    let wait_ready = async {
+        let mut line: Vec<u8> = Vec::new();
+        let mut byte = [0u8; 1];
+        let mut seen = 0usize;
+        loop {
+            let n = stream.read(&mut byte).await.map_err(|e| e.to_string())?;
+            if n == 0 {
+                return Err(format!("{}: sudo closed the channel", SUDO_FAILED));
+            }
+            seen += 1;
+            if seen > 64 * 1024 {
+                return Err(format!("{}: no ready marker from the server", SUDO_FAILED));
+            }
+            if byte[0] == b'\n' {
+                let l = line.strip_suffix(b"\r").unwrap_or(&line);
+                if l == ELEVATED_SFTP_READY.as_bytes() {
+                    return Ok(());
+                }
+                line.clear();
+            } else {
+                line.push(byte[0]);
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(20), wait_ready)
+        .await
+        .map_err(|_| format!("{}: timed out starting sftp-server via sudo", SUDO_FAILED))??;
+    russh_sftp::client::SftpSession::new_with_config(stream, sftp_client_config())
+        .await
+        .map_err(|e| format!("{}: {}", SUDO_FAILED, e))
+}
+
+#[cfg(test)]
+mod elevated_sftp_tests {
+    use super::*;
+
+    #[test]
+    fn sudo_errors_map_to_stable_codes() {
+        assert_eq!(classify_sudo_failure("sudo: a password is required"), SUDO_NEED_PASSWORD);
+        assert_eq!(classify_sudo_failure("Sorry, try again. sudo: no password was provided"), SUDO_WRONG_PASSWORD);
+        assert_eq!(classify_sudo_failure("sudo: 1 incorrect password attempt"), SUDO_WRONG_PASSWORD);
+        assert_eq!(classify_sudo_failure("sudo: sorry, you must have a tty to run sudo"), SUDO_REQUIRETTY);
+        assert_eq!(classify_sudo_failure("bob is not in the sudoers file."), SUDO_NOT_ALLOWED);
+        assert_eq!(classify_sudo_failure(""), SUDO_NOT_ALLOWED);
+        assert!(classify_sudo_failure("sudo: something odd").starts_with(SUDO_FAILED));
+    }
+
+    #[test]
+    fn only_plain_absolute_paths_reach_the_remote_shell() {
+        assert!(is_safe_remote_exec_path("/usr/lib/openssh/sftp-server"));
+        assert!(is_safe_remote_exec_path("/usr/libexec/openssh/sftp-server"));
+        assert!(!is_safe_remote_exec_path("sftp-server"));
+        assert!(!is_safe_remote_exec_path("/usr/lib/sftp-server; rm -rf /"));
+        assert!(!is_safe_remote_exec_path("/opt/my sftp/sftp-server"));
+        assert!(!is_safe_remote_exec_path("/usr/lib/$(id)/sftp-server"));
+    }
+
+    #[test]
+    fn probe_script_survives_single_quote_wrapping_in_any_shell() {
+        // It is sent as `sh -c '<script>'`: a single quote would end the
+        // argument early, and `!` triggers history expansion in tcsh.
+        assert!(!SUDO_SFTP_PROBE.contains('\''));
+        assert!(!SUDO_SFTP_PROBE.contains('!'));
+    }
+}
+
+/// Which connection SFTP rides for a session: the dedicated `::sftp` one when
+/// the tab has it, otherwise the primary.
+async fn sftp_transport(state: &SshState, session_id: &str) -> Result<(String, SessionHandleArc), String> {
+    let connections = state.connections.lock().await;
+    let dedicated_key = format!("{}::sftp", session_id);
+    if !session_id.contains("::") && connections.contains_key(&dedicated_key) {
+        Ok((dedicated_key.clone(), Arc::clone(connections.get(&dedicated_key).unwrap())))
+    } else if let Some(sess) = connections.get(session_id) {
+        Ok((session_id.to_string(), Arc::clone(sess)))
+    } else {
+        Err("Session not connected".into())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct SftpElevationStatus {
+    elevated: bool,
+    /// True when sudo let us in without a password (NOPASSWD rule).
+    passwordless: bool,
+}
+
+/// The user file operations run as when NOT elevated (`id -un` on the SFTP
+/// transport) — lets the pane flag a direct root login too.
+#[tauri::command]
+async fn sftp_login_user(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+) -> Result<String, String> {
+    let (_, session_arc) = sftp_transport(&state, &session_id).await?;
+    let out = exec_with_stdin_capture(&session_arc, "id -un", None, 10).await?;
+    Ok(out.lines().next().unwrap_or("").trim().to_string())
+}
+
+#[tauri::command]
+async fn sftp_elevation_status(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+) -> Result<SftpElevationStatus, String> {
+    Ok(match state.sftp_elevation.lock().await.get(&session_id) {
+        Some(e) => SftpElevationStatus { elevated: true, passwordless: e.password.is_none() },
+        None => SftpElevationStatus { elevated: false, passwordless: false },
+    })
+}
+
+/// Switch this tab's file operations to root (sudo) or back. Tries
+/// passwordless sudo first and only uses `password` when sudo asks for one;
+/// returns `[SUDO] NEED_PASSWORD` so the UI can prompt.
+#[tauri::command]
+async fn sftp_set_elevated(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    enabled: bool,
+    password: Option<String>,
+) -> Result<SftpElevationStatus, String> {
+    if !enabled {
+        set_sftp_mode(&state, &session_id, None).await;
+        return Ok(SftpElevationStatus { elevated: false, passwordless: false });
+    }
+    let password = password.map(zeroize::Zeroizing::new).filter(|p| !p.is_empty());
+    if let Some(p) = &password {
+        if p.contains(['\n', '\r', '\0']) {
+            return Err(format!("{}: the password contains a line break", SUDO_FAILED));
+        }
+    }
+    let (_, session_arc) = sftp_transport(&state, &session_id).await?;
+    let (server_path, used_password) = match probe_sudo_sftp(&session_arc, None).await {
+        Ok(path) => (path, None),
+        Err(e) if e == SUDO_NEED_PASSWORD => {
+            let Some(pw) = password else { return Err(e) };
+            let path = probe_sudo_sftp(&session_arc, Some(pw.as_str())).await?;
+            (path, Some(pw))
+        }
+        Err(e) => return Err(e),
+    };
+    let passwordless = used_password.is_none();
+    set_sftp_mode(
+        &state,
+        &session_id,
+        Some(ssh_manager::SftpElevation { server_path, password: used_password }),
+    )
+    .await;
+    // Open it right away so a failure shows up here, not on the next click.
+    if let Err(e) = get_sftp_session(&state, &session_id).await {
+        set_sftp_mode(&state, &session_id, None).await;
+        return Err(e);
+    }
+    Ok(SftpElevationStatus { elevated: true, passwordless })
+}
+
+/// Switch a tab's SFTP privilege mode and drop its cached session in one
+/// step. Lock order is sftp_sessions, then sftp_elevation — the same order
+/// get_sftp_session checks the mode in before caching — so a session opened
+/// in the old mode can never be cached after the switch.
+async fn set_sftp_mode(state: &SshState, session_id: &str, elevation: Option<ssh_manager::SftpElevation>) {
+    let mut cache = state.sftp_sessions.lock().await;
+    let mut modes = state.sftp_elevation.lock().await;
+    match elevation {
+        Some(e) => {
+            modes.insert(session_id.to_string(), e);
+        }
+        None => {
+            modes.remove(session_id);
+        }
+    }
+    cache.remove(session_id);
 }
 
 pub async fn get_sftp_session(
@@ -7667,25 +10130,31 @@ pub async fn get_sftp_session(
     // is a pure transport: it appearing/disappearing just invalidates this
     // cache (see the `::sftp` lifecycle hooks) and the next file operation
     // re-opens the subsystem on whatever transport is available.
-    let (transport_key, session_arc) = {
-        let connections = state.connections.lock().await;
-        let dedicated_key = format!("{}::sftp", session_id);
-        if !session_id.contains("::") && connections.contains_key(&dedicated_key) {
-            (dedicated_key.clone(), Arc::clone(connections.get(&dedicated_key).unwrap()))
-        } else if let Some(sess) = connections.get(session_id) {
-            (session_id.to_string(), Arc::clone(sess))
-        } else {
-            return Err("Session not connected".into());
+    let (transport_key, session_arc) = sftp_transport(state, session_id).await?;
+
+    // Elevated tabs get `sudo <sftp-server>` instead of the plain subsystem.
+    let elevation = state.sftp_elevation.lock().await.get(session_id).cloned();
+    let was_elevated = elevation.is_some();
+    let sftp = match elevation {
+        Some(elev) => open_elevated_sftp(&session_arc, &elev).await?,
+        None => {
+            let session = session_arc.lock().await;
+            let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
+            channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
+            russh_sftp::client::SftpSession::new_with_config(channel.into_stream(), sftp_client_config())
+                .await
+                .map_err(|e| e.to_string())?
         }
     };
-
-    let session = session_arc.lock().await;
-    let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
-    channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
-    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream()).await.map_err(|e| e.to_string())?;
     let arc = Arc::new(sftp);
 
     let mut cache = state.sftp_sessions.lock().await;
+    // The privilege mode flipped while we were opening: never cache a session
+    // of the wrong level. Checked under the cache lock, which set_sftp_mode
+    // also holds while it switches, so the two can't interleave.
+    if state.sftp_elevation.lock().await.contains_key(session_id) != was_elevated {
+        return Err("File access mode changed while opening SFTP — try again".into());
+    }
     if let Some(existing) = cache.get(session_id) {
         // Another caller raced us; keep the existing one and drop ours.
         return Ok(Arc::clone(existing));
@@ -7733,8 +10202,12 @@ async fn sftp_list_dir(
         if name == "." || name == ".." {
             continue;
         }
+        // Every other name is listed as-is, even one this OS can't store
+        // (`a:b` on Windows): the remote file is still there to open, rename
+        // or delete. The download commands check the name before writing.
         let is_dir = entry.file_type().is_dir();
         let metadata = entry.metadata();
+        let is_symlink = metadata.is_symlink();
         let size = metadata.size.unwrap_or(0);
         let permissions = metadata.permissions;
         let uid = metadata.uid;
@@ -7756,9 +10229,58 @@ async fn sftp_list_dir(
             uid,
             gid,
             modified,
+            is_symlink,
+            broken_link: false,
         });
     }
-    
+
+    // READDIR describes a symlink itself (lstat), so a link to a folder would
+    // list as a file. STAT each link (follows it) so links to folders show and
+    // open as folders, and dangling ones are flagged. Pipelined with a cap; a
+    // folder with an extreme number of links (thousands of .so links in
+    // /usr/lib) keeps plain link rows instead of stalling the listing.
+    const MAX_LINKS_TO_RESOLVE: usize = 2000;
+    const RESOLVE_CONCURRENCY: usize = 32;
+    let link_rows: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.is_symlink)
+        .map(|(i, _)| i)
+        .collect();
+    if !link_rows.is_empty() && link_rows.len() <= MAX_LINKS_TO_RESOLVE {
+        let permits = Arc::new(tokio::sync::Semaphore::new(RESOLVE_CONCURRENCY));
+        let mut lookups = tokio::task::JoinSet::new();
+        for idx in link_rows {
+            let sftp = Arc::clone(&sftp);
+            let permits = Arc::clone(&permits);
+            let link_path = entries[idx].path.clone();
+            lookups.spawn(async move {
+                let _permit = permits.acquire_owned().await;
+                let target = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    sftp.metadata(link_path),
+                )
+                .await;
+                (idx, target)
+            });
+        }
+        while let Some(joined) = lookups.join_next().await {
+            let Ok((idx, target)) = joined else { continue };
+            let row = &mut entries[idx];
+            match target {
+                Ok(Ok(meta)) => {
+                    row.is_dir = meta.is_dir();
+                    if !row.is_dir {
+                        row.size = meta.size.unwrap_or(row.size);
+                    }
+                }
+                Ok(Err(_)) => row.broken_link = true,
+                // Slow server: leave it as a plain link row.
+                Err(_) => {}
+            }
+        }
+    }
+
     // Sort: directories first, then alphabetically
     entries.sort_by(|a, b| {
         if a.is_dir != b.is_dir {
@@ -7803,6 +10325,17 @@ async fn sftp_remove_dir(
     path: String,
 ) -> Result<(), String> {
     let sftp = get_sftp_session(&state, &session_id).await?;
+    // A link to a folder lists as a folder, but deleting it must only unlink
+    // the link itself — never touch what it points to.
+    if sftp
+        .symlink_metadata(path.clone())
+        .await
+        .map(|m| m.is_symlink())
+        .unwrap_or(false)
+    {
+        sftp.remove_file(path).await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     sftp.remove_dir(path).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -7865,13 +10398,15 @@ async fn sftp_set_permissions(
     permissions: u32,
 ) -> Result<(), String> {
     let sftp = get_sftp_session(&state, &session_id).await?;
-    // Propagate metadata fetch errors instead of falling back to a zeroed
-    // FileAttributes. Without this, a transient network blip or a perms
-    // failure during read would have us send `set_metadata` with uid=gid
-    // =size=0 — silently clobbering ownership and other attributes.
-    let mut metadata = sftp.metadata(&path).await
-        .map_err(|e| format!("[SFTP] METADATA_READ_FAILED: {}", e))?;
-    metadata.permissions = Some(permissions);
+    // Send ONLY the permissions attribute. Echoing back the full stat result
+    // makes the server apply every field in it, and the size one turns into
+    // truncate(2) — which fails with EISDIR on a directory, surfacing as a
+    // bare SSH_FX_FAILURE. Omitted fields are left untouched by the server,
+    // so ownership and timestamps can't be clobbered either.
+    let metadata = russh_sftp::protocol::FileAttributes {
+        permissions: Some(permissions),
+        ..Default::default()
+    };
     sftp.set_metadata(path, metadata).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -7885,12 +10420,50 @@ async fn sftp_set_owner(
     gid: Option<u32>,
 ) -> Result<(), String> {
     let sftp = get_sftp_session(&state, &session_id).await?;
-    let mut metadata = sftp.metadata(&path).await
-        .map_err(|e| format!("[SFTP] METADATA_READ_FAILED: {}", e))?;
-    metadata.uid = uid;
-    metadata.gid = gid;
+    // uid and gid travel as a pair on the wire, so a missing half has to be
+    // filled from the current owner rather than defaulting to 0 (root).
+    // Propagate the stat error for the same reason.
+    let (uid, gid) = match (uid, gid) {
+        (Some(u), Some(g)) => (u, g),
+        _ => {
+            let current = sftp.metadata(&path).await
+                .map_err(|e| format!("[SFTP] METADATA_READ_FAILED: {}", e))?;
+            match (uid.or(current.uid), gid.or(current.gid)) {
+                (Some(u), Some(g)) => (u, g),
+                _ => return Err("[SFTP] METADATA_READ_FAILED: server did not report owner".into()),
+            }
+        }
+    };
+    // Only the owner fields — see sftp_set_permissions for why size must
+    // not be sent (truncate on a directory fails).
+    let metadata = russh_sftp::protocol::FileAttributes {
+        uid: Some(uid),
+        gid: Some(gid),
+        ..Default::default()
+    };
     sftp.set_metadata(path, metadata).await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct SftpModeOwner {
+    permissions: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+}
+
+/// Current mode and owner of a remote path, following symlinks — what
+/// chmod/chown on that path change. The listing has a link's own mode
+/// (lrwxrwxrwx), which says nothing about its target.
+#[tauri::command]
+async fn sftp_stat(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    path: String,
+) -> Result<SftpModeOwner, String> {
+    let sftp = get_sftp_session(&state, &session_id).await?;
+    let meta = sftp.metadata(&path).await.map_err(|e| e.to_string())?;
+    Ok(SftpModeOwner { permissions: meta.permissions, uid: meta.uid, gid: meta.gid })
 }
 
 #[tauri::command]
@@ -7906,6 +10479,11 @@ async fn sftp_download_file(
     use tokio::io::AsyncReadExt;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    // The file name is the one part of the destination the server controls
+    // (the frontend joins `<chosen folder><sep><remote name>`), so check it
+    // before anything touches the path — see validate_download_target.
+    validate_download_target(&local_path, &remote_path)?;
+
     // Overwrite protection: when the caller has NOT explicitly opted in
     // (overwrite==Some(true)), refuse to clobber an existing local file.
     // The sentinel error string `EXISTS:<path>` lets the frontend tell
@@ -7916,10 +10494,9 @@ async fn sftp_download_file(
     }
 
     // Validate the destination BEFORE touching the network. A compromised
-    // renderer (or a malicious SFTP server name in the UI) could otherwise
-    // request a download into a system directory like `/etc` or
-    // `C:\Windows\System32\…`. allow_nonexistent=true because the
-    // destination file is being created right now.
+    // renderer could otherwise request a download into a system directory
+    // like `/etc` or `C:\Windows\System32\…`. allow_nonexistent=true because
+    // the destination file is being created right now.
     let _guarded_local = guard_local_path(&local_path, true)?;
 
     let sftp = get_sftp_session(&state, &session_id).await?;
@@ -8040,8 +10617,29 @@ async fn sftp_download_dir(
 
     // Destination is the PARENT directory. We'll create remote_path's
     // basename underneath it so the user gets `local/{folder}/...`,
-    // matching scp -r and rsync semantics.
+    // matching scp -r and rsync semantics. That parent is the user's own
+    // folder (picker or pane); everything the server names below it is
+    // checked one component at a time.
     let _guarded_local = guard_local_path(&local_path, true)?;
+
+    // The folder name is the basename of a server-controlled remote path, and
+    // it's the first path component we join onto local_path. On a Windows
+    // client a basename like `C:` is drive-relative (join discards local_path);
+    // `..` would climb out. Reject anything that isn't a single safe component
+    // up front so the whole tree stays under the chosen destination.
+    {
+        let folder_name = remote_path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("");
+        if !folder_name.is_empty() && !is_safe_dir_entry_name(folder_name) {
+            return Err(format!(
+                "Refusing to download a folder whose name isn't a safe local filename: {:?}",
+                folder_name
+            ));
+        }
+    }
 
     // Overwrite protection for the destination folder: if the target
     // `local_path/{folder}` already exists, refuse unless explicitly
@@ -8117,6 +10715,7 @@ async fn sftp_download_dir(
     let remote_root = remote_path.trim_end_matches('/').to_string();
     let mut files: Vec<(String, String, u64)> = Vec::new(); // (remote, rel, size)
     let mut total_bytes: u64 = 0;
+    let mut skipped_names: u64 = 0;
     let mut stack: Vec<String> = vec![remote_root.clone()];
 
     while let Some(dir) = stack.pop() {
@@ -8133,11 +10732,17 @@ async fn sftp_download_dir(
         };
         for entry in read {
             let name = entry.file_name();
-            // Skip any entry whose name isn't a single plain component. A
-            // hostile SFTP server can return `../../x` or `..\x` here; joining
-            // that onto local_root below would escape the chosen folder
-            // (zip-slip → arbitrary local write). See is_safe_dir_entry_name.
-            if !is_safe_dir_entry_name(&name) { continue; }
+            if name == "." || name == ".." { continue; }
+            // Skip any entry whose name isn't a single plain component this OS
+            // can store. A hostile SFTP server can return `../../x` or `..\x`
+            // here; joining that onto local_root below would escape the chosen
+            // folder. Ordinary names Windows can't store (`a:b`) are skipped
+            // too — counted, so the user hears about them instead of a quietly
+            // incomplete copy. See is_safe_dir_entry_name.
+            if !is_safe_dir_entry_name(&name) {
+                skipped_names = skipped_names.saturating_add(1);
+                continue;
+            }
             let full = format!("{}/{}", dir.trim_end_matches('/'), name);
             if entry.file_type().is_dir() {
                 stack.push(full);
@@ -8154,12 +10759,15 @@ async fn sftp_download_dir(
         }
     }
 
+    // Shown on the finished transfer card when the walk skipped names.
+    let skipped_note = skipped_names_note(skipped_names);
+
     if files.is_empty() {
         // Still create the (empty) destination folder so the UI sees the
         // shape — otherwise the user sees "done" with nothing to show for it.
         let local_root = std::path::PathBuf::from(&local_path).join(&folder_name);
         let _ = tokio::fs::create_dir_all(&local_root).await;
-        emit_progress(0, 0, "done", None);
+        emit_progress(0, 0, "done", skipped_note);
         return Ok(());
     }
 
@@ -8189,6 +10797,19 @@ async fn sftp_download_dir(
         // containing slashes.
         let rel_local = if cfg!(windows) { rel.replace('/', "\\") } else { rel.clone() };
         let dest = local_root.join(&rel_local);
+        // Defense in depth: every component of `rel` was checked with
+        // is_safe_dir_entry_name during the walk, so this can't fail for a
+        // well-behaved tree — but check before we create or open anything
+        // that the relative part is plain names only (no root, prefix or
+        // `..`), so the join can only land under the destination root.
+        let rel_is_plain = std::path::Path::new(&rel_local)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !rel_is_plain || !dest.starts_with(&local_root) {
+            emit_progress(transferred, total_bytes, "error",
+                Some(format!("unsafe path escaped destination: {}", dest.display())));
+            return Err(format!("unsafe path escaped destination: {}", dest.display()));
+        }
         if let Some(parent) = dest.parent() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
                 emit_progress(transferred, total_bytes, "error",
@@ -8243,7 +10864,7 @@ async fn sftp_download_dir(
         local_file.flush().await.map_err(|e| format!("flush {}: {}", dest.display(), e))?;
     }
 
-    emit_progress(transferred, total_bytes, "done", None);
+    emit_progress(transferred, total_bytes, "done", skipped_note);
     Ok(())
 }
 
@@ -8652,9 +11273,7 @@ fn classify_russh_error(e: &russh::Error) -> ConnectErrorKind {
 
         // Algorithm negotiation — server's reachable, we just don't share
         // the cipher / KEX / etc. it asked for.
-        NoCommonCipher | NoCommonKexAlgo | NoCommonKeyAlgo
-        | NoCommonCompression | NoCommonMac
-        | UnknownAlgo | UnknownKey => ConnectErrorKind::Algorithm,
+        NoCommonAlgo { .. } | UnknownAlgo | UnknownKey => ConnectErrorKind::Algorithm,
 
         // Host-key flow: the server's signature didn't verify. KeyChanged
         // carries data so it falls through to the catch-all branch which
@@ -8665,7 +11284,7 @@ fn classify_russh_error(e: &russh::Error) -> ConnectErrorKind {
         IO(_) | HUP | Disconnect | SendError => ConnectErrorKind::Transport,
 
         // Explicit timeouts from russh.
-        ConnectionTimeout | Elapsed(_) => ConnectErrorKind::Timeout,
+        ConnectionTimeout | KeepaliveTimeout | InactivityTimeout | Elapsed(_) => ConnectErrorKind::Timeout,
 
         // Protocol disagreements that aren't algorithm- or auth-shaped:
         // version skew, packet integrity, decryption — surface as transport
@@ -8678,7 +11297,7 @@ fn classify_russh_error(e: &russh::Error) -> ConnectErrorKind {
 
         // Key-file problems (local cert can't be parsed). Tag as Auth-shaped
         // so the UI doesn't auto-retry a key that will keep failing.
-        CouldNotReadKey | Keys(_) => ConnectErrorKind::Auth,
+        CouldNotReadKey | Keys(_) | SshKey(_) | UnsupportedAuthMethod => ConnectErrorKind::Auth,
 
         // Last-resort string sniff for anything russh adds in future
         // versions or for io::Error subtypes the explicit arms above
@@ -8714,7 +11333,7 @@ fn describe_error_kind(kind: ConnectErrorKind, target: &str) -> String {
         ConnectErrorKind::Auth =>
             "Authentication rejected by server (wrong password, missing key, or account locked).".into(),
         ConnectErrorKind::Algorithm =>
-            format!("Negotiation with {} failed: no SSH algorithm in common (this build might be missing legacy ciphers — try the release build).", target),
+            format!("Negotiation with {} failed: no SSH algorithm in common (the server only offers key-exchange, host-key, cipher or MAC algorithms Submarine doesn't support).", target),
         ConnectErrorKind::HostKey =>
             "Host key was not approved (wrong key, declined, or the fingerprint prompt timed out).".into(),
         ConnectErrorKind::Transport =>
@@ -8791,7 +11410,7 @@ fn app_temp_root() -> &'static std::path::PathBuf {
     static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
         let mut bytes = [0u8; 12];
-        rand::thread_rng().fill(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         let root = std::env::temp_dir().join(format!("submarine-{}", hex::encode(bytes)));
         let _ = std::fs::create_dir_all(&root);
         #[cfg(unix)]
@@ -8832,6 +11451,32 @@ fn safe_temp_leaf_name(remote_path: &str) -> Result<String, String> {
     Ok(raw.to_string())
 }
 
+/// The folder, inside a session's temp dir, that holds the live-edit copy of
+/// one remote file: 16 hex digits of the SHA-256 of its path. The copy keeps
+/// the file's own name (editors go by it), so without a folder per path two
+/// remote files with the same name would share one local copy.
+fn live_edit_dir_name(remote_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(&Sha256::digest(remote_path.as_bytes())[..8])
+}
+
+#[cfg(test)]
+mod live_edit_tests {
+    use super::live_edit_dir_name;
+
+    #[test]
+    fn same_named_files_in_different_folders_get_different_copies() {
+        let a = live_edit_dir_name("/var/www/site1/index.php");
+        let b = live_edit_dir_name("/var/www/site2/index.php");
+        assert_ne!(a, b);
+        assert_eq!(a, live_edit_dir_name("/var/www/site1/index.php"), "stable for one path");
+        for name in [&a, &b] {
+            assert_eq!(name.len(), 16);
+            assert!(name.chars().all(|c| c.is_ascii_hexdigit()), "a plain folder name: {name}");
+        }
+    }
+}
+
 #[tauri::command]
 async fn sftp_open_remote_file(
     app_handle: tauri::AppHandle,
@@ -8851,11 +11496,22 @@ async fn sftp_open_remote_file(
     // disconnect rather than leaving loose `submarine_sftp_*` files in the global
     // temp dir. The directory is also a smaller blast radius for any path-
     // related shenanigans (each editor sees only files from one session).
-    let session_temp_dir = session_sftp_dir(&session_id);
-    std::fs::create_dir_all(&session_temp_dir)
+    // Inside it, one folder per remote file (live_edit_dir_name). Copies used
+    // to sit side by side under their bare names: opening /a/index.php and
+    // then /b/index.php wrote b's content over a's copy, and a's watcher
+    // uploaded it to /a/index.php without any edit.
+    let copy_dir = session_sftp_dir(&session_id).join(live_edit_dir_name(&remote_path));
+    std::fs::create_dir_all(&copy_dir)
         .map_err(|e| format!("Failed to create temp dir: {}", e))?;
-    let temp_file_path = session_temp_dir.join(&filename);
+    let temp_file_path = copy_dir.join(&filename);
     std::fs::write(&temp_file_path, &data).map_err(|e| format!("Failed to write temporary file: {}", e))?;
+    // What the server holds as far as we know — upload only when the copy
+    // differs from it, not on every write event (an editor touching the file,
+    // the same file opened a second time).
+    let synced_hash = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(&data).to_vec()
+    };
 
     // Open local temp file in system default application. The whole
     // live-edit-in-default-editor feature is desktop-only — Android's
@@ -8877,6 +11533,7 @@ async fn sftp_open_remote_file(
 
     // Spawn modification watcher task in background
     let connections_clone = Arc::clone(&state.connections);
+    let elevation_clone = Arc::clone(&state.sftp_elevation);
     let app_handle_clone = app_handle.clone();
     let session_id_clone = session_id.clone();
     let remote_path_clone = remote_path.clone();
@@ -8923,6 +11580,7 @@ async fn sftp_open_remote_file(
         // Overall 2-hour ceiling so an editor left open forever doesn't
         // keep the watcher alive past any reasonable session.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2 * 60 * 60);
+        let mut synced_hash = synced_hash;
         loop {
             let wait = tokio::time::sleep_until(deadline);
             tokio::select! {
@@ -8930,6 +11588,21 @@ async fn sftp_open_remote_file(
                 maybe = tok_rx.recv() => {
                     if maybe.is_none() { break; }
                     if !temp_file_path_clone.exists() { break; }
+                    let content = match std::fs::read(&temp_file_path_clone) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = app_handle_clone.emit(
+                                &format!("sftp-sync-status-{}", session_id_clone),
+                                serde_json::json!({ "status": "error", "message": format!("Auto-sync failed: Failed to read file: {}", e) })
+                            );
+                            continue;
+                        }
+                    };
+                    let content_hash = {
+                        use sha2::{Digest, Sha256};
+                        Sha256::digest(&content).to_vec()
+                    };
+                    if content_hash == synced_hash { continue; }
                     // Cheap pre-check: if the session is gone we exit the
                     // watcher entirely instead of looping and spamming
                     // "Auto-sync failed" toasts on every subsequent save.
@@ -8962,18 +11635,24 @@ async fn sftp_open_remote_file(
                     // every open_terminal / cold-cache SFTP-bootstrap request on
                     // the same session behind this one save — visible as a UI
                     // freeze whenever the user Ctrl-S's a large remote file.
-                    let sftp = {
+                    // An elevated tab (file ops as root via sudo) must save
+                    // back the same way, or root-owned files can't be written.
+                    let elevation = elevation_clone.lock().await.get(&session_id_clone).cloned();
+                    let sftp = if let Some(elev) = elevation {
+                        open_elevated_sftp(&session_arc, &elev).await?
+                    } else {
                         let session = session_arc.lock().await;
                         let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
                         channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
-                        let s = russh_sftp::client::SftpSession::new(channel.into_stream()).await.map_err(|e| e.to_string())?;
+                        let s = russh_sftp::client::SftpSession::new_with_config(channel.into_stream(), sftp_client_config())
+                            .await
+                            .map_err(|e| e.to_string())?;
                         drop(session);
                         s
                     };
 
                     use russh_sftp::protocol::OpenFlags;
                     use tokio::io::AsyncWriteExt;
-                    let content = std::fs::read(&temp_file_path_clone).map_err(|e| format!("Failed to read file: {}", e))?;
                     // Truncate so shortening the file doesn't leave the old
                     // tail behind on the server.
                     let mut remote_file = sftp
@@ -9000,6 +11679,7 @@ async fn sftp_open_remote_file(
                             serde_json::json!({ "status": "error", "message": format!("Auto-sync failed: {}", e) })
                         );
                     } else {
+                        synced_hash = content_hash;
                         let _ = app_handle_clone.emit(
                             &format!("sftp-sync-status-{}", session_id_clone),
                             serde_json::json!({ "status": "success", "message": format!("Auto-synced {}", filename_clone) })
@@ -9015,6 +11695,9 @@ async fn sftp_open_remote_file(
         // worst case is the file persists until the OS cleans temp.
         drop(debouncer);
         let _ = std::fs::remove_file(&temp_file_path_clone);
+        if let Some(dir) = temp_file_path_clone.parent() {
+            let _ = std::fs::remove_dir(dir); // the file's own folder, if now empty
+        }
     });
 
     Ok(())
@@ -9093,9 +11776,12 @@ async fn local_open_in_explorer(local_path: String) -> Result<(), String> {
 struct LocalFileEntry {
     name: String,
     path: String,
+    /// For a symlink / junction this describes the TARGET (see SftpFileEntry).
     is_dir: bool,
     size: u64,
     modified: Option<u64>,
+    is_symlink: bool,
+    broken_link: bool,
 }
 
 #[tauri::command]
@@ -9252,8 +11938,9 @@ async fn android_default_local_dir(app: tauri::AppHandle) -> Result<String, Stri
 
 /// One resolved entry from an OpenSSH client config `Host` block. The
 /// frontend picks a subset of these and turns each into a fresh server row
-/// via the existing `add_server` command — password/key are left blank so
-/// the user configures those after import.
+/// via the existing `add_server` command. A host that named an `IdentityFile`
+/// gets that key registered and linked; everything else lands password-less
+/// for the user to finish.
 #[derive(serde::Serialize)]
 struct ImportedHost {
     /// The alias the user actually types (`ssh <alias>`) — becomes the
@@ -9267,9 +11954,10 @@ struct ImportedHost {
     /// Resolved `User`. Empty string when unset — the frontend can fall
     /// back to whatever it uses elsewhere.
     user: String,
-    /// Resolved `IdentityFile`. Purely informational for now — the import
-    /// flow doesn't auto-attach keys because we'd need to also read and
-    /// register them in the vault, which is a separate feature.
+    /// Resolved `IdentityFile`, still in the config's own spelling (`~` and
+    /// all). The importer feeds it to `import_ssh_key_file`, which expands and
+    /// reads it, so a host that names a key comes in as a key-authenticated
+    /// row rather than one the user has to go back and finish.
     identity_file: Option<String>,
     /// Resolved `ProxyJump`. Informational only; live proxy config still
     /// happens in the Server details panel.
@@ -9445,10 +12133,9 @@ fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, String> {
 ///     `[{"label":"foo","address":"1.2.3.4","port":22,"username":"root"}, …]`.
 ///     Any missing field defaults to the OpenSSH convention.
 ///
-///   • MobaXterm `.mxtsessions` INI (partial) — sessions live under
-///     `[Bookmarks_<n>]` with `SessionName=…` and comma-separated fields
-///     `HostName,Port,UserName,…`. Best-effort — MobaXterm's schema has
-///     drifted across releases so we only trust the first four fields.
+///   • MobaXterm `.mxtsessions` export — an INI file with one session per
+///     line under `[Bookmarks]`, `[Bookmarks_1]`, … sections (see
+///     `parse_mobaxterm_sessions`). SSH sessions only.
 ///
 /// Anything the parser can't recognise is a soft-fail: the returned
 /// `Vec` is what we DID find, the message describes what got skipped.
@@ -9460,7 +12147,14 @@ fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
         return Err("Paste an exported session block first.".into());
     }
 
-    // ── JSON array — the most permissive path, so try it first. Two
+    // ── MobaXterm .mxtsessions. Checked before JSON: the file starts with
+    //    its `[Bookmarks]` section header, which starts with `[` like a JSON
+    //    array does, so it used to fail as broken JSON (#25).
+    if trimmed.lines().any(|l| l.trim_start().starts_with("[Bookmarks")) {
+        return parse_mobaxterm_sessions(trimmed);
+    }
+
+    // ── JSON array — the most permissive path. Two
     //    supported field-name variants (see doc comment). We accept a
     //    generic `serde_json::Value` array rather than a strict struct
     //    so a stray extra field doesn't kill the whole import.
@@ -9520,11 +12214,6 @@ fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
         || trimmed.contains("[HKEY_USERS\\") && trimmed.contains("SimonTatham\\PuTTY\\Sessions")
     {
         return parse_putty_reg(trimmed);
-    }
-
-    // ── MobaXterm .mxtsessions
-    if trimmed.contains("[Bookmarks") || trimmed.contains(";SessionName") {
-        return parse_mobaxterm_sessions(trimmed);
     }
 
     Err("Unrecognised format — paste a JSON array, a PuTTY .reg export, or a MobaXterm .mxtsessions block.".into())
@@ -9653,14 +12342,23 @@ fn strip_reg_dword(val: &str) -> Option<u32> {
     u32::from_str_radix(stripped, 16).ok()
 }
 
-/// Parse a MobaXterm `.mxtsessions` INI-ish blob. MobaXterm stores each
-/// session as one line under a `[Bookmarks_N]` group, formatted roughly
-/// `<Title>=#109#0%<hostname>%<port>%<username>%…` with a variable trail
-/// of feature flags. We only decode the first three fields — anything
-/// past that is version-specific and not worth the complexity for an
-/// import flow that leaves password/key blank anyway.
+/// Parse a MobaXterm `.mxtsessions` export. It's an INI file: each section
+/// (`[Bookmarks]`, `[Bookmarks_1]`, …) is a folder, with `SubRep=` its path
+/// and `ImgNum=` its icon, and every other line is one session:
+///
+/// `<name>= #<icon>#<settings>#<terminal settings>#…`
+///
+/// `<settings>` is `%`-separated and starts with the session type (0 = SSH,
+/// 4 = RDP, 5 = VNC, 7 = SFTP, …). For SSH, field 1 is the host, 2 the port,
+/// 3 the user (`<default>` = none set), 8/9/10 the jump hosts' names, ports
+/// and users (`__PIPE__` between hops) and 14 the key file, with its drive
+/// written as `_CurrentDrive_`. The icon is the user's pick, so it says
+/// nothing about the type. Only SSH sessions are imported.
 fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
+    const SSH: &str = "0";
     let mut out: Vec<ImportedHost> = Vec::new();
+    // Session names repeat across folders; the import list keys rows by name.
+    let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut in_bookmarks = false;
     for raw in text.lines() {
         let line = raw.trim();
@@ -9670,32 +12368,256 @@ fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
             continue;
         }
         if !in_bookmarks { continue; }
-        let Some((title, val)) = line.split_once('=') else { continue; };
-        // MobaXterm SSH sessions start with `#109#`. Non-SSH bookmark
-        // types (telnet, RDP, sftp-only) use different numbers — we
-        // don't want to blindly import those as SSH rows.
-        if !val.starts_with("#109#") { continue; }
-        // Skip the `#109#<N>%` framing and split the payload on `%`.
-        let payload = val.split_once('%').map(|(_, rest)| rest).unwrap_or(val);
-        let parts: Vec<&str> = payload.split('%').collect();
-        if parts.len() < 3 { continue; }
-        let hostname = parts[0].trim();
-        let port = parts[1].trim().parse::<u16>().unwrap_or(22);
-        let user = parts[2].trim().to_string();
+        let Some((name, value)) = line.split_once('=') else { continue; };
+        let name = name.trim();
+        if name == "SubRep" || name == "ImgNum" { continue; }
+        let mut blocks = value.trim().split('#');
+        let (Some(_reconnect), Some(_icon), Some(settings)) = (blocks.next(), blocks.next(), blocks.next()) else {
+            continue;
+        };
+        let fields: Vec<&str> = settings.split('%').map(str::trim).collect();
+        let field = |i: usize| fields.get(i).copied().unwrap_or("");
+        if field(0) != SSH { continue; }
+        let hostname = field(1);
         if hostname.is_empty() { continue; }
+        let port = field(2).parse::<u16>().ok().filter(|p| *p != 0).unwrap_or(22);
+        let user = match field(3) {
+            "<default>" => "",
+            u => u,
+        };
+        // `_CurrentDrive_` is the drive MobaXterm ran from — nearly always C.
+        // A key file that isn't there is skipped by the import, not fatal.
+        let identity_file = Some(field(14))
+            .filter(|p| !p.is_empty())
+            .map(|p| p.replace("_CurrentDrive_", "C"));
+        let mut alias = name.to_string();
+        let mut n = 2;
+        while !names.insert(alias.clone()) {
+            alias = format!("{} ({})", name, n);
+            n += 1;
+        }
         out.push(ImportedHost {
-            host_alias: title.trim().to_string(),
+            host_alias: alias,
             hostname: hostname.to_string(),
             port,
-            user,
-            identity_file: None,
-            proxy_jump: None,
+            user: user.to_string(),
+            identity_file,
+            proxy_jump: mobaxterm_jump_hosts(field(8), field(9), field(10)),
         });
     }
     if out.is_empty() {
-        return Err("No MobaXterm sessions found in the pasted text.".into());
+        return Err("No MobaXterm SSH sessions found in the pasted text.".into());
     }
     Ok(out)
+}
+
+/// MobaXterm's jump hosts (one `__PIPE__`-separated list each for names,
+/// ports and users) as an OpenSSH ProxyJump value: `user@host:port,…`.
+fn mobaxterm_jump_hosts(hosts: &str, ports: &str, users: &str) -> Option<String> {
+    let list = |s: &str| s.split("__PIPE__").map(str::trim).map(String::from).collect::<Vec<_>>();
+    let (ports, users) = (list(ports), list(users));
+    let hops: Vec<String> = list(hosts)
+        .iter()
+        .enumerate()
+        .filter(|(_, host)| !host.is_empty())
+        .map(|(i, host)| {
+            let user = users.get(i).filter(|u| !u.is_empty() && u.as_str() != "<default>");
+            let port = ports.get(i).and_then(|p| p.parse::<u16>().ok()).filter(|p| *p != 0 && *p != 22);
+            let mut hop = String::new();
+            if let Some(u) = user {
+                hop.push_str(u);
+                hop.push('@');
+            }
+            hop.push_str(host);
+            if let Some(p) = port {
+                hop.push_str(&format!(":{}", p));
+            }
+            hop
+        })
+        .collect();
+    (!hops.is_empty()).then(|| hops.join(","))
+}
+
+#[cfg(test)]
+mod client_import_tests {
+    use super::parse_client_import;
+
+    /// Lines as MobaXterm writes them: a blank before the first `#`, the
+    /// icon, the `%`-separated settings, then the terminal settings.
+    const TERMINAL: &str = "#MobaFont%10%0%0%-1%15%236,236,236%30,30,30%180,180,192%0%-1%0%%xterm%-1%-1%_Std_Colors_0_%80%24%0%1%-1%<none>%%0%0%-1%-1#0# #-1";
+
+    fn session(name: &str, icon: u32, settings: &str) -> String {
+        format!("{}= #{}#{}{}", name, icon, settings, TERMINAL)
+    }
+
+    fn export(lines: &[String]) -> String {
+        let mut text = String::from("[Bookmarks]\r\nSubRep=\r\nImgNum=42\r\n");
+        for l in lines {
+            text.push_str(l);
+            text.push_str("\r\n");
+        }
+        text
+    }
+
+    #[test]
+    fn a_mobaxterm_export_is_not_taken_for_broken_json() {
+        let text = export(&[session("web01", 109, "0%10.0.0.5%22%admin%%-1%-1%%%%%0%0%0%%%-1%0%0%0%%1080%%0%0%1")]);
+        let hosts = parse_client_import(text).expect("the #25 export must import");
+        assert_eq!(hosts.len(), 1);
+        assert_eq!((hosts[0].host_alias.as_str(), hosts[0].hostname.as_str(), hosts[0].port, hosts[0].user.as_str()), ("web01", "10.0.0.5", 22, "admin"));
+    }
+
+    #[test]
+    fn ssh_sessions_import_whatever_their_icon_and_other_types_are_skipped() {
+        let text = export(&[
+            session("default icon", 109, "0%a.example%2222%alice%%-1%-1%%%%%0%0%0%%%-1"),
+            session("debian icon", 149, "0%b.example%22%bob%%0%-1%%%%%0%0%0%%%-1"),
+            session("desktop", 91, "4%c.example%3389%carol%%-1%0%0"),
+            session("files", 140, "7%d.example%22%dave%-1%0%%0%0%%0"),
+            session("vnc", 128, "5%e.example%5900%%-1%0"),
+            "web02=#109#0%f.example%22%frank%%-1%-1%%%%%0%0%0%%%-1".to_string(),
+        ]);
+        let hosts = parse_client_import(text).unwrap();
+        let got: Vec<(&str, &str, u16)> = hosts.iter().map(|h| (h.host_alias.as_str(), h.hostname.as_str(), h.port)).collect();
+        assert_eq!(got, vec![("default icon", "a.example", 2222), ("debian icon", "b.example", 22), ("web02", "f.example", 22)]);
+    }
+
+    #[test]
+    fn default_user_key_file_and_jump_hosts_carry_over() {
+        let text = export(&[
+            session("no user", 109, "0%g.example%22%<default>%%-1%-1%%%%%0%0%0%%%-1"),
+            session("with key", 109, r"0%h.example%22%root%%-1%-1%%%%%0%0%0%_CurrentDrive_:\keys\id_ed25519%%-1"),
+            session("behind bastion", 109, "0%i.example%22%ops%%-1%-1%%bastion.example__PIPE__inner.example%2222__PIPE__22%jump__PIPE__<default>%0%0%0%%%-1"),
+        ]);
+        let hosts = parse_client_import(text).unwrap();
+        assert_eq!(hosts[0].user, "");
+        assert_eq!(hosts[0].identity_file, None);
+        assert_eq!(hosts[1].identity_file.as_deref(), Some(r"C:\keys\id_ed25519"));
+        assert_eq!(hosts[1].proxy_jump, None);
+        assert_eq!(hosts[2].proxy_jump.as_deref(), Some("jump@bastion.example:2222,inner.example"));
+    }
+
+    #[test]
+    fn a_name_used_in_two_folders_stays_two_rows() {
+        let mut text = export(&[session("web", 109, "0%a.example%22%u%%-1%-1%%%%%0%0%0%%%-1")]);
+        text.push_str("[Bookmarks_1]\r\nSubRep=Prod\r\nImgNum=41\r\n");
+        text.push_str(&session("web", 109, "0%b.example%22%u%%-1%-1%%%%%0%0%0%%%-1"));
+        let hosts = parse_client_import(text).unwrap();
+        let names: Vec<&str> = hosts.iter().map(|h| h.host_alias.as_str()).collect();
+        assert_eq!(names, vec!["web", "web (2)"]);
+    }
+
+    #[test]
+    fn an_export_with_no_ssh_session_says_so() {
+        let text = export(&[session("desktop", 91, "4%c.example%3389%carol%%-1%0%0")]);
+        let err = parse_client_import(text).err().expect("an RDP-only export must be refused");
+        assert!(err.contains("No MobaXterm SSH sessions"), "{err}");
+    }
+
+    #[test]
+    fn json_arrays_still_import() {
+        let hosts = parse_client_import("\n  [ {\"name\": \"box\", \"host\": \"j.example\", \"port\": 2200, \"user\": \"u\"} ]".into()).unwrap();
+        assert_eq!((hosts[0].host_alias.as_str(), hosts[0].hostname.as_str(), hosts[0].port), ("box", "j.example", 2200));
+        let err = parse_client_import("[ {\"name\": ".into()).err().expect("broken JSON must be refused");
+        assert!(err.starts_with("JSON parse failed"), "{err}");
+    }
+}
+
+/// True when a single SFTP directory-entry name is a plain, safe filename —
+/// i.e. one that can be joined onto a local root without escaping it.
+///
+/// `read_dir` entry names come straight off the SFTP wire, so a malicious or
+/// compromised server can return a name that contains path separators or `..`
+/// (e.g. `../../../.config/autostart/x.desktop`, or `..\..\Startup\x.bat`).
+/// Joining such a name onto the download root resolves OUTSIDE it — a zip-slip
+/// arbitrary-write primitive. A genuine filesystem entry name is always a
+/// single component: it never contains `/` (the POSIX/SFTP separator) or a
+/// NUL, and is never `.`/`..`. Callers skip (or refuse) a rejected entry.
+///
+/// On a WINDOWS client more names escape or misbehave, because Win32
+/// reinterprets them:
+///   * `\` is a path separator there (a POSIX name may legally contain it).
+///   * a drive marker — `C:evil` is drive-RELATIVE, so `root.join("C:evil")`
+///     discards `root` and resolves against the process CWD; `a:b` likewise.
+///     (A `:` elsewhere also opens an NTFS alternate data stream.)
+///   * reserved device names (`CON`, `NUL`, `COM1`, `LPT1`, `CONIN$`, …, with
+///     or without an extension) open a device, not a file under `root`.
+///   * a trailing `.` or space is silently stripped, aliasing one name to
+///     another and defeating an exact-name overwrite check.
+///
+/// These are all legal in a POSIX filename, so they are only barred when this
+/// build is the Windows client that would misinterpret them — a POSIX client
+/// downloading a file literally named `a:b` or `a\b` is fine.
+pub(crate) fn is_safe_dir_entry_name(name: &str) -> bool {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\0')
+    {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        if name.contains('\\') || name.contains(':') {
+            return false;
+        }
+        if matches!(name.chars().last(), Some('.') | Some(' ')) {
+            return false;
+        }
+        // Compare the part before the first dot (spaces before the dot are
+        // dropped too) against the reserved set, case-insensitively: `NUL`,
+        // `nul.txt`, `COM1.log` and `AUX .c` are all devices.
+        let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+        const RESERVED: &[&str] = &[
+            "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
+            "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "COM¹", "COM²", "COM³",
+            "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+            "LPT¹", "LPT²", "LPT³",
+        ];
+        if RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r)) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Check a single-file download destination before anything touches it. The
+/// frontend builds `local_path` as `<chosen folder><sep><remote name>`, and the
+/// remote name is the only part the server controls: it must be one plain
+/// component this OS can store, and really be the last component of
+/// `local_path`. Everything before it is the user's own folder, so a `..` they
+/// typed there is fine — guard_local_path resolves it.
+fn validate_download_target(local_path: &str, remote_path: &str) -> Result<(), String> {
+    let name = remote_path.rsplit('/').next().unwrap_or("");
+    if !is_safe_dir_entry_name(name) {
+        return Err(format!(
+            "\"{}\" can't be saved here: its name isn't a valid file name on this computer.",
+            name
+        ));
+    }
+    let last = std::path::Path::new(local_path).file_name().and_then(|n| n.to_str());
+    if last != Some(name) {
+        return Err(format!(
+            "Refusing a download destination that doesn't end in the file's name: {}",
+            local_path
+        ));
+    }
+    Ok(())
+}
+
+/// The note on a finished folder-download card when the walk skipped names
+/// this computer can't store (see is_safe_dir_entry_name).
+fn skipped_names_note(skipped: u64) -> Option<String> {
+    match skipped {
+        0 => None,
+        1 => Some("1 item skipped: its name isn't a valid file name on this computer".into()),
+        n => Some(format!(
+            "{} items skipped: their names aren't valid file names on this computer",
+            n
+        )),
+    }
 }
 
 /// Defense-in-depth guard for the local-FS commands the frontend can invoke.
@@ -9705,28 +12627,6 @@ fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
 /// directories, and unresolvable paths. If the renderer is ever compromised
 /// (XSS via terminal output, a future feature, etc.) this stops
 /// `local_remove("C:\\")` cold.
-/// True when a single SFTP directory-entry name is a plain, safe filename —
-/// i.e. one that can be joined onto a local root without escaping it.
-///
-/// `read_dir` entry names come straight off the SFTP wire, so a malicious or
-/// compromised server can return a name that contains path separators or `..`
-/// (e.g. `../../../.config/autostart/x.desktop`, or `..\..\Startup\x.bat`).
-/// Joining such a name onto the download root resolves OUTSIDE it — a zip-slip
-/// arbitrary-write primitive. A genuine filesystem entry name is always a
-/// single component: it never contains `/` (the POSIX/SFTP separator), `\` (a
-/// separator once the rel path is split for a Windows client), or a NUL, and is
-/// never `.`/`..`. Rejecting anything else costs nothing on a well-behaved
-/// server and stops the traversal at the point the untrusted name first enters
-/// our local-path building. Callers skip (or abort on) a rejected entry.
-pub(crate) fn is_safe_dir_entry_name(name: &str) -> bool {
-    !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains('/')
-        && !name.contains('\\')
-        && !name.contains('\0')
-}
-
 fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::PathBuf, String> {
     let p = std::path::Path::new(path);
     let canonical = match p.canonicalize() {
@@ -9745,7 +12645,33 @@ fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::Pa
             }
         }
     };
+    check_local_path_policy(canonical)
+}
 
+/// Like `guard_local_path`, but the LAST component is not resolved — for
+/// operations on the directory entry itself (delete, rename). Canonicalising
+/// a symlink or junction resolves it to its target, so deleting or renaming a
+/// link would hit the file/folder it points to (and a dangling link couldn't
+/// be removed at all). The parent is still canonicalised and the same
+/// system-path policy applies.
+fn guard_local_path_nofollow(path: &str, must_exist: bool) -> Result<std::path::PathBuf, String> {
+    let p = std::path::Path::new(path);
+    let file = p.file_name().ok_or_else(|| format!("Invalid path: {}", path))?;
+    let parent = p
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .ok_or_else(|| format!("Invalid path: {}", path))?;
+    let canon_parent = parent
+        .canonicalize()
+        .map_err(|e| format!("Invalid parent directory: {}", e))?;
+    let full = canon_parent.join(file);
+    if must_exist {
+        std::fs::symlink_metadata(&full).map_err(|e| format!("Invalid path: {}", e))?;
+    }
+    check_local_path_policy(full)
+}
+
+fn check_local_path_policy(canonical: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
     // Refuse the filesystem root itself (`/`, `C:\`, etc.).
     if canonical.parent().is_none() {
         return Err(format!("Refusing to operate on filesystem root: {}", canonical.display()));
@@ -9819,20 +12745,183 @@ async fn local_create_dir(path: String) -> Result<(), String> {
     std::fs::create_dir_all(&safe).map_err(|e| format!("Failed to create directory: {}", e))
 }
 
+/// Remove a symlink / junction itself, never what it points to. Windows
+/// directory links and junctions go through RemoveDirectory; everything else
+/// (all links on Unix) is a plain unlink.
+fn remove_link_itself(p: &std::path::Path, ft: &std::fs::FileType) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if ft.is_symlink_dir() {
+            return std::fs::remove_dir(p);
+        }
+    }
+    let _ = ft;
+    std::fs::remove_file(p)
+}
+
 #[tauri::command]
 async fn local_remove(path: String, is_dir: bool) -> Result<(), String> {
-    let safe = guard_local_path(&path, false)?;
-    if is_dir {
+    // What's on disk decides, not the caller's hint: a link must only ever be
+    // unlinked, whatever the UI thought the row was.
+    let _ = is_dir;
+    let safe = guard_local_path_nofollow(&path, true)?;
+    let ft = std::fs::symlink_metadata(&safe)
+        .map_err(|e| format!("Failed to remove: {}", e))?
+        .file_type();
+    if ft.is_symlink() {
+        remove_link_itself(&safe, &ft).map_err(|e| format!("Failed to remove link: {}", e))
+    } else if ft.is_dir() {
+        // std's remove_dir_all doesn't follow links found inside the tree.
         std::fs::remove_dir_all(&safe).map_err(|e| format!("Failed to remove directory: {}", e))
     } else {
         std::fs::remove_file(&safe).map_err(|e| format!("Failed to remove file: {}", e))
     }
 }
 
+#[cfg(test)]
+mod symlink_fs_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("submarine-{}-{}-{}", tag, std::process::id(), nanos));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Creating symlinks on Windows needs Developer Mode or admin; when the
+    /// OS refuses, the test skips instead of failing.
+    fn link_dir(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        let r = std::os::windows::fs::symlink_dir(target, link);
+        #[cfg(unix)]
+        let r = std::os::unix::fs::symlink(target, link);
+        r.is_ok()
+    }
+
+    fn link_file(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        let r = std::os::windows::fs::symlink_file(target, link);
+        #[cfg(unix)]
+        let r = std::os::unix::fs::symlink(target, link);
+        r.is_ok()
+    }
+
+    #[tokio::test]
+    async fn deleting_a_folder_link_keeps_the_folder_and_its_contents() {
+        let root = scratch("rmdirlink");
+        let target = root.join("real");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("keep.txt"), b"data").unwrap();
+        let link = root.join("link");
+        if !link_dir(&target, &link) {
+            eprintln!("skipped: no symlink permission");
+            return;
+        }
+        // Even with the UI claiming it's a directory, only the link goes.
+        local_remove(link.to_string_lossy().to_string(), true).await.unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err(), "link must be gone");
+        assert!(target.join("keep.txt").exists(), "target contents must survive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_file_link_keeps_the_file() {
+        let root = scratch("rmfilelink");
+        let target = root.join("real.txt");
+        std::fs::write(&target, b"data").unwrap();
+        let link = root.join("link.txt");
+        if !link_file(&target, &link) {
+            eprintln!("skipped: no symlink permission");
+            return;
+        }
+        local_remove(link.to_string_lossy().to_string(), false).await.unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"data");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_dangling_link_can_be_deleted() {
+        let root = scratch("dangling");
+        let link = root.join("gone");
+        if !link_file(&root.join("missing.txt"), &link) {
+            eprintln!("skipped: no symlink permission");
+            return;
+        }
+        local_remove(link.to_string_lossy().to_string(), false).await.unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn renaming_a_link_moves_the_link_not_the_target() {
+        let root = scratch("mvlink");
+        let target = root.join("real.txt");
+        std::fs::write(&target, b"data").unwrap();
+        let link = root.join("link.txt");
+        if !link_file(&target, &link) {
+            eprintln!("skipped: no symlink permission");
+            return;
+        }
+        let renamed = root.join("renamed.txt");
+        local_rename(link.to_string_lossy().to_string(), renamed.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert!(target.exists(), "target must stay where it was");
+        assert!(std::fs::symlink_metadata(&renamed).unwrap().file_type().is_symlink());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn listing_reports_folder_links_as_folders() {
+        let root = scratch("list");
+        let target = root.join("real");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = root.join("link");
+        if !link_dir(&target, &link) {
+            eprintln!("skipped: no symlink permission");
+            return;
+        }
+        let listed = local_list_dir(root.to_string_lossy().to_string()).await.unwrap();
+        let row = listed.iter().find(|e| e.name == "link").unwrap();
+        assert!(row.is_dir && row.is_symlink && !row.broken_link);
+        let real = listed.iter().find(|e| e.name == "real").unwrap();
+        assert!(real.is_dir && !real.is_symlink);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nofollow_guard_keeps_the_link_name() {
+        let root = scratch("guard");
+        let target = root.join("real");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = root.join("link");
+        if !link_dir(&target, &link) {
+            eprintln!("skipped: no symlink permission");
+            return;
+        }
+        let guarded = guard_local_path_nofollow(&link.to_string_lossy(), true).unwrap();
+        assert_eq!(guarded.file_name().unwrap(), "link");
+        // The following guard still resolves to the target, for listing/opening.
+        let followed = guard_local_path(&link.to_string_lossy(), false).unwrap();
+        assert_eq!(followed.file_name().unwrap(), "real");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
 #[tauri::command]
 async fn local_rename(from: String, to: String) -> Result<(), String> {
-    let safe_from = guard_local_path(&from, false)?;
-    let safe_to = guard_local_path(&to, true)?;
+    // No-follow on both ends: renaming a link must move the link, and an
+    // existing link at the destination must not redirect the rename onto its
+    // target.
+    let safe_from = guard_local_path_nofollow(&from, true)?;
+    let safe_to = guard_local_path_nofollow(&to, false)?;
     // Same auto-mkdir-parent UX as sftp_rename: moving a file into a
     // subfolder that doesn't exist yet would otherwise fail with a
     // confusing "system cannot find the path specified" / ENOENT.
@@ -9873,7 +12962,14 @@ async fn local_list_dir(path: String) -> Result<Vec<LocalFileEntry>, String> {
 
     for entry in read_dir {
         if let Ok(entry) = entry {
-            let metadata = entry.metadata().ok();
+            // DirEntry::metadata doesn't follow links, so for a symlink or a
+            // Windows junction it describes the link. Follow it so links to
+            // folders list as folders; a dangling link keeps its own metadata.
+            let link_meta = entry.metadata().ok();
+            let is_symlink = link_meta.as_ref().map(|m| m.file_type().is_symlink()).unwrap_or(false);
+            let target_meta = if is_symlink { std::fs::metadata(entry.path()).ok() } else { None };
+            let broken_link = is_symlink && target_meta.is_none();
+            let metadata = target_meta.or(link_meta);
             let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
             let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
             let name = entry.file_name().to_string_lossy().to_string();
@@ -9890,6 +12986,8 @@ async fn local_list_dir(path: String) -> Result<Vec<LocalFileEntry>, String> {
                 is_dir,
                 size,
                 modified,
+                is_symlink,
+                broken_link,
             });
         }
     }
@@ -9977,7 +13075,9 @@ fn resolve_node_auth_for_monitor(
     Ok(monitor::NodeAuth {
         host,
         port: port as u16,
-        username: if username.trim().is_empty() { "root".into() } else { username },
+        // Blank stays blank: connect_for_monitor reports it instead of
+        // guessing root (#54).
+        username,
         password,
         private_key,
         passphrase,
@@ -10401,27 +13501,6 @@ pub fn run() {
         if std::env::var_os("WEBKIT_DISABLE_HARDWARE_ACCELERATION").is_none() {
             std::env::set_var("WEBKIT_DISABLE_HARDWARE_ACCELERATION", "1");
         }
-        // bwrap sandbox strips inherited env from WebKitWebProcess (Fedora's
-        // SELinux-confined bwrap is the canonical offender) — the flags we
-        // set in this block need to reach the render-process child or none
-        // of the rendering overrides will fire.
-        //
-        // WebKit 2.42 renamed `WEBKIT_FORCE_SANDBOX=0` to
-        // `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` and the old name now
-        // emits a warning ("no longer allows disabling the sandbox") instead
-        // of actually disabling anything. We set BOTH so the override works
-        // across the full WebKit version range we'll meet in the wild —
-        // older WebKit picks up the legacy name, 2.42+ picks up the loud
-        // one. Losing the sandbox boundary for the webview is acceptable
-        // for a desktop app that already runs with the user's full
-        // filesystem access; the security boundary that matters
-        // (Tauri capabilities + strict CSP) is unaffected.
-        if std::env::var_os("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
-        }
-        if std::env::var_os("WEBKIT_FORCE_SANDBOX").is_none() {
-            std::env::set_var("WEBKIT_FORCE_SANDBOX", "0");
-        }
         // Older-renderer + DMA-BUF flags stay as belt-and-braces — they
         // cost nothing on builds where WEBKIT_DISABLE_HARDWARE_ACCELERATION
         // already wins, and they cover the corner cases where a downstream
@@ -10440,7 +13519,21 @@ pub fn run() {
         if std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none() {
             std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
         }
+        // Sandbox the web process (bubblewrap) when this machine supports it.
+        // The rendering flags above still reach it: WebKit's bwrap launcher
+        // only sets/unsets a few specific variables, it never clears the
+        // environment. See webkit_sandbox.rs.
+        webkit_sandbox::configure();
     }
+
+    // Portable mode: with a `submarine-data` folder next to the executable,
+    // every app directory moves into it — profiles, cloud token, window state,
+    // and the webview's data (localStorage, i.e. the UI preferences). Decided
+    // here, once, and applied before the app is built because Tauri reads the
+    // override out of the config and derives the webview's data dir from it.
+    // Without the folder nothing is touched. See portable.rs.
+    let mut context = tauri::generate_context!();
+    portable::apply(context.config_mut());
 
     let builder = tauri::Builder::default();
     // Save/restore the main window's last size + position to a JSON file
@@ -10486,7 +13579,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             check_db_exists, setup_master_db, persist_vault,
             list_profiles, cloud_list_sync_profiles, cloud_delete_profile, force_push_profile, select_profile, create_profile, delete_profile, close_profile,
-            export_profile, import_profile_pick, import_profile_save,
+            export_profile, import_profile_pick, import_profile_save, import_profile_bytes,
             cloud::cloud_status, cloud::cloud_signup, cloud::cloud_consume_verify_link,
             cloud::cloud_set_password, cloud::cloud_login, cloud::cloud_logout,
             cloud::cloud_request_password_reset, cloud::cloud_reset_password,
@@ -10506,6 +13599,7 @@ pub fn run() {
             mirror_dry_run, start_mirror, stop_mirror, list_mirrors, pick_local_directory,
             add_credential, edit_credential, delete_credential,
             add_ssh_key, edit_ssh_key, delete_ssh_key,
+            pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             open_terminal, write_terminal_data, resize_terminal, close_terminal,
@@ -10534,15 +13628,18 @@ pub fn run() {
             parse_ssh_config,
             parse_client_import,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
-            sftp_rename, sftp_set_permissions, sftp_set_owner,
+            sftp_rename, sftp_set_permissions, sftp_set_owner, sftp_stat,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,
+            sftp_set_elevated, sftp_elevation_status, sftp_login_user,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
             monitor_list, monitor_add, monitor_remove, monitor_set_metrics, monitor_set_custom_metrics,
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,
             monitor_get_settings, monitor_set_settings,
-            about::app_info, about::check_for_updates, about::open_external_url
+            about::app_info, about::check_for_updates, about::open_external_url,
+            portable::get_storage_info,
+            fonts::list_system_fonts
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }
 
@@ -10558,30 +13655,96 @@ mod tests {
             ".",
             "..",
             "../../etc/passwd",
-            "..\\..\\Startup\\x.bat",
             "a/b",
-            "a\\b",
             "/etc/passwd",
             "with\0nul",
         ] {
             assert!(!is_safe_dir_entry_name(bad), "should reject {:?}", bad);
+        }
+        // `\` separates components only on Windows; on a POSIX client it's an
+        // ordinary byte (systemd unit names like `mnt-data\x2d1.mount`).
+        for name in ["..\\..\\Startup\\x.bat", "a\\b", "mnt-data\\x2d1.mount"] {
+            assert_eq!(is_safe_dir_entry_name(name), !cfg!(windows), "{:?}", name);
         }
     }
 
     #[test]
     fn dir_entry_name_accepts_plain_filenames() {
         // Legitimate names must still pass — including ones that merely
-        // start with dots or contain colons/spaces (all legal on POSIX).
+        // start with dots.
         for ok in [
             "file.txt",
             "notes 2024.md",
             ".bashrc",
             "..foo",
-            "2024:01:01.log",
             "release-v0.2.37",
             "Ω_unicode_名前",
         ] {
             assert!(is_safe_dir_entry_name(ok), "should accept {:?}", ok);
         }
+        // `:` is a legal POSIX filename byte — accepted on a POSIX client,
+        // rejected on a Windows one (it's a drive marker / ADS there).
+        #[cfg(not(windows))]
+        assert!(is_safe_dir_entry_name("2024:01:01.log"));
     }
+    #[cfg(windows)]
+    #[test]
+    fn dir_entry_name_rejects_windows_specials() {
+        // Drive-relative markers (join discards the root) and NTFS ADS.
+        for bad in ["C:", "C:evil", "a:b", "file.txt:stream"] {
+            assert!(!is_safe_dir_entry_name(bad), "should reject {:?}", bad);
+        }
+        // Reserved device names, with and without an extension, any case.
+        for bad in [
+            "CON", "nul", "NUL.txt", "com1", "COM9", "LPT1", "lpt9.log", "aux", "Prn",
+            "COM0", "lpt0.txt", "COM¹", "LPT³.log", "CONIN$", "conout$", "AUX .c",
+        ] {
+            assert!(!is_safe_dir_entry_name(bad), "should reject {:?}", bad);
+        }
+        // Trailing dot/space are silently stripped by Win32.
+        for bad in ["name.", "name ", "trailingdot."] {
+            assert!(!is_safe_dir_entry_name(bad), "should reject {:?}", bad);
+        }
+        // But a reserved stem as a substring of a longer name is fine.
+        for ok in ["console.log", "communications", "nulled.txt", "lpt10"] {
+            assert!(is_safe_dir_entry_name(ok), "should accept {:?}", ok);
+        }
+    }
+
+    #[test]
+    fn download_target_checks_only_the_server_named_part() {
+        let dir = if cfg!(windows) { "C:\\Users\\u\\Downloads" } else { "/home/u/Downloads" };
+        let sep = if cfg!(windows) { "\\" } else { "/" };
+        let dest = |name: &str| format!("{}{}{}", dir, sep, name);
+
+        assert!(validate_download_target(&dest("report.txt"), "/srv/report.txt").is_ok());
+        assert!(validate_download_target(&dest(".bashrc"), "/home/x/.bashrc").is_ok());
+        // A `..` the user typed in their own folder is fine; only the name is
+        // the server's.
+        let typed = format!("{}{}..{}Desktop{}report.txt", dir, sep, sep, sep);
+        assert!(validate_download_target(&typed, "/srv/report.txt").is_ok());
+
+        // The destination must end in exactly the remote file's name.
+        assert!(validate_download_target(&dest("other.txt"), "/srv/report.txt").is_err());
+        // No name at all, or `..` as the name.
+        assert!(validate_download_target(&dest(""), "/srv/").is_err());
+        assert!(validate_download_target(&dest(".."), "/srv/..").is_err());
+
+        // A name that climbs out on Windows is refused there; on POSIX it's
+        // one literal (odd) file name that stays in the folder.
+        let climb = "..\\..\\Startup\\x.bat";
+        assert_eq!(
+            validate_download_target(&dest(climb), &format!("/srv/{}", climb)).is_ok(),
+            !cfg!(windows)
+        );
+        #[cfg(windows)]
+        assert!(validate_download_target(&dest("a:b"), "/srv/a:b").is_err());
+    }
+
+    #[test]
+    fn skipped_names_note_counts() {
+        assert_eq!(skipped_names_note(0), None);
+        assert!(skipped_names_note(1).unwrap().starts_with("1 item skipped"));
+        assert!(skipped_names_note(7).unwrap().starts_with("7 items skipped"));
+}
 }

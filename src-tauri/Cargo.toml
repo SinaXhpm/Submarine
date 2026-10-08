@@ -5,7 +5,7 @@ description = "Submarine SSH Client"
 authors = ["Sina Xhpm (sinaxhpm.com)"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.90"
 
 # Library + binary dual target. The Tauri Builder, command registry, and
 # state setup live in `src/lib.rs::run()`. The bin entry point (`src/main.rs`)
@@ -42,25 +42,12 @@ opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
 
-[features]
-# Default build is OpenSSL-free so it compiles on any machine without Perl /
-# system libcrypto. The trade-off is reduced SSH compatibility: russh's
-# default only negotiates Ed25519 / ECDSA-P256 host keys + modern KEX /
-# MAC algorithms, so older Linux servers and most shared hosts still using
-# RSA host keys won't connect ("No common key algorithm").
-default = []
-# Turned on by the release workflow (tauri-action `args: ... --features
-# full-ssh-algos`) so the shipped binaries can talk to essentially any SSH
-# server in production: full RSA host-key family, legacy DH groups, the
-# older HMAC-SHA1 family. Pulls in russh's openssl backend plus a vendored
-# (statically-linked, built-from-source) libcrypto so the resulting binary
-# has no runtime libssl dependency. Cost is a one-time perl + C compiler
-# requirement on the build host, which is why we don't make it default —
-# developers debugging locally shouldn't need to install Perl.
-full-ssh-algos = ["russh/openssl", "russh-keys/openssl", "dep:openssl-sys"]
-
 [dependencies]
-tauri = { version = "2.1", features = [] }
+# 2.12 is the first release with `app > appDirectoriesOverride`, which portable
+# mode uses to re-root every app directory — and, through app_local_data_dir,
+# the webview's data folder — into `submarine-data` (see src/portable.rs). This
+# is already the version resolved in Cargo.lock, so it only raises the floor.
+tauri = { version = "2.12", features = [] }
 # tauri-plugin-opener replaces the `open` crate for URL opening — the latter
 # is excluded on Android (no equivalent crate), so before this plugin the
 # About-panel "open repo / website" buttons returned a literal "external
@@ -81,38 +68,38 @@ tokio = { version = "1", features = ["full"] }
 # TCP-level keepalive on the SSH transport sockets (poor-network resilience).
 # Already in the tree transitively via tokio — a direct dep adds no new crates.
 socket2 = "0.6"
-rusqlite = { version = "0.31", features = ["bundled", "backup", "serialize", "functions"] }
-argon2 = "0.5"
-aes-gcm = "0.10"
+rusqlite = { version = "0.40", features = ["bundled", "backup", "serialize", "functions"] }
+argon2 = "0.6"
+aes-gcm = "0.11"
 # E2E profile sharing: X25519 sealed-box (ECIES) so a profile's data key can be
 # handed to another member wrapped to their public key — the server never sees
-# it. curve25519-dalek 4.x is already in the tree via ssh-key, so x25519-dalek 2
+# it. curve25519-dalek 5.x is already in the tree via ssh-key, so x25519-dalek 3
 # adds no new curve impl. HKDF-SHA256 derives the AEAD key from the ECDH shared
 # secret (sha2 is already a dep).
-x25519-dalek = { version = "2", features = ["getrandom", "static_secrets"] }
-hkdf = "0.12"
-rand = "0.8"
-rand_core = { version = "0.6", features = ["getrandom"] }
-directories = "5.0"
-# OpenSSL-backed features (RSA host keys, legacy KEX, full MAC suite) are
-# gated behind the `full-ssh-algos` feature so the default `cargo build`
-# stays Perl-free for local debugging. See the [features] block above.
-russh = "0.40.2"
-russh-keys = "0.40.1"
-openssl-sys = { version = "0.9", features = ["vendored"], optional = true }
-ssh-key = { version = "0.6", features = ["alloc", "encryption", "getrandom", "ed25519", "rsa"] }
+x25519-dalek = { version = "3", features = ["getrandom", "static_secrets"] }
+hkdf = "0.13"
+rand = "0.10"
+directories = "6.0"
+# russh >= 0.45 is pure Rust for the whole algorithm set (RSA host keys, all
+# DH groups, HMAC-SHA1), so the old OpenSSL-backed `full-ssh-algos` feature and
+# its Perl build requirement are gone. `ring` is picked as the crypto backend
+# because it is already in the tree via rustls (aws-lc-rs would add a cmake /
+# NASM build dependency on Windows for nothing).
+russh = { version = "0.63", default-features = false, features = ["flate2", "ring", "rsa"] }
+# Must be the exact version russh pins: the key types are shared between our
+# key generation / validation code and russh's auth API.
+ssh-key = { version = "=0.7.0-rc.11", features = ["alloc", "encryption", "ed25519", "rsa"] }
 tokio-socks = "0.5"
 async-http-proxy = { version = "1.2", features = ["runtime-tokio"] }
-async-trait = "0.1.89"
-russh-sftp = "2.1.2"
-notify = "6.1.1"
+russh-sftp = "3"
+notify = "8.2"
 # Debounces filesystem events so we don't try to upload a file mid-write.
 # Mirror watcher uses this — events for the same path within 500ms collapse
 # to a single action, which both eliminates partial uploads and keeps
 # rapid-fire editor saves (e.g. vim's swap-then-rename pattern) from
-# generating spurious traffic. Pairs cleanly with the `notify` 6.x crate
+# generating spurious traffic. Pairs cleanly with the `notify` 8.x crate
 # we already use elsewhere.
-notify-debouncer-mini = "0.4"
+notify-debouncer-mini = "0.7"
 # Used by the mirror module to stamp downloaded files with the remote's
 # mtime. Without it, every freshly-downloaded file has local mtime = now,
 # which would make the next dry-run treat the local copy as "newer" and
@@ -126,7 +113,7 @@ filetime = "0.2"
 # the files as different if the digests actually disagree. SHA-256 is
 # overkill for a "same or not?" question but it's already pulled in
 # transitively by russh/ssh-key, so making the dep explicit costs nothing.
-sha2 = "0.10"
+sha2 = "0.11"
 regex = "1.10"
 # rustls-tls so we don't drag in OpenSSL on Windows builds. multipart for blob
 # uploads; json for typed request/response bodies.
@@ -135,7 +122,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # Real profiles compress ~50-70% (lots of repeated SQL+JSON structure), so
 # both local disk and cloud blobs shrink correspondingly. v1 vaults stay
 # readable — we only emit v2 going forward.
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 # Zeroize-on-drop wrappers for the master vault key and the decompressed
 # SQLite plaintext. Without this, secrets stay in the heap until allocator
 # reuse — long enough for a swap file / crash dump to capture them. We
@@ -155,5 +142,11 @@ zeroize = { version = "1.8", features = ["zeroize_derive"] }
 # ---------------------------------------------------------------------------
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tauri-plugin-window-state = "2"
-rfd = "0.14"
+rfd = "0.17"
 open = "5.1"
+# Lists the fonts installed on this device for the terminal font picker. A
+# webview can't enumerate system fonts (the Local Font Access API pops a
+# permission prompt and doesn't exist on WebKitGTK or Android), so we read the
+# OS font folders ourselves. Pure Rust: it only parses font name tables. Not
+# on Android, which lists no installed fonts (see fonts.rs).
+fontdb = "0.24"

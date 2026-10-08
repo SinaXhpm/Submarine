@@ -9,12 +9,17 @@
 export interface FileEntry {
   name: string;
   path: string;
+  /** For a symlink this describes the target, so links to folders open like folders. */
   isDir: boolean;
   size: number;
   permissions?: number; // unix mode bits
   uid?: number;
   gid?: number;
   modified?: number; // unix timestamp (seconds)
+  /** The entry is a symlink (or Windows junction). Delete/rename act on the link itself. */
+  isSymlink?: boolean;
+  /** Symlink whose target is missing or not accessible. */
+  brokenLink?: boolean;
 }
 
 export interface ListResult {
@@ -40,12 +45,16 @@ export interface FileProvider {
 
   // ---- mutations -----------------------------------------------------------
   mkdir(path: string): Promise<void>;
-  remove(path: string, isDir: boolean): Promise<void>;
+  /** `isSymlink` makes the remote side unlink the link instead of rmdir-ing it. */
+  remove(path: string, isDir: boolean, isSymlink?: boolean): Promise<void>;
   rename(from: string, to: string): Promise<void>;
 
   // ---- optional unix-only operations --------------------------------------
   chmod?: (path: string, mode: number) => Promise<void>;
-  chown?: (path: string, uid: number, gid: number) => Promise<void>;
+  /** `gid` null keeps the current group. */
+  chown?: (path: string, uid: number, gid: number | null) => Promise<void>;
+  /** Current mode and owner, following symlinks (what chmod/chown change). */
+  stat?: (path: string) => Promise<{ permissions?: number; uid?: number; gid?: number }>;
 }
 
 /** Remote provider carries the SSH session id so transfer.ts can target it. */

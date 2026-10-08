@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square, History } from "lucide-react";
+import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square, History, Plus, Copy } from "lucide-react";
 import PasswordField from "./PasswordField";
+import { useTextPrompt } from "../ui/confirm";
 
 // Compact "2h ago" style relative time for the attribution line.
 function relTime(d: Date): string {
@@ -33,9 +34,38 @@ type ImportedHost = {
   proxy_jump: string | null;
 };
 
-const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, folders, refreshFolders, refreshServers, servers, isEditMode, formError, isMobile }: any) => {
+// What `import_ssh_key_file` hands back after putting a key file in the vault.
+type ImportedSshKey = {
+  id: number;
+  name: string;
+  reused: boolean;
+  encrypted: boolean;
+};
+
+const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, refreshSshKeys, folders, refreshFolders, refreshServers, servers, isEditMode, formError, isMobile }: any) => {
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  // Set while the native key picker is open so the Browse button can't be
+  // fired twice — a second dialog would sit behind the first with no way to
+  // tell which one the user is answering.
+  const [keyBrowseBusy, setKeyBrowseBusy] = useState(false);
+  const [keyBrowseNote, setKeyBrowseNote] = useState<string | null>(null);
+  // A key generated from this form: its public half is shown (with a copy
+  // button) while it's the selected key, since it has to go into the
+  // server's authorized_keys before it can log in.
+  const [generatedKey, setGeneratedKey] = useState<{ id: number; name: string; publicKey: string } | null>(null);
+  const [publicKeyCopied, setPublicKeyCopied] = useState(false);
+  const textPrompt = useTextPrompt();
+
+  // The panel stays mounted and slides off-screen rather than unmounting, so
+  // the note from the last key someone loaded would still be sitting there the
+  // next time they open it — against a different server.
+  useEffect(() => {
+    if (!isOpen) {
+      setKeyBrowseNote(null);
+      setGeneratedKey(null);
+    }
+  }, [isOpen]);
 
   // SSH-config import modal state. Lives here so it's colocated with the
   // "Add server" flow — the button that triggers it sits in this panel's
@@ -46,6 +76,9 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
   const [importLoading, setImportLoading] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  // Separate from importError: the import worked, there's just something the
+  // user has to follow up on (a key that still needs its passphrase).
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   const [importHosts, setImportHosts] = useState<ImportedHost[]>([]);
   const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
   // Source selector for the import modal. `ssh` = the on-disk OpenSSH
@@ -68,6 +101,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     setImportSource("ssh");
     setImportPasteText("");
     setImportError(null);
+    setImportNotice(null);
     setImportHosts([]);
     setImportSelected(new Set());
     setImportLoading(true);
@@ -86,6 +120,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
   const parsePastedImport = async () => {
     setImportLoading(true);
     setImportError(null);
+    setImportNotice(null);
     setImportHosts([]);
     setImportSelected(new Set());
     try {
@@ -102,6 +137,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     if (importBusy || importSource === next) return;
     setImportSource(next);
     setImportError(null);
+    setImportNotice(null);
     setImportHosts([]);
     setImportSelected(new Set());
     if (next === "ssh") {
@@ -121,6 +157,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     if (importBusy) return;
     setImportOpen(false);
     setImportError(null);
+    setImportNotice(null);
     setImportHosts([]);
     setImportSelected(new Set());
     setImportPasteText("");
@@ -143,26 +180,61 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     });
   };
 
-  // Fire one `add_server` per selected host. We use auth_type "custom_pass"
-  // with empty password so the row is valid but non-connecting until the
-  // user edits it — matches the spec that key/password stay unset. Errors
-  // per-host are surfaced but don't abort the batch; the modal shows how
-  // many landed and how many failed.
+  // Fire one `add_server` per selected host. A host that named an IdentityFile
+  // comes in key-authenticated; anything else lands as auth_type "custom_pass"
+  // with no password — a valid row that won't connect until the user fills it
+  // in. Errors per-host are surfaced but don't abort the batch; the modal
+  // shows how many landed and how many failed.
   const importSelectedHosts = async () => {
     if (importSelected.size === 0 || importBusy) return;
     setImportBusy(true);
     setImportError(null);
+    setImportNotice(null);
     let ok = 0;
     let failed = 0;
     let lastErr: string | null = null;
+    // Several hosts routinely point at the same `~/.ssh/id_ed25519`. The Rust
+    // side already dedupes by key content, but caching here means one read and
+    // one vault write for the whole batch instead of one per host. `null`
+    // records a path we already tried and couldn't use, so we don't retry a
+    // missing file once per host that mentions it.
+    const keysByPath = new Map<string, ImportedSshKey | null>();
+    let keysAttached = 0;
+    let keysNeedingPassphrase = 0;
     for (const host of importHosts) {
       if (!importSelected.has(host.host_alias)) continue;
+      let key: ImportedSshKey | null = null;
+      if (host.identity_file) {
+        if (keysByPath.has(host.identity_file)) {
+          key = keysByPath.get(host.identity_file) ?? null;
+        } else {
+          try {
+            key = await invoke<ImportedSshKey>("import_ssh_key_file", {
+              path: host.identity_file,
+              name: null,
+            });
+          } catch {
+            // An unreadable IdentityFile isn't a reason to skip the host —
+            // the server row is still worth having. It just imports
+            // password-less, exactly as it did before keys were attached.
+            key = null;
+          }
+          keysByPath.set(host.identity_file, key);
+          if (key) {
+            keysAttached++;
+            if (key.encrypted) keysNeedingPassphrase++;
+          }
+        }
+      }
       try {
         await invoke<number>("add_server", {
           name: host.host_alias,
           host: host.hostname || host.host_alias,
           port: host.port || 22,
-          username: (host.user && host.user.trim()) ? host.user.trim() : "root",
+          // No user in the export (MobaXterm's <default>, an ssh_config
+          // entry without User): leave it blank, so connecting asks
+          // "Login as" — where empty still means root (#72).
+          username: host.user ? host.user.trim() : "",
           password: null,
           credentialId: null,
           folderId: null,
@@ -170,8 +242,8 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
           proxyHost: "",
           proxyPort: 1080,
           tunnels: [],
-          authType: "custom_pass",
-          keyId: null,
+          authType: key ? "custom_key" : "custom_pass",
+          keyId: key ? key.id : null,
           autostart: false,
           mirrors: [],
           color: null,
@@ -189,8 +261,89 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     if (refreshServers) {
       try { await refreshServers(); } catch { /* refresh failure isn't fatal */ }
     }
+    if (keysAttached > 0 && refreshSshKeys) {
+      try { await refreshSshKeys(); } catch { /* same — the list refreshes on next open */ }
+    }
+    // A passphrase-protected key's passphrase isn't anywhere in the config
+    // file. The user can add it under Settings › SSH keys, or leave it and be
+    // asked at connect time (issue #30) — either way, hold the modal open and
+    // point it out so the import isn't silently half-finished.
+    if (keysNeedingPassphrase > 0) {
+      setImportNotice(
+        `${ok} imported, ${keysAttached} SSH key${keysAttached === 1 ? "" : "s"} attached. ` +
+        `${keysNeedingPassphrase} of them need a passphrase — add it under Settings › SSH keys, or leave it empty to be asked when connecting.`,
+      );
+      return;
+    }
     if (failed === 0) {
       closeImportModal();
+    }
+  };
+
+  // Browse to a key on disk and select it on this server in one step. The key
+  // goes into the vault (deduped by content) rather than being referenced by
+  // path — the vault is what syncs and what gets exported, so a server that
+  // works here has to keep working on a machine where ~/.ssh looks different.
+  const browseForKey = async () => {
+    if (keyBrowseBusy) return;
+    setKeyBrowseBusy(true);
+    setKeyBrowseNote(null);
+    try {
+      const path = await invoke<string | null>("pick_ssh_key_file");
+      if (!path) return;
+      const key = await invoke<ImportedSshKey>("import_ssh_key_file", { path, name: null });
+      if (refreshSshKeys) await refreshSshKeys();
+      setNewNode({ ...newNode, keyId: key.id.toString() });
+      setKeyBrowseNote(
+        key.encrypted
+          ? `Loaded "${key.name}" — it's passphrase-protected. Add the passphrase under Settings › SSH keys, or leave it empty to be asked when connecting.`
+          : key.reused
+            ? `"${key.name}" was already in your vault — selected it.`
+            : `Loaded "${key.name}" into your vault.`,
+      );
+    } catch (e: any) {
+      setKeyBrowseNote(typeof e === "string" ? e : (e?.message || String(e)));
+    } finally {
+      setKeyBrowseBusy(false);
+    }
+  };
+
+  // Make a new key without leaving the form (#23): the same Ed25519 key the
+  // SSH keys page generates, selected on this server straight away.
+  const generateKey = async () => {
+    if (keyBrowseBusy) return;
+    const suggested = `${String(newNode.name || newNode.host || "server").trim()}-key`;
+    const name = await textPrompt({
+      title: "Generate SSH key",
+      message: "Give this key a name — it's just for your reference here in Submarine.",
+      initialValue: suggested,
+      okLabel: "Generate",
+      validate: (v) => v.length === 0 ? "Name is required" : null,
+    });
+    if (!name) return;
+    setKeyBrowseBusy(true);
+    setKeyBrowseNote(null);
+    setGeneratedKey(null);
+    try {
+      const key = await invoke<{ id: number; public_key: string }>("generate_ssh_key", { name });
+      if (refreshSshKeys) await refreshSshKeys();
+      setNewNode({ ...newNode, keyId: key.id.toString() });
+      setGeneratedKey({ id: key.id, name, publicKey: key.public_key });
+      setPublicKeyCopied(false);
+    } catch (e: any) {
+      setKeyBrowseNote(typeof e === "string" ? e : (e?.message || String(e)));
+    } finally {
+      setKeyBrowseBusy(false);
+    }
+  };
+
+  const copyPublicKey = async () => {
+    if (!generatedKey) return;
+    try {
+      await navigator.clipboard.writeText(generatedKey.publicKey);
+      setPublicKeyCopied(true);
+    } catch {
+      setKeyBrowseNote("Couldn't copy — select the key text and copy it by hand.");
     }
   };
 
@@ -360,7 +513,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               <div className="space-y-3 animate-in fade-in">
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-bold text-zinc-400 ml-1">Username</label>
-                  <input type="text" placeholder="root" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
+                  <input type="text" placeholder="Ask when connecting" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-bold text-zinc-400 ml-1">Password</label>
@@ -370,6 +523,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner"
                     placeholder="••••••"
                   />
+                  <p className="text-[10px] text-zinc-500 ml-1">Leave empty to be asked when connecting.</p>
                 </div>
               </div>
             )}
@@ -378,14 +532,65 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               <div className="space-y-3 animate-in fade-in">
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-bold text-zinc-400 ml-1">Username</label>
-                  <input type="text" placeholder="root" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
+                  <input type="text" placeholder="Ask when connecting" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-400 ml-1">SSH key</label>
+                  <div className="flex items-center justify-between ml-1">
+                    <label className="text-[11px] font-bold text-zinc-400">SSH key</label>
+                    {/* Loading a key from disk is the common case for someone
+                        moving over from the `ssh` command line — the key is
+                        already in ~/.ssh and copy-pasting it out of a terminal
+                        is the worst part of setting up a first server. */}
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={generateKey}
+                        disabled={keyBrowseBusy}
+                        title="Make a new SSH key and use it for this server"
+                        className="h-6 px-2 flex items-center gap-1 text-[10px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-all"
+                      >
+                        <Plus size={10} />
+                        Generate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={browseForKey}
+                        disabled={keyBrowseBusy}
+                        className="h-6 px-2 flex items-center gap-1 text-[10px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-all"
+                      >
+                        <Key size={10} />
+                        {keyBrowseBusy ? "Loading…" : "Load from file"}
+                      </button>
+                    </div>
+                  </div>
                   <select className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" value={newNode.keyId} onChange={e => setNewNode({ ...newNode, keyId: e.target.value })}>
                     <option value="" className="bg-[#1a1a1e] text-zinc-500">-- Pick a key --</option>
                     {sshKeys?.map((k: any) => <option key={k.id} value={k.id.toString()} className="bg-[#1a1a1e] text-zinc-300">{k.name}</option>)}
                   </select>
+                  {keyBrowseNote && (
+                    <div className="p-2 bg-white/5 border border-white/10 rounded-lg text-[11px] text-zinc-400 break-words">
+                      {keyBrowseNote}
+                    </div>
+                  )}
+                  {generatedKey && newNode.keyId === generatedKey.id.toString() && (
+                    <div className="p-2 bg-white/5 border border-white/10 rounded-lg text-[11px] text-zinc-400 space-y-1.5">
+                      <div>
+                        Generated "{generatedKey.name}" and picked it for this server. Add its public key to
+                        {" "}<code className="text-zinc-300">~/.ssh/authorized_keys</code> on the server before connecting:
+                      </div>
+                      <code className="block p-1.5 bg-black/40 rounded text-[10.5px] text-zinc-300 font-mono break-all select-text">
+                        {generatedKey.publicKey}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={copyPublicKey}
+                        className="h-6 px-2 flex items-center gap-1 text-[10px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 rounded-lg transition-all"
+                      >
+                        <Copy size={10} />
+                        {publicKeyCopied ? "Copied" : "Copy public key"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -861,6 +1066,12 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   {importError && importHosts.length > 0 && (
                     <div className="mt-3 p-2 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-[11px] font-mono">
                       {importError}
+                    </div>
+                  )}
+
+                  {importNotice && (
+                    <div className="mt-3 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-300 text-[11px]">
+                      {importNotice}
                     </div>
                   )}
                 </>

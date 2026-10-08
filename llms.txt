@@ -113,7 +113,7 @@ Builds are currently unsigned. Windows SmartScreen prompts on first run; on macO
 
 ## Build from source
 
-Requirements: Node 20+, Rust stable, Tauri prerequisites for your OS. Windows additionally needs Strawberry Perl (`winget install StrawberryPerl.StrawberryPerl`). Android additionally needs the Android SDK + Platform Tools, NDK 27, and JDK 17.
+Requirements: Node 20+, Rust 1.89+, Tauri prerequisites for your OS. No OpenSSL or Perl is needed (the SSH stack is pure Rust). Android additionally needs the Android SDK + Platform Tools, NDK 27, and JDK 17.
 
 ```
 git clone https://github.com/sinaxhpm/submarine

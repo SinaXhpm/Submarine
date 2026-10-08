@@ -1,15 +1,16 @@
-import { useState, useEffect, useRef, memo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw } from "lucide-react";
+import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2 } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
 import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
+import { fontFamilyCss, readFontFamily, readFontSize } from "../util/terminalFont";
 
 // Compact "run this tab on its own dedicated SSH connection" toggle, shown in
 // the SFTP and Port-Forwarding tab headers. The status dot reflects the live
@@ -51,7 +52,7 @@ const SepToggle = ({ on, onToggle, status, title, onReconnect }: {
   </span>
 );
 
-const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange }: any) => {
+const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, isActiveView = false, onPromptChange }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -75,22 +76,65 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       ? [...prev.slice(prev.length - LOG_CAP + 1), stamped]
       : [...prev, stamped]);
   };
+  // The connect-time log box follows new lines — kept scrolled to the bottom —
+  // while the user is at the bottom. Scrolling up to read pauses that until
+  // they scroll back down; a new attempt (logs cleared) follows again. Without
+  // it the latest line, i.e. what the connection is doing right now, sat below
+  // the fold on a short window. Layout effect so it lands before paint.
+  const logBoxRef = useRef<HTMLDivElement | null>(null);
+  const logFollowRef = useRef(true);
+  useLayoutEffect(() => {
+    if (logs.length === 0) logFollowRef.current = true;
+    const el = logBoxRef.current;
+    if (el && logFollowRef.current) el.scrollTop = el.scrollHeight;
+  }, [logs]);
+  // The box only exists on the connect screen. Whenever it (re)appears —
+  // e.g. after the reconnect banner was cancelled, with lines already in it —
+  // start at the newest line and follow again.
+  const attachLogBox = useCallback((el: HTMLDivElement | null) => {
+    logBoxRef.current = el;
+    if (el) {
+      logFollowRef.current = true;
+      el.scrollTop = el.scrollHeight;
+    }
+  }, []);
   const [fingerprintPrompt, setFingerprintPrompt] = useState<any>(null);
   // Keyboard-interactive (2FA / verification-code) prompt. `kbiPrompt` holds
   // the backend payload ({ nonce, name, instructions, prompts:[{prompt,echo}] });
   // `kbiValues` mirrors one editable answer per prompt.
   const [kbiPrompt, setKbiPrompt] = useState<any>(null);
   const [kbiValues, setKbiValues] = useState<string[]>([]);
+  // Nonce of the prompt on screen, read synchronously by the dismiss
+  // listeners — state would lag a render behind a dismiss that races in.
+  const fpNonceRef = useRef<string | null>(null);
+  const kbiNonceRef = useRef<string | null>(null);
+  // The prompt's answer field takes the caret only while this session is on
+  // screen: when the prompt appears with the tab in front, or when the user
+  // switches to a tab whose prompt is waiting. A hidden tab's prompt must not
+  // swallow what's typed into the visible one.
+  const kbiFirstInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (kbiPrompt && isActiveView) kbiFirstInputRef.current?.focus();
+  }, [kbiPrompt, isActiveView]);
+  // Tell the tab strip while a prompt waits on the user — a background tab's
+  // prompt is hidden along with its tab, so the tab is marked instead.
+  const promptWaiting = !!(fingerprintPrompt || kbiPrompt);
+  useEffect(() => {
+    onPromptChange?.(session.id, promptWaiting);
+  }, [onPromptChange, session.id, promptWaiting]);
+  useEffect(() => () => onPromptChange?.(session.id, false), [onPromptChange, session.id]);
   const [isAuthError, setIsAuthError] = useState(false);
   const [customPassword, setCustomPassword] = useState("");
   // The connect-time log box mirrors the terminal font-size setting, so the
   // user's chosen size applies to the startup logs too — not just the shell.
   // `submarine-settings-changed` (dispatched by Settings on save) keeps it live.
-  const readLogFontSize = () =>
-    Math.max(1, parseInt(localStorage.getItem('submarine-terminal-font-size') || '14') || 14);
-  const [logFontSize, setLogFontSize] = useState(readLogFontSize);
+  const [logFontSize, setLogFontSize] = useState(readFontSize);
+  const [logFontFamily, setLogFontFamily] = useState(() => fontFamilyCss(readFontFamily()));
   useEffect(() => {
-    const sync = () => setLogFontSize(readLogFontSize());
+    const sync = () => {
+      setLogFontSize(readFontSize());
+      setLogFontFamily(fontFamilyCss(readFontFamily()));
+    };
     window.addEventListener('submarine-settings-changed', sync);
     return () => window.removeEventListener('submarine-settings-changed', sync);
   }, []);
@@ -334,6 +378,31 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       onTerminalsChange(session.id, terminals, activeTab);
     }
   }, [session?.id, terminals, activeTab, onTerminalsChange]);
+
+  // ── Focus the terminal when its tab (or this session's server tab) is
+  // selected ── issue #51. We don't reach into xterm from here; we bump a
+  // monotonic signal that TerminalView watches, and the terminal that is
+  // currently active focuses itself (with its own touch / input / dialog
+  // guards). `requestTerminalFocus` is the single entry point so the
+  // "don't fight an open auth prompt" rule lives in one place.
+  const [focusTick, setFocusTick] = useState(0);
+  const requestTerminalFocus = () => {
+    // A fingerprint / 2FA prompt owns the keyboard while it's up — don't
+    // yank focus out from under the user answering it. (TerminalView also
+    // refuses focus while disabled, which it is during these prompts.)
+    if (fingerprintPrompt || kbiPrompt) return;
+    setFocusTick(t => t + 1);
+  };
+  // When this SessionView becomes the frontmost server tab, pull focus into
+  // its active terminal so switching servers lets you type right away.
+  const prevActiveViewRef = useRef(isActiveView);
+  useEffect(() => {
+    const was = prevActiveViewRef.current;
+    prevActiveViewRef.current = isActiveView;
+    if (isActiveView && !was) requestTerminalFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActiveView]);
+
   const [activeTool, setActiveTool] = useState<'sftp' | 'tunnels' | 'mirrors' | 'cmds' | 'info' | null>(null);
   // Split-pane state — an ORDERED array of terminal IDs that currently
   // share the main pane. `[]` or a single-id array means "no split, use
@@ -433,20 +502,30 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     });
 
     const unlistenPrompt = listen(`fingerprint-prompt-${session.id}`, (event: any) => {
+      fpNonceRef.current = event.payload?.nonce ?? null;
       setFingerprintPrompt(event.payload);
     });
 
-    const unlistenPromptDismiss = listen(`fingerprint-prompt-dismiss-${session.id}`, () => {
+    // A dismiss names the prompt it closes (its nonce): one left over from an
+    // older connect attempt mustn't close the prompt that's showing now.
+    const unlistenPromptDismiss = listen(`fingerprint-prompt-dismiss-${session.id}`, (event: any) => {
+      const nonce = event.payload?.nonce;
+      if (nonce && fpNonceRef.current && nonce !== fpNonceRef.current) return;
+      fpNonceRef.current = null;
       setFingerprintPrompt(null);
     });
 
     const unlistenKbi = listen(`kbi-prompt-${session.id}`, (event: any) => {
       const p = event.payload;
+      kbiNonceRef.current = p?.nonce ?? null;
       setKbiPrompt(p);
       setKbiValues(Array.isArray(p?.prompts) ? p.prompts.map(() => "") : []);
     });
 
-    const unlistenKbiDismiss = listen(`kbi-prompt-dismiss-${session.id}`, () => {
+    const unlistenKbiDismiss = listen(`kbi-prompt-dismiss-${session.id}`, (event: any) => {
+      const nonce = event.payload?.nonce;
+      if (nonce && kbiNonceRef.current && nonce !== kbiNonceRef.current) return;
+      kbiNonceRef.current = null;
       setKbiPrompt(null);
       setKbiValues([]);
     });
@@ -512,6 +591,13 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
       const wasReconnect = reconnectAttemptRef.current > 0 || prevStatus === 'disconnected' || prevStatus === 'failed';
       setStatus('connected');
       cancelReconnect();
+      // Whatever got this connection in — the password typed into the failed
+      // screen, or one asked for — is in the tab's cache now, so forget the
+      // typed override before the secondaries below start: a mistyped one
+      // would otherwise be tried first on every reconnect and secondary
+      // connection, a failed login each time.
+      customPasswordRef.current = "";
+      setCustomPassword("");
       // On a successful RECONNECT we bump connectionEpoch instead of
       // replacing the terminals array. The terminal_id stays the same
       // (so the existing event listener keeps catching output), the
@@ -658,6 +744,13 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     setStatus('connecting');
     setLogs([]);
     setIsAuthError(false);
+    // A prompt still showing belongs to the attempt being replaced; the
+    // backend stops it from prompting or reporting once this one starts.
+    fpNonceRef.current = null;
+    kbiNonceRef.current = null;
+    setFingerprintPrompt(null);
+    setKbiPrompt(null);
+    setKbiValues([]);
     setDisconnectReason("");
     resetSecondaryStatus();
     primarySeparateRef.current = separateFwdRef.current;
@@ -775,6 +868,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     // (or a hostile script that knows only the session id) can't accept
     // a fingerprint on the user's behalf.
     const nonce = fingerprintPrompt?.nonce;
+    fpNonceRef.current = null;
     setFingerprintPrompt(null);
     if (!nonce) return;
     try {
@@ -791,6 +885,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   const handleKbiSubmit = async () => {
     const nonce = kbiPrompt?.nonce;
     const responses = kbiValues;
+    kbiNonceRef.current = null;
     setKbiPrompt(null);
     setKbiValues([]);
     if (!nonce) return;
@@ -803,6 +898,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
 
   const handleKbiCancel = async () => {
     const nonce = kbiPrompt?.nonce;
+    kbiNonceRef.current = null;
     setKbiPrompt(null);
     setKbiValues([]);
     if (!nonce) return;
@@ -895,6 +991,11 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               <h3 className="text-sm font-bold text-primary uppercase tracking-widest">
                 {kbiPrompt.name && String(kbiPrompt.name).trim() ? kbiPrompt.name : "Verification required"}
               </h3>
+              {/* Which server is asking — the server's own wording rarely
+                  says, and several tabs can be connecting at once. */}
+              <p className="mt-0.5 text-[11.5px] text-zinc-500 truncate" title={session.serverName}>
+                {session.serverName}
+              </p>
               {kbiPrompt.instructions && String(kbiPrompt.instructions).trim() && (
                 <p className="text-zinc-400 mt-2 leading-relaxed whitespace-pre-wrap break-words">
                   {kbiPrompt.instructions}
@@ -908,8 +1009,13 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                     </label>
                     <input
                       type={p?.echo ? "text" : "password"}
-                      autoFocus={i === 0}
+                      ref={i === 0 ? kbiFirstInputRef : undefined}
                       className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-sm text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all"
+                      // A login name or code, never prose: a phone keyboard
+                      // must not capitalise "alice" into "Alice".
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       value={kbiValues[i] ?? ""}
                       onChange={e => setKbiValues(vals => {
                         const next = [...vals];
@@ -944,50 +1050,91 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     </>
   );
 
+  // Host-key / 2FA / login prompts float over THIS session's area — centered
+  // and scrolling on their own, whatever the log's scroll — but never over the
+  // title bar, another tab or another split pane, and below the app's own
+  // dialogs. A background tab's prompt stays hidden with its tab (the tab
+  // strip marks it via onPromptChange), so it can't pop up over whatever the
+  // user is doing. No aria-modal: it only blocks this session.
+  const promptOverlay = (
+    <div
+      role="dialog"
+      aria-label={`Connection prompt for ${session.serverName}`}
+      className="absolute inset-0 z-40 flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto"
+    >
+      <div className="max-w-2xl w-full mt-6 sm:mt-12">
+        {authPrompts}
+      </div>
+    </div>
+  );
+
   // Only render the full-screen log view for the FIRST connection — once an
   // auto-reconnect cycle is running, the user's terminal output and SFTP
   // state stay visible behind a slim banner.
   if (reconnectAttempt === 0 && (status === 'connecting' || status === 'failed')) {
     return (
-      <div className="flex-1 flex flex-col p-4 sm:p-8 bg-[#0a0a0c] text-white overflow-hidden">
+      <div className="relative flex-1 flex flex-col p-4 sm:p-8 bg-[#0a0a0c] text-white overflow-hidden">
         <div className="max-w-2xl w-full mx-auto flex-1 flex flex-col min-h-0">
-          {/* Header: on desktop, title row keeps title + actions side-by-side.
-              On phone, wide letter-spacing on the title wraps "0-1 AMIR" onto
-              three lines and the Reconnect / Close buttons get pushed past
-              the viewport. We stack vertically and trim the typography so
-              the whole header fits in two compact rows at any width. */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4 sm:mb-6">
-            <div>
-              <h2 className="text-base sm:text-xl font-black uppercase tracking-wider sm:tracking-[0.2em] break-words">
+          {/* Header: status chip + server name on the left, actions on the
+              right — one row at every width. The name is regular-case text
+              that truncates instead of wrapping (a long user@host used to
+              wrap and push the buttons onto their own line), and on phones
+              the buttons collapse to icons. Close is there while connecting
+              too, so a hung attempt can be abandoned from this screen. */}
+          <div className="flex items-center gap-3 mb-3 sm:mb-4">
+            <div
+              className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center ${
+                status === 'failed' ? 'bg-red-500/10 text-red-400' : 'bg-primary/10 text-primary'
+              }`}
+              aria-hidden="true"
+            >
+              {status === 'connecting' ? <Loader2 size={16} className="animate-spin" /> : <AlertTriangle size={16} />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold text-zinc-100 truncate" title={session.serverName}>
                 {session.serverName}
               </h2>
-              <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mt-1">
-                {status === 'connecting' ? 'Establishing Connection...' : 'Connection Failed'}
+              <p className={`text-[11px] mt-0.5 ${status === 'failed' ? 'text-red-400/90' : 'text-zinc-500'}`}>
+                {status === 'connecting' ? 'Connecting…' : 'Connection failed'}
               </p>
             </div>
-            {status === 'failed' && (
-              <div className="flex flex-wrap gap-2 items-center">
-                {isAuthError && (
-                  <input
-                    type="password"
-                    placeholder="Password..."
-                    className="h-8 flex-1 min-w-0 sm:flex-none bg-[#1a1a1e] rounded-lg px-3 text-xs text-white border border-white/10 outline-none focus:border-primary/50"
-                    value={customPassword}
-                    onChange={e => setCustomPassword(e.target.value)}
-                    onKeyDown={e => {
-                      if(e.key === 'Enter') reconnect();
-                    }}
-                  />
-                )}
-                <button onClick={reconnect} className="flex-1 sm:flex-none px-4 py-2 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors">
-                  Reconnect
+            <div className="shrink-0 flex items-center gap-2">
+              {status === 'failed' && (
+                <button
+                  onClick={reconnect}
+                  title="Reconnect"
+                  aria-label="Reconnect"
+                  className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 text-xs font-semibold transition-colors"
+                >
+                  <RotateCw size={13} /><span className="hidden sm:inline">Reconnect</span>
                 </button>
-                <button onClick={onClose} className="flex-1 sm:flex-none px-4 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors">
-                  Close Session
-                </button>
-              </div>
-            )}
+              )}
+              <button
+                onClick={onClose}
+                title="Close session"
+                aria-label="Close session"
+                className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-white/5 text-zinc-300 hover:bg-red-500/15 hover:text-red-300 text-xs font-semibold transition-colors"
+              >
+                <X size={13} /><span className="hidden sm:inline">Close</span>
+              </button>
+            </div>
           </div>
+
+          {/* Auth failed: try another password without leaving the screen. Its
+              own row, so it never squeezes the header. Enter reconnects. */}
+          {status === 'failed' && isAuthError && (
+            <input
+              type="password"
+              aria-label="Password"
+              placeholder="Try another password — press Enter to reconnect"
+              className="h-8 w-full mb-3 sm:mb-4 bg-[#1a1a1e] rounded-lg px-3 text-xs text-white border border-white/10 outline-none focus:border-primary/50"
+              value={customPassword}
+              onChange={e => setCustomPassword(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') reconnect();
+              }}
+            />
+          )}
 
           {/* Log Window. `min-h-0` is what makes it actually scroll: a flex
               child defaults to min-height:auto (its content height), so without
@@ -998,8 +1145,15 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               overscroll-contain keeps a flick from scrolling the page behind it;
               WebkitOverflowScrolling gives older Android WebViews momentum. */}
           <div
+            ref={attachLogBox}
+            onScroll={(e) => {
+              // Follow only while (nearly) at the bottom — a few px of slack
+              // for sub-pixel rounding after our own scroll.
+              const el = e.currentTarget;
+              logFollowRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+            }}
             className="flex-1 min-h-0 bg-[#121214] border border-white/5 rounded-2xl p-4 font-mono overflow-y-auto overscroll-contain custom-scrollbar shadow-inner relative select-text cursor-text"
-            style={{ WebkitOverflowScrolling: 'touch', fontSize: logFontSize, lineHeight: 1.5 }}
+            style={{ WebkitOverflowScrolling: 'touch', fontSize: logFontSize, fontFamily: logFontFamily, lineHeight: 1.5 }}
           >
             {logs.map((l, i) => (
               <div key={i} className={`mb-2 ${l.type === 'error' ? 'text-red-400' : l.type === 'success' ? 'text-primary' : 'text-zinc-400'}`}>
@@ -1007,9 +1161,14 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                 {l.msg}
               </div>
             ))}
-
-            {authPrompts}
           </div>
+
+          {/* The prompt floats over this session instead of being appended to
+              the bottom of the scroll-box above, where a short window — or a
+              long keyboard-interactive banner before the code prompt — pushed
+              the input below the fold and the connection looked "stuck at
+              2FA" (#27). See promptOverlay. */}
+          {promptWaiting && promptOverlay}
         </div>
       </div>
     );
@@ -1017,20 +1176,12 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
 
   // Connected State with Nested Tabs
   return (
-    <div className="flex-1 flex flex-col bg-background overflow-hidden animate-in fade-in">
+    <div className="relative flex-1 flex flex-col bg-background overflow-hidden animate-in fade-in">
       {/* Auth prompts during an AUTO-RECONNECT. The full-screen view above only
           renders on the first connect (reconnectAttempt===0); once a reconnect
-          cycle is running we show the terminal behind a slim banner, so a
-          fingerprint / 2FA prompt fired mid-reconnect would otherwise be
-          invisible and unanswerable. Float it over everything via a portal. */}
-      {(fingerprintPrompt || kbiPrompt) && createPortal(
-        <div className="fixed inset-0 z-[200] flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto">
-          <div className="max-w-2xl w-full mt-6 sm:mt-12">
-            {authPrompts}
-          </div>
-        </div>,
-        document.body
-      )}
+          cycle is running we show the terminal behind a slim banner, so the
+          prompt floats over it — see promptOverlay. */}
+      {promptWaiting && promptOverlay}
       {/* Nested Tab Bar — hidden in `chromeless` mode. Chromeless is
           used by the App-level Split-view tiling: merged (non-focused)
           panes show only the active terminal, no per-session tab strip
@@ -1062,6 +1213,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                   setSplitRatios([]);
                 }
                 setActiveTab(t.id);
+                // Land the caret in the terminal even when the active one
+                // didn't change (re-clicking the current tab, or focus was in
+                // a tool pane / another input) — issue #51.
+                requestTerminalFocus();
               }}
               title={t.container ? `Container: ${t.container.name}` : undefined}
               className={`h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-8' : ''} rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${
@@ -1347,6 +1502,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                       terminalId={t.id}
                       disabled={status !== 'connected'}
                       isActive={isFocused && !(activeTool && isCompact)}
+                      isActiveView={isActiveView}
+                      focusSignal={focusTick}
                       containerExec={t.container ? { container: t.container.name, useSudo: t.container.useSudo } : undefined}
                       connectionEpoch={connectionEpoch}
                       serverId={session.serverId}
@@ -1468,6 +1625,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                   terminalId={t.id}
                   disabled={status !== 'connected'}
                   isActive={activeTab === t.id && !(activeTool && isCompact)}
+                  isActiveView={isActiveView}
+                  focusSignal={focusTick}
                   containerExec={t.container ? { container: t.container.name, useSudo: t.container.useSudo } : undefined}
                   connectionEpoch={connectionEpoch}
                   serverId={session.serverId}

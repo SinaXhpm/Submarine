@@ -148,7 +148,10 @@ fn write_stored_token(app: &tauri::AppHandle, tok: &StoredToken) -> Result<(), S
     // Write with restrictive permissions so a multi-user system can't
     // expose the bearer token to other accounts. On Unix we set 0600 at
     // open time; on Windows we rely on per-user app_data_dir + default
-    // ACLs (which inherit from the parent profile dir = user-only).
+    // ACLs (which inherit from the parent profile dir = user-only). In
+    // portable mode app_data_dir is the user's own `submarine-data` folder,
+    // so its ACLs are whatever they made them — the README tells them to keep
+    // it private.
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
