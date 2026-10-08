@@ -221,7 +221,10 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
           name: host.host_alias,
           host: host.hostname || host.host_alias,
           port: host.port || 22,
-          username: (host.user && host.user.trim()) ? host.user.trim() : "root",
+          // No user in the export (MobaXterm's <default>, an ssh_config
+          // entry without User): leave it blank, so connecting asks
+          // "Login as" — where empty still means root (#72).
+          username: host.user ? host.user.trim() : "",
           password: null,
           credentialId: null,
           folderId: null,
