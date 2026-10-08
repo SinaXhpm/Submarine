@@ -12013,10 +12013,9 @@ fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, String> {
 ///     `[{"label":"foo","address":"1.2.3.4","port":22,"username":"root"}, …]`.
 ///     Any missing field defaults to the OpenSSH convention.
 ///
-///   • MobaXterm `.mxtsessions` INI (partial) — sessions live under
-///     `[Bookmarks_<n>]` with `SessionName=…` and comma-separated fields
-///     `HostName,Port,UserName,…`. Best-effort — MobaXterm's schema has
-///     drifted across releases so we only trust the first four fields.
+///   • MobaXterm `.mxtsessions` export — an INI file with one session per
+///     line under `[Bookmarks]`, `[Bookmarks_1]`, … sections (see
+///     `parse_mobaxterm_sessions`). SSH sessions only.
 ///
 /// Anything the parser can't recognise is a soft-fail: the returned
 /// `Vec` is what we DID find, the message describes what got skipped.
@@ -12028,7 +12027,14 @@ fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
         return Err("Paste an exported session block first.".into());
     }
 
-    // ── JSON array — the most permissive path, so try it first. Two
+    // ── MobaXterm .mxtsessions. Checked before JSON: the file starts with
+    //    its `[Bookmarks]` section header, which starts with `[` like a JSON
+    //    array does, so it used to fail as broken JSON (#25).
+    if trimmed.lines().any(|l| l.trim_start().starts_with("[Bookmarks")) {
+        return parse_mobaxterm_sessions(trimmed);
+    }
+
+    // ── JSON array — the most permissive path. Two
     //    supported field-name variants (see doc comment). We accept a
     //    generic `serde_json::Value` array rather than a strict struct
     //    so a stray extra field doesn't kill the whole import.
@@ -12088,11 +12094,6 @@ fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
         || trimmed.contains("[HKEY_USERS\\") && trimmed.contains("SimonTatham\\PuTTY\\Sessions")
     {
         return parse_putty_reg(trimmed);
-    }
-
-    // ── MobaXterm .mxtsessions
-    if trimmed.contains("[Bookmarks") || trimmed.contains(";SessionName") {
-        return parse_mobaxterm_sessions(trimmed);
     }
 
     Err("Unrecognised format — paste a JSON array, a PuTTY .reg export, or a MobaXterm .mxtsessions block.".into())
@@ -12221,14 +12222,23 @@ fn strip_reg_dword(val: &str) -> Option<u32> {
     u32::from_str_radix(stripped, 16).ok()
 }
 
-/// Parse a MobaXterm `.mxtsessions` INI-ish blob. MobaXterm stores each
-/// session as one line under a `[Bookmarks_N]` group, formatted roughly
-/// `<Title>=#109#0%<hostname>%<port>%<username>%…` with a variable trail
-/// of feature flags. We only decode the first three fields — anything
-/// past that is version-specific and not worth the complexity for an
-/// import flow that leaves password/key blank anyway.
+/// Parse a MobaXterm `.mxtsessions` export. It's an INI file: each section
+/// (`[Bookmarks]`, `[Bookmarks_1]`, …) is a folder, with `SubRep=` its path
+/// and `ImgNum=` its icon, and every other line is one session:
+///
+/// `<name>= #<icon>#<settings>#<terminal settings>#…`
+///
+/// `<settings>` is `%`-separated and starts with the session type (0 = SSH,
+/// 4 = RDP, 5 = VNC, 7 = SFTP, …). For SSH, field 1 is the host, 2 the port,
+/// 3 the user (`<default>` = none set), 8/9/10 the jump hosts' names, ports
+/// and users (`__PIPE__` between hops) and 14 the key file, with its drive
+/// written as `_CurrentDrive_`. The icon is the user's pick, so it says
+/// nothing about the type. Only SSH sessions are imported.
 fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
+    const SSH: &str = "0";
     let mut out: Vec<ImportedHost> = Vec::new();
+    // Session names repeat across folders; the import list keys rows by name.
+    let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut in_bookmarks = false;
     for raw in text.lines() {
         let line = raw.trim();
@@ -12238,32 +12248,159 @@ fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
             continue;
         }
         if !in_bookmarks { continue; }
-        let Some((title, val)) = line.split_once('=') else { continue; };
-        // MobaXterm SSH sessions start with `#109#`. Non-SSH bookmark
-        // types (telnet, RDP, sftp-only) use different numbers — we
-        // don't want to blindly import those as SSH rows.
-        if !val.starts_with("#109#") { continue; }
-        // Skip the `#109#<N>%` framing and split the payload on `%`.
-        let payload = val.split_once('%').map(|(_, rest)| rest).unwrap_or(val);
-        let parts: Vec<&str> = payload.split('%').collect();
-        if parts.len() < 3 { continue; }
-        let hostname = parts[0].trim();
-        let port = parts[1].trim().parse::<u16>().unwrap_or(22);
-        let user = parts[2].trim().to_string();
+        let Some((name, value)) = line.split_once('=') else { continue; };
+        let name = name.trim();
+        if name == "SubRep" || name == "ImgNum" { continue; }
+        let mut blocks = value.trim().split('#');
+        let (Some(_reconnect), Some(_icon), Some(settings)) = (blocks.next(), blocks.next(), blocks.next()) else {
+            continue;
+        };
+        let fields: Vec<&str> = settings.split('%').map(str::trim).collect();
+        let field = |i: usize| fields.get(i).copied().unwrap_or("");
+        if field(0) != SSH { continue; }
+        let hostname = field(1);
         if hostname.is_empty() { continue; }
+        let port = field(2).parse::<u16>().ok().filter(|p| *p != 0).unwrap_or(22);
+        let user = match field(3) {
+            "<default>" => "",
+            u => u,
+        };
+        // `_CurrentDrive_` is the drive MobaXterm ran from — nearly always C.
+        // A key file that isn't there is skipped by the import, not fatal.
+        let identity_file = Some(field(14))
+            .filter(|p| !p.is_empty())
+            .map(|p| p.replace("_CurrentDrive_", "C"));
+        let mut alias = name.to_string();
+        let mut n = 2;
+        while !names.insert(alias.clone()) {
+            alias = format!("{} ({})", name, n);
+            n += 1;
+        }
         out.push(ImportedHost {
-            host_alias: title.trim().to_string(),
+            host_alias: alias,
             hostname: hostname.to_string(),
             port,
-            user,
-            identity_file: None,
-            proxy_jump: None,
+            user: user.to_string(),
+            identity_file,
+            proxy_jump: mobaxterm_jump_hosts(field(8), field(9), field(10)),
         });
     }
     if out.is_empty() {
-        return Err("No MobaXterm sessions found in the pasted text.".into());
+        return Err("No MobaXterm SSH sessions found in the pasted text.".into());
     }
     Ok(out)
+}
+
+/// MobaXterm's jump hosts (one `__PIPE__`-separated list each for names,
+/// ports and users) as an OpenSSH ProxyJump value: `user@host:port,…`.
+fn mobaxterm_jump_hosts(hosts: &str, ports: &str, users: &str) -> Option<String> {
+    let list = |s: &str| s.split("__PIPE__").map(str::trim).map(String::from).collect::<Vec<_>>();
+    let (ports, users) = (list(ports), list(users));
+    let hops: Vec<String> = list(hosts)
+        .iter()
+        .enumerate()
+        .filter(|(_, host)| !host.is_empty())
+        .map(|(i, host)| {
+            let user = users.get(i).filter(|u| !u.is_empty() && u.as_str() != "<default>");
+            let port = ports.get(i).and_then(|p| p.parse::<u16>().ok()).filter(|p| *p != 0 && *p != 22);
+            let mut hop = String::new();
+            if let Some(u) = user {
+                hop.push_str(u);
+                hop.push('@');
+            }
+            hop.push_str(host);
+            if let Some(p) = port {
+                hop.push_str(&format!(":{}", p));
+            }
+            hop
+        })
+        .collect();
+    (!hops.is_empty()).then(|| hops.join(","))
+}
+
+#[cfg(test)]
+mod client_import_tests {
+    use super::parse_client_import;
+
+    /// Lines as MobaXterm writes them: a blank before the first `#`, the
+    /// icon, the `%`-separated settings, then the terminal settings.
+    const TERMINAL: &str = "#MobaFont%10%0%0%-1%15%236,236,236%30,30,30%180,180,192%0%-1%0%%xterm%-1%-1%_Std_Colors_0_%80%24%0%1%-1%<none>%%0%0%-1%-1#0# #-1";
+
+    fn session(name: &str, icon: u32, settings: &str) -> String {
+        format!("{}= #{}#{}{}", name, icon, settings, TERMINAL)
+    }
+
+    fn export(lines: &[String]) -> String {
+        let mut text = String::from("[Bookmarks]\r\nSubRep=\r\nImgNum=42\r\n");
+        for l in lines {
+            text.push_str(l);
+            text.push_str("\r\n");
+        }
+        text
+    }
+
+    #[test]
+    fn a_mobaxterm_export_is_not_taken_for_broken_json() {
+        let text = export(&[session("web01", 109, "0%10.0.0.5%22%admin%%-1%-1%%%%%0%0%0%%%-1%0%0%0%%1080%%0%0%1")]);
+        let hosts = parse_client_import(text).expect("the #25 export must import");
+        assert_eq!(hosts.len(), 1);
+        assert_eq!((hosts[0].host_alias.as_str(), hosts[0].hostname.as_str(), hosts[0].port, hosts[0].user.as_str()), ("web01", "10.0.0.5", 22, "admin"));
+    }
+
+    #[test]
+    fn ssh_sessions_import_whatever_their_icon_and_other_types_are_skipped() {
+        let text = export(&[
+            session("default icon", 109, "0%a.example%2222%alice%%-1%-1%%%%%0%0%0%%%-1"),
+            session("debian icon", 149, "0%b.example%22%bob%%0%-1%%%%%0%0%0%%%-1"),
+            session("desktop", 91, "4%c.example%3389%carol%%-1%0%0"),
+            session("files", 140, "7%d.example%22%dave%-1%0%%0%0%%0"),
+            session("vnc", 128, "5%e.example%5900%%-1%0"),
+            "web02=#109#0%f.example%22%frank%%-1%-1%%%%%0%0%0%%%-1".to_string(),
+        ]);
+        let hosts = parse_client_import(text).unwrap();
+        let got: Vec<(&str, &str, u16)> = hosts.iter().map(|h| (h.host_alias.as_str(), h.hostname.as_str(), h.port)).collect();
+        assert_eq!(got, vec![("default icon", "a.example", 2222), ("debian icon", "b.example", 22), ("web02", "f.example", 22)]);
+    }
+
+    #[test]
+    fn default_user_key_file_and_jump_hosts_carry_over() {
+        let text = export(&[
+            session("no user", 109, "0%g.example%22%<default>%%-1%-1%%%%%0%0%0%%%-1"),
+            session("with key", 109, r"0%h.example%22%root%%-1%-1%%%%%0%0%0%_CurrentDrive_:\keys\id_ed25519%%-1"),
+            session("behind bastion", 109, "0%i.example%22%ops%%-1%-1%%bastion.example__PIPE__inner.example%2222__PIPE__22%jump__PIPE__<default>%0%0%0%%%-1"),
+        ]);
+        let hosts = parse_client_import(text).unwrap();
+        assert_eq!(hosts[0].user, "");
+        assert_eq!(hosts[0].identity_file, None);
+        assert_eq!(hosts[1].identity_file.as_deref(), Some(r"C:\keys\id_ed25519"));
+        assert_eq!(hosts[1].proxy_jump, None);
+        assert_eq!(hosts[2].proxy_jump.as_deref(), Some("jump@bastion.example:2222,inner.example"));
+    }
+
+    #[test]
+    fn a_name_used_in_two_folders_stays_two_rows() {
+        let mut text = export(&[session("web", 109, "0%a.example%22%u%%-1%-1%%%%%0%0%0%%%-1")]);
+        text.push_str("[Bookmarks_1]\r\nSubRep=Prod\r\nImgNum=41\r\n");
+        text.push_str(&session("web", 109, "0%b.example%22%u%%-1%-1%%%%%0%0%0%%%-1"));
+        let hosts = parse_client_import(text).unwrap();
+        let names: Vec<&str> = hosts.iter().map(|h| h.host_alias.as_str()).collect();
+        assert_eq!(names, vec!["web", "web (2)"]);
+    }
+
+    #[test]
+    fn an_export_with_no_ssh_session_says_so() {
+        let text = export(&[session("desktop", 91, "4%c.example%3389%carol%%-1%0%0")]);
+        let err = parse_client_import(text).err().expect("an RDP-only export must be refused");
+        assert!(err.contains("No MobaXterm SSH sessions"), "{err}");
+    }
+
+    #[test]
+    fn json_arrays_still_import() {
+        let hosts = parse_client_import("\n  [ {\"name\": \"box\", \"host\": \"j.example\", \"port\": 2200, \"user\": \"u\"} ]".into()).unwrap();
+        assert_eq!((hosts[0].host_alias.as_str(), hosts[0].hostname.as_str(), hosts[0].port), ("box", "j.example", 2200));
+        let err = parse_client_import("[ {\"name\": ".into()).err().expect("broken JSON must be refused");
+        assert!(err.starts_with("JSON parse failed"), "{err}");
+    }
 }
 
 /// True when a single SFTP directory-entry name is a plain, safe filename —
