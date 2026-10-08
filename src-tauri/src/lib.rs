@@ -11387,6 +11387,32 @@ fn safe_temp_leaf_name(remote_path: &str) -> Result<String, String> {
     Ok(raw.to_string())
 }
 
+/// The folder, inside a session's temp dir, that holds the live-edit copy of
+/// one remote file: 16 hex digits of the SHA-256 of its path. The copy keeps
+/// the file's own name (editors go by it), so without a folder per path two
+/// remote files with the same name would share one local copy.
+fn live_edit_dir_name(remote_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(&Sha256::digest(remote_path.as_bytes())[..8])
+}
+
+#[cfg(test)]
+mod live_edit_tests {
+    use super::live_edit_dir_name;
+
+    #[test]
+    fn same_named_files_in_different_folders_get_different_copies() {
+        let a = live_edit_dir_name("/var/www/site1/index.php");
+        let b = live_edit_dir_name("/var/www/site2/index.php");
+        assert_ne!(a, b);
+        assert_eq!(a, live_edit_dir_name("/var/www/site1/index.php"), "stable for one path");
+        for name in [&a, &b] {
+            assert_eq!(name.len(), 16);
+            assert!(name.chars().all(|c| c.is_ascii_hexdigit()), "a plain folder name: {name}");
+        }
+    }
+}
+
 #[tauri::command]
 async fn sftp_open_remote_file(
     app_handle: tauri::AppHandle,
@@ -11406,11 +11432,22 @@ async fn sftp_open_remote_file(
     // disconnect rather than leaving loose `submarine_sftp_*` files in the global
     // temp dir. The directory is also a smaller blast radius for any path-
     // related shenanigans (each editor sees only files from one session).
-    let session_temp_dir = session_sftp_dir(&session_id);
-    std::fs::create_dir_all(&session_temp_dir)
+    // Inside it, one folder per remote file (live_edit_dir_name). Copies used
+    // to sit side by side under their bare names: opening /a/index.php and
+    // then /b/index.php wrote b's content over a's copy, and a's watcher
+    // uploaded it to /a/index.php without any edit.
+    let copy_dir = session_sftp_dir(&session_id).join(live_edit_dir_name(&remote_path));
+    std::fs::create_dir_all(&copy_dir)
         .map_err(|e| format!("Failed to create temp dir: {}", e))?;
-    let temp_file_path = session_temp_dir.join(&filename);
+    let temp_file_path = copy_dir.join(&filename);
     std::fs::write(&temp_file_path, &data).map_err(|e| format!("Failed to write temporary file: {}", e))?;
+    // What the server holds as far as we know — upload only when the copy
+    // differs from it, not on every write event (an editor touching the file,
+    // the same file opened a second time).
+    let synced_hash = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(&data).to_vec()
+    };
 
     // Open local temp file in system default application. The whole
     // live-edit-in-default-editor feature is desktop-only — Android's
@@ -11479,6 +11516,7 @@ async fn sftp_open_remote_file(
         // Overall 2-hour ceiling so an editor left open forever doesn't
         // keep the watcher alive past any reasonable session.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2 * 60 * 60);
+        let mut synced_hash = synced_hash;
         loop {
             let wait = tokio::time::sleep_until(deadline);
             tokio::select! {
@@ -11486,6 +11524,21 @@ async fn sftp_open_remote_file(
                 maybe = tok_rx.recv() => {
                     if maybe.is_none() { break; }
                     if !temp_file_path_clone.exists() { break; }
+                    let content = match std::fs::read(&temp_file_path_clone) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = app_handle_clone.emit(
+                                &format!("sftp-sync-status-{}", session_id_clone),
+                                serde_json::json!({ "status": "error", "message": format!("Auto-sync failed: Failed to read file: {}", e) })
+                            );
+                            continue;
+                        }
+                    };
+                    let content_hash = {
+                        use sha2::{Digest, Sha256};
+                        Sha256::digest(&content).to_vec()
+                    };
+                    if content_hash == synced_hash { continue; }
                     // Cheap pre-check: if the session is gone we exit the
                     // watcher entirely instead of looping and spamming
                     // "Auto-sync failed" toasts on every subsequent save.
@@ -11536,7 +11589,6 @@ async fn sftp_open_remote_file(
 
                     use russh_sftp::protocol::OpenFlags;
                     use tokio::io::AsyncWriteExt;
-                    let content = std::fs::read(&temp_file_path_clone).map_err(|e| format!("Failed to read file: {}", e))?;
                     // Truncate so shortening the file doesn't leave the old
                     // tail behind on the server.
                     let mut remote_file = sftp
@@ -11563,6 +11615,7 @@ async fn sftp_open_remote_file(
                             serde_json::json!({ "status": "error", "message": format!("Auto-sync failed: {}", e) })
                         );
                     } else {
+                        synced_hash = content_hash;
                         let _ = app_handle_clone.emit(
                             &format!("sftp-sync-status-{}", session_id_clone),
                             serde_json::json!({ "status": "success", "message": format!("Auto-synced {}", filename_clone) })
@@ -11578,6 +11631,9 @@ async fn sftp_open_remote_file(
         // worst case is the file persists until the OS cleans temp.
         drop(debouncer);
         let _ = std::fs::remove_file(&temp_file_path_clone);
+        if let Some(dir) = temp_file_path_clone.parent() {
+            let _ = std::fs::remove_dir(dir); // the file's own folder, if now empty
+        }
     });
 
     Ok(())
