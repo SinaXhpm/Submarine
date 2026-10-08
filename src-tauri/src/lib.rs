@@ -10576,7 +10576,13 @@ async fn sftp_download_file(
             last_report = std::time::Instant::now();
         }
     }
-    local_file.flush().await.map_err(|e| format!("flush: {}", e))?;
+    // tokio's File hands writes to a background thread, so the last chunk's
+    // failure (a full disk, say) only shows up here. Without the event the
+    // transfer card would stay on "progress" for good.
+    local_file
+        .flush()
+        .await
+        .map_err(|e| { emit_progress(transferred, "error", Some(e.to_string())); format!("flush: {}", e) })?;
     emit_progress(transferred, "done", None);
     Ok(())
 }
@@ -10846,7 +10852,13 @@ async fn sftp_download_dir(
                 last_report = std::time::Instant::now();
             }
         }
-        local_file.flush().await.map_err(|e| format!("flush {}: {}", dest.display(), e))?;
+        // See sftp_download_file: a failed last write surfaces here.
+        local_file.flush().await
+            .map_err(|e| {
+                emit_progress(transferred, total_bytes, "error",
+                    Some(format!("flush {}: {}", dest.display(), e)));
+                format!("flush {}: {}", dest.display(), e)
+            })?;
     }
 
     emit_progress(transferred, total_bytes, "done", skipped_note);
@@ -10965,10 +10977,13 @@ async fn sftp_upload_file(
             last_report = std::time::Instant::now();
         }
     }
+    // The close can fail after every write went through (the connection
+    // drops, the server reports a late write error). The card needs to hear
+    // about it like any other failure, or it stays on "progress" for good.
     remote_file
         .shutdown()
         .await
-        .map_err(|e| format!("Failed to close remote file: {}", e))?;
+        .map_err(|e| { emit_progress(transferred, "error", Some(e.to_string())); format!("Failed to close remote file: {}", e) })?;
     emit_progress(transferred, "done", None);
     Ok(())
 }
@@ -11188,8 +11203,13 @@ async fn sftp_upload_dir(
                 last_report = std::time::Instant::now();
             }
         }
+        // See sftp_upload_file: a failed close must end the card too.
         remote_file.shutdown().await
-            .map_err(|e| format!("shutdown {}: {}", remote_full, e))?;
+            .map_err(|e| {
+                emit_progress(transferred, total_bytes, "error",
+                    Some(format!("close {}: {}", remote_full, e)));
+                format!("shutdown {}: {}", remote_full, e)
+            })?;
     }
 
     emit_progress(transferred, total_bytes, "done", None);
