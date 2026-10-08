@@ -13446,6 +13446,39 @@ async fn monitor_resume_all(
     Ok(())
 }
 
+/// The clipboard's text, for a paste into the terminal. Only the Linux
+/// frontend asks; the others read it in the page.
+///
+/// WebKitGTK refuses the page's `navigator.clipboard.readText()` (#89). And
+/// where the webview reads the clipboard itself (a keyboard paste, or the
+/// page API once it is allowed), it crashes the whole app when nothing owns
+/// the clipboard (seen with WebKitGTK 2.54). So on Linux the page asks here
+/// and GTK is asked directly. A clipboard that is empty or holds no text
+/// gives an empty string.
+#[tauri::command]
+async fn clipboard_read_text(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
+        // GTK's clipboard belongs to the main thread.
+        app.run_on_main_thread(move || {
+            gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).request_text(move |_, text| {
+                let _ = tx.send(text.map(str::to_owned));
+            });
+        })
+        .map_err(|e| e.to_string())?;
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+            Ok(Ok(text)) => Ok(text.unwrap_or_default()),
+            _ => Err("The clipboard did not answer.".to_string()),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app;
+        Err("Reading the clipboard here is only for Linux.".to_string())
+    }
+}
+
 /// Library entrypoint shared by both the desktop `bin/main.rs` shim and
 /// Tauri's Android entry-point macro. Everything that builds the
 /// `tauri::Builder`, registers plugins/state/commands, and finally calls
@@ -13622,7 +13655,8 @@ pub fn run() {
             monitor_get_settings, monitor_set_settings,
             about::app_info, about::check_for_updates, about::open_external_url,
             portable::get_storage_info,
-            fonts::list_system_fonts
+            fonts::list_system_fonts,
+            clipboard_read_text
         ])
         .run(context)
         .expect("error while running tauri application");

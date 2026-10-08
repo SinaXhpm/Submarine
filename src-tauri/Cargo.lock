@@ -4944,6 +4944,8 @@ dependencies = [
  "directories",
  "filetime",
  "fontdb",
+ "gdk",
+ "gtk",
  "hex",
  "hkdf",
  "notify",

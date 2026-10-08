@@ -150,3 +150,13 @@ open = "5.1"
 # OS font folders ourselves. Pure Rust: it only parses font name tables. Not
 # on Android, which lists no installed fonts (see fonts.rs).
 fontdb = "0.24"
+
+# ---------------------------------------------------------------------------
+# Linux-only. GTK's own crates, already in the build through Tauri (same
+# versions, nothing new to download). lib.rs reads the clipboard through
+# them for pastes into the terminal, because the webview can't be trusted
+# with it there (#89, see `clipboard_read_text`).
+# ---------------------------------------------------------------------------
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+gdk = "0.18"

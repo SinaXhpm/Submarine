@@ -10,7 +10,7 @@ import { MobileKeyBar, ModifiersState, ModKey, SpecialKey } from './MobileKeyBar
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
 import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
-import { IS_ANDROID } from '../util/platform';
+import { IS_ANDROID, IS_LINUX } from '../util/platform';
 
 // Does the recent remote OUTPUT look like a no-echo password / passphrase
 // prompt? Used to skip command-history capture so typed secrets (sudo, su,
@@ -753,14 +753,19 @@ const TerminalView = ({
     // clobber the clipboard. Disarm on blur so only a release we actually see
     // can copy.
     const onWindowBlur = () => { selectionArmed = false; };
-    // Right-click → paste clipboard into the PTY. preventDefault swallows the
-    // platform context menu so the user gets the terminal-style behavior they
-    // asked for. Disabled sessions silently drop the paste (matches onData).
-    const onContextMenu = async (ev: MouseEvent) => {
-      ev.preventDefault();
+    // The clipboard's text for a paste. On Linux it comes from the backend:
+    // WebKitGTK refuses the page's own clipboard read (#89), and where the
+    // webview reads the clipboard itself it crashes the whole app when the
+    // clipboard is empty (seen with WebKitGTK 2.54), so it is kept out of it
+    // there.
+    const readClipboardText = (): Promise<string> =>
+      IS_LINUX ? invoke<string>('clipboard_read_text') : navigator.clipboard.readText();
+    // Paste the clipboard into the PTY. Disabled sessions silently drop the
+    // paste (matches onData).
+    const pasteClipboard = async (toast: boolean) => {
       if (disabledRef.current) return;
       let text = '';
-      try { text = await navigator.clipboard.readText(); }
+      try { text = await readClipboardText(); }
       catch { notify('Clipboard read denied', 'err'); return; }
       if (!text) return;
       // Hand the text to xterm's own paste path instead of writing it raw to
@@ -780,8 +785,29 @@ const TerminalView = ({
       } finally {
         pastingRef.current = false;
       }
-      notify('Pasted');
+      if (toast) notify('Pasted');
     };
+    // Right-click → paste. preventDefault swallows the platform context menu
+    // so the user gets the terminal-style behavior they asked for.
+    const onContextMenu = (ev: MouseEvent) => {
+      ev.preventDefault();
+      void pasteClipboard(true);
+    };
+    // Linux: the paste shortcuts (Ctrl+Shift+V, Shift+Insert) are taken away
+    // from the webview, whose own paste is the one that crashes on an empty
+    // clipboard, and go through the same path as a right-click.
+    if (IS_LINUX) {
+      term.attachCustomKeyEventHandler((ev) => {
+        const isPasteKey = !ev.altKey && !ev.metaKey && (
+          (ev.ctrlKey && ev.shiftKey && ev.code === 'KeyV') ||
+          (ev.shiftKey && !ev.ctrlKey && ev.key === 'Insert')
+        );
+        if (!isPasteKey) return true;
+        ev.preventDefault();
+        if (ev.type === 'keydown' && !ev.repeat) void pasteClipboard(false);
+        return false;
+      });
+    }
     terminalRef.current.addEventListener('mousedown', onMouseDown);
     document.addEventListener('mouseup', onDocMouseUp);
     window.addEventListener('blur', onWindowBlur);
