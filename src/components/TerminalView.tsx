@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import 'xterm/css/xterm.css';
 import { useIsNarrow } from '../hooks/useViewport';
-import { MobileKeyBar, ModifiersState, ModKey } from './MobileKeyBar';
+import { MobileKeyBar, ModifiersState, ModKey, SpecialKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
 import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
@@ -210,6 +210,9 @@ const TerminalView = ({
   // holds pasted text, so its Enter is skipped too.
   const pastingRef = useRef(false);
   const commandBufPastedRef = useRef(false);
+  // The terminal's input handler (what xterm's onData runs), for keys that
+  // don't come from xterm itself — the mobile key bar's arrows and symbols.
+  const inputRef = useRef<((data: string) => void) | null>(null);
   // Small tail of recent remote OUTPUT, kept only to detect no-echo password
   // prompts (see looksLikePasswordPrompt) — never persisted or displayed.
   const recentOutputRef = useRef<string>("");
@@ -234,8 +237,28 @@ const TerminalView = ({
   // Esc / Tab from the bar bypass the onData modifier pipeline (those keys
   // produce escape sequences directly, not printable chars), but Shift+Tab
   // still has a meaningful encoding so we honor it here.
-  const sendSpecialKey = (key: "esc" | "tab") => {
+  //
+  // Arrows and symbols go through the terminal's input handler like typed
+  // keys. An arrow sends what xterm sends for the real key: `ESC [ A` (or
+  // `ESC O A` once the program asked for application cursor keys, as vim and
+  // less do), and with modifiers armed `ESC [ 1 ; <m> A`, where m is 1 plus
+  // Shift 1, Alt 2, Ctrl 4. `|` and `~` are typed characters, so the handler
+  // applies the armed modifiers to them itself.
+  const sendSpecialKey = (key: SpecialKey) => {
     if (disabledRef.current) return;
+    if (key === "|" || key === "~") {
+      inputRef.current?.(key);
+      return;
+    }
+    if (key !== "esc" && key !== "tab") {
+      const final = { up: "A", down: "B", right: "C", left: "D" }[key];
+      const m = modifiersRef.current;
+      const mod = 1 + (m.shift !== "off" ? 1 : 0) + (m.alt !== "off" ? 2 : 0) + (m.ctrl !== "off" ? 4 : 0);
+      const appCursor = xtermRef.current?.modes.applicationCursorKeysMode ?? false;
+      inputRef.current?.(mod > 1 ? `\x1b[1;${mod}${final}` : `\x1b${appCursor ? "O" : "["}${final}`);
+      if (mod > 1) consumeArmedModifiers();
+      return;
+    }
     let bytes: number[];
     let consumes = false;
     if (key === "esc") {
@@ -516,7 +539,7 @@ const TerminalView = ({
     // the matching control sequence before sending (Ctrl+letter → 0x01-0x1a,
     // Alt+char → ESC-prefix). Multi-char inputs (paste, IME composition) are
     // forwarded verbatim because we can't sensibly "Ctrl" a phrase.
-    const onDataDisposable = term.onData((data) => {
+    const handleData = (data: string) => {
       if (disabledRef.current) return;
       // A paste: our right-click path, or xterm's own keyboard paste, which
       // starts with the bracketed-paste marker when the remote program asked
@@ -650,7 +673,11 @@ const TerminalView = ({
         // Other control chars are ignored on the assumption they don't
         // contribute to the user's visible command line.
       }
-    });
+    };
+    // The mobile key bar's arrow and symbol keys come through here too, so
+    // they're broadcast and recorded exactly like typed input.
+    inputRef.current = handleData;
+    const onDataDisposable = term.onData(handleData);
 
     // ---- Copy on select / paste on right-click --------------------------------
     // Selection-change fires per mouse move during a drag — that's noisy AND
@@ -879,6 +906,7 @@ const TerminalView = ({
       window.removeEventListener('submarine-settings-changed', handleSettingsChange);
       resizeObserver.disconnect();
       onDataDisposable.dispose();
+      if (inputRef.current === handleData) inputRef.current = null;
       onResizeDisposable.dispose();
       if (container) {
         container.removeEventListener('mousedown', onMouseDown);
