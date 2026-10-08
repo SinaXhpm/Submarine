@@ -865,175 +865,179 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         }`}>{notification.msg}</div>
       )}
 
-      {/* Header */}
-      <div className={`w-full flex items-center justify-between gap-1.5 p-1.5 border rounded-lg shrink-0 shadow-lg ${
+      {/* Header: label and buttons on top, the path on a row of its own so
+          a long path stays readable even in a narrow pane. */}
+      <div className={`w-full flex flex-col gap-1.5 p-1.5 border rounded-lg shrink-0 shadow-lg ${
         rootMode ? "bg-rose-950/30 border-rose-500/40" : "bg-[#121214] border-white/5"
       }`}>
-        <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300 px-1.5 shrink-0">
-          {provider.label}
-        </span>
-        {headerExtra}
-        <div className="h-5 w-px bg-white/10 shrink-0" />
-        <div className="flex-1 flex items-center gap-1.5 min-w-0 relative">
-          <button onClick={goUp} title="Up" className="p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 shrink-0">
-            <ArrowUp size={11} />
-          </button>
-          <div className="relative shrink-0">
-            <button
-              onClick={() => setRecentOpen((p) => !p)}
-              onBlur={() => setTimeout(() => setRecentOpen(false), 200)}
-              disabled={recentDirs.filter((p) => p !== currentPath).length === 0}
-              title="Recent directories"
-              className="p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed flex items-center"
-            >
-              <ChevronDown size={11} />
+        {/* min-h-6: the remote pane's sudo button is that tall, and both
+            panes should line up when they sit side by side. */}
+        <div className="flex flex-wrap items-center gap-1.5 min-h-6">
+          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300 px-1.5 shrink-0">
+            {provider.label}
+          </span>
+          {headerExtra}
+          <div className="h-5 w-px bg-white/10 shrink-0" />
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button onClick={goUp} title="Up" className="p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 shrink-0">
+              <ArrowUp size={11} />
             </button>
-            {recentOpen && (
-              <div className="absolute top-[28px] left-0 z-50 min-w-[220px] max-h-[220px] overflow-y-auto bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
-                <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">Recent</div>
-                {recentDirs
-                  .filter((p) => p !== currentPath)
-                  .map((p) => (
-                    <button
-                      key={p}
-                      onMouseDown={(e) => { e.preventDefault(); setRecentOpen(false); fetch(p); }}
-                      className="w-full flex items-center gap-2 p-1.5 rounded text-left hover:bg-white/10 hover:text-white truncate"
-                      title={p}
-                    >
-                      <Folder size={11} className="text-indigo-300 shrink-0" />
-                      <span className="truncate">{p}</span>
-                    </button>
-                  ))}
-              </div>
-            )}
+            <div className="relative shrink-0">
+              <button
+                onClick={() => setRecentOpen((p) => !p)}
+                onBlur={() => setTimeout(() => setRecentOpen(false), 200)}
+                disabled={recentDirs.filter((p) => p !== currentPath).length === 0}
+                title="Recent directories"
+                className="p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed flex items-center"
+              >
+                <ChevronDown size={11} />
+              </button>
+              {recentOpen && (
+                <div className="absolute top-[28px] left-0 z-50 min-w-[220px] max-h-[220px] overflow-y-auto bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
+                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">Recent</div>
+                  {recentDirs
+                    .filter((p) => p !== currentPath)
+                    .map((p) => (
+                      <button
+                        key={p}
+                        onMouseDown={(e) => { e.preventDefault(); setRecentOpen(false); fetch(p); }}
+                        className="w-full flex items-center gap-2 p-1.5 rounded text-left hover:bg-white/10 hover:text-white truncate"
+                        title={p}
+                      >
+                        <Folder size={11} className="text-indigo-300 shrink-0" />
+                        <span className="truncate">{p}</span>
+                      </button>
+                    ))}
+                </div>
+              )}
+            </div>
+            <button onClick={() => fetch(currentPath)} title="Refresh"
+              className={`p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 shrink-0 ${loading ? "animate-spin" : ""}`}>
+              <RefreshCw size={11} />
+            </button>
           </div>
-          <div className="flex-1 relative">
-            <input
-              type="text"
-              value={tempInput}
-              onChange={(e) => { setTempInput(e.target.value); setActiveSuggestion(-1); }}
-              onFocus={() => setInputFocused(true)}
-              onBlur={() => setTimeout(() => setInputFocused(false), 250)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  if (activeSuggestion >= 0 && activeSuggestion < suggestions.length) {
-                    pickSuggestion(suggestions[activeSuggestion]);
-                  } else {
-                    const target = tempInput.trim();
-                    if (target) {
-                      // Drop the autocomplete dropdown so the user clearly
-                      // sees navigation kick off, and blur the input so
-                      // browser default form-like behaviour doesn't kick in.
-                      setInputFocused(false);
-                      (e.currentTarget as HTMLInputElement).blur();
-                      fetch(target);
+          <div className="flex items-center gap-1 shrink-0 relative ml-auto">
+            {provider.id === "local" && (
+              <button
+                onClick={async () => {
+                  if (IS_ANDROID) {
+                    // First open pulls the quick-dir list; subsequent opens
+                    // reuse the cached list so scoped-storage probes don't
+                    // rerun on every click.
+                    if (!androidQuickDirs) {
+                      try {
+                        const dirs = await invoke<{ label: string; path: string }[]>("android_quick_dirs");
+                        setAndroidQuickDirs(dirs);
+                      } catch (err: any) {
+                        notify(`Browse failed: ${err}`, "error");
+                        return;
+                      }
                     }
+                    setAndroidPickerOpen((v) => !v);
+                    return;
                   }
-                } else if (e.key === "ArrowDown" && suggestions.length > 0) {
-                  e.preventDefault(); setActiveSuggestion((p) => (p + 1) % suggestions.length);
-                } else if (e.key === "ArrowUp" && suggestions.length > 0) {
-                  e.preventDefault(); setActiveSuggestion((p) => (p - 1 + suggestions.length) % suggestions.length);
-                } else if (e.key === "Escape") setInputFocused(false);
-              }}
-              placeholder="Path…"
-              className="w-full h-6 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-indigo-400/50 focus:bg-white/10"
-            />
-            {inputFocused && suggestions.length > 0 && (
-              <div className="absolute top-[28px] left-0 right-0 max-h-[220px] overflow-y-auto z-50 bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
-                {suggestions.map((s, idx) => (
-                  <button key={s.path} onClick={() => pickSuggestion(s)}
-                    className={`w-full flex items-center justify-between p-1.5 rounded text-left transition-colors ${
-                      idx === activeSuggestion ? "bg-indigo-500/30 text-white font-bold" : "hover:bg-white/5 hover:text-white"
-                    }`}>
-                    <div className="flex items-center gap-2 truncate">
-                      {s.isDir ? <Folder size={11} className="text-indigo-300 shrink-0" /> : <File size={11} className="text-zinc-500 shrink-0" />}
-                      <span className="truncate">{s.name}</span>
+                  try {
+                    const picked = await invoke<string | null>("select_local_folder");
+                    if (picked) await fetch(picked);
+                  } catch (err: any) {
+                    notify(`Browse failed: ${err}`, "error");
+                  }
+                }}
+                title="Browse for folder"
+                className="p-1 rounded bg-white/[0.04] border border-white/10 text-emerald-300 hover:bg-white/10"
+              >
+                <FolderSearch size={11} />
+              </button>
+            )}
+            {IS_ANDROID && androidPickerOpen && androidQuickDirs && (
+              <div className="absolute top-[24px] right-0 z-50 min-w-[180px] bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px]">
+                {androidQuickDirs.length === 0 ? (
+                  <div className="p-2 text-zinc-400 text-[10.5px]">
+                    No writable locations found. On Android 11+ shared storage
+                    requires SAF — the app can only read/write its own scoped
+                    storage directly.
+                  </div>
+                ) : androidQuickDirs.map((d) => (
+                  <button
+                    key={d.path}
+                    onClick={() => { setAndroidPickerOpen(false); fetch(d.path); }}
+                    className="w-full flex items-center gap-2 p-1.5 rounded text-left text-zinc-200 hover:bg-white/10 hover:text-white"
+                  >
+                    <Folder size={11} className="text-indigo-300 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate">{d.label}</div>
+                      <div className="truncate text-[9.5px] text-zinc-500">{d.path}</div>
                     </div>
-                    {s.isDir && <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-1 rounded">dir</span>}
                   </button>
                 ))}
               </div>
             )}
-          </div>
-          <button onClick={() => fetch(currentPath)} title="Refresh"
-            className={`p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 shrink-0 ${loading ? "animate-spin" : ""}`}>
-            <RefreshCw size={11} />
-          </button>
-        </div>
-        <div className="h-5 w-px bg-white/10 shrink-0" />
-        <div className="flex items-center gap-1 shrink-0 relative">
-          {provider.id === "local" && (
-            <button
-              onClick={async () => {
-                if (IS_ANDROID) {
-                  // First open pulls the quick-dir list; subsequent opens
-                  // reuse the cached list so scoped-storage probes don't
-                  // rerun on every click.
-                  if (!androidQuickDirs) {
-                    try {
-                      const dirs = await invoke<{ label: string; path: string }[]>("android_quick_dirs");
-                      setAndroidQuickDirs(dirs);
-                    } catch (err: any) {
-                      notify(`Browse failed: ${err}`, "error");
-                      return;
-                    }
-                  }
-                  setAndroidPickerOpen((v) => !v);
-                  return;
-                }
-                try {
-                  const picked = await invoke<string | null>("select_local_folder");
-                  if (picked) await fetch(picked);
-                } catch (err: any) {
-                  notify(`Browse failed: ${err}`, "error");
-                }
-              }}
-              title="Browse for folder"
-              className="p-1 rounded bg-white/[0.04] border border-white/10 text-emerald-300 hover:bg-white/10"
-            >
-              <FolderSearch size={11} />
+            <button onClick={() => setModal({ type: "mkdir", v1: "" })} title="New Folder"
+              className="p-1 rounded bg-white/[0.04] border border-white/10 text-indigo-300 hover:bg-white/10">
+              <Folder size={11} />
             </button>
-          )}
-          {IS_ANDROID && androidPickerOpen && androidQuickDirs && (
-            <div className="absolute top-[24px] right-0 z-50 min-w-[180px] bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px]">
-              {androidQuickDirs.length === 0 ? (
-                <div className="p-2 text-zinc-400 text-[10.5px]">
-                  No writable locations found. On Android 11+ shared storage
-                  requires SAF — the app can only read/write its own scoped
-                  storage directly.
-                </div>
-              ) : androidQuickDirs.map((d) => (
-                <button
-                  key={d.path}
-                  onClick={() => { setAndroidPickerOpen(false); fetch(d.path); }}
-                  className="w-full flex items-center gap-2 p-1.5 rounded text-left text-zinc-200 hover:bg-white/10 hover:text-white"
-                >
-                  <Folder size={11} className="text-indigo-300 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="truncate">{d.label}</div>
-                    <div className="truncate text-[9.5px] text-zinc-500">{d.path}</div>
+            <button
+              onClick={toggleSelectAll}
+              disabled={sortedEntries.length === 0}
+              title={allSelected ? "Deselect all (Ctrl+A)" : "Select all (Ctrl+A)"}
+              className={`p-1 rounded border border-white/10 hover:bg-white/10 disabled:opacity-30 ${
+                allSelected
+                  ? "bg-indigo-500/20 text-indigo-200"
+                  : "bg-white/[0.04] text-zinc-300"
+              }`}
+            >
+              {allSelected ? <CheckSquare size={11} /> : <Square size={11} />}
+            </button>
+          </div>
+        </div>
+        <div className="relative">
+          <input
+            type="text"
+            value={tempInput}
+            onChange={(e) => { setTempInput(e.target.value); setActiveSuggestion(-1); }}
+            onFocus={() => setInputFocused(true)}
+            onBlur={() => setTimeout(() => setInputFocused(false), 250)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (activeSuggestion >= 0 && activeSuggestion < suggestions.length) {
+                  pickSuggestion(suggestions[activeSuggestion]);
+                } else {
+                  const target = tempInput.trim();
+                  if (target) {
+                    // Drop the autocomplete dropdown so the user clearly
+                    // sees navigation kick off, and blur the input so
+                    // browser default form-like behaviour doesn't kick in.
+                    setInputFocused(false);
+                    (e.currentTarget as HTMLInputElement).blur();
+                    fetch(target);
+                  }
+                }
+              } else if (e.key === "ArrowDown" && suggestions.length > 0) {
+                e.preventDefault(); setActiveSuggestion((p) => (p + 1) % suggestions.length);
+              } else if (e.key === "ArrowUp" && suggestions.length > 0) {
+                e.preventDefault(); setActiveSuggestion((p) => (p - 1 + suggestions.length) % suggestions.length);
+              } else if (e.key === "Escape") setInputFocused(false);
+            }}
+            placeholder="Path…"
+            className="w-full h-6 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-indigo-400/50 focus:bg-white/10"
+          />
+          {inputFocused && suggestions.length > 0 && (
+            <div className="absolute top-[28px] left-0 right-0 max-h-[220px] overflow-y-auto z-50 bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
+              {suggestions.map((s, idx) => (
+                <button key={s.path} onClick={() => pickSuggestion(s)}
+                  className={`w-full flex items-center justify-between p-1.5 rounded text-left transition-colors ${
+                    idx === activeSuggestion ? "bg-indigo-500/30 text-white font-bold" : "hover:bg-white/5 hover:text-white"
+                  }`}>
+                  <div className="flex items-center gap-2 truncate">
+                    {s.isDir ? <Folder size={11} className="text-indigo-300 shrink-0" /> : <File size={11} className="text-zinc-500 shrink-0" />}
+                    <span className="truncate">{s.name}</span>
                   </div>
+                  {s.isDir && <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-1 rounded">dir</span>}
                 </button>
               ))}
             </div>
           )}
-          <button onClick={() => setModal({ type: "mkdir", v1: "" })} title="New Folder"
-            className="p-1 rounded bg-white/[0.04] border border-white/10 text-indigo-300 hover:bg-white/10">
-            <Folder size={11} />
-          </button>
-          <button
-            onClick={toggleSelectAll}
-            disabled={sortedEntries.length === 0}
-            title={allSelected ? "Deselect all (Ctrl+A)" : "Select all (Ctrl+A)"}
-            className={`p-1 rounded border border-white/10 hover:bg-white/10 disabled:opacity-30 ${
-              allSelected
-                ? "bg-indigo-500/20 text-indigo-200"
-                : "bg-white/[0.04] text-zinc-300"
-            }`}
-          >
-            {allSelected ? <CheckSquare size={11} /> : <Square size={11} />}
-          </button>
         </div>
       </div>
 

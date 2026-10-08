@@ -3,14 +3,38 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { TerminalSquare, Folder, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2 } from "lucide-react";
+import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, PanelRight, PanelLeft, PanelBottom, PanelTop } from "lucide-react";
 import TerminalView from "./TerminalView";
-import SftpWorkspace from "./SftpWorkspace";
+import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
 import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
 import { fontFamilyCss, readFontFamily, readFontSize } from "../util/terminalFont";
+
+// Where the tool panel (SFTP, Ports, Library, Info) sits around the terminal.
+// Remembered per device like the panel's size; compact windows ignore it and
+// show the tool full screen.
+type ToolDock = "right" | "left" | "bottom" | "top";
+const TOOL_DOCK_KEY = "submarine-tool-dock";
+const DOCK_OPTIONS: { id: ToolDock; label: string; Icon: typeof PanelRight }[] = [
+  { id: "right", label: "Right of the terminal", Icon: PanelRight },
+  { id: "left", label: "Left of the terminal", Icon: PanelLeft },
+  { id: "bottom", label: "Below the terminal", Icon: PanelBottom },
+  { id: "top", label: "Above the terminal", Icon: PanelTop },
+];
+// The panel is the last element in the DOM; reversing the flex direction
+// moves it without remounting the terminals.
+const DOCK_FLEX: Record<ToolDock, string> = {
+  right: "flex-row",
+  left: "flex-row-reverse",
+  bottom: "flex-col",
+  top: "flex-col-reverse",
+};
+// Above or below the terminal the panel has a height of its own; the
+// terminal always keeps at least MIN_TERMINAL_HEIGHT.
+const MIN_TOOL_HEIGHT = 160;
+const MIN_TERMINAL_HEIGHT = 120;
 
 // Compact "run this tab on its own dedicated SSH connection" toggle, shown in
 // the SFTP and Port-Forwarding tab headers. The status dot reflects the live
@@ -447,6 +471,32 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     const quarter = Math.round((window.innerWidth || 1440) / 4);
     return Math.max(240, Math.min(900, quarter));
   });
+  // Which side of the terminal the tool pane docks on (see DOCK_OPTIONS).
+  // Right and left use the width above; above or below, the pane spans the
+  // full width and uses its own height.
+  const [toolDock, setToolDock] = useState<ToolDock>(() => {
+    try {
+      const v = localStorage.getItem(TOOL_DOCK_KEY);
+      return v === "left" || v === "bottom" || v === "top" ? v : "right";
+    } catch { return "right"; }
+  });
+  const setToolDockPersisted = (d: ToolDock) => {
+    setToolDock(d);
+    try { localStorage.setItem(TOOL_DOCK_KEY, d); } catch { /* ignore */ }
+  };
+  const dockTopBottom = toolDock === "bottom" || toolDock === "top";
+  const [toolPanelHeight, setToolPanelHeight] = useState<number>(() => {
+    let saved = NaN;
+    try { saved = parseInt(localStorage.getItem('submarine-tool-panel-height') || '', 10); } catch { /* ignore */ }
+    if (Number.isFinite(saved) && saved >= MIN_TOOL_HEIGHT) return saved;
+    return Math.max(MIN_TOOL_HEIGHT, Math.round((window.innerHeight || 800) * 0.45));
+  });
+  // Anchor of the open "Panel position" menu, if any.
+  const [dockMenu, setDockMenu] = useState<{ x: number; y: number } | null>(null);
+  // SFTP pane: the file browser or Mirror (the button in its title bar).
+  const [sftpView, setSftpView] = useState<SftpView>("files");
+  const mainAreaRef = useRef<HTMLDivElement | null>(null);
+  const toolPanelRef = useRef<HTMLDivElement | null>(null);
 
   const initiatedRef = useRef(false);
   // Guards the per-node "run on connect" commands to fire exactly once for
@@ -795,25 +845,28 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     }
   };
 
-  // Grow the window when the tool pane is opened, shrink when it's closed.
+  // Grow the window when a tool pane docked left or right opens, so the
+  // terminal keeps its width, and shrink it again when the pane closes or
+  // moves above/below the terminal (where it takes height, not width).
   // The +4 accounts for the resize divider itself.
-  const prevActiveToolRef = useRef<typeof activeTool>(null);
+  const windowGrownRef = useRef(false);
   useEffect(() => {
-    const prev = prevActiveToolRef.current;
-    prevActiveToolRef.current = activeTool;
-    if (!prev && activeTool) {
+    const want = !!activeTool && !dockTopBottom;
+    if (want && !windowGrownRef.current) {
+      windowGrownRef.current = true;
       adjustWindowWidth(toolWidthRef.current + 4);
-    } else if (prev && !activeTool) {
+    } else if (!want && windowGrownRef.current) {
+      windowGrownRef.current = false;
       adjustWindowWidth(-(toolWidthRef.current + 4));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTool]);
+  }, [activeTool, dockTopBottom]);
 
   // If the user closes the session tab while a tool is open, give the
   // window space back rather than leaving it stretched.
   useEffect(() => {
     return () => {
-      if (prevActiveToolRef.current) {
+      if (windowGrownRef.current) {
         adjustWindowWidth(-(toolWidthRef.current + 4));
       }
     };
@@ -822,6 +875,31 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
 
   const startToolResize = (e: React.MouseEvent) => {
     e.preventDefault();
+    if (dockTopBottom) {
+      // Above/below the terminal only the split moves; the window keeps its
+      // size. Dragging toward the terminal grows the pane.
+      const startY = e.clientY;
+      const area = mainAreaRef.current?.clientHeight ?? window.innerHeight;
+      const maxHeight = Math.max(MIN_TOOL_HEIGHT, area - MIN_TERMINAL_HEIGHT - 4);
+      // Start from what's on screen: a height saved in a taller window
+      // shows capped.
+      const startHeight = Math.min(maxHeight, toolPanelRef.current?.getBoundingClientRect().height ?? toolPanelHeight);
+      const sign = toolDock === "bottom" ? 1 : -1;
+      let latest = startHeight;
+      const onMove = (ev: MouseEvent) => {
+        latest = Math.round(Math.max(MIN_TOOL_HEIGHT, Math.min(maxHeight, startHeight + sign * (startY - ev.clientY))));
+        setToolPanelHeight(latest);
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        try { localStorage.setItem("submarine-tool-panel-height", String(latest)); }
+        catch { /* ignore */ }
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+      return;
+    }
     const startX = e.clientX;
     const startWidth = toolWidthRef.current;
     let lastCommittedWidth = startWidth;
@@ -829,8 +907,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     let frameRequested = false;
 
     const onMove = (ev: MouseEvent) => {
-      // Dragging LEFT (cursor moves left) widens the tool pane.
-      const next = Math.max(240, Math.min(900, startWidth + (startX - ev.clientX)));
+      // Dragging toward the terminal widens the tool pane: left for a pane
+      // on the right, right for a pane on the left.
+      const pulled = toolDock === "left" ? ev.clientX - startX : startX - ev.clientX;
+      const next = Math.max(240, Math.min(900, startWidth + pulled));
       pendingWidth = next;
       setToolPanelWidth(next);
       // Throttle window resizes to one per animation frame. setSize crosses an
@@ -1174,6 +1254,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     );
   }
 
+  const DockIcon = (DOCK_OPTIONS.find((o) => o.id === toolDock) ?? DOCK_OPTIONS[0]).Icon;
+
   // Connected State with Nested Tabs
   return (
     <div className="relative flex-1 flex flex-col bg-background overflow-hidden animate-in fade-in">
@@ -1334,6 +1416,22 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               </button>
             );
           })}
+          {/* Where the tool pane sits around the terminal. Compact windows
+              show the tool full screen, so there is nothing to place. */}
+          {!isCompact && (
+            <button
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                setDockMenu({ x: r.right, y: r.bottom + 4 });
+              }}
+              title="Panel position"
+              aria-label="Panel position"
+              aria-haspopup="menu"
+              className="h-10 sm:h-8 px-2 rounded-lg flex items-center text-zinc-400 border border-transparent hover:bg-white/[0.08] hover:border-white/20 hover:text-white transition-all"
+            >
+              <DockIcon size={14} />
+            </button>
+          )}
         </div>
       </div>
       )}
@@ -1411,6 +1509,38 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
         document.body
       )}
 
+      {dockMenu && createPortal(
+        <>
+          <div
+            className="fixed inset-0 z-[9998]"
+            onClick={() => setDockMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setDockMenu(null); }}
+          />
+          <div
+            role="menu"
+            aria-label="Panel position"
+            style={{ left: Math.max(8, Math.min(dockMenu.x - 210, window.innerWidth - 218)), top: Math.min(dockMenu.y, window.innerHeight - 170) }}
+            className="fixed z-[9999] w-[210px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
+          >
+            <div className="px-3 pt-1 pb-1.5 text-[9.5px] font-bold uppercase tracking-wider text-zinc-500">Panel position</div>
+            {DOCK_OPTIONS.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                role="menuitemradio"
+                aria-checked={toolDock === id}
+                onClick={() => { setToolDockPersisted(id); setDockMenu(null); }}
+                className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
+              >
+                <Icon size={13} className={toolDock === id ? "text-primary" : "text-zinc-500"} />
+                <span className="flex-1">{label}</span>
+                {toolDock === id && <Check size={12} className="text-primary" />}
+              </button>
+            ))}
+          </div>
+        </>,
+        document.body
+      )}
+
       {/* Disconnection / auto-reconnect banner. Pinned to the top so it's
           visible whether the terminal or SFTP is in focus. The disabled
           overlay inside TerminalView / SftpWorkspace / TunnelsPanel does the
@@ -1462,8 +1592,12 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
           and the terminal is hidden — the tool tabs themselves act as the
           "back to terminal" affordance (clicking the active tool toggles
           it off). This avoids squeezing a usable terminal + tool into a
-          mobile-sized window. */}
-      <div className="flex-1 flex overflow-hidden relative bg-[#09090b]">
+          mobile-sized window. Elsewhere the tool docks on the side the user
+          picked (toolDock). */}
+      <div
+        ref={mainAreaRef}
+        className={`flex-1 flex overflow-hidden relative bg-[#09090b] ${isCompact ? "" : DOCK_FLEX[toolDock]}`}
+      >
         {/* Left Panel: Active Terminals.
             On compact + activeTool, hide entirely so the tool fills the
             screen. Terminals stay mounted (no PTY teardown) — just CSS
@@ -1476,7 +1610,11 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
             hidden — so switching a tab that isn't in the split preserves
             its scrollback. The tiles fill the whole left panel; the tool
             side panel continues to work exactly as before. */}
-        <div className={`h-full relative ${activeTool && isCompact ? 'hidden' : 'flex-1 min-w-0'}`}>
+        <div className={`relative ${
+          activeTool && isCompact ? 'hidden'
+            : dockTopBottom && !isCompact ? 'w-full flex-1 min-h-0'
+            : 'h-full flex-1 min-w-0'
+        }`}>
           {splitTerminals.length >= 2 && !isCompact ? (
             <div className={`absolute inset-0 flex ${splitOrientation === "h" ? "flex-row" : "flex-col"}`}>
               {splitTerminals.map((termId, slotIdx) => {
@@ -1641,7 +1779,9 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
         {activeTool && !isCompact && (
           <div
             onMouseDown={startToolResize}
-            className="w-1 shrink-0 cursor-col-resize bg-white/5 hover:bg-primary/40 transition-colors"
+            className={`shrink-0 bg-white/5 hover:bg-primary/40 transition-colors ${
+              dockTopBottom ? 'h-1 cursor-row-resize' : 'w-1 cursor-col-resize'
+            }`}
             title="Drag to resize"
           />
         )}
@@ -1653,25 +1793,54 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
             tree was torn down. Other tools still conditional-render: they
             don't carry live state worth preserving across switches. */}
         <div
-          style={activeTool && !isCompact ? { width: `${toolPanelWidth}px` } : undefined}
-          className={`${activeTool ? (isCompact ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-[#121214]/95 flex flex-col h-full overflow-hidden ${activeTool ? 'animate-in slide-in-from-right duration-300' : ''}`}
+          ref={toolPanelRef}
+          style={activeTool && !isCompact
+            ? (dockTopBottom
+                ? { height: `${toolPanelHeight}px`, maxHeight: `calc(100% - ${MIN_TERMINAL_HEIGHT + 4}px)` }
+                : { width: `${toolPanelWidth}px` })
+            : undefined}
+          className={`${activeTool ? (isCompact ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-[#121214]/95 flex flex-col ${dockTopBottom && !isCompact ? 'w-full' : 'h-full'} overflow-hidden ${activeTool ? 'animate-in slide-in-from-right duration-300' : ''}`}
         >
           {activeTool === 'sftp' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5">
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 shrink-0">SFTP File Browser</span>
-                  <SepToggle
-                    on={separateSftp}
-                    onToggle={toggleSeparateSftp}
-                    status={!separateSftp ? 'off' : sftpConnStatus === 'ready' ? 'ready' : sftpConnStatus === 'failed' ? 'failed' : 'pending'}
-                    title="Run SFTP over its own dedicated SSH connection instead of sharing the terminal's session"
-                    onReconnect={reconnectSftpConn}
-                  />
+              {/* In a narrow pane Mirror drops its label (container query on
+                  this bar's width), then the title truncates; the toggle
+                  never wraps. */}
+              <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5 [container-type:inline-size]">
+                <div className="flex items-center gap-3 min-w-0 overflow-hidden">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 truncate">SFTP File Browser</span>
+                  <span className="shrink-0 whitespace-nowrap">
+                    <SepToggle
+                      on={separateSftp}
+                      onToggle={toggleSeparateSftp}
+                      status={!separateSftp ? 'off' : sftpConnStatus === 'ready' ? 'ready' : sftpConnStatus === 'failed' ? 'failed' : 'pending'}
+                      title="Run SFTP over its own dedicated SSH connection instead of sharing the terminal's session"
+                      onReconnect={reconnectSftpConn}
+                    />
+                  </span>
                 </div>
-                <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors shrink-0">
-                  <X size={14} />
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => setSftpView(v => v === 'mirror' ? 'files' : 'mirror')}
+                    disabled={!session.serverId}
+                    aria-pressed={sftpView === 'mirror'}
+                    aria-label="Mirror"
+                    title={!session.serverId
+                      ? "Mirror needs a saved server"
+                      : sftpView === 'mirror' ? "Back to the files" : "Mirror: keep a local folder copied to this server"}
+                    className={`h-6 px-2 rounded border flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                      sftpView === 'mirror'
+                        ? 'text-primary bg-primary/10 border-primary/30'
+                        : 'text-zinc-400 border-white/10 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    <FolderUp size={12} />
+                    <span className="hidden [@container(min-width:420px)]:inline">Mirror</span>
+                  </button>
+                  <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors shrink-0">
+                    <X size={14} />
+                  </button>
+                </div>
               </div>
               <div className="flex-1 overflow-hidden relative">
                 <SftpWorkspace
@@ -1681,6 +1850,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                   mirrorsConfig={(() => {
                     try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
                   })()}
+                  view={sftpView}
                 />
               </div>
             </div>
