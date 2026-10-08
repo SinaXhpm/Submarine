@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square, History } from "lucide-react";
+import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square, History, Plus, Copy } from "lucide-react";
 import PasswordField from "./PasswordField";
+import { useTextPrompt } from "../ui/confirm";
 
 // Compact "2h ago" style relative time for the attribution line.
 function relTime(d: Date): string {
@@ -49,12 +50,21 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
   // tell which one the user is answering.
   const [keyBrowseBusy, setKeyBrowseBusy] = useState(false);
   const [keyBrowseNote, setKeyBrowseNote] = useState<string | null>(null);
+  // A key generated from this form: its public half is shown (with a copy
+  // button) while it's the selected key, since it has to go into the
+  // server's authorized_keys before it can log in.
+  const [generatedKey, setGeneratedKey] = useState<{ id: number; name: string; publicKey: string } | null>(null);
+  const [publicKeyCopied, setPublicKeyCopied] = useState(false);
+  const textPrompt = useTextPrompt();
 
   // The panel stays mounted and slides off-screen rather than unmounting, so
   // the note from the last key someone loaded would still be sitting there the
   // next time they open it — against a different server.
   useEffect(() => {
-    if (!isOpen) setKeyBrowseNote(null);
+    if (!isOpen) {
+      setKeyBrowseNote(null);
+      setGeneratedKey(null);
+    }
   }, [isOpen]);
 
   // SSH-config import modal state. Lives here so it's colocated with the
@@ -298,6 +308,45 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     }
   };
 
+  // Make a new key without leaving the form (#23): the same Ed25519 key the
+  // SSH keys page generates, selected on this server straight away.
+  const generateKey = async () => {
+    if (keyBrowseBusy) return;
+    const suggested = `${String(newNode.name || newNode.host || "server").trim()}-key`;
+    const name = await textPrompt({
+      title: "Generate SSH key",
+      message: "Give this key a name — it's just for your reference here in Submarine.",
+      initialValue: suggested,
+      okLabel: "Generate",
+      validate: (v) => v.length === 0 ? "Name is required" : null,
+    });
+    if (!name) return;
+    setKeyBrowseBusy(true);
+    setKeyBrowseNote(null);
+    setGeneratedKey(null);
+    try {
+      const key = await invoke<{ id: number; public_key: string }>("generate_ssh_key", { name });
+      if (refreshSshKeys) await refreshSshKeys();
+      setNewNode({ ...newNode, keyId: key.id.toString() });
+      setGeneratedKey({ id: key.id, name, publicKey: key.public_key });
+      setPublicKeyCopied(false);
+    } catch (e: any) {
+      setKeyBrowseNote(typeof e === "string" ? e : (e?.message || String(e)));
+    } finally {
+      setKeyBrowseBusy(false);
+    }
+  };
+
+  const copyPublicKey = async () => {
+    if (!generatedKey) return;
+    try {
+      await navigator.clipboard.writeText(generatedKey.publicKey);
+      setPublicKeyCopied(true);
+    } catch {
+      setKeyBrowseNote("Couldn't copy — select the key text and copy it by hand.");
+    }
+  };
+
   const handleCreateFolder = async () => {
     if (!newFolderName.trim()) return;
     try {
@@ -492,15 +541,27 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         moving over from the `ssh` command line — the key is
                         already in ~/.ssh and copy-pasting it out of a terminal
                         is the worst part of setting up a first server. */}
-                    <button
-                      type="button"
-                      onClick={browseForKey}
-                      disabled={keyBrowseBusy}
-                      className="h-6 px-2 flex items-center gap-1 text-[10px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-all"
-                    >
-                      <Key size={10} />
-                      {keyBrowseBusy ? "Loading…" : "Load from file"}
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={generateKey}
+                        disabled={keyBrowseBusy}
+                        title="Make a new SSH key and use it for this server"
+                        className="h-6 px-2 flex items-center gap-1 text-[10px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-all"
+                      >
+                        <Plus size={10} />
+                        Generate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={browseForKey}
+                        disabled={keyBrowseBusy}
+                        className="h-6 px-2 flex items-center gap-1 text-[10px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-all"
+                      >
+                        <Key size={10} />
+                        {keyBrowseBusy ? "Loading…" : "Load from file"}
+                      </button>
+                    </div>
                   </div>
                   <select className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" value={newNode.keyId} onChange={e => setNewNode({ ...newNode, keyId: e.target.value })}>
                     <option value="" className="bg-[#1a1a1e] text-zinc-500">-- Pick a key --</option>
@@ -509,6 +570,25 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   {keyBrowseNote && (
                     <div className="p-2 bg-white/5 border border-white/10 rounded-lg text-[11px] text-zinc-400 break-words">
                       {keyBrowseNote}
+                    </div>
+                  )}
+                  {generatedKey && newNode.keyId === generatedKey.id.toString() && (
+                    <div className="p-2 bg-white/5 border border-white/10 rounded-lg text-[11px] text-zinc-400 space-y-1.5">
+                      <div>
+                        Generated "{generatedKey.name}" and picked it for this server. Add its public key to
+                        {" "}<code className="text-zinc-300">~/.ssh/authorized_keys</code> on the server before connecting:
+                      </div>
+                      <code className="block p-1.5 bg-black/40 rounded text-[10.5px] text-zinc-300 font-mono break-all select-text">
+                        {generatedKey.publicKey}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={copyPublicKey}
+                        className="h-6 px-2 flex items-center gap-1 text-[10px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 rounded-lg transition-all"
+                      >
+                        <Copy size={10} />
+                        {publicKeyCopied ? "Copied" : "Copy public key"}
+                      </button>
                     </div>
                   )}
                 </div>
