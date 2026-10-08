@@ -9,6 +9,12 @@
 export const IS_ANDROID: boolean =
   typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
 
+// Desktop Linux, where the webview is WebKitGTK. (Android's user agent says
+// "Linux" too, so it is ruled out.) Clipboard reads go through the backend
+// there — see TerminalView.
+export const IS_LINUX: boolean =
+  typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent) && !IS_ANDROID;
+
 // True when we're inside a Tauri WebView (desktop or Android). Kept for future
 // use — some UI may want to differentiate a browser preview from packaged app.
 export const IS_TAURI: boolean =
