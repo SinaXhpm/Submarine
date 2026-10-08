@@ -3762,8 +3762,16 @@ async fn create_profile(
     Ok(())
 }
 
+/// What `generate_ssh_key` made: its row id (so the server form can select
+/// it) and the public half to put in the server's authorized_keys.
+#[derive(serde::Serialize)]
+struct GeneratedSshKey {
+    id: i64,
+    public_key: String,
+}
+
 #[tauri::command]
-async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Result<(), String> {
+async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Result<GeneratedSshKey, String> {
     let mut seed = [0u8; 32];
     rand::rng().fill_bytes(&mut seed);
     let keypair = Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&seed));
@@ -3778,10 +3786,11 @@ async fn generate_ssh_key(state: tauri::State<'_, DbState>, name: String) -> Res
     
     conn.execute("INSERT INTO ssh_keys (name, public_key, private_key) VALUES (?1, ?2, ?3)", rusqlite::params![name, pub_ssh, priv_ssh])
         .map_err(|e| format!("[DATABASE] KEY_INSERT_FAILED: {}", e))?;
-    
+    let id = conn.last_insert_rowid();
+
     drop(conn_guard);
     save_vault_internal(&state)?;
-    Ok(())
+    Ok(GeneratedSshKey { id, public_key: pub_ssh })
 }
 
 /// The `-----BEGIN … PRIVATE KEY-----` line of a PEM key, skipping anything
