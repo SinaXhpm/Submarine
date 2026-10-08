@@ -140,7 +140,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const [nameFilter, setNameFilter] = useState("");
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
-  const [modal, setModal] = useState<{ type: "rename" | "mkdir" | "properties" | "move" | "move-bulk"; entry?: FileEntry; v1?: string; v2?: string } | null>(null);
+  // `orig`: the mode and owner the Properties dialog opened with, so Save
+  // only sends what the user changed.
+  const [modal, setModal] = useState<{ type: "rename" | "mkdir" | "properties" | "move" | "move-bulk"; entry?: FileEntry; v1?: string; v2?: string; orig?: { mode: number; uid?: number } } | null>(null);
   const [notification, setNotification] = useState<{ msg: string; type: "info" | "success" | "error" } | null>(null);
 
   const [dragOver, setDragOver] = useState(false);
@@ -492,6 +494,26 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   // ---- modals -----------------------------------------------------------------
 
+  // Properties shows the path's current mode and owner, read fresh and
+  // following symlinks: chmod/chown on a link change its target, and the
+  // listing only has the link's own mode (777). The setuid/setgid/sticky
+  // bits are kept so Save can't drop them.
+  const openProperties = async (entry: FileEntry) => {
+    setContextMenu(null);
+    let permissions = entry.permissions;
+    let uid = entry.uid;
+    if (provider.stat) {
+      try {
+        ({ permissions, uid } = await provider.stat(entry.path));
+      } catch (err: any) {
+        notify(`Properties: ${err}`, "error");
+        return;
+      }
+    }
+    const mode = permissions !== undefined ? permissions & 0o7777 : 0o755;
+    setModal({ type: "properties", entry, v1: mode.toString(8).padStart(3, "0"), v2: uid?.toString(), orig: { mode, uid } });
+  };
+
   const submitModal = async () => {
     if (!modal) return;
     const { type, entry, v1, v2 } = modal;
@@ -535,13 +557,21 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         notify(`Created ${v1}`, "success");
       } else if (type === "properties" && entry && v1 && provider.chmod) {
         const mode = parseInt(v1, 8);
-        if (isNaN(mode)) throw new Error("Invalid octal mode");
-        await provider.chmod(entry.path, mode);
+        if (isNaN(mode) || mode < 0 || mode > 0o7777) throw new Error("Invalid octal mode");
+        const orig = modal.orig;
+        // Only what changed. Owner first: Linux clears setuid/setgid on a
+        // chown, so the mode goes on after it (again, if it has those bits).
+        let chowned = false;
         if (v2 && provider.chown) {
           const uid = parseInt(v2);
-          if (!isNaN(uid)) await provider.chown(entry.path, uid, entry.gid ?? 0);
+          if (!isNaN(uid) && uid !== orig?.uid) {
+            await provider.chown(entry.path, uid, null); // null: keep the group
+            chowned = true;
+          }
         }
-        notify("Properties updated", "success");
+        const chmodded = mode !== orig?.mode || (chowned && (mode & 0o6000) !== 0);
+        if (chmodded) await provider.chmod(entry.path, mode);
+        notify(chowned || chmodded ? "Properties updated" : "Nothing changed", chowned || chmodded ? "success" : "info");
       }
       await fetch(currentPath);
     } catch (err: any) {
@@ -1335,7 +1365,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <Move size={11} /><span>{multi ? `Move (${acting.length}) to…` : "Move to…"}</span>
           </button>
           {!multi && provider.chmod && (
-            <button onClick={() => { setContextMenu(null); setModal({ type: "properties", entry: contextMenu.entry, v1: (contextMenu.entry.permissions ? (contextMenu.entry.permissions & 0o777).toString(8) : "755"), v2: contextMenu.entry.uid?.toString() }); }}
+            <button onClick={() => openProperties(contextMenu.entry)}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <Shield size={11} /><span>Properties</span>
             </button>
@@ -1371,13 +1401,21 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 <>
                   <div>Name: <span className="text-zinc-100 font-bold">{modal.entry?.name}</span></div>
                   <div>Path: <span className="text-zinc-400 text-[10px] block truncate">{modal.entry?.path}</span></div>
+                  {modal.entry?.isSymlink && (
+                    <div className="text-[10px] text-amber-300/80">
+                      This is a link: these are the settings of the file it points to, and changes apply to that file.
+                    </div>
+                  )}
 
                   {/* RWX matrix — owner/group/other × read/write/execute. The
                       checkbox grid is the source of truth; the octal input
-                      below mirrors it and accepts manual edits both ways. */}
+                      below mirrors it and accepts manual edits both ways.
+                      setuid/setgid/sticky (the 4th octal digit) aren't on the
+                      grid but ride along untouched. */}
                   {(() => {
                     const parsed = parseInt(modal.v1 || "0", 8);
-                    const mode = isNaN(parsed) ? 0 : parsed & 0o777;
+                    const full = isNaN(parsed) ? 0 : parsed & 0o7777;
+                    const mode = full & 0o777;
                     const roles: { key: "owner" | "group" | "other"; label: string; shift: number }[] = [
                       { key: "owner", label: "Owner", shift: 6 },
                       { key: "group", label: "Group", shift: 3 },
@@ -1389,8 +1427,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                       { key: "x", label: "X", bit: 1 },
                     ];
                     const toggle = (shift: number, bit: number) => {
-                      const next = mode ^ (bit << shift);
-                      setModal({ ...modal, v1: (next & 0o777).toString(8).padStart(3, "0") });
+                      const next = full ^ (bit << shift);
+                      setModal({ ...modal, v1: next.toString(8).padStart(3, "0") });
                     };
                     return (
                       <div className="pt-1">
@@ -1430,9 +1468,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                       <label className="text-[10px] text-zinc-400 block mb-1">Octal</label>
                       <input type="text" value={modal.v1 || ""}
                         onChange={(e) => {
-                          // Only accept 0–3 digits, each 0–7 — anything else is
-                          // ignored so the checkbox grid never sees garbage.
-                          const v = e.target.value.replace(/[^0-7]/g, "").slice(0, 3);
+                          // Only accept up to 4 digits (setuid/setgid/sticky
+                          // first), each 0–7 — anything else is ignored so
+                          // the checkbox grid never sees garbage.
+                          const v = e.target.value.replace(/[^0-7]/g, "").slice(0, 4);
                           setModal({ ...modal, v1: v });
                         }}
                         className="w-full h-7 px-2 bg-white/5 border border-white/5 rounded text-zinc-200 focus:outline-none focus:border-indigo-400/40 text-[11.5px] font-mono" />

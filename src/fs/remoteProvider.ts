@@ -83,8 +83,13 @@ export function createRemoteProvider(sessionId: string): RemoteFileProvider {
       await invoke("sftp_set_permissions", { sessionId, path, permissions: mode });
     },
 
-    async chown(path: string, uid: number, gid: number) {
+    async chown(path: string, uid: number, gid: number | null) {
       await invoke("sftp_set_owner", { sessionId, path, uid, gid });
+    },
+
+    async stat(path: string) {
+      const s = await invoke<{ permissions: number | null; uid: number | null; gid: number | null }>("sftp_stat", { sessionId, path });
+      return { permissions: s.permissions ?? undefined, uid: s.uid ?? undefined, gid: s.gid ?? undefined };
     },
   };
 }
