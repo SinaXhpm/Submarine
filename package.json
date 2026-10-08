@@ -13,8 +13,8 @@
     "android:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/android-dev.ps1",
     "android:dev:raw": "tauri android dev",
     "android:build:apk": "npm run android:build:apk:arm64",
-    "android:build:apk:arm64": "tauri android build --apk --target aarch64 --features full-ssh-algos",
-    "android:build:apk:armv7": "tauri android build --apk --target armv7 --features full-ssh-algos",
+    "android:build:apk:arm64": "tauri android build --apk --target aarch64",
+    "android:build:apk:armv7": "tauri android build --apk --target armv7",
     "android:build": "npm run android:build:apk"
   },
   "dependencies": {
