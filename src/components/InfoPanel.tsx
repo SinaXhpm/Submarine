@@ -924,13 +924,21 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
   }, [tab]);
 
   // ---------- Tab strip ----------
-  // ScrollableTabs wraps overflow onto a second row instead of hiding tabs
-  // behind a scroll. On narrow widths (split panes, phone) this means a tab
-  // strip can take two rows — preferable to the previous chevron-scroll
-  // pattern which hid tabs behind interaction the user couldn't discover.
+  // On narrow widths (split panes, phone) the tabs don't fit on one row.
+  // ScrollableTabs then shows them as a dropdown, so the strip keeps one
+  // row's height and every section stays one pick away — unlike the old
+  // chevron-scroll pattern, which hid tabs behind interaction the user
+  // couldn't discover.
   const SubTabStrip = (
     <div className="shrink-0 border-b border-white/5 bg-white/[0.02] px-3 py-2">
-      <ScrollableTabs>
+      <ScrollableTabs
+        select={{
+          value: tab,
+          options: TABS.map(t => ({ value: t.id, label: t.label })),
+          onChange: setTab,
+          label: "Section",
+        }}
+      >
         {TABS.map(t => {
           const Icon = t.icon;
           return (
