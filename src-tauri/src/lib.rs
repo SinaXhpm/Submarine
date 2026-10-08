@@ -10421,6 +10421,27 @@ async fn sftp_set_owner(
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct SftpModeOwner {
+    permissions: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+}
+
+/// Current mode and owner of a remote path, following symlinks — what
+/// chmod/chown on that path change. The listing has a link's own mode
+/// (lrwxrwxrwx), which says nothing about its target.
+#[tauri::command]
+async fn sftp_stat(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    path: String,
+) -> Result<SftpModeOwner, String> {
+    let sftp = get_sftp_session(&state, &session_id).await?;
+    let meta = sftp.metadata(&path).await.map_err(|e| e.to_string())?;
+    Ok(SftpModeOwner { permissions: meta.permissions, uid: meta.uid, gid: meta.gid })
+}
+
 #[tauri::command]
 async fn sftp_download_file(
     app: tauri::AppHandle,
@@ -13583,7 +13604,7 @@ pub fn run() {
             parse_ssh_config,
             parse_client_import,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
-            sftp_rename, sftp_set_permissions, sftp_set_owner,
+            sftp_rename, sftp_set_permissions, sftp_set_owner, sftp_stat,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,
             sftp_set_elevated, sftp_elevation_status, sftp_login_user,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,

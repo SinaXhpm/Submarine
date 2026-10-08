@@ -51,7 +51,10 @@ export interface FileProvider {
 
   // ---- optional unix-only operations --------------------------------------
   chmod?: (path: string, mode: number) => Promise<void>;
-  chown?: (path: string, uid: number, gid: number) => Promise<void>;
+  /** `gid` null keeps the current group. */
+  chown?: (path: string, uid: number, gid: number | null) => Promise<void>;
+  /** Current mode and owner, following symlinks (what chmod/chown change). */
+  stat?: (path: string) => Promise<{ permissions?: number; uid?: number; gid?: number }>;
 }
 
 /** Remote provider carries the SSH session id so transfer.ts can target it. */
