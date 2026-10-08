@@ -454,9 +454,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // Tauri 2 routes OS file drops through `tauri://drag-drop`; HTML5 drop events
   // fire too but their `File.path` is empty inside Tauri. We listen globally and
   // dispatch only when the cursor landed inside our root.
+  //
+  // Only the remote pane takes OS drops (they're uploads). The local pane is
+  // given a sessionId too, for its Upload button, so checking that alone made
+  // a drop on the local pane upload the files to `<local folder>/<name>` on
+  // the server.
 
   useEffect(() => {
-    if (!sessionId) return; // local pane doesn't need this
+    if (!sessionId || provider.id !== "remote") return;
     let unlisten: (() => void) | null = null;
     listen<{ paths: string[]; position: { x: number; y: number } }>(
       "tauri://drag-drop",
@@ -490,7 +495,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     ).then((fn) => { unlisten = fn; });
     return () => { if (unlisten) unlisten(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [sessionId, provider.id]);
 
   // ---- modals -----------------------------------------------------------------
 
@@ -821,8 +826,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   };
 
   // ---- HTML5 dragover for visual feedback during OS-level drop ----------------
+  // Only the remote pane takes the drop (see the tauri://drag-drop listener);
+  // over the local pane the cursor says so instead of a highlight.
 
-  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); setDragOver(true); };
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (provider.id === "remote") setDragOver(true);
+    else e.dataTransfer.dropEffect = "none";
+  };
   const onDragLeave = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); };
   const onDrop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); };
 
