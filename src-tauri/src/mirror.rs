@@ -250,7 +250,7 @@ async fn open_sftp(handle: &Arc<Mutex<russh::client::Handle<ClientHandler>>>) ->
     };
     channel.request_subsystem(true, "sftp").await
         .map_err(|e| format!("request sftp subsystem: {}", e))?;
-    SftpSession::new(channel.into_stream()).await
+    SftpSession::new_with_config(channel.into_stream(), crate::sftp_client_config()).await
         .map_err(|e| format!("sftp init: {}", e))
 }
 
