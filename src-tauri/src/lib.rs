@@ -8317,7 +8317,7 @@ async fn initiate_connection(
                                     // drop it from the cache: a transfer holds
                                     // its own Arc to it, and its pending
                                     // requests would otherwise wait out their
-                                    // 120s deadline (sftp_client_config) on a
+                                    // 240s deadline (sftp_client_config) on a
                                     // link that is gone. close() only signals
                                     // russh-sftp's own task; nothing is sent.
                                     let dead_sftp = state_sftp_w.lock().await.remove(&sid_w);
@@ -9848,20 +9848,20 @@ async fn probe_sudo_sftp(session_arc: &SessionHandleArc, password: Option<&str>)
 /// russh-sftp gives each request a deadline that starts when it's sent, and
 /// keeps several requests in flight, so on a slow link the last one queued
 /// waits for the others and can run out of time while the transfer is still
-/// moving. With the defaults (10 s, 16 reads of up to 255 KiB = 4 MiB in
-/// flight) a download failed with "Timeout" on anything under ~3 Mbit/s, and
-/// an upload (16 writes of 32 KiB) under ~420 kbit/s.
-/// - 8 reads in flight (2 MiB) still fill 160 Mbit/s at 100 ms round trip.
-/// - 120 s per request then carries downloads down to ~140 kbit/s and uploads
-///   down to ~35 kbit/s.
+/// moving. With the default 10 s, a download (16 reads of up to 255 KiB = 4 MiB
+/// in flight) failed with "Timeout" on anything under ~3 Mbit/s, and an upload
+/// (16 writes of 32 KiB) under ~420 kbit/s. The same goes for a directory
+/// listing queued behind a running transfer.
 ///
-/// A dead connection doesn't wait that out: when the session watcher drops it,
-/// the requests still pending fail with it. The deadline is for a server that
-/// stops answering on a connection that is still up.
+/// 240 s per request carries downloads down to ~140 kbit/s and uploads down to
+/// ~17 kbit/s, and keeps the 16 reads in flight that fast high-latency links
+/// need. It doesn't make a dead connection hang: the session watcher closes
+/// the SFTP session when it gives up on the connection, and the requests still
+/// pending fail with it. The deadline is only for a server that stops
+/// answering on a connection that is still up.
 pub(crate) fn sftp_client_config() -> russh_sftp::client::Config {
     russh_sftp::client::Config {
-        max_concurrent_reads: 8,
-        request_timeout_secs: 120,
+        request_timeout_secs: 240,
         ..Default::default()
     }
 }
