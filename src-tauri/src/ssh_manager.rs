@@ -435,6 +435,33 @@ impl SshState {
     }
 }
 
+/// When the server last sent anything on a connection — channel data or a
+/// window adjustment — on a process-wide monotonic clock in milliseconds
+/// (0 = never). The session watcher reads it: on a slow link a busy channel
+/// (an upload, a download) can queue the keepalive reply behind its own data
+/// for longer than the probe waits, but a server that keeps sending while we
+/// wait is alive.
+#[derive(Clone, Default)]
+pub struct LastHeard(Arc<std::sync::atomic::AtomicU64>);
+
+impl LastHeard {
+    /// The clock `stamp` writes and `heard_since` compares against. Starts at
+    /// 1, so a stamp is never mistaken for "never".
+    pub fn now() -> u64 {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
+    }
+
+    pub fn stamp(&self) {
+        self.0.store(Self::now(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the server sent anything after `t` (a `now()` reading).
+    pub fn heard_since(&self, t: u64) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed) > t
+    }
+}
+
 pub struct ClientHandler {
     pub app: AppHandle,
     pub session_id: String,
@@ -480,6 +507,9 @@ pub struct ClientHandler {
     /// an attempt that's no longer current (or that its driver gave up on) is
     /// refused silently instead of appearing over a newer attempt's.
     pub attempt: ConnectAttempt,
+    /// Stamped on every packet of channel data or window adjustment the
+    /// server sends; the session watcher holds a clone (see `LastHeard`).
+    pub last_heard: LastHeard,
 }
 
 /// One connect attempt of a session: its id, the session generation it started
@@ -815,11 +845,63 @@ impl client::Handler for ClientHandler {
         }
         Ok(())
     }
+
+    // The next three only note that the server is talking (see `LastHeard`).
+    // russh hands the data itself to the channel's own stream as well; the
+    // default implementations do nothing.
+    async fn data(
+        &mut self,
+        _channel: russh::ChannelId,
+        _data: &[u8],
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.last_heard.stamp();
+        Ok(())
+    }
+
+    async fn extended_data(
+        &mut self,
+        _channel: russh::ChannelId,
+        _ext: u32,
+        _data: &[u8],
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.last_heard.stamp();
+        Ok(())
+    }
+
+    async fn window_adjusted(
+        &mut self,
+        _channel: russh::ChannelId,
+        _new_size: u32,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.last_heard.stamp();
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn last_heard_counts_only_what_arrived_after_the_question() {
+        let heard = LastHeard::default();
+        let before = LastHeard::now();
+        assert!(!heard.heard_since(0), "nothing heard yet");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        heard.stamp();
+        assert!(heard.heard_since(before));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let asked_at = LastHeard::now();
+        assert!(!heard.heard_since(asked_at), "an older stamp doesn't answer a newer question");
+        // A clone (what the watcher keeps) sees the handler's stamps.
+        let watcher = heard.clone();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        heard.stamp();
+        assert!(watcher.heard_since(asked_at));
+    }
 
     /// The stored `known_hosts` format must stay byte-identical to what
     /// russh-keys 0.40 wrote: un-padded base64 SHA-256 of the key blob, no
