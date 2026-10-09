@@ -214,38 +214,46 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   };
 
   const rootByLogin = !elevation.elevated && loginUser === "root";
-  const rootBadgeClass =
-    "h-6 px-2 flex items-center gap-1 rounded-md text-[10px] font-black uppercase tracking-wider bg-rose-500/20 text-rose-200 border border-rose-500/50";
-  const elevationControl = (
-    <div className="flex items-center gap-1.5 shrink-0 min-w-0">
-      {elevation.elevated ? (
-        <button
-          onClick={toggleElevation}
-          disabled={elevBusy}
-          title={`File operations run as root via sudo${elevation.passwordless ? " (passwordless)" : ""}. Click to go back to ${loginUser || "your login user"}.`}
-          className={`${rootBadgeClass} hover:bg-rose-500/30 disabled:opacity-50`}
-        >
-          <ShieldAlert size={11} /> root · sudo
-        </button>
-      ) : rootByLogin ? (
-        <span title="Logged in as root: file operations run with full privileges." className={rootBadgeClass}>
-          <ShieldAlert size={11} /> root
-        </span>
-      ) : (
-        <button
-          onClick={toggleElevation}
-          disabled={elevBusy || disabled}
-          title="Run file operations as root (sudo)"
-          className="h-6 px-2 flex items-center gap-1 rounded-md text-[10px] font-bold uppercase tracking-wider bg-white/[0.04] text-zinc-300 border border-white/10 hover:bg-white/10 hover:text-white disabled:opacity-40"
-        >
-          <Shield size={11} /> {elevBusy ? "…" : "sudo"}
-        </button>
-      )}
-      {elevError && (
-        <span className="text-[10px] text-rose-300 max-w-[220px] truncate" title={elevError}>{elevError}</span>
-      )}
-    </div>
+  // The remote pane's header says how much room this control has (FilePanel
+  // sets `data-elev` on the pane): the icon alone, the word, or the word
+  // and how root was reached.
+  const elevWord = "group-data-[elev=icon]/pane:hidden";
+  const elevMore = "hidden group-data-[elev=full]/pane:inline";
+  const elevBox = "h-[22px] px-1.5 shrink-0 flex items-center gap-1 rounded-md text-[10px] uppercase tracking-wider border";
+  const rootBadgeClass = `${elevBox} font-black bg-rose-500/20 text-rose-200 border-rose-500/50`;
+  const elevationControl = elevation.elevated ? (
+    <button
+      onClick={toggleElevation}
+      disabled={elevBusy}
+      title={`File operations run as root via sudo${elevation.passwordless ? " (passwordless)" : ""}. Click to go back to ${loginUser || "your login user"}.`}
+      aria-label="root (sudo)"
+      className={`${rootBadgeClass} hover:bg-rose-500/30 disabled:opacity-50`}
+    >
+      <ShieldAlert size={11} className="shrink-0" />
+      <span className={elevWord}>root<span className={elevMore}> · sudo</span></span>
+    </button>
+  ) : rootByLogin ? (
+    <span title="Logged in as root: file operations run with full privileges." className={rootBadgeClass}>
+      <ShieldAlert size={11} className="shrink-0" />
+      <span className={elevWord}>root</span>
+    </span>
+  ) : (
+    <button
+      onClick={toggleElevation}
+      disabled={elevBusy || disabled}
+      title="Run file operations as root (sudo)"
+      aria-label="sudo"
+      className={`${elevBox} font-bold bg-white/[0.04] text-zinc-300 border-white/10 hover:bg-white/10 hover:text-white disabled:opacity-40`}
+    >
+      <Shield size={11} className={`shrink-0 ${elevBusy ? "animate-pulse" : ""}`} />
+      <span className={elevWord}>{elevBusy ? "…" : "sudo"}</span>
+    </button>
   );
+  // Why sudo failed: a line of its own under the header's buttons, so the
+  // whole sentence shows and the buttons keep their places.
+  const elevationNote = elevError ? (
+    <div role="alert" className="px-1 text-[10px] leading-snug text-rose-300 break-words">{elevError}</div>
+  ) : null;
 
   // Persist the last directory each panel was in per (session, side) so the
   // user lands on the same path next time they open this server. If the
@@ -520,6 +528,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               onPathChange={(p) => saveDir("remote", p)}
               getOppositeDir={() => localRef.current?.currentDir()}
               headerExtra={elevationControl}
+              headerNote={elevationNote}
               rootMode={elevation.elevated || rootByLogin}
             />
           </div>
@@ -539,19 +548,21 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
         </div>
       )}
 
-      {notification && (
-        <div className={`absolute bottom-3 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded-lg border text-[11px] font-mono shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-4 duration-300 ${
-          notification.type === "success" ? "bg-emerald-950/90 border-emerald-500/30 text-emerald-400" :
-          notification.type === "error"   ? "bg-rose-950/90 border-rose-500/30 text-rose-400" :
-                                            "bg-indigo-950/90 border-indigo-500/30 text-indigo-400"
-        }`}>{notification.msg}</div>
-      )}
-
-      {/* Live transfer cards — one growing progress bar per active SFTP
-          upload/download. Stacked bottom-right, fade out shortly after the
-          transfer completes. */}
-      {Object.values(transfers).length > 0 && (
-        <div className="absolute bottom-3 right-3 z-50 flex flex-col gap-1.5 max-w-[280px]">
+      {/* Notices along the bottom of the workspace: the toast, then the live
+          transfer cards (one growing progress bar per active upload or
+          download; a card fades out shortly after its transfer ends). The
+          stack spans the workspace, so nothing in it can be wider than a
+          narrow panel and end up cut off at the panel's edge. Clicks go
+          through it everywhere but on a card. */}
+      {(notification || Object.values(transfers).length > 0) && (
+        <div className="absolute bottom-3 inset-x-3 z-50 flex flex-col items-end gap-1.5 pointer-events-none">
+          {notification && (
+            <div className={`self-center max-w-full px-3 py-1.5 rounded-lg border text-[11px] font-mono [overflow-wrap:anywhere] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-4 duration-300 ${
+              notification.type === "success" ? "bg-emerald-950/90 border-emerald-500/30 text-emerald-400" :
+              notification.type === "error"   ? "bg-rose-950/90 border-rose-500/30 text-rose-400" :
+                                                "bg-indigo-950/90 border-indigo-500/30 text-indigo-400"
+            }`}>{notification.msg}</div>
+          )}
           {Object.values(transfers).map((t) => {
             const pct = t.total > 0 ? Math.min(100, Math.round((t.bytes * 100) / t.total)) : 0;
             const tone =
@@ -576,7 +587,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               : t.total > 0              ? `${pct}%`
                                          : formatBytes(t.bytes);
             return (
-              <div key={t.id} className={`px-2.5 py-1.5 rounded border ${tone} font-mono text-[10.5px] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4`}>
+              <div key={t.id} className={`w-full max-w-[280px] pointer-events-auto px-2.5 py-1.5 rounded border ${tone} font-mono text-[10.5px] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4`}>
                 <div className="flex items-center gap-1.5 mb-1">
                   <Icon size={11} className="shrink-0" />
                   <span className="truncate flex-1" title={t.name}>{t.name}</span>
@@ -602,13 +613,15 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
                     />
                   </div>
                 )}
+                {/* Why it failed: up to three lines, so the reason can be
+                    read without hovering; the tooltip has all of it. */}
                 {t.status === "error" && t.error && (
-                  <div className="text-[9.5px] opacity-80 truncate" title={t.error}>{t.error}</div>
+                  <div className="text-[9.5px] opacity-80 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
                 )}
                 {/* A finished folder download can carry a note, e.g. names
                     this computer can't store were skipped. */}
                 {t.status === "done" && t.error && (
-                  <div className="text-[9.5px] text-amber-300/90 truncate" title={t.error}>{t.error}</div>
+                  <div className="text-[9.5px] text-amber-300/90 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
                 )}
               </div>
             );
