@@ -109,6 +109,9 @@ rust {
 }
 
 dependencies {
+    // Produced by ../../../../tailcat-bridge/build-aar.sh. It contains only
+    // Tailcat userspace networking; it has no VpnService/TUN dependency.
+    implementation(files("libs/tailcat-bridge.aar"))
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")

@@ -22,6 +22,7 @@ mod mirror;
 mod docker;
 mod hlc;
 mod identity;
+mod tailcat_transport;
 mod portable;
 mod fonts;
 mod webkit_sandbox;
@@ -4297,8 +4298,8 @@ async fn save_quick_connect_node(
 
     conn.execute(
         "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color) \
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, 'none', '', 1080, '[]', ?6, ?7, 0, '[]', NULL)",
-        rusqlite::params![name, auth.host, auth.port, username, db_password, auth_type, db_key_id],
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, '', 1080, '[]', ?7, ?8, 0, '[]', NULL)",
+        rusqlite::params![name, auth.host, auth.port, username, db_password, auth.transport.as_deref().unwrap_or("none"), auth_type, db_key_id],
     ).map_err(|e| format!("[DATABASE] QUICK_NODE_INSERT_FAILED: {}", e))?;
 
     let new_id = conn.last_insert_rowid();
@@ -5238,6 +5239,8 @@ struct QuickAuth {
     private_key: Option<String>,
     #[serde(default)]
     passphrase: Option<String>,
+    #[serde(default)]
+    transport: Option<String>,
 }
 
 /// Largest number of connect-time secret prompts (a missing password or key
@@ -7364,7 +7367,7 @@ async fn initiate_connection(
             q.username.clone(),
             q.password.clone(),
             key_data,
-            "none".to_string(),         // proxy_type — no proxy in quick mode
+            q.transport.clone().unwrap_or_else(|| "none".to_string()),
             None,                       // proxy_host
             None,                       // proxy_port
             auth_type.to_string(),      // server_auth_type
@@ -7506,7 +7509,7 @@ async fn initiate_connection(
         app: app.clone(),
         session_id: session_id.clone(),
         connect_nonce: connect_nonce.clone(),
-        server_host: host.clone(),
+        server_host: if proxy_type == "tailcat" { tailcat_transport::verification_host(&host) } else { host.clone() },
         server_port: port as u16,
         db: db_conn_shared,
         fp_rx: Some(fp_rx),
@@ -7570,10 +7573,15 @@ async fn initiate_connection(
         // A blank username is resolved after the handshake (issue #54): from
         // this tab's cache, or asked for — see resolve_login_user.
         let saved_user = user.trim().to_string();
+        let display_host = if proxy_type == "tailcat" {
+            tailcat_transport::redact(&host)
+        } else {
+            host.clone()
+        };
         emit_log(
             &format!(
                 "Server Details -> Host: {}, Port: {}, User: {}",
-                host,
+                display_host,
                 port,
                 if saved_user.is_empty() { "(asked when connecting)" } else { saved_user.as_str() },
             ),
@@ -7662,6 +7670,13 @@ async fn initiate_connection(
             }
         } else {
         match proxy_type.as_str() {
+            "tailcat" => {
+                emit_log("Opening Tailcat transport…", "info");
+                match tailcat_transport::open(&host, port as u16).await {
+                    Ok(stream) => { emit_log("Tailcat transport established.", "success"); Ok(Box::new(stream)) }
+                    Err(e) => Err(e),
+                }
+            }
             "socks5" => {
                 let p_host = match proxy_host.as_ref().filter(|h| !h.is_empty()) {
                     Some(h) => h,
@@ -13726,7 +13741,6 @@ mod tests {
         #[cfg(not(windows))]
         assert!(is_safe_dir_entry_name("2024:01:01.log"));
     }
-
     #[cfg(windows)]
     #[test]
     fn dir_entry_name_rejects_windows_specials() {
@@ -13786,5 +13800,5 @@ mod tests {
         assert_eq!(skipped_names_note(0), None);
         assert!(skipped_names_note(1).unwrap().starts_with("1 item skipped"));
         assert!(skipped_names_note(7).unwrap().starts_with("7 items skipped"));
-    }
+}
 }
