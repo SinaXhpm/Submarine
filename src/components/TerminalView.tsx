@@ -1031,12 +1031,14 @@ const TerminalView = ({
           onSpecialKey={sendSpecialKey}
         />
       )}
-      {/* Clipboard toast — bottom-right of the terminal pane. Pointer-events
-          off so a stray hover never blocks selection / right-click. */}
+      {/* Clipboard toast — bottom-right of the terminal pane, never wider
+          than the pane (a split or a wide tool panel can leave it narrow).
+          Pointer-events off so a stray hover never blocks selection /
+          right-click. */}
       {toast && (
-        <div className="absolute bottom-3 right-3 z-20 pointer-events-none">
+        <div className="absolute bottom-3 right-3 z-20 max-w-[calc(100%-1.5rem)] pointer-events-none">
           <span
-            className={`px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border ${
+            className={`block truncate px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border ${
               toast.tone === 'err'
                 ? 'bg-rose-500/15 border-rose-500/30 text-rose-300'
                 : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'

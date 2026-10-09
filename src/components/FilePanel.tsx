@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useImperativeHandle, forwardRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useImperativeHandle, forwardRef } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Folder, File, ArrowUp, RefreshCw, Trash2, Edit3, Shield,
-  X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch,
+  X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch, FolderPlus,
   Download, Upload, ExternalLink, Move, CheckSquare, Square, Search, Link2,
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
@@ -60,6 +60,31 @@ async function transferWithOverwriteCheck(
 type SortColumn = "name" | "size" | "modified" | "permissions";
 interface SortState { column: SortColumn; asc: boolean; }
 
+// The header's square icon buttons; a step smaller in the narrowest panes.
+const HEADER_BUTTON_BASE =
+  "shrink-0 flex items-center justify-center rounded bg-white/[0.04] border border-white/10 hover:bg-white/10";
+const headerButton = (tight: boolean) => `${HEADER_BUTTON_BASE} ${tight ? "h-5 w-5" : "h-[22px] w-[22px]"}`;
+
+// How the header lays itself out, from the width its buttons have (`inner`,
+// in px). It goes by the pane, not the window: side by side, a pane is half
+// the tool panel. The steps are sized for the remote pane, whose name group
+// is the wider one, and both panes use them, so their headers are the same
+// height next to each other.
+//   rows   the name group shares a row with the buttons, or has its own
+//   elev   what the remote pane's root/sudo control spells out: the icon
+//          alone, the word, or the word and what it was reached through
+//   tight  smaller gaps, for the narrowest panes
+interface HeaderFit { rows: 1 | 2; elev: "full" | "word" | "icon"; tight: boolean }
+const HEADER_FITS: { from: number; fit: HeaderFit }[] = [
+  { from: 284, fit: { rows: 1, elev: "full", tight: false } },
+  { from: 236, fit: { rows: 1, elev: "word", tight: false } },
+  { from: 200, fit: { rows: 1, elev: "icon", tight: false } },
+  { from: 160, fit: { rows: 2, elev: "full", tight: false } },
+  { from: 124, fit: { rows: 2, elev: "word", tight: false } },
+  { from: 0, fit: { rows: 2, elev: "icon", tight: true } },
+];
+const headerFitIndex = (inner: number) => HEADER_FITS.findIndex((s) => inner >= s.from);
+
 export interface ActiveDrag {
   paneId: "local" | "remote";
   entry: FileEntry;
@@ -90,8 +115,14 @@ export interface FilePanelProps {
    * download lands there directly instead of popping a folder picker.
    */
   getOppositeDir?: () => string | undefined;
-  /** Extra controls rendered next to the pane label (remote: the root/sudo badge). */
+  /**
+   * Extra controls rendered next to the pane label (remote: the root/sudo
+   * badge). The pane root carries `group/pane` and `data-elev` (full | word |
+   * icon), which says how much such a control should spell out at this width.
+   */
   headerExtra?: React.ReactNode;
+  /** A line of its own under the header's buttons (remote: why sudo failed). */
+  headerNote?: React.ReactNode;
   /** File operations in this pane run as root — tint the header so it's unmistakable. */
   rootMode?: boolean;
 }
@@ -110,6 +141,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   onPathChange,
   getOppositeDir,
   headerExtra,
+  headerNote,
   rootMode = false,
 }, ref) => {
   const [currentPath, setCurrentPath] = useState("");
@@ -159,6 +191,28 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // touch-probe per directory on every panel mount.
   const [androidPickerOpen, setAndroidPickerOpen] = useState(false);
   const [androidQuickDirs, setAndroidQuickDirs] = useState<{ label: string; path: string }[] | null>(null);
+
+  // The header follows its own width (see HEADER_FITS). Only the step is
+  // state, so dragging the panel's divider re-renders the pane when a step
+  // is crossed, not on every pixel.
+  const headerRowRef = useRef<HTMLDivElement | null>(null);
+  const [fitIndex, setFitIndex] = useState(0);
+  const fit = HEADER_FITS[fitIndex].fit;
+  const headerBtn = headerButton(fit.tight);
+  // Before the first paint, so a narrow pane never flashes the wide layout.
+  useLayoutEffect(() => {
+    const el = headerRowRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      // 0 while the pane is hidden (the other tab): keep the last step.
+      const inner = el.clientWidth;
+      if (inner > 0) setFitIndex(headerFitIndex(inner));
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    measure();
+    return () => observer.disconnect();
+  }, []);
 
   // ---- helpers ----------------------------------------------------------------
 
@@ -844,7 +898,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     <div
       data-fs-pane={provider.id}
       data-fs-current-path={currentPath}
-      className="flex-1 flex flex-col h-full bg-[#09090b] p-1.5 gap-1.5 overflow-hidden relative select-none"
+      data-elev={fit.elev}
+      className="group/pane flex-1 flex flex-col h-full bg-[#09090b] p-1.5 gap-1.5 overflow-hidden relative select-none"
     >
       {disabled && (
         <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono uppercase">
@@ -858,65 +913,28 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         // Bottom-right of the pane, not top-right — top-right used to sit
         // on top of the path-bar header and obscure the first row of
         // entries on a short pane. Bottom keeps the file list visible.
-        <div className={`absolute bottom-3 right-3 z-50 max-w-[80%] px-3 py-1.5 rounded-lg border text-[11px] font-mono shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-4 duration-300 ${
+        <div className={`absolute bottom-3 right-3 z-50 max-w-[calc(100%-1.5rem)] px-3 py-1.5 rounded-lg border text-[11px] font-mono [overflow-wrap:anywhere] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-4 duration-300 ${
           notification.type === "success" ? "bg-emerald-950/90 border-emerald-500/30 text-emerald-400" :
           notification.type === "error"   ? "bg-rose-950/90 border-rose-500/30 text-rose-400" :
                                             "bg-indigo-950/90 border-indigo-500/30 text-indigo-400"
         }`}>{notification.msg}</div>
       )}
 
-      {/* Header: label and buttons on top, the path on a row of its own so
-          a long path stays readable even in a narrow pane. */}
+      {/* Header: the pane's name and buttons on top, the path on a row of
+          its own so a long path stays readable even in a narrow pane. */}
       <div className={`w-full flex flex-col gap-1.5 p-1.5 border rounded-lg shrink-0 shadow-lg ${
         rootMode ? "bg-rose-950/30 border-rose-500/40" : "bg-[#121214] border-white/5"
       }`}>
-        {/* min-h-6: the remote pane's sudo button is that tall, and both
-            panes should line up when they sit side by side. */}
-        <div className="flex flex-wrap items-center gap-1.5 min-h-6">
-          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300 px-1.5 shrink-0">
-            {provider.label}
-          </span>
-          {headerExtra}
-          <div className="h-5 w-px bg-white/10 shrink-0" />
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button onClick={goUp} title="Up" className="p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 shrink-0">
-              <ArrowUp size={11} />
-            </button>
-            <div className="relative shrink-0">
-              <button
-                onClick={() => setRecentOpen((p) => !p)}
-                onBlur={() => setTimeout(() => setRecentOpen(false), 200)}
-                disabled={recentDirs.filter((p) => p !== currentPath).length === 0}
-                title="Recent directories"
-                className="p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed flex items-center"
-              >
-                <ChevronDown size={11} />
-              </button>
-              {recentOpen && (
-                <div className="absolute top-[28px] left-0 z-50 min-w-[220px] max-h-[220px] overflow-y-auto bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
-                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">Recent</div>
-                  {recentDirs
-                    .filter((p) => p !== currentPath)
-                    .map((p) => (
-                      <button
-                        key={p}
-                        onMouseDown={(e) => { e.preventDefault(); setRecentOpen(false); fetch(p); }}
-                        className="w-full flex items-center gap-2 p-1.5 rounded text-left hover:bg-white/10 hover:text-white truncate"
-                        title={p}
-                      >
-                        <Folder size={11} className="text-indigo-300 shrink-0" />
-                        <span className="truncate">{p}</span>
-                      </button>
-                    ))}
-                </div>
-              )}
-            </div>
-            <button onClick={() => fetch(currentPath)} title="Refresh"
-              className={`p-1 rounded bg-white/[0.04] border border-white/10 text-zinc-200 hover:bg-white/10 shrink-0 ${loading ? "animate-spin" : ""}`}>
-              <RefreshCw size={11} />
-            </button>
-          </div>
-          <div className="flex items-center gap-1 shrink-0 relative ml-auto">
+        {/* Three groups: who (the name, plus the pane's own control: Browse
+            here, root/sudo on the remote side), where to go, what to make.
+            One row when the pane has the width; otherwise the name group
+            takes a row to itself. Both panes switch at the same widths
+            (HEADER_FITS), so side by side their lists start level. */}
+        <div ref={headerRowRef} className={`relative flex flex-wrap items-center gap-y-1.5 ${fit.tight ? "gap-x-1" : "gap-x-2"}`}>
+          <div className={`flex items-center gap-1.5 min-w-0 min-h-[22px] ${fit.rows === 2 ? "basis-full justify-between" : ""}`}>
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300 pl-1 shrink-0">
+              {provider.label}
+            </span>
             {provider.id === "local" && (
               <button
                 onClick={async () => {
@@ -944,52 +962,82 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                   }
                 }}
                 title="Browse for folder"
-                className="p-1 rounded bg-white/[0.04] border border-white/10 text-emerald-300 hover:bg-white/10"
+                aria-label="Browse for folder"
+                className={`${headerBtn} text-emerald-300`}
               >
                 <FolderSearch size={11} />
               </button>
             )}
-            {IS_ANDROID && androidPickerOpen && androidQuickDirs && (
-              <div className="absolute top-[24px] right-0 z-50 min-w-[180px] bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px]">
-                {androidQuickDirs.length === 0 ? (
-                  <div className="p-2 text-zinc-400 text-[10.5px]">
-                    No writable locations found. On Android 11+ shared storage
-                    requires SAF — the app can only read/write its own scoped
-                    storage directly.
-                  </div>
-                ) : androidQuickDirs.map((d) => (
-                  <button
-                    key={d.path}
-                    onClick={() => { setAndroidPickerOpen(false); fetch(d.path); }}
-                    className="w-full flex items-center gap-2 p-1.5 rounded text-left text-zinc-200 hover:bg-white/10 hover:text-white"
-                  >
-                    <Folder size={11} className="text-indigo-300 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="truncate">{d.label}</div>
-                      <div className="truncate text-[9.5px] text-zinc-500">{d.path}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-            <button onClick={() => setModal({ type: "mkdir", v1: "" })} title="New Folder"
-              className="p-1 rounded bg-white/[0.04] border border-white/10 text-indigo-300 hover:bg-white/10">
-              <Folder size={11} />
+            {headerExtra}
+          </div>
+          <div className={`flex items-center shrink-0 ${fit.tight ? "gap-0.5" : "gap-1"}`}>
+            <button onClick={goUp} title="Up" aria-label="Up" className={`${headerBtn} text-zinc-200`}>
+              <ArrowUp size={11} />
             </button>
             <button
-              onClick={toggleSelectAll}
-              disabled={sortedEntries.length === 0}
-              title={allSelected ? "Deselect all (Ctrl+A)" : "Select all (Ctrl+A)"}
-              className={`p-1 rounded border border-white/10 hover:bg-white/10 disabled:opacity-30 ${
-                allSelected
-                  ? "bg-indigo-500/20 text-indigo-200"
-                  : "bg-white/[0.04] text-zinc-300"
-              }`}
+              onClick={() => setRecentOpen((p) => !p)}
+              onBlur={() => setTimeout(() => setRecentOpen(false), 200)}
+              disabled={recentDirs.filter((p) => p !== currentPath).length === 0}
+              title="Recent directories"
+              aria-label="Recent directories"
+              className={`${headerBtn} text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed`}
             >
-              {allSelected ? <CheckSquare size={11} /> : <Square size={11} />}
+              <ChevronDown size={11} />
+            </button>
+            <button onClick={() => fetch(currentPath)} title="Refresh" aria-label="Refresh"
+              className={`${headerBtn} text-zinc-200`}>
+              <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
             </button>
           </div>
+          <button onClick={() => setModal({ type: "mkdir", v1: "" })} title="New Folder" aria-label="New Folder"
+            className={`${headerBtn} text-indigo-300 ml-auto`}>
+            <FolderPlus size={11} />
+          </button>
+          {/* Both lists open under the buttons across the header's width, so
+              neither is cut off by a narrow pane. */}
+          {recentOpen && (
+            <div className="absolute top-full mt-1 inset-x-0 z-50 max-h-[220px] overflow-y-auto bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
+              <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">Recent</div>
+              {recentDirs
+                .filter((p) => p !== currentPath)
+                .map((p) => (
+                  <button
+                    key={p}
+                    onMouseDown={(e) => { e.preventDefault(); setRecentOpen(false); fetch(p); }}
+                    className="w-full flex items-center gap-2 p-1.5 rounded text-left hover:bg-white/10 hover:text-white truncate"
+                    title={p}
+                  >
+                    <Folder size={11} className="text-indigo-300 shrink-0" />
+                    <span className="truncate">{p}</span>
+                  </button>
+                ))}
+            </div>
+          )}
+          {IS_ANDROID && androidPickerOpen && androidQuickDirs && (
+            <div className="absolute top-full mt-1 inset-x-0 z-50 bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px]">
+              {androidQuickDirs.length === 0 ? (
+                <div className="p-2 text-zinc-400 text-[10.5px]">
+                  No writable locations found. On Android 11+ shared storage
+                  requires SAF — the app can only read/write its own scoped
+                  storage directly.
+                </div>
+              ) : androidQuickDirs.map((d) => (
+                <button
+                  key={d.path}
+                  onClick={() => { setAndroidPickerOpen(false); fetch(d.path); }}
+                  className="w-full flex items-center gap-2 p-1.5 rounded text-left text-zinc-200 hover:bg-white/10 hover:text-white"
+                >
+                  <Folder size={11} className="text-indigo-300 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="truncate">{d.label}</div>
+                    <div className="truncate text-[9.5px] text-zinc-500">{d.path}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
+        {headerNote}
         <div className="relative">
           <input
             type="text"
@@ -1127,37 +1175,38 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         </div>
       )}
 
-      {/* List */}
+      {/* List. It takes the keyboard focus when clicked (tabIndex), which is
+          how Ctrl+A knows which of the two panes it is meant for. */}
       <div
         ref={dropTargetRef}
+        tabIndex={0}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        className={`flex-1 border rounded-lg bg-[#121214] flex flex-col overflow-auto transition-all duration-200 border-indigo-500/30 shadow-2xl shadow-indigo-950/10 ${dragOver ? "border-indigo-400 bg-indigo-950/10" : ""}`}
+        className={`flex-1 border rounded-lg bg-[#121214] flex flex-col overflow-auto transition-all duration-200 border-indigo-500/30 shadow-2xl shadow-indigo-950/10 outline-none focus-visible:border-indigo-400/70 ${dragOver ? "border-indigo-400 bg-indigo-950/10" : ""}`}
       >
-        {/* The select column is conditionally injected — only present when
-            there's at least one selected row. With nothing selected the row
-            content reclaims the 22px and the list reads cleanly. Discovery
-            paths into multi-select that work without the column visible:
-            row click (single select), Ctrl/Shift-click (extend), Ctrl+A
-            (select all), right-click → context menu, and the header bar's
-            select-all toggle to the right of the address bar. */}
-        <div className={`group min-w-full grid ${
+        {/* Ways into a selection: a row click (one row), Ctrl/Shift-click
+            (extend), a row's own box, Ctrl+A, and the select-all box in this
+            header row, the only one of them that is always on screen. */}
+        <div className={`min-w-full grid ${
           showPerms
-            ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]"
+            ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(150px,1fr)_65px_115px_85px]"
             : "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_75px_125px]"
         } gap-1.5 px-2.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 select-none font-bold shrink-0 sticky top-0 z-10 shadow-md`}>
-          {/* Select-all — the 22px column is ALWAYS reserved (both here and in
-              every row) so starting a selection never shifts the columns
-              sideways. The control is revealed on header hover, or whenever a
-              selection is already active. */}
-          <div
-            className={`bg-[#161619] flex items-center justify-center py-1.5 cursor-pointer hover:text-white transition-opacity ${selected.size > 0 ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+          {/* Select-all. Its 22px column is always reserved (here and in
+              every row), so starting a selection never shifts the columns
+              sideways. */}
+          <button
+            type="button"
+            disabled={sortedEntries.length === 0}
+            className="bg-[#161619] flex items-center justify-center py-1.5 text-zinc-500 hover:text-zinc-200 disabled:opacity-40 disabled:hover:text-zinc-500"
             onClick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
-            title={allSelected ? "Deselect all" : "Select all"}
+            title={allSelected ? "Deselect all (Ctrl+A)" : "Select all (Ctrl+A)"}
+            aria-label={allSelected ? "Deselect all" : "Select all"}
+            aria-pressed={allSelected}
           >
-            {allSelected ? <CheckSquare size={12} className="text-indigo-300" /> : <Square size={12} className="text-zinc-500" />}
-          </div>
+            {allSelected ? <CheckSquare size={12} className="text-indigo-300" /> : <Square size={12} />}
+          </button>
           <div className="bg-[#161619] cursor-pointer hover:text-white py-1.5" onClick={() => toggleSort("name")}>
             NAME {sortIcon("name")}
           </div>
@@ -1215,7 +1264,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 data-fs-row-isdir={entry.isDir ? "1" : "0"}
                 className={`group grid ${
                   showPerms
-                    ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_65px_115px_85px]"
+                    ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(150px,1fr)_65px_115px_85px]"
                     : "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_75px_125px]"
                 } gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
                   isSel
