@@ -9762,20 +9762,29 @@ fn is_safe_remote_exec_path(p: &str) -> bool {
         && p.chars().all(|c| c.is_ascii_alphanumeric() || "/._+-".contains(c))
 }
 
-/// Map sudo's stderr to a stable code the UI can explain.
+/// Map sudo's stderr to a stable code the UI can explain. Two programs go by
+/// the name `sudo`, each with its own wording: the original, and sudo-rs,
+/// which is what Ubuntu installs from 25.10 on. Each group below has both.
 fn classify_sudo_failure(msg: &str) -> String {
     let m = msg.to_ascii_lowercase();
-    if m.contains("password is required") {
+    if m.contains("password is required") || m.contains("interactive authentication is required") {
         SUDO_NEED_PASSWORD.into()
     } else if m.contains("incorrect password")
         || m.contains("sorry, try again")
         || m.contains("authentication failure")
         || m.contains("no password was provided")
+        || m.contains("authentication failed")
+        || m.contains("incorrect authentication attempt")
+        || m.contains("authentication required but not attempted")
     {
         SUDO_WRONG_PASSWORD.into()
     } else if m.contains("must have a tty") || m.contains("no tty present") {
         SUDO_REQUIRETTY.into()
-    } else if m.trim().is_empty() || m.contains("not in the sudoers") || m.contains("not allowed") {
+    } else if m.trim().is_empty()
+        || m.contains("not in the sudoers")
+        || m.contains("not allowed")
+        || m.contains("may not run sudo")
+    {
         SUDO_NOT_ALLOWED.into()
     } else {
         format!("{}: {}", SUDO_FAILED, msg.trim())
@@ -9971,6 +9980,25 @@ mod elevated_sftp_tests {
         assert_eq!(classify_sudo_failure("bob is not in the sudoers file."), SUDO_NOT_ALLOWED);
         assert_eq!(classify_sudo_failure(""), SUDO_NOT_ALLOWED);
         assert!(classify_sudo_failure("sudo: something odd").starts_with(SUDO_FAILED));
+    }
+
+    /// What sudo-rs 0.2.13 prints (Ubuntu 26.04) for the probe's two commands.
+    #[test]
+    fn sudo_rs_errors_map_to_the_same_codes() {
+        // `sudo -n -l <server>`, where a password is needed.
+        assert_eq!(classify_sudo_failure("sudo: interactive authentication is required"), SUDO_NEED_PASSWORD);
+        // `sudo -S -k -p "" -l <server>`: a wrong password, three of them, none at all.
+        assert_eq!(
+            classify_sudo_failure(" sudo: Authentication failed, try again.  sudo: Authentication required but not attempted"),
+            SUDO_WRONG_PASSWORD
+        );
+        assert_eq!(
+            classify_sudo_failure(" sudo: Authentication failed, try again.  sudo: Authentication failed, try again.  sudo: maximum 3 incorrect authentication attempts"),
+            SUDO_WRONG_PASSWORD
+        );
+        assert_eq!(classify_sudo_failure(" sudo: Authentication required but not attempted"), SUDO_WRONG_PASSWORD);
+        // A user with no sudo rule at all (the original says the same for `-l`).
+        assert_eq!(classify_sudo_failure("sudo: Sorry, user bob may not run sudo on web1."), SUDO_NOT_ALLOWED);
     }
 
     #[test]
