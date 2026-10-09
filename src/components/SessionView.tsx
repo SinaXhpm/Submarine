@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from 
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, PanelRight, PanelLeft, PanelBottom, PanelTop } from "lucide-react";
+import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2 } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
@@ -34,6 +34,23 @@ const DOCK_FLEX: Record<ToolDock, string> = {
 // terminal always keeps at least MIN_TERMINAL_HEIGHT.
 const MIN_TOOL_HEIGHT = 160;
 const MIN_TERMINAL_HEIGHT = 120;
+// The panel can also take the terminal's place ("full screen"); remembered
+// with the dock.
+const TOOL_FULL_KEY = "submarine-tool-full";
+
+// Title-bar button of a tool panel: give the panel the terminal's room, or
+// bring the terminal back. The terminal keeps running either way.
+const FullToggle = ({ full, onToggle }: { full: boolean; onToggle: () => void }) => (
+  <button
+    onClick={onToggle}
+    aria-pressed={full}
+    aria-label="Full screen"
+    title={full ? "Show the terminal again" : "Full screen: hide the terminal and give this panel all the room"}
+    className={`shrink-0 transition-colors ${full ? "text-primary hover:text-white" : "text-zinc-500 hover:text-white"}`}
+  >
+    {full ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+  </button>
+);
 
 // Compact "run this tab on its own dedicated SSH connection" toggle, shown in
 // the SFTP and Port-Forwarding tab headers. The status dot reflects the live
@@ -122,6 +139,109 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
         </button>
       )}
     </span>
+  );
+};
+
+// The SFTP panel's title bar: the title, the Dedicated toggle, then Mirror,
+// full screen and close. In a narrow panel not all of it fits. What gives way,
+// in this order: the title shortens to "SFTP", the title goes, and only then
+// does Mirror lose its word. So the word is there whenever there is room for
+// it. The bar measures itself instead of using fixed widths, because the
+// toggle is wider while its status dot shows and the text's width depends on
+// the font.
+const TITLE_BAR_GAP = 12; // gap-3 between the title, the toggle and the buttons
+const MIRROR_WORD_GAP = 6; // gap-1.5 between Mirror's icon and its word
+const TITLE_BAR_TEXT = "text-[10px] font-bold uppercase tracking-wider";
+interface TitleBarFit { title: "full" | "short" | "none"; mirrorWord: boolean }
+const TITLE_BAR_FITS: TitleBarFit[] = [
+  { title: "full", mirrorWord: true },
+  { title: "short", mirrorWord: true },
+  { title: "none", mirrorWord: true },
+  { title: "short", mirrorWord: false },
+  { title: "none", mirrorWord: false },
+];
+const SftpTitleBar = ({ toggle, mirrorOn, mirrorDisabled, onMirror, extra, onClose }: {
+  toggle: React.ReactNode;
+  mirrorOn: boolean;
+  mirrorDisabled: boolean;
+  onMirror: () => void;
+  /** Buttons between Mirror and Close (full screen). */
+  extra: React.ReactNode;
+  onClose: () => void;
+}) => {
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const toggleRef = useRef<HTMLSpanElement | null>(null);
+  const buttonsRef = useRef<HTMLDivElement | null>(null);
+  // Never shown: they only give the three texts' widths.
+  const fullTitleRef = useRef<HTMLSpanElement | null>(null);
+  const shortTitleRef = useRef<HTMLSpanElement | null>(null);
+  const mirrorWordRef = useRef<HTMLSpanElement | null>(null);
+  const [fitIndex, setFitIndex] = useState(0);
+  const fit = TITLE_BAR_FITS[fitIndex];
+  const fitRef = useRef(fit);
+  fitRef.current = fit;
+  useLayoutEffect(() => {
+    const bar = barRef.current, toggleBox = toggleRef.current, buttons = buttonsRef.current;
+    if (!bar || !toggleBox || !buttons || typeof ResizeObserver === "undefined") return;
+    const width = (el: HTMLElement | null) => (el ? el.getBoundingClientRect().width : 0);
+    const measure = () => {
+      const style = getComputedStyle(bar);
+      const room = bar.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      if (!(room > 0)) return; // not laid out
+      const word = width(mirrorWordRef.current) + MIRROR_WORD_GAP;
+      const iconButtons = width(buttons) - (fitRef.current.mirrorWord ? word : 0);
+      const titles = { full: width(fullTitleRef.current), short: width(shortTitleRef.current), none: 0 };
+      const needed = (f: TitleBarFit) =>
+        (f.title === "none" ? 0 : titles[f.title] + TITLE_BAR_GAP)
+        + width(toggleBox) + TITLE_BAR_GAP + iconButtons + (f.mirrorWord ? word : 0);
+      // A pixel to spare, so rounding never leaves the last one a hair too wide.
+      const first = TITLE_BAR_FITS.findIndex((f) => needed(f) + 1 <= room);
+      setFitIndex(first === -1 ? TITLE_BAR_FITS.length - 1 : first);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(bar);
+    observer.observe(toggleBox);
+    observer.observe(buttons);
+    measure();
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div ref={barRef} className="relative h-10 px-4 flex items-center gap-3 border-b border-white/5 bg-white/5 overflow-hidden">
+      {fit.title !== "none" && (
+        <span className={`${TITLE_BAR_TEXT} text-zinc-400 truncate min-w-0`}>
+          {fit.title === "full" ? "SFTP File Browser" : "SFTP"}
+        </span>
+      )}
+      <span ref={toggleRef} className="shrink-0 whitespace-nowrap">{toggle}</span>
+      <div ref={buttonsRef} className="ml-auto flex items-center gap-2 shrink-0">
+        <button
+          onClick={onMirror}
+          disabled={mirrorDisabled}
+          aria-pressed={mirrorOn}
+          aria-label="Mirror"
+          title={mirrorDisabled
+            ? "Mirror needs a saved server"
+            : mirrorOn ? "Back to the files" : "Mirror: keep a local folder copied to this server"}
+          className={`h-6 px-2 rounded border flex items-center gap-1.5 ${TITLE_BAR_TEXT} transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+            mirrorOn
+              ? 'text-primary bg-primary/10 border-primary/30'
+              : 'text-zinc-400 border-white/10 hover:text-white hover:bg-white/5'
+          }`}
+        >
+          <FolderUp size={12} className="shrink-0" />
+          {fit.mirrorWord && <span>Mirror</span>}
+        </button>
+        {extra}
+        <button onClick={onClose} aria-label="Close" className="text-zinc-500 hover:text-white transition-colors shrink-0">
+          <X size={14} />
+        </button>
+      </div>
+      <div aria-hidden className="absolute left-0 top-0 invisible pointer-events-none whitespace-nowrap flex gap-4">
+        <span ref={fullTitleRef} className={TITLE_BAR_TEXT}>SFTP File Browser</span>
+        <span ref={shortTitleRef} className={TITLE_BAR_TEXT}>SFTP</span>
+        <span ref={mirrorWordRef} className={TITLE_BAR_TEXT}>Mirror</span>
+      </div>
+    </div>
   );
 };
 
@@ -534,6 +654,24 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
     try { localStorage.setItem(TOOL_DOCK_KEY, d); } catch { /* ignore */ }
   };
   const dockTopBottom = toolDock === "bottom" || toolDock === "top";
+  // "Full screen": the open tool takes the terminal's place (the button in
+  // each tool's title bar). The terminals stay mounted and connected, hidden
+  // the way a compact window hides them, and come back when the panel is
+  // restored or closed.
+  const [toolFull, setToolFull] = useState<boolean>(() => {
+    try { return localStorage.getItem(TOOL_FULL_KEY) === "1"; } catch { return false; }
+  });
+  const setToolFullPersisted = (v: boolean) => {
+    setToolFull(v);
+    try { localStorage.setItem(TOOL_FULL_KEY, v ? "1" : "0"); } catch { /* ignore */ }
+  };
+  // The tool is shown without the terminal: always in a compact window, by
+  // choice in a roomy one.
+  const toolAlone = isCompact || toolFull;
+  // Nothing to toggle in a compact window, where the tool is always alone.
+  const fullToggle = isCompact ? null : (
+    <FullToggle full={toolFull} onToggle={() => setToolFullPersisted(!toolFull)} />
+  );
   const [toolPanelHeight, setToolPanelHeight] = useState<number>(() => {
     let saved = NaN;
     try { saved = parseInt(localStorage.getItem('submarine-tool-panel-height') || '', 10); } catch { /* ignore */ }
@@ -1515,7 +1653,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                 key={id}
                 role="menuitemradio"
                 aria-checked={toolDock === id}
-                onClick={() => { setToolDockPersisted(id); setDockMenu(null); }}
+                onClick={() => { setToolDockPersisted(id); setToolFullPersisted(false); setDockMenu(null); }}
                 className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
               >
                 <Icon size={13} className={toolDock === id ? "text-primary" : "text-zinc-500"} />
@@ -1580,15 +1718,17 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
           "back to terminal" affordance (clicking the active tool toggles
           it off). This avoids squeezing a usable terminal + tool into a
           mobile-sized window. Elsewhere the tool docks on the side the user
-          picked (toolDock). */}
+          picked (toolDock), unless they made it full screen (toolFull),
+          which shows it alone the same way. */}
       <div
         ref={mainAreaRef}
-        className={`flex-1 flex overflow-hidden relative bg-[#09090b] ${isCompact ? "" : DOCK_FLEX[toolDock]}`}
+        className={`flex-1 flex overflow-hidden relative bg-[#09090b] ${toolAlone ? "" : DOCK_FLEX[toolDock]}`}
       >
         {/* Left Panel: Active Terminals.
-            On compact + activeTool, hide entirely so the tool fills the
-            screen. Terminals stay mounted (no PTY teardown) — just CSS
-            hidden so swapping back keeps the same shell session.
+            With a tool open in a compact window, or made full screen, hide
+            entirely so the tool fills the screen. Terminals stay mounted (no
+            PTY teardown) — just CSS hidden so swapping back keeps the same
+            shell session.
 
             Split mode: when `splitTerminals` holds 2+ ids and the
             viewport is roomy enough, we tile those terminals side-by-side
@@ -1598,8 +1738,8 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
             its scrollback. The tiles fill the whole left panel; the tool
             side panel continues to work exactly as before. */}
         <div className={`relative ${
-          activeTool && isCompact ? 'hidden'
-            : dockTopBottom && !isCompact ? 'w-full flex-1 min-h-0'
+          activeTool && toolAlone ? 'hidden'
+            : dockTopBottom && !toolAlone ? 'w-full flex-1 min-h-0'
             : 'h-full flex-1 min-w-0'
         }`}>
           {splitTerminals.length >= 2 && !isCompact ? (
@@ -1626,7 +1766,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                       sessionId={session.id}
                       terminalId={t.id}
                       disabled={status !== 'connected'}
-                      isActive={isFocused && !(activeTool && isCompact)}
+                      isActive={isFocused && !(activeTool && toolAlone)}
                       isActiveView={isActiveView}
                       focusSignal={focusTick}
                       containerExec={t.container ? { container: t.container.name, useSudo: t.container.useSudo } : undefined}
@@ -1749,7 +1889,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                   sessionId={session.id}
                   terminalId={t.id}
                   disabled={status !== 'connected'}
-                  isActive={activeTab === t.id && !(activeTool && isCompact)}
+                  isActive={activeTab === t.id && !(activeTool && toolAlone)}
                   isActiveView={isActiveView}
                   focusSignal={focusTick}
                   containerExec={t.container ? { container: t.container.name, useSudo: t.container.useSudo } : undefined}
@@ -1763,7 +1903,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
         </div>
 
         {/* Resizable divider — only useful when both panes are visible. */}
-        {activeTool && !isCompact && (
+        {activeTool && !toolAlone && (
           <div
             onMouseDown={startToolResize}
             className={`shrink-0 bg-white/5 hover:bg-primary/40 transition-colors ${
@@ -1781,54 +1921,31 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
             don't carry live state worth preserving across switches. */}
         <div
           ref={toolPanelRef}
-          style={activeTool && !isCompact
+          style={activeTool && !toolAlone
             ? (dockTopBottom
                 ? { height: `${toolPanelHeight}px`, maxHeight: `calc(100% - ${MIN_TERMINAL_HEIGHT + 4}px)` }
                 : { width: `${toolPanelWidth}px` })
             : undefined}
-          className={`${activeTool ? (isCompact ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-[#121214]/95 flex flex-col ${dockTopBottom && !isCompact ? 'w-full' : 'h-full'} overflow-hidden ${activeTool ? 'animate-in slide-in-from-right duration-300' : ''}`}
+          className={`${activeTool ? (toolAlone ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-[#121214]/95 flex flex-col ${dockTopBottom && !toolAlone ? 'w-full' : 'h-full'} overflow-hidden ${activeTool ? 'animate-in slide-in-from-right duration-300' : ''}`}
         >
           {activeTool === 'sftp' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              {/* In a narrow pane Mirror drops its label (container query on
-                  this bar's width), then the title truncates; the toggle
-                  never wraps. */}
-              <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5 [container-type:inline-size]">
-                <div className="flex items-center gap-3 min-w-0 overflow-hidden">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 truncate">SFTP File Browser</span>
-                  <span className="shrink-0 whitespace-nowrap">
-                    <SepToggle
-                      on={separateSftp}
-                      onToggle={toggleSeparateSftp}
-                      status={!separateSftp ? 'off' : sftpConnStatus === 'ready' ? 'ready' : sftpConnStatus === 'failed' ? 'failed' : 'pending'}
-                      hint="SFTP runs on its own SSH connection, so large transfers don't slow the terminal down."
-                      onReconnect={reconnectSftpConn}
-                    />
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => setSftpView(v => v === 'mirror' ? 'files' : 'mirror')}
-                    disabled={!session.serverId}
-                    aria-pressed={sftpView === 'mirror'}
-                    aria-label="Mirror"
-                    title={!session.serverId
-                      ? "Mirror needs a saved server"
-                      : sftpView === 'mirror' ? "Back to the files" : "Mirror: keep a local folder copied to this server"}
-                    className={`h-6 px-2 rounded border flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
-                      sftpView === 'mirror'
-                        ? 'text-primary bg-primary/10 border-primary/30'
-                        : 'text-zinc-400 border-white/10 hover:text-white hover:bg-white/5'
-                    }`}
-                  >
-                    <FolderUp size={12} />
-                    <span className="hidden [@container(min-width:420px)]:inline">Mirror</span>
-                  </button>
-                  <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors shrink-0">
-                    <X size={14} />
-                  </button>
-                </div>
-              </div>
+              <SftpTitleBar
+                toggle={
+                  <SepToggle
+                    on={separateSftp}
+                    onToggle={toggleSeparateSftp}
+                    status={!separateSftp ? 'off' : sftpConnStatus === 'ready' ? 'ready' : sftpConnStatus === 'failed' ? 'failed' : 'pending'}
+                    hint="SFTP runs on its own SSH connection, so large transfers don't slow the terminal down."
+                    onReconnect={reconnectSftpConn}
+                  />
+                }
+                mirrorOn={sftpView === 'mirror'}
+                mirrorDisabled={!session.serverId}
+                onMirror={() => setSftpView(v => v === 'mirror' ? 'files' : 'mirror')}
+                extra={fullToggle}
+                onClose={() => setActiveTool(null)}
+              />
               <div className="flex-1 overflow-hidden relative">
                 <SftpWorkspace
                   sessionId={session.id}
@@ -1856,9 +1973,12 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                     onReconnect={reconnectFwdConn}
                   />
                 </div>
-                <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors shrink-0">
-                  <X size={14} />
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  {fullToggle}
+                  <button onClick={() => setActiveTool(null)} aria-label="Close" className="text-zinc-500 hover:text-white transition-colors shrink-0">
+                    <X size={14} />
+                  </button>
+                </div>
               </div>
               <div className="flex-1 overflow-hidden relative">
                 <TunnelsPanel sessionId={session.id} serverId={session.serverId} disabled={status !== 'connected'} />
@@ -1870,6 +1990,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
             <CmdsPanel
               activeTab={activeTab}
               onClose={() => setActiveTool(null)}
+              headerActions={fullToggle}
               serverId={session.serverId}
               serverName={session.serverName}
             />
@@ -1880,11 +2001,14 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               explicitly asked for "cache while session is alive", and a
               fresh remount would re-fire the probe every tab swap. */}
           <div className={`flex-1 flex flex-col overflow-hidden ${activeTool === 'info' ? '' : 'hidden'}`}>
-            <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 bg-white/5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Server Info</span>
-              <button onClick={() => setActiveTool(null)} className="text-zinc-500 hover:text-white transition-colors">
-                <X size={14} />
-              </button>
+            <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 truncate">Server Info</span>
+              <div className="flex items-center gap-2 shrink-0">
+                {fullToggle}
+                <button onClick={() => setActiveTool(null)} aria-label="Close" className="text-zinc-500 hover:text-white transition-colors">
+                  <X size={14} />
+                </button>
+              </div>
             </div>
             <InfoPanel
               sessionId={session.id}

@@ -31,7 +31,9 @@ type EditTarget =
   | { kind: "command"; id: number; title: string; body: string }
   | { kind: "note"; id: number; title: string; body: string };
 
-export const CmdsPanel = ({ activeTab, onClose, serverId, serverName }: { activeTab: string; onClose: () => void; serverId?: number; serverName?: string }) => {
+// `headerActions`: extra title-bar buttons from the session view (full screen),
+// shown just before Close.
+export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverName }: { activeTab: string; onClose: () => void; headerActions?: React.ReactNode; serverId?: number; serverName?: string }) => {
   const [tab, setTab] = useState<Tab>("commands");
   const [commands, setCommands] = useState<CommandItem[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
@@ -248,6 +250,7 @@ export const CmdsPanel = ({ activeTab, onClose, serverId, serverName }: { active
           >
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
           </button>
+          {headerActions}
           <button
             onClick={async () => { await flushIfDirty(editRef.current); onClose(); }}
             className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all"
