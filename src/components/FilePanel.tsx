@@ -646,9 +646,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const overwritePrompt = useOverwritePrompt();
 
   // Bulk-aware delete. Pops a single confirm dialog regardless of count, then
-  // applies provider.remove to each item in turn — best-effort: per-item
-  // failures notify but don't halt the rest. Selection is cleared on success
-  // so the user isn't left with stale paths highlighted.
+  // applies provider.remove to each item in turn — best-effort: an item that
+  // fails doesn't halt the rest, and one toast says how the batch went.
+  // Selection is cleared on success so the user isn't left with stale paths
+  // highlighted.
   const removeItems = async (items: FileEntry[]) => {
     if (items.length === 0) return;
     const ok = await confirmDialog({
@@ -665,16 +666,40 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     });
     if (!ok) return;
     let count = 0;
+    // The first item that could not be deleted, and why. One toast has to
+    // say how the whole batch went, so only the first is kept.
+    let failure: { name: string; reason: string } | null = null;
+    let failed = 0;
+    let stopped = false;
     for (const it of items) {
       try { await provider.remove(it.path, it.isDir, it.isSymlink); count++; }
-      catch (err: any) { notify(`Delete failed for ${it.name}: ${err}`, "error"); }
+      catch (err: any) {
+        // A remote folder's delete was stopped from its card: the rest of
+        // the batch stops with it.
+        if (String(err) === "cancelled") { stopped = true; break; }
+        failed++;
+        failure ??= { name: it.name, reason: String(err) };
+      }
     }
     if (count > 0) {
       setSelected(new Set());
       lastSelectedPathRef.current = null;
-      notify(items.length === 1 ? `Deleted ${items[0].name}` : `Deleted ${count} of ${items.length} items`, "success");
-      await fetch(currentPath);
     }
+    if (stopped) {
+      notify(count > 0 ? `Delete stopped after ${count} of ${items.length} items` : "Delete stopped. What was already removed is gone.", "info");
+    } else if (failure) {
+      notify(
+        items.length === 1
+          ? `Delete failed for ${failure.name}: ${failure.reason}`
+          : `Deleted ${count} of ${items.length} items. ${failed === 1 ? "" : `${failed} failed; the first: `}${failure.name}: ${failure.reason}`,
+        "error",
+      );
+    } else {
+      notify(items.length === 1 ? `Deleted ${items[0].name}` : `Deleted ${count} of ${items.length} items`, "success");
+    }
+    // A folder that could not be removed completely, or whose delete was
+    // stopped, may have lost part of its contents: show what is there now.
+    await fetch(currentPath);
   };
 
   // ---- contextual actions -----------------------------------------------------
