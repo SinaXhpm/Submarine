@@ -8,6 +8,7 @@ import {
   Download, Upload, ExternalLink, Move, CheckSquare, Square, Search, Link2,
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
+import { localDir, localJoin } from "../fs/localPath";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
 import { IS_ANDROID } from "../util/platform";
 import { nameFilterMatcher } from "../util/nameFilter";
@@ -370,6 +371,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     return { parent, leaf };
   };
 
+  // A typed folder the way the provider names one: no separator at the end,
+  // except on a root.
+  const typedFolder = (typed: string) =>
+    provider.id === "local" ? localDir(typed) : typed.replace(/[\\/]+$/, "") || "/";
+
   // Prefetch listings for typed paths outside the current directory. Debounced
   // so a fast typist doesn't fire one SFTP request per keystroke; skipped
   // when the typed parent already matches currentPath (free from `entries`).
@@ -377,14 +383,15 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     if (!inputFocused) return;
     const split = splitInputPath(tempInput);
     if (!split) return;
-    // Normalize: most providers report paths without the trailing '/'.
-    const probe = split.parent.replace(/[\\/]+$/, "") || "/";
+    const probe = typedFolder(split.parent);
     if (probe === currentPath || probe === lookaheadParent) return;
     const t = setTimeout(async () => {
       try {
         const result = await provider.list(probe);
         setLookaheadEntries(result.entries);
-        setLookaheadParent(result.currentPath);
+        // Remembered as typed, not as the provider resolved it (another
+        // letter case, a link followed): it is compared with what is typed.
+        setLookaheadParent(probe);
       } catch { /* parent doesn't exist (yet) — suggestions just stay empty */ }
     }, 220);
     return () => clearTimeout(t);
@@ -395,7 +402,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     if (!inputFocused) return [];
     const split = splitInputPath(tempInput);
     if (!split) return [];
-    const probe = split.parent.replace(/[\\/]+$/, "") || "/";
+    const probe = typedFolder(split.parent);
     const source =
       probe === currentPath      ? entries :
       probe === lookaheadParent  ? lookaheadEntries :
@@ -587,7 +594,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         // bulk-move semantics so users have a single mental model). We
         // append the entry's own name so the item keeps its filename. To
         // change the filename, the user picks "Rename" instead.
-        const destDir = v1.replace(/[\\/]+$/, "");
+        const destDir = typedFolder(v1);
         const dest = provider.joinPath(destDir, entry.name);
         if (dest === entry.path) throw new Error("Destination is the current location — nothing to move.");
         await provider.rename(entry.path, dest);
@@ -595,7 +602,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       } else if (type === "move-bulk" && v1) {
         // v1 is the destination *directory*; each selected item keeps its
         // own name under it.
-        const dest = v1.replace(/[\\/]+$/, "");
+        const dest = typedFolder(v1);
         const items = sortedEntries.filter(e => selected.has(e.path));
         let count = 0;
         for (const it of items) {
@@ -730,8 +737,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       } catch (err: any) { notify(`Pick folder failed: ${err}`, "error"); return; }
       if (!dest) return;
     }
-    const sep = dest.includes("\\") ? "\\" : "/";
-    const trimmed = dest.replace(/[\\/]+$/, "");
+    const destDir = localDir(dest);
     const fileCount = items.filter(e => !e.isDir).length;
     const dirCount  = items.filter(e =>  e.isDir).length;
     const summary =
@@ -745,7 +751,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     for (const e of items) {
       if (cancelled) break;
       try {
-        const dest = e.isDir ? trimmed : `${trimmed}${sep}${e.name}`;
+        // A folder is given the folder it goes into (the backend adds its
+        // name), a file the full path it is saved as.
+        const dest = e.isDir ? destDir : localJoin(destDir, e.name);
         const cmd = e.isDir ? "sftp_download_dir" : "sftp_download_file";
         const res = await transferWithOverwriteCheck(
           (ow) => invoke(cmd, { sessionId, remotePath: e.path, localPath: dest, overwrite: ow }),
