@@ -41,8 +41,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebouncedEventKind};
+use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::{FileAttributes, OpenFlags};
+use russh_sftp::protocol::{FileAttributes, FileType, OpenFlags, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
@@ -255,8 +256,9 @@ async fn open_sftp(handle: &Arc<Mutex<russh::client::Handle<ClientHandler>>>) ->
 }
 
 /// Equivalent of `mkdir -p` over SFTP. Walks the path components and
-/// creates each missing intermediate directory. Treats AlreadyExists as
-/// success since two mirror tasks may race to create the same parent.
+/// creates each missing intermediate directory. A directory that turns out
+/// to be there after all counts as success, since two mirror tasks may race
+/// to create the same parent.
 async fn sftp_mkdir_p(sftp: &SftpSession, path: &str) -> Result<(), String> {
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').filter(|p| !p.is_empty()).collect();
     let mut cur = String::from("/");
@@ -265,11 +267,13 @@ async fn sftp_mkdir_p(sftp: &SftpSession, path: &str) -> Result<(), String> {
         cur.push_str(p);
         // Stat first so we don't churn through CREATE errors on every level.
         if sftp.metadata(&cur).await.is_ok() { continue; }
-        match sftp.create_dir(&cur).await {
-            Ok(_) => {}
-            Err(e) => {
-                let msg = e.to_string().to_lowercase();
-                if msg.contains("exist") || msg.contains("file exists") { continue; }
+        if let Err(e) = sftp.create_dir(&cur).await {
+            // Refused: the first sync runs several transfers at a time, and
+            // another one may have made this directory since the stat above.
+            // The answer itself can't tell us (OpenSSH says a bare "Failure"
+            // for a directory that exists, not "already exists"), so look
+            // again: what counts is that it is there now.
+            if sftp.metadata(&cur).await.is_err() {
                 return Err(format!("mkdir {}: {}", cur, e));
             }
         }
@@ -416,18 +420,49 @@ async fn sftp_soft_delete(sftp: &SftpSession, remote_root: &str, target: &str) -
     Ok(())
 }
 
+fn is_status(e: &SftpError, code: StatusCode) -> bool {
+    matches!(e, SftpError::Status(status) if status.status_code == code)
+}
+
+/// The server answered that the path is not there.
+fn is_no_such_file(e: &SftpError) -> bool {
+    is_status(e, StatusCode::NoSuchFile)
+}
+
+/// Remove a remote path for good. A file or a link is unlinked. A directory
+/// goes with RMDIR, which only takes an empty one: whatever the mirror did
+/// not put there (excluded files, files from somewhere else) is never deleted
+/// along with it, and the directory then stays, with a line in the log.
 async fn sftp_hard_delete(sftp: &SftpSession, target: &str) -> Result<(), String> {
-    // Try as file, then as directory (russh-sftp doesn't expose stat-type
-    // cheaply; the two error paths are fast).
-    if let Err(e) = sftp.remove_file(target).await {
-        let msg = e.to_string().to_lowercase();
-        if msg.contains("directory") || msg.contains("isdir") {
-            sftp.remove_dir(target).await.map_err(|e| format!("rmdir {}: {}", target, e))?;
-        } else if !msg.contains("no such") && !msg.contains("does not exist") {
-            return Err(format!("rm {}: {}", target, e));
-        }
+    let refused = match sftp.remove_file(target).await {
+        Ok(()) => return Ok(()),
+        Err(e) if is_no_such_file(&e) => return Ok(()),
+        Err(e) => e,
+    };
+    // REMOVE was refused. The answer doesn't say whether that is because the
+    // path is a directory (OpenSSH on Linux says a bare "Failure" for one),
+    // so ask what is there, without following a link.
+    match sftp.symlink_metadata(target).await {
+        Err(e) if is_no_such_file(&e) => Ok(()),
+        Ok(meta) if meta.file_type() == FileType::Dir => match sftp.remove_dir(target).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_no_such_file(&e) => Ok(()),
+            // "Failure" is how a server says "not empty".
+            Err(e) if is_status(&e, StatusCode::Failure) => {
+                Err(format!("rmdir {}: {}. A directory is only removed once it is empty.", target, e))
+            }
+            Err(e) => Err(format!("rmdir {}: {}", target, e)),
+        },
+        _ => Err(format!("rm {}: {}", target, refused)),
     }
-    Ok(())
+}
+
+/// The order a batch of changed paths is handled in when deletes are for
+/// good: deepest first. A directory deleted together with what was in it
+/// arrives as one path per entry, in no particular order, and the directory
+/// can only be removed after its entries.
+fn deepest_first(paths: &mut [PathBuf]) {
+    paths.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
 }
 
 // ---------------------------------------------------------------------------
@@ -973,14 +1008,22 @@ async fn run_mirror(
         let _ = forward_join.await;
     }
 
+    // Entries of directories that were new to the server (see process_event),
+    // waiting for their turn. They are taken a few at a time, so that a big
+    // directory moved into the mirror doesn't keep Stop or the watcher's
+    // own events waiting until all of it is sent.
+    let mut backlog: std::collections::VecDeque<PathBuf> = std::collections::VecDeque::new();
+    const BACKLOG_AT_ONCE: usize = 16;
+
     loop {
         tokio::select! {
+            biased;
             _ = &mut stop_rx => {
                 shutdown(debouncer, forward_join).await;
                 return Ok(());
             }
             maybe = tok_rx.recv() => {
-                let paths = match maybe {
+                let mut paths = match maybe {
                     Some(p) => p,
                     None => {
                         // Forwarder side hung up (debouncer dropped on its
@@ -989,18 +1032,38 @@ async fn run_mirror(
                         return Ok(());
                     }
                 };
+                if !spec.soft_delete {
+                    deepest_first(&mut paths);
+                }
                 {
                     let mut s = status.lock().await;
                     s.queue_depth = s.queue_depth.saturating_add(paths.len() as u32);
                 }
                 emit_update(&app, &status.lock().await.clone()).await;
+                // An entry that is in this batch itself gets its turn here.
+                let in_batch: HashSet<PathBuf> = paths.iter().cloned().collect();
                 for path in paths {
-                    process_event(&app, &session_id, &mirror_id, &local_root, &spec,
-                                  &*sftp, &status, &path).await;
+                    let mut found = process_event(&app, &session_id, &mirror_id, &local_root, &spec,
+                                                  &*sftp, &status, &path).await;
+                    found.retain(|entry| !in_batch.contains(entry));
                     {
                         let mut s = status.lock().await;
-                        s.queue_depth = s.queue_depth.saturating_sub(1);
+                        s.queue_depth = s.queue_depth.saturating_sub(1).saturating_add(found.len() as u32);
                     }
+                    backlog.extend(found);
+                    emit_update(&app, &status.lock().await.clone()).await;
+                }
+            }
+            _ = std::future::ready(()), if !backlog.is_empty() => {
+                for _ in 0..BACKLOG_AT_ONCE {
+                    let Some(path) = backlog.pop_front() else { break };
+                    let found = process_event(&app, &session_id, &mirror_id, &local_root, &spec,
+                                              &sftp, &status, &path).await;
+                    {
+                        let mut s = status.lock().await;
+                        s.queue_depth = s.queue_depth.saturating_sub(1).saturating_add(found.len() as u32);
+                    }
+                    backlog.extend(found);
                     emit_update(&app, &status.lock().await.clone()).await;
                 }
             }
@@ -1008,9 +1071,27 @@ async fn run_mirror(
     }
 }
 
+/// What is in a local directory: its files and directories, not its links
+/// (the first sync leaves links out too, and a link can lead back to where
+/// it is). A directory that can't be read has no entries.
+async fn dir_entries(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(mut rd) = tokio::fs::read_dir(dir).await else { return found };
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        match entry.file_type().await {
+            Ok(kind) if kind.is_dir() || kind.is_file() => found.push(entry.path()),
+            _ => {}
+        }
+    }
+    found
+}
+
 /// Apply a single debounced FS event. Because the debouncer collapses
 /// bursts, we only care about the *current* state of the path: still
 /// present → upload (overwrites), gone → delete on remote.
+///
+/// Returns more paths to handle the same way: the entries of a directory
+/// that was new to the server.
 async fn process_event(
     app: &AppHandle,
     session_id: &str,
@@ -1020,20 +1101,39 @@ async fn process_event(
     sftp: &SftpSession,
     status: &Arc<Mutex<MirrorStatus>>,
     path: &Path,
-) {
+) -> Vec<PathBuf> {
     // Excludes — apply BEFORE we look at metadata so we don't even stat
     // huge dirs like node_modules.
     let rel = path.strip_prefix(local_root).map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
-    if rel.is_empty() || is_excluded(&rel, &spec.excludes) { return; }
-    let remote = match local_to_remote(path, local_root, &spec.remote) { Some(r) => r, None => return };
+    if rel.is_empty() || is_excluded(&rel, &spec.excludes) { return Vec::new(); }
+    let remote = match local_to_remote(path, local_root, &spec.remote) { Some(r) => r, None => return Vec::new() };
 
     match tokio::fs::metadata(path).await {
         Ok(meta) if meta.is_dir() => {
+            // The patterns name a directory with its "/" (`node_modules/`).
+            if is_excluded(&format!("{}/", rel), &spec.excludes) { return Vec::new(); }
+            // On the server already: nothing to do. A change inside it comes
+            // with a path of its own.
+            if sftp.metadata(&remote).await.is_ok() { return Vec::new(); }
             if let Err(e) = sftp_mkdir_p(sftp, &remote).await {
                 emit_log(app, session_id, mirror_id, "warn", "mkdir-fail",
                          Some(rel), Some(e));
+                return Vec::new();
             }
+            // New to the server. A directory that was moved or renamed into
+            // place is named by the watcher once, with nothing about what is
+            // in it (and one that fills up right after it was made can be
+            // ahead of the watcher), so its entries get their turn next.
+            // Not through a link, though: links are left out, as above.
+            let through_link = tokio::fs::symlink_metadata(path).await.map(|m| !m.is_dir()).unwrap_or(true);
+            if through_link { return Vec::new(); }
+            let mut entries = dir_entries(path).await;
+            entries.retain(|entry| {
+                let rel = entry.strip_prefix(local_root).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+                !rel.is_empty() && !is_excluded(&rel, &spec.excludes)
+            });
+            return entries;
         }
         Ok(meta) if meta.is_file() => {
             // The debounced FS event tells us the user JUST touched this file.
@@ -1101,5 +1201,271 @@ async fn process_event(
             emit_log(app, session_id, mirror_id, "warn", "stat-fail",
                      Some(rel), Some(e.to_string()));
         }
+    }
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use russh_sftp::protocol::{Attrs, Status};
+    use std::collections::BTreeMap;
+    use std::sync::Mutex as StdMutex;
+
+    /// What a path is on the test server.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Node {
+        Dir,
+        File,
+        /// A symbolic link; `links` says where it points.
+        Link,
+    }
+    use Node::*;
+
+    /// A server that answers the way OpenSSH on Linux does. MKDIR of a
+    /// directory that is there, REMOVE of a directory and RMDIR of one that
+    /// is not empty all get a bare "Failure".
+    struct Server {
+        tree: Arc<StdMutex<BTreeMap<String, Node>>>,
+        links: HashMap<String, String>,
+        /// REMOVE of these is refused with "Permission denied".
+        remove_denied: HashSet<String>,
+        /// Every request, as "OP path", with " refused" added when it was.
+        log: Arc<StdMutex<Vec<String>>>,
+    }
+
+    fn ok(id: u32) -> Status {
+        Status { id, status_code: StatusCode::Ok, error_message: "Ok".into(), language_tag: "en-US".into() }
+    }
+
+    impl Server {
+        fn node(&self, path: &str) -> Option<Node> {
+            self.tree.lock().unwrap().get(path).copied()
+        }
+
+        fn answer<T>(&self, op: &str, path: &str, result: Result<T, StatusCode>) -> Result<T, StatusCode> {
+            let refused = if result.is_err() { " refused" } else { "" };
+            self.log.lock().unwrap().push(format!("{} {}{}", op, path, refused));
+            result
+        }
+
+        fn attrs(&self, id: u32, path: &str, follow: bool) -> Result<Attrs, StatusCode> {
+            let mut node = self.node(path);
+            if follow && node == Some(Link) {
+                node = self.links.get(path).and_then(|target| self.node(target));
+            }
+            let mode = match node.ok_or(StatusCode::NoSuchFile)? {
+                Dir => 0o040755,
+                File => 0o100644,
+                Link => 0o120777,
+            };
+            Ok(Attrs { id, attrs: FileAttributes { permissions: Some(mode), ..Default::default() } })
+        }
+    }
+
+    impl russh_sftp::server::Handler for Server {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> StatusCode {
+            StatusCode::OpUnsupported
+        }
+
+        async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, StatusCode> {
+            self.answer("STAT", &path, self.attrs(id, &path, true))
+        }
+
+        async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, StatusCode> {
+            self.answer("LSTAT", &path, self.attrs(id, &path, false))
+        }
+
+        async fn mkdir(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, StatusCode> {
+            let parent = path.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+            let result = if !parent.is_empty() && self.node(parent) != Some(Dir) {
+                Err(StatusCode::NoSuchFile)
+            } else if self.node(&path).is_some() {
+                Err(StatusCode::Failure)
+            } else {
+                self.tree.lock().unwrap().insert(path.clone(), Dir);
+                Ok(ok(id))
+            };
+            self.answer("MKDIR", &path, result)
+        }
+
+        async fn remove(&mut self, id: u32, path: String) -> Result<Status, StatusCode> {
+            let result = match self.node(&path) {
+                _ if self.remove_denied.contains(&path) => Err(StatusCode::PermissionDenied),
+                Some(Dir) => Err(StatusCode::Failure),
+                Some(_) => {
+                    self.tree.lock().unwrap().remove(&path);
+                    Ok(ok(id))
+                }
+                None => Err(StatusCode::NoSuchFile),
+            };
+            self.answer("REMOVE", &path, result)
+        }
+
+        async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, StatusCode> {
+            let below = format!("{}/", path);
+            let has_entries = self.tree.lock().unwrap().keys().any(|key| key.starts_with(&below));
+            let result = match self.node(&path) {
+                Some(Dir) if has_entries => Err(StatusCode::Failure),
+                Some(Dir) => {
+                    self.tree.lock().unwrap().remove(&path);
+                    Ok(ok(id))
+                }
+                // "Not a directory" comes back as "No such file" too.
+                Some(_) | None => Err(StatusCode::NoSuchFile),
+            };
+            self.answer("RMDIR", &path, result)
+        }
+    }
+
+    /// A server over `entries` (path, what it is) with `links` (link, what
+    /// it points to), and a client connected to it.
+    struct Lab {
+        sftp: SftpSession,
+        tree: Arc<StdMutex<BTreeMap<String, Node>>>,
+        log: Arc<StdMutex<Vec<String>>>,
+    }
+
+    impl Lab {
+        async fn new(entries: &[(&str, Node)], links: &[(&str, &str)], remove_denied: &[&str]) -> Lab {
+            let tree = Arc::new(StdMutex::new(
+                entries.iter().map(|(path, node)| (path.to_string(), *node)).collect::<BTreeMap<_, _>>(),
+            ));
+            let log = Arc::new(StdMutex::new(Vec::new()));
+            let (client, server) = tokio::io::duplex(64 * 1024);
+            let handler = Server {
+                tree: Arc::clone(&tree),
+                links: links.iter().map(|(from, to)| (from.to_string(), to.to_string())).collect(),
+                remove_denied: remove_denied.iter().map(|path| path.to_string()).collect(),
+                log: Arc::clone(&log),
+            };
+            russh_sftp::server::run(server, handler).await;
+            let sftp = SftpSession::new(client).await.unwrap();
+            Lab { sftp, tree, log }
+        }
+
+        fn left(&self) -> Vec<String> {
+            self.tree.lock().unwrap().keys().cloned().collect()
+        }
+
+        fn log(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn transfers_that_need_the_same_new_folder_all_get_it() {
+        let lab = Lab::new(&[("/srv", Dir)], &[], &[]).await;
+        // The first sync runs its transfers several at a time. Each one asks
+        // whether its folders are there and makes the missing ones, so two
+        // can both find "/srv/site" missing and both try to make it.
+        let made = tokio::join!(
+            sftp_mkdir_p(&lab.sftp, "/srv/site/a"),
+            sftp_mkdir_p(&lab.sftp, "/srv/site/b"),
+            sftp_mkdir_p(&lab.sftp, "/srv/site/a/deep"),
+            sftp_mkdir_p(&lab.sftp, "/srv/site"),
+        );
+        assert_eq!(made, (Ok(()), Ok(()), Ok(()), Ok(())));
+        assert_eq!(lab.left(), ["/srv", "/srv/site", "/srv/site/a", "/srv/site/a/deep", "/srv/site/b"]);
+        // The race did happen here: the server refused a MKDIR for a folder
+        // another transfer had just made.
+        assert!(lab.log().iter().any(|line| line == "MKDIR /srv/site refused"), "{:?}", lab.log());
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_cannot_be_made_is_still_an_error() {
+        let lab = Lab::new(&[("/srv", Dir), ("/srv/file", File)], &[], &[]).await;
+        let err = sftp_mkdir_p(&lab.sftp, "/srv/file/sub/deeper").await.unwrap_err();
+        assert!(err.starts_with("mkdir /srv/file/sub:"), "{}", err);
+        assert_eq!(lab.left(), ["/srv", "/srv/file"]);
+    }
+
+    #[tokio::test]
+    async fn a_hard_delete_takes_a_file_a_link_and_an_empty_folder() {
+        let lab = Lab::new(
+            &[("/srv", Dir), ("/srv/f.txt", File), ("/srv/empty", Dir), ("/srv/kept", Dir), ("/srv/kept/x", File), ("/srv/link", Link)],
+            &[("/srv/link", "/srv/kept")],
+            &[],
+        )
+        .await;
+        for target in ["/srv/f.txt", "/srv/empty", "/srv/link", "/srv/never-there"] {
+            assert_eq!(sftp_hard_delete(&lab.sftp, target).await, Ok(()), "{}", target);
+        }
+        // The link went, not the folder it pointed to.
+        assert_eq!(lab.left(), ["/srv", "/srv/kept", "/srv/kept/x"]);
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_still_has_something_in_it_stays() {
+        let lab = Lab::new(&[("/srv", Dir), ("/srv/site", Dir), ("/srv/site/theirs.txt", File)], &[], &[]).await;
+        let err = sftp_hard_delete(&lab.sftp, "/srv/site").await.unwrap_err();
+        assert!(err.starts_with("rmdir /srv/site:"), "{}", err);
+        assert_eq!(lab.left(), ["/srv", "/srv/site", "/srv/site/theirs.txt"]);
+        // Nothing in it was asked about, let alone removed.
+        assert!(lab.log().iter().all(|line| !line.contains("theirs")), "{:?}", lab.log());
+    }
+
+    #[tokio::test]
+    async fn a_file_the_server_will_not_remove_is_reported_as_that() {
+        let lab = Lab::new(&[("/srv", Dir), ("/srv/locked.txt", File)], &[], &["/srv/locked.txt"]).await;
+        let err = sftp_hard_delete(&lab.sftp, "/srv/locked.txt").await.unwrap_err();
+        assert!(err.starts_with("rm /srv/locked.txt:") && err.contains("Permission denied"), "{}", err);
+        assert_eq!(lab.left(), ["/srv", "/srv/locked.txt"]);
+        // A file is not tried as a folder.
+        assert!(lab.log().iter().all(|line| !line.starts_with("RMDIR")), "{:?}", lab.log());
+    }
+
+    #[tokio::test]
+    async fn the_entries_of_a_folder_leave_its_links_out() {
+        let dir = std::env::temp_dir().join(format!("submarine-mirror-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("f.txt"), b"x").unwrap();
+        // A link back to the folder it is in: followed, it would never end.
+        // (A junction on Windows, which needs no special rights to make.)
+        let link = dir.join("loop");
+        #[cfg(unix)]
+        let _ = std::os::unix::fs::symlink(&dir, &link);
+        #[cfg(windows)]
+        let _ = std::process::Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(&link).arg(&dir).output();
+        assert!(std::fs::symlink_metadata(&link).is_ok(), "the link for this test could not be made");
+
+        let mut names: Vec<String> =
+            dir_entries(&dir).await.iter().map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, ["f.txt", "sub"]);
+        assert!(dir_entries(&dir.join("not-there")).await.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_deleted_folder_goes_once_what_was_in_it_is_handled_first() {
+        // One path per deleted entry, in the order they happened to arrive.
+        let mut batch: Vec<PathBuf> =
+            ["gone", "gone/inner/b.txt", "keep/new.txt", "gone/a.txt", "gone/inner"].iter().map(PathBuf::from).collect();
+        deepest_first(&mut batch);
+        let order: Vec<String> = batch.iter().map(|path| path.to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(order, ["gone/inner/b.txt", "keep/new.txt", "gone/a.txt", "gone/inner", "gone"]);
+
+        let lab = Lab::new(
+            &[
+                ("/srv", Dir),
+                ("/srv/gone", Dir),
+                ("/srv/gone/a.txt", File),
+                ("/srv/gone/inner", Dir),
+                ("/srv/gone/inner/b.txt", File),
+                ("/srv/keep", Dir),
+            ],
+            &[],
+            &[],
+        )
+        .await;
+        for rel in order.iter().filter(|rel| rel.starts_with("gone")) {
+            assert_eq!(sftp_hard_delete(&lab.sftp, &format!("/srv/{}", rel)).await, Ok(()), "{}", rel);
+        }
+        assert_eq!(lab.left(), ["/srv", "/srv/keep"]);
     }
 }
