@@ -294,6 +294,14 @@ const TerminalView = ({
     // already did it and this instance just needs to keep reading
     // events off the same terminal_id.
     if (attachOnly) return;
+    // As on the first open: the backend only takes resizes once the shell is
+    // up, so a resize that landed while it was starting again (the window
+    // was being dragged, a panel opened) is sent once more when it is. Without
+    // this the shell kept the size it was reopened with, and wrapped its lines
+    // at the wrong column until the next resize.
+    const syncSize = () => {
+      invoke('resize_terminal', { terminalId, cols: term.cols, rows: term.rows }).catch(() => {});
+    };
     const ce = containerExecRef.current;
     if (ce) {
       invoke('open_container_terminal', {
@@ -303,7 +311,7 @@ const TerminalView = ({
         cols: term.cols || 80,
         rows: term.rows || 24,
         useSudo: ce.useSudo,
-      }).catch(e => {
+      }).then(syncSize, e => {
         term.writeln(`\x1b[31mReconnect into container failed: ${e}\x1b[0m`);
       });
     } else {
@@ -312,7 +320,7 @@ const TerminalView = ({
         terminalId,
         cols: term.cols || 80,
         rows: term.rows || 24,
-      }).catch(e => {
+      }).then(syncSize, e => {
         term.writeln(`\x1b[31mReconnect failed: ${e}\x1b[0m`);
       });
     }
