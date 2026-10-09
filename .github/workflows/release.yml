@@ -380,6 +380,25 @@ jobs:
         with:
           packages: "platforms;android-36 build-tools;36.0.0 ndk;27.1.12297006"
 
+      # setup-android exposes ANDROID_SDK_ROOT but its NDK location is not
+      # available through the workflow expression context (`env.*`). Resolve
+      # it once and persist it for subsequent shell steps. This also tolerates
+      # an image that already contains a newer compatible NDK patch release.
+      - name: Resolve Android NDK path
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_DIR="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n 1)"
+          if [ -z "$NDK_DIR" ] || [ ! -x "$ANDROID_SDK_ROOT/ndk/$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
+            echo "::error::Could not locate a usable Android NDK under $ANDROID_SDK_ROOT/ndk"
+            exit 1
+          fi
+          NDK_PATH="$ANDROID_SDK_ROOT/ndk/$NDK_DIR"
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "Using Android NDK $NDK_DIR at $NDK_PATH"
+
       - name: Install pinned Go for Tailcat bridge
         uses: actions/setup-go@v5
         with:
@@ -513,9 +532,6 @@ jobs:
       # becomes a goal later, re-add `android:build:aab` to package.json
       # and the matching find/copy loop here.
       - name: Build Android APK
-        env:
-          NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
         run: |
           mkdir -p artifacts
           npm run android:build:apk:arm64
