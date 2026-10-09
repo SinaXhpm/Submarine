@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle }
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { File as FileIcon, Download, Upload, AlertTriangle, Check, X, Ban, Folder, Rows, Columns, LayoutPanelTop, Shield, ShieldAlert } from "lucide-react";
+import { File as FileIcon, Download, Upload, AlertTriangle, Check, X, Ban, Folder, Rows, Columns, LayoutPanelTop, Shield, ShieldAlert, Trash2 } from "lucide-react";
 import FilePanel, { ActiveDrag, FilePanelHandle } from "./FilePanel";
 import MirrorsPanel from "./MirrorsPanel";
 import { createLocalProvider } from "../fs/localProvider";
@@ -298,11 +298,13 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
 
   // Live transfer progress, keyed by the backend-assigned id. The Rust
   // commands stream events at ~10Hz; we replace the entry on each update so
-  // a single growing progress bar shows per transfer.
+  // a single growing progress bar shows per transfer. A folder delete that
+  // takes a while comes through here too (kind "delete"): for it `bytes` is
+  // the number of entries removed so far, and there is no total.
   interface Transfer {
     id: string;
     name: string;
-    kind: "upload" | "download";
+    kind: "upload" | "download" | "delete";
     bytes: number;
     total: number;
     status: "progress" | "done" | "error" | "cancelled";
@@ -580,10 +582,12 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               t.status === "done"      ? Check :
               t.status === "cancelled" ? Ban :
               t.kind   === "upload"    ? Upload :
+              t.kind   === "delete"    ? Trash2 :
                                          Download;
             const statusLabel =
               t.status === "error"     ? "failed"
               : t.status === "cancelled" ? "cancelled"
+              : t.kind === "delete"      ? `${t.bytes.toLocaleString()} removed`
               : t.total > 0              ? `${pct}%`
                                          : formatBytes(t.bytes);
             return (
@@ -608,7 +612,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
                 {t.status !== "error" && (
                   <div className="h-1 bg-white/10 rounded overflow-hidden">
                     <div
-                      className={`h-full ${barTone} transition-[width] duration-150`}
+                      className={`h-full ${barTone} transition-[width] duration-150 ${t.kind === "delete" && t.status === "progress" ? "animate-pulse" : ""}`}
                       style={{ width: t.total > 0 ? `${pct}%` : "100%" }}
                     />
                   </div>

@@ -25,6 +25,7 @@ mod identity;
 mod portable;
 mod fonts;
 mod webkit_sandbox;
+mod sftp_remove;
 #[cfg(test)]
 mod ssh_test_server;
 use ssh_manager::SshState;
@@ -10303,26 +10304,102 @@ async fn sftp_remove_file(
     Ok(())
 }
 
+/// Delete a remote folder and everything in it (see `sftp_remove`).
+///
+/// A delete that takes a while shows up like a transfer: it emits on the same
+/// `sftp-transfer-{session}` channel with kind "delete" and the number of
+/// entries removed so far, and the card's Cancel (`sftp_cancel_transfer`)
+/// stops it between two requests. It then ends with the error "cancelled".
+/// A delete that is over within a moment emits nothing.
 #[tauri::command]
 async fn sftp_remove_dir(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
     session_id: String,
     path: String,
 ) -> Result<(), String> {
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+    use tauri::Emitter;
+
+    let root = sftp_remove::tree_root(&path)?;
     let sftp = get_sftp_session(&state, &session_id).await?;
-    // A link to a folder lists as a folder, but deleting it must only unlink
-    // the link itself — never touch what it points to.
-    if sftp
-        .symlink_metadata(path.clone())
-        .await
-        .map(|m| m.is_symlink())
-        .unwrap_or(false)
-    {
-        sftp.remove_file(path).await.map_err(|e| e.to_string())?;
-        return Ok(());
+    let Some(root) = root else {
+        // Not a path that starts with "/": removed the way folders always
+        // were, only when empty. A link to a folder lists as a folder, and
+        // deleting it must only unlink the link itself.
+        if sftp
+            .symlink_metadata(path.clone())
+            .await
+            .map(|m| m.is_symlink())
+            .unwrap_or(false)
+        {
+            return sftp.remove_file(path).await.map_err(|e| e.to_string());
+        }
+        return sftp.remove_dir(path).await.map_err(|e| e.to_string());
+    };
+
+    let id = transfer_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancels_map = Arc::clone(&state.transfer_cancels);
+    cancels_map.lock().await.insert(id.clone(), Arc::clone(&cancel));
+    struct CancelGuard {
+        map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+        id: String,
     }
-    sftp.remove_dir(path).await.map_err(|e| e.to_string())?;
-    Ok(())
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            if let Ok(mut g) = self.map.try_lock() {
+                g.remove(&self.id);
+            }
+        }
+    }
+    let _guard = CancelGuard { map: Arc::clone(&cancels_map), id: id.clone() };
+
+    let name = root.rsplit('/').next().unwrap_or(root).to_string();
+    let event_name = format!("sftp-transfer-{}", session_id);
+    let emit = |removed: u64, status: &str, error: Option<String>| {
+        let _ = app.emit(
+            &event_name,
+            serde_json::json!({
+                "id": id, "name": name, "kind": "delete",
+                "bytes": removed, "total": 0,
+                "status": status, "error": error,
+            }),
+        );
+    };
+
+    // The card comes up only once the delete has run for a moment, and is
+    // then updated a few times a second.
+    const CARD_AFTER: Duration = Duration::from_millis(400);
+    const CARD_EVERY: Duration = Duration::from_millis(200);
+    let started = Instant::now();
+    let mut last_shown: Option<Instant> = None;
+    let mut removed_so_far = 0u64;
+    let result = {
+        let mut report = |removed: u64| {
+            removed_so_far = removed;
+            let due = match last_shown {
+                None => started.elapsed() >= CARD_AFTER,
+                Some(at) => at.elapsed() >= CARD_EVERY,
+            };
+            if due {
+                last_shown = Some(Instant::now());
+                emit(removed, "progress", None);
+            }
+        };
+        sftp_remove::remove_tree(sftp, root, &cancel, &mut report).await
+    };
+    // The card, if there is one, gets its ending. The pane reports the
+    // result either way.
+    if last_shown.is_some() {
+        match &result {
+            Ok(()) => emit(removed_so_far, "done", None),
+            Err(e) if e == sftp_remove::CANCELLED => emit(removed_so_far, "cancelled", None),
+            Err(e) => emit(removed_so_far, "error", Some(e.clone())),
+        }
+    }
+    result
 }
 
 #[tauri::command]
