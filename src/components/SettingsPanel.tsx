@@ -289,8 +289,31 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
           <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
             <Settings size={14} /> Terminal Configuration
           </div>
-          
+
           <TerminalFontSettings settings={settings} setSettings={setSettings} />
+
+          <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-zinc-100">Use my default shell</div>
+                <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
+                  Start new terminals with the shell your own system is configured for ($SHELL) — zsh,
+                  fish, whatever you run locally — as a login shell, instead of the connected account's
+                  default. Brings over your prompt theme, plugins, and aliases, as long as that shell is
+                  also installed on the server. Desktop macOS/Linux only; has no effect when $SHELL can't
+                  be determined (Windows, or an app launched without one set).
+                </p>
+              </div>
+              <button
+                role="switch"
+                aria-checked={!!settings.useLocalShell}
+                onClick={() => setSettings((s: any) => ({ ...s, useLocalShell: !s.useLocalShell }))}
+                className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${settings.useLocalShell ? 'bg-primary' : 'bg-zinc-700'}`}
+              >
+                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${settings.useLocalShell ? 'left-[22px]' : 'left-0.5'}`} />
+              </button>
+            </div>
+          </div>
         </section>
 
         {/* Activity Section — moved out of the sidebar so the top-level

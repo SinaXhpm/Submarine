@@ -10,6 +10,7 @@ import { MobileKeyBar, ModifiersState, ModKey, SpecialKey } from './MobileKeyBar
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
 import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
+import { readUseLocalShell } from '../util/terminalShell';
 import { IS_ANDROID, IS_LINUX } from '../util/platform';
 
 // Does the recent remote OUTPUT look like a no-echo password / passphrase
@@ -320,6 +321,7 @@ const TerminalView = ({
         terminalId,
         cols: term.cols || 80,
         rows: term.rows || 24,
+        useLocalShell: readUseLocalShell(),
       }).then(syncSize, e => {
         term.writeln(`\x1b[31mReconnect failed: ${e}\x1b[0m`);
       });
@@ -531,7 +533,8 @@ const TerminalView = ({
             sessionId,
             terminalId,
             cols: term.cols || 80,
-            rows: term.rows || 24
+            rows: term.rows || 24,
+            useLocalShell: readUseLocalShell(),
           }).then(syncSize, e => {
             term.writeln(`\x1b[31mFailed to open terminal: ${e}\x1b[0m`);
           });

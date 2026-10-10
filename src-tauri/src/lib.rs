@@ -9002,8 +9002,51 @@ async fn disconnect_session(
     Ok(())
 }
 
+// Name of the shell this desktop has configured as the user's own default —
+// what their system terminal launches, `.zshrc`/`.config/fish` and all. Read
+// from `$SHELL`, which every login manager on Linux and macOS exports for
+// the user's session (set via `chsh` / Directory Services, independent of
+// whichever shell happens to be running Submarine itself).
+//
+// Only meaningful on Unix desktops: Windows has no `$SHELL` equivalent that
+// means the same thing over SSH (`request_shell` there doesn't take the
+// result anywhere near a login shell), and Android has no system terminal to
+// mirror. On those platforms — and whenever `$SHELL` isn't set, e.g. a macOS
+// app launched from Finder with a minimal environment — this returns `None`
+// and `open_terminal` falls back to its normal behaviour unchanged.
+//
+// Validated with `is_safe_remote_exec_path` before use: it's about to be
+// spliced into a command sent to the remote host, so only a plain absolute
+// path survives.
+#[cfg(all(unix, not(target_os = "android")))]
+fn local_default_shell() -> Option<String> {
+    let shell = std::env::var("SHELL").ok()?;
+    let shell = shell.trim();
+    is_safe_remote_exec_path(shell).then(|| shell.to_string())
+}
+
+#[cfg(not(all(unix, not(target_os = "android"))))]
+fn local_default_shell() -> Option<String> {
+    None
+}
+
+// Builds the command behind "Use my default shell": try the desktop's own
+// shell first, as a login shell; if it isn't installed on this host, fall
+// back to the account's *own* configured shell (via `getent`, same thing
+// plain `request_shell` would have started) rather than let a missing
+// binary kill the whole channel — see `open_terminal`. `shell` must already
+// be `is_safe_remote_exec_path`-validated; this only quotes it.
+fn login_shell_exec_command(shell: &str) -> String {
+    let sh = crate::docker::shq(shell);
+    format!(
+        "if command -v {sh} >/dev/null 2>&1; then exec {sh} -l; \
+         else d=$(getent passwd \"$(id -un)\" 2>/dev/null | cut -d: -f7); \
+         exec \"${{d:-${{SHELL:-/bin/sh}}}}\" -l; fi"
+    )
+}
+
 #[tauri::command]
-async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>, session_id: String, terminal_id: String, cols: u32, rows: u32) -> Result<(), String> {
+async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>, session_id: String, terminal_id: String, cols: u32, rows: u32, use_local_shell: bool) -> Result<(), String> {
     use std::sync::Arc;
     use crate::ssh_manager::TerminalCommand;
 
@@ -9021,7 +9064,26 @@ async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>,
 
     // Request PTY
     channel.request_pty(false, "xterm-256color", cols, rows, 0, 0, &[]).await.map_err(|e| e.to_string())?;
-    channel.request_shell(true).await.map_err(|e| e.to_string())?;
+
+    // Settings → Terminal → "Use my default shell": instead of the plain
+    // shell request below (which starts whatever the *remote account* has
+    // configured as its login shell), explicitly `exec` this desktop's own
+    // default shell as a login shell. Gives the remote session the same
+    // prompt theme, aliases, and plugins the user already has locally,
+    // without needing `chsh` rights on every server they connect to.
+    // `-l` (login) is understood by bash/zsh/ksh/dash/tcsh/fish alike, so
+    // rc files get sourced the same way they would in the user's own
+    // terminal. Falls back to the unchanged default when the setting is
+    // off or no local shell could be determined (see `local_default_shell`).
+    match use_local_shell.then(local_default_shell).flatten() {
+        Some(shell) => {
+            let cmd = login_shell_exec_command(&shell);
+            channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
+        }
+        None => {
+            channel.request_shell(true).await.map_err(|e| e.to_string())?;
+        }
+    }
 
     let (tx, rx) = tokio::sync::mpsc::channel::<TerminalCommand>(32);
     // Last-wins watch channel for PTY resizes. The PTY task selects on
@@ -10009,6 +10071,30 @@ mod elevated_sftp_tests {
         assert!(!is_safe_remote_exec_path("/usr/lib/sftp-server; rm -rf /"));
         assert!(!is_safe_remote_exec_path("/opt/my sftp/sftp-server"));
         assert!(!is_safe_remote_exec_path("/usr/lib/$(id)/sftp-server"));
+    }
+
+    #[test]
+    fn login_shell_exec_command_falls_back_when_the_shell_is_missing() {
+        let cmd = login_shell_exec_command("/usr/bin/zsh");
+        // Tries the requested shell first, as a login shell.
+        assert!(cmd.contains("command -v '/usr/bin/zsh'"));
+        assert!(cmd.contains("exec '/usr/bin/zsh' -l"));
+        // On a host without it, falls back to the account's OWN shell
+        // (getent) rather than dying with "No such file or directory" and
+        // taking the whole channel down — and still as a login shell.
+        assert!(cmd.contains("getent passwd"));
+        assert!(cmd.contains("${d:-${SHELL:-/bin/sh}}"));
+        assert!(cmd.ends_with("-l; fi"));
+    }
+
+    #[test]
+    fn login_shell_exec_command_quotes_the_shell_path() {
+        // A shell path can't actually contain a single quote (it must pass
+        // is_safe_remote_exec_path first), but the quoting itself shouldn't
+        // silently break if it somehow did.
+        let cmd = login_shell_exec_command("/bin/zsh");
+        assert!(!cmd.contains("exec /bin/zsh")); // unquoted would be a bug
+        assert!(cmd.contains("'/bin/zsh'"));
     }
 
     #[test]
