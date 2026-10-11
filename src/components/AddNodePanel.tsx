@@ -825,15 +825,15 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               </button>
             </div>
 
-            {/* Sync shell config toggle — shows a "Sync shell config" button
-                in this server's session toolbar once connected. Off by
+            {/* Enables the "Shell" button in this server's session toolbar
+                once connected — it doesn't sync anything itself. Off by
                 default and per-server on purpose: with many saved servers
                 the user doesn't want every one of them offering to push
                 local dotfiles, only the ones they pick here. What actually
                 gets pushed is configured once, globally, in Settings. */}
             <div className="flex items-center justify-between gap-3 pt-1">
               <div className="min-w-0">
-                <div className="text-[11px] font-bold text-zinc-300">Sync shell config to this server</div>
+                <div className="text-[11px] font-bold text-zinc-300">Enable shell config sync for this server</div>
                 <div className="text-[10.5px] text-zinc-500 leading-snug">
                   Adds a button in the session toolbar to push your local shell config (Settings → Shell config sync) to this server.
                 </div>
