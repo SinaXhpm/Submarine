@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Folder, File, ArrowUp, RefreshCw, Trash2, Edit3, Shield,
   X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch, FolderPlus,
-  Download, Upload, ExternalLink, Move, CheckSquare, MinusSquare, Square, Search, Link2,
+  Download, Upload, ExternalLink, Move, CheckSquare, MinusSquare, Square, Search, Link2, Copy,
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
 import { localDir, localJoin } from "../fs/localPath";
@@ -1067,6 +1067,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     }
   };
 
+  // Copy name / Copy path in a row's menu.
+  const copyText = async (text: string, what: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify(`Copied ${what}`, "success");
+    } catch (err: any) {
+      notify(`Copy failed: ${err}`, "error");
+    }
+  };
+
   // Local: reveal in OS file manager.
   const revealLocalEntry = async (entry: FileEntry) => {
     try {
@@ -1884,6 +1894,25 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
             <Move size={11} /><span>{multi ? `Move (${acting.length}) to…` : "Move to…"}</span>
           </button>
+          {/* A row's name or full path; for several rows, their paths, one
+              per line. */}
+          {!multi ? (
+            <>
+              <button onClick={() => { setContextMenu(null); copyText(contextMenu.entry.name, "name"); }}
+                className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+                <Copy size={11} /><span>Copy name</span>
+              </button>
+              <button onClick={() => { setContextMenu(null); copyText(contextMenu.entry.path, "path"); }}
+                className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+                <Copy size={11} /><span>Copy path</span>
+              </button>
+            </>
+          ) : (
+            <button onClick={() => { setContextMenu(null); copyText(acting.map((e) => e.path).join("\n"), `${acting.length} paths`); }}
+              className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+              <Copy size={11} /><span>Copy {acting.length} paths</span>
+            </button>
+          )}
           {!multi && provider.chmod && (
             <button onClick={() => openProperties(contextMenu.entry)}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
