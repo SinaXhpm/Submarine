@@ -33,7 +33,9 @@ use crate::ssh_manager::ClientHandler;
 // Public types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One forwarding rule: what a node saves in its `tunnels` column, and what a
+/// session keeps in its rule list (`SshState::session_tunnel_specs`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelSpec {
     /// "D" (dynamic / SOCKS5), "L" (local forward), "R" (remote forward —
     /// not implemented yet; start_tunnel returns an error for this kind).
@@ -45,6 +47,82 @@ pub struct TunnelSpec {
     /// Remote target "host:port" — used by L only. Ignored by D.
     #[serde(default)]
     pub remote: String,
+    /// The name the user gave the forward, if any (see `clean_name`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Stopped by the user: the rule is kept, but nothing starts it (not a
+    /// connect, a reconnect, the dedicated connection or a retry) until the
+    /// user starts it again. Rules saved before this existed have no such
+    /// field, and run.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stopped: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Two specs are the same forward when their kind, local side and target
+/// match. The name and the stopped flag describe a forward; they don't make
+/// it a different one.
+impl PartialEq for TunnelSpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.local == other.local && self.remote == other.remote
+    }
+}
+
+impl Eq for TunnelSpec {}
+
+/// The longest name a forward keeps, in characters.
+const NAME_MAX_CHARS: usize = 64;
+
+/// A name as typed, the way it is kept: trimmed, at most `NAME_MAX_CHARS`
+/// characters, and none at all when nothing is left.
+pub fn clean_name(name: Option<&str>) -> Option<String> {
+    let name: String = name?.trim().chars().take(NAME_MAX_CHARS).collect();
+    let name = name.trim_end().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// A session's rules after `spec` was started: the rule for that forward is
+/// running again (and takes `spec`'s name, if it has one), or is added at the
+/// end when the forward is new.
+pub fn rule_started(rules: &mut Vec<TunnelSpec>, spec: &TunnelSpec) {
+    match rules.iter_mut().find(|rule| *rule == spec) {
+        Some(rule) => {
+            rule.stopped = false;
+            if spec.name.is_some() {
+                rule.name = spec.name.clone();
+            }
+        }
+        None => rules.push(TunnelSpec { stopped: false, ..spec.clone() }),
+    }
+}
+
+/// A session's rules after the user stopped `spec`: the rule stays, marked
+/// stopped. (Before #28 a stop removed the rule, and the node lost it.)
+pub fn rule_stopped(rules: &mut [TunnelSpec], spec: &TunnelSpec) {
+    for rule in rules.iter_mut().filter(|rule| *rule == spec) {
+        rule.stopped = true;
+    }
+}
+
+/// Removes the rule for `spec`. False when there was none.
+pub fn rule_removed(rules: &mut Vec<TunnelSpec>, spec: &TunnelSpec) -> bool {
+    let before = rules.len();
+    rules.retain(|rule| rule != spec);
+    rules.len() != before
+}
+
+/// Gives the rule for `spec` the name `name` (see `clean_name`). False when
+/// there is no such rule.
+pub fn rule_renamed(rules: &mut [TunnelSpec], spec: &TunnelSpec, name: Option<&str>) -> bool {
+    let mut found = false;
+    for rule in rules.iter_mut().filter(|rule| *rule == spec) {
+        rule.name = clean_name(name);
+        found = true;
+    }
+    found
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,6 +144,10 @@ pub struct TunnelStatus {
     pub conns_active: u32,
     pub bytes_in: u64,
     pub bytes_out: u64,
+    /// The rule this tunnel was started from, so the Ports panel can tell
+    /// which of a session's rules are running (`listen_addr` is the resolved
+    /// address, not what the rule says).
+    pub spec: TunnelSpec,
 }
 
 pub struct ActiveTunnel {
@@ -358,6 +440,7 @@ pub async fn start_tunnel(
         conns_active: 0,
         bytes_in: 0,
         bytes_out: 0,
+        spec: spec.clone(),
     };
     let status_arc = Arc::new(Mutex::new(status.clone()));
 
@@ -1859,10 +1942,105 @@ async fn handle_socks5(
 #[cfg(test)]
 mod tunnel_tests {
     use super::{bind_with_retry, drained_stream, drained_stream_with_cap, pump_bidirectional_with_idle, pump_channel};
+    use super::{clean_name, rule_removed, rule_renamed, rule_started, rule_stopped, TunnelSpec};
     use crate::ssh_test_server::{connect, TestServer};
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn spec(kind: &str, local: &str, remote: &str) -> TunnelSpec {
+        serde_json::from_value(serde_json::json!({ "type": kind, "local": local, "remote": remote })).unwrap()
+    }
+
+    #[test]
+    fn rules_saved_before_names_and_stopping_read_and_save_as_they_were() {
+        let old = r#"[{"type":"L","local":"8080","remote":"db:5432"},{"type":"D","local":"1080","remote":""}]"#;
+        let rules: Vec<TunnelSpec> = serde_json::from_str(old).unwrap();
+        assert!(rules.iter().all(|rule| rule.name.is_none() && !rule.stopped));
+        // Unchanged rules are saved byte for byte as before, so an older
+        // version reading them sees nothing new.
+        assert_eq!(serde_json::to_string(&rules).unwrap(), old);
+        // The node form keeps a row id of its own in the same objects.
+        let with_row_id: TunnelSpec =
+            serde_json::from_str(r#"{"rid":"t-1","type":"L","local":"8080","remote":"db:5432"}"#).unwrap();
+        assert_eq!(with_row_id, rules[0]);
+    }
+
+    #[test]
+    fn a_name_and_a_stop_are_saved_with_the_rule() {
+        let mut rule = spec("L", "8080", "db:5432");
+        rule.name = Some("database".into());
+        rule.stopped = true;
+        let json = serde_json::to_string(&rule).unwrap();
+        assert_eq!(json, r#"{"type":"L","local":"8080","remote":"db:5432","name":"database","stopped":true}"#);
+        let back: TunnelSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name.as_deref(), Some("database"));
+        assert!(back.stopped);
+    }
+
+    #[test]
+    fn a_forward_is_the_same_one_whatever_its_name_or_state() {
+        let mut named = spec("L", "8080", "db:5432");
+        named.name = Some("database".into());
+        named.stopped = true;
+        assert_eq!(named, spec("L", "8080", "db:5432"));
+        assert_ne!(spec("L", "8080", "db:5432"), spec("L", "8081", "db:5432"));
+        assert_ne!(spec("L", "8080", "db:5432"), spec("L", "8080", "db:5433"));
+        assert_ne!(spec("L", "8080", "x:1"), spec("R", "8080", "x:1"));
+    }
+
+    #[test]
+    fn a_name_is_kept_trimmed_and_short_and_none_when_blank() {
+        assert_eq!(clean_name(Some("  web admin  ")).as_deref(), Some("web admin"));
+        assert_eq!(clean_name(Some("   ")), None);
+        assert_eq!(clean_name(Some("")), None);
+        assert_eq!(clean_name(None), None);
+        let long = "ü".repeat(100);
+        assert_eq!(clean_name(Some(&long)).unwrap().chars().count(), 64);
+        // Cutting at 64 can leave a space at the end; it goes too.
+        let spaced = format!("{} tail", "a".repeat(63));
+        assert_eq!(clean_name(Some(&spaced)).unwrap(), "a".repeat(63));
+    }
+
+    #[test]
+    fn stopping_keeps_the_rule_and_starting_brings_it_back() {
+        let mut rules = vec![spec("D", "1080", ""), spec("L", "8080", "db:5432")];
+        rules[1].name = Some("database".into());
+
+        rule_stopped(&mut rules, &spec("L", "8080", "db:5432"));
+        assert_eq!(rules.len(), 2, "a stop keeps the rule");
+        assert!(rules[1].stopped && !rules[0].stopped);
+        assert_eq!(rules[1].name.as_deref(), Some("database"));
+
+        // Started again without a name: the rule keeps the one it has.
+        rule_started(&mut rules, &spec("L", "8080", "db:5432"));
+        assert_eq!(rules.len(), 2, "no duplicate");
+        assert!(!rules[1].stopped);
+        assert_eq!(rules[1].name.as_deref(), Some("database"));
+
+        // A new forward is added at the end, running, with its name.
+        let mut new = spec("R", "9000", "localhost:22");
+        new.name = Some("back in".into());
+        new.stopped = true; // whatever the caller sent, a started rule runs
+        rule_started(&mut rules, &new);
+        assert_eq!(rules.len(), 3);
+        assert!(!rules[2].stopped);
+        assert_eq!(rules[2].name.as_deref(), Some("back in"));
+    }
+
+    #[test]
+    fn removing_and_renaming_touch_only_that_rule() {
+        let mut rules = vec![spec("D", "1080", ""), spec("L", "8080", "db:5432")];
+        assert!(rule_renamed(&mut rules, &spec("D", "1080", ""), Some(" socks ")));
+        assert_eq!(rules[0].name.as_deref(), Some("socks"));
+        assert!(rule_renamed(&mut rules, &spec("D", "1080", ""), Some("")));
+        assert_eq!(rules[0].name, None, "an empty name takes the name away");
+        assert!(!rule_renamed(&mut rules, &spec("D", "1081", ""), Some("x")), "no such rule");
+
+        assert!(rule_removed(&mut rules, &spec("L", "8080", "db:5432")));
+        assert_eq!(rules, vec![spec("D", "1080", "")]);
+        assert!(!rule_removed(&mut rules, &spec("L", "8080", "db:5432")), "already gone");
+    }
 
     /// Round-trip a few bytes on a NEW channel of `session` — only possible
     /// while russh's protocol task for the connection is not blocked.

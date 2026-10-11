@@ -213,7 +213,7 @@ function DesktopApp() {
     // *after* they've saved a few credentials and want to reuse one.
     authType: "custom_pass", credentialId: "", folderId: "", keyId: "",
     proxyType: "none", proxyHost: "", proxyPort: 1080,
-    tunnels: [] as { local: string, remote: string, type: string }[],
+    tunnels: [] as { local: string, remote: string, type: string, name?: string, stopped?: boolean }[],
     autostart: false,
     mirrors: [] as { local: string, remote: string, soft_delete: boolean, excludes: string[], conflict_resolution: string }[],
     color: null as string | null,
@@ -2361,7 +2361,13 @@ function DesktopApp() {
               proxyType: newNode.proxyType || "none",
               proxyHost: newNode.proxyHost || "",
               proxyPort: newNode.proxyPort || 1080,
-              tunnels: newNode.tunnels || [],
+              // A forward's name is kept trimmed and a blank one not at all,
+              // as the Ports panel keeps it; "stopped" only when it is.
+              tunnels: (newNode.tunnels || []).map(({ name, stopped, ...t }: any) => ({
+                ...t,
+                ...(typeof name === "string" && name.trim() ? { name: name.trim() } : {}),
+                ...(stopped ? { stopped: true } : {}),
+              })),
               authType: newNode.authType,
               keyId: newNode.authType === "custom_key" && newNode.keyId ? parseInt(newNode.keyId) : null,
               autostart: !!newNode.autostart,
