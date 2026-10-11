@@ -26,6 +26,7 @@ mod portable;
 mod fonts;
 mod webkit_sandbox;
 mod sftp_remove;
+mod archive;
 #[cfg(test)]
 mod ssh_test_server;
 use ssh_manager::SshState;
@@ -14496,6 +14497,7 @@ pub fn run() {
             sftp_rename, sftp_set_permissions, sftp_set_owner, sftp_stat,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,
             sftp_set_elevated, sftp_elevation_status, sftp_login_user, sftp_resolve_owners,
+            archive::local_archive, archive::local_extract, archive::sftp_archive, archive::sftp_extract,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
             monitor_list, monitor_add, monitor_remove, monitor_set_metrics, monitor_set_custom_metrics,
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,

@@ -502,6 +502,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               headerExtra={elevationControl}
               headerNote={elevationNote}
               rootMode={elevation.elevated || rootByLogin}
+              archiveOff={elevation.elevated ? "Archive and extract aren't available in root mode: they run as the login user, not through sudo" : undefined}
             />
           </div>
         </div>
