@@ -190,7 +190,8 @@ const shortcutLetter = (e: React.KeyboardEvent) =>
 
 export interface ActiveDrag {
   paneId: "local" | "remote";
-  entry: FileEntry;
+  /** What is dragged: the selection when the row grabbed is in it, else that row. */
+  entries: FileEntry[];
   x: number;
   y: number;
 }
@@ -203,6 +204,8 @@ export interface FilePanelProps {
   sessionId?: string;
   /** Notifies the parent of an active cross-pane drag. */
   onDragMove: (drag: ActiveDrag | null) => void;
+  /** After an upload or download sent something to the other pane's folder, so that pane can show it. */
+  onTransferred?: () => void;
   /**
    * Optional starting directory. Overrides the provider's home. If listing it
    * fails (e.g. the saved dir was removed since last session), the panel falls
@@ -235,6 +238,8 @@ export interface FilePanelProps {
 export interface FilePanelHandle {
   refresh: () => Promise<void>;
   currentDir: () => string;
+  /** Send `items` of this pane into `dir` of the other one: a download from the remote pane, an upload from the local one. */
+  sendTo: (items: FileEntry[], dir: string) => Promise<void>;
 }
 
 const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
@@ -242,6 +247,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   disabled = false,
   sessionId,
   onDragMove,
+  onTransferred,
   initialPath,
   onPathChange,
   getOppositeDir,
@@ -518,9 +524,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
 
+  // `sendTo` goes through a ref that every render points at its own
+  // upload/download, so the handle (made once) never runs a stale one.
+  const sendToRef = useRef<(items: FileEntry[], dir: string) => Promise<void>>(async () => {});
   useImperativeHandle(ref, () => ({
     refresh: () => fetch(currentPathRef.current),
     currentDir: () => currentPathRef.current,
+    sendTo: (items, dir) => sendToRef.current(items, dir),
   }), []);
 
   const goUp = () => fetch(provider.parentPath(currentPath), currentPath);
@@ -688,13 +698,17 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   const DRAG_START_THRESHOLD = 6;
 
+  // Files and folders alike. A row that is part of the selection takes the
+  // whole selection along; any other row goes alone.
   const handleRowMouseDown = (e: React.MouseEvent, entry: FileEntry) => {
     if (disabled || e.button !== 0) return;
-    if (entry.isDir) return; // folder drag handled later
 
     const startX = e.clientX;
     const startY = e.clientY;
     let dragStarted = false;
+    const entries = selected.has(entry.path)
+      ? sortedEntries.filter((x) => selected.has(x.path))
+      : [entry];
 
     const onMove = (ev: MouseEvent) => {
       if (!dragStarted) {
@@ -704,7 +718,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       }
       onDragMove({
         paneId: provider.id as "local" | "remote",
-        entry,
+        entries,
         x: ev.clientX,
         y: ev.clientY,
       });
@@ -982,9 +996,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // and preserves structure; individual files go through the single-file
   // command. Both paths emit progress on the same `sftp-transfer-{id}`
   // channel so the user sees uniform cards.
-  const downloadItems = async (items: FileEntry[]) => {
+  // `into`: the local folder to download into (a drop on the local pane, or
+  // on a folder row in it) in place of the folder that pane shows.
+  const downloadItems = async (items: FileEntry[], into?: string) => {
     if (!sessionId || items.length === 0) return;
-    let dest = getOppositeDir?.();
+    let dest = into ?? getOppositeDir?.();
     if (!dest) {
       // Fallback destination when the sibling pane hasn't reported a dir
       // yet. Desktop opens the rfd folder picker; Android has no picker
@@ -1029,6 +1045,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     }
     if (count > 0) {
       notify(items.length === 1 ? `Downloaded ${items[0].name}` : `Downloaded ${count} of ${items.length} items`, "success");
+      onTransferred?.();
     } else if (cancelled) {
       notify("Download batch cancelled", "info");
     }
@@ -1039,9 +1056,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // Destination is whatever directory the remote pane is showing; if the
   // remote pane hasn't reported one yet (still loading), we bail with a
   // clear error rather than guessing the home dir.
-  const uploadItems = async (items: FileEntry[]) => {
+  // `into`: the remote folder to upload into, as with downloadItems.
+  const uploadItems = async (items: FileEntry[], into?: string) => {
     if (!sessionId || items.length === 0) return;
-    const dest = getOppositeDir?.();
+    const dest = into ?? getOppositeDir?.();
     if (!dest) { notify("Open a directory in the remote pane first.", "error"); return; }
     const trimmed = dest.replace(/[\\/]+$/, "");
     const fileCount = items.filter((e) => !e.isDir).length;
@@ -1073,10 +1091,12 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     }
     if (count > 0) {
       notify(items.length === 1 ? `Uploaded ${items[0].name}` : `Uploaded ${count} of ${items.length} items`, "success");
+      onTransferred?.();
     } else if (cancelled) {
       notify("Upload batch cancelled", "info");
     }
   };
+  sendToRef.current = (items, dir) => (provider.id === "remote" ? downloadItems(items, dir) : uploadItems(items, dir));
 
   // Remote: open in OS default editor with a save-watcher that re-uploads on
   // every change. Backed by the existing `sftp_open_remote_file` command.

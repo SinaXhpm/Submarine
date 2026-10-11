@@ -7,8 +7,7 @@ import FilePanel, { ActiveDrag, FilePanelHandle } from "./FilePanel";
 import MirrorsPanel from "./MirrorsPanel";
 import { createLocalProvider } from "../fs/localProvider";
 import { createRemoteProvider } from "../fs/remoteProvider";
-import { transferFile } from "../fs/transfer";
-import { useOverwritePrompt, useTextPrompt } from "../ui/confirm";
+import { useTextPrompt } from "../ui/confirm";
 import { useIsNarrow } from "../hooks/useViewport";
 import { bookmarksKey } from "../util/sftpBookmarks";
 
@@ -31,8 +30,7 @@ const describeSudoError = (raw: string) => {
 
 // Dual-pane SFTP workspace. Owns the two FilePanels, the cross-pane drag
 // state, and the global mouseup that turns a release over the opposite pane
-// into a `transferFile` call. The panels themselves stay agnostic — they only
-// know how to drive their own provider.
+// into the source pane's own upload or download (FilePanelHandle.sendTo).
 
 export type SftpView = "files" | "mirror";
 
@@ -93,8 +91,12 @@ const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
       }}
       className="bg-[#0c0c0e]/95 border border-indigo-500/40 rounded-lg px-3 py-1.5 text-[11px] font-mono text-zinc-100 shadow-2xl backdrop-blur-md flex items-center gap-2"
     >
-      <FileIcon size={12} className="text-indigo-300 shrink-0" />
-      <span className="truncate max-w-[260px]">{drag.entry.name}</span>
+      {drag.entries.length === 1 && drag.entries[0].isDir
+        ? <Folder size={12} className="text-indigo-300 shrink-0" />
+        : <FileIcon size={12} className="text-indigo-300 shrink-0" />}
+      <span className="truncate max-w-[260px]">
+        {drag.entries.length === 1 ? drag.entries[0].name : `${drag.entries.length} items`}
+      </span>
     </div>,
     document.body
   );
@@ -353,11 +355,15 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
     return `${(n / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
   };
 
-  const overwritePrompt = useOverwritePrompt();
+  // The workspace's own element: a drop counts only on its panes.
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
-  // Cross-pane drop dispatch: when the user releases the mouse anywhere, look
-  // up which pane is under the cursor; if it differs from the source pane,
-  // run the transfer and refresh both panels.
+  // Cross-pane drop: on a release over this workspace's other pane, the pane
+  // the drag came from sends what was dragged there with its own upload or
+  // download (folders, several items, the overwrite prompts), into the folder
+  // row under the pointer or else the folder that pane shows. The other pane
+  // then lists again (onTransferred). A release over a pane of another
+  // session's workspace (tabs side by side) is not this one's to handle.
   useEffect(() => {
     const onMouseUp = (e: MouseEvent) => {
       const active = dragRef.current;
@@ -366,74 +372,27 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
       // listener clearing the ghost) doesn't re-enter this branch.
       dragRef.current = null;
 
-      const hit = document.elementFromPoint(e.clientX, e.clientY);
-      if (!hit) return;
-      const pane = (hit as HTMLElement).closest("[data-fs-pane]") as HTMLElement | null;
-      if (!pane) return;
+      const hit = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+      const pane = hit?.closest("[data-fs-pane]") as HTMLElement | null;
+      if (!pane || !rootRef.current?.contains(pane)) return;
       const targetPaneId = pane.getAttribute("data-fs-pane");
       if (!targetPaneId || targetPaneId === active.paneId) return;
 
-      // Row-aware drop: if the cursor is on a folder row inside the
-      // destination pane, drop INTO that folder (its path) instead of
-      // the pane's current directory. Falling on a file row, an empty
-      // area, or the header still falls back to the pane's currentPath.
-      // This makes the natural "drag onto folder" gesture work, matching
-      // how users expect Finder/Explorer drag-drop to behave.
-      const row = (hit as HTMLElement).closest("[data-fs-row-isdir]") as HTMLElement | null;
-      const rowIsDir = row?.getAttribute("data-fs-row-isdir") === "1";
-      const rowPath = rowIsDir ? row?.getAttribute("data-fs-row-path") : null;
+      // Dropped on a folder row: into that folder, as in Finder or Explorer.
+      const row = hit?.closest("[data-fs-row-isdir]") as HTMLElement | null;
+      const rowPath = row?.getAttribute("data-fs-row-isdir") === "1" ? row.getAttribute("data-fs-row-path") : null;
       const targetDir = rowPath || pane.getAttribute("data-fs-current-path") || "";
       if (!targetDir) return;
 
-      const srcProv = active.paneId === "local" ? localProvider : remoteProvider;
-      const destProv = targetPaneId === "local" ? localProvider : remoteProvider;
-      const isCrossSide = (active.paneId === "local") !== (targetPaneId === "local");
-
-      const action = active.paneId === "local" && targetPaneId === "remote"
-        ? "Uploading"
-        : active.paneId === "remote" && targetPaneId === "local"
-          ? "Downloading"
-          : "Moving";
-      notify(`${action} ${active.entry.name}…`, "info");
-
-      const runTransfer = async () => {
-        const srcInfo = { provider: srcProv, path: active.entry.path, name: active.entry.name, isDir: active.entry.isDir };
-        const dstInfo = { provider: destProv, dir: targetDir };
-        try {
-          await transferFile(srcInfo, dstInfo, false);
-        } catch (err: any) {
-          const msg = String(err?.message ?? err);
-          // The backend emits `EXISTS:<path>` only for cross-side SFTP
-          // transfers; same-side rename surfaces its own per-provider
-          // errors that won't match this sentinel. Both paths therefore
-          // do the right thing.
-          if (!msg.startsWith("EXISTS:") || !isCrossSide || active.entry.isDir) throw err;
-          const direction = action === "Uploading" ? "upload" : "download";
-          const choice = await overwritePrompt({ name: active.entry.name, direction, batchSize: 1 });
-          if (choice === "cancel" || choice === "skip" || choice === "skip-all") {
-            notify(`${active.entry.name} skipped`, "info");
-            return;
-          }
-          await transferFile(srcInfo, dstInfo, true);
-        }
-        notify(`${active.entry.name} ✓`, "success");
-        // Refresh both sides — source may have lost the file (move semantics
-        // for same-side transfers), target gains it.
-        localRef.current?.refresh();
-        remoteRef.current?.refresh();
-      };
-
-      runTransfer().catch((err) => {
-        notify(`Transfer failed: ${err}`, "error");
-        console.error("Cross-pane transfer failed:", err);
-      });
+      const source = active.paneId === "local" ? localRef.current : remoteRef.current;
+      source?.sendTo(active.entries, targetDir).catch((err) => notify(`Transfer failed: ${err}`, "error"));
     };
     window.addEventListener("mouseup", onMouseUp);
     return () => window.removeEventListener("mouseup", onMouseUp);
-  }, [localProvider, remoteProvider, overwritePrompt]);
+  }, []);
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#0a0a0c] relative">
+    <div ref={rootRef} className="flex-1 flex flex-col h-full overflow-hidden bg-[#0a0a0c] relative">
       {/* Files view — dual-pane browser. Stays mounted when Mirror is on top
           so directory state and selection don't reset across tab toggles.
           Both FilePanels are ALWAYS mounted (one is just CSS-hidden in
@@ -518,6 +477,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               initialPath={savedDirsRef.current.local}
               onPathChange={(p) => saveDir("local", p)}
               getOppositeDir={() => remoteRef.current?.currentDir()}
+              onTransferred={() => remoteRef.current?.refresh()}
               bookmarksKey={bookmarkKeyFor("local")}
             />
           </div>
@@ -537,6 +497,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               initialPath={savedDirsRef.current.remote}
               onPathChange={(p) => saveDir("remote", p)}
               getOppositeDir={() => localRef.current?.currentDir()}
+              onTransferred={() => localRef.current?.refresh()}
               bookmarksKey={bookmarkKeyFor("remote")}
               headerExtra={elevationControl}
               headerNote={elevationNote}
