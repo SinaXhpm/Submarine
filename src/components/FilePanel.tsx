@@ -59,7 +59,7 @@ async function transferWithOverwriteCheck(
 // tree. Drag-out and drop integration are handled by the parent workspace —
 // FilePanel just emits lifecycle callbacks.
 
-type SortColumn = "name" | "size" | "modified" | "permissions";
+type SortColumn = "name" | "size" | "modified" | "permissions" | "owner";
 interface SortState { column: SortColumn; asc: boolean; }
 
 // The header's square icon buttons; a step smaller in the narrowest panes.
@@ -93,30 +93,33 @@ const headerFitIndex = (inner: number) => HEADER_FITS.findIndex((s) => inner >= 
 // and sit right after it, so in a wide pane the room left over stays empty at
 // the end of the row instead of opening a gap between a name and its size.
 // When a pane can't fit a column beside a NAME_MIN name, the columns give way
-// from the end (rights, then changed, then size), and what they showed moves
+// from the end (owner, rights, changed, then size), and what they showed moves
 // to a line under the name.
-type MetaColumn = "size" | "modified" | "permissions";
+type MetaColumn = "size" | "modified" | "permissions" | "owner";
 type ColumnWidths = Record<MetaColumn, number>;
-const REMOTE_COLUMNS: MetaColumn[] = ["size", "modified", "permissions"];
-const LOCAL_COLUMNS: MetaColumn[] = ["size", "modified"]; // local entries carry no rights here
-const COLUMN_LABEL: Record<MetaColumn, string> = { size: "SIZE", modified: "CHANGED", permissions: "RIGHTS" };
+const REMOTE_COLUMNS: MetaColumn[] = ["size", "modified", "permissions", "owner"];
+const LOCAL_COLUMNS: MetaColumn[] = ["size", "modified"]; // local entries carry no rights or owner here
+const COLUMN_LABEL: Record<MetaColumn, string> = { size: "SIZE", modified: "CHANGED", permissions: "RIGHTS", owner: "OWNER" };
 // The left-aligned columns keep a little room from the column before them
 // (COLUMN_LEAD, part of their width), so a size and a date don't run together.
 const COLUMN_CELL: Record<MetaColumn, string> = {
   size: "text-right text-[10.5px] text-zinc-300",
   modified: "pl-1.5 text-[9.5px] text-zinc-400",
   permissions: "pl-1.5 text-[10.5px] text-zinc-300 opacity-90",
+  owner: "pl-1.5 text-[10.5px] text-zinc-300",
 };
-const COLUMN_LEAD: ColumnWidths = { size: 0, modified: 6, permissions: 6 };
+const COLUMN_LEAD: ColumnWidths = { size: 0, modified: 6, permissions: 6, owner: 6 };
 // A column is as wide as the widest value it can show (at its text size) or
 // its heading with the sort arrow, whichever is wider, in the list's own
-// font: measured once (see measureColumns), these until then.
+// font: measured once (see measureColumns), these until then. An owner
+// longer than the sample is cut short and shows in full on hover.
 const COLUMN_SAMPLE: Record<MetaColumn, [string, number]> = {
   size: ["1023.9 KB", 10.5],
   modified: ["0000-00-00 00:00", 9.5],
   permissions: ["drwxr-xr-x", 10.5],
+  owner: ["deployuser", 10.5],
 };
-const COLUMN_FALLBACK: ColumnWidths = { size: 56, modified: 98, permissions: 70 };
+const COLUMN_FALLBACK: ColumnWidths = { size: 56, modified: 98, permissions: 70, owner: 72 };
 const SORT_ARROW = 15;  // the heading's arrow and its margin
 const NAME_MIN = 128;
 const NAME_MAX = 340;
@@ -1129,6 +1132,40 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     else openLocalEntry(entry);
   };
 
+  // ---- owners -----------------------------------------------------------------
+  // The remote OWNER column: an SFTP listing has only numeric uids, so the
+  // names are looked up on the server (sftp_resolve_owners) for uids not
+  // asked about yet, and kept for this pane. A server that can't do it (no
+  // POSIX sh), or two failed lookups, stop the asking: SFTP-only accounts
+  // aren't sent an exec on every folder change. Without a name the uid shows.
+  const [owners, setOwners] = useState<Map<number, string>>(() => new Map());
+  const ownersAskedRef = useRef(new Set<number>());
+  const ownerFailuresRef = useRef(0);
+  useEffect(() => {
+    if (provider.id !== "remote" || !sessionId || ownerFailuresRef.current >= 2) return;
+    const ask = [...new Set(entries.map((e) => e.uid).filter((u): u is number => typeof u === "number"))]
+      .filter((u) => !ownersAskedRef.current.has(u));
+    if (ask.length === 0) return;
+    ask.forEach((u) => ownersAskedRef.current.add(u));
+    invoke<{ owners: { uid: number; name: string }[]; status: string }>("sftp_resolve_owners", { sessionId, uids: ask })
+      .then((found) => {
+        if (found.status !== "complete") ownerFailuresRef.current = 2;
+        if (found.owners.length === 0) return;
+        setOwners((prev) => {
+          const next = new Map(prev);
+          for (const o of found.owners) next.set(o.uid, o.name);
+          return next;
+        });
+      })
+      .catch(() => {
+        ownerFailuresRef.current += 1;
+        ask.forEach((u) => ownersAskedRef.current.delete(u));
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries]);
+  const ownerName = (entry: FileEntry) =>
+    entry.uid === undefined ? "" : owners.get(entry.uid) ?? String(entry.uid);
+
   // ---- sorting ----------------------------------------------------------------
 
   const sortedEntries = (() => {
@@ -1140,6 +1177,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         case "size": va = a.isDir ? -1 : a.size; vb = b.isDir ? -1 : b.size; break;
         case "modified": va = a.modified || 0; vb = b.modified || 0; break;
         case "permissions": va = a.permissions || 0; vb = b.permissions || 0; break;
+        case "owner": va = ownerName(a).toLowerCase(); vb = ownerName(b).toLowerCase(); break;
       }
       if (va < vb) return sort.asc ? -1 : 1;
       if (va > vb) return sort.asc ? 1 : -1;
@@ -1390,6 +1428,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const columnText = (column: MetaColumn, entry: FileEntry) =>
     column === "size" ? (entry.isDir ? "" : formatSize(entry.size))
     : column === "modified" ? formatTime(entry.modified)
+    : column === "owner" ? ownerName(entry)
     : formatRights(entry.isDir, entry.permissions, entry.isSymlink);
 
   return (
@@ -1835,7 +1874,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                   <div title={entry.name} className={`min-w-0 flex-1 truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
                 </div>
                 {shownColumns.map((c) => (
-                  <div key={c} className={`truncate ${COLUMN_CELL[c]}`}>{columnText(c, entry)}</div>
+                  <div key={c} className={`truncate ${COLUMN_CELL[c]}`} title={c === "owner" ? columnText(c, entry) : undefined}>{columnText(c, entry)}</div>
                 ))}
                 {/* The row's menu, for a pointer without a right button. Shown
                     on hover, on the selected rows and on the keyboard's row

@@ -10200,6 +10200,39 @@ mod elevated_sftp_tests {
 }
 
 #[cfg(test)]
+mod owner_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn only_asked_uids_with_a_plain_name_are_taken() {
+        let out = "0\troot\n1003\tdeploy\n1004\tother\nbad line\n7\t\n8\tx\u{1b}[31m\n__SUB_OWNERS:OK\n";
+        let owners = parse_owners(out, &[0, 1003, 7, 8]);
+        let got: Vec<(u32, &str)> = owners.iter().map(|o| (o.uid, o.name.as_str())).collect();
+        assert_eq!(got, vec![(0, "root"), (1003, "deploy")]);
+    }
+
+    #[test]
+    fn the_script_survives_single_quote_wrapping_in_any_shell() {
+        assert!(!OWNER_LOOKUP_SCRIPT.contains('\''));
+        assert!(!OWNER_LOOKUP_SCRIPT.contains('!'));
+    }
+
+    // The script itself, run by this machine's sh: uid 0 is root everywhere.
+    #[cfg(unix)]
+    #[test]
+    fn the_script_names_root_and_ends_with_its_marker() {
+        let out = std::process::Command::new("sh")
+            .args(["-c", OWNER_LOOKUP_SCRIPT, "sh", "0", "3999999999"])
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&out.stdout);
+        assert!(out.lines().any(|l| l == "0\troot"), "{out}");
+        assert!(out.lines().any(|l| l == "__SUB_OWNERS:OK"), "{out}");
+        assert_eq!(parse_owners(&out, &[0, 3999999999]).len(), 1, "{out}");
+    }
+}
+
+#[cfg(test)]
 mod login_shell_tests {
     use super::*;
 
@@ -10280,6 +10313,73 @@ async fn sftp_login_user(
     let (_, session_arc) = sftp_transport(&state, &session_id).await?;
     let out = exec_with_stdin_capture(&session_arc, "id -un", None, 10).await?;
     Ok(out.lines().next().unwrap_or("").trim().to_string())
+}
+
+#[derive(serde::Serialize)]
+struct SftpOwner {
+    uid: u32,
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+struct SftpOwners {
+    owners: Vec<SftpOwner>,
+    /// "complete": every uid asked was looked up; one without a name has
+    /// none on the server. "unsupported": the server can't run the lookup
+    /// (no POSIX sh: a Windows server). An exec that fails or hangs is Err.
+    status: &'static str,
+}
+
+// The names behind the uids of an SFTP listing, which carries numbers only:
+// each uid through `id -un`, else the passwd database. The uids come as
+// arguments (numbers); the script is fixed and has no single quote, as it is
+// sent as `sh -c '<script>' sh <uid>...`.
+const OWNER_LOOKUP_SCRIPT: &str = r#"for uid; do name=$(id -un "$uid" 2>/dev/null) || name=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1 | head -n 1); [ -n "$name" ] && printf "%s\t%s\n" "$uid" "$name"; done; echo __SUB_OWNERS:OK"#;
+
+// One lookup takes this many uids at most; a listing rarely has a handful.
+const OWNER_LOOKUP_MAX: usize = 256;
+
+/// The `uid<TAB>name` lines of OWNER_LOOKUP_SCRIPT's output, for uids that
+/// were asked about. A name is at most 64 characters, with no control
+/// characters.
+fn parse_owners(out: &str, asked: &[u32]) -> Vec<SftpOwner> {
+    out.lines()
+        .filter_map(|line| {
+            let (uid, name) = line.split_once('\t')?;
+            let uid: u32 = uid.trim().parse().ok()?;
+            let name = name.trim();
+            let ok = asked.contains(&uid)
+                && !name.is_empty()
+                && name.chars().count() <= 64
+                && !name.chars().any(char::is_control);
+            ok.then(|| SftpOwner { uid, name: name.to_string() })
+        })
+        .collect()
+}
+
+/// Names for the uids of the remote pane's listing, for its OWNER column.
+#[tauri::command]
+async fn sftp_resolve_owners(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    uids: Vec<u32>,
+) -> Result<SftpOwners, String> {
+    let mut uids = uids;
+    uids.sort_unstable();
+    uids.dedup();
+    uids.truncate(OWNER_LOOKUP_MAX);
+    if uids.is_empty() {
+        return Ok(SftpOwners { owners: Vec::new(), status: "complete" });
+    }
+    let (_, session_arc) = sftp_transport(&state, &session_id).await?;
+    let args = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(" ");
+    let cmd = format!("sh -c '{}' sh {}", OWNER_LOOKUP_SCRIPT, args);
+    let out = exec_with_stdin_capture(&session_arc, &cmd, None, 5).await?;
+    let complete = out.lines().any(|line| line.trim() == "__SUB_OWNERS:OK");
+    Ok(SftpOwners {
+        owners: parse_owners(&out, &uids),
+        status: if complete { "complete" } else { "unsupported" },
+    })
 }
 
 #[tauri::command]
@@ -14395,7 +14495,7 @@ pub fn run() {
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner, sftp_stat,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,
-            sftp_set_elevated, sftp_elevation_status, sftp_login_user,
+            sftp_set_elevated, sftp_elevation_status, sftp_login_user, sftp_resolve_owners,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
             monitor_list, monitor_add, monitor_remove, monitor_set_metrics, monitor_set_custom_metrics,
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,
