@@ -10,6 +10,7 @@ import { createRemoteProvider } from "../fs/remoteProvider";
 import { transferFile } from "../fs/transfer";
 import { useOverwritePrompt, useTextPrompt } from "../ui/confirm";
 import { useIsNarrow } from "../hooks/useViewport";
+import { bookmarksKey } from "../util/sftpBookmarks";
 
 // Root (sudo) mode for the remote pane — see `sftp_set_elevated` in lib.rs.
 type ElevationStatus = { elevated: boolean; passwordless: boolean };
@@ -47,6 +48,9 @@ interface SftpWorkspaceProps {
   // Files or Mirror. The switch is the Mirror button in the SFTP panel's
   // title bar (SessionView), which leaves this panel all its height.
   view?: SftpView;
+  // The unlocked profile: with the server id it keys the panes' bookmarks
+  // (util/sftpBookmarks). A server that isn't saved (Quick Connect) has none.
+  profile?: string | null;
 }
 // "split" is Local above Remote; the name predates "side" and stays because
 // it is what earlier versions saved.
@@ -97,7 +101,7 @@ const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
 });
 DragGhost.displayName = "DragGhost";
 
-const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files" }: SftpWorkspaceProps) => {
+const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files", profile }: SftpWorkspaceProps) => {
   // Mirror needs a saved server; without one the files always show.
   const shownView: SftpView = view === "mirror" && serverId ? "mirror" : "files";
   // Files layout: "tabs" (one side full height) is the default because the
@@ -272,6 +276,9 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
     try { localStorage.setItem(storageKey, JSON.stringify(savedDirsRef.current)); }
     catch { /* quota or private-mode storage — ignore */ }
   };
+  // Where each pane keeps its bookmarks; none for a server that isn't saved.
+  const bookmarkKeyFor = (side: "local" | "remote") =>
+    profile && serverId > 0 ? bookmarksKey(profile, serverId, side) : undefined;
 
   // Source of truth for the active drag. Updated SYNCHRONOUSLY from the
   // panel's onMove via the ref so the window mouseup handler (which runs in
@@ -511,6 +518,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               initialPath={savedDirsRef.current.local}
               onPathChange={(p) => saveDir("local", p)}
               getOppositeDir={() => remoteRef.current?.currentDir()}
+              bookmarksKey={bookmarkKeyFor("local")}
             />
           </div>
           <div className={
@@ -529,6 +537,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               initialPath={savedDirsRef.current.remote}
               onPathChange={(p) => saveDir("remote", p)}
               getOppositeDir={() => localRef.current?.currentDir()}
+              bookmarksKey={bookmarkKeyFor("remote")}
               headerExtra={elevationControl}
               headerNote={elevationNote}
               rootMode={elevation.elevated || rootByLogin}

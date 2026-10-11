@@ -251,8 +251,9 @@ const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
 };
 
 // `displayName`: the session tab's name, which the user may have changed
-// from the server's (DesktopApp's tabNames).
-const SessionViewImpl = ({ session, displayName, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, isActiveView = false, onPromptChange }: any) => {
+// from the server's (DesktopApp's tabNames). `profile`: the unlocked
+// profile's name, for what is kept per server on this device.
+const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, isActiveView = false, onPromptChange }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -2015,6 +2016,7 @@ const SessionViewImpl = ({ session, displayName, onClose, addLog, onStatusChange
                   sessionId={session.id}
                   disabled={status !== 'connected'}
                   serverId={session.serverId}
+                  profile={profile}
                   mirrorsConfig={(() => {
                     try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
                   })()}

@@ -5,13 +5,14 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   Folder, File, ArrowUp, RefreshCw, Trash2, Edit3, Shield,
   X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch, FolderPlus,
-  Download, Upload, ExternalLink, Move, CheckSquare, MinusSquare, Square, Search, Link2, Copy,
+  Download, Upload, ExternalLink, Move, CheckSquare, MinusSquare, Square, Search, Link2, Copy, Bookmark,
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
 import { localDir, localJoin } from "../fs/localPath";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
 import { IS_ANDROID } from "../util/platform";
 import { nameFilterMatcher } from "../util/nameFilter";
+import { BOOKMARKS_MAX, readBookmarks, writeBookmarks } from "../util/sftpBookmarks";
 
 // Batch overwrite state shared across items in a single download/upload run.
 // Once the user picks "Overwrite all" or "Skip all" the kind is sticky and we
@@ -224,6 +225,8 @@ export interface FilePanelProps {
   headerNote?: React.ReactNode;
   /** File operations in this pane run as root — tint the header so it's unmistakable. */
   rootMode?: boolean;
+  /** Where this pane keeps its bookmarked folders (util/sftpBookmarks). None: no bookmarks (a server that isn't saved). */
+  bookmarksKey?: string;
 }
 
 export interface FilePanelHandle {
@@ -242,6 +245,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   headerExtra,
   headerNote,
   rootMode = false,
+  bookmarksKey,
 }, ref) => {
   const [currentPath, setCurrentPath] = useState("");
   // Last five distinct directories visited in this panel, MRU first. Lives
@@ -251,6 +255,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // when navigation succeeds.
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
   const [recentOpen, setRecentOpen] = useState(false);
+  // Bookmarked folders: the star at the end of the path box, and their own
+  // part of the Recent list. Kept on this device (util/sftpBookmarks).
+  const [bookmarks, setBookmarks] = useState<string[]>(() => (bookmarksKey ? readBookmarks(bookmarksKey) : []));
+  useEffect(() => { setBookmarks(bookmarksKey ? readBookmarks(bookmarksKey) : []); }, [bookmarksKey]);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   // Multi-selection lives as a Set of paths (see onRowClick for the clicks).
@@ -407,6 +415,18 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       const next = [path, ...prev.filter((p) => p !== path)];
       return next.slice(0, 5);
     });
+  };
+
+  const toggleBookmark = (path: string) => {
+    if (!bookmarksKey || !path) return;
+    const marked = bookmarks.includes(path);
+    if (!marked && bookmarks.length >= BOOKMARKS_MAX) {
+      notify(`Up to ${BOOKMARKS_MAX} bookmarks: remove one to add another`, "info");
+      return;
+    }
+    const next = marked ? bookmarks.filter((p) => p !== path) : [...bookmarks, path];
+    setBookmarks(next);
+    writeBookmarks(bookmarksKey, next);
   };
 
   // A row to bring into view once the next listing is on screen (see the
@@ -1324,6 +1344,39 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   const isRemote = provider.id === "remote";
 
+  // The Recent list, and a row of it: open the folder, or (the bookmark at
+  // its end) add or remove its bookmark. Mouse-down keeps the focus on the
+  // list's button, whose blur closes the list.
+  const recentShown = recentDirs.filter((p) => p !== currentPath);
+  const currentBookmarked = bookmarks.includes(currentPath);
+  const dirRow = (path: string, part: "recent" | "bookmark") => {
+    const marked = bookmarks.includes(path);
+    return (
+      <div key={`${part}:${path}`} className="flex items-center rounded hover:bg-white/10">
+        <button
+          onMouseDown={(e) => { e.preventDefault(); setRecentOpen(false); fetch(path); }}
+          className="flex-1 min-w-0 flex items-center gap-2 p-1.5 text-left hover:text-white"
+          title={path}
+        >
+          <Folder size={11} className="text-indigo-300 shrink-0" />
+          <span className="truncate">{path}</span>
+        </button>
+        {bookmarksKey && (
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => toggleBookmark(path)}
+            title={marked ? "Remove the bookmark" : "Bookmark this folder"}
+            aria-label={marked ? `Remove the bookmark for ${path}` : `Bookmark ${path}`}
+            aria-pressed={marked}
+            className={`p-1.5 shrink-0 ${marked ? "text-amber-300 hover:text-amber-200" : "text-zinc-500 hover:text-zinc-200"}`}
+          >
+            <Bookmark size={11} fill={marked ? "currentColor" : "none"} />
+          </button>
+        )}
+      </div>
+    );
+  };
+
   // The list's columns at this width (see columnsThatFit), shared by the
   // header and the rows; the ones that gave way show under each name.
   const shownColumns = metaColumns.slice(0, columnsFit);
@@ -1423,8 +1476,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <button
               onClick={() => setRecentOpen((p) => !p)}
               onBlur={() => setTimeout(() => setRecentOpen(false), 200)}
-              disabled={recentDirs.filter((p) => p !== currentPath).length === 0}
-              title="Recent directories"
+              disabled={recentShown.length === 0 && bookmarks.length === 0}
+              title="Recent and bookmarked folders"
               aria-label="Recent directories"
               className={`${headerBtn} text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed`}
             >
@@ -1441,22 +1494,21 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           </button>
           {/* Both lists open under the buttons across the header's width, so
               neither is cut off by a narrow pane. */}
-          {recentOpen && (
-            <div className="absolute top-full mt-1 inset-x-0 z-50 max-h-[220px] overflow-y-auto bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
-              <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">Recent</div>
-              {recentDirs
-                .filter((p) => p !== currentPath)
-                .map((p) => (
-                  <button
-                    key={p}
-                    onMouseDown={(e) => { e.preventDefault(); setRecentOpen(false); fetch(p); }}
-                    className="w-full flex items-center gap-2 p-1.5 rounded text-left hover:bg-white/10 hover:text-white truncate"
-                    title={p}
-                  >
-                    <Folder size={11} className="text-indigo-300 shrink-0" />
-                    <span className="truncate">{p}</span>
-                  </button>
-                ))}
+          {recentOpen && (recentShown.length > 0 || bookmarks.length > 0) && (
+            <div className="absolute top-full mt-1 inset-x-0 z-50 max-h-[320px] overflow-y-auto bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
+              {recentShown.length > 0 && (
+                <>
+                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">Recent</div>
+                  {recentShown.map((p) => dirRow(p, "recent"))}
+                </>
+              )}
+              {recentShown.length > 0 && bookmarks.length > 0 && <div className="my-1 h-px bg-white/10" />}
+              {bookmarks.length > 0 && (
+                <>
+                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">Bookmarks</div>
+                  {bookmarks.map((p) => dirRow(p, "bookmark"))}
+                </>
+              )}
             </div>
           )}
           {IS_ANDROID && androidPickerOpen && androidQuickDirs && (
@@ -1516,6 +1568,18 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             placeholder="Path…"
             className="flex-1 min-w-0 h-6 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-indigo-400/50 focus:bg-white/10"
           />
+          {bookmarksKey && (
+            <button
+              onClick={() => toggleBookmark(currentPath)}
+              disabled={!currentPath}
+              title={currentBookmarked ? "Remove this folder's bookmark" : "Bookmark this folder"}
+              aria-label="Bookmark this folder"
+              aria-pressed={currentBookmarked}
+              className={`${HEADER_BUTTON_BASE} h-6 w-6 disabled:opacity-30 ${currentBookmarked ? "text-amber-300" : "text-zinc-200"}`}
+            >
+              <Bookmark size={11} fill={currentBookmarked ? "currentColor" : "none"} />
+            </button>
+          )}
           <button
             onClick={() => (filterOpen ? closeFilter() : openFilter())}
             title={filterOpen ? "Close the name filter" : "Filter by name (Ctrl+F)"}

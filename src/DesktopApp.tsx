@@ -16,6 +16,7 @@ import PasswordField from "./components/PasswordField";
 import QuickConnectModal, { QuickAuth } from "./components/QuickConnectModal";
 import { useConfirm, useTextPrompt } from "./ui/confirm";
 import { RenameInput } from "./ui/renameInput";
+import { forgetServerBookmarks } from "./util/sftpBookmarks";
 import { useIsNarrow } from "./hooks/useViewport";
 import { FONT_FAMILY_KEY, FONT_SIZE_KEY, readFontFamily, readFontSize } from "./util/terminalFont";
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
@@ -529,6 +530,7 @@ function DesktopApp() {
   const removeServer = async (id: number) => {
     try {
       await invoke("delete_server", { id });
+      if (activeProfile) forgetServerBookmarks(activeProfile, id);
       refreshServers();
       bumpSync();
       addLog("Server removed.", "info");
@@ -1870,6 +1872,7 @@ function DesktopApp() {
                           >
                             <SessionView
                               session={sess}
+                              profile={activeProfile}
                               displayName={tabLabel(sess)}
                               onClose={getCloseHandler(sess.id)}
                               addLog={addLog}
