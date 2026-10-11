@@ -8,6 +8,7 @@ import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
 import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
+import { RenameInput } from "../ui/renameInput";
 import { useIsCompact } from "../hooks/useViewport";
 import { fontFamilyCss, readFontFamily, readFontSize } from "../util/terminalFont";
 import { readShellSyncPairs } from "../util/shellSync";
@@ -143,13 +144,14 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
   );
 };
 
-// The SFTP panel's title bar: the title, the Dedicated toggle, then Mirror,
+// The title bar of a tool panel with a Dedicated toggle (SFTP, Port
+// Forwarding): the title, the toggle, then the panel's buttons (SFTP's Mirror),
 // full screen and close. In a narrow panel not all of it fits. What gives way,
-// in this order: the title shortens to "SFTP", the title goes, and only then
-// does Mirror lose its word. So the word is there whenever there is room for
-// it. The bar measures itself instead of using fixed widths, because the
-// toggle is wider while its status dot shows and the text's width depends on
-// the font.
+// in this order: the title shortens ("SFTP", "Ports"), the title goes, and
+// only then does Mirror lose its word. So the word is there whenever there is
+// room for it. The bar measures itself instead of using fixed widths, because
+// the toggle is wider while its status dot shows and the text's width depends
+// on the font.
 const TITLE_BAR_GAP = 12; // gap-3 between the title, the toggle and the buttons
 const MIRROR_WORD_GAP = 6; // gap-1.5 between Mirror's icon and its word
 const TITLE_BAR_TEXT = "text-[10px] font-bold uppercase tracking-wider";
@@ -161,11 +163,12 @@ const TITLE_BAR_FITS: TitleBarFit[] = [
   { title: "short", mirrorWord: false },
   { title: "none", mirrorWord: false },
 ];
-const SftpTitleBar = ({ toggle, mirrorOn, mirrorDisabled, onMirror, extra, onClose }: {
+const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
+  title: string;
+  shortTitle: string;
   toggle: React.ReactNode;
-  mirrorOn: boolean;
-  mirrorDisabled: boolean;
-  onMirror: () => void;
+  /** SFTP's Mirror button; the other panels have none. */
+  mirror?: { on: boolean; disabled: boolean; onToggle: () => void };
   /** Buttons between Mirror and Close (full screen). */
   extra: React.ReactNode;
   onClose: () => void;
@@ -189,7 +192,7 @@ const SftpTitleBar = ({ toggle, mirrorOn, mirrorDisabled, onMirror, extra, onClo
       const style = getComputedStyle(bar);
       const room = bar.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       if (!(room > 0)) return; // not laid out
-      const word = width(mirrorWordRef.current) + MIRROR_WORD_GAP;
+      const word = mirrorWordRef.current ? width(mirrorWordRef.current) + MIRROR_WORD_GAP : 0;
       const iconButtons = width(buttons) - (fitRef.current.mirrorWord ? word : 0);
       const titles = { full: width(fullTitleRef.current), short: width(shortTitleRef.current), none: 0 };
       const needed = (f: TitleBarFit) =>
@@ -210,43 +213,48 @@ const SftpTitleBar = ({ toggle, mirrorOn, mirrorDisabled, onMirror, extra, onClo
     <div ref={barRef} className="relative h-10 px-4 flex items-center gap-3 border-b border-white/5 bg-white/5 overflow-hidden">
       {fit.title !== "none" && (
         <span className={`${TITLE_BAR_TEXT} text-zinc-400 truncate min-w-0`}>
-          {fit.title === "full" ? "SFTP File Browser" : "SFTP"}
+          {fit.title === "full" ? title : shortTitle}
         </span>
       )}
       <span ref={toggleRef} className="shrink-0 whitespace-nowrap">{toggle}</span>
       <div ref={buttonsRef} className="ml-auto flex items-center gap-2 shrink-0">
-        <button
-          onClick={onMirror}
-          disabled={mirrorDisabled}
-          aria-pressed={mirrorOn}
-          aria-label="Mirror"
-          title={mirrorDisabled
-            ? "Mirror needs a saved server"
-            : mirrorOn ? "Back to the files" : "Mirror: keep a local folder copied to this server"}
-          className={`h-6 px-2 rounded border flex items-center gap-1.5 ${TITLE_BAR_TEXT} transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
-            mirrorOn
-              ? 'text-primary bg-primary/10 border-primary/30'
-              : 'text-zinc-400 border-white/10 hover:text-white hover:bg-white/5'
-          }`}
-        >
-          <FolderUp size={12} className="shrink-0" />
-          {fit.mirrorWord && <span>Mirror</span>}
-        </button>
+        {mirror && (
+          <button
+            onClick={mirror.onToggle}
+            disabled={mirror.disabled}
+            aria-pressed={mirror.on}
+            aria-label="Mirror"
+            title={mirror.disabled
+              ? "Mirror needs a saved server"
+              : mirror.on ? "Back to the files" : "Mirror: keep a local folder copied to this server"}
+            className={`h-6 px-2 rounded border flex items-center gap-1.5 ${TITLE_BAR_TEXT} transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+              mirror.on
+                ? 'text-primary bg-primary/10 border-primary/30'
+                : 'text-zinc-400 border-white/10 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <FolderUp size={12} className="shrink-0" />
+            {fit.mirrorWord && <span>Mirror</span>}
+          </button>
+        )}
         {extra}
         <button onClick={onClose} aria-label="Close" className="text-zinc-500 hover:text-white transition-colors shrink-0">
           <X size={14} />
         </button>
       </div>
       <div aria-hidden className="absolute left-0 top-0 invisible pointer-events-none whitespace-nowrap flex gap-4">
-        <span ref={fullTitleRef} className={TITLE_BAR_TEXT}>SFTP File Browser</span>
-        <span ref={shortTitleRef} className={TITLE_BAR_TEXT}>SFTP</span>
-        <span ref={mirrorWordRef} className={TITLE_BAR_TEXT}>Mirror</span>
+        <span ref={fullTitleRef} className={TITLE_BAR_TEXT}>{title}</span>
+        <span ref={shortTitleRef} className={TITLE_BAR_TEXT}>{shortTitle}</span>
+        {mirror && <span ref={mirrorWordRef} className={TITLE_BAR_TEXT}>Mirror</span>}
       </div>
     </div>
   );
 };
 
-const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, isActiveView = false, onPromptChange }: any) => {
+// `displayName`: the session tab's name, which the user may have changed
+// from the server's (DesktopApp's tabNames). `profile`: the unlocked
+// profile's name, for what is kept per server on this device.
+const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, isActiveView = false, onPromptChange }: any) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -541,7 +549,9 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // docker-exec session into a specific container (spawned from the Info
   // panel). Container slots stay otherwise identical — same xterm, same
   // events — they just point the backend at `open_container_terminal`.
-  const [terminals, setTerminals] = useState<{id: string, title: string, container?: { name: string; useSudo: boolean }}[]>(() => {
+  // `baseTitle`: the title a tab had before it was renamed, which an empty
+  // name brings back.
+  const [terminals, setTerminals] = useState<{id: string, title: string, baseTitle?: string, container?: { name: string; useSudo: boolean }}[]>(() => {
     return [{ id: `${session.id}-term-0`, title: '1' }];
   });
   // Bumped on every successful reconnect. TerminalView watches this prop
@@ -688,6 +698,20 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   // window-space, matching the pattern used by the session tab menu at
   // App level.
   const [plusMenu, setPlusMenu] = useState<{ x: number; y: number } | null>(null);
+  // A terminal tab's own menu (right-click, or a double-click straight into
+  // its name editor). A new title goes into `terminals`, so the Wall and
+  // split headers show it too.
+  const [termMenu, setTermMenu] = useState<{ x: number; y: number; termId: string } | null>(null);
+  const [termRename, setTermRename] = useState<string | null>(null);
+  useEffect(() => { if (!termMenu) setTermRename(null); }, [termMenu]);
+  const renameTerminal = (termId: string, name: string) => {
+    const title = name.trim();
+    setTerminals(prev => prev.map(t => {
+      if (t.id !== termId) return t;
+      if (!title) return t.baseTitle !== undefined ? { ...t, title: t.baseTitle, baseTitle: undefined } : t;
+      return { ...t, title, baseTitle: t.baseTitle ?? t.title };
+    }));
+  };
   // On narrow viewports the side-by-side terminal+tool layout doesn't fit.
   // We collapse to a stacked single-pane view: when a tool is open, the
   // tool takes full width and the terminal is hidden behind a back-chip.
@@ -1261,7 +1285,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               {/* Which server is asking — the server's own wording rarely
                   says, and several tabs can be connecting at once. */}
               <p className="mt-0.5 text-[11.5px] text-zinc-500 truncate" title={session.serverName}>
-                {session.serverName}
+                {displayName || session.serverName}
               </p>
               {kbiPrompt.instructions && String(kbiPrompt.instructions).trim() && (
                 <p className="text-zinc-400 mt-2 leading-relaxed whitespace-pre-wrap break-words">
@@ -1359,7 +1383,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
             </div>
             <div className="min-w-0 flex-1">
               <h2 className="text-sm font-semibold text-zinc-100 truncate" title={session.serverName}>
-                {session.serverName}
+                {displayName || session.serverName}
               </h2>
               <p className={`text-[11px] mt-0.5 ${status === 'failed' ? 'text-red-400/90' : 'text-zinc-500'}`}>
                 {status === 'connecting' ? 'Connecting…' : 'Connection failed'}
@@ -1470,7 +1494,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
           const isFocusedHalf = activeTab === t.id;
           const isSplitPartner = !!(splitTerminals.includes(t.id) && !isFocusedHalf);
           return (
-          <div key={t.id} className="group relative flex items-center">
+          <div key={t.id} className="group relative flex items-center"
+            onContextMenu={(e) => { e.preventDefault(); setTermMenu({ x: e.clientX, y: e.clientY, termId: t.id }); }}
+            onDoubleClick={(e) => { setTermMenu({ x: e.clientX, y: e.clientY, termId: t.id }); setTermRename(t.id); }}
+          >
             <button
               onClick={() => {
                 // Clicking a tab NOT participating in the current split
@@ -1708,6 +1735,40 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                 That way the picker is anchored to the tab it operates
                 on and users don't have to know two entry points for the
                 same feature. */}
+          </div>
+        </>,
+        document.body
+      )}
+
+      {/* A terminal tab's menu: its name, edited in place. Enter keeps it
+          (an empty one brings back the tab's first title), Esc goes back
+          to the menu. */}
+      {termMenu && terminals.some(t => t.id === termMenu.termId) && createPortal(
+        <>
+          <div
+            className="fixed inset-0 z-[9998]"
+            onClick={() => setTermMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setTermMenu(null); }}
+          />
+          <div
+            style={{ left: Math.min(termMenu.x, window.innerWidth - 240), top: Math.min(termMenu.y, window.innerHeight - 80) }}
+            className="fixed z-[9999] w-[220px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
+          >
+            {termRename === termMenu.termId ? (
+              <RenameInput
+                initialValue={terminals.find(t => t.id === termMenu.termId)?.title ?? ""}
+                placeholder="Tab name (empty: the first one)"
+                onCommit={(v) => { renameTerminal(termMenu.termId, v); setTermMenu(null); }}
+                onCancel={() => setTermRename(null)}
+              />
+            ) : (
+              <button
+                onClick={() => setTermRename(termMenu.termId)}
+                className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
+              >
+                <span className="flex-1">Rename tab</span>
+              </button>
+            )}
           </div>
         </>,
         document.body
@@ -2009,7 +2070,9 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
         >
           {activeTool === 'sftp' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <SftpTitleBar
+              <ToolTitleBar
+                title="SFTP File Browser"
+                shortTitle="SFTP"
                 toggle={
                   <SepToggle
                     on={separateSftp}
@@ -2019,9 +2082,11 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                     onReconnect={reconnectSftpConn}
                   />
                 }
-                mirrorOn={sftpView === 'mirror'}
-                mirrorDisabled={!session.serverId}
-                onMirror={() => setSftpView(v => v === 'mirror' ? 'files' : 'mirror')}
+                mirror={{
+                  on: sftpView === 'mirror',
+                  disabled: !session.serverId,
+                  onToggle: () => setSftpView(v => v === 'mirror' ? 'files' : 'mirror'),
+                }}
                 extra={fullToggle}
                 onClose={() => setActiveTool(null)}
               />
@@ -2030,6 +2095,7 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                   sessionId={session.id}
                   disabled={status !== 'connected'}
                   serverId={session.serverId}
+                  profile={profile}
                   mirrorsConfig={(() => {
                     try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
                   })()}
@@ -2041,9 +2107,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
 
           {activeTool === 'tunnels' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5">
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 shrink-0">Port Forwarding</span>
+              <ToolTitleBar
+                title="Port Forwarding"
+                shortTitle="Ports"
+                toggle={
                   <SepToggle
                     on={separateFwd}
                     onToggle={toggleSeparateFwd}
@@ -2051,14 +2118,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                     hint="Port forwards run on their own SSH connection, so heavy traffic doesn't slow the terminal down."
                     onReconnect={reconnectFwdConn}
                   />
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {fullToggle}
-                  <button onClick={() => setActiveTool(null)} aria-label="Close" className="text-zinc-500 hover:text-white transition-colors shrink-0">
-                    <X size={14} />
-                  </button>
-                </div>
-              </div>
+                }
+                extra={fullToggle}
+                onClose={() => setActiveTool(null)}
+              />
               <div className="flex-1 overflow-hidden relative">
                 <TunnelsPanel sessionId={session.id} serverId={session.serverId} disabled={status !== 'connected'} />
               </div>

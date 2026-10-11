@@ -6,8 +6,8 @@
 //!
 //! The folder becomes Tauri's `app > appDirectoriesOverride` root, so every
 //! path the app resolves through `app.path().app_*_dir()` lands inside it with
-//! the same relative layout: our own files (profiles/, cloud_token.json and
-//! sync_device.json, via app_data_dir), the window-state plugin's
+//! the same relative layout: our own files (profiles/, cloud_token.json,
+//! cloud_config.json and sync_device.json, via app_data_dir), the window-state plugin's
 //! `.window-state.json` (app_config_dir), and — crucially — the webview's data
 //! directory. On Windows and Linux Tauri derives that directory from
 //! app_local_data_dir whenever the app hasn't set one itself (see tauri's

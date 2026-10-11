@@ -91,5 +91,15 @@ export function createRemoteProvider(sessionId: string): RemoteFileProvider {
       const s = await invoke<{ permissions: number | null; uid: number | null; gid: number | null }>("sftp_stat", { sessionId, path });
       return { permissions: s.permissions ?? undefined, uid: s.uid ?? undefined, gid: s.gid ?? undefined };
     },
+
+    // Both run `tar`, `zip` or `unzip` on the server, so nothing crosses the
+    // wire; see archive.rs.
+    async archive(dir, names, name, format, overwrite, jobId) {
+      return await invoke<string | null>("sftp_archive", { sessionId, dir, names, name, format, overwrite, jobId });
+    },
+
+    async extract(dir, name, folder, jobId) {
+      return await invoke<string | null>("sftp_extract", { sessionId, dir, name, folder, jobId });
+    },
   };
 }

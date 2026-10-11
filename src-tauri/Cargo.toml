@@ -117,12 +117,23 @@ sha2 = "0.11"
 regex = "1.10"
 # rustls-tls so we don't drag in OpenSSL on Windows builds. multipart for blob
 # uploads; json for typed request/response bodies.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart", "stream"] }
+# socks and system-proxy: the sync server can be reached through a proxy
+# (`cloud_config`), a SOCKS5 one included, and "system" means the OS's proxy
+# settings, not only the proxy environment variables.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart", "stream", "socks", "system-proxy"] }
 # Vault v2 compresses the SQLite serialisation with zstd before encrypting.
 # Real profiles compress ~50-70% (lots of repeated SQL+JSON structure), so
 # both local disk and cloud blobs shrink correspondingly. v1 vaults stay
 # readable — we only emit v2 going forward.
 zstd = { version = "0.14", default-features = false }
+# Archive and extract in the local file pane (the remote pane runs tar, zip
+# and unzip on the server). tar 0.4.46 has the fixes for its link and PAX
+# header advisories. flate2 and chrono are in the tree already: deflate for
+# zip and gzip, and the local time a zip entry is stamped with.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+tar = { version = "0.4.46", default-features = false }
+flate2 = "1.1.10"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 # Zeroize-on-drop wrappers for the master vault key and the decompressed
 # SQLite plaintext. Without this, secrets stay in the heap until allocator
 # reuse — long enough for a swap file / crash dump to capture them. We

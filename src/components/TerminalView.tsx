@@ -10,6 +10,7 @@ import { MobileKeyBar, ModifiersState, ModKey, SpecialKey } from './MobileKeyBar
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
 import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
+import { readUseLocalShell } from '../util/terminalShell';
 import { IS_ANDROID, IS_LINUX } from '../util/platform';
 
 // Does the recent remote OUTPUT look like a no-echo password / passphrase
@@ -320,6 +321,7 @@ const TerminalView = ({
         terminalId,
         cols: term.cols || 80,
         rows: term.rows || 24,
+        useLocalShell: readUseLocalShell(),
       }).then(syncSize, e => {
         term.writeln(`\x1b[31mReconnect failed: ${e}\x1b[0m`);
       });
@@ -531,7 +533,8 @@ const TerminalView = ({
             sessionId,
             terminalId,
             cols: term.cols || 80,
-            rows: term.rows || 24
+            rows: term.rows || 24,
+            useLocalShell: readUseLocalShell(),
           }).then(syncSize, e => {
             term.writeln(`\x1b[31mFailed to open terminal: ${e}\x1b[0m`);
           });
@@ -725,7 +728,9 @@ const TerminalView = ({
       return lines.join('\n');
     };
     const copySelectionIfAny = async () => {
-      const text = buildSelectedText();
+      // A selection that runs past the last line ends in empty rows: Ctrl+Shift+A
+      // takes the whole buffer, the blank rows under the prompt included.
+      const text = buildSelectedText().replace(/\n+$/, '');
       if (!text) return;
       const ok = await writeClipboard(text);
       if (ok) notify('Copied');
@@ -801,21 +806,42 @@ const TerminalView = ({
       ev.preventDefault();
       void pasteClipboard(true);
     };
-    // Linux: the paste shortcuts (Ctrl+Shift+V, Shift+Insert) are taken away
-    // from the webview, whose own paste is the one that crashes on an empty
-    // clipboard, and go through the same path as a right-click.
-    if (IS_LINUX) {
-      term.attachCustomKeyEventHandler((ev) => {
+    // Ctrl+Shift+A / Ctrl+Shift+C / Ctrl+Shift+V — Warp/GNOME-Terminal-style
+    // select-all / copy / paste, deliberately on the SHIFTED combo so plain
+    // Ctrl+A (start of line) and Ctrl+C (SIGINT) keep going straight to the
+    // remote shell untouched, exactly as every readline/zle user expects.
+    // xterm.js only allows one attachCustomKeyEventHandler at a time, so all
+    // three live in this single handler rather than three separate calls.
+    term.attachCustomKeyEventHandler((ev) => {
+      const noOtherMods = !ev.altKey && !ev.metaKey && ev.ctrlKey && ev.shiftKey;
+      if (noOtherMods && ev.code === 'KeyA') {
+        if (ev.type === 'keydown' && !ev.repeat) term.selectAll();
+        ev.preventDefault();
+        return false;
+      }
+      if (noOtherMods && ev.code === 'KeyC') {
+        if (ev.type === 'keydown' && !ev.repeat) void copySelectionIfAny();
+        ev.preventDefault();
+        return false;
+      }
+      // Linux only: paste. Elsewhere the webview's own Ctrl+Shift+V /
+      // Shift+Insert already reaches xterm's built-in paste handling, but
+      // WebKitGTK's own clipboard read is the one that crashes on an empty
+      // clipboard (#89), so it's taken over here and routed through the
+      // same path as a right-click instead.
+      if (IS_LINUX) {
         const isPasteKey = !ev.altKey && !ev.metaKey && (
           (ev.ctrlKey && ev.shiftKey && ev.code === 'KeyV') ||
           (ev.shiftKey && !ev.ctrlKey && ev.key === 'Insert')
         );
-        if (!isPasteKey) return true;
-        ev.preventDefault();
-        if (ev.type === 'keydown' && !ev.repeat) void pasteClipboard(false);
-        return false;
-      });
-    }
+        if (isPasteKey) {
+          ev.preventDefault();
+          if (ev.type === 'keydown' && !ev.repeat) void pasteClipboard(false);
+          return false;
+        }
+      }
+      return true;
+    });
     terminalRef.current.addEventListener('mousedown', onMouseDown);
     document.addEventListener('mouseup', onDocMouseUp);
     window.addEventListener('blur', onWindowBlur);

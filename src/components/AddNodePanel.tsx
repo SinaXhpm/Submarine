@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square, History, Plus, Copy } from "lucide-react";
+import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download, CheckSquare, Square, History, Plus, Copy, Play } from "lucide-react";
 import PasswordField from "./PasswordField";
 import { useTextPrompt } from "../ui/confirm";
 
@@ -359,7 +359,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     }
   };
 
-  const updateTunnel = (idx: number, field: string, value: string) => {
+  const updateTunnel = (idx: number, field: string, value: string | boolean) => {
     const newT = [...newNode.tunnels];
     newT[idx][field] = value;
     setNewNode({ ...newNode, tunnels: newT });
@@ -659,45 +659,74 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   // back to idx for legacy rows that lack it; new rows
                   // always carry rid so deletions / reorders preserve
                   // each input's focus and cursor state.
-                  <div key={t.rid ?? idx} className="flex items-center gap-2 p-2 bg-[#1a1a1e] rounded-lg border border-white/5 group transition-all hover:border-primary/30">
-                    <select
-                      className="bg-transparent text-[11px] font-black outline-none text-primary uppercase tracking-wider cursor-pointer pl-1"
-                      value={t.type}
-                      onChange={e => updateTunnel(idx, 'type', e.target.value)}
-                    >
-                      <option value="D" className="bg-[#1a1a1e] text-primary">Dynamic</option>
-                      <option value="L" className="bg-[#1a1a1e] text-primary">Local</option>
-                      <option value="R" className="bg-[#1a1a1e] text-primary">Remote</option>
-                    </select>
+                  <div key={t.rid ?? idx} className="p-2 bg-[#1a1a1e] rounded-lg border border-white/5 group transition-all hover:border-primary/30 space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <select
+                        className="bg-transparent text-[11px] font-black outline-none text-primary uppercase tracking-wider cursor-pointer pl-1"
+                        value={t.type}
+                        onChange={e => updateTunnel(idx, 'type', e.target.value)}
+                      >
+                        <option value="D" className="bg-[#1a1a1e] text-primary">Dynamic</option>
+                        <option value="L" className="bg-[#1a1a1e] text-primary">Local</option>
+                        <option value="R" className="bg-[#1a1a1e] text-primary">Remote</option>
+                      </select>
 
-                    <div className="h-4 w-px bg-white/10 mx-1" />
+                      <div className="h-4 w-px bg-white/10 mx-1" />
 
-                    <input
-                      className="flex-1 min-w-0 bg-transparent text-[12px] font-mono outline-none text-zinc-300 placeholder:text-zinc-700"
-                      placeholder={
-                        t.type === 'D' ? "Port (1080)" :
-                        t.type === 'R' ? "Server bind (8080 or 0.0.0.0:8080)" :
-                                         "Local (8080 or 0.0.0.0:8080)"
-                      }
-                      value={t.local}
-                      onChange={e => updateTunnel(idx, 'local', e.target.value)}
-                    />
+                      <input
+                        className="flex-1 min-w-0 bg-transparent text-[12px] font-mono outline-none text-zinc-300 placeholder:text-zinc-700"
+                        placeholder={
+                          t.type === 'D' ? "Port (1080)" :
+                          t.type === 'R' ? "Server bind (8080 or 0.0.0.0:8080)" :
+                                           "Local (8080 or 0.0.0.0:8080)"
+                        }
+                        value={t.local}
+                        onChange={e => updateTunnel(idx, 'local', e.target.value)}
+                      />
 
-                    {t.type !== 'D' && (
-                      <>
-                        <ArrowLeftRight size={10} className="text-zinc-700 shrink-0 mx-1" />
-                        <input
-                          className="flex-1 min-w-0 bg-transparent text-[12px] font-mono outline-none text-primary placeholder:text-zinc-700"
-                          placeholder="Remote (80)"
-                          value={t.remote}
-                          onChange={e => updateTunnel(idx, 'remote', e.target.value)}
-                        />
-                      </>
-                    )}
+                      {t.type !== 'D' && (
+                        <>
+                          <ArrowLeftRight size={10} className="text-zinc-700 shrink-0 mx-1" />
+                          <input
+                            className="flex-1 min-w-0 bg-transparent text-[12px] font-mono outline-none text-primary placeholder:text-zinc-700"
+                            placeholder="Remote (80)"
+                            value={t.remote}
+                            onChange={e => updateTunnel(idx, 'remote', e.target.value)}
+                          />
+                        </>
+                      )}
 
-                    <button onClick={() => setNewNode({ ...newNode, tunnels: newNode.tunnels.filter((_: any, i: number) => i !== idx) })} className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 w-6 h-6 flex items-center justify-center text-red-500 hover:bg-red-500/10 rounded transition-all shrink-0">
-                      <X size={12} />
-                    </button>
+                      <button onClick={() => setNewNode({ ...newNode, tunnels: newNode.tunnels.filter((_: any, i: number) => i !== idx) })} className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 w-6 h-6 flex items-center justify-center text-red-500 hover:bg-red-500/10 rounded transition-all shrink-0">
+                        <X size={12} />
+                      </button>
+                    </div>
+                    {/* Its name, and whether it starts with the connection: a
+                        forward stopped in the Ports panel stays here, stopped. */}
+                    <div className="flex items-center gap-2 pl-1">
+                      <input
+                        className="flex-1 min-w-0 bg-transparent text-[11px] outline-none text-zinc-300 placeholder:text-zinc-700"
+                        placeholder="Name (optional)"
+                        aria-label="Forward name"
+                        maxLength={64}
+                        value={t.name ?? ""}
+                        onChange={e => updateTunnel(idx, 'name', e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => updateTunnel(idx, 'stopped', !t.stopped)}
+                        title={t.stopped
+                          ? "Kept, but not started on connect. Click to start it on connect."
+                          : "Started on connect. Click to keep it stopped."}
+                        className={`h-5 px-1.5 rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 shrink-0 transition-colors ${
+                          t.stopped
+                            ? "text-zinc-500 bg-white/5 hover:text-zinc-300"
+                            : "text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20"
+                        }`}
+                      >
+                        {t.stopped ? <Square size={9} /> : <Play size={9} fill="currentColor" />}
+                        {t.stopped ? "Stopped" : "On connect"}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { RoleBadge, roleBlurb } from "./shareRoles";
+import { hostOf } from "./SyncServerSetting";
 
 interface RecentEdit { name: string; edited_by: string; updated_at: string; }
 interface SyncDiff { in_sync: number; needs_push: number; needs_pull: number; out_of_sync_nodes: string[]; }
@@ -50,6 +51,12 @@ interface ShareStatus {
   identity_unlocked: boolean;
   signed_in: boolean;
   email: string | null;
+  /** The server this profile syncs with; null until its first sync. */
+  cloud_server: string | null;
+  /** The sync server in use. */
+  current_server: string;
+  /** Whether that is a self-hosted one, not the default. */
+  custom_server: boolean;
 }
 
 interface MemberInfo { user_id: number; email: string; role: string; status: string; }
@@ -241,6 +248,28 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
   const shared = !!st?.share_id;
   const isOwner = st?.role === "owner";
   const signedIn = st?.signed_in === true;
+  // A profile linked to another server than the one in use doesn't sync: its
+  // data and keys only ever go to the server it syncs with.
+  const otherServer = st?.cloud_server && st.cloud_server !== st.current_server ? st.cloud_server : null;
+
+  const moveHere = async () => {
+    if (!st || !otherServer) return;
+    const from = hostOf(otherServer), to = hostOf(st.current_server);
+    if (!(await confirm({
+      title: `Sync this profile with ${to}?`,
+      message:
+        `It syncs with ${from} now. From now on it syncs with ${to} instead, and the next sync uploads it there in full.\n\n` +
+        `Its copy on ${from} isn't changed or deleted.`,
+      okLabel: `Sync with ${to}`,
+    }))) return;
+    setBusy(true); setErr(null);
+    try {
+      await invoke("move_profile_to_current_server");
+      await refresh();
+      flash(`This profile now syncs with ${to}.`);
+      if (signedIn) await doSync();
+    } catch (e) { fail(e); } finally { setBusy(false); }
+  };
 
   const card = "bg-zinc-900/40 border border-white/5 rounded-xl p-4 space-y-3";
   const label = "text-[11px] font-bold uppercase tracking-wider text-zinc-500";
@@ -294,6 +323,34 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
             </>
           )}
         </div>
+        {st?.custom_server && !otherServer && (
+          <div className="text-[11px] text-zinc-500">
+            Sync server: <span className="font-mono text-zinc-400">{hostOf(st.current_server)}</span>
+          </div>
+        )}
+        {otherServer && st && (
+          <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-100 text-[12px] space-y-2">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-300" />
+              <span className="flex-1 break-words">
+                This profile syncs with <span className="font-mono">{hostOf(otherServer)}</span>, not with{" "}
+                <span className="font-mono">{hostOf(st.current_server)}</span>, so it doesn't sync now.{" "}
+                {shared
+                  ? "A shared profile stays on the server it was shared on: switch the sync server back to sync it."
+                  : "Switch the sync server back, or move this profile to the server in use."}
+              </span>
+            </div>
+            {!shared && (
+              <button
+                onClick={moveHere}
+                disabled={busy}
+                className="h-8 px-3 rounded-lg bg-amber-500/20 border border-amber-400/30 text-amber-100 text-[12px] font-bold hover:bg-amber-500/30 disabled:opacity-40"
+              >
+                Sync with {hostOf(st.current_server)}
+              </button>
+            )}
+          </div>
+        )}
         {signedIn && (
           <>
             <div className="flex items-center gap-2 flex-wrap">

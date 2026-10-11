@@ -100,5 +100,13 @@ export function createLocalProvider(): LocalFileProvider {
     async rename(from: string, to: string) {
       await invoke("local_rename", { from, to });
     },
+
+    async archive(dir, names, name, format, overwrite, jobId) {
+      return await invoke<string | null>("local_archive", { dir, names, name, format, overwrite, jobId });
+    },
+
+    async extract(dir, name, folder, jobId) {
+      return await invoke<string | null>("local_extract", { dir, name, folder, jobId });
+    },
   };
 }

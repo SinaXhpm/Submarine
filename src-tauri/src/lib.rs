@@ -17,6 +17,7 @@ mod ssh_manager;
 mod tunnel;
 mod monitor;
 mod cloud;
+mod cloud_config;
 mod about;
 mod mirror;
 mod docker;
@@ -26,6 +27,7 @@ mod portable;
 mod fonts;
 mod webkit_sandbox;
 mod sftp_remove;
+mod archive;
 #[cfg(test)]
 mod ssh_test_server;
 use ssh_manager::SshState;
@@ -1191,6 +1193,89 @@ fn open_pw_escrow(blob_hex: &str, password: &str) -> Result<[u8; 32], String> {
     Ok(dek)
 }
 
+// ---- which server a profile syncs with ---------------------------------------
+//
+// The sync server can be self-hosted (`cloud_config`), so a profile is tied to
+// the server it syncs with, in sync_meta 'cloud_server'. Without that, signing
+// in to another server would push every profile there on the next automatic
+// sync, password-sealed key escrow included, and a shared profile would take
+// whatever key the new server handed back for its share id. A profile from
+// before the server could be chosen has no row and syncs with the default
+// server; a new profile has an empty one until its first sync links it.
+
+/// The server the open profile syncs with; `None` when it isn't linked yet.
+fn profile_server(conn: &Connection) -> Option<String> {
+    match conn.query_row("SELECT value FROM sync_meta WHERE key='cloud_server'", [], |r| r.get::<_, String>(0)) {
+        Ok(server) if server.is_empty() => None,
+        Ok(server) => Some(server),
+        Err(_) => Some(cloud::CLOUD_API_BASE.to_string()),
+    }
+}
+
+/// Refuses to sync the open profile with `base` when it is linked to another
+/// server. `Ok(true)`: it isn't linked yet, and the caller links it once the
+/// server has taken it (`link_profile_server`).
+fn check_profile_server(conn: &Connection, base: &str) -> Result<bool, String> {
+    match profile_server(conn) {
+        None => Ok(true),
+        Some(server) if server == base => Ok(false),
+        Some(server) => Err(format!(
+            "[SYNC] OTHER_SERVER: this profile syncs with {}, not with {}. Switch the sync server back, or move this profile from its Profile panel.",
+            cloud_config::host_of(&server),
+            cloud_config::host_of(base)
+        )),
+    }
+}
+
+fn link_profile_server(conn: &Connection, base: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO sync_meta(key,value) VALUES('cloud_server',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [base],
+    )
+    .map_err(|e| format!("[SYNC] SET_CLOUD_SERVER: {e}"))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod profile_server_tests {
+    use super::*;
+
+    fn meta() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []).unwrap();
+        conn
+    }
+
+    const OWN: &str = "https://sync.example.com";
+
+    // A profile from before the server could be chosen syncs with the default
+    // server, and only there.
+    #[test]
+    fn no_row_means_the_default_server() {
+        let conn = meta();
+        assert_eq!(profile_server(&conn).as_deref(), Some(cloud::CLOUD_API_BASE));
+        assert_eq!(check_profile_server(&conn, cloud::CLOUD_API_BASE), Ok(false));
+        let err = check_profile_server(&conn, OWN).unwrap_err();
+        assert!(err.starts_with("[SYNC] OTHER_SERVER") && err.contains("submarine.sinaxhpm.com"), "{}", err);
+    }
+
+    // A new profile goes with the first server it syncs with, and then stays.
+    #[test]
+    fn a_new_profile_links_on_its_first_sync() {
+        let conn = meta();
+        conn.execute("INSERT INTO sync_meta(key,value) VALUES('cloud_server','')", []).unwrap();
+        assert_eq!(profile_server(&conn), None);
+        assert_eq!(check_profile_server(&conn, OWN), Ok(true));
+        link_profile_server(&conn, OWN).unwrap();
+        assert_eq!(check_profile_server(&conn, OWN), Ok(false));
+        assert!(check_profile_server(&conn, cloud::CLOUD_API_BASE).is_err());
+        // Moving it is an explicit step.
+        link_profile_server(&conn, cloud::CLOUD_API_BASE).unwrap();
+        assert_eq!(check_profile_server(&conn, cloud::CLOUD_API_BASE), Ok(false));
+        assert!(check_profile_server(&conn, OWN).is_err());
+    }
+}
+
 /// One full per-entity sync of the OPEN profile: collect every local record,
 /// exchange with the server (which LWW-merges + returns its view), merge the
 /// server's records back, and persist. Full-set each call (the dataset is
@@ -1202,12 +1287,33 @@ async fn sync_now(
     db_state: tauri::State<'_, DbState>,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<SyncReport, String> {
+    let session = cloud.session().await?;
+    sync_with(&app, &db_state, &cloud, &session).await
+}
+
+/// `sync_now` over a session the caller already holds, so a command that also
+/// did other calls first keeps all of them on one server.
+async fn sync_with(
+    app: &tauri::AppHandle,
+    db_state: &DbState,
+    cloud: &cloud::CloudState,
+    session: &cloud::Session,
+) -> Result<SyncReport, String> {
     let profile = db_state
         .active_profile
         .lock()
         .map_err(|_| "[STATE] LOCK_PROFILE")?
         .clone()
         .ok_or("[SYNC] NO_PROFILE_OPEN")?;
+
+    // Checked before anything goes out, the shared key refresh below included:
+    // a server the profile isn't linked to could hand back a key it knows,
+    // and every record pushed after that would be readable to it.
+    let unlinked = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        check_profile_server(conn, session.base())?
+    };
 
     // A shared profile's key can change under us: the owner rotates it whenever
     // a member is revoked, so the copy cached at import time goes stale. Refresh
@@ -1222,7 +1328,7 @@ async fn sync_now(
     };
     if let Some(sid) = &existing_share {
         if let Some((_, my_secret)) = cloud.identity().await {
-            if let Ok(grant) = cloud::share_dek(&app, &cloud, sid).await {
+            if let Ok(grant) = cloud::share_dek(app, cloud, session, sid).await {
                 if let Ok(raw) = hex::decode(&grant.sealed_dek) {
                     if let Ok(opened) = identity::unseal(&my_secret, &raw) {
                         if opened.len() == 32 {
@@ -1290,7 +1396,7 @@ async fn sync_now(
     // nothing — it can only pull, so sending records would just 403.
     let (remote, pushed) = if let Some((share_id, role)) = &share {
         let to_push: &[SyncRecord] = if role == "user" { &[] } else { &records };
-        let remote = cloud::shared_sync_exchange(&app, &cloud, share_id, "", to_push).await?;
+        let remote = cloud::shared_sync_exchange(app, cloud, session, share_id, "", to_push).await?;
         (remote, to_push.len())
     } else {
         // Personal profile: publish (or refresh) the DEK escrow alongside the
@@ -1305,7 +1411,7 @@ async fn sync_now(
         // essential once `cloud_profile` is an opaque UUID for new profiles. For
         // legacy `main` the name equals the partition, so it's a harmless echo.
         let remote =
-            cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &to_push, Some(profile.as_str())).await?;
+            cloud::sync_exchange(app, cloud, session, &cloud_profile, "", &to_push, Some(profile.as_str())).await?;
         (remote, to_push.len())
     };
     let pulled = remote.len();
@@ -1314,9 +1420,12 @@ async fn sync_now(
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         apply_remote_records(conn, &dek, &remote, &hlc)?;
+        if unlinked {
+            link_profile_server(conn, session.base())?;
+        }
     }
     // Persist the merged vault so the applied changes survive a restart.
-    save_vault_async(&db_state).await?;
+    save_vault_async(db_state).await?;
     Ok(SyncReport { pushed, pulled })
 }
 
@@ -1367,13 +1476,19 @@ async fn profile_sync_stats(
         .map_err(|_| "[STATE] LOCK_PROFILE")?
         .clone()
         .ok_or("[SYNC] NO_PROFILE_OPEN")?;
+    let session = cloud.session().await.ok();
 
     // Local snapshot under the lock: records, DEK, routing, recent edits, and a
     // uuid→name map for servers so the diff can name what's out of sync.
-    let (local, dek, share, cloud_profile, recent_edits, server_names) = {
+    let (local, dek, share, cloud_profile, recent_edits, server_names, comparable) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let (dek, _created) = get_or_create_dek(conn)?;
+        // The cloud copy is only compared on the server this profile syncs
+        // with; one that hasn't synced yet has nothing there to compare.
+        let comparable = session
+            .as_ref()
+            .is_some_and(|s| matches!(check_profile_server(conn, s.base()), Ok(false)));
         let local = collect_local_records(conn, &dek, "")?;
         let share_id: Option<String> = conn
             .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
@@ -1433,6 +1548,7 @@ async fn profile_sync_stats(
             cloud_profile,
             recent_edits,
             server_names,
+            comparable,
         )
     };
 
@@ -1446,10 +1562,15 @@ async fn profile_sync_stats(
 
     // Best-effort dry run: pure pull (empty push mutates nothing on the server).
     let diff = {
-        let pulled = if let Some((share_id, _role)) = &share {
-            cloud::shared_sync_exchange(&app, &cloud, share_id, "", &[]).await
-        } else {
-            cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &[], None).await
+        let pulled = match &session {
+            Some(session) if comparable => {
+                if let Some((share_id, _role)) = &share {
+                    cloud::shared_sync_exchange(&app, &cloud, session, share_id, "", &[]).await
+                } else {
+                    cloud::sync_exchange(&app, &cloud, session, &cloud_profile, "", &[], None).await
+                }
+            }
+            _ => Err(String::new()),
         };
         match pulled {
             Ok(server) => {
@@ -1535,10 +1656,10 @@ async fn identity_status(
         return Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(hex::encode(pubk)) });
     }
     // Not unlocked — ask the server whether a key exists (requires being signed in).
-    if cloud.token().await.is_none() {
+    let Ok(session) = cloud.session().await else {
         return Ok(IdentityStatus { exists_on_server: false, unlocked: false, public_key: None });
-    }
-    let keys = cloud::fetch_my_keys(&app, &cloud).await?;
+    };
+    let keys = cloud::fetch_my_keys(&app, &cloud, &session).await?;
     Ok(IdentityStatus { exists_on_server: keys.exists, unlocked: false, public_key: keys.public_key })
 }
 
@@ -1555,7 +1676,8 @@ async fn setup_identity(
     if enc_passphrase.is_empty() {
         return Err("[SHARE] EMPTY_PASSPHRASE".into());
     }
-    let existing = cloud::fetch_my_keys(&app, &cloud).await?;
+    let session = cloud.session().await?;
+    let existing = cloud::fetch_my_keys(&app, &cloud, &session).await?;
     if existing.exists {
         let salt_hex = existing.enc_salt.ok_or("[SHARE] MISSING_SALT")?;
         let wrapped = existing.wrapped_privkey.ok_or("[SHARE] MISSING_WRAPPED")?;
@@ -1585,7 +1707,7 @@ async fn setup_identity(
     let mut salt = [0u8; 16];
     rand::rng().fill_bytes(&mut salt);
     let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
-    cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
+    cloud::publish_identity(&app, &cloud, &session, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
     cloud.set_identity(kp.public, kp.secret).await;
     Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(hex::encode(kp.public)) })
 }
@@ -1602,11 +1724,12 @@ async fn reset_identity(
     if enc_passphrase.chars().count() < 8 {
         return Err("[SHARE] WEAK_PASSPHRASE: use at least 8 characters".into());
     }
+    let session = cloud.session().await?;
     let kp = identity::generate_keypair();
     let mut salt = [0u8; 16];
     rand::rng().fill_bytes(&mut salt);
     let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
-    cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
+    cloud::publish_identity(&app, &cloud, &session, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
     cloud.set_identity(kp.public, kp.secret).await;
     Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(hex::encode(kp.public)) })
 }
@@ -1630,9 +1753,13 @@ async fn share_current_profile(
         return Err("[SHARE] BAD_NAME: 1-64 characters".into());
     }
     let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: set up your sharing identity first")?;
-    let dek = {
+    let session = cloud.session().await?;
+    let (dek, unlinked) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        // A profile is shared on the server it syncs with, or on the one in
+        // use if it hasn't synced yet.
+        let unlinked = check_profile_server(conn, session.base())?;
         // Only the UI's hidden button stopped this from running twice. Called
         // again on an already-shared profile it would mint a SECOND share_id,
         // overwrite the local one, and orphan the first — leaving its members
@@ -1644,14 +1771,17 @@ async fn share_current_profile(
         if already.is_some() {
             return Err("[SHARE] ALREADY_SHARED: this profile is already shared — stop sharing first if you want a new share.".into());
         }
-        get_or_create_dek(conn)?.0
+        (get_or_create_dek(conn)?.0, unlinked)
     };
     let sealed_self = hex::encode(identity::seal_to(&my_pub, &dek)?);
     let share_id = new_entity_uuid(); // 32 hex — within the server's {16,64}
-    cloud::create_share(&app, &cloud, &share_id, &name, &sealed_self).await?;
+    cloud::create_share(&app, &cloud, &session, &share_id, &name, &sealed_self).await?;
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        if unlinked {
+            link_profile_server(conn, session.base())?;
+        }
         conn.execute(
             "INSERT INTO sync_meta(key,value) VALUES('share_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [&share_id],
@@ -1694,8 +1824,9 @@ async fn invite_to_share(
         return Err("[SHARE] BAD_ROLE: role must be 'editor' or 'user'".into());
     }
     let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
+    let session = cloud.session().await?;
     // Get the DEK by unsealing my own grant for this share.
-    let mine = cloud::share_dek(&app, &cloud, &share_id).await?;
+    let mine = cloud::share_dek(&app, &cloud, &session, &share_id).await?;
     let dek_bytes = identity::unseal(&my_secret, &hex::decode(&mine.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
         .map_err(|_| "[SHARE] UNSEAL_SELF: cannot open your own grant — your identity may have changed")?;
     let dek = {
@@ -1706,12 +1837,12 @@ async fn invite_to_share(
         d.copy_from_slice(&dek_bytes);
         d
     };
-    let info = cloud::lookup_pubkey(&app, &cloud, &email)
+    let info = cloud::lookup_pubkey(&app, &cloud, &session, &email)
         .await?
         .ok_or("[SHARE] NO_ACCOUNT: that email hasn't set up sharing yet")?;
     let invitee_pub = hex_to_32(&info.public_key)?;
     let sealed = hex::encode(identity::seal_to(&invitee_pub, &dek)?);
-    cloud::invite_member(&app, &cloud, &share_id, &email, &role, &sealed).await?;
+    cloud::invite_member(&app, &cloud, &session, &share_id, &email, &role, &sealed).await?;
     Ok(InviteResult { email: info.email })
 }
 
@@ -1721,7 +1852,8 @@ async fn list_shares(
     app: tauri::AppHandle,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<Vec<cloud::ShareInfo>, String> {
-    cloud::list_shares(&app, &cloud).await
+    let session = cloud.session().await?;
+    cloud::list_shares(&app, &cloud, &session).await
 }
 
 /// The member roster of a share I belong to.
@@ -1731,7 +1863,8 @@ async fn share_member_list(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
     share_id: String,
 ) -> Result<Vec<cloud::MemberInfo>, String> {
-    cloud::share_members(&app, &cloud, &share_id).await
+    let session = cloud.session().await?;
+    cloud::share_members(&app, &cloud, &session, &share_id).await
 }
 
 #[derive(serde::Serialize)]
@@ -1749,7 +1882,8 @@ async fn accept_share(
     share_id: String,
 ) -> Result<AcceptResult, String> {
     let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: unlock your sharing identity first")?;
-    let resp = cloud::accept_share(&app, &cloud, &share_id).await?;
+    let session = cloud.session().await?;
+    let resp = cloud::accept_share(&app, &cloud, &session, &share_id).await?;
     let dek = identity::unseal(&my_secret, &hex::decode(&resp.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
         .map_err(|_| "[SHARE] UNSEAL_FAILED: this invite wasn't sealed to your current identity")?;
     if dek.len() != 32 {
@@ -1773,7 +1907,8 @@ async fn import_shared_profile(
     vault_password: String,
 ) -> Result<SyncReport, String> {
     let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: unlock your sharing identity first")?;
-    let mine = cloud::share_dek(&app, &cloud, &share_id).await?;
+    let session = cloud.session().await?;
+    let mine = cloud::share_dek(&app, &cloud, &session, &share_id).await?;
     let dek_vec = identity::unseal(&my_secret, &hex::decode(&mine.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
         .map_err(|_| "[SHARE] UNSEAL_FAILED: this share wasn't sealed to your identity")?;
     if dek_vec.len() != 32 {
@@ -1824,6 +1959,7 @@ async fn import_shared_profile(
             [&mine.role],
         )
         .map_err(|e| format!("[SHARE] SET_ROLE: {e}"))?;
+        link_profile_server(conn, session.base())?;
         Ok(())
     })();
     if let Err(e) = seeded {
@@ -1831,7 +1967,7 @@ async fn import_shared_profile(
         return Err(e);
     }
     // Pull the shared data into the new profile.
-    match sync_now(app.clone(), db_state, cloud).await {
+    match sync_with(&app, &db_state, &cloud, &session).await {
         Ok(report) => Ok(report),
         Err(e) => {
             discard_half_built_profile(&app, &local_name);
@@ -1898,7 +2034,8 @@ async fn restore_personal_profile(
     }
 
     // Peek at the cloud stream (empty push) and lift the escrow record out.
-    let peek = cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &[], None).await?;
+    let session = cloud.session().await?;
+    let peek = cloud::sync_exchange(&app, &cloud, &session, &cloud_profile, "", &[], None).await?;
     let sealed = peek
         .iter()
         .find(|r| r.entity_type == ESCROW_ETYPE && r.uuid == ESCROW_UUID)
@@ -1952,13 +2089,14 @@ async fn restore_personal_profile(
             [&cloud_profile],
         )
         .map_err(|e| format!("[SYNC] SET_CLOUD_PROFILE: {e}"))?;
+        link_profile_server(conn, session.base())?;
         Ok(())
     })();
     if let Err(e) = seeded {
         discard_half_built_profile(&app, &local_name);
         return Err(e);
     }
-    match sync_now(app.clone(), db_state, cloud).await {
+    match sync_with(&app, &db_state, &cloud, &session).await {
         Ok(report) => Ok(report),
         Err(e) => {
             discard_half_built_profile(&app, &local_name);
@@ -1979,7 +2117,8 @@ async fn share_set_role(
     if role != "editor" && role != "user" {
         return Err("[SHARE] BAD_ROLE".into());
     }
-    cloud::set_member_role(&app, &cloud, &share_id, member_user_id, &role).await
+    let session = cloud.session().await?;
+    cloud::set_member_role(&app, &cloud, &session, &share_id, member_user_id, &role).await
 }
 
 /// Mint a fresh DEK for a share and re-seal it to everyone still on the roster.
@@ -2000,6 +2139,7 @@ async fn rotate_share_dek(
     app: &tauri::AppHandle,
     db_state: &tauri::State<'_, DbState>,
     cloud: &tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    session: &cloud::Session,
     share_id: &str,
     share_name: &str,
 ) -> Result<(), String> {
@@ -2010,17 +2150,17 @@ async fn rotate_share_dek(
     // Re-seal to the owner FIRST. If this is the step that fails, nobody's grant
     // has changed yet and the old key is still universally valid — a clean no-op
     // rather than a share whose members hold a key the owner can't open.
-    cloud::create_share(app, cloud, share_id, share_name, &hex::encode(identity::seal_to(&my_pub, &fresh)?)).await?;
+    cloud::create_share(app, cloud, session, share_id, share_name, &hex::encode(identity::seal_to(&my_pub, &fresh)?)).await?;
 
-    let roster = cloud::share_members(app, cloud, share_id).await?;
+    let roster = cloud::share_members(app, cloud, session, share_id).await?;
     for m in roster.iter().filter(|m| m.role != "owner" && m.status != "revoked") {
-        let Some(info) = cloud::lookup_pubkey(app, cloud, &m.email).await? else { continue };
+        let Some(info) = cloud::lookup_pubkey(app, cloud, session, &m.email).await? else { continue };
         let sealed = hex::encode(identity::seal_to(&hex_to_32(&info.public_key)?, &fresh)?);
         // Best-effort per member: one member whose key lookup fails must not
         // abort the rotation and leave the rest on a key the owner has already
         // replaced. They simply can't decrypt until re-invited, which is the
         // safe direction to fail.
-        if let Err(e) = cloud::invite_member(app, cloud, share_id, &m.email, &m.role, &sealed).await {
+        if let Err(e) = cloud::invite_member(app, cloud, session, share_id, &m.email, &m.role, &sealed).await {
             eprintln!("[SHARE] re-seal failed for {}: {e}", m.email);
         }
     }
@@ -2046,7 +2186,13 @@ async fn share_revoke(
     share_id: String,
     member_user_id: i64,
 ) -> Result<(), String> {
-    cloud::revoke_member(&app, &cloud, &share_id, member_user_id).await?;
+    let session = cloud.session().await?;
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        check_profile_server(conn, session.base())?;
+    }
+    cloud::revoke_member(&app, &cloud, &session, &share_id, member_user_id).await?;
     // Revocation itself has succeeded by here. If the rotation leg fails we
     // still report success for the removal — the member IS out — but say plainly
     // that the key wasn't replaced, because that's the part with a security
@@ -2066,7 +2212,7 @@ async fn share_revoke(
             .clone()
             .unwrap_or_else(|| "profile".to_string()),
     };
-    if let Err(e) = rotate_share_dek(&app, &db_state, &cloud, &share_id, &name).await {
+    if let Err(e) = rotate_share_dek(&app, &db_state, &cloud, &session, &share_id, &name).await {
         return Err(format!(
             "[SHARE] REVOKED_BUT_KEY_NOT_ROTATED: {} is out of the share, but the shared key could not be replaced ({e}). \
              They can no longer reach the server, but they still hold the old key — retry from the members list to rotate it.",
@@ -2083,7 +2229,8 @@ async fn share_leave(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
     share_id: String,
 ) -> Result<(), String> {
-    cloud::leave_share(&app, &cloud, &share_id).await
+    let session = cloud.session().await?;
+    cloud::leave_share(&app, &cloud, &session, &share_id).await
 }
 
 /// Owner: delete the whole shared profile.
@@ -2093,7 +2240,8 @@ async fn share_delete(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
     share_id: String,
 ) -> Result<(), String> {
-    cloud::delete_share(&app, &cloud, &share_id).await
+    let session = cloud.session().await?;
+    cloud::delete_share(&app, &cloud, &session, &share_id).await
 }
 
 #[derive(serde::Serialize)]
@@ -2104,6 +2252,12 @@ struct ProfileShareStatus {
     identity_unlocked: bool,
     signed_in: bool,
     email: Option<String>,
+    /// The server this profile syncs with; `None` while it isn't linked yet.
+    cloud_server: Option<String>,
+    /// The sync server in use.
+    current_server: String,
+    /// Whether that is a self-hosted one, not the default.
+    custom_server: bool,
 }
 
 /// Everything the in-app Profile panel needs about the OPEN profile, read in one
@@ -2116,7 +2270,7 @@ async fn profile_share_status(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<ProfileShareStatus, String> {
     // Scoped so both std MutexGuards drop before the awaits below.
-    let (profile, share_id, role) = {
+    let (profile, share_id, role, cloud_server) = {
         let profile = db_state
             .active_profile
             .lock()
@@ -2131,12 +2285,13 @@ async fn profile_share_status(
                 let role: Option<String> = conn
                     .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
                     .ok();
-                (profile, sid, role)
+                (profile, sid, role, profile_server(conn))
             }
-            None => (profile, None, None),
+            None => (profile, None, None, None),
         }
     };
     let st = cloud.status().await;
+    let current_server = cloud.base().await;
     Ok(ProfileShareStatus {
         profile,
         share_id,
@@ -2144,7 +2299,35 @@ async fn profile_share_status(
         identity_unlocked: cloud.identity().await.is_some(),
         signed_in: st.signed_in,
         email: st.email,
+        cloud_server,
+        custom_server: current_server != cloud::CLOUD_API_BASE,
+        current_server,
     })
+}
+
+/// Links the OPEN personal profile to the sync server in use, so it syncs
+/// there from now on. Nothing is copied or deleted by this: the next sync
+/// pushes the profile in full (pushes always are), and its copy on the old
+/// server stays where it is. A shared profile can't move: its members are on
+/// the server it was shared on.
+#[tauri::command]
+async fn move_profile_to_current_server(
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<(), String> {
+    let base = cloud.base().await;
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        let shared = conn
+            .query_row("SELECT 1 FROM sync_meta WHERE key='share_id'", [], |_| Ok(()))
+            .is_ok();
+        if shared {
+            return Err("[SYNC] SHARED_PROFILE: a shared profile stays on the server it was shared on.".into());
+        }
+        link_profile_server(conn, &base)?;
+    }
+    save_vault_async(&db_state).await
 }
 
 /// Stop sharing the OPEN profile. Owner → tears the share down for everyone;
@@ -2157,6 +2340,7 @@ async fn stop_sharing(
     db_state: tauri::State<'_, DbState>,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<(), String> {
+    let session = cloud.session().await?;
     let (share_id, role) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
@@ -2166,6 +2350,7 @@ async fn stop_sharing(
         let role: Option<String> = conn
             .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
             .ok();
+        check_profile_server(conn, session.base())?;
         (
             sid.ok_or("[SHARE] NOT_SHARED: this profile isn't shared")?,
             role.unwrap_or_default(),
@@ -2176,7 +2361,7 @@ async fn stop_sharing(
         // the server never got the message we must NOT forget the share_id —
         // dropping it locally would orphan a live share that members keep
         // syncing against, with nobody left able to shut it down.
-        cloud::delete_share(&app, &cloud, &share_id).await?;
+        cloud::delete_share(&app, &cloud, &session, &share_id).await?;
     } else {
         // Leaving is the member's own decision about their own device, so it has
         // to succeed locally whatever the server says. It used to abort on any
@@ -2185,7 +2370,7 @@ async fn stop_sharing(
         // one escape hatch the UI offers failed every single time, and their
         // vault stayed pointed at a dead share that errored on every sync
         // forever. Best-effort tell the server, then clear regardless.
-        if let Err(e) = cloud::leave_share(&app, &cloud, &share_id).await {
+        if let Err(e) = cloud::leave_share(&app, &cloud, &session, &share_id).await {
             eprintln!("[SHARE] leave_share failed, clearing locally anyway: {e}");
         }
     }
@@ -2821,7 +3006,8 @@ async fn cloud_list_sync_profiles(
     app: tauri::AppHandle,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<Vec<cloud::SyncProfileInfo>, String> {
-    cloud::list_sync_profiles(&app, &cloud).await
+    let session = cloud.session().await?;
+    cloud::list_sync_profiles(&app, &cloud, &session).await
 }
 
 /// Delete one of the caller's OWN personal profiles from the cloud: wipes every
@@ -2840,7 +3026,8 @@ async fn cloud_delete_profile(
     if profile.is_empty() {
         return Err("[SYNC] NO_PROFILE_NAME".into());
     }
-    cloud::delete_sync_profile(&app, &cloud, &profile).await
+    let session = cloud.session().await?;
+    cloud::delete_sync_profile(&app, &cloud, &session, &profile).await
 }
 
 /// Replace this profile's entire cloud copy with what's on THIS device.
@@ -2870,9 +3057,11 @@ async fn force_push_profile(
         .map_err(|_| "[STATE] LOCK_PROFILE")?
         .clone()
         .ok_or("[SYNC] NO_PROFILE_OPEN")?;
+    let session = cloud.session().await?;
     let (share_id, cloud_profile) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        check_profile_server(conn, session.base())?;
         let sid: Option<String> = conn
             .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
             .ok();
@@ -2884,11 +3073,11 @@ async fn force_push_profile(
     if share_id.is_some() {
         return Err("[SYNC] SHARED_PROFILE: this profile is shared with other people, and replacing the cloud copy would delete their changes too. Stop sharing first if you really want to reset it.".into());
     }
-    let removed = cloud::delete_sync_profile(&app, &cloud, &cloud_profile).await?;
+    let removed = cloud::delete_sync_profile(&app, &cloud, &session, &cloud_profile).await?;
     eprintln!("[SYNC] force push: server dropped {removed} record(s) for '{cloud_profile}'");
     // Pushes are always a full set, so the very next sync repopulates the
     // partition from this vault — including a fresh DEK escrow record.
-    sync_now(app, db_state, cloud).await
+    sync_with(&app, &db_state, &cloud, &session).await
 }
 
 /// Mark a profile as the active one. Subsequent `check_db_exists` /
@@ -3770,6 +3959,13 @@ async fn create_profile(
             [&pid_hex],
         )
         .map_err(|e| format!("[STATE] CLOUD_PROFILE_STORE: {e}"))?;
+        // Not linked to any sync server yet: its first sync links it to the
+        // one in use (see `check_profile_server`).
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('cloud_server','') ON CONFLICT(key) DO NOTHING",
+            [],
+        )
+        .map_err(|e| format!("[STATE] CLOUD_SERVER_STORE: {e}"))?;
     }
     save_vault_internal(&db_state)?;
     Ok(())
@@ -8022,7 +8218,9 @@ async fn initiate_connection(
                                 }
                             }
                         };
-                        for spec in &specs_to_start {
+                        // A rule the user stopped stays down until they start
+                        // it again.
+                        for spec in specs_to_start.iter().filter(|spec| !spec.stopped) {
                             let started = tunnel::start_tunnel(
                                 app.clone(),
                                 session_id_clone.clone(),
@@ -8098,7 +8296,7 @@ async fn initiate_connection(
                                     },
                                 }
                             };
-                            if !specs.is_empty() {
+                            if specs.iter().any(|spec| !spec.stopped) {
                                 emit_log("Dedicated forwarding connection ready — moving tunnels onto it.", "info");
                                 start_tunnel_specs_on(
                                     &app,
@@ -8302,7 +8500,7 @@ async fn initiate_connection(
                                 // bind retry never delays death detection.
                                 if !dead && tick.is_multiple_of(30) && !sid_w.contains("::") {
                                     let specs = state_specs_w.lock().await.get(&sid_w).cloned().unwrap_or_default();
-                                    if !specs.is_empty() {
+                                    if specs.iter().any(|spec| !spec.stopped) {
                                         let app_r = app_w.clone();
                                         let sid_r = sid_w.clone();
                                         let handle_r = Arc::clone(&handle_arc);
@@ -8641,7 +8839,8 @@ async fn start_tunnel_specs_on(
         }
     }
     for spec in specs {
-        if running.contains(&spec) {
+        // A rule the user stopped stays down until they start it again.
+        if spec.stopped || running.contains(&spec) {
             continue;
         }
         match tunnel::start_tunnel(
@@ -8679,41 +8878,93 @@ async fn start_tunnel_specs_on(
     }
 }
 
+/// The forwarding rules saved on a node (its `tunnels` column).
+fn saved_tunnel_rules(db_state: &DbState, server_id: i32) -> Result<Vec<tunnel::TunnelSpec>, String> {
+    let conn_guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    let mut stmt = conn
+        .prepare("SELECT tunnels FROM servers WHERE id=?1")
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([server_id]).map_err(|e| e.to_string())?;
+    let json = match rows.next().map_err(|e| e.to_string())? {
+        Some(row) => row
+            .get::<_, Option<String>>(0)
+            .unwrap_or_default()
+            .unwrap_or_else(|| "[]".to_string()),
+        None => "[]".to_string(),
+    };
+    Ok(serde_json::from_str(&json).unwrap_or_default())
+}
+
+/// Make sure the session has its rule list before the user changes it. A
+/// session that hasn't engaged its tunnels yet has none (the dedicated
+/// connection is still coming up, or the node was just edited): it starts
+/// from the node's saved rules, the way connecting would. Starting from an
+/// empty list instead would save just the changed rule over all the others.
+async fn ensure_session_rules(
+    state: &SshState,
+    db_state: &DbState,
+    session_id: &str,
+    server_id: Option<i32>,
+) -> Result<(), String> {
+    let server_id = server_id.unwrap_or(0);
+    if server_id <= 0 || state.session_tunnel_specs.lock().await.contains_key(session_id) {
+        return Ok(());
+    }
+    let saved = saved_tunnel_rules(db_state, server_id)?;
+    // Whatever got there in the meantime (a connect) wins: it read the same rules.
+    state
+        .session_tunnel_specs
+        .lock()
+        .await
+        .entry(session_id.to_string())
+        .or_insert(saved);
+    Ok(())
+}
+
 #[tauri::command]
 async fn start_tunnel(
     app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
     session_id: String,
+    server_id: Option<i32>,
     spec: tunnel::TunnelSpec,
 ) -> Result<String, String> {
+    // A new forward, or a stopped rule started again: it runs from now on.
+    let spec = tunnel::TunnelSpec {
+        name: tunnel::clean_name(spec.name.as_deref()),
+        stopped: false,
+        ..spec
+    };
+    ensure_session_rules(state.inner(), db_state.inner(), &session_id, server_id).await?;
     // Dedicated-transport aware: rides the `::fwd` connection when one is up,
     // the primary otherwise. The tunnel is TAGGED under the plain session id
     // either way, so the Tunnels panel / list / teardown never re-key.
     let (handle, forwarded) = resolve_tunnel_transport(state.inner(), &session_id).await?;
     let id = tunnel::start_tunnel(app, session_id.clone(), handle, Arc::clone(&state.tunnels), forwarded, spec.clone()).await?;
-    // Record this ad-hoc spec against the session so a future reconnect can
-    // re-open it. Dedup against (kind, local, remote) so toggling the same
-    // tunnel off-and-on doesn't accumulate duplicates.
+    // Record the rule against the session so a future reconnect re-opens it
+    // and the panel can save it to the node. One rule per forward, so
+    // starting the same one again doesn't add a duplicate.
     {
         let mut map = state.session_tunnel_specs.lock().await;
-        let entry = map.entry(session_id).or_insert_with(Vec::new);
-        if !entry.contains(&spec) {
-            entry.push(spec);
-        }
+        tunnel::rule_started(map.entry(session_id).or_default(), &spec);
     }
     Ok(id)
 }
 
+/// Stop a running tunnel. Its rule stays, marked stopped: the panel still
+/// lists it, nothing starts it again until the user does, and saving keeps it
+/// on the node. `remove_tunnel_rule` is what deletes a rule.
 #[tauri::command]
 async fn stop_tunnel(
     state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
     tunnel_id: String,
+    server_id: Option<i32>,
 ) -> Result<(), String> {
     // Snapshot spec + session BEFORE stop — the listener task removes itself
-    // from the tunnels map on exit, racing this lookup. With the snapshot in
-    // hand we can drop the matching entry from the session's replay list so
-    // a user who explicitly stopped a tunnel doesn't see it return on the
-    // next reconnect.
+    // from the tunnels map on exit, racing this lookup.
     let snapshot = {
         let map = state.tunnels.lock().await;
         match map.get(&tunnel_id) {
@@ -8724,14 +8975,89 @@ async fn stop_tunnel(
             None => None,
         }
     };
+    if let Some((_, sid)) = &snapshot {
+        ensure_session_rules(state.inner(), db_state.inner(), sid, server_id).await?;
+    }
     tunnel::stop_tunnel(&state.tunnels, &tunnel_id).await?;
     if let Some((spec, sid)) = snapshot {
         let mut map = state.session_tunnel_specs.lock().await;
-        if let Some(list) = map.get_mut(&sid) {
-            list.retain(|s| s != &spec);
+        if let Some(rules) = map.get_mut(&sid) {
+            tunnel::rule_stopped(rules, &spec);
         }
     }
     Ok(())
+}
+
+/// The session's forwarding rules: running and stopped ones alike. Before the
+/// session has engaged its tunnels, the node's saved rules.
+#[tauri::command]
+async fn list_tunnel_rules(
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    session_id: String,
+    server_id: Option<i32>,
+) -> Result<Vec<tunnel::TunnelSpec>, String> {
+    if let Some(rules) = state.session_tunnel_specs.lock().await.get(&session_id) {
+        return Ok(rules.clone());
+    }
+    match server_id {
+        Some(id) if id > 0 => saved_tunnel_rules(db_state.inner(), id),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Delete a forwarding rule from the session, stopping it first if it runs.
+#[tauri::command]
+async fn remove_tunnel_rule(
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    session_id: String,
+    server_id: Option<i32>,
+    spec: tunnel::TunnelSpec,
+) -> Result<(), String> {
+    ensure_session_rules(state.inner(), db_state.inner(), &session_id, server_id).await?;
+    // Two-phase, as in tunnel::stop_all_for_session: ids under the map lock,
+    // the session check after releasing it.
+    let candidates: Vec<(String, Arc<tokio::sync::Mutex<tunnel::TunnelStatus>>)> = {
+        let map = state.tunnels.lock().await;
+        map.iter()
+            .filter(|(_, t)| t.spec == spec)
+            .map(|(id, t)| (id.clone(), Arc::clone(&t.status)))
+            .collect()
+    };
+    for (id, status) in candidates {
+        if status.lock().await.session_id == session_id {
+            // Already gone is fine: the point is that it isn't running.
+            let _ = tunnel::stop_tunnel(&state.tunnels, &id).await;
+        }
+    }
+    if let Some(rules) = state.session_tunnel_specs.lock().await.get_mut(&session_id) {
+        tunnel::rule_removed(rules, &spec);
+    }
+    Ok(())
+}
+
+/// Give a forwarding rule a name, or take it away (an empty name).
+#[tauri::command]
+async fn rename_tunnel_rule(
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    session_id: String,
+    server_id: Option<i32>,
+    spec: tunnel::TunnelSpec,
+    name: Option<String>,
+) -> Result<(), String> {
+    ensure_session_rules(state.inner(), db_state.inner(), &session_id, server_id).await?;
+    let mut map = state.session_tunnel_specs.lock().await;
+    let renamed = map
+        .get_mut(&session_id)
+        .map(|rules| tunnel::rule_renamed(rules, &spec, name.as_deref()))
+        .unwrap_or(false);
+    if renamed {
+        Ok(())
+    } else {
+        Err("This forward is no longer in the list.".into())
+    }
 }
 
 #[tauri::command]
@@ -8742,10 +9068,10 @@ async fn list_tunnels(
     Ok(tunnel::list_tunnels(&state.tunnels, session_id.as_deref()).await)
 }
 
-/// Persist the session's current live tunnel set to the node's saved `tunnels`
-/// column so ad-hoc port-forwards a user adds (or removes) during a session
-/// survive to the next time the node is opened. The Tunnels panel calls this
-/// after a successful start/stop. A quick-connect session (server_id <= 0) has
+/// Persist the session's forwarding rules (running and stopped, with their
+/// names) to the node's saved `tunnels` column so changes a user makes during
+/// a session survive to the next time the node is opened. The Tunnels panel
+/// calls this after each change. A quick-connect session (server_id <= 0) has
 /// no node to save to, so it's a no-op.
 #[tauri::command]
 async fn persist_session_tunnels(
@@ -8757,13 +9083,12 @@ async fn persist_session_tunnels(
     if server_id <= 0 {
         return Ok(());
     }
-    let specs = state
-        .session_tunnel_specs
-        .lock()
-        .await
-        .get(&session_id)
-        .cloned()
-        .unwrap_or_default();
+    // No list means the session never engaged its rules (or the node was just
+    // edited, which drops it): the node's rules are already what there is,
+    // and writing an empty list would erase them.
+    let Some(specs) = state.session_tunnel_specs.lock().await.get(&session_id).cloned() else {
+        return Ok(());
+    };
     let json = serde_json::to_string(&specs).unwrap_or_else(|_| "[]".to_string());
     {
         // Scoped so the non-Send rusqlite guard drops before save_vault_internal.
@@ -8801,23 +9126,7 @@ async fn restart_session_tunnels(
         state.session_tunnel_specs.lock().await.get(&session_id).cloned();
     let mut specs: Vec<tunnel::TunnelSpec> = existing.clone().unwrap_or_default();
     if existing.is_none() && server_id > 0 {
-        // Nested block so the non-Send rusqlite guard drops before any await.
-        let tunnels_json: String = {
-            let conn_guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
-            let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-            let mut stmt = conn
-                .prepare("SELECT tunnels FROM servers WHERE id=?1")
-                .map_err(|e| e.to_string())?;
-            let mut rows = stmt.query([server_id]).map_err(|e| e.to_string())?;
-            match rows.next().map_err(|e| e.to_string())? {
-                Some(row) => row
-                    .get::<_, Option<String>>(0)
-                    .unwrap_or_default()
-                    .unwrap_or_else(|| "[]".to_string()),
-                None => "[]".to_string(),
-            }
-        };
-        specs = serde_json::from_str(&tunnels_json).unwrap_or_default();
+        specs = saved_tunnel_rules(db_state.inner(), server_id)?;
         if !specs.is_empty() {
             state
                 .session_tunnel_specs
@@ -8826,7 +9135,8 @@ async fn restart_session_tunnels(
                 .insert(session_id.clone(), specs.clone());
         }
     }
-    if specs.is_empty() {
+    // Nothing to start: no rules, or only ones the user stopped.
+    if !specs.iter().any(|spec| !spec.stopped) {
         return Ok(());
     }
 
@@ -9109,8 +9419,59 @@ async fn disconnect_session(
     Ok(())
 }
 
+// The shell this computer's own terminals start, for Settings → Terminal →
+// "Use my default shell": `$SHELL`, which the login session sets on Linux and
+// macOS desktops (and launchd for an app started from Finder). Windows and
+// Android have no such shell, so the setting does nothing there and the
+// settings page doesn't offer it (see `local_shell`). The path is sent to the
+// server, so only a plain absolute one is taken (`is_safe_remote_exec_path`).
+#[cfg(all(unix, not(target_os = "android")))]
+fn local_default_shell() -> Option<String> {
+    let shell = std::env::var("SHELL").ok()?;
+    let shell = shell.trim();
+    is_safe_remote_exec_path(shell).then(|| shell.to_string())
+}
+
+#[cfg(not(all(unix, not(target_os = "android"))))]
+fn local_default_shell() -> Option<String> {
+    None
+}
+
+/// The shell "Use my default shell" starts; none where the setting does
+/// nothing.
 #[tauri::command]
-async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>, session_id: String, terminal_id: String, cols: u32, rows: u32) -> Result<(), String> {
+fn local_shell() -> Option<String> {
+    local_default_shell()
+}
+
+// Starts `$1` as a login shell, with $SHELL naming it for the programs that
+// start a shell of their own (tmux, vim's :sh). If it has gone since
+// `server_runs_login_shell` looked, the account's own shell starts instead
+// (sshd sets $SHELL to it). Sent as `sh -c '<script>' sh <shell>`: the
+// account's shell, whatever it is (fish and csh included), only runs a plain
+// command, and the path arrives as an argument, never inside the script.
+const LOGIN_SHELL_SCRIPT: &str =
+    r#"if [ -x "$1" ]; then SHELL=$1; export SHELL; exec "$1" -l; fi; exec "${SHELL:-/bin/sh}" -l"#;
+
+fn login_shell_command(shell: &str) -> String {
+    format!("sh -c '{}' sh {}", LOGIN_SHELL_SCRIPT, crate::docker::shq(shell))
+}
+
+// Whether the server can start `shell` that way: it takes exec requests, it
+// has a POSIX sh, and the shell is there. A Windows server, an appliance that
+// only offers a plain shell, or a server without that shell fails this and
+// gets the plain shell request, as with the setting off: a terminal opens in
+// any case. Asked on a channel of its own, before the terminal's.
+async fn server_runs_login_shell(session_arc: &SessionHandleArc, shell: &str) -> bool {
+    let cmd = format!("sh -c '[ -x \"$1\" ] && echo __SUB_SHELL:OK' sh {}", crate::docker::shq(shell));
+    matches!(
+        exec_with_stdin_capture(session_arc, &cmd, None, 4).await,
+        Ok(out) if out.lines().any(|line| line.trim() == "__SUB_SHELL:OK")
+    )
+}
+
+#[tauri::command]
+async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>, session_id: String, terminal_id: String, cols: u32, rows: u32, use_local_shell: bool) -> Result<(), String> {
     use std::sync::Arc;
     use crate::ssh_manager::TerminalCommand;
 
@@ -9123,12 +9484,26 @@ async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>,
         }
     };
 
+    // Settings → Terminal → "Use my default shell": this computer's shell,
+    // started on the server as a login shell in place of the account's own
+    // (LOGIN_SHELL_SCRIPT), where the server can (server_runs_login_shell);
+    // otherwise, and with the setting off, the account's own shell. Asked
+    // before the session is locked for the terminal's channel.
+    let login_shell = match use_local_shell.then(local_default_shell).flatten() {
+        Some(shell) if server_runs_login_shell(&session_arc, &shell).await => Some(shell),
+        _ => None,
+    };
+
     let session = session_arc.lock().await;
     let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
 
     // Request PTY
     channel.request_pty(false, "xterm-256color", cols, rows, 0, 0, &[]).await.map_err(|e| e.to_string())?;
-    channel.request_shell(true).await.map_err(|e| e.to_string())?;
+    match login_shell {
+        Some(shell) => channel.exec(true, login_shell_command(&shell).as_bytes()).await,
+        None => channel.request_shell(true).await,
+    }
+    .map_err(|e| e.to_string())?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<TerminalCommand>(32);
     // Last-wins watch channel for PTY resizes. The PTY task selects on
@@ -10127,6 +10502,89 @@ mod elevated_sftp_tests {
     }
 }
 
+#[cfg(test)]
+mod owner_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn only_asked_uids_with_a_plain_name_are_taken() {
+        let out = "0\troot\n1003\tdeploy\n1004\tother\nbad line\n7\t\n8\tx\u{1b}[31m\n__SUB_OWNERS:OK\n";
+        let owners = parse_owners(out, &[0, 1003, 7, 8]);
+        let got: Vec<(u32, &str)> = owners.iter().map(|o| (o.uid, o.name.as_str())).collect();
+        assert_eq!(got, vec![(0, "root"), (1003, "deploy")]);
+    }
+
+    #[test]
+    fn the_script_survives_single_quote_wrapping_in_any_shell() {
+        assert!(!OWNER_LOOKUP_SCRIPT.contains('\''));
+        assert!(!OWNER_LOOKUP_SCRIPT.contains('!'));
+    }
+
+    // The script itself, run by this machine's sh: uid 0 is root everywhere.
+    #[cfg(unix)]
+    #[test]
+    fn the_script_names_root_and_ends_with_its_marker() {
+        let out = std::process::Command::new("sh")
+            .args(["-c", OWNER_LOOKUP_SCRIPT, "sh", "0", "3999999999"])
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&out.stdout);
+        assert!(out.lines().any(|l| l == "0\troot"), "{out}");
+        assert!(out.lines().any(|l| l == "__SUB_OWNERS:OK"), "{out}");
+        assert_eq!(parse_owners(&out, &[0, 3999999999]).len(), 1, "{out}");
+    }
+}
+
+#[cfg(test)]
+mod login_shell_tests {
+    use super::*;
+
+    #[test]
+    fn the_shell_path_goes_in_as_an_argument() {
+        assert_eq!(
+            login_shell_command("/usr/bin/zsh"),
+            format!("sh -c '{}' sh '/usr/bin/zsh'", LOGIN_SHELL_SCRIPT)
+        );
+    }
+
+    #[test]
+    fn the_script_survives_single_quote_wrapping_in_any_shell() {
+        // Sent as `sh -c '<script>'` through the account's own shell: a single
+        // quote would end the argument early, and `!` triggers history
+        // expansion in tcsh.
+        assert!(!LOGIN_SHELL_SCRIPT.contains('\''));
+        assert!(!LOGIN_SHELL_SCRIPT.contains('!'));
+    }
+
+    // What the script does, run by this machine's own sh, with a stand-in
+    // shell that says how it was started.
+    #[cfg(unix)]
+    #[test]
+    fn the_script_starts_the_shell_as_a_login_shell_or_else_the_accounts_own() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("sub-login-shell-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("fake-shell");
+        std::fs::write(&fake, "#!/bin/sh\necho \"started $0 $* SHELL=$SHELL\"\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fake = fake.to_str().unwrap().to_string();
+        let run = |shell: &str, account_shell: &str| {
+            let out = std::process::Command::new("sh")
+                .args(["-c", LOGIN_SHELL_SCRIPT, "sh", shell])
+                .env("SHELL", account_shell)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        // The shell is there: it starts as a login shell, and is $SHELL.
+        assert_eq!(run(&fake, "/bin/false"), format!("started {fake} -l SHELL={fake}"));
+        // It isn't: the account's own shell starts, as a login shell.
+        let missing = dir.join("no-such-shell");
+        assert_eq!(run(missing.to_str().unwrap(), &fake), format!("started {fake} -l SHELL={fake}"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 /// Which connection SFTP rides for a session: the dedicated `::sftp` one when
 /// the tab has it, otherwise the primary.
 async fn sftp_transport(state: &SshState, session_id: &str) -> Result<(String, SessionHandleArc), String> {
@@ -10158,6 +10616,73 @@ async fn sftp_login_user(
     let (_, session_arc) = sftp_transport(&state, &session_id).await?;
     let out = exec_with_stdin_capture(&session_arc, "id -un", None, 10).await?;
     Ok(out.lines().next().unwrap_or("").trim().to_string())
+}
+
+#[derive(serde::Serialize)]
+struct SftpOwner {
+    uid: u32,
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+struct SftpOwners {
+    owners: Vec<SftpOwner>,
+    /// "complete": every uid asked was looked up; one without a name has
+    /// none on the server. "unsupported": the server can't run the lookup
+    /// (no POSIX sh: a Windows server). An exec that fails or hangs is Err.
+    status: &'static str,
+}
+
+// The names behind the uids of an SFTP listing, which carries numbers only:
+// each uid through `id -un`, else the passwd database. The uids come as
+// arguments (numbers); the script is fixed and has no single quote, as it is
+// sent as `sh -c '<script>' sh <uid>...`.
+const OWNER_LOOKUP_SCRIPT: &str = r#"for uid; do name=$(id -un "$uid" 2>/dev/null) || name=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1 | head -n 1); [ -n "$name" ] && printf "%s\t%s\n" "$uid" "$name"; done; echo __SUB_OWNERS:OK"#;
+
+// One lookup takes this many uids at most; a listing rarely has a handful.
+const OWNER_LOOKUP_MAX: usize = 256;
+
+/// The `uid<TAB>name` lines of OWNER_LOOKUP_SCRIPT's output, for uids that
+/// were asked about. A name is at most 64 characters, with no control
+/// characters.
+fn parse_owners(out: &str, asked: &[u32]) -> Vec<SftpOwner> {
+    out.lines()
+        .filter_map(|line| {
+            let (uid, name) = line.split_once('\t')?;
+            let uid: u32 = uid.trim().parse().ok()?;
+            let name = name.trim();
+            let ok = asked.contains(&uid)
+                && !name.is_empty()
+                && name.chars().count() <= 64
+                && !name.chars().any(char::is_control);
+            ok.then(|| SftpOwner { uid, name: name.to_string() })
+        })
+        .collect()
+}
+
+/// Names for the uids of the remote pane's listing, for its OWNER column.
+#[tauri::command]
+async fn sftp_resolve_owners(
+    state: tauri::State<'_, SshState>,
+    session_id: String,
+    uids: Vec<u32>,
+) -> Result<SftpOwners, String> {
+    let mut uids = uids;
+    uids.sort_unstable();
+    uids.dedup();
+    uids.truncate(OWNER_LOOKUP_MAX);
+    if uids.is_empty() {
+        return Ok(SftpOwners { owners: Vec::new(), status: "complete" });
+    }
+    let (_, session_arc) = sftp_transport(&state, &session_id).await?;
+    let args = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(" ");
+    let cmd = format!("sh -c '{}' sh {}", OWNER_LOOKUP_SCRIPT, args);
+    let out = exec_with_stdin_capture(&session_arc, &cmd, None, 5).await?;
+    let complete = out.lines().any(|line| line.trim() == "__SUB_OWNERS:OK");
+    Ok(SftpOwners {
+        owners: parse_owners(&out, &uids),
+        status: if complete { "complete" } else { "unsupported" },
+    })
 }
 
 #[tauri::command]
@@ -11089,19 +11614,18 @@ async fn sftp_upload_file(
     remote_path: String,
     overwrite: Option<bool>,
 ) -> Result<(), String> {
-    use russh_sftp::protocol::OpenFlags;
     use tauri::Emitter;
     use tokio::io::AsyncWriteExt;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     // Overwrite protection: stat the remote target first; refuse if it
     // exists and the caller hasn't explicitly opted in. Same `EXISTS:<path>`
-    // sentinel as the download path.
+    // sentinel as the download path. What it finds also tells a cancel
+    // whether the file was there before (see open_upload_target).
     let sftp = get_sftp_session(&state, &session_id).await?;
-    if overwrite != Some(true) {
-        if sftp.metadata(&remote_path).await.is_ok() {
-            return Err(format!("EXISTS:{}", remote_path));
-        }
+    let existed = sftp.metadata(&remote_path).await.is_ok();
+    if existed && overwrite != Some(true) {
+        return Err(format!("EXISTS:{}", remote_path));
     }
 
     // Source must exist and live in a path the user could plausibly own —
@@ -11156,11 +11680,13 @@ async fn sftp_upload_file(
     let mut local_file = tokio::fs::File::open(&local_path)
         .await
         .map_err(|e| { emit_progress(0, "error", Some(e.to_string())); format!("Failed to read local file: {}", e) })?;
-    let mut remote_file = sftp
-        .open_with_flags(
-            remote_path,
-            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-        )
+    // The open below truncates a file that is there: a cancel that came in
+    // before it must not cost that file its content.
+    if cancel.load(Ordering::Relaxed) {
+        emit_progress(0, "cancelled", None);
+        return Err("cancelled".into());
+    }
+    let (mut remote_file, created) = open_upload_target(&sftp, &remote_path, existed)
         .await
         .map_err(|e| { emit_progress(0, "error", Some(e.to_string())); format!("Failed to open remote file: {}", e) })?;
 
@@ -11171,10 +11697,8 @@ async fn sftp_upload_file(
     use tokio::io::AsyncReadExt;
     loop {
         if cancel.load(Ordering::Relaxed) {
-            // Close the remote handle so the server doesn't keep an
-            // open-write descriptor for a file we'll never finish.
-            let _ = remote_file.shutdown().await;
-            emit_progress(transferred, "cancelled", None);
+            let note = finish_cancelled_upload(&sftp, remote_file, &remote_path, &name, created).await;
+            emit_progress(transferred, "cancelled", note);
             return Err("cancelled".into());
         }
         let n = local_file
@@ -11203,6 +11727,56 @@ async fn sftp_upload_file(
     Ok(())
 }
 
+/// Open an upload's remote file for writing, and tell whether this upload
+/// created it: then a cancel may delete it. EXCL decides that in the same
+/// request, as it opens only a path that has nothing there. Anything else (a
+/// file, a link, even a dangling one, or any error) is opened again with
+/// TRUNCATE alone and counts as existing, so a cancel leaves it, with its
+/// owner, mode and links. `existed` is what a check just before found: a
+/// server that ignores EXCL would otherwise let a file that was there pass
+/// for a new one.
+async fn open_upload_target(
+    sftp: &russh_sftp::client::SftpSession,
+    remote_path: &str,
+    existed: bool,
+) -> Result<(russh_sftp::client::fs::File, bool), russh_sftp::client::error::Error> {
+    use russh_sftp::protocol::OpenFlags;
+    let truncate = OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE;
+    if let Ok(file) = sftp.open_with_flags(remote_path, truncate | OpenFlags::EXCLUDE).await {
+        return Ok((file, !existed));
+    }
+    Ok((sftp.open_with_flags(remote_path, truncate).await?, false))
+}
+
+/// Close the remote file of an upload cancelled mid-write and, when this
+/// upload created it, delete it, so no half-written copy stays on the
+/// server. Awaited (for up to 10 s) before the upload reports its cancel, so
+/// an upload of the same file started right after can't lose its file to
+/// this delete. Returns the card's note: what the cancel left on the server.
+/// `name` is how the note names the file.
+async fn finish_cancelled_upload(
+    sftp: &russh_sftp::client::SftpSession,
+    mut remote_file: russh_sftp::client::fs::File,
+    remote_path: &str,
+    name: &str,
+    created: bool,
+) -> Option<String> {
+    use tokio::io::AsyncWriteExt;
+    let cleanup = async {
+        let _ = remote_file.shutdown().await;
+        if created { sftp.remove_file(remote_path).await.err() } else { None }
+    };
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), cleanup).await;
+    if !created {
+        return Some(format!("{name} on the server holds only the part sent before the cancel."));
+    }
+    match outcome {
+        Ok(None) => None,
+        Ok(Some(e)) => Some(format!("The partly sent {name} is still on the server: {e}")),
+        Err(_) => Some(format!("The partly sent {name} may still be on the server: the server took too long to remove it.")),
+    }
+}
+
 /// Recursive directory upload — mirror of sftp_download_dir. Walks the local
 /// tree, mkdirs each subdirectory on the remote, then streams every file
 /// through the same flags+chunk logic as sftp_upload_file. Cancel flag and
@@ -11217,7 +11791,6 @@ async fn sftp_upload_dir(
     remote_path: String,
     overwrite: Option<bool>,
 ) -> Result<(), String> {
-    use russh_sftp::protocol::OpenFlags;
     use tauri::Emitter;
     use tokio::io::AsyncWriteExt;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -11381,11 +11954,17 @@ async fn sftp_upload_dir(
                 return Err(format!("open {:?}: {}", local_file_path, e));
             }
         };
-        let mut remote_file = match sftp.open_with_flags(
-            remote_full.clone(),
-            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-        ).await {
-            Ok(f) => f,
+        // See sftp_upload_file: no truncating open after a cancel.
+        if cancel.load(Ordering::Relaxed) {
+            emit_progress(transferred, total_bytes, "cancelled", None);
+            return Err("cancelled".into());
+        }
+        // Whether each file was there isn't asked (a round trip per file):
+        // EXCL alone tells a file this upload created. A cancel deletes only
+        // the file it was writing; files already sent and the folders made
+        // for them stay.
+        let (mut remote_file, created) = match open_upload_target(&sftp, &remote_full, false).await {
+            Ok(opened) => opened,
             Err(e) => {
                 emit_progress(transferred, total_bytes, "error",
                     Some(format!("open remote {}: {}", remote_full, e)));
@@ -11395,8 +11974,9 @@ async fn sftp_upload_dir(
 
         loop {
             if cancel.load(Ordering::Relaxed) {
-                let _ = remote_file.shutdown().await;
-                emit_progress(transferred, total_bytes, "cancelled", None);
+                let shown = format!("{}/{}", folder_name, rel);
+                let note = finish_cancelled_upload(&sftp, remote_file, &remote_full, &shown, created).await;
+                emit_progress(transferred, total_bytes, "cancelled", note);
                 return Err("cancelled".into());
             }
             let n = local_file.read(&mut buf).await
@@ -12888,6 +13468,18 @@ fn display_path(path: &std::path::Path) -> String {
     full.into_owned()
 }
 
+/// The local paths the app writes to are full paths: from a listing, the
+/// folder picker or the user's own folder. A relative one (`name`, or on
+/// Windows `G:name` and `\name`) would be resolved against whatever folder the
+/// app happens to run in, so it is refused.
+fn require_full_path(p: &std::path::Path) -> Result<(), String> {
+    if p.is_absolute() {
+        Ok(())
+    } else {
+        Err(format!("Not a full path: {}", p.display()))
+    }
+}
+
 /// Defense-in-depth guard for the local-FS commands the frontend can invoke.
 /// We can't lock everything down to a sandbox (the local file browser
 /// legitimately needs to roam the user's disk to pick uploads), but we CAN
@@ -12900,6 +13492,7 @@ fn display_path(path: &std::path::Path) -> String {
 /// `readable_local_dir`, which has no such limits.
 fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::PathBuf, String> {
     let p = std::path::Path::new(path);
+    require_full_path(p)?;
     let canonical = match p.canonicalize() {
         Ok(c) => c,
         Err(e) => {
@@ -12927,6 +13520,7 @@ fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::Pa
 /// system-path policy applies.
 fn guard_local_path_nofollow(path: &str, must_exist: bool) -> Result<std::path::PathBuf, String> {
     let p = std::path::Path::new(path);
+    require_full_path(p)?;
     let file = p.file_name().ok_or_else(|| format!("Invalid path: {}", path))?;
     let parent = p
         .parent()
@@ -12940,6 +13534,38 @@ fn guard_local_path_nofollow(path: &str, must_exist: bool) -> Result<std::path::
         std::fs::symlink_metadata(&full).map_err(|e| format!("Invalid path: {}", e))?;
     }
     check_local_path_policy(full)
+}
+
+/// The system folders `check_local_path_policy` refuses, as lowercase paths
+/// with `/`. On Windows they are also read from the environment (`var` looks
+/// one up): Windows and its program folders aren't always on drive C. On
+/// macOS `/etc` and `/var` are links into `/private`, and a checked path is
+/// already resolved, so the folders are listed there too.
+fn system_dirs(var: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let fixed: &[&str] = if cfg!(windows) {
+        &["c:/windows", "c:/program files", "c:/program files (x86)", "c:/programdata"]
+    } else {
+        &[
+            "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot",
+            "/sys", "/proc", "/dev", "/var/log", "/var/run", "/root",
+            "/private/etc", "/private/var/log", "/private/var/run", "/system",
+        ]
+    };
+    let mut dirs: Vec<String> = fixed.iter().map(|dir| dir.to_string()).collect();
+    if cfg!(windows) {
+        for name in ["SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"] {
+            let Some(value) = var(name) else { continue };
+            let dir = value.trim().to_lowercase().replace('\\', "/");
+            let dir = dir.trim_end_matches('/');
+            // Only a folder below a drive's root: `x:/…`. Anything else (a
+            // blank, a relative path, the root itself) would refuse too much.
+            let b = dir.as_bytes();
+            if b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/' && !dirs.iter().any(|d| d == dir) {
+                dirs.push(dir.to_string());
+            }
+        }
+    }
+    dirs
 }
 
 fn check_local_path_policy(canonical: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
@@ -12967,20 +13593,17 @@ fn check_local_path_policy(canonical: std::path::PathBuf) -> Result<std::path::P
     // Trim trailing slash for clean prefix matches.
     let canon_norm = canon_norm.trim_end_matches('/').to_string();
 
-    let blocked: &[&str] = if cfg!(windows) {
-        &[
-            "c:/windows", "c:/program files", "c:/program files (x86)",
-            "c:/programdata", "c:/system volume information", "c:/$recycle.bin",
-        ]
-    } else {
-        &[
-            "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot",
-            "/sys", "/proc", "/dev", "/var/log", "/var/run", "/root",
-        ]
-    };
-    for prefix in blocked {
-        let pfx = prefix.to_lowercase();
-        if canon_norm == pfx || canon_norm.starts_with(&format!("{}/", pfx)) {
+    let under = |dir: &str| canon_norm == dir || canon_norm.starts_with(&format!("{}/", dir));
+    if system_dirs(|var| std::env::var(var).ok()).iter().any(|dir| under(dir)) {
+        return Err(format!("Refusing operation on system path: {}", display_path(&canonical)));
+    }
+    // Every drive has these two, not just drive C.
+    if cfg!(windows) && canon_norm.as_bytes().get(1) == Some(&b':') {
+        let below_drive = &canon_norm[2..];
+        if ["/system volume information", "/$recycle.bin"]
+            .iter()
+            .any(|dir| below_drive == *dir || below_drive.starts_with(&format!("{}/", dir)))
+        {
             return Err(format!("Refusing operation on system path: {}", display_path(&canonical)));
         }
     }
@@ -13349,6 +13972,68 @@ mod local_browse_tests {
         }
         let dir = std::env::temp_dir().to_string_lossy().to_string();
         assert!(check_download_dir_target(&dir, "submarine-no-such-folder").is_ok());
+    }
+
+    #[test]
+    fn system_folders_are_found_wherever_windows_put_them() {
+        let env = |var: &str| match var {
+            "SystemRoot" => Some(r"D:\Windows".to_string()),
+            "ProgramFiles" => Some(r"E:\Apps\".to_string()),
+            "ProgramData" => Some(String::new()),
+            "windir" => Some(r"relative\path".to_string()),
+            "ProgramW6432" => Some(r"F:\".to_string()),
+            _ => None,
+        };
+        let dirs = system_dirs(env);
+        if cfg!(windows) {
+            assert!(dirs.iter().any(|d| d == "d:/windows"), "{:?}", dirs);
+            assert!(dirs.iter().any(|d| d == "e:/apps"), "{:?}", dirs);
+            assert!(dirs.iter().any(|d| d == "c:/windows"), "the usual place stays: {:?}", dirs);
+            // A blank, a relative path or a whole drive refuses nothing.
+            assert!(dirs.iter().all(|d| d.len() > 3 && d.as_bytes()[1] == b':'), "{:?}", dirs);
+            assert!(check_local_path_policy(std::path::PathBuf::from(r"\\?\C:\Windows\System32\x")).is_err());
+        } else {
+            for dir in ["/etc", "/private/etc", "/private/var/log", "/system"] {
+                assert!(dirs.iter().any(|d| d == dir), "{} in {:?}", dir, dirs);
+            }
+        }
+    }
+
+    #[test]
+    fn only_full_paths_are_written_to() {
+        // Each would land in whatever folder the app runs in.
+        let mut relative = vec!["name", "sub/name", "./name", "../name"];
+        if cfg!(windows) {
+            relative.extend([r"G:name", r"\name", "C:"]);
+        }
+        for path in relative {
+            assert!(guard_local_path(path, true).unwrap_err().starts_with("Not a full path"), "{}", path);
+            assert!(guard_local_path_nofollow(path, false).unwrap_err().starts_with("Not a full path"), "{}", path);
+        }
+        let here = std::env::temp_dir().join("submarine-no-such-file");
+        assert!(guard_local_path(&here.to_string_lossy(), true).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_drives_own_system_folders_are_refused_on_every_drive() {
+        for path in [r"\\?\D:\System Volume Information\x", r"E:\$Recycle.Bin", r"\\?\Z:\$RECYCLE.BIN\S-1-5\f"] {
+            assert!(check_local_path_policy(std::path::PathBuf::from(path)).is_err(), "{}", path);
+        }
+        // Only at the top of a drive.
+        assert!(check_local_path_policy(std::path::PathBuf::from(r"D:\data\System Volume Information")).is_ok());
+        assert!(check_local_path_policy(std::path::PathBuf::from(r"D:\data\$Recycle.Bin.txt")).is_ok());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn system_folders_are_refused_where_macos_really_keeps_them() {
+        // A checked path is already resolved: macOS's /etc arrives as /private/etc.
+        for path in ["/private/etc/hosts", "/private/var/log/x", "/System/Library/x", "/etc/x"] {
+            assert!(check_local_path_policy(std::path::PathBuf::from(path)).is_err(), "{}", path);
+        }
+        assert!(check_local_path_policy(std::path::PathBuf::from("/private/tmp/x")).is_ok());
+        assert!(check_local_path_policy(std::path::PathBuf::from("/home/me/systemd.txt")).is_ok());
     }
 
     #[test]
@@ -14051,8 +14736,9 @@ pub fn run() {
         // are hot-applied without restarting any monitor.
         .manage::<SharedSettings>(std::sync::Arc::new(tokio::sync::Mutex::new(monitor::MonitorSettings::default())))
         // CloudState needs the AppHandle to find app_data_dir on construction
-        // (to load any persisted bearer token). Setup is the earliest hook we
-        // get an AppHandle, so initialise it there and `manage` it for commands.
+        // (to load the server settings and any persisted bearer token). Setup
+        // is the earliest hook we get an AppHandle, so initialise it there and
+        // `manage` it for commands.
         .setup(|app| {
             let cloud_state = cloud::CloudState::new(&app.handle());
             app.manage(cloud_state);
@@ -14066,7 +14752,8 @@ pub fn run() {
             cloud::cloud_set_password, cloud::cloud_login, cloud::cloud_logout,
             cloud::cloud_request_password_reset, cloud::cloud_reset_password,
             cloud::cloud_request_login_link, cloud::cloud_login_with_link,
-            sync_now,
+            cloud_config::cloud_get_config, cloud_config::cloud_set_config, cloud_config::cloud_test_connection,
+            sync_now, move_profile_to_current_server,
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
@@ -14085,7 +14772,8 @@ pub fn run() {
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
-            open_terminal, write_terminal_data, resize_terminal, close_terminal,
+            list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
+            open_terminal, local_shell, write_terminal_data, resize_terminal, close_terminal,
             ssh_info_probe_section, ssh_systemctl_action, ssh_kill_process,
             ssh_iptables_chain, ssh_nft_chain,
             docker::ssh_docker_container_action,
@@ -14113,7 +14801,8 @@ pub fn run() {
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner, sftp_stat,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,
-            sftp_set_elevated, sftp_elevation_status, sftp_login_user,
+            sftp_set_elevated, sftp_elevation_status, sftp_login_user, sftp_resolve_owners,
+            archive::local_archive, archive::local_extract, archive::sftp_archive, archive::sftp_extract,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
             monitor_list, monitor_add, monitor_remove, monitor_set_metrics, monitor_set_custom_metrics,
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,

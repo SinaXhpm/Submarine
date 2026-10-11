@@ -8,6 +8,7 @@ import CloudPanel from "./CloudPanel";
 import logoUrl from "../assets/logo.png";
 import { IS_ANDROID } from "../util/platform";
 import { useTextPrompt, useConfirm } from "../ui/confirm";
+import { forgetProfileBookmarks } from "../util/sftpBookmarks";
 
 // Vault file header (lib.rs VAULT_MAGIC / VAULT_VERSION) — checked up front on
 // Android imports so a wrong file fails before the user picks a name.
@@ -351,6 +352,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     setBusy(true); setError(null);
     try {
       await invoke("delete_profile", { name });
+      forgetProfileBookmarks(name);
       await reload();
       refreshCloud();
     } catch (e: any) {

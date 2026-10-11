@@ -6,6 +6,8 @@
 // each backend can keep its own fast path (e.g. `sftp_download_file` writes
 // directly to disk instead of round-tripping through a JS `Uint8Array`).
 
+import type { ArchiveFormat } from "./archive";
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -55,6 +57,24 @@ export interface FileProvider {
   chown?: (path: string, uid: number, gid: number | null) => Promise<void>;
   /** Current mode and owner, following symlinks (what chmod/chown change). */
   stat?: (path: string) => Promise<{ permissions?: number; uid?: number; gid?: number }>;
+
+  // ---- archives ------------------------------------------------------------
+  // Both run until done or until `jobId` is cancelled (`cancelArchiveJob`),
+  // and reject with "CANCELLED" then. They resolve with a warning when the
+  // job got done but the tool had something to say (a file changed or
+  // couldn't be read while it was packed).
+  /**
+   * Packs `names` (entries of `dir`) into the archive `name` in `dir`.
+   * Rejects with `EXISTS:<name>` when that is already there and `overwrite`
+   * is false.
+   */
+  archive(dir: string, names: string[], name: string, format: ArchiveFormat, overwrite: boolean, jobId: string): Promise<string | null>;
+  /**
+   * Unpacks the archive `name` of `dir` into `dir`, or into its subfolder
+   * `folder` (created if missing), replacing same-named files. `name` and
+   * `folder` are single names; the backend refuses anything else.
+   */
+  extract(dir: string, name: string, folder: string | null, jobId: string): Promise<string | null>;
 }
 
 /** Remote provider carries the SSH session id so transfer.ts can target it. */
