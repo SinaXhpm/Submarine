@@ -581,6 +581,138 @@ pub async fn dry_run(
     Ok(DryRunReport { entries, total_bytes })
 }
 
+// ---------------------------------------------------------------------------
+// Shell config sync: one-shot, push-only (local -> remote), no watcher
+// ---------------------------------------------------------------------------
+//
+// "Sync my shell config to this server" is deliberately NOT a mirror: there
+// is no watcher, no MirrorMap entry, nothing to stop — the user clicks a
+// button, we push, we're done. It reuses the same SFTP primitives as the
+// mirror above (open_sftp, walk_local, compare_files, sftp_upload_file).
+
+/// A single local/remote pair for the shell-config sync button. `remote` is
+/// always relative to the REMOTE account's home directory (e.g. ".zshrc",
+/// ".oh-my-zsh/custom") — resolved against a probed `remote_home` — because
+/// the same pair list has to work across servers with different usernames.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ShellSyncPair {
+    pub local: String,
+    pub remote: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ShellSyncEntry {
+    pub local: String,
+    pub remote: String,
+    pub size: u64,
+    /// "upload-new" | "upload-modified"
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ShellSyncReport {
+    pub entries: Vec<ShellSyncEntry>,
+    pub total_bytes: u64,
+}
+
+/// Strips a leading `~/` or `/` from a user-typed remote path and joins it
+/// onto the resolved remote home dir. A bare `~` / empty remote maps to the
+/// home dir itself.
+fn shell_sync_resolve_remote(remote_home: &str, pair_remote: &str) -> String {
+    let trimmed = pair_remote.trim();
+    let rel = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix('/')).unwrap_or(trimmed);
+    let rel = rel.trim_start_matches('~');
+    let home = remote_home.trim_end_matches('/');
+    if rel.is_empty() { home.to_string() } else { format!("{}/{}", home, rel) }
+}
+
+/// Builds the list of files that would move, without transferring anything.
+/// Each pair is scanned independently (so entries carry full absolute
+/// local/remote paths rather than a root-relative one — several pairs could
+/// otherwise produce colliding relative paths).
+///
+/// Push-only: a directory pair reuses `walk_local` with conflict_mode
+/// "local" (local always wins) and deliberately never calls `walk_remote`,
+/// so remote-only files are left alone — that's what makes the walk
+/// one-directional for free, with no new comparison logic. A file pair gets
+/// a short inline version of the same compare since `walk_local` assumes a
+/// directory root.
+async fn shell_sync_scan(
+    sftp: &SftpSession,
+    pairs: &[ShellSyncPair],
+    remote_home: &str,
+) -> Result<ShellSyncReport, String> {
+    let mut entries = Vec::new();
+    let mut total_bytes: u64 = 0;
+    for pair in pairs {
+        let local_root = PathBuf::from(&pair.local);
+        let remote_root = shell_sync_resolve_remote(remote_home, &pair.remote);
+        let meta = tokio::fs::metadata(&local_root).await
+            .map_err(|e| format!("local path {:?}: {}", local_root, e))?;
+        if meta.is_dir() {
+            let mut raw = Vec::new();
+            let mut seen = HashSet::new();
+            let mut scanned = 0u32;
+            walk_local(&local_root, &local_root, &remote_root, &[], sftp, "local",
+                       &mut raw, &mut total_bytes, &mut seen, &mut scanned).await?;
+            for e in raw {
+                let local = local_root.join(e.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+                let remote = format!("{}/{}", remote_root.trim_end_matches('/'), e.path);
+                entries.push(ShellSyncEntry {
+                    local: local.to_string_lossy().into_owned(),
+                    remote,
+                    size: e.size,
+                    action: e.action,
+                });
+            }
+        } else if meta.is_file() {
+            let remote_attr = sftp.metadata(&remote_root).await.ok();
+            let action = match &remote_attr {
+                None => Some("upload-new"),
+                Some(attr) => match compare_files(sftp, &local_root, &remote_root, &meta, attr).await? {
+                    CompareResult::Identical => None,
+                    _ => Some("upload-modified"),
+                },
+            };
+            if let Some(action) = action {
+                entries.push(ShellSyncEntry {
+                    local: pair.local.clone(),
+                    remote: remote_root,
+                    size: meta.len(),
+                    action: action.into(),
+                });
+                total_bytes = total_bytes.saturating_add(meta.len());
+            }
+        }
+        // Neither a file nor a directory (socket, broken symlink, ...) — skip.
+    }
+    Ok(ShellSyncReport { entries, total_bytes })
+}
+
+/// Preview-only: what `shell_sync_push` would do, with nothing transferred.
+pub async fn shell_sync_preview(
+    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    pairs: Vec<ShellSyncPair>,
+    remote_home: String,
+) -> Result<ShellSyncReport, String> {
+    let sftp = open_sftp(&handle).await?;
+    shell_sync_scan(&sftp, &pairs, &remote_home).await
+}
+
+/// Scans, then uploads every entry that isn't already identical.
+pub async fn shell_sync_push(
+    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    pairs: Vec<ShellSyncPair>,
+    remote_home: String,
+) -> Result<ShellSyncReport, String> {
+    let sftp = open_sftp(&handle).await?;
+    let report = shell_sync_scan(&sftp, &pairs, &remote_home).await?;
+    for entry in &report.entries {
+        sftp_upload_file(&sftp, Path::new(&entry.local), &entry.remote).await?;
+    }
+    Ok(report)
+}
+
 /// Recursive walk over the LOCAL tree. For each file we ask compare_files
 /// whether the remote copy is missing / equal / newer / older, then pick a
 /// direction using the mirror's `conflict_resolution` setting. Every
@@ -1467,5 +1599,21 @@ mod tests {
             assert_eq!(sftp_hard_delete(&lab.sftp, &format!("/srv/{}", rel)).await, Ok(()), "{}", rel);
         }
         assert_eq!(lab.left(), ["/srv", "/srv/keep"]);
+    }
+
+    #[test]
+    fn shell_sync_resolve_remote_strips_a_leading_tilde_or_slash() {
+        // The user may type any of these for the same server-relative file —
+        // all have to land on the same path under the probed home dir.
+        assert_eq!(shell_sync_resolve_remote("/home/alice", "~/.zshrc"), "/home/alice/.zshrc");
+        assert_eq!(shell_sync_resolve_remote("/home/alice", ".zshrc"), "/home/alice/.zshrc");
+        assert_eq!(shell_sync_resolve_remote("/home/alice", "/.zshrc"), "/home/alice/.zshrc");
+        assert_eq!(shell_sync_resolve_remote("/home/alice/", ".zshrc"), "/home/alice/.zshrc");
+    }
+
+    #[test]
+    fn shell_sync_resolve_remote_bare_tilde_is_the_home_dir_itself() {
+        assert_eq!(shell_sync_resolve_remote("/home/alice", "~"), "/home/alice");
+        assert_eq!(shell_sync_resolve_remote("/home/alice", ""), "/home/alice");
     }
 }

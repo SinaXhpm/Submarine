@@ -825,6 +825,36 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               </button>
             </div>
 
+            {/* Sync shell config toggle — shows a "Sync shell config" button
+                in this server's session toolbar once connected. Off by
+                default and per-server on purpose: with many saved servers
+                the user doesn't want every one of them offering to push
+                local dotfiles, only the ones they pick here. What actually
+                gets pushed is configured once, globally, in Settings. */}
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <div className="min-w-0">
+                <div className="text-[11px] font-bold text-zinc-300">Sync shell config to this server</div>
+                <div className="text-[10.5px] text-zinc-500 leading-snug">
+                  Adds a button in the session toolbar to push your local shell config (Settings → Shell config sync) to this server.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNewNode({ ...newNode, syncShellConfig: !newNode.syncShellConfig })}
+                role="switch"
+                aria-checked={!!newNode.syncShellConfig}
+                className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${
+                  newNode.syncShellConfig ? "bg-primary" : "bg-white/10"
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${
+                    newNode.syncShellConfig ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
             {/* Per-node notes — free-form, plain text. Lives on the server
                 row (servers.notes column) and never crosses the network. The
                 primary use case is small runbooks: which user owns root,

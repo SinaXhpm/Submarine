@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Settings, Palette, RefreshCw, List, Cloud, Minus, Plus } from "lucide-react";
+import { Settings, Palette, RefreshCw, List, Cloud, Minus, Plus, ArrowRight, X } from "lucide-react";
 import {
   MAX_FONT_SIZE, MIN_FONT_SIZE, clampFontSize, fontFamilyCss,
   isFontAvailable, primaryFontName, sanitizeFontFamily,
 } from "../util/terminalFont";
+import { ShellSyncPair, readShellSyncPairs, writeShellSyncPairs } from "../util/shellSync";
 import { invoke } from "@tauri-apps/api/core";
 import CopyValue from "./CopyValue";
 import FontPicker from "./FontPicker";
@@ -168,6 +169,78 @@ function TerminalFontSettings({ settings, setSettings }: any) {
   );
 }
 
+// What the "Sync shell config" button (SessionView toolbar) pushes, device-
+// wide across every server that has the per-server toggle on (Add/Edit
+// Server). Per-device like the font prefs above — it describes THIS
+// machine's dotfiles, not a server — and shell-agnostic on purpose: a plain
+// local/remote path list rather than anything tied to zsh/bash/fish
+// specifically, since different pairs point at whatever shell config the
+// user actually has. `remote` is relative to the connected account's home
+// dir so the same list works across servers with different usernames.
+function ShellConfigSyncSettings() {
+  const [pairs, setPairs] = useState<ShellSyncPair[]>(() => readShellSyncPairs());
+
+  const persist = (next: ShellSyncPair[]) => {
+    setPairs(next);
+    writeShellSyncPairs(next);
+  };
+
+  return (
+    <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl space-y-4">
+      <div>
+        <div className="text-sm font-semibold text-zinc-100">Shell config sync</div>
+        <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
+          Files/folders to push with the "Sync shell config" button in a session's toolbar — your
+          dotfiles, theme, plugins, whatever shell you run locally. The remote side is relative to
+          that server's home directory, so the same list works across servers with different
+          usernames. The button only shows up on servers where this is turned on, in that server's
+          Add/Edit panel.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        {pairs.map((pair, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <input
+              type="text"
+              value={pair.local}
+              onChange={(e) => persist(pairs.map((p, idx) => idx === i ? { ...p, local: e.target.value } : p))}
+              placeholder="~/.zshrc"
+              className="flex-1 min-w-0 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-primary/50"
+            />
+            <ArrowRight size={14} className="text-zinc-600 shrink-0" />
+            <input
+              type="text"
+              value={pair.remote}
+              onChange={(e) => persist(pairs.map((p, idx) => idx === i ? { ...p, remote: e.target.value } : p))}
+              placeholder=".zshrc"
+              className="flex-1 min-w-0 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-primary/50"
+            />
+            <button
+              onClick={() => persist(pairs.filter((_, idx) => idx !== i))}
+              aria-label="Remove pair"
+              title="Remove pair"
+              className="shrink-0 p-2 rounded-lg text-zinc-500 hover:bg-white/10 hover:text-rose-400 transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ))}
+        {pairs.length === 0 && (
+          <p className="text-[12px] text-zinc-500 italic">No pairs configured yet — nothing to sync.</p>
+        )}
+      </div>
+
+      <button
+        onClick={() => persist([...pairs, { local: "", remote: "" }])}
+        className="flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary/80 transition-colors"
+      >
+        <Plus size={14} /> Add pair
+      </button>
+    </div>
+  );
+}
+
 const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
   const accentColors = [
     { name: 'Light Blue', value: '#60a5fa' },
@@ -291,6 +364,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
           </div>
           
           <TerminalFontSettings settings={settings} setSettings={setSettings} />
+
+          <ShellConfigSyncSettings />
         </section>
 
         {/* Activity Section — moved out of the sidebar so the top-level

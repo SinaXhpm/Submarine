@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from 
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2 } from "lucide-react";
+import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, ShieldAlert, KeyRound, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud } from "lucide-react";
 import TerminalView from "./TerminalView";
 import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
 import TunnelsPanel from "./TunnelsPanel";
@@ -10,6 +10,7 @@ import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
 import { useIsCompact } from "../hooks/useViewport";
 import { fontFamilyCss, readFontFamily, readFontSize } from "../util/terminalFont";
+import { readShellSyncPairs } from "../util/shellSync";
 
 // Where the tool panel (SFTP, Ports, Library, Info) sits around the terminal.
 // Remembered per device like the panel's size; compact windows ignore it and
@@ -597,6 +598,67 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
   }, [isActiveView]);
 
   const [activeTool, setActiveTool] = useState<'sftp' | 'tunnels' | 'mirrors' | 'cmds' | 'info' | null>(null);
+
+  // "Sync shell config" — a one-shot push, not a dock-able tool pane like the
+  // four above, so it gets its own small preview/confirm dialog instead of a
+  // slot in `activeTool`. `report` is null while idle/loading and holds the
+  // last preview once the probe + dry-run come back; `probe.remote_home` is
+  // what `shell_sync_push` needs to actually write the files.
+  const [shellSyncOpen, setShellSyncOpen] = useState(false);
+  const [shellSyncBusy, setShellSyncBusy] = useState(false);
+  const [shellSyncError, setShellSyncError] = useState<string | null>(null);
+  const [shellSyncProbe, setShellSyncProbe] = useState<{ remote_home: string; remote_shell: string; local_shell: string; shell_mismatch: boolean } | null>(null);
+  const [shellSyncReport, setShellSyncReport] = useState<{ entries: { local: string; remote: string; size: number; action: string }[]; total_bytes: number } | null>(null);
+
+  const fmtBytes = (n: number) => {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  };
+
+  const openShellSync = async () => {
+    setShellSyncOpen(true);
+    setShellSyncError(null);
+    setShellSyncReport(null);
+    setShellSyncProbe(null);
+    const pairs = readShellSyncPairs();
+    if (pairs.length === 0) {
+      setShellSyncError('No pairs configured yet — add some in Settings → Shell config sync first.');
+      return;
+    }
+    setShellSyncBusy(true);
+    try {
+      const probe: { remote_home: string; remote_shell: string; local_shell: string; shell_mismatch: boolean } =
+        await invoke("shell_sync_probe", { sessionId: session.id });
+      setShellSyncProbe(probe);
+      const report: { entries: { local: string; remote: string; size: number; action: string }[]; total_bytes: number } =
+        await invoke("shell_sync_preview", { sessionId: session.id, pairs, remoteHome: probe.remote_home });
+      setShellSyncReport(report);
+    } catch (e: any) {
+      setShellSyncError(String(e));
+    } finally {
+      setShellSyncBusy(false);
+    }
+  };
+
+  const confirmShellSync = async () => {
+    if (!shellSyncProbe) return;
+    setShellSyncBusy(true);
+    setShellSyncError(null);
+    try {
+      const pairs = readShellSyncPairs();
+      const report: { entries: { local: string; remote: string; size: number; action: string }[]; total_bytes: number } =
+        await invoke("shell_sync_push", { sessionId: session.id, pairs, remoteHome: shellSyncProbe.remote_home });
+      addLog(`Shell config sync: pushed ${report.entries.length} file${report.entries.length === 1 ? '' : 's'} (${fmtBytes(report.total_bytes)}) to ${session.serverName}.`, "success");
+      setShellSyncOpen(false);
+      setShellSyncReport(null);
+      setShellSyncProbe(null);
+    } catch (e: any) {
+      setShellSyncError(String(e));
+    } finally {
+      setShellSyncBusy(false);
+    }
+  };
   // Split-pane state — an ORDERED array of terminal IDs that currently
   // share the main pane. `[]` or a single-id array means "no split, use
   // the usual absolute-overlap layout"; length ≥ 2 means the panes tile
@@ -1541,6 +1603,23 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
               </button>
             );
           })}
+          {/* "Sync shell config" — opt-in per server (AddNodePanel), so it
+              only shows up here on the servers the user picked, not all of
+              them. Unlike the four tabs above it doesn't dock a panel: it's
+              a one-shot push, so it opens a small preview/confirm dialog
+              instead (see shellSyncOpen below). */}
+          {!!session.syncShellConfig && (
+            <button
+              onClick={openShellSync}
+              disabled={status !== 'connected'}
+              title="Sync shell config — push your local dotfiles/theme/plugins to this server"
+              aria-label="Sync shell config"
+              className="h-10 sm:h-8 px-2.5 rounded-lg flex items-center gap-1.5 transition-all text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <UploadCloud size={14} className="shrink-0" />
+              <span className="hidden md:inline text-[11px] font-semibold tracking-tight">Shell</span>
+            </button>
+          )}
           {/* Where the tool pane sits around the terminal. Compact windows
               show the tool full screen, so there is nothing to place. */}
           {!isCompact && (
@@ -2019,6 +2098,104 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
           </div>
         </div>
       </div>
+
+      {/* Sync shell config — preview/confirm dialog. Scoped to this session
+          (absolute, not a document.body portal) like promptOverlay above,
+          since it only makes sense for the session whose toolbar button
+          opened it. */}
+      {shellSyncOpen && (
+        <div
+          role="dialog"
+          aria-label={`Sync shell config to ${session.serverName}`}
+          className="absolute inset-0 z-50 flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto"
+        >
+          <div className="max-w-xl w-full mt-6 sm:mt-12 bg-[#121215] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <UploadCloud size={15} className="text-primary shrink-0" />
+                <h3 className="text-sm font-semibold text-zinc-100 truncate">
+                  Sync shell config → {session.serverName}
+                </h3>
+              </div>
+              <button
+                onClick={() => setShellSyncOpen(false)}
+                aria-label="Close"
+                className="shrink-0 text-zinc-500 hover:text-white transition-colors"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-3 max-h-[60vh] overflow-y-auto">
+              {shellSyncBusy && !shellSyncReport && (
+                <div className="flex items-center gap-2 text-sm text-zinc-400 py-4">
+                  <Loader2 size={14} className="animate-spin" /> Checking what would change…
+                </div>
+              )}
+
+              {shellSyncError && (
+                <div className="flex items-start gap-2 text-[12px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2.5">
+                  <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                  <span>{shellSyncError}</span>
+                </div>
+              )}
+
+              {shellSyncProbe?.shell_mismatch && (
+                <div className="flex items-start gap-2 text-[12px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2.5">
+                  <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                  <span>
+                    Local shell is <strong>{shellSyncProbe.local_shell}</strong>, but this server's
+                    default shell is <strong>{shellSyncProbe.remote_shell || 'unknown'}</strong>. The
+                    files will still be pushed — just flagging it in case that's not what you expect.
+                  </span>
+                </div>
+              )}
+
+              {shellSyncReport && (
+                shellSyncReport.entries.length === 0 ? (
+                  <p className="text-sm text-zinc-400 py-2">Everything is already up to date — nothing to push.</p>
+                ) : (
+                  <>
+                    <p className="text-[11px] text-zinc-500">
+                      {shellSyncReport.entries.length} file{shellSyncReport.entries.length === 1 ? '' : 's'} ·{' '}
+                      {fmtBytes(shellSyncReport.total_bytes)}
+                    </p>
+                    <div className="rounded-lg border border-white/10 divide-y divide-white/5 overflow-hidden">
+                      {shellSyncReport.entries.map((e, i) => (
+                        <div key={i} className="flex items-center gap-2 px-3 py-2 text-[12px]">
+                          <span className="flex-1 min-w-0 truncate text-zinc-300" title={e.remote}>{e.remote}</span>
+                          <span className="shrink-0 text-zinc-500">{fmtBytes(e.size)}</span>
+                          <span className={`shrink-0 text-[10px] font-bold uppercase tracking-wide ${e.action === 'upload-new' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                            {e.action === 'upload-new' ? 'new' : 'update'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )
+              )}
+            </div>
+
+            <div className="px-5 py-3.5 border-t border-white/5 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setShellSyncOpen(false)}
+                disabled={shellSyncBusy}
+                className="h-8 px-3 rounded-lg text-xs font-semibold text-zinc-300 hover:bg-white/5 transition-colors disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmShellSync}
+                disabled={shellSyncBusy || !shellSyncReport || shellSyncReport.entries.length === 0}
+                className="h-8 px-3 rounded-lg text-xs font-semibold bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:pointer-events-none flex items-center gap-1.5"
+              >
+                {shellSyncBusy && shellSyncReport ? <Loader2 size={13} className="animate-spin" /> : <UploadCloud size={13} />}
+                Push
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
