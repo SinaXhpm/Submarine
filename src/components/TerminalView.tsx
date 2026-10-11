@@ -725,7 +725,9 @@ const TerminalView = ({
       return lines.join('\n');
     };
     const copySelectionIfAny = async () => {
-      const text = buildSelectedText();
+      // A selection that runs past the last line ends in empty rows: Ctrl+Shift+A
+      // takes the whole buffer, the blank rows under the prompt included.
+      const text = buildSelectedText().replace(/\n+$/, '');
       if (!text) return;
       const ok = await writeClipboard(text);
       if (ok) notify('Copied');
