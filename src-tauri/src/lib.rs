@@ -11211,19 +11211,18 @@ async fn sftp_upload_file(
     remote_path: String,
     overwrite: Option<bool>,
 ) -> Result<(), String> {
-    use russh_sftp::protocol::OpenFlags;
     use tauri::Emitter;
     use tokio::io::AsyncWriteExt;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     // Overwrite protection: stat the remote target first; refuse if it
     // exists and the caller hasn't explicitly opted in. Same `EXISTS:<path>`
-    // sentinel as the download path.
+    // sentinel as the download path. What it finds also tells a cancel
+    // whether the file was there before (see open_upload_target).
     let sftp = get_sftp_session(&state, &session_id).await?;
-    if overwrite != Some(true) {
-        if sftp.metadata(&remote_path).await.is_ok() {
-            return Err(format!("EXISTS:{}", remote_path));
-        }
+    let existed = sftp.metadata(&remote_path).await.is_ok();
+    if existed && overwrite != Some(true) {
+        return Err(format!("EXISTS:{}", remote_path));
     }
 
     // Source must exist and live in a path the user could plausibly own —
@@ -11278,11 +11277,13 @@ async fn sftp_upload_file(
     let mut local_file = tokio::fs::File::open(&local_path)
         .await
         .map_err(|e| { emit_progress(0, "error", Some(e.to_string())); format!("Failed to read local file: {}", e) })?;
-    let mut remote_file = sftp
-        .open_with_flags(
-            remote_path,
-            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-        )
+    // The open below truncates a file that is there: a cancel that came in
+    // before it must not cost that file its content.
+    if cancel.load(Ordering::Relaxed) {
+        emit_progress(0, "cancelled", None);
+        return Err("cancelled".into());
+    }
+    let (mut remote_file, created) = open_upload_target(&sftp, &remote_path, existed)
         .await
         .map_err(|e| { emit_progress(0, "error", Some(e.to_string())); format!("Failed to open remote file: {}", e) })?;
 
@@ -11293,10 +11294,8 @@ async fn sftp_upload_file(
     use tokio::io::AsyncReadExt;
     loop {
         if cancel.load(Ordering::Relaxed) {
-            // Close the remote handle so the server doesn't keep an
-            // open-write descriptor for a file we'll never finish.
-            let _ = remote_file.shutdown().await;
-            emit_progress(transferred, "cancelled", None);
+            let note = finish_cancelled_upload(&sftp, remote_file, &remote_path, &name, created).await;
+            emit_progress(transferred, "cancelled", note);
             return Err("cancelled".into());
         }
         let n = local_file
@@ -11325,6 +11324,56 @@ async fn sftp_upload_file(
     Ok(())
 }
 
+/// Open an upload's remote file for writing, and tell whether this upload
+/// created it: then a cancel may delete it. EXCL decides that in the same
+/// request, as it opens only a path that has nothing there. Anything else (a
+/// file, a link, even a dangling one, or any error) is opened again with
+/// TRUNCATE alone and counts as existing, so a cancel leaves it, with its
+/// owner, mode and links. `existed` is what a check just before found: a
+/// server that ignores EXCL would otherwise let a file that was there pass
+/// for a new one.
+async fn open_upload_target(
+    sftp: &russh_sftp::client::SftpSession,
+    remote_path: &str,
+    existed: bool,
+) -> Result<(russh_sftp::client::fs::File, bool), russh_sftp::client::error::Error> {
+    use russh_sftp::protocol::OpenFlags;
+    let truncate = OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE;
+    if let Ok(file) = sftp.open_with_flags(remote_path, truncate | OpenFlags::EXCLUDE).await {
+        return Ok((file, !existed));
+    }
+    Ok((sftp.open_with_flags(remote_path, truncate).await?, false))
+}
+
+/// Close the remote file of an upload cancelled mid-write and, when this
+/// upload created it, delete it, so no half-written copy stays on the
+/// server. Awaited (for up to 10 s) before the upload reports its cancel, so
+/// an upload of the same file started right after can't lose its file to
+/// this delete. Returns the card's note: what the cancel left on the server.
+/// `name` is how the note names the file.
+async fn finish_cancelled_upload(
+    sftp: &russh_sftp::client::SftpSession,
+    mut remote_file: russh_sftp::client::fs::File,
+    remote_path: &str,
+    name: &str,
+    created: bool,
+) -> Option<String> {
+    use tokio::io::AsyncWriteExt;
+    let cleanup = async {
+        let _ = remote_file.shutdown().await;
+        if created { sftp.remove_file(remote_path).await.err() } else { None }
+    };
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), cleanup).await;
+    if !created {
+        return Some(format!("{name} on the server holds only the part sent before the cancel."));
+    }
+    match outcome {
+        Ok(None) => None,
+        Ok(Some(e)) => Some(format!("The partly sent {name} is still on the server: {e}")),
+        Err(_) => Some(format!("The partly sent {name} may still be on the server: the server took too long to remove it.")),
+    }
+}
+
 /// Recursive directory upload — mirror of sftp_download_dir. Walks the local
 /// tree, mkdirs each subdirectory on the remote, then streams every file
 /// through the same flags+chunk logic as sftp_upload_file. Cancel flag and
@@ -11339,7 +11388,6 @@ async fn sftp_upload_dir(
     remote_path: String,
     overwrite: Option<bool>,
 ) -> Result<(), String> {
-    use russh_sftp::protocol::OpenFlags;
     use tauri::Emitter;
     use tokio::io::AsyncWriteExt;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -11503,11 +11551,17 @@ async fn sftp_upload_dir(
                 return Err(format!("open {:?}: {}", local_file_path, e));
             }
         };
-        let mut remote_file = match sftp.open_with_flags(
-            remote_full.clone(),
-            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-        ).await {
-            Ok(f) => f,
+        // See sftp_upload_file: no truncating open after a cancel.
+        if cancel.load(Ordering::Relaxed) {
+            emit_progress(transferred, total_bytes, "cancelled", None);
+            return Err("cancelled".into());
+        }
+        // Whether each file was there isn't asked (a round trip per file):
+        // EXCL alone tells a file this upload created. A cancel deletes only
+        // the file it was writing; files already sent and the folders made
+        // for them stay.
+        let (mut remote_file, created) = match open_upload_target(&sftp, &remote_full, false).await {
+            Ok(opened) => opened,
             Err(e) => {
                 emit_progress(transferred, total_bytes, "error",
                     Some(format!("open remote {}: {}", remote_full, e)));
@@ -11517,8 +11571,9 @@ async fn sftp_upload_dir(
 
         loop {
             if cancel.load(Ordering::Relaxed) {
-                let _ = remote_file.shutdown().await;
-                emit_progress(transferred, total_bytes, "cancelled", None);
+                let shown = format!("{}/{}", folder_name, rel);
+                let note = finish_cancelled_upload(&sftp, remote_file, &remote_full, &shown, created).await;
+                emit_progress(transferred, total_bytes, "cancelled", note);
                 return Err("cancelled".into());
             }
             let n = local_file.read(&mut buf).await

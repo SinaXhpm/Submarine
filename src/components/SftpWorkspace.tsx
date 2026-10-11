@@ -623,8 +623,9 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
                   <div className="text-[9.5px] opacity-80 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
                 )}
                 {/* A finished folder download can carry a note, e.g. names
-                    this computer can't store were skipped. */}
-                {t.status === "done" && t.error && (
+                    this computer can't store were skipped; a cancelled
+                    upload says what it left on the server. */}
+                {(t.status === "done" || t.status === "cancelled") && t.error && (
                   <div className="text-[9.5px] text-amber-300/90 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
                 )}
               </div>
