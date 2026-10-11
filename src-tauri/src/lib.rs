@@ -12895,6 +12895,18 @@ fn display_path(path: &std::path::Path) -> String {
     full.into_owned()
 }
 
+/// The local paths the app writes to are full paths: from a listing, the
+/// folder picker or the user's own folder. A relative one (`name`, or on
+/// Windows `G:name` and `\name`) would be resolved against whatever folder the
+/// app happens to run in, so it is refused.
+fn require_full_path(p: &std::path::Path) -> Result<(), String> {
+    if p.is_absolute() {
+        Ok(())
+    } else {
+        Err(format!("Not a full path: {}", p.display()))
+    }
+}
+
 /// Defense-in-depth guard for the local-FS commands the frontend can invoke.
 /// We can't lock everything down to a sandbox (the local file browser
 /// legitimately needs to roam the user's disk to pick uploads), but we CAN
@@ -12907,6 +12919,7 @@ fn display_path(path: &std::path::Path) -> String {
 /// `readable_local_dir`, which has no such limits.
 fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::PathBuf, String> {
     let p = std::path::Path::new(path);
+    require_full_path(p)?;
     let canonical = match p.canonicalize() {
         Ok(c) => c,
         Err(e) => {
@@ -12934,6 +12947,7 @@ fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::Pa
 /// system-path policy applies.
 fn guard_local_path_nofollow(path: &str, must_exist: bool) -> Result<std::path::PathBuf, String> {
     let p = std::path::Path::new(path);
+    require_full_path(p)?;
     let file = p.file_name().ok_or_else(|| format!("Invalid path: {}", path))?;
     let parent = p
         .parent()
@@ -12947,6 +12961,38 @@ fn guard_local_path_nofollow(path: &str, must_exist: bool) -> Result<std::path::
         std::fs::symlink_metadata(&full).map_err(|e| format!("Invalid path: {}", e))?;
     }
     check_local_path_policy(full)
+}
+
+/// The system folders `check_local_path_policy` refuses, as lowercase paths
+/// with `/`. On Windows they are also read from the environment (`var` looks
+/// one up): Windows and its program folders aren't always on drive C. On
+/// macOS `/etc` and `/var` are links into `/private`, and a checked path is
+/// already resolved, so the folders are listed there too.
+fn system_dirs(var: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let fixed: &[&str] = if cfg!(windows) {
+        &["c:/windows", "c:/program files", "c:/program files (x86)", "c:/programdata"]
+    } else {
+        &[
+            "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot",
+            "/sys", "/proc", "/dev", "/var/log", "/var/run", "/root",
+            "/private/etc", "/private/var/log", "/private/var/run", "/system",
+        ]
+    };
+    let mut dirs: Vec<String> = fixed.iter().map(|dir| dir.to_string()).collect();
+    if cfg!(windows) {
+        for name in ["SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"] {
+            let Some(value) = var(name) else { continue };
+            let dir = value.trim().to_lowercase().replace('\\', "/");
+            let dir = dir.trim_end_matches('/');
+            // Only a folder below a drive's root: `x:/…`. Anything else (a
+            // blank, a relative path, the root itself) would refuse too much.
+            let b = dir.as_bytes();
+            if b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/' && !dirs.iter().any(|d| d == dir) {
+                dirs.push(dir.to_string());
+            }
+        }
+    }
+    dirs
 }
 
 fn check_local_path_policy(canonical: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
@@ -12974,20 +13020,17 @@ fn check_local_path_policy(canonical: std::path::PathBuf) -> Result<std::path::P
     // Trim trailing slash for clean prefix matches.
     let canon_norm = canon_norm.trim_end_matches('/').to_string();
 
-    let blocked: &[&str] = if cfg!(windows) {
-        &[
-            "c:/windows", "c:/program files", "c:/program files (x86)",
-            "c:/programdata", "c:/system volume information", "c:/$recycle.bin",
-        ]
-    } else {
-        &[
-            "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot",
-            "/sys", "/proc", "/dev", "/var/log", "/var/run", "/root",
-        ]
-    };
-    for prefix in blocked {
-        let pfx = prefix.to_lowercase();
-        if canon_norm == pfx || canon_norm.starts_with(&format!("{}/", pfx)) {
+    let under = |dir: &str| canon_norm == dir || canon_norm.starts_with(&format!("{}/", dir));
+    if system_dirs(|var| std::env::var(var).ok()).iter().any(|dir| under(dir)) {
+        return Err(format!("Refusing operation on system path: {}", display_path(&canonical)));
+    }
+    // Every drive has these two, not just drive C.
+    if cfg!(windows) && canon_norm.as_bytes().get(1) == Some(&b':') {
+        let below_drive = &canon_norm[2..];
+        if ["/system volume information", "/$recycle.bin"]
+            .iter()
+            .any(|dir| below_drive == *dir || below_drive.starts_with(&format!("{}/", dir)))
+        {
             return Err(format!("Refusing operation on system path: {}", display_path(&canonical)));
         }
     }
@@ -13356,6 +13399,68 @@ mod local_browse_tests {
         }
         let dir = std::env::temp_dir().to_string_lossy().to_string();
         assert!(check_download_dir_target(&dir, "submarine-no-such-folder").is_ok());
+    }
+
+    #[test]
+    fn system_folders_are_found_wherever_windows_put_them() {
+        let env = |var: &str| match var {
+            "SystemRoot" => Some(r"D:\Windows".to_string()),
+            "ProgramFiles" => Some(r"E:\Apps\".to_string()),
+            "ProgramData" => Some(String::new()),
+            "windir" => Some(r"relative\path".to_string()),
+            "ProgramW6432" => Some(r"F:\".to_string()),
+            _ => None,
+        };
+        let dirs = system_dirs(env);
+        if cfg!(windows) {
+            assert!(dirs.iter().any(|d| d == "d:/windows"), "{:?}", dirs);
+            assert!(dirs.iter().any(|d| d == "e:/apps"), "{:?}", dirs);
+            assert!(dirs.iter().any(|d| d == "c:/windows"), "the usual place stays: {:?}", dirs);
+            // A blank, a relative path or a whole drive refuses nothing.
+            assert!(dirs.iter().all(|d| d.len() > 3 && d.as_bytes()[1] == b':'), "{:?}", dirs);
+            assert!(check_local_path_policy(std::path::PathBuf::from(r"\\?\C:\Windows\System32\x")).is_err());
+        } else {
+            for dir in ["/etc", "/private/etc", "/private/var/log", "/system"] {
+                assert!(dirs.iter().any(|d| d == dir), "{} in {:?}", dir, dirs);
+            }
+        }
+    }
+
+    #[test]
+    fn only_full_paths_are_written_to() {
+        // Each would land in whatever folder the app runs in.
+        let mut relative = vec!["name", "sub/name", "./name", "../name"];
+        if cfg!(windows) {
+            relative.extend([r"G:name", r"\name", "C:"]);
+        }
+        for path in relative {
+            assert!(guard_local_path(path, true).unwrap_err().starts_with("Not a full path"), "{}", path);
+            assert!(guard_local_path_nofollow(path, false).unwrap_err().starts_with("Not a full path"), "{}", path);
+        }
+        let here = std::env::temp_dir().join("submarine-no-such-file");
+        assert!(guard_local_path(&here.to_string_lossy(), true).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_drives_own_system_folders_are_refused_on_every_drive() {
+        for path in [r"\\?\D:\System Volume Information\x", r"E:\$Recycle.Bin", r"\\?\Z:\$RECYCLE.BIN\S-1-5\f"] {
+            assert!(check_local_path_policy(std::path::PathBuf::from(path)).is_err(), "{}", path);
+        }
+        // Only at the top of a drive.
+        assert!(check_local_path_policy(std::path::PathBuf::from(r"D:\data\System Volume Information")).is_ok());
+        assert!(check_local_path_policy(std::path::PathBuf::from(r"D:\data\$Recycle.Bin.txt")).is_ok());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn system_folders_are_refused_where_macos_really_keeps_them() {
+        // A checked path is already resolved: macOS's /etc arrives as /private/etc.
+        for path in ["/private/etc/hosts", "/private/var/log/x", "/System/Library/x", "/etc/x"] {
+            assert!(check_local_path_policy(std::path::PathBuf::from(path)).is_err(), "{}", path);
+        }
+        assert!(check_local_path_policy(std::path::PathBuf::from("/private/tmp/x")).is_ok());
+        assert!(check_local_path_policy(std::path::PathBuf::from("/home/me/systemd.txt")).is_ok());
     }
 
     #[test]
