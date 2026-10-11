@@ -21,6 +21,43 @@ interface StorageInfo {
 // Slider covers the everyday range; the number field takes anything 1–99.
 const SLIDER_MAX = 40;
 
+// "Use my default shell" (open_terminal in lib.rs): offered only where this
+// computer has a shell of its own to start, which the backend knows
+// (`local_shell`: none on Windows and Android, or without $SHELL).
+function DefaultShellSetting({ settings, setSettings }: any) {
+  const [shell, setShell] = useState<string | null>(null);
+  useEffect(() => {
+    invoke<string | null>("local_shell").then(setShell, () => setShell(null));
+  }, []);
+  if (!shell) return null;
+  const name = shell.split("/").pop();
+  return (
+    <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-zinc-100">Use my default shell</div>
+          <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
+            New terminals start {name}, the shell this computer uses, as a login shell on the
+            server in place of the account's own. {name} reads the server's own startup files;
+            nothing is copied from here. The server's welcome message isn't shown in these
+            terminals. A server without {name}, or one that can't start it this way (a Windows
+            server, some network devices), opens the account's own shell as before.
+          </p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={!!settings.useLocalShell}
+          aria-label="Use my default shell"
+          onClick={() => setSettings((s: any) => ({ ...s, useLocalShell: !s.useLocalShell }))}
+          className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${settings.useLocalShell ? 'bg-primary' : 'bg-zinc-700'}`}
+        >
+          <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${settings.useLocalShell ? 'left-[22px]' : 'left-0.5'}`} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Terminal font face + size. Both are drafts while you type: the size field
 // can sit empty mid-edit (it used to snap back to 14 the moment it was
 // cleared, which made small sizes impossible to type on Android), and the
@@ -291,29 +328,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs }: any) => {
           </div>
 
           <TerminalFontSettings settings={settings} setSettings={setSettings} />
-
-          <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl">
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <div className="text-sm font-semibold text-zinc-100">Use my default shell</div>
-                <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
-                  Start new terminals with the shell your own system is configured for ($SHELL) — zsh,
-                  fish, whatever you run locally — as a login shell, instead of the connected account's
-                  default. Brings over your prompt theme, plugins, and aliases, as long as that shell is
-                  also installed on the server. Desktop macOS/Linux only; has no effect when $SHELL can't
-                  be determined (Windows, or an app launched without one set).
-                </p>
-              </div>
-              <button
-                role="switch"
-                aria-checked={!!settings.useLocalShell}
-                onClick={() => setSettings((s: any) => ({ ...s, useLocalShell: !s.useLocalShell }))}
-                className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${settings.useLocalShell ? 'bg-primary' : 'bg-zinc-700'}`}
-              >
-                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${settings.useLocalShell ? 'left-[22px]' : 'left-0.5'}`} />
-              </button>
-            </div>
-          </div>
+          <DefaultShellSetting settings={settings} setSettings={setSettings} />
         </section>
 
         {/* Activity Section — moved out of the sidebar so the top-level
