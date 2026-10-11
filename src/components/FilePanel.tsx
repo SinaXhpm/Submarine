@@ -413,12 +413,20 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // layout effect after the sorting).
   const revealRef = useRef<{ path: string; block: ScrollLogicalPosition } | null>(null);
 
+  // Every listing asked for gets the next number, and only the newest one's
+  // answer is used. On a slow link answers come back out of order: open a
+  // big folder, then another before the first has listed, and the older
+  // answer would land last and put the pane back in the folder just left.
+  const listSeqRef = useRef(0);
+
   // `reveal`: a row to select in the new folder if it is there (going up
   // selects the folder just left).
   const fetch = async (path: string, reveal?: string) => {
+    const seq = ++listSeqRef.current;
     setLoading(true);
     try {
       const result = await provider.list(path);
+      if (seq !== listSeqRef.current) return;
       const present = new Set(result.entries.map((e) => e.path));
       setEntries(result.entries);
       setCurrentPath(result.currentPath);
@@ -445,9 +453,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       onPathChange?.(result.currentPath);
       pushRecent(result.currentPath);
     } catch (err: any) {
-      notify(`List failed: ${err}`, "error");
+      if (seq === listSeqRef.current) notify(`List failed: ${err}`, "error");
     } finally {
-      setLoading(false);
+      if (seq === listSeqRef.current) setLoading(false);
     }
   };
 
@@ -456,9 +464,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // no longer exists — that way a saved path being removed doesn't strand
   // the user with an error screen.
   useEffect(() => {
+    const seq = ++listSeqRef.current;
     (async () => {
       const tryFetch = async (path: string) => {
         const result = await provider.list(path);
+        if (seq !== listSeqRef.current) return; // the user went elsewhere meanwhile
         setEntries(result.entries);
         setCurrentPath(result.currentPath);
         setTempInput(result.currentPath);
@@ -477,9 +487,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         const home = await provider.homePath();
         await tryFetch(home);
       } catch (err: any) {
-        notify(`Failed to load: ${err}`, "error");
+        if (seq === listSeqRef.current) notify(`Failed to load: ${err}`, "error");
       } finally {
-        setLoading(false);
+        if (seq === listSeqRef.current) setLoading(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
