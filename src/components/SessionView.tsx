@@ -142,13 +142,14 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
   );
 };
 
-// The SFTP panel's title bar: the title, the Dedicated toggle, then Mirror,
+// The title bar of a tool panel with a Dedicated toggle (SFTP, Port
+// Forwarding): the title, the toggle, then the panel's buttons (SFTP's Mirror),
 // full screen and close. In a narrow panel not all of it fits. What gives way,
-// in this order: the title shortens to "SFTP", the title goes, and only then
-// does Mirror lose its word. So the word is there whenever there is room for
-// it. The bar measures itself instead of using fixed widths, because the
-// toggle is wider while its status dot shows and the text's width depends on
-// the font.
+// in this order: the title shortens ("SFTP", "Ports"), the title goes, and
+// only then does Mirror lose its word. So the word is there whenever there is
+// room for it. The bar measures itself instead of using fixed widths, because
+// the toggle is wider while its status dot shows and the text's width depends
+// on the font.
 const TITLE_BAR_GAP = 12; // gap-3 between the title, the toggle and the buttons
 const MIRROR_WORD_GAP = 6; // gap-1.5 between Mirror's icon and its word
 const TITLE_BAR_TEXT = "text-[10px] font-bold uppercase tracking-wider";
@@ -160,11 +161,12 @@ const TITLE_BAR_FITS: TitleBarFit[] = [
   { title: "short", mirrorWord: false },
   { title: "none", mirrorWord: false },
 ];
-const SftpTitleBar = ({ toggle, mirrorOn, mirrorDisabled, onMirror, extra, onClose }: {
+const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
+  title: string;
+  shortTitle: string;
   toggle: React.ReactNode;
-  mirrorOn: boolean;
-  mirrorDisabled: boolean;
-  onMirror: () => void;
+  /** SFTP's Mirror button; the other panels have none. */
+  mirror?: { on: boolean; disabled: boolean; onToggle: () => void };
   /** Buttons between Mirror and Close (full screen). */
   extra: React.ReactNode;
   onClose: () => void;
@@ -188,7 +190,7 @@ const SftpTitleBar = ({ toggle, mirrorOn, mirrorDisabled, onMirror, extra, onClo
       const style = getComputedStyle(bar);
       const room = bar.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       if (!(room > 0)) return; // not laid out
-      const word = width(mirrorWordRef.current) + MIRROR_WORD_GAP;
+      const word = mirrorWordRef.current ? width(mirrorWordRef.current) + MIRROR_WORD_GAP : 0;
       const iconButtons = width(buttons) - (fitRef.current.mirrorWord ? word : 0);
       const titles = { full: width(fullTitleRef.current), short: width(shortTitleRef.current), none: 0 };
       const needed = (f: TitleBarFit) =>
@@ -209,37 +211,39 @@ const SftpTitleBar = ({ toggle, mirrorOn, mirrorDisabled, onMirror, extra, onClo
     <div ref={barRef} className="relative h-10 px-4 flex items-center gap-3 border-b border-white/5 bg-white/5 overflow-hidden">
       {fit.title !== "none" && (
         <span className={`${TITLE_BAR_TEXT} text-zinc-400 truncate min-w-0`}>
-          {fit.title === "full" ? "SFTP File Browser" : "SFTP"}
+          {fit.title === "full" ? title : shortTitle}
         </span>
       )}
       <span ref={toggleRef} className="shrink-0 whitespace-nowrap">{toggle}</span>
       <div ref={buttonsRef} className="ml-auto flex items-center gap-2 shrink-0">
-        <button
-          onClick={onMirror}
-          disabled={mirrorDisabled}
-          aria-pressed={mirrorOn}
-          aria-label="Mirror"
-          title={mirrorDisabled
-            ? "Mirror needs a saved server"
-            : mirrorOn ? "Back to the files" : "Mirror: keep a local folder copied to this server"}
-          className={`h-6 px-2 rounded border flex items-center gap-1.5 ${TITLE_BAR_TEXT} transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
-            mirrorOn
-              ? 'text-primary bg-primary/10 border-primary/30'
-              : 'text-zinc-400 border-white/10 hover:text-white hover:bg-white/5'
-          }`}
-        >
-          <FolderUp size={12} className="shrink-0" />
-          {fit.mirrorWord && <span>Mirror</span>}
-        </button>
+        {mirror && (
+          <button
+            onClick={mirror.onToggle}
+            disabled={mirror.disabled}
+            aria-pressed={mirror.on}
+            aria-label="Mirror"
+            title={mirror.disabled
+              ? "Mirror needs a saved server"
+              : mirror.on ? "Back to the files" : "Mirror: keep a local folder copied to this server"}
+            className={`h-6 px-2 rounded border flex items-center gap-1.5 ${TITLE_BAR_TEXT} transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+              mirror.on
+                ? 'text-primary bg-primary/10 border-primary/30'
+                : 'text-zinc-400 border-white/10 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <FolderUp size={12} className="shrink-0" />
+            {fit.mirrorWord && <span>Mirror</span>}
+          </button>
+        )}
         {extra}
         <button onClick={onClose} aria-label="Close" className="text-zinc-500 hover:text-white transition-colors shrink-0">
           <X size={14} />
         </button>
       </div>
       <div aria-hidden className="absolute left-0 top-0 invisible pointer-events-none whitespace-nowrap flex gap-4">
-        <span ref={fullTitleRef} className={TITLE_BAR_TEXT}>SFTP File Browser</span>
-        <span ref={shortTitleRef} className={TITLE_BAR_TEXT}>SFTP</span>
-        <span ref={mirrorWordRef} className={TITLE_BAR_TEXT}>Mirror</span>
+        <span ref={fullTitleRef} className={TITLE_BAR_TEXT}>{title}</span>
+        <span ref={shortTitleRef} className={TITLE_BAR_TEXT}>{shortTitle}</span>
+        {mirror && <span ref={mirrorWordRef} className={TITLE_BAR_TEXT}>Mirror</span>}
       </div>
     </div>
   );
@@ -1930,7 +1934,9 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
         >
           {activeTool === 'sftp' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <SftpTitleBar
+              <ToolTitleBar
+                title="SFTP File Browser"
+                shortTitle="SFTP"
                 toggle={
                   <SepToggle
                     on={separateSftp}
@@ -1940,9 +1946,11 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                     onReconnect={reconnectSftpConn}
                   />
                 }
-                mirrorOn={sftpView === 'mirror'}
-                mirrorDisabled={!session.serverId}
-                onMirror={() => setSftpView(v => v === 'mirror' ? 'files' : 'mirror')}
+                mirror={{
+                  on: sftpView === 'mirror',
+                  disabled: !session.serverId,
+                  onToggle: () => setSftpView(v => v === 'mirror' ? 'files' : 'mirror'),
+                }}
                 extra={fullToggle}
                 onClose={() => setActiveTool(null)}
               />
@@ -1962,9 +1970,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
 
           {activeTool === 'tunnels' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5">
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 shrink-0">Port Forwarding</span>
+              <ToolTitleBar
+                title="Port Forwarding"
+                shortTitle="Ports"
+                toggle={
                   <SepToggle
                     on={separateFwd}
                     onToggle={toggleSeparateFwd}
@@ -1972,14 +1981,10 @@ const SessionViewImpl = ({ session, onClose, addLog, onStatusChange, chromeless 
                     hint="Port forwards run on their own SSH connection, so heavy traffic doesn't slow the terminal down."
                     onReconnect={reconnectFwdConn}
                   />
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {fullToggle}
-                  <button onClick={() => setActiveTool(null)} aria-label="Close" className="text-zinc-500 hover:text-white transition-colors shrink-0">
-                    <X size={14} />
-                  </button>
-                </div>
-              </div>
+                }
+                extra={fullToggle}
+                onClose={() => setActiveTool(null)}
+              />
               <div className="flex-1 overflow-hidden relative">
                 <TunnelsPanel sessionId={session.id} serverId={session.serverId} disabled={status !== 'connected'} />
               </div>
