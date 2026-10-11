@@ -1193,6 +1193,89 @@ fn open_pw_escrow(blob_hex: &str, password: &str) -> Result<[u8; 32], String> {
     Ok(dek)
 }
 
+// ---- which server a profile syncs with ---------------------------------------
+//
+// The sync server can be self-hosted (`cloud_config`), so a profile is tied to
+// the server it syncs with, in sync_meta 'cloud_server'. Without that, signing
+// in to another server would push every profile there on the next automatic
+// sync, password-sealed key escrow included, and a shared profile would take
+// whatever key the new server handed back for its share id. A profile from
+// before the server could be chosen has no row and syncs with the default
+// server; a new profile has an empty one until its first sync links it.
+
+/// The server the open profile syncs with; `None` when it isn't linked yet.
+fn profile_server(conn: &Connection) -> Option<String> {
+    match conn.query_row("SELECT value FROM sync_meta WHERE key='cloud_server'", [], |r| r.get::<_, String>(0)) {
+        Ok(server) if server.is_empty() => None,
+        Ok(server) => Some(server),
+        Err(_) => Some(cloud::CLOUD_API_BASE.to_string()),
+    }
+}
+
+/// Refuses to sync the open profile with `base` when it is linked to another
+/// server. `Ok(true)`: it isn't linked yet, and the caller links it once the
+/// server has taken it (`link_profile_server`).
+fn check_profile_server(conn: &Connection, base: &str) -> Result<bool, String> {
+    match profile_server(conn) {
+        None => Ok(true),
+        Some(server) if server == base => Ok(false),
+        Some(server) => Err(format!(
+            "[SYNC] OTHER_SERVER: this profile syncs with {}, not with {}. Switch the sync server back, or move this profile from its Profile panel.",
+            cloud_config::host_of(&server),
+            cloud_config::host_of(base)
+        )),
+    }
+}
+
+fn link_profile_server(conn: &Connection, base: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO sync_meta(key,value) VALUES('cloud_server',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [base],
+    )
+    .map_err(|e| format!("[SYNC] SET_CLOUD_SERVER: {e}"))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod profile_server_tests {
+    use super::*;
+
+    fn meta() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []).unwrap();
+        conn
+    }
+
+    const OWN: &str = "https://sync.example.com";
+
+    // A profile from before the server could be chosen syncs with the default
+    // server, and only there.
+    #[test]
+    fn no_row_means_the_default_server() {
+        let conn = meta();
+        assert_eq!(profile_server(&conn).as_deref(), Some(cloud::CLOUD_API_BASE));
+        assert_eq!(check_profile_server(&conn, cloud::CLOUD_API_BASE), Ok(false));
+        let err = check_profile_server(&conn, OWN).unwrap_err();
+        assert!(err.starts_with("[SYNC] OTHER_SERVER") && err.contains("submarine.sinaxhpm.com"), "{}", err);
+    }
+
+    // A new profile goes with the first server it syncs with, and then stays.
+    #[test]
+    fn a_new_profile_links_on_its_first_sync() {
+        let conn = meta();
+        conn.execute("INSERT INTO sync_meta(key,value) VALUES('cloud_server','')", []).unwrap();
+        assert_eq!(profile_server(&conn), None);
+        assert_eq!(check_profile_server(&conn, OWN), Ok(true));
+        link_profile_server(&conn, OWN).unwrap();
+        assert_eq!(check_profile_server(&conn, OWN), Ok(false));
+        assert!(check_profile_server(&conn, cloud::CLOUD_API_BASE).is_err());
+        // Moving it is an explicit step.
+        link_profile_server(&conn, cloud::CLOUD_API_BASE).unwrap();
+        assert_eq!(check_profile_server(&conn, cloud::CLOUD_API_BASE), Ok(false));
+        assert!(check_profile_server(&conn, OWN).is_err());
+    }
+}
+
 /// One full per-entity sync of the OPEN profile: collect every local record,
 /// exchange with the server (which LWW-merges + returns its view), merge the
 /// server's records back, and persist. Full-set each call (the dataset is
@@ -1204,12 +1287,33 @@ async fn sync_now(
     db_state: tauri::State<'_, DbState>,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<SyncReport, String> {
+    let session = cloud.session().await?;
+    sync_with(&app, &db_state, &cloud, &session).await
+}
+
+/// `sync_now` over a session the caller already holds, so a command that also
+/// did other calls first keeps all of them on one server.
+async fn sync_with(
+    app: &tauri::AppHandle,
+    db_state: &DbState,
+    cloud: &cloud::CloudState,
+    session: &cloud::Session,
+) -> Result<SyncReport, String> {
     let profile = db_state
         .active_profile
         .lock()
         .map_err(|_| "[STATE] LOCK_PROFILE")?
         .clone()
         .ok_or("[SYNC] NO_PROFILE_OPEN")?;
+
+    // Checked before anything goes out, the shared key refresh below included:
+    // a server the profile isn't linked to could hand back a key it knows,
+    // and every record pushed after that would be readable to it.
+    let unlinked = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        check_profile_server(conn, session.base())?
+    };
 
     // A shared profile's key can change under us: the owner rotates it whenever
     // a member is revoked, so the copy cached at import time goes stale. Refresh
@@ -1224,7 +1328,7 @@ async fn sync_now(
     };
     if let Some(sid) = &existing_share {
         if let Some((_, my_secret)) = cloud.identity().await {
-            if let Ok(grant) = cloud::share_dek(&app, &cloud, sid).await {
+            if let Ok(grant) = cloud::share_dek(app, cloud, session, sid).await {
                 if let Ok(raw) = hex::decode(&grant.sealed_dek) {
                     if let Ok(opened) = identity::unseal(&my_secret, &raw) {
                         if opened.len() == 32 {
@@ -1292,7 +1396,7 @@ async fn sync_now(
     // nothing — it can only pull, so sending records would just 403.
     let (remote, pushed) = if let Some((share_id, role)) = &share {
         let to_push: &[SyncRecord] = if role == "user" { &[] } else { &records };
-        let remote = cloud::shared_sync_exchange(&app, &cloud, share_id, "", to_push).await?;
+        let remote = cloud::shared_sync_exchange(app, cloud, session, share_id, "", to_push).await?;
         (remote, to_push.len())
     } else {
         // Personal profile: publish (or refresh) the DEK escrow alongside the
@@ -1307,7 +1411,7 @@ async fn sync_now(
         // essential once `cloud_profile` is an opaque UUID for new profiles. For
         // legacy `main` the name equals the partition, so it's a harmless echo.
         let remote =
-            cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &to_push, Some(profile.as_str())).await?;
+            cloud::sync_exchange(app, cloud, session, &cloud_profile, "", &to_push, Some(profile.as_str())).await?;
         (remote, to_push.len())
     };
     let pulled = remote.len();
@@ -1316,9 +1420,12 @@ async fn sync_now(
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         apply_remote_records(conn, &dek, &remote, &hlc)?;
+        if unlinked {
+            link_profile_server(conn, session.base())?;
+        }
     }
     // Persist the merged vault so the applied changes survive a restart.
-    save_vault_async(&db_state).await?;
+    save_vault_async(db_state).await?;
     Ok(SyncReport { pushed, pulled })
 }
 
@@ -1369,13 +1476,19 @@ async fn profile_sync_stats(
         .map_err(|_| "[STATE] LOCK_PROFILE")?
         .clone()
         .ok_or("[SYNC] NO_PROFILE_OPEN")?;
+    let session = cloud.session().await.ok();
 
     // Local snapshot under the lock: records, DEK, routing, recent edits, and a
     // uuid→name map for servers so the diff can name what's out of sync.
-    let (local, dek, share, cloud_profile, recent_edits, server_names) = {
+    let (local, dek, share, cloud_profile, recent_edits, server_names, comparable) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let (dek, _created) = get_or_create_dek(conn)?;
+        // The cloud copy is only compared on the server this profile syncs
+        // with; one that hasn't synced yet has nothing there to compare.
+        let comparable = session
+            .as_ref()
+            .is_some_and(|s| matches!(check_profile_server(conn, s.base()), Ok(false)));
         let local = collect_local_records(conn, &dek, "")?;
         let share_id: Option<String> = conn
             .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
@@ -1435,6 +1548,7 @@ async fn profile_sync_stats(
             cloud_profile,
             recent_edits,
             server_names,
+            comparable,
         )
     };
 
@@ -1448,10 +1562,15 @@ async fn profile_sync_stats(
 
     // Best-effort dry run: pure pull (empty push mutates nothing on the server).
     let diff = {
-        let pulled = if let Some((share_id, _role)) = &share {
-            cloud::shared_sync_exchange(&app, &cloud, share_id, "", &[]).await
-        } else {
-            cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &[], None).await
+        let pulled = match &session {
+            Some(session) if comparable => {
+                if let Some((share_id, _role)) = &share {
+                    cloud::shared_sync_exchange(&app, &cloud, session, share_id, "", &[]).await
+                } else {
+                    cloud::sync_exchange(&app, &cloud, session, &cloud_profile, "", &[], None).await
+                }
+            }
+            _ => Err(String::new()),
         };
         match pulled {
             Ok(server) => {
@@ -1537,10 +1656,10 @@ async fn identity_status(
         return Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(hex::encode(pubk)) });
     }
     // Not unlocked — ask the server whether a key exists (requires being signed in).
-    if cloud.token().await.is_none() {
+    let Ok(session) = cloud.session().await else {
         return Ok(IdentityStatus { exists_on_server: false, unlocked: false, public_key: None });
-    }
-    let keys = cloud::fetch_my_keys(&app, &cloud).await?;
+    };
+    let keys = cloud::fetch_my_keys(&app, &cloud, &session).await?;
     Ok(IdentityStatus { exists_on_server: keys.exists, unlocked: false, public_key: keys.public_key })
 }
 
@@ -1557,7 +1676,8 @@ async fn setup_identity(
     if enc_passphrase.is_empty() {
         return Err("[SHARE] EMPTY_PASSPHRASE".into());
     }
-    let existing = cloud::fetch_my_keys(&app, &cloud).await?;
+    let session = cloud.session().await?;
+    let existing = cloud::fetch_my_keys(&app, &cloud, &session).await?;
     if existing.exists {
         let salt_hex = existing.enc_salt.ok_or("[SHARE] MISSING_SALT")?;
         let wrapped = existing.wrapped_privkey.ok_or("[SHARE] MISSING_WRAPPED")?;
@@ -1587,7 +1707,7 @@ async fn setup_identity(
     let mut salt = [0u8; 16];
     rand::rng().fill_bytes(&mut salt);
     let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
-    cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
+    cloud::publish_identity(&app, &cloud, &session, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
     cloud.set_identity(kp.public, kp.secret).await;
     Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(hex::encode(kp.public)) })
 }
@@ -1604,11 +1724,12 @@ async fn reset_identity(
     if enc_passphrase.chars().count() < 8 {
         return Err("[SHARE] WEAK_PASSPHRASE: use at least 8 characters".into());
     }
+    let session = cloud.session().await?;
     let kp = identity::generate_keypair();
     let mut salt = [0u8; 16];
     rand::rng().fill_bytes(&mut salt);
     let wrapped = identity::wrap_secret(&enc_passphrase, &salt, &kp.secret)?;
-    cloud::publish_identity(&app, &cloud, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
+    cloud::publish_identity(&app, &cloud, &session, &hex::encode(kp.public), &wrapped, &hex::encode(salt)).await?;
     cloud.set_identity(kp.public, kp.secret).await;
     Ok(IdentityStatus { exists_on_server: true, unlocked: true, public_key: Some(hex::encode(kp.public)) })
 }
@@ -1632,9 +1753,13 @@ async fn share_current_profile(
         return Err("[SHARE] BAD_NAME: 1-64 characters".into());
     }
     let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: set up your sharing identity first")?;
-    let dek = {
+    let session = cloud.session().await?;
+    let (dek, unlinked) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        // A profile is shared on the server it syncs with, or on the one in
+        // use if it hasn't synced yet.
+        let unlinked = check_profile_server(conn, session.base())?;
         // Only the UI's hidden button stopped this from running twice. Called
         // again on an already-shared profile it would mint a SECOND share_id,
         // overwrite the local one, and orphan the first — leaving its members
@@ -1646,14 +1771,17 @@ async fn share_current_profile(
         if already.is_some() {
             return Err("[SHARE] ALREADY_SHARED: this profile is already shared — stop sharing first if you want a new share.".into());
         }
-        get_or_create_dek(conn)?.0
+        (get_or_create_dek(conn)?.0, unlinked)
     };
     let sealed_self = hex::encode(identity::seal_to(&my_pub, &dek)?);
     let share_id = new_entity_uuid(); // 32 hex — within the server's {16,64}
-    cloud::create_share(&app, &cloud, &share_id, &name, &sealed_self).await?;
+    cloud::create_share(&app, &cloud, &session, &share_id, &name, &sealed_self).await?;
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        if unlinked {
+            link_profile_server(conn, session.base())?;
+        }
         conn.execute(
             "INSERT INTO sync_meta(key,value) VALUES('share_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [&share_id],
@@ -1696,8 +1824,9 @@ async fn invite_to_share(
         return Err("[SHARE] BAD_ROLE: role must be 'editor' or 'user'".into());
     }
     let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
+    let session = cloud.session().await?;
     // Get the DEK by unsealing my own grant for this share.
-    let mine = cloud::share_dek(&app, &cloud, &share_id).await?;
+    let mine = cloud::share_dek(&app, &cloud, &session, &share_id).await?;
     let dek_bytes = identity::unseal(&my_secret, &hex::decode(&mine.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
         .map_err(|_| "[SHARE] UNSEAL_SELF: cannot open your own grant — your identity may have changed")?;
     let dek = {
@@ -1708,12 +1837,12 @@ async fn invite_to_share(
         d.copy_from_slice(&dek_bytes);
         d
     };
-    let info = cloud::lookup_pubkey(&app, &cloud, &email)
+    let info = cloud::lookup_pubkey(&app, &cloud, &session, &email)
         .await?
         .ok_or("[SHARE] NO_ACCOUNT: that email hasn't set up sharing yet")?;
     let invitee_pub = hex_to_32(&info.public_key)?;
     let sealed = hex::encode(identity::seal_to(&invitee_pub, &dek)?);
-    cloud::invite_member(&app, &cloud, &share_id, &email, &role, &sealed).await?;
+    cloud::invite_member(&app, &cloud, &session, &share_id, &email, &role, &sealed).await?;
     Ok(InviteResult { email: info.email })
 }
 
@@ -1723,7 +1852,8 @@ async fn list_shares(
     app: tauri::AppHandle,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<Vec<cloud::ShareInfo>, String> {
-    cloud::list_shares(&app, &cloud).await
+    let session = cloud.session().await?;
+    cloud::list_shares(&app, &cloud, &session).await
 }
 
 /// The member roster of a share I belong to.
@@ -1733,7 +1863,8 @@ async fn share_member_list(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
     share_id: String,
 ) -> Result<Vec<cloud::MemberInfo>, String> {
-    cloud::share_members(&app, &cloud, &share_id).await
+    let session = cloud.session().await?;
+    cloud::share_members(&app, &cloud, &session, &share_id).await
 }
 
 #[derive(serde::Serialize)]
@@ -1751,7 +1882,8 @@ async fn accept_share(
     share_id: String,
 ) -> Result<AcceptResult, String> {
     let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: unlock your sharing identity first")?;
-    let resp = cloud::accept_share(&app, &cloud, &share_id).await?;
+    let session = cloud.session().await?;
+    let resp = cloud::accept_share(&app, &cloud, &session, &share_id).await?;
     let dek = identity::unseal(&my_secret, &hex::decode(&resp.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
         .map_err(|_| "[SHARE] UNSEAL_FAILED: this invite wasn't sealed to your current identity")?;
     if dek.len() != 32 {
@@ -1775,7 +1907,8 @@ async fn import_shared_profile(
     vault_password: String,
 ) -> Result<SyncReport, String> {
     let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: unlock your sharing identity first")?;
-    let mine = cloud::share_dek(&app, &cloud, &share_id).await?;
+    let session = cloud.session().await?;
+    let mine = cloud::share_dek(&app, &cloud, &session, &share_id).await?;
     let dek_vec = identity::unseal(&my_secret, &hex::decode(&mine.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
         .map_err(|_| "[SHARE] UNSEAL_FAILED: this share wasn't sealed to your identity")?;
     if dek_vec.len() != 32 {
@@ -1826,6 +1959,7 @@ async fn import_shared_profile(
             [&mine.role],
         )
         .map_err(|e| format!("[SHARE] SET_ROLE: {e}"))?;
+        link_profile_server(conn, session.base())?;
         Ok(())
     })();
     if let Err(e) = seeded {
@@ -1833,7 +1967,7 @@ async fn import_shared_profile(
         return Err(e);
     }
     // Pull the shared data into the new profile.
-    match sync_now(app.clone(), db_state, cloud).await {
+    match sync_with(&app, &db_state, &cloud, &session).await {
         Ok(report) => Ok(report),
         Err(e) => {
             discard_half_built_profile(&app, &local_name);
@@ -1900,7 +2034,8 @@ async fn restore_personal_profile(
     }
 
     // Peek at the cloud stream (empty push) and lift the escrow record out.
-    let peek = cloud::sync_exchange(&app, &cloud, &cloud_profile, "", &[], None).await?;
+    let session = cloud.session().await?;
+    let peek = cloud::sync_exchange(&app, &cloud, &session, &cloud_profile, "", &[], None).await?;
     let sealed = peek
         .iter()
         .find(|r| r.entity_type == ESCROW_ETYPE && r.uuid == ESCROW_UUID)
@@ -1954,13 +2089,14 @@ async fn restore_personal_profile(
             [&cloud_profile],
         )
         .map_err(|e| format!("[SYNC] SET_CLOUD_PROFILE: {e}"))?;
+        link_profile_server(conn, session.base())?;
         Ok(())
     })();
     if let Err(e) = seeded {
         discard_half_built_profile(&app, &local_name);
         return Err(e);
     }
-    match sync_now(app.clone(), db_state, cloud).await {
+    match sync_with(&app, &db_state, &cloud, &session).await {
         Ok(report) => Ok(report),
         Err(e) => {
             discard_half_built_profile(&app, &local_name);
@@ -1981,7 +2117,8 @@ async fn share_set_role(
     if role != "editor" && role != "user" {
         return Err("[SHARE] BAD_ROLE".into());
     }
-    cloud::set_member_role(&app, &cloud, &share_id, member_user_id, &role).await
+    let session = cloud.session().await?;
+    cloud::set_member_role(&app, &cloud, &session, &share_id, member_user_id, &role).await
 }
 
 /// Mint a fresh DEK for a share and re-seal it to everyone still on the roster.
@@ -2002,6 +2139,7 @@ async fn rotate_share_dek(
     app: &tauri::AppHandle,
     db_state: &tauri::State<'_, DbState>,
     cloud: &tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    session: &cloud::Session,
     share_id: &str,
     share_name: &str,
 ) -> Result<(), String> {
@@ -2012,17 +2150,17 @@ async fn rotate_share_dek(
     // Re-seal to the owner FIRST. If this is the step that fails, nobody's grant
     // has changed yet and the old key is still universally valid — a clean no-op
     // rather than a share whose members hold a key the owner can't open.
-    cloud::create_share(app, cloud, share_id, share_name, &hex::encode(identity::seal_to(&my_pub, &fresh)?)).await?;
+    cloud::create_share(app, cloud, session, share_id, share_name, &hex::encode(identity::seal_to(&my_pub, &fresh)?)).await?;
 
-    let roster = cloud::share_members(app, cloud, share_id).await?;
+    let roster = cloud::share_members(app, cloud, session, share_id).await?;
     for m in roster.iter().filter(|m| m.role != "owner" && m.status != "revoked") {
-        let Some(info) = cloud::lookup_pubkey(app, cloud, &m.email).await? else { continue };
+        let Some(info) = cloud::lookup_pubkey(app, cloud, session, &m.email).await? else { continue };
         let sealed = hex::encode(identity::seal_to(&hex_to_32(&info.public_key)?, &fresh)?);
         // Best-effort per member: one member whose key lookup fails must not
         // abort the rotation and leave the rest on a key the owner has already
         // replaced. They simply can't decrypt until re-invited, which is the
         // safe direction to fail.
-        if let Err(e) = cloud::invite_member(app, cloud, share_id, &m.email, &m.role, &sealed).await {
+        if let Err(e) = cloud::invite_member(app, cloud, session, share_id, &m.email, &m.role, &sealed).await {
             eprintln!("[SHARE] re-seal failed for {}: {e}", m.email);
         }
     }
@@ -2048,7 +2186,13 @@ async fn share_revoke(
     share_id: String,
     member_user_id: i64,
 ) -> Result<(), String> {
-    cloud::revoke_member(&app, &cloud, &share_id, member_user_id).await?;
+    let session = cloud.session().await?;
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        check_profile_server(conn, session.base())?;
+    }
+    cloud::revoke_member(&app, &cloud, &session, &share_id, member_user_id).await?;
     // Revocation itself has succeeded by here. If the rotation leg fails we
     // still report success for the removal — the member IS out — but say plainly
     // that the key wasn't replaced, because that's the part with a security
@@ -2068,7 +2212,7 @@ async fn share_revoke(
             .clone()
             .unwrap_or_else(|| "profile".to_string()),
     };
-    if let Err(e) = rotate_share_dek(&app, &db_state, &cloud, &share_id, &name).await {
+    if let Err(e) = rotate_share_dek(&app, &db_state, &cloud, &session, &share_id, &name).await {
         return Err(format!(
             "[SHARE] REVOKED_BUT_KEY_NOT_ROTATED: {} is out of the share, but the shared key could not be replaced ({e}). \
              They can no longer reach the server, but they still hold the old key — retry from the members list to rotate it.",
@@ -2085,7 +2229,8 @@ async fn share_leave(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
     share_id: String,
 ) -> Result<(), String> {
-    cloud::leave_share(&app, &cloud, &share_id).await
+    let session = cloud.session().await?;
+    cloud::leave_share(&app, &cloud, &session, &share_id).await
 }
 
 /// Owner: delete the whole shared profile.
@@ -2095,7 +2240,8 @@ async fn share_delete(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
     share_id: String,
 ) -> Result<(), String> {
-    cloud::delete_share(&app, &cloud, &share_id).await
+    let session = cloud.session().await?;
+    cloud::delete_share(&app, &cloud, &session, &share_id).await
 }
 
 #[derive(serde::Serialize)]
@@ -2106,6 +2252,12 @@ struct ProfileShareStatus {
     identity_unlocked: bool,
     signed_in: bool,
     email: Option<String>,
+    /// The server this profile syncs with; `None` while it isn't linked yet.
+    cloud_server: Option<String>,
+    /// The sync server in use.
+    current_server: String,
+    /// Whether that is a self-hosted one, not the default.
+    custom_server: bool,
 }
 
 /// Everything the in-app Profile panel needs about the OPEN profile, read in one
@@ -2118,7 +2270,7 @@ async fn profile_share_status(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<ProfileShareStatus, String> {
     // Scoped so both std MutexGuards drop before the awaits below.
-    let (profile, share_id, role) = {
+    let (profile, share_id, role, cloud_server) = {
         let profile = db_state
             .active_profile
             .lock()
@@ -2133,12 +2285,13 @@ async fn profile_share_status(
                 let role: Option<String> = conn
                     .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
                     .ok();
-                (profile, sid, role)
+                (profile, sid, role, profile_server(conn))
             }
-            None => (profile, None, None),
+            None => (profile, None, None, None),
         }
     };
     let st = cloud.status().await;
+    let current_server = cloud.base().await;
     Ok(ProfileShareStatus {
         profile,
         share_id,
@@ -2146,7 +2299,35 @@ async fn profile_share_status(
         identity_unlocked: cloud.identity().await.is_some(),
         signed_in: st.signed_in,
         email: st.email,
+        cloud_server,
+        custom_server: current_server != cloud::CLOUD_API_BASE,
+        current_server,
     })
+}
+
+/// Links the OPEN personal profile to the sync server in use, so it syncs
+/// there from now on. Nothing is copied or deleted by this: the next sync
+/// pushes the profile in full (pushes always are), and its copy on the old
+/// server stays where it is. A shared profile can't move: its members are on
+/// the server it was shared on.
+#[tauri::command]
+async fn move_profile_to_current_server(
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<(), String> {
+    let base = cloud.base().await;
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        let shared = conn
+            .query_row("SELECT 1 FROM sync_meta WHERE key='share_id'", [], |_| Ok(()))
+            .is_ok();
+        if shared {
+            return Err("[SYNC] SHARED_PROFILE: a shared profile stays on the server it was shared on.".into());
+        }
+        link_profile_server(conn, &base)?;
+    }
+    save_vault_async(&db_state).await
 }
 
 /// Stop sharing the OPEN profile. Owner → tears the share down for everyone;
@@ -2159,6 +2340,7 @@ async fn stop_sharing(
     db_state: tauri::State<'_, DbState>,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<(), String> {
+    let session = cloud.session().await?;
     let (share_id, role) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
@@ -2168,6 +2350,7 @@ async fn stop_sharing(
         let role: Option<String> = conn
             .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
             .ok();
+        check_profile_server(conn, session.base())?;
         (
             sid.ok_or("[SHARE] NOT_SHARED: this profile isn't shared")?,
             role.unwrap_or_default(),
@@ -2178,7 +2361,7 @@ async fn stop_sharing(
         // the server never got the message we must NOT forget the share_id —
         // dropping it locally would orphan a live share that members keep
         // syncing against, with nobody left able to shut it down.
-        cloud::delete_share(&app, &cloud, &share_id).await?;
+        cloud::delete_share(&app, &cloud, &session, &share_id).await?;
     } else {
         // Leaving is the member's own decision about their own device, so it has
         // to succeed locally whatever the server says. It used to abort on any
@@ -2187,7 +2370,7 @@ async fn stop_sharing(
         // one escape hatch the UI offers failed every single time, and their
         // vault stayed pointed at a dead share that errored on every sync
         // forever. Best-effort tell the server, then clear regardless.
-        if let Err(e) = cloud::leave_share(&app, &cloud, &share_id).await {
+        if let Err(e) = cloud::leave_share(&app, &cloud, &session, &share_id).await {
             eprintln!("[SHARE] leave_share failed, clearing locally anyway: {e}");
         }
     }
@@ -2823,7 +3006,8 @@ async fn cloud_list_sync_profiles(
     app: tauri::AppHandle,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<Vec<cloud::SyncProfileInfo>, String> {
-    cloud::list_sync_profiles(&app, &cloud).await
+    let session = cloud.session().await?;
+    cloud::list_sync_profiles(&app, &cloud, &session).await
 }
 
 /// Delete one of the caller's OWN personal profiles from the cloud: wipes every
@@ -2842,7 +3026,8 @@ async fn cloud_delete_profile(
     if profile.is_empty() {
         return Err("[SYNC] NO_PROFILE_NAME".into());
     }
-    cloud::delete_sync_profile(&app, &cloud, &profile).await
+    let session = cloud.session().await?;
+    cloud::delete_sync_profile(&app, &cloud, &session, &profile).await
 }
 
 /// Replace this profile's entire cloud copy with what's on THIS device.
@@ -2872,9 +3057,11 @@ async fn force_push_profile(
         .map_err(|_| "[STATE] LOCK_PROFILE")?
         .clone()
         .ok_or("[SYNC] NO_PROFILE_OPEN")?;
+    let session = cloud.session().await?;
     let (share_id, cloud_profile) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        check_profile_server(conn, session.base())?;
         let sid: Option<String> = conn
             .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
             .ok();
@@ -2886,11 +3073,11 @@ async fn force_push_profile(
     if share_id.is_some() {
         return Err("[SYNC] SHARED_PROFILE: this profile is shared with other people, and replacing the cloud copy would delete their changes too. Stop sharing first if you really want to reset it.".into());
     }
-    let removed = cloud::delete_sync_profile(&app, &cloud, &cloud_profile).await?;
+    let removed = cloud::delete_sync_profile(&app, &cloud, &session, &cloud_profile).await?;
     eprintln!("[SYNC] force push: server dropped {removed} record(s) for '{cloud_profile}'");
     // Pushes are always a full set, so the very next sync repopulates the
     // partition from this vault — including a fresh DEK escrow record.
-    sync_now(app, db_state, cloud).await
+    sync_with(&app, &db_state, &cloud, &session).await
 }
 
 /// Mark a profile as the active one. Subsequent `check_db_exists` /
@@ -3760,6 +3947,13 @@ async fn create_profile(
             [&pid_hex],
         )
         .map_err(|e| format!("[STATE] CLOUD_PROFILE_STORE: {e}"))?;
+        // Not linked to any sync server yet: its first sync links it to the
+        // one in use (see `check_profile_server`).
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('cloud_server','') ON CONFLICT(key) DO NOTHING",
+            [],
+        )
+        .map_err(|e| format!("[STATE] CLOUD_SERVER_STORE: {e}"))?;
     }
     save_vault_internal(&db_state)?;
     Ok(())
@@ -14435,10 +14629,10 @@ pub fn run() {
         // are hot-applied without restarting any monitor.
         .manage::<SharedSettings>(std::sync::Arc::new(tokio::sync::Mutex::new(monitor::MonitorSettings::default())))
         // CloudState needs the AppHandle to find app_data_dir on construction
-        // (to load any persisted bearer token). Setup is the earliest hook we
-        // get an AppHandle, so initialise it there and `manage` it for commands.
+        // (to load the server settings and any persisted bearer token). Setup
+        // is the earliest hook we get an AppHandle, so initialise it there and
+        // `manage` it for commands.
         .setup(|app| {
-            cloud_config::init(&app.handle());
             let cloud_state = cloud::CloudState::new(&app.handle());
             app.manage(cloud_state);
             Ok(())
@@ -14451,8 +14645,8 @@ pub fn run() {
             cloud::cloud_set_password, cloud::cloud_login, cloud::cloud_logout,
             cloud::cloud_request_password_reset, cloud::cloud_reset_password,
             cloud::cloud_request_login_link, cloud::cloud_login_with_link,
-            cloud_config::cloud_get_server, cloud_config::cloud_set_server,
-            sync_now,
+            cloud_config::cloud_get_config, cloud_config::cloud_set_config, cloud_config::cloud_test_connection,
+            sync_now, move_profile_to_current_server,
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
