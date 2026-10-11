@@ -8005,7 +8005,9 @@ async fn initiate_connection(
                                 }
                             }
                         };
-                        for spec in &specs_to_start {
+                        // A rule the user stopped stays down until they start
+                        // it again.
+                        for spec in specs_to_start.iter().filter(|spec| !spec.stopped) {
                             let started = tunnel::start_tunnel(
                                 app.clone(),
                                 session_id_clone.clone(),
@@ -8081,7 +8083,7 @@ async fn initiate_connection(
                                     },
                                 }
                             };
-                            if !specs.is_empty() {
+                            if specs.iter().any(|spec| !spec.stopped) {
                                 emit_log("Dedicated forwarding connection ready — moving tunnels onto it.", "info");
                                 start_tunnel_specs_on(
                                     &app,
@@ -8285,7 +8287,7 @@ async fn initiate_connection(
                                 // bind retry never delays death detection.
                                 if !dead && tick.is_multiple_of(30) && !sid_w.contains("::") {
                                     let specs = state_specs_w.lock().await.get(&sid_w).cloned().unwrap_or_default();
-                                    if !specs.is_empty() {
+                                    if specs.iter().any(|spec| !spec.stopped) {
                                         let app_r = app_w.clone();
                                         let sid_r = sid_w.clone();
                                         let handle_r = Arc::clone(&handle_arc);
@@ -8624,7 +8626,8 @@ async fn start_tunnel_specs_on(
         }
     }
     for spec in specs {
-        if running.contains(&spec) {
+        // A rule the user stopped stays down until they start it again.
+        if spec.stopped || running.contains(&spec) {
             continue;
         }
         match tunnel::start_tunnel(
@@ -8662,41 +8665,93 @@ async fn start_tunnel_specs_on(
     }
 }
 
+/// The forwarding rules saved on a node (its `tunnels` column).
+fn saved_tunnel_rules(db_state: &DbState, server_id: i32) -> Result<Vec<tunnel::TunnelSpec>, String> {
+    let conn_guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    let mut stmt = conn
+        .prepare("SELECT tunnels FROM servers WHERE id=?1")
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([server_id]).map_err(|e| e.to_string())?;
+    let json = match rows.next().map_err(|e| e.to_string())? {
+        Some(row) => row
+            .get::<_, Option<String>>(0)
+            .unwrap_or_default()
+            .unwrap_or_else(|| "[]".to_string()),
+        None => "[]".to_string(),
+    };
+    Ok(serde_json::from_str(&json).unwrap_or_default())
+}
+
+/// Make sure the session has its rule list before the user changes it. A
+/// session that hasn't engaged its tunnels yet has none (the dedicated
+/// connection is still coming up, or the node was just edited): it starts
+/// from the node's saved rules, the way connecting would. Starting from an
+/// empty list instead would save just the changed rule over all the others.
+async fn ensure_session_rules(
+    state: &SshState,
+    db_state: &DbState,
+    session_id: &str,
+    server_id: Option<i32>,
+) -> Result<(), String> {
+    let server_id = server_id.unwrap_or(0);
+    if server_id <= 0 || state.session_tunnel_specs.lock().await.contains_key(session_id) {
+        return Ok(());
+    }
+    let saved = saved_tunnel_rules(db_state, server_id)?;
+    // Whatever got there in the meantime (a connect) wins: it read the same rules.
+    state
+        .session_tunnel_specs
+        .lock()
+        .await
+        .entry(session_id.to_string())
+        .or_insert(saved);
+    Ok(())
+}
+
 #[tauri::command]
 async fn start_tunnel(
     app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
     session_id: String,
+    server_id: Option<i32>,
     spec: tunnel::TunnelSpec,
 ) -> Result<String, String> {
+    // A new forward, or a stopped rule started again: it runs from now on.
+    let spec = tunnel::TunnelSpec {
+        name: tunnel::clean_name(spec.name.as_deref()),
+        stopped: false,
+        ..spec
+    };
+    ensure_session_rules(state.inner(), db_state.inner(), &session_id, server_id).await?;
     // Dedicated-transport aware: rides the `::fwd` connection when one is up,
     // the primary otherwise. The tunnel is TAGGED under the plain session id
     // either way, so the Tunnels panel / list / teardown never re-key.
     let (handle, forwarded) = resolve_tunnel_transport(state.inner(), &session_id).await?;
     let id = tunnel::start_tunnel(app, session_id.clone(), handle, Arc::clone(&state.tunnels), forwarded, spec.clone()).await?;
-    // Record this ad-hoc spec against the session so a future reconnect can
-    // re-open it. Dedup against (kind, local, remote) so toggling the same
-    // tunnel off-and-on doesn't accumulate duplicates.
+    // Record the rule against the session so a future reconnect re-opens it
+    // and the panel can save it to the node. One rule per forward, so
+    // starting the same one again doesn't add a duplicate.
     {
         let mut map = state.session_tunnel_specs.lock().await;
-        let entry = map.entry(session_id).or_insert_with(Vec::new);
-        if !entry.contains(&spec) {
-            entry.push(spec);
-        }
+        tunnel::rule_started(map.entry(session_id).or_default(), &spec);
     }
     Ok(id)
 }
 
+/// Stop a running tunnel. Its rule stays, marked stopped: the panel still
+/// lists it, nothing starts it again until the user does, and saving keeps it
+/// on the node. `remove_tunnel_rule` is what deletes a rule.
 #[tauri::command]
 async fn stop_tunnel(
     state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
     tunnel_id: String,
+    server_id: Option<i32>,
 ) -> Result<(), String> {
     // Snapshot spec + session BEFORE stop — the listener task removes itself
-    // from the tunnels map on exit, racing this lookup. With the snapshot in
-    // hand we can drop the matching entry from the session's replay list so
-    // a user who explicitly stopped a tunnel doesn't see it return on the
-    // next reconnect.
+    // from the tunnels map on exit, racing this lookup.
     let snapshot = {
         let map = state.tunnels.lock().await;
         match map.get(&tunnel_id) {
@@ -8707,14 +8762,89 @@ async fn stop_tunnel(
             None => None,
         }
     };
+    if let Some((_, sid)) = &snapshot {
+        ensure_session_rules(state.inner(), db_state.inner(), sid, server_id).await?;
+    }
     tunnel::stop_tunnel(&state.tunnels, &tunnel_id).await?;
     if let Some((spec, sid)) = snapshot {
         let mut map = state.session_tunnel_specs.lock().await;
-        if let Some(list) = map.get_mut(&sid) {
-            list.retain(|s| s != &spec);
+        if let Some(rules) = map.get_mut(&sid) {
+            tunnel::rule_stopped(rules, &spec);
         }
     }
     Ok(())
+}
+
+/// The session's forwarding rules: running and stopped ones alike. Before the
+/// session has engaged its tunnels, the node's saved rules.
+#[tauri::command]
+async fn list_tunnel_rules(
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    session_id: String,
+    server_id: Option<i32>,
+) -> Result<Vec<tunnel::TunnelSpec>, String> {
+    if let Some(rules) = state.session_tunnel_specs.lock().await.get(&session_id) {
+        return Ok(rules.clone());
+    }
+    match server_id {
+        Some(id) if id > 0 => saved_tunnel_rules(db_state.inner(), id),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Delete a forwarding rule from the session, stopping it first if it runs.
+#[tauri::command]
+async fn remove_tunnel_rule(
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    session_id: String,
+    server_id: Option<i32>,
+    spec: tunnel::TunnelSpec,
+) -> Result<(), String> {
+    ensure_session_rules(state.inner(), db_state.inner(), &session_id, server_id).await?;
+    // Two-phase, as in tunnel::stop_all_for_session: ids under the map lock,
+    // the session check after releasing it.
+    let candidates: Vec<(String, Arc<tokio::sync::Mutex<tunnel::TunnelStatus>>)> = {
+        let map = state.tunnels.lock().await;
+        map.iter()
+            .filter(|(_, t)| t.spec == spec)
+            .map(|(id, t)| (id.clone(), Arc::clone(&t.status)))
+            .collect()
+    };
+    for (id, status) in candidates {
+        if status.lock().await.session_id == session_id {
+            // Already gone is fine: the point is that it isn't running.
+            let _ = tunnel::stop_tunnel(&state.tunnels, &id).await;
+        }
+    }
+    if let Some(rules) = state.session_tunnel_specs.lock().await.get_mut(&session_id) {
+        tunnel::rule_removed(rules, &spec);
+    }
+    Ok(())
+}
+
+/// Give a forwarding rule a name, or take it away (an empty name).
+#[tauri::command]
+async fn rename_tunnel_rule(
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    session_id: String,
+    server_id: Option<i32>,
+    spec: tunnel::TunnelSpec,
+    name: Option<String>,
+) -> Result<(), String> {
+    ensure_session_rules(state.inner(), db_state.inner(), &session_id, server_id).await?;
+    let mut map = state.session_tunnel_specs.lock().await;
+    let renamed = map
+        .get_mut(&session_id)
+        .map(|rules| tunnel::rule_renamed(rules, &spec, name.as_deref()))
+        .unwrap_or(false);
+    if renamed {
+        Ok(())
+    } else {
+        Err("This forward is no longer in the list.".into())
+    }
 }
 
 #[tauri::command]
@@ -8725,10 +8855,10 @@ async fn list_tunnels(
     Ok(tunnel::list_tunnels(&state.tunnels, session_id.as_deref()).await)
 }
 
-/// Persist the session's current live tunnel set to the node's saved `tunnels`
-/// column so ad-hoc port-forwards a user adds (or removes) during a session
-/// survive to the next time the node is opened. The Tunnels panel calls this
-/// after a successful start/stop. A quick-connect session (server_id <= 0) has
+/// Persist the session's forwarding rules (running and stopped, with their
+/// names) to the node's saved `tunnels` column so changes a user makes during
+/// a session survive to the next time the node is opened. The Tunnels panel
+/// calls this after each change. A quick-connect session (server_id <= 0) has
 /// no node to save to, so it's a no-op.
 #[tauri::command]
 async fn persist_session_tunnels(
@@ -8740,13 +8870,12 @@ async fn persist_session_tunnels(
     if server_id <= 0 {
         return Ok(());
     }
-    let specs = state
-        .session_tunnel_specs
-        .lock()
-        .await
-        .get(&session_id)
-        .cloned()
-        .unwrap_or_default();
+    // No list means the session never engaged its rules (or the node was just
+    // edited, which drops it): the node's rules are already what there is,
+    // and writing an empty list would erase them.
+    let Some(specs) = state.session_tunnel_specs.lock().await.get(&session_id).cloned() else {
+        return Ok(());
+    };
     let json = serde_json::to_string(&specs).unwrap_or_else(|_| "[]".to_string());
     {
         // Scoped so the non-Send rusqlite guard drops before save_vault_internal.
@@ -8784,23 +8913,7 @@ async fn restart_session_tunnels(
         state.session_tunnel_specs.lock().await.get(&session_id).cloned();
     let mut specs: Vec<tunnel::TunnelSpec> = existing.clone().unwrap_or_default();
     if existing.is_none() && server_id > 0 {
-        // Nested block so the non-Send rusqlite guard drops before any await.
-        let tunnels_json: String = {
-            let conn_guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
-            let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-            let mut stmt = conn
-                .prepare("SELECT tunnels FROM servers WHERE id=?1")
-                .map_err(|e| e.to_string())?;
-            let mut rows = stmt.query([server_id]).map_err(|e| e.to_string())?;
-            match rows.next().map_err(|e| e.to_string())? {
-                Some(row) => row
-                    .get::<_, Option<String>>(0)
-                    .unwrap_or_default()
-                    .unwrap_or_else(|| "[]".to_string()),
-                None => "[]".to_string(),
-            }
-        };
-        specs = serde_json::from_str(&tunnels_json).unwrap_or_default();
+        specs = saved_tunnel_rules(db_state.inner(), server_id)?;
         if !specs.is_empty() {
             state
                 .session_tunnel_specs
@@ -8809,7 +8922,8 @@ async fn restart_session_tunnels(
                 .insert(session_id.clone(), specs.clone());
         }
     }
-    if specs.is_empty() {
+    // Nothing to start: no rules, or only ones the user stopped.
+    if !specs.iter().any(|spec| !spec.stopped) {
         return Ok(());
     }
 
@@ -12896,6 +13010,18 @@ fn display_path(path: &std::path::Path) -> String {
     full.into_owned()
 }
 
+/// The local paths the app writes to are full paths: from a listing, the
+/// folder picker or the user's own folder. A relative one (`name`, or on
+/// Windows `G:name` and `\name`) would be resolved against whatever folder the
+/// app happens to run in, so it is refused.
+fn require_full_path(p: &std::path::Path) -> Result<(), String> {
+    if p.is_absolute() {
+        Ok(())
+    } else {
+        Err(format!("Not a full path: {}", p.display()))
+    }
+}
+
 /// Defense-in-depth guard for the local-FS commands the frontend can invoke.
 /// We can't lock everything down to a sandbox (the local file browser
 /// legitimately needs to roam the user's disk to pick uploads), but we CAN
@@ -12908,6 +13034,7 @@ fn display_path(path: &std::path::Path) -> String {
 /// `readable_local_dir`, which has no such limits.
 fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::PathBuf, String> {
     let p = std::path::Path::new(path);
+    require_full_path(p)?;
     let canonical = match p.canonicalize() {
         Ok(c) => c,
         Err(e) => {
@@ -12935,6 +13062,7 @@ fn guard_local_path(path: &str, allow_nonexistent: bool) -> Result<std::path::Pa
 /// system-path policy applies.
 fn guard_local_path_nofollow(path: &str, must_exist: bool) -> Result<std::path::PathBuf, String> {
     let p = std::path::Path::new(path);
+    require_full_path(p)?;
     let file = p.file_name().ok_or_else(|| format!("Invalid path: {}", path))?;
     let parent = p
         .parent()
@@ -12948,6 +13076,38 @@ fn guard_local_path_nofollow(path: &str, must_exist: bool) -> Result<std::path::
         std::fs::symlink_metadata(&full).map_err(|e| format!("Invalid path: {}", e))?;
     }
     check_local_path_policy(full)
+}
+
+/// The system folders `check_local_path_policy` refuses, as lowercase paths
+/// with `/`. On Windows they are also read from the environment (`var` looks
+/// one up): Windows and its program folders aren't always on drive C. On
+/// macOS `/etc` and `/var` are links into `/private`, and a checked path is
+/// already resolved, so the folders are listed there too.
+fn system_dirs(var: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let fixed: &[&str] = if cfg!(windows) {
+        &["c:/windows", "c:/program files", "c:/program files (x86)", "c:/programdata"]
+    } else {
+        &[
+            "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot",
+            "/sys", "/proc", "/dev", "/var/log", "/var/run", "/root",
+            "/private/etc", "/private/var/log", "/private/var/run", "/system",
+        ]
+    };
+    let mut dirs: Vec<String> = fixed.iter().map(|dir| dir.to_string()).collect();
+    if cfg!(windows) {
+        for name in ["SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"] {
+            let Some(value) = var(name) else { continue };
+            let dir = value.trim().to_lowercase().replace('\\', "/");
+            let dir = dir.trim_end_matches('/');
+            // Only a folder below a drive's root: `x:/…`. Anything else (a
+            // blank, a relative path, the root itself) would refuse too much.
+            let b = dir.as_bytes();
+            if b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/' && !dirs.iter().any(|d| d == dir) {
+                dirs.push(dir.to_string());
+            }
+        }
+    }
+    dirs
 }
 
 fn check_local_path_policy(canonical: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
@@ -12975,20 +13135,17 @@ fn check_local_path_policy(canonical: std::path::PathBuf) -> Result<std::path::P
     // Trim trailing slash for clean prefix matches.
     let canon_norm = canon_norm.trim_end_matches('/').to_string();
 
-    let blocked: &[&str] = if cfg!(windows) {
-        &[
-            "c:/windows", "c:/program files", "c:/program files (x86)",
-            "c:/programdata", "c:/system volume information", "c:/$recycle.bin",
-        ]
-    } else {
-        &[
-            "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot",
-            "/sys", "/proc", "/dev", "/var/log", "/var/run", "/root",
-        ]
-    };
-    for prefix in blocked {
-        let pfx = prefix.to_lowercase();
-        if canon_norm == pfx || canon_norm.starts_with(&format!("{}/", pfx)) {
+    let under = |dir: &str| canon_norm == dir || canon_norm.starts_with(&format!("{}/", dir));
+    if system_dirs(|var| std::env::var(var).ok()).iter().any(|dir| under(dir)) {
+        return Err(format!("Refusing operation on system path: {}", display_path(&canonical)));
+    }
+    // Every drive has these two, not just drive C.
+    if cfg!(windows) && canon_norm.as_bytes().get(1) == Some(&b':') {
+        let below_drive = &canon_norm[2..];
+        if ["/system volume information", "/$recycle.bin"]
+            .iter()
+            .any(|dir| below_drive == *dir || below_drive.starts_with(&format!("{}/", dir)))
+        {
             return Err(format!("Refusing operation on system path: {}", display_path(&canonical)));
         }
     }
@@ -13357,6 +13514,68 @@ mod local_browse_tests {
         }
         let dir = std::env::temp_dir().to_string_lossy().to_string();
         assert!(check_download_dir_target(&dir, "submarine-no-such-folder").is_ok());
+    }
+
+    #[test]
+    fn system_folders_are_found_wherever_windows_put_them() {
+        let env = |var: &str| match var {
+            "SystemRoot" => Some(r"D:\Windows".to_string()),
+            "ProgramFiles" => Some(r"E:\Apps\".to_string()),
+            "ProgramData" => Some(String::new()),
+            "windir" => Some(r"relative\path".to_string()),
+            "ProgramW6432" => Some(r"F:\".to_string()),
+            _ => None,
+        };
+        let dirs = system_dirs(env);
+        if cfg!(windows) {
+            assert!(dirs.iter().any(|d| d == "d:/windows"), "{:?}", dirs);
+            assert!(dirs.iter().any(|d| d == "e:/apps"), "{:?}", dirs);
+            assert!(dirs.iter().any(|d| d == "c:/windows"), "the usual place stays: {:?}", dirs);
+            // A blank, a relative path or a whole drive refuses nothing.
+            assert!(dirs.iter().all(|d| d.len() > 3 && d.as_bytes()[1] == b':'), "{:?}", dirs);
+            assert!(check_local_path_policy(std::path::PathBuf::from(r"\\?\C:\Windows\System32\x")).is_err());
+        } else {
+            for dir in ["/etc", "/private/etc", "/private/var/log", "/system"] {
+                assert!(dirs.iter().any(|d| d == dir), "{} in {:?}", dir, dirs);
+            }
+        }
+    }
+
+    #[test]
+    fn only_full_paths_are_written_to() {
+        // Each would land in whatever folder the app runs in.
+        let mut relative = vec!["name", "sub/name", "./name", "../name"];
+        if cfg!(windows) {
+            relative.extend([r"G:name", r"\name", "C:"]);
+        }
+        for path in relative {
+            assert!(guard_local_path(path, true).unwrap_err().starts_with("Not a full path"), "{}", path);
+            assert!(guard_local_path_nofollow(path, false).unwrap_err().starts_with("Not a full path"), "{}", path);
+        }
+        let here = std::env::temp_dir().join("submarine-no-such-file");
+        assert!(guard_local_path(&here.to_string_lossy(), true).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_drives_own_system_folders_are_refused_on_every_drive() {
+        for path in [r"\\?\D:\System Volume Information\x", r"E:\$Recycle.Bin", r"\\?\Z:\$RECYCLE.BIN\S-1-5\f"] {
+            assert!(check_local_path_policy(std::path::PathBuf::from(path)).is_err(), "{}", path);
+        }
+        // Only at the top of a drive.
+        assert!(check_local_path_policy(std::path::PathBuf::from(r"D:\data\System Volume Information")).is_ok());
+        assert!(check_local_path_policy(std::path::PathBuf::from(r"D:\data\$Recycle.Bin.txt")).is_ok());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn system_folders_are_refused_where_macos_really_keeps_them() {
+        // A checked path is already resolved: macOS's /etc arrives as /private/etc.
+        for path in ["/private/etc/hosts", "/private/var/log/x", "/System/Library/x", "/etc/x"] {
+            assert!(check_local_path_policy(std::path::PathBuf::from(path)).is_err(), "{}", path);
+        }
+        assert!(check_local_path_policy(std::path::PathBuf::from("/private/tmp/x")).is_ok());
+        assert!(check_local_path_policy(std::path::PathBuf::from("/home/me/systemd.txt")).is_ok());
     }
 
     #[test]
@@ -14092,6 +14311,7 @@ pub fn run() {
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
+            list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
             open_terminal, local_shell, write_terminal_data, resize_terminal, close_terminal,
             ssh_info_probe_section, ssh_systemctl_action, ssh_kill_process,
             ssh_iptables_chain, ssh_nft_chain,

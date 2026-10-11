@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useImperativeHandle, forwardRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useImperativeHandle, forwardRef } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Folder, File, ArrowUp, RefreshCw, Trash2, Edit3, Shield,
   X, ChevronUp, ChevronDown, Plus, MoreVertical, FolderSearch, FolderPlus,
-  Download, Upload, ExternalLink, Move, CheckSquare, Square, Search, Link2,
+  Download, Upload, ExternalLink, Move, CheckSquare, MinusSquare, Square, Search, Link2,
 } from "lucide-react";
 import { FileEntry, FileProvider } from "../fs/types";
 import { localDir, localJoin } from "../fs/localPath";
@@ -86,6 +86,104 @@ const HEADER_FITS: { from: number; fit: HeaderFit }[] = [
 ];
 const headerFitIndex = (inner: number) => HEADER_FITS.findIndex((s) => inner >= s.from);
 
+// The file list's columns. The name column is as wide as the folder's longest
+// name needs, from NAME_MIN to NAME_MAX (a longer name is cut short and shows
+// in full on hover). The others are as wide as the widest value they can show
+// and sit right after it, so in a wide pane the room left over stays empty at
+// the end of the row instead of opening a gap between a name and its size.
+// When a pane can't fit a column beside a NAME_MIN name, the columns give way
+// from the end (rights, then changed, then size), and what they showed moves
+// to a line under the name.
+type MetaColumn = "size" | "modified" | "permissions";
+type ColumnWidths = Record<MetaColumn, number>;
+const REMOTE_COLUMNS: MetaColumn[] = ["size", "modified", "permissions"];
+const LOCAL_COLUMNS: MetaColumn[] = ["size", "modified"]; // local entries carry no rights here
+const COLUMN_LABEL: Record<MetaColumn, string> = { size: "SIZE", modified: "CHANGED", permissions: "RIGHTS" };
+// The left-aligned columns keep a little room from the column before them
+// (COLUMN_LEAD, part of their width), so a size and a date don't run together.
+const COLUMN_CELL: Record<MetaColumn, string> = {
+  size: "text-right text-[10.5px] text-zinc-300",
+  modified: "pl-1.5 text-[9.5px] text-zinc-400",
+  permissions: "pl-1.5 text-[10.5px] text-zinc-300 opacity-90",
+};
+const COLUMN_LEAD: ColumnWidths = { size: 0, modified: 6, permissions: 6 };
+// A column is as wide as the widest value it can show (at its text size) or
+// its heading with the sort arrow, whichever is wider, in the list's own
+// font: measured once (see measureColumns), these until then.
+const COLUMN_SAMPLE: Record<MetaColumn, [string, number]> = {
+  size: ["1023.9 KB", 10.5],
+  modified: ["0000-00-00 00:00", 9.5],
+  permissions: ["drwxr-xr-x", 10.5],
+};
+const COLUMN_FALLBACK: ColumnWidths = { size: 56, modified: 98, permissions: 70 };
+const SORT_ARROW = 15;  // the heading's arrow and its margin
+const NAME_MIN = 128;
+const NAME_MAX = 340;
+const NAME_CHROME = 26; // the name column's icon, gap and padding
+const CHECK_WIDTH = 14; // the selection boxes, in selection mode
+const MENU_WIDTH = 16;  // a row's options button
+const COLUMN_GAP = 6;   // gap-1.5
+const LIST_INSET = 30;  // the list's padding, and a row's border and padding
+
+// How many of `columns` fit beside a NAME_MIN name in a list `width` px wide.
+// Selection mode's boxes come out of the name's room, not a column's, so
+// starting a selection never moves a column under the names.
+const columnsThatFit = (width: number, columns: MetaColumn[], widths: ColumnWidths) => {
+  let need = LIST_INSET + NAME_MIN + COLUMN_GAP + MENU_WIDTH;
+  let fit = 0;
+  for (const column of columns) {
+    need += COLUMN_GAP + widths[column];
+    if (need > width) break;
+    fit++;
+  }
+  return fit;
+};
+
+// One canvas measures text for every pane.
+let measureContext: CanvasRenderingContext2D | null | undefined;
+const textContext = () => {
+  if (measureContext === undefined) measureContext = document.createElement("canvas").getContext("2d");
+  return measureContext;
+};
+
+// The width of the widest of `names` in `font`, in px, up to `cap`.
+const widestName = (names: string[], font: string, cap: number) => {
+  const ctx = textContext();
+  if (!ctx) return cap;
+  ctx.font = font;
+  let widest = 0;
+  for (const name of names) {
+    widest = Math.max(widest, ctx.measureText(name).width);
+    if (widest >= cap) return cap;
+  }
+  return widest;
+};
+
+const measureColumns = (family: string): ColumnWidths => {
+  const ctx = textContext();
+  const widths = { ...COLUMN_FALLBACK };
+  if (!ctx) return widths;
+  for (const column of Object.keys(COLUMN_SAMPLE) as MetaColumn[]) {
+    const [sample, size] = COLUMN_SAMPLE[column];
+    ctx.font = `400 ${size}px ${family}`;
+    const value = ctx.measureText(sample).width;
+    ctx.font = `700 10.5px ${family}`;
+    const heading = ctx.measureText(`${COLUMN_LABEL[column]} `).width + SORT_ARROW;
+    widths[column] = Math.ceil(Math.max(value, heading)) + 2 + COLUMN_LEAD[column];
+  }
+  return widths;
+};
+
+// Typed letters within this many ms of each other make one name to jump to.
+const TYPE_AHEAD_MS = 800;
+
+// The letter of a Ctrl/⌘ shortcut: the key's own, or on a layout without
+// Latin letters (Persian, Russian…) the one printed beside it.
+const shortcutLetter = (e: React.KeyboardEvent) =>
+  /^[a-z]$/i.test(e.key) ? e.key.toLowerCase()
+  : /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase()
+  : "";
+
 export interface ActiveDrag {
   paneId: "local" | "remote";
   entry: FileEntry;
@@ -155,11 +253,29 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const [recentOpen, setRecentOpen] = useState(false);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
-  // Multi-selection lives as a Set of paths. Single-click replaces, Ctrl/⌘-
-  // click toggles a row in/out, Shift-click extends from the last-clicked
-  // anchor. lastSelectedPathRef remembers that anchor across renders.
+  // Multi-selection lives as a Set of paths (see onRowClick for the clicks).
+  // lastSelectedPathRef is the anchor a Shift-click or Shift-arrow ranges
+  // from, and rangeBaseRef what was selected before a run of those began (see
+  // selectRange). Both change through setAnchor.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const lastSelectedPathRef = useRef<string | null>(null);
+  const rangeBaseRef = useRef<Set<string> | null>(null);
+  const setAnchor = (path: string | null) => {
+    lastSelectedPathRef.current = path;
+    rangeBaseRef.current = null;
+  };
+  // Selection mode: the rows show selection boxes, and a plain click adds or
+  // removes a row instead of selecting just that one. Entered by Ctrl/⌘-click,
+  // a Shift range, Ctrl+A, Space, "Select" in a row's menu (on a touch screen
+  // a long press opens it) or "Select more" on the selection bar. Left once
+  // nothing is selected (Esc, a click on empty space, the bar's Clear).
+  const [selectMode, setSelectMode] = useState(false);
+  useEffect(() => { if (selected.size === 0) setSelectMode(false); }, [selected]);
+  const inMode = selectMode && selected.size > 0;
+  // The row the keyboard is on, and whether the keyboard moved it last (its
+  // outline only shows then: after a click the selection says where it is).
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [keyNav, setKeyNav] = useState(false);
   const [sort, setSort] = useState<SortState>({ column: "name", asc: true });
 
   const [tempInput, setTempInput] = useState("");
@@ -169,8 +285,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // `?` wildcard pattern for the whole name (util/nameFilter). Kept separate
   // from the path bar so the user can leave a filter active while
   // typing into the path. Sticky across `cd` so a quick filter session can
-  // span sibling dirs; the X button or Escape on the input clears it.
+  // span sibling dirs; the X button clears it.
   const [nameFilter, setNameFilter] = useState("");
+  // The filter's row opens from the magnifier beside the path (or Ctrl+F in
+  // the list) and is closed at first. Closing it clears the filter, so no
+  // rows are ever left out by a filter that isn't on screen.
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterInputRef = useRef<HTMLInputElement | null>(null);
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
   // `orig`: the mode and owner the Properties dialog opened with, so Save
@@ -179,6 +300,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const [notification, setNotification] = useState<{ msg: string; type: "info" | "success" | "error" } | null>(null);
 
   const [dragOver, setDragOver] = useState(false);
+  const paneRef = useRef<HTMLDivElement | null>(null);
   const dropTargetRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const currentPathRef = useRef(currentPath);
@@ -213,6 +335,36 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     observer.observe(el);
     measure();
     return () => observer.disconnect();
+  }, []);
+
+  // The list's columns follow the list's width the same way (see
+  // columnsThatFit): only how many fit is state. The rows' font is read
+  // once, for measuring names and columns.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [listFont, setListFont] = useState("");
+  const [columnWidths, setColumnWidths] = useState(COLUMN_FALLBACK);
+  const [columnsFit, setColumnsFit] = useState(3);
+  const metaColumns = provider.id === "remote" ? REMOTE_COLUMNS : LOCAL_COLUMNS;
+  useLayoutEffect(() => {
+    const scroller = dropTargetRef.current;
+    const rows = listRef.current;
+    if (!scroller || !rows) return;
+    const style = getComputedStyle(rows);
+    setListFont(`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`);
+    const widths = measureColumns(style.fontFamily);
+    setColumnWidths(widths);
+    if (typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      // 0 while the pane is hidden (the other tab): keep the last fit.
+      const width = scroller.clientWidth;
+      if (width <= 0) return;
+      setColumnsFit(columnsThatFit(width, metaColumns, widths));
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(scroller);
+    measure();
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---- helpers ----------------------------------------------------------------
@@ -257,15 +409,39 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     });
   };
 
-  const fetch = async (path: string) => {
+  // A row to bring into view once the next listing is on screen (see the
+  // layout effect after the sorting).
+  const revealRef = useRef<{ path: string; block: ScrollLogicalPosition } | null>(null);
+
+  // `reveal`: a row to select in the new folder if it is there (going up
+  // selects the folder just left).
+  const fetch = async (path: string, reveal?: string) => {
     setLoading(true);
     try {
       const result = await provider.list(path);
+      const present = new Set(result.entries.map((e) => e.path));
       setEntries(result.entries);
       setCurrentPath(result.currentPath);
       setTempInput(result.currentPath);
-      setSelected(new Set());
-      lastSelectedPathRef.current = null;
+      if (result.currentPath === currentPathRef.current) {
+        // A refresh keeps the selection and the keyboard's row, less what
+        // is gone. It ends a run of Shift ranges, whose base may be gone.
+        setSelected((prev) => {
+          const kept = [...prev].filter((p) => present.has(p));
+          return kept.length === prev.size ? prev : new Set(kept);
+        });
+        setCursor((c) => (c && present.has(c) ? c : null));
+        const anchor = lastSelectedPathRef.current;
+        setAnchor(anchor && present.has(anchor) ? anchor : null);
+      } else if (reveal && present.has(reveal)) {
+        selectOnly(reveal);
+        setCursor(reveal);
+        revealRef.current = { path: reveal, block: "center" };
+      } else {
+        setSelected(new Set());
+        setAnchor(null);
+        setCursor(null);
+      }
       onPathChange?.(result.currentPath);
       pushRecent(result.currentPath);
     } catch (err: any) {
@@ -287,7 +463,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         setCurrentPath(result.currentPath);
         setTempInput(result.currentPath);
         setSelected(new Set());
-      lastSelectedPathRef.current = null;
+        setAnchor(null);
+        setCursor(null);
         onPathChange?.(result.currentPath);
         pushRecent(result.currentPath);
       };
@@ -313,37 +490,52 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     currentDir: () => currentPathRef.current,
   }), []);
 
-  const goUp = () => fetch(provider.parentPath(currentPath));
+  const goUp = () => fetch(provider.parentPath(currentPath), currentPath);
 
   // ---- selection -------------------------------------------------------------
 
-  // Three click modes match every desktop file manager people already know:
-  //   - plain click  → replace selection with this row
-  //   - Ctrl/⌘+click → toggle this row in / out of the existing set
-  //   - Shift+click  → extend the range from the last anchor to this row
-  // Shift-extend uses `sortedEntries` (the rendered order), not `entries`,
-  // so the visual range matches what the user just dragged across.
+  // The clicks every desktop file manager has:
+  //   - plain click  → just this row (in selection mode: add or remove it)
+  //   - Ctrl/⌘+click → add or remove this row
+  //   - Shift+click  → the rows from the anchor to this one, added to the
+  //                    selection with Ctrl/⌘ or in selection mode
+  // Ranges use `ordered` (the rendered order), not `entries`, so they match
+  // what is on screen.
+  const selectOnly = (path: string) => {
+    setSelected(new Set([path]));
+    setAnchor(path);
+  };
+  const toggleRow = (path: string) => {
+    const next = new Set(selected);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    setSelected(next);
+    setAnchor(path);
+    setSelectMode(true);
+  };
+  // The rows from the anchor to `to`. A run of Shift-clicks or Shift-arrows
+  // from one anchor grows and shrinks one range on top of what was selected
+  // before the run began: nothing, unless the run adds (`add` at its start).
+  // False when the anchor isn't on screen to range from.
+  const selectRange = (to: string, ordered: FileEntry[], add: boolean) => {
+    const a = ordered.findIndex(x => x.path === lastSelectedPathRef.current);
+    const b = ordered.findIndex(x => x.path === to);
+    if (a < 0 || b < 0) return false;
+    const [lo, hi] = a <= b ? [a, b] : [b, a];
+    if (!rangeBaseRef.current) rangeBaseRef.current = add ? new Set(selected) : new Set();
+    const next = new Set(rangeBaseRef.current);
+    for (const x of ordered.slice(lo, hi + 1)) next.add(x.path);
+    setSelected(next);
+    if (next.size > 1) setSelectMode(true);
+    return true; // the anchor stays where the range started
+  };
   const onRowClick = (e: React.MouseEvent, entry: FileEntry, ordered: FileEntry[]) => {
-    if (e.shiftKey && lastSelectedPathRef.current) {
-      const a = ordered.findIndex(x => x.path === lastSelectedPathRef.current);
-      const b = ordered.findIndex(x => x.path === entry.path);
-      if (a >= 0 && b >= 0) {
-        const [lo, hi] = a <= b ? [a, b] : [b, a];
-        const range = ordered.slice(lo, hi + 1).map(x => x.path);
-        setSelected(new Set([...selected, ...range]));
-        return;
-      }
-    }
-    if (e.ctrlKey || e.metaKey) {
-      const next = new Set(selected);
-      if (next.has(entry.path)) next.delete(entry.path);
-      else next.add(entry.path);
-      setSelected(next);
-      lastSelectedPathRef.current = entry.path;
-      return;
-    }
-    setSelected(new Set([entry.path]));
-    lastSelectedPathRef.current = entry.path;
+    setCursor(entry.path);
+    setKeyNav(false);
+    const add = e.ctrlKey || e.metaKey || inMode;
+    if (e.shiftKey && selectRange(entry.path, ordered, add)) return;
+    if (add) toggleRow(entry.path);
+    else selectOnly(entry.path);
   };
 
   // Forward-walking autocomplete. As the user types a path, look at the
@@ -436,18 +628,28 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const openMenu = (e: React.MouseEvent, entry: FileEntry) => {
     e.preventDefault();
     e.stopPropagation();
-    const MENU_W = 200, MENU_H = 320;
-    const x = Math.min(e.clientX, window.innerWidth - MENU_W - 4);
-    const y = Math.min(e.clientY, window.innerHeight - MENU_H - 4);
     // Right-click on a row that isn't already part of the selection should
-    // switch focus to it (Explorer/Finder behaviour). Right-click on a row
-    // that IS selected keeps the multi-selection so bulk actions apply.
+    // switch focus to it (Explorer/Finder behaviour), out of selection mode
+    // too, so the menu acts on that row alone. Right-click on a row that IS
+    // selected keeps the multi-selection so bulk actions apply.
     if (!selected.has(entry.path)) {
-      setSelected(new Set([entry.path]));
-      lastSelectedPathRef.current = entry.path;
+      selectOnly(entry.path);
+      setSelectMode(false);
     }
-    setContextMenu({ x: Math.max(4, x), y: Math.max(4, y), entry });
+    setCursor(entry.path);
+    setKeyNav(false);
+    setContextMenu({ x: e.clientX, y: e.clientY, entry });
   };
+  // The menu opens at the pointer and moves up or left as far as it has to
+  // to stay in the window, by its own size.
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!contextMenu || !el) return;
+    const { width, height } = el.getBoundingClientRect();
+    const x = Math.max(4, Math.min(contextMenu.x, window.innerWidth - width - 4));
+    const y = Math.max(4, Math.min(contextMenu.y, window.innerHeight - height - 4));
+    if (x !== contextMenu.x || y !== contextMenu.y) setContextMenu({ ...contextMenu, x, y });
+  }, [contextMenu]);
 
   // ---- drag-source -------------------------------------------------------------
 
@@ -514,7 +716,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // ---- OS-level drag-drop into this pane --------------------------------------
   // Tauri 2 routes OS file drops through `tauri://drag-drop`; HTML5 drop events
   // fire too but their `File.path` is empty inside Tauri. We listen globally and
-  // dispatch only when the cursor landed inside our root.
+  // dispatch only when the cursor landed inside our root: anywhere in the
+  // pane, the selection bar over the list's end included.
   //
   // Only the remote pane takes OS drops (they're uploads). The local pane is
   // given a sessionId too, for its Upload button, so checking that alone made
@@ -528,9 +731,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       "tauri://drag-drop",
       async (event) => {
         const { paths, position } = event.payload || ({} as any);
-        if (!paths?.length || !dropTargetRef.current) return;
+        if (!paths?.length || !paneRef.current) return;
         const hit = document.elementFromPoint(position.x, position.y);
-        if (!hit || !dropTargetRef.current.contains(hit)) return;
+        if (!hit || !paneRef.current.contains(hit)) return;
         setDragOver(false);
         const dir = currentPathRef.current;
         const batch: OverwriteBatch = { kind: "ask" };
@@ -588,6 +791,17 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         const destDir = provider.parentPath(entry.path);
         const dest = provider.joinPath(destDir, v1);
         await provider.rename(entry.path, dest);
+        // The row keeps its place in the selection and the keyboard's place
+        // under its new name (the refresh below keeps both).
+        setSelected((prev) => {
+          if (!prev.has(entry.path)) return prev;
+          const next = new Set(prev);
+          next.delete(entry.path);
+          return next.add(dest);
+        });
+        if (lastSelectedPathRef.current === entry.path) setAnchor(dest);
+        setCursor(dest);
+        revealRef.current = { path: dest, block: "nearest" };
         notify(`Renamed to ${v1}`, "success");
       } else if (type === "move" && entry && v1) {
         // v1 is the destination *directory* the user typed (matches the
@@ -615,11 +829,15 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         }
         if (count > 0) {
           setSelected(new Set());
-          lastSelectedPathRef.current = null;
+          setAnchor(null);
           notify(items.length === 1 ? `Moved ${items[0].name} → ${dest}` : `Moved ${count} of ${items.length} items → ${dest}`, "success");
         }
       } else if (type === "mkdir" && v1) {
-        await provider.mkdir(provider.joinPath(currentPath, v1));
+        const made = provider.joinPath(currentPath, v1);
+        await provider.mkdir(made);
+        selectOnly(made);
+        setCursor(made);
+        revealRef.current = { path: made, block: "nearest" };
         notify(`Created ${v1}`, "success");
       } else if (type === "properties" && entry && v1 && provider.chmod) {
         const mode = parseInt(v1, 8);
@@ -646,6 +864,17 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       setModal(null);
     }
   };
+
+  // Once a dialog closes the list has the keyboard again (F2, a new name,
+  // Enter, and the arrows go on from the renamed row).
+  const hadModalRef = useRef(false);
+  useEffect(() => {
+    const active = document.activeElement;
+    if (hadModalRef.current && !modal && (!active || active === document.body)) {
+      dropTargetRef.current?.focus({ preventScroll: true });
+    }
+    hadModalRef.current = !!modal;
+  }, [modal]);
 
   // ---- removal ----------------------------------------------------------------
 
@@ -690,7 +919,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     }
     if (count > 0) {
       setSelected(new Set());
-      lastSelectedPathRef.current = null;
+      setAnchor(null);
     }
     if (stopped) {
       notify(count > 0 ? `Delete stopped after ${count} of ${items.length} items` : "Delete stopped. What was already removed is gone.", "info");
@@ -847,6 +1076,19 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     }
   };
 
+  // A double-click or Enter on a row.
+  const openEntry = (entry: FileEntry) => {
+    if (entry.isDir) { fetch(entry.path); return; }
+    if (entry.brokenLink) { notify(`“${entry.name}” is a broken link: its target is missing or not accessible.`, "error"); return; }
+    // For files: remote → live-edit (download + open editor + auto-upload on
+    // save); local → open in the OS default app. Both are desktop-only — on
+    // Android opening a file is a no-op (there's no OS default editor to hand
+    // off to).
+    if (IS_ANDROID) return;
+    if (provider.id === "remote") liveEditEntry(entry);
+    else openLocalEntry(entry);
+  };
+
   // ---- sorting ----------------------------------------------------------------
 
   const sortedEntries = (() => {
@@ -868,39 +1110,175 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   })();
   const filteredOut = nameFilter.trim() ? entries.length - sortedEntries.length : 0;
 
+  // As wide as the folder's longest name needs (see NAME_MIN). Measured on
+  // the whole listing, so the columns hold still while a filter is typed.
+  const nameWidth = useMemo(() => {
+    if (!listFont) return NAME_MIN;
+    const text = widestName(entries.map((e) => e.name), listFont, NAME_MAX - NAME_CHROME);
+    return Math.min(NAME_MAX, Math.max(NAME_MIN, Math.ceil(text) + NAME_CHROME));
+  }, [entries, listFont]);
+
+  // A new folder starts at the top; then the row `fetch` (or a dialog) asked
+  // for comes into view.
+  useLayoutEffect(() => {
+    if (dropTargetRef.current) dropTargetRef.current.scrollTop = 0;
+  }, [currentPath]);
+  useLayoutEffect(() => {
+    const reveal = revealRef.current;
+    if (!reveal) return;
+    revealRef.current = null;
+    const index = sortedEntries.findIndex((e) => e.path === reveal.path);
+    (listRef.current?.children[index] as HTMLElement | undefined)?.scrollIntoView({ block: reveal.block });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries]);
+
   // ---- select-all -------------------------------------------------------------
-  // Toggles the entire visible (sorted) list. Computed AFTER `sortedEntries`
-  // so the const TDZ doesn't fire on first render. Cmd/Ctrl+A is the keyboard
-  // counterpart; we let the browser handle Ctrl+A in text inputs by bailing
-  // out when the focused element is editable.
+  // Over the rows on screen: a filter leaves the others out, and typing one
+  // drops the rows it hides from the selection, so what is selected is always
+  // what the selection bar and the menu act on.
   const selectAllVisible = () => {
     if (sortedEntries.length === 0) return;
     setSelected(new Set(sortedEntries.map(e => e.path)));
-    lastSelectedPathRef.current = sortedEntries[sortedEntries.length - 1].path;
+    setAnchor(sortedEntries[sortedEntries.length - 1].path);
+    setSelectMode(true);
   };
   const clearSelection = () => {
     setSelected(new Set());
-    lastSelectedPathRef.current = null;
+    setAnchor(null);
   };
-  const allSelected = sortedEntries.length > 0 && selected.size === sortedEntries.length;
-  const toggleSelectAll = () => { allSelected ? clearSelection() : selectAllVisible(); };
-
+  const selectedEntries = sortedEntries.filter(e => selected.has(e.path));
+  const allSelected = sortedEntries.length > 0 && selectedEntries.length === sortedEntries.length;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "a") return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      // Only fire when this panel owns the focus, so two side-by-side
-      // FilePanel instances don't both select all on the same press.
-      const root = dropTargetRef.current;
-      if (root && document.activeElement && !root.contains(document.activeElement)) return;
-      e.preventDefault();
-      toggleSelectAll();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    if (selected.size === 0) return;
+    const shown = new Set(sortedEntries.map((e) => e.path));
+    const kept = [...selected].filter((p) => shown.has(p));
+    if (kept.length === selected.size) return;
+    setSelected(new Set(kept));
+    const anchor = lastSelectedPathRef.current;
+    setAnchor(anchor && shown.has(anchor) ? anchor : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortedEntries.length, allSelected]);
+  }, [nameFilter]);
+
+  // ---- keyboard ---------------------------------------------------------------
+  // The list takes the focus when it is clicked or tabbed to. Then:
+  //   ↑ ↓ Home End PgUp PgDn  move; outside selection mode the selection
+  //                           moves along. Shift extends it, Ctrl/⌘ moves alone
+  //   Space                   start selection mode / add or remove the row
+  //   Enter                   open             Backspace, Alt+↑  up a folder
+  //   Delete (⌘⌫)             delete           F2                rename
+  //   Ctrl/⌘+A                select all       Esc               clear it
+  //   Ctrl/⌘+F                the name filter
+  //   letters                 the next name that starts with what was typed
+  const typeAheadRef = useRef({ text: "", at: 0 });
+
+  const openFilter = () => {
+    setFilterOpen(true);
+    // Already open: back into it, with what is typed selected.
+    filterInputRef.current?.focus();
+    filterInputRef.current?.select();
+  };
+  const closeFilter = () => {
+    setFilterOpen(false);
+    setNameFilter("");
+  };
+
+  const scrollToRow = (index: number) =>
+    (listRef.current?.children[index] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
+
+  const moveCursor = (index: number, mods: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
+    if (sortedEntries.length === 0) return;
+    const at = Math.max(0, Math.min(sortedEntries.length - 1, index));
+    const to = sortedEntries[at].path;
+    setCursor(to);
+    setKeyNav(true);
+    if (mods.shiftKey) {
+      if (!lastSelectedPathRef.current) setAnchor(cursor ?? to);
+      if (!selectRange(to, sortedEntries, inMode)) selectOnly(to);
+    } else if (!(mods.ctrlKey || mods.metaKey) && !inMode) {
+      selectOnly(to);
+    }
+    scrollToRow(at);
+  };
+
+  // The same letter again goes on to the next name that starts with it.
+  const typeAhead = (key: string, from: number) => {
+    const typed = typeAheadRef.current;
+    const now = Date.now();
+    typed.text = now - typed.at > TYPE_AHEAD_MS ? key : typed.text + key;
+    typed.at = now;
+    const text = typed.text.toLowerCase();
+    const repeat = [...text].every((c) => c === text[0]);
+    const prefix = repeat ? text[0] : text;
+    const start = repeat ? from + 1 : Math.max(from, 0);
+    for (let i = 0; i < sortedEntries.length; i++) {
+      const at = (start + i) % sortedEntries.length;
+      if (sortedEntries[at].name.toLowerCase().startsWith(prefix)) {
+        moveCursor(at, { shiftKey: false, ctrlKey: false, metaKey: false });
+        return;
+      }
+    }
+  };
+
+  const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    // A row's options button keeps Enter and Space for itself.
+    if (e.target !== e.currentTarget && (e.key === "Enter" || e.key === " ")) return;
+    // A key closes the row menu; Esc does only that.
+    if (contextMenu) {
+      setContextMenu(null);
+      if (e.key === "Escape") { e.preventDefault(); return; }
+    }
+    const at = sortedEntries.findIndex((x) => x.path === (cursor ?? lastSelectedPathRef.current));
+    const current = at >= 0 ? sortedEntries[at] : undefined;
+    const ctrl = e.ctrlKey || e.metaKey;
+    const page = () => {
+      const row = listRef.current?.firstElementChild as HTMLElement | null;
+      return Math.max(1, Math.floor((dropTargetRef.current?.clientHeight ?? 0) / (row?.offsetHeight || 24)) - 2);
+    };
+    const typing = Date.now() - typeAheadRef.current.at <= TYPE_AHEAD_MS;
+    switch (e.key) {
+      case "ArrowDown": moveCursor(at < 0 ? 0 : at + 1, e); break;
+      case "ArrowUp":
+        if (e.altKey) goUp();
+        else moveCursor(at < 0 ? 0 : at - 1, e);
+        break;
+      case "Home": moveCursor(0, e); break;
+      case "End": moveCursor(sortedEntries.length - 1, e); break;
+      case "PageDown": moveCursor(at < 0 ? 0 : at + page(), e); break;
+      case "PageUp": moveCursor(at < 0 ? 0 : at - page(), e); break;
+      case "Enter": if (current) openEntry(current); break;
+      case "Backspace":
+        if (e.metaKey) removeItems(selectedEntries);
+        else goUp();
+        break;
+      case "Delete": removeItems(selectedEntries); break;
+      case "F2": if (current) setModal({ type: "rename", entry: current, v1: current.name }); break;
+      case "Escape":
+        if (selected.size === 0) return;
+        clearSelection();
+        break;
+      case " ":
+        if (typing && !ctrl) { typeAhead(" ", at); break; }
+        if (!current) break;
+        setCursor(current.path);
+        setKeyNav(true);
+        if (ctrl || inMode) {
+          toggleRow(current.path);
+        } else {
+          setSelected(new Set([...selected, current.path]));
+          setAnchor(current.path);
+          setSelectMode(true);
+        }
+        break;
+      default:
+        if (ctrl && !e.altKey && shortcutLetter(e) === "a") selectAllVisible();
+        else if (ctrl && !e.altKey && shortcutLetter(e) === "f") openFilter();
+        else if (e.key.length === 1 && !ctrl && !e.altKey) typeAhead(e.key, at);
+        else return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+  };
 
   const toggleSort = (col: SortColumn) =>
     setSort((p) => ({ column: col, asc: p.column === col ? !p.asc : true }));
@@ -925,10 +1303,25 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const onDrop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); };
 
   const isRemote = provider.id === "remote";
-  const showPerms = isRemote; // local entries don't carry perms here
+
+  // The list's columns at this width (see columnsThatFit), shared by the
+  // header and the rows; the ones that gave way show under each name.
+  const shownColumns = metaColumns.slice(0, columnsFit);
+  const movedColumns = metaColumns.slice(shownColumns.length);
+  const gridTemplateColumns = [
+    ...(inMode ? [`${CHECK_WIDTH}px`] : []),
+    `minmax(0, ${nameWidth}px)`,
+    ...shownColumns.map((c) => `${columnWidths[c]}px`),
+    `${MENU_WIDTH}px`,
+  ].join(" ");
+  const columnText = (column: MetaColumn, entry: FileEntry) =>
+    column === "size" ? (entry.isDir ? "" : formatSize(entry.size))
+    : column === "modified" ? formatTime(entry.modified)
+    : formatRights(entry.isDir, entry.permissions, entry.isSymlink);
 
   return (
     <div
+      ref={paneRef}
       data-fs-pane={provider.id}
       data-fs-current-path={currentPath}
       data-elev={fit.elev}
@@ -1071,7 +1464,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           )}
         </div>
         {headerNote}
-        <div className="relative">
+        <div className="relative flex items-center gap-1">
           <input
             type="text"
             value={tempInput}
@@ -1101,8 +1494,17 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               } else if (e.key === "Escape") setInputFocused(false);
             }}
             placeholder="Path…"
-            className="w-full h-6 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-indigo-400/50 focus:bg-white/10"
+            className="flex-1 min-w-0 h-6 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-indigo-400/50 focus:bg-white/10"
           />
+          <button
+            onClick={() => (filterOpen ? closeFilter() : openFilter())}
+            title={filterOpen ? "Close the name filter" : "Filter by name (Ctrl+F)"}
+            aria-label="Filter by name"
+            aria-pressed={filterOpen}
+            className={`${HEADER_BUTTON_BASE} h-6 w-6 ${filterOpen ? "text-indigo-200 bg-indigo-500/20 border-indigo-400/40" : "text-zinc-200"}`}
+          >
+            <Search size={11} />
+          </button>
           {inputFocused && suggestions.length > 0 && (
             <div className="absolute top-[28px] left-0 right-0 max-h-[220px] overflow-y-auto z-50 bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
               {suggestions.map((s, idx) => (
@@ -1122,51 +1524,78 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         </div>
       </div>
 
-      {/* Filter row — always visible, narrow (24 px). Lets the user trim
-          the rendered list by name without touching sort or the path bar.
-          Sticky across cd so they can hunt the same name across sibling
-          dirs; the X clears, Esc on the input clears too. */}
-      <div className="shrink-0 flex items-center gap-1 px-2 py-1 bg-[#0e0e10] border border-white/5 rounded text-[10.5px] font-mono">
-        <Search size={11} className="text-zinc-500 shrink-0" />
-        <input
-          type="text"
-          value={nameFilter}
-          onChange={(e) => setNameFilter(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Escape") { setNameFilter(""); (e.currentTarget as HTMLInputElement).blur(); } }}
-          placeholder="Filter by name…"
-          title="Filter by name. Wildcards match the whole name: * any characters, ? one character (e.g. *.sh)"
-          className="flex-1 min-w-0 h-5 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
-        />
-        {nameFilter && (
-          <>
-            <span className="text-[9.5px] text-zinc-500 shrink-0">
-              {sortedEntries.length}/{entries.length}
-            </span>
-            <button
-              onClick={() => setNameFilter("")}
-              title="Clear filter"
-              className="shrink-0 p-0.5 rounded text-zinc-400 hover:text-white hover:bg-white/10"
-            >
-              <X size={10} />
-            </button>
-          </>
-        )}
-      </div>
+      {/* Filter row, opened from the magnifier beside the path. Lets the
+          user trim the rendered list by name without touching sort or the
+          path bar. Sticky across cd so they can hunt the same name across
+          sibling dirs; the X clears it, and Esc closes the row. Enter or ↓
+          goes on to the rows that are left. */}
+      {filterOpen && (
+        <div className="shrink-0 flex items-center gap-1 px-2 py-1 bg-[#0e0e10] border border-white/5 rounded text-[10.5px] font-mono">
+          <Search size={11} className="text-zinc-500 shrink-0" />
+          <input
+            ref={filterInputRef}
+            type="text"
+            autoFocus
+            value={nameFilter}
+            onChange={(e) => setNameFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                closeFilter();
+                dropTargetRef.current?.focus({ preventScroll: true });
+              } else if ((e.key === "Enter" || e.key === "ArrowDown") && sortedEntries.length > 0) {
+                e.preventDefault();
+                dropTargetRef.current?.focus({ preventScroll: true });
+                moveCursor(0, { shiftKey: false, ctrlKey: false, metaKey: false });
+              }
+            }}
+            placeholder="Filter by name…"
+            title="Filter by name. Wildcards match the whole name: * any characters, ? one character (e.g. *.sh)"
+            className="flex-1 min-w-0 h-5 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
+          />
+          {nameFilter && (
+            <>
+              <span className="text-[9.5px] text-zinc-500 shrink-0">
+                {sortedEntries.length}/{entries.length}
+              </span>
+              <button
+                onClick={() => { setNameFilter(""); filterInputRef.current?.focus(); }}
+                title="Clear filter"
+                className="shrink-0 p-0.5 rounded text-zinc-400 hover:text-white hover:bg-white/10"
+              >
+                <X size={10} />
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Bulk action bar — shows for any non-empty selection so the user can
           send / move / delete with one click without right-clicking. It is a
           FLOATING overlay (absolute, pinned bottom-center) rather than a flex
           sibling, so its appearance never pushes the file list down — the rows
-          stay exactly where they are when a selection starts. */}
-      {selected.size > 0 && (
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 max-w-[calc(100%-1rem)] flex flex-wrap items-center justify-center gap-1.5 px-2.5 py-1.5 bg-indigo-950/95 border border-indigo-500/40 rounded-lg shadow-2xl shadow-black/50 backdrop-blur-md text-[10.5px] text-indigo-100 font-mono">
+          stay exactly where they are when a selection starts (the list gets
+          room at its end instead, so its last rows can scroll clear of it).
+          Centred by its margins, so it may grow to the pane's width before it
+          wraps (a left: 50% would leave it half of that). */}
+      {selectedEntries.length > 0 && (
+        <div className="absolute bottom-3 inset-x-2 mx-auto w-fit z-20 flex flex-wrap items-center justify-center gap-1.5 px-2.5 py-1.5 bg-indigo-950/95 border border-indigo-500/40 rounded-lg shadow-2xl shadow-black/50 backdrop-blur-md text-[10.5px] text-indigo-100 font-mono">
           <span className="font-bold uppercase tracking-wider text-[9.5px] text-indigo-300 shrink-0">
-            {selected.size} selected
+            {selectedEntries.length} selected
           </span>
+          {!inMode && (
+            <button
+              onClick={() => setSelectMode(true)}
+              title="Add rows with a click (Ctrl+click, Shift+click and Space do it too)"
+              className="px-2 py-0.5 rounded bg-white/5 text-indigo-200 hover:bg-white/10 flex items-center gap-1"
+            >
+              <CheckSquare size={10} /> Select more
+            </button>
+          )}
           <div className="flex-1" />
           {isRemote && (
             <button
-              onClick={() => downloadItems(sortedEntries.filter(e => selected.has(e.path)))}
+              onClick={() => downloadItems(selectedEntries)}
               title={getOppositeDir?.()
                 ? `Download to ${getOppositeDir!()}`
                 : "Pick a destination folder…"}
@@ -1177,7 +1606,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           )}
           {!isRemote && (
             <button
-              onClick={() => uploadItems(sortedEntries.filter(e => selected.has(e.path)))}
+              onClick={() => uploadItems(selectedEntries)}
               title={getOppositeDir?.()
                 ? `Upload to ${getOppositeDir!()}`
                 : "Open a remote directory first…"}
@@ -1194,13 +1623,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <Move size={10} /> Move…
           </button>
           <button
-            onClick={() => removeItems(sortedEntries.filter(e => selected.has(e.path)))}
+            onClick={() => removeItems(selectedEntries)}
             className="px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 hover:bg-rose-500/25 flex items-center gap-1"
           >
             <Trash2 size={10} /> Delete
           </button>
           <button
-            onClick={() => { setSelected(new Set()); lastSelectedPathRef.current = null; }}
+            onClick={clearSelection}
+            title="Clear the selection (Esc)"
             className="px-2 py-0.5 rounded bg-white/5 text-zinc-400 hover:bg-white/10 flex items-center gap-1"
           >
             <X size={10} /> Clear
@@ -1208,65 +1638,62 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         </div>
       )}
 
-      {/* List. It takes the keyboard focus when clicked (tabIndex), which is
-          how Ctrl+A knows which of the two panes it is meant for. */}
+      {/* List. It takes the keyboard focus when clicked or tabbed to (see
+          onListKeyDown), so keys go to the pane they are meant for. */}
       <div
         ref={dropTargetRef}
         tabIndex={0}
+        aria-label={`${provider.label} files`}
+        onKeyDown={onListKeyDown}
+        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setKeyNav(false); }}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        className={`flex-1 border rounded-lg bg-[#121214] flex flex-col overflow-auto transition-all duration-200 border-indigo-500/30 shadow-2xl shadow-indigo-950/10 outline-none focus-visible:border-indigo-400/70 ${dragOver ? "border-indigo-400 bg-indigo-950/10" : ""}`}
+        className={`flex-1 border rounded-lg bg-[#121214] flex flex-col overflow-y-auto overflow-x-hidden transition-all duration-200 border-indigo-500/30 shadow-2xl shadow-indigo-950/10 outline-none focus-visible:border-indigo-400/70 ${dragOver ? "border-indigo-400 bg-indigo-950/10" : ""}`}
       >
-        {/* Ways into a selection: a row click (one row), Ctrl/Shift-click
-            (extend), a row's own box, Ctrl+A, and the select-all box in this
-            header row, the only one of them that is always on screen. */}
-        <div className={`min-w-full grid ${
-          showPerms
-            ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(150px,1fr)_65px_115px_85px]"
-            : "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_75px_125px]"
-        } gap-1.5 px-2.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 select-none font-bold shrink-0 sticky top-0 z-10 shadow-md`}>
-          {/* Select-all. Its 22px column is always reserved (here and in
-              every row), so starting a selection never shifts the columns
-              sideways. */}
-          <button
-            type="button"
-            disabled={sortedEntries.length === 0}
-            className="bg-[#161619] flex items-center justify-center py-1.5 text-zinc-500 hover:text-zinc-200 disabled:opacity-40 disabled:hover:text-zinc-500"
-            onClick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
-            title={allSelected ? "Deselect all (Ctrl+A)" : "Select all (Ctrl+A)"}
-            aria-label={allSelected ? "Deselect all" : "Select all"}
-            aria-pressed={allSelected}
-          >
-            {allSelected ? <CheckSquare size={12} className="text-indigo-300" /> : <Square size={12} />}
-          </button>
-          <div className="bg-[#161619] cursor-pointer hover:text-white py-1.5" onClick={() => toggleSort("name")}>
+        {/* The rows' columns, lined up with them: its padding matches the
+            list's and a row's own. In selection mode the box in front selects
+            all, or clears the selection once everything is selected. */}
+        <div
+          style={{ gridTemplateColumns }}
+          className="grid gap-1.5 pl-4 pr-3.5 bg-[#161619] border-b border-white/5 font-mono text-[10.5px] text-zinc-300 font-bold shrink-0 sticky top-0 z-10 shadow-md"
+        >
+          {inMode && (
+            <button
+              type="button"
+              tabIndex={-1}
+              role="checkbox"
+              aria-checked={allSelected ? "true" : "mixed"}
+              onClick={() => (allSelected ? clearSelection() : selectAllVisible())}
+              title={allSelected ? "Clear the selection (Esc)" : "Select all (Ctrl+A)"}
+              aria-label={allSelected ? "Clear the selection" : "Select all"}
+              className="flex items-center justify-center py-1.5 text-indigo-300 hover:text-indigo-100"
+            >
+              {allSelected ? <CheckSquare size={12} /> : <MinusSquare size={12} />}
+            </button>
+          )}
+          <div className="cursor-pointer hover:text-white py-1.5 truncate" onClick={() => toggleSort("name")}>
             NAME {sortIcon("name")}
           </div>
-          <div className="hidden sm:block bg-[#161619] cursor-pointer hover:text-white text-right py-1.5" onClick={() => toggleSort("size")}>
-            SIZE {sortIcon("size")}
-          </div>
-          <div className="hidden sm:block bg-[#161619] cursor-pointer hover:text-white text-right py-1.5" onClick={() => toggleSort("modified")}>
-            CHANGED {sortIcon("modified")}
-          </div>
-          {showPerms && (
-            <div className="hidden sm:block bg-[#161619] cursor-pointer hover:text-white text-right py-1.5" onClick={() => toggleSort("permissions")}>
-              RIGHTS {sortIcon("permissions")}
+          {shownColumns.map((c) => (
+            <div
+              key={c}
+              className={`cursor-pointer hover:text-white py-1.5 truncate ${c === "size" ? "text-right" : "pl-1.5"}`}
+              onClick={() => toggleSort(c)}
+            >
+              {COLUMN_LABEL[c]} {sortIcon(c)}
             </div>
-          )}
+          ))}
         </div>
 
-        <div className="min-w-full p-1 font-mono text-[11px]"
-             onClick={(e) => {
-               // Click landed on the bare list background (not on a row, since
-               // rows stopPropagation via their own onClick chain implicitly
-               // by being the click target). Clear selection so users can
-               // escape a multi-selection without a keyboard shortcut.
-               if (e.target === e.currentTarget) {
-                 setSelected(new Set());
-                 lastSelectedPathRef.current = null;
-               }
-             }}>
+        {/* The rows. A click on the empty space around them clears the
+            selection. While the selection bar is up, there is room for it at
+            the end, so the last rows can scroll clear of it. */}
+        <div
+          ref={listRef}
+          className={`flex-1 p-1 font-mono text-[11px] ${selectedEntries.length > 0 ? "pb-16" : ""}`}
+          onClick={(e) => { if (e.target === e.currentTarget) clearSelection(); }}
+        >
           {loading && sortedEntries.length === 0 ? (
             <div className="text-center py-14 text-zinc-400">Loading…</div>
           ) : sortedEntries.length === 0 ? (
@@ -1276,60 +1703,36 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           ) : (
             sortedEntries.map((entry) => {
               const isSel = selected.has(entry.path);
+              const isCursor = entry.path === cursor;
+              const moved = movedColumns.map((c) => columnText(c, entry)).filter(Boolean).join(" · ");
               return (
               <div
                 key={entry.path}
                 onMouseDown={(e) => handleRowMouseDown(e, entry)}
                 onContextMenu={(e) => openMenu(e, entry)}
                 onClick={(e) => onRowClick(e, entry, sortedEntries)}
-                onDoubleClick={() => {
-                  if (entry.isDir) { fetch(entry.path); return; }
-                  if (entry.brokenLink) { notify(`“${entry.name}” is a broken link: its target is missing or not accessible.`, "error"); return; }
-                  // For files: remote → live-edit (download + open editor +
-                  // auto-upload on save); local → open in the OS default app.
-                  // Both are desktop-only — on Android a double-tap on a file
-                  // is a no-op (there's no OS default editor to hand off to).
-                  if (IS_ANDROID) return;
-                  if (isRemote) liveEditEntry(entry);
-                  else openLocalEntry(entry);
-                }}
+                onDoubleClick={() => openEntry(entry)}
                 data-fs-row-path={entry.path}
                 data-fs-row-isdir={entry.isDir ? "1" : "0"}
-                className={`group grid ${
-                  showPerms
-                    ? "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(150px,1fr)_65px_115px_85px]"
-                    : "grid-cols-[22px_1fr] sm:grid-cols-[22px_minmax(180px,1fr)_75px_125px]"
-                } gap-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center ${
+                data-fs-row-selected={isSel ? "1" : "0"}
+                style={{ gridTemplateColumns }}
+                className={`group grid gap-x-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center scroll-mt-8 ${
+                  selectedEntries.length > 0 ? "scroll-mb-16" : ""
+                } ${
                   isSel
-                    ? "bg-indigo-950/40 border-indigo-400 text-indigo-100 font-bold"
+                    ? "bg-indigo-500/15 border-indigo-400 text-indigo-100"
                     : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
-                }`}
+                } ${keyNav && isCursor ? "ring-1 ring-inset ring-indigo-400/60" : ""}`}
               >
-                {/* Per-row checkbox. Its 22px column is always reserved, so the
-                    box appearing never shifts the row's content sideways. Hidden
-                    at rest, revealed on row hover or whenever a selection is
-                    already active (so any row can be toggled). */}
-                <div
-                  className={`flex items-center justify-center transition-opacity ${isSel || selected.size > 0 ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    // Pure toggle for this row — doesn't replace the
-                    // selection the way a bare row click does. Keeps
-                    // existing selection intact and just flips this entry
-                    // in/out.
-                    e.stopPropagation();
-                    const next = new Set(selected);
-                    if (next.has(entry.path)) next.delete(entry.path);
-                    else next.add(entry.path);
-                    setSelected(next);
-                    lastSelectedPathRef.current = entry.path;
-                  }}
-                  title={isSel ? "Deselect" : "Select"}
-                >
-                  {isSel
-                    ? <CheckSquare size={12} className="text-indigo-300" />
-                    : <Square size={12} className="text-zinc-500 hover:text-zinc-300" />}
-                </div>
+                {/* Selection mode only. A click anywhere on the row does what
+                    a click on its box would. */}
+                {inMode && (
+                  <span className="flex items-center justify-center">
+                    {isSel
+                      ? <CheckSquare size={12} className="text-indigo-300" />
+                      : <Square size={12} className="text-zinc-500 group-hover:text-zinc-300" />}
+                  </span>
+                )}
                 <div className="flex items-center gap-2 min-w-0 pr-1">
                   <span
                     className="relative inline-flex shrink-0"
@@ -1345,34 +1748,35 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                       />
                     )}
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <div className={`truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
-                    {/* Narrow-viewport subline: on < sm the SIZE / CHANGED /
-                        RIGHTS cells are display:none (so they don't force
-                        horizontal scroll), and their info collapses into
-                        this muted second line under the filename. */}
-                    <div className="sm:hidden truncate text-[10px] text-zinc-500 font-mono">
-                      {[
-                        entry.isDir ? null : formatSize(entry.size),
-                        formatTime(entry.modified),
-                        showPerms ? formatRights(entry.isDir, entry.permissions, entry.isSymlink) : null,
-                      ].filter(Boolean).join(" · ")}
-                    </div>
-                  </div>
+                  <div title={entry.name} className={`min-w-0 flex-1 truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
                 </div>
-                <div className="hidden sm:block text-right text-[10.5px] text-zinc-300 font-sans">
-                  {entry.isDir ? "" : formatSize(entry.size)}
-                </div>
-                <div className="hidden sm:block text-right text-[9.5px] text-zinc-400 truncate">
-                  {formatTime(entry.modified)}
-                </div>
-                {showPerms && (
-                  <div className="hidden sm:flex text-right text-[10.5px] text-zinc-300 font-mono opacity-90 items-center justify-end gap-1">
-                    <span className="truncate">{formatRights(entry.isDir, entry.permissions, entry.isSymlink)}</span>
-                    <button onClick={(e) => openMenu(e, entry)} title="Options"
-                      className="opacity-60 hover:opacity-100 p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-white shrink-0">
-                      <MoreVertical size={11} />
-                    </button>
+                {shownColumns.map((c) => (
+                  <div key={c} className={`truncate ${COLUMN_CELL[c]}`}>{columnText(c, entry)}</div>
+                ))}
+                {/* The row's menu, for a pointer without a right button. Shown
+                    on hover, on the selected rows and on the keyboard's row
+                    (always on Android, which has no hover). */}
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => openMenu(e, entry)}
+                  title="Options"
+                  aria-label="Options"
+                  className={`flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-white/10 hover:!opacity-100 ${
+                    IS_ANDROID || isSel || isCursor ? "opacity-60" : "opacity-0 group-hover:opacity-60"
+                  }`}
+                >
+                  <MoreVertical size={11} />
+                </button>
+                {/* What the columns that gave way show: a line of its own
+                    under the name, as wide as the row. */}
+                {moved && (
+                  <div
+                    style={{ gridColumn: `${inMode ? 2 : 1} / -1` }}
+                    className="row-start-2 pl-5 truncate text-[10px] text-zinc-500"
+                  >
+                    {moved}
                   </div>
                 )}
               </div>
@@ -1387,53 +1791,72 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           apply to the whole set; per-item actions (Rename, Properties,
           Edit) only show when exactly one row is selected. */}
       {contextMenu && createPortal((() => {
-        const selectedEntries = sortedEntries.filter(e => selected.has(e.path));
         const acting = selectedEntries.length > 0 ? selectedEntries : [contextMenu.entry];
         const multi = acting.length > 1;
-        const selectedFileCount = acting.filter(e => !e.isDir).length;
+        const uploadDir = isRemote ? undefined : getOppositeDir?.();
         return (
         <div ref={menuRef}
           style={{ top: contextMenu.y, left: contextMenu.x }}
           className="fixed z-[9999] min-w-[180px] bg-[#0c0c0e] border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11.5px] text-zinc-200">
 
-          {/* Primary action: open folder, or transfer/edit file. The exact
-              set depends on which side this panel is on. */}
-          {contextMenu.entry.isDir && !multi ? (
+          {/* Primary actions: open a folder or a local file, send what is
+              selected to the other pane, live-edit a remote file. */}
+          {!multi && contextMenu.entry.isDir && (
             <button onClick={() => { setContextMenu(null); fetch(contextMenu.entry.path); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <Folder size={11} className="text-indigo-400" /><span>Open</span>
             </button>
-          ) : isRemote ? (
-            <>
-              <button onClick={() => { setContextMenu(null); downloadItems(acting); }}
-                className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-                <Download size={11} className="text-emerald-400" />
-                <span>Download{multi ? ` (${selectedFileCount})` : "…"}</span>
-              </button>
-              {/* Live-edit needs a local temp file + a native OS editor + a
-                  filesystem watcher. Android has none of those in a form we
-                  can bridge, so the backend command returns an error there
-                  — hide the menu item entirely rather than surface it. */}
-              {!multi && !contextMenu.entry.isDir && !IS_ANDROID && (
-                <button onClick={() => { setContextMenu(null); liveEditEntry(contextMenu.entry); }}
-                  className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-                  <ExternalLink size={11} className="text-indigo-400" /><span>Edit (auto-upload)</span>
-                </button>
-              )}
-            </>
+          )}
+          {!multi && !contextMenu.entry.isDir && !isRemote && !IS_ANDROID && (
+            <button onClick={() => { setContextMenu(null); openLocalEntry(contextMenu.entry); }}
+              className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+              <ExternalLink size={11} className="text-indigo-400" /><span>Open</span>
+            </button>
+          )}
+          {isRemote ? (
+            <button onClick={() => { setContextMenu(null); downloadItems(acting); }}
+              className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+              <Download size={11} className="text-emerald-400" />
+              <span>Download{multi ? ` (${acting.length})` : "…"}</span>
+            </button>
           ) : (
-            !multi && !contextMenu.entry.isDir && !IS_ANDROID && (
-              <button onClick={() => { setContextMenu(null); openLocalEntry(contextMenu.entry); }}
-                className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-                <ExternalLink size={11} className="text-indigo-400" /><span>Open</span>
-              </button>
-            )
+            <button onClick={() => { setContextMenu(null); uploadItems(acting); }}
+              disabled={!uploadDir}
+              title={uploadDir ? `Upload to ${uploadDir}` : "Open a remote directory first…"}
+              className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed">
+              <Upload size={11} className="text-sky-400" />
+              <span>Upload{multi ? ` (${acting.length})` : ""}</span>
+            </button>
+          )}
+          {/* Live-edit needs a local temp file + a native OS editor + a
+              filesystem watcher. Android has none of those in a form we
+              can bridge, so the backend command returns an error there
+              — hide the menu item entirely rather than surface it. */}
+          {isRemote && !multi && !contextMenu.entry.isDir && !IS_ANDROID && (
+            <button onClick={() => { setContextMenu(null); liveEditEntry(contextMenu.entry); }}
+              className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+              <ExternalLink size={11} className="text-indigo-400" /><span>Edit (auto-upload)</span>
+            </button>
           )}
 
           {!isRemote && !multi && !IS_ANDROID && (
             <button onClick={() => { setContextMenu(null); revealLocalEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <FolderSearch size={11} className="text-emerald-300" /><span>Reveal in Explorer</span>
+            </button>
+          )}
+
+          {/* Into selection mode, where a click adds or removes a row: the
+              way to pick several rows without a keyboard. */}
+          {!inMode ? (
+            <button onClick={() => { setContextMenu(null); setSelectMode(true); }}
+              className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+              <CheckSquare size={11} className="text-indigo-300" /><span>Select</span>
+            </button>
+          ) : !allSelected && (
+            <button onClick={() => { setContextMenu(null); selectAllVisible(); }}
+              className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
+              <CheckSquare size={11} className="text-indigo-300" /><span>Select all</span>
             </button>
           )}
 
@@ -1483,13 +1906,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       {modal && (
         <div className="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setModal(null)}>
           <div onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setModal(null); } }}
             className="w-full max-w-[320px] bg-[#121214] border border-white/5 rounded-xl shadow-2xl p-4 font-mono text-[11px]">
             <div className="flex items-center justify-between mb-3">
               <span className="font-black uppercase tracking-wider text-zinc-300">
                 {modal.type === "rename" ? "Rename" :
                  modal.type === "mkdir" ? "New Directory" :
                  modal.type === "move" ? "Move to…" :
-                 modal.type === "move-bulk" ? `Move ${selected.size} items to…` : "Properties"}
+                 modal.type === "move-bulk" ? `Move ${selectedEntries.length} items to…` : "Properties"}
               </span>
               <button onClick={() => setModal(null)} className="text-zinc-500 hover:text-white"><X size={12} /></button>
             </div>

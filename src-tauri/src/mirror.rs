@@ -1043,8 +1043,14 @@ async fn run_mirror(
                 // An entry that is in this batch itself gets its turn here.
                 let in_batch: HashSet<PathBuf> = paths.iter().cloned().collect();
                 for path in paths {
-                    let mut found = process_event(&app, &session_id, &mirror_id, &local_root, &spec,
-                                                  &*sftp, &status, &path).await;
+                    let mut found = match process_event(&app, &session_id, &mirror_id, &local_root, &spec,
+                                                        &sftp, &status, &path).await {
+                        Ok(found) => found,
+                        Err(e) => {
+                            shutdown(debouncer, forward_join).await;
+                            return Err(e);
+                        }
+                    };
                     found.retain(|entry| !in_batch.contains(entry));
                     {
                         let mut s = status.lock().await;
@@ -1057,8 +1063,14 @@ async fn run_mirror(
             _ = std::future::ready(()), if !backlog.is_empty() => {
                 for _ in 0..BACKLOG_AT_ONCE {
                     let Some(path) = backlog.pop_front() else { break };
-                    let found = process_event(&app, &session_id, &mirror_id, &local_root, &spec,
-                                              &sftp, &status, &path).await;
+                    let found = match process_event(&app, &session_id, &mirror_id, &local_root, &spec,
+                                                    &sftp, &status, &path).await {
+                        Ok(found) => found,
+                        Err(e) => {
+                            shutdown(debouncer, forward_join).await;
+                            return Err(e);
+                        }
+                    };
                     {
                         let mut s = status.lock().await;
                         s.queue_depth = s.queue_depth.saturating_sub(1).saturating_add(found.len() as u32);
@@ -1069,6 +1081,19 @@ async fn run_mirror(
             }
         }
     }
+}
+
+/// Why a mirror stops when the folder it mirrors goes away.
+const LOCAL_ROOT_GONE: &str = "The local folder is gone (deleted, renamed, or on a drive or share \
+that went away). The mirror stopped, and nothing more is deleted on the server. Start it again once \
+the folder is back.";
+
+/// Whether the folder being mirrored is still there. When it isn't (it was
+/// renamed or deleted, its drive was unplugged, its share unmounted), every
+/// path in it reads as "not found", and that is not the user deleting those
+/// files one by one.
+async fn local_root_present(local_root: &Path) -> bool {
+    tokio::fs::metadata(local_root).await.map(|m| m.is_dir()).unwrap_or(false)
 }
 
 /// What is in a local directory: its files and directories, not its links
@@ -1091,7 +1116,8 @@ async fn dir_entries(dir: &Path) -> Vec<PathBuf> {
 /// present → upload (overwrites), gone → delete on remote.
 ///
 /// Returns more paths to handle the same way: the entries of a directory
-/// that was new to the server.
+/// that was new to the server. An error means the mirror can't go on (the
+/// folder it mirrors is gone, see `local_root_present`).
 async fn process_event(
     app: &AppHandle,
     session_id: &str,
@@ -1101,25 +1127,25 @@ async fn process_event(
     sftp: &SftpSession,
     status: &Arc<Mutex<MirrorStatus>>,
     path: &Path,
-) -> Vec<PathBuf> {
+) -> Result<Vec<PathBuf>, String> {
     // Excludes — apply BEFORE we look at metadata so we don't even stat
     // huge dirs like node_modules.
     let rel = path.strip_prefix(local_root).map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
-    if rel.is_empty() || is_excluded(&rel, &spec.excludes) { return Vec::new(); }
-    let remote = match local_to_remote(path, local_root, &spec.remote) { Some(r) => r, None => return Vec::new() };
+    if rel.is_empty() || is_excluded(&rel, &spec.excludes) { return Ok(Vec::new()); }
+    let remote = match local_to_remote(path, local_root, &spec.remote) { Some(r) => r, None => return Ok(Vec::new()) };
 
     match tokio::fs::metadata(path).await {
         Ok(meta) if meta.is_dir() => {
             // The patterns name a directory with its "/" (`node_modules/`).
-            if is_excluded(&format!("{}/", rel), &spec.excludes) { return Vec::new(); }
+            if is_excluded(&format!("{}/", rel), &spec.excludes) { return Ok(Vec::new()); }
             // On the server already: nothing to do. A change inside it comes
             // with a path of its own.
-            if sftp.metadata(&remote).await.is_ok() { return Vec::new(); }
+            if sftp.metadata(&remote).await.is_ok() { return Ok(Vec::new()); }
             if let Err(e) = sftp_mkdir_p(sftp, &remote).await {
                 emit_log(app, session_id, mirror_id, "warn", "mkdir-fail",
                          Some(rel), Some(e));
-                return Vec::new();
+                return Ok(Vec::new());
             }
             // New to the server. A directory that was moved or renamed into
             // place is named by the watcher once, with nothing about what is
@@ -1127,13 +1153,13 @@ async fn process_event(
             // ahead of the watcher), so its entries get their turn next.
             // Not through a link, though: links are left out, as above.
             let through_link = tokio::fs::symlink_metadata(path).await.map(|m| !m.is_dir()).unwrap_or(true);
-            if through_link { return Vec::new(); }
+            if through_link { return Ok(Vec::new()); }
             let mut entries = dir_entries(path).await;
             entries.retain(|entry| {
                 let rel = entry.strip_prefix(local_root).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
                 !rel.is_empty() && !is_excluded(&rel, &spec.excludes)
             });
-            return entries;
+            return Ok(entries);
         }
         Ok(meta) if meta.is_file() => {
             // The debounced FS event tells us the user JUST touched this file.
@@ -1173,6 +1199,12 @@ async fn process_event(
             // remapping ownership) and would trigger a real remote delete
             // if we lumped them together — an unrecoverable hard-rm when
             // spec.soft_delete=false.
+            //
+            // And only while the mirrored folder itself is there: without
+            // it, everything in it reads as gone (see local_root_present).
+            if !local_root_present(local_root).await {
+                return Err(LOCAL_ROOT_GONE.into());
+            }
             let res = if spec.soft_delete {
                 sftp_soft_delete(sftp, &spec.remote, &remote).await
             } else {
@@ -1202,7 +1234,7 @@ async fn process_event(
                      Some(rel), Some(e.to_string()));
         }
     }
-    Vec::new()
+    Ok(Vec::new())
 }
 
 #[cfg(test)]
@@ -1415,6 +1447,28 @@ mod tests {
         assert_eq!(lab.left(), ["/srv", "/srv/locked.txt"]);
         // A file is not tried as a folder.
         assert!(lab.log().iter().all(|line| !line.starts_with("RMDIR")), "{:?}", lab.log());
+    }
+
+    #[tokio::test]
+    async fn a_mirrored_folder_that_is_gone_is_told_apart_from_deleted_files() {
+        let dir = std::env::temp_dir().join(format!("submarine-mirror-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("file.txt"), b"x").unwrap();
+        assert!(local_root_present(&dir).await);
+        // A file in it going away doesn't make the folder gone.
+        std::fs::remove_file(dir.join("file.txt")).unwrap();
+        assert!(local_root_present(&dir).await);
+        // A file where the folder was is no folder to mirror.
+        assert!(!local_root_present(&dir.join("sub").join("missing")).await);
+        std::fs::write(dir.join("plain"), b"x").unwrap();
+        assert!(!local_root_present(&dir.join("plain")).await);
+        // Renamed away: gone, under the name the mirror knows.
+        let moved = dir.with_extension("moved");
+        let _ = std::fs::remove_dir_all(&moved);
+        std::fs::rename(&dir, &moved).unwrap();
+        assert!(!local_root_present(&dir).await);
+        let _ = std::fs::remove_dir_all(&moved);
     }
 
     #[tokio::test]
