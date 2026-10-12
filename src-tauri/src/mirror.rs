@@ -306,31 +306,7 @@ async fn sftp_upload_file(sftp: &SftpSession, local: &Path, remote: &str) -> Res
         }
     }
     let tmp = format!("{}.submarine-tmp", remote);
-    let mut f = tokio::fs::File::open(local).await
-        .map_err(|e| format!("local open {:?}: {}", local, e))?;
-    let write_result: Result<(), String> = async {
-        let mut handle = sftp.open_with_flags(
-            &tmp,
-            OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
-        ).await.map_err(|e| format!("sftp open {}: {}", tmp, e))?;
-
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = f.read(&mut buf).await.map_err(|e| format!("local read: {}", e))?;
-            if n == 0 { break; }
-            handle.write_all(&buf[..n]).await.map_err(|e| format!("sftp write: {}", e))?;
-        }
-        // Flush + close errors are real (bytes may not have landed) — propagate.
-        handle.flush().await.map_err(|e| format!("sftp flush {}: {}", tmp, e))?;
-        handle.shutdown().await.map_err(|e| format!("sftp close {}: {}", tmp, e))?;
-        Ok(())
-    }.await;
-    if let Err(e) = write_result {
-        // Best-effort cleanup of the partial tmp before returning the error
-        // so we don't leave `<name>.submarine-tmp` littering the remote root.
-        let _ = sftp.remove_file(&tmp).await;
-        return Err(e);
-    }
+    sftp_stream_file(sftp, local, &tmp, FileAttributes::empty()).await?;
     // Rename over the destination. On POSIX SFTP servers `sftp.rename` errors
     // if the destination already exists, so we unlink the previous copy first.
     // The lost-atomicity window here (destination missing between remove and
@@ -339,6 +315,42 @@ async fn sftp_upload_file(sftp: &SftpSession, local: &Path, remote: &str) -> Res
     let _ = sftp.remove_file(remote).await;
     sftp.rename(&tmp, remote).await
         .map_err(|e| format!("sftp rename {} -> {}: {}", tmp, remote, e))?;
+    Ok(())
+}
+
+/// Stream `local` into a new remote file `tmp`, created with `attrs` (none,
+/// or just the permissions), for the caller to rename into place. A partial
+/// file is removed again on an error.
+async fn sftp_stream_file(sftp: &SftpSession, local: &Path, tmp: &str, attrs: FileAttributes) -> Result<(), String> {
+    let mut f = tokio::fs::File::open(local).await
+        .map_err(|e| format!("can't read {}: {}", crate::display_path(local), e))?;
+    // A refusal names the folder: the temporary file is ours, the folder is
+    // what someone can do something about.
+    let folder = Path::new(tmp).parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+    let write_result: Result<(), String> = async {
+        let mut handle = sftp.open_with_flags_and_attributes(
+            tmp,
+            OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
+            attrs,
+        ).await.map_err(|e| format!("can't write in {}: {}", folder, sftp_reason(&e)))?;
+
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = f.read(&mut buf).await.map_err(|e| format!("can't read {}: {}", crate::display_path(local), e))?;
+            if n == 0 { break; }
+            handle.write_all(&buf[..n]).await.map_err(|e| format!("the upload broke off: {}", e))?;
+        }
+        // Flush + close errors are real (bytes may not have landed) — propagate.
+        handle.flush().await.map_err(|e| format!("the upload broke off: {}", e))?;
+        handle.shutdown().await.map_err(|e| format!("the upload broke off: {}", e))?;
+        Ok(())
+    }.await;
+    if let Err(e) = write_result {
+        // Best-effort cleanup of the partial tmp before returning the error
+        // so we don't leave `<name>.submarine-tmp` littering the remote root.
+        let _ = sftp.remove_file(tmp).await;
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -418,6 +430,16 @@ async fn sftp_soft_delete(sftp: &SftpSession, remote_root: &str, target: &str) -
     let dest = format!("{}/{}", trash_root, leaf);
     sftp.rename(target, &dest).await.map_err(|e| format!("sftp soft-delete {}: {}", target, e))?;
     Ok(())
+}
+
+/// What the server said, once. OpenSSH's message is the status's own name,
+/// so the error's "code: message" reads "Permission denied: Permission
+/// denied".
+fn sftp_reason(e: &SftpError) -> String {
+    match e {
+        SftpError::Status(s) if !s.error_message.trim().is_empty() => s.error_message.trim().to_string(),
+        _ => e.to_string(),
+    }
 }
 
 fn is_status(e: &SftpError, code: StatusCode) -> bool {
@@ -585,133 +607,502 @@ pub async fn dry_run(
 // Shell config sync: one-shot, push-only (local -> remote), no watcher
 // ---------------------------------------------------------------------------
 //
-// "Sync my shell config to this server" is deliberately NOT a mirror: there
-// is no watcher, no MirrorMap entry, nothing to stop — the user clicks a
-// button, we push, we're done. It reuses the same SFTP primitives as the
-// mirror above (open_sftp, walk_local, compare_files, sftp_upload_file).
+// "Push my shell config to this server" is deliberately NOT a mirror: there
+// is no watcher, no MirrorMap entry, nothing to stop. The user clicks a
+// button, sees what would change, and pushes. Nothing is ever half-written in
+// place: a file is written next to its place and renamed in. One that is
+// there already keeps its permissions and is moved to
+// `~/.submarine-trash/shell-<time>/` first; a link on the server is left
+// alone. The checks on the pairs themselves are in lib.rs
+// (`shell_sync_targets`).
 
-/// A single local/remote pair for the shell-config sync button. `remote` is
-/// always relative to the REMOTE account's home directory (e.g. ".zshrc",
-/// ".oh-my-zsh/custom") — resolved against a probed `remote_home` — because
-/// the same pair list has to work across servers with different usernames.
+/// A pair as typed in Settings: a local file or folder, and where it goes on
+/// the server, relative to the home folder there.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ShellSyncPair {
     pub local: String,
     pub remote: String,
 }
 
+/// A pair that passed the checks.
+#[derive(Debug)]
+pub struct ShellSyncTarget {
+    /// The local file or folder, resolved.
+    pub local: PathBuf,
+    /// Where it goes, relative to the home folder on the server. "" is the
+    /// home folder itself, which only a folder's contents can go to.
+    pub rel: String,
+}
+
+/// More files than this in one push is a pair that points at the wrong
+/// folder (the whole home folder, say), not a shell config.
+const SHELL_SYNC_MAX_FILES: usize = 5000;
+/// Larger files aren't read for Windows line endings or a private key.
+const SHELL_SYNC_READ_MAX: u64 = 1024 * 1024;
+
+// What a push never reads, sends or writes into, wherever it is: a git
+// checkout's history, and where keys, tokens, credentials and command history
+// live. Names are compared without case. A folder pair skips them; a pair that
+// is one, or would write into one on the server, is refused. Each shows in the
+// preview with why.
+
+/// Folders, by name.
+const SHELL_SYNC_PRIVATE_DIRS: &[&str] = &[
+    ".ssh", ".gnupg", ".password-store", ".pki", ".aws", ".azure", ".kube", ".docker",
+];
+/// Folders that hold secrets below a particular parent: `parent/name`.
+const SHELL_SYNC_PRIVATE_SUBDIRS: &[(&str, &str)] = &[
+    (".config", "gcloud"), (".config", "gh"), (".config", "hub"), (".config", "rclone"),
+    ("share", "keyrings"),
+];
+/// Credential and token files, by name (`.env.*` as well).
+const SHELL_SYNC_CREDENTIAL_FILES: &[&str] = &[
+    ".netrc", "_netrc", ".git-credentials", ".npmrc", ".pypirc", ".pgpass", ".my.cnf",
+    ".env", ".xauthority", ".iceauthority",
+];
+/// Key files, by extension (and `id_*` without `.pub`).
+const SHELL_SYNC_KEY_EXTENSIONS: &[&str] = &[
+    "pem", "key", "p12", "pfx", "ppk", "kdbx", "jks", "keystore", "gpg",
+];
+/// Command history, by name.
+const SHELL_SYNC_HISTORY_FILES: &[&str] = &[
+    ".bash_history", ".zsh_history", ".sh_history", ".history", "fish_history",
+    ".python_history", ".node_repl_history", ".mysql_history", ".psql_history",
+    ".sqlite_history", ".lesshst", ".viminfo",
+];
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ShellSyncEntry {
+    /// The local file.
     pub local: String,
+    /// Where it goes on the server, as `~/…`.
     pub remote: String,
     pub size: u64,
-    /// "upload-new" | "upload-modified"
+    /// What a push does with it: "new", "update", or "server-newer" (the copy
+    /// on the server changed after this one; it's replaced all the same,
+    /// after its backup). Or what it leaves alone: "skip-private" (see
+    /// `reason`; for a folder, all of it), "skip-link" (a link on the server),
+    /// "skip-folder" (a folder where the file would go), "skip-other"
+    /// (anything else that isn't a plain file).
     pub action: String,
+    /// Why "skip-private": "git history", "keys or credentials", "command
+    /// history" or "contains a private key".
+    pub reason: Option<String>,
+    /// A text file with Windows line endings, which a shell on the server
+    /// reads as part of each command.
+    pub crlf: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ShellSyncReport {
+    /// The home folder on the server that `~` stands for.
+    pub home: String,
     pub entries: Vec<ShellSyncEntry>,
+    /// What a push sends.
     pub total_bytes: u64,
 }
 
-/// Strips a leading `~/` or `/` from a user-typed remote path and joins it
-/// onto the resolved remote home dir. A bare `~` / empty remote maps to the
-/// home dir itself.
-fn shell_sync_resolve_remote(remote_home: &str, pair_remote: &str) -> String {
-    let trimmed = pair_remote.trim();
-    let rel = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix('/')).unwrap_or(trimmed);
-    let rel = rel.trim_start_matches('~');
-    let home = remote_home.trim_end_matches('/');
-    if rel.is_empty() { home.to_string() } else { format!("{}/{}", home, rel) }
+#[derive(Debug, Clone, Serialize)]
+pub struct ShellSyncFailure {
+    /// As `~/…`.
+    pub remote: String,
+    pub error: String,
 }
 
-/// Builds the list of files that would move, without transferring anything.
-/// Each pair is scanned independently (so entries carry full absolute
-/// local/remote paths rather than a root-relative one — several pairs could
-/// otherwise produce colliding relative paths).
-///
-/// Push-only: a directory pair reuses `walk_local` with conflict_mode
-/// "local" (local always wins) and deliberately never calls `walk_remote`,
-/// so remote-only files are left alone — that's what makes the walk
-/// one-directional for free, with no new comparison logic. A file pair gets
-/// a short inline version of the same compare since `walk_local` assumes a
-/// directory root.
-async fn shell_sync_scan(
-    sftp: &SftpSession,
-    pairs: &[ShellSyncPair],
-    remote_home: &str,
-) -> Result<ShellSyncReport, String> {
-    let mut entries = Vec::new();
-    let mut total_bytes: u64 = 0;
-    for pair in pairs {
-        let local_root = PathBuf::from(&pair.local);
-        let remote_root = shell_sync_resolve_remote(remote_home, &pair.remote);
-        let meta = tokio::fs::metadata(&local_root).await
-            .map_err(|e| format!("local path {:?}: {}", local_root, e))?;
-        if meta.is_dir() {
-            let mut raw = Vec::new();
-            let mut seen = HashSet::new();
-            let mut scanned = 0u32;
-            walk_local(&local_root, &local_root, &remote_root, &[], sftp, "local",
-                       &mut raw, &mut total_bytes, &mut seen, &mut scanned).await?;
-            for e in raw {
-                let local = local_root.join(e.path.replace('/', std::path::MAIN_SEPARATOR_STR));
-                let remote = format!("{}/{}", remote_root.trim_end_matches('/'), e.path);
-                entries.push(ShellSyncEntry {
-                    local: local.to_string_lossy().into_owned(),
-                    remote,
-                    size: e.size,
-                    action: e.action,
-                });
-            }
-        } else if meta.is_file() {
-            let remote_attr = sftp.metadata(&remote_root).await.ok();
-            let action = match &remote_attr {
-                None => Some("upload-new"),
-                Some(attr) => match compare_files(sftp, &local_root, &remote_root, &meta, attr).await? {
-                    CompareResult::Identical => None,
-                    _ => Some("upload-modified"),
-                },
-            };
-            if let Some(action) = action {
-                entries.push(ShellSyncEntry {
-                    local: pair.local.clone(),
-                    remote: remote_root,
-                    size: meta.len(),
-                    action: action.into(),
-                });
-                total_bytes = total_bytes.saturating_add(meta.len());
+#[derive(Debug, Clone, Serialize)]
+pub struct ShellSyncPushReport {
+    pub pushed: usize,
+    pub bytes: u64,
+    pub failed: Vec<ShellSyncFailure>,
+    /// Where the files it replaced went, as `~/…`, when it replaced any.
+    pub backup: Option<String>,
+}
+
+/// A file found by a scan, with what a push needs.
+struct ShellSyncItem {
+    local: PathBuf,
+    /// The full path on the server.
+    remote: String,
+    /// The same, below the home folder.
+    rel: String,
+    /// What's there now (not following a link), if anything.
+    existing: Option<FileAttributes>,
+    entry: ShellSyncEntry,
+}
+
+/// The remote side of a pair, relative to the home folder on the server:
+/// `.zshrc`, `~/.zshrc` and `~/.config/fish` all work, and `~` or nothing is
+/// the home folder itself. A path from `/` is refused rather than quietly put
+/// under the home folder, and so is `..`, which would climb out of it. A
+/// backslash counts as a `/`.
+pub fn shell_sync_remote_rel(typed: &str) -> Result<String, String> {
+    let t = typed.trim().replace('\\', "/");
+    let rest = if t == "~" { "" } else { t.strip_prefix("~/").unwrap_or(&t) };
+    if rest.starts_with('/') {
+        return Err("give the place on the server relative to its home folder, like .zshrc or ~/.zshrc".into());
+    }
+    if rest.starts_with('~') {
+        return Err("~user isn't supported: give the place relative to the home folder".into());
+    }
+    let mut parts = Vec::new();
+    for seg in rest.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => return Err("`..` isn't allowed: everything stays inside the home folder".into()),
+            s => parts.push(s),
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+/// `rel` below `base` on the server.
+fn shell_sync_join(base: &str, rel: &str) -> String {
+    let base = base.trim_end_matches('/');
+    if rel.is_empty() {
+        if base.is_empty() { "/".into() } else { base.into() }
+    } else {
+        format!("{}/{}", base, rel)
+    }
+}
+
+/// `rel` as the user reads it: `~/…`.
+fn shell_sync_display(rel: &str) -> String {
+    if rel.is_empty() { "~".into() } else { format!("~/{}", rel) }
+}
+
+fn shell_sync_pushes(action: &str) -> bool {
+    matches!(action, "new" | "update" | "server-newer")
+}
+
+/// Why a push leaves this path alone, by its names: a local path in full, or
+/// a place below the home folder on the server.
+fn shell_sync_private(segments: &[String]) -> Option<&'static str> {
+    let segs: Vec<String> = segments.iter().map(|s| s.to_lowercase()).collect();
+    for (i, s) in segs.iter().enumerate() {
+        if s == ".git" {
+            return Some("git history");
+        }
+        if SHELL_SYNC_PRIVATE_DIRS.contains(&s.as_str())
+            || (i > 0 && SHELL_SYNC_PRIVATE_SUBDIRS.iter().any(|(p, n)| segs[i - 1] == *p && s == n))
+        {
+            return Some("keys or credentials");
+        }
+    }
+    let name = segs.last()?;
+    if SHELL_SYNC_HISTORY_FILES.contains(&name.as_str()) {
+        return Some("command history");
+    }
+    let key_ext = name.rsplit_once('.').is_some_and(|(_, ext)| SHELL_SYNC_KEY_EXTENSIONS.contains(&ext));
+    if SHELL_SYNC_CREDENTIAL_FILES.contains(&name.as_str())
+        || name.starts_with(".env.")
+        || (name.starts_with("id_") && !name.ends_with(".pub"))
+        || key_ext
+    {
+        return Some("keys or credentials");
+    }
+    None
+}
+
+/// `shell_sync_private` for a local path.
+fn shell_sync_private_path(path: &Path) -> Option<&'static str> {
+    let segs: Vec<String> = path.components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    shell_sync_private(&segs)
+}
+
+/// `shell_sync_private` for a place below the home folder on the server; the
+/// backup folder is off limits there too.
+fn shell_sync_private_rel(rel: &str) -> Option<&'static str> {
+    let segs: Vec<String> = rel.split('/').filter(|s| !s.is_empty()).map(String::from).collect();
+    if segs.first().is_some_and(|s| s.eq_ignore_ascii_case(".submarine-trash")) {
+        return Some("backups");
+    }
+    shell_sync_private(&segs)
+}
+
+/// What a walk of a pair's local folder finds.
+enum ShellSyncFound {
+    /// A file, with its path below the folder (`a/b`).
+    File(PathBuf, String),
+    /// A file or folder a push leaves alone, and why. A folder isn't walked.
+    Private(PathBuf, String, &'static str),
+}
+
+/// Every file below a local folder. Links, sockets and the like are left out,
+/// as in a mirror.
+fn shell_sync_local_files(root: &Path, dir: &Path, out: &mut Vec<ShellSyncFound>, files: &mut usize) -> Result<(), String> {
+    let rd = std::fs::read_dir(dir).map_err(|e| format!("{}: {}", crate::display_path(dir), e))?;
+    for entry in rd {
+        let entry = entry.map_err(|e| format!("{}: {}", crate::display_path(dir), e))?;
+        // file_type() doesn't follow a link, so a linked folder isn't walked.
+        let ft = entry.file_type().map_err(|e| format!("{}: {}", crate::display_path(&entry.path()), e))?;
+        if !ft.is_dir() && !ft.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+        if let Some(why) = shell_sync_private_path(&path) {
+            out.push(ShellSyncFound::Private(path, rel, why));
+        } else if ft.is_dir() {
+            shell_sync_local_files(root, &path, out, files)?;
+        } else {
+            out.push(ShellSyncFound::File(path, rel));
+            *files += 1;
+            if *files > SHELL_SYNC_MAX_FILES {
+                return Err(format!(
+                    "More than {} files in {}: pick the folders to push more narrowly",
+                    SHELL_SYNC_MAX_FILES,
+                    crate::display_path(root)
+                ));
             }
         }
-        // Neither a file nor a directory (socket, broken symlink, ...) — skip.
     }
-    Ok(ShellSyncReport { entries, total_bytes })
+    Ok(())
+}
+
+/// What a file's content says: Windows line endings (in a text file, one
+/// without NUL bytes, so that a binary file in a theme folder doesn't count),
+/// and a private key anywhere in it.
+async fn shell_sync_inspect(path: &Path, size: u64) -> (bool, bool) {
+    if size > SHELL_SYNC_READ_MAX {
+        return (false, false);
+    }
+    let Ok(bytes) = tokio::fs::read(path).await else {
+        return (false, false);
+    };
+    let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    let crlf = !bytes.contains(&0) && has(b"\r\n");
+    let private_key = has(b"PRIVATE KEY-----") || bytes.starts_with(b"PuTTY-User-Key-File-");
+    (crlf, private_key)
+}
+
+/// The permissions a new file gets: the local file's, where there are any
+/// to copy.
+#[cfg(unix)]
+fn shell_sync_local_mode(meta: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(meta.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn shell_sync_local_mode(_meta: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
+/// What a push of these pairs would do, file by file, without changing
+/// anything. The home folder is the SFTP server's own starting folder, not
+/// something the caller says. A file that two pairs would push is listed
+/// once, for the first of them.
+async fn shell_sync_scan(sftp: &SftpSession, targets: &[ShellSyncTarget]) -> Result<(String, Vec<ShellSyncItem>), String> {
+    let home = sftp.canonicalize(".").await
+        .map_err(|e| format!("Couldn't find the home folder on the server: {}", e))?;
+    let mut items: Vec<ShellSyncItem> = Vec::new();
+    let mut taken: HashSet<String> = HashSet::new();
+    let below = |base: &str, sub: &str| if base.is_empty() { sub.to_string() } else { format!("{}/{}", base, sub) };
+    // Left alone: listed, never read or sent.
+    let private = |local: &Path, rel: &str, why: &str| ShellSyncItem {
+        entry: ShellSyncEntry {
+            local: crate::display_path(local),
+            remote: shell_sync_display(rel),
+            size: 0,
+            action: "skip-private".into(),
+            reason: Some(why.into()),
+            crlf: false,
+        },
+        local: local.to_path_buf(),
+        remote: shell_sync_join(&home, rel),
+        rel: rel.to_string(),
+        existing: None,
+    };
+    for t in targets {
+        if let Some(why) = shell_sync_private_path(&t.local).or_else(|| shell_sync_private_rel(&t.rel)) {
+            items.push(private(&t.local, &t.rel, why));
+            continue;
+        }
+        let mut files: Vec<(PathBuf, String)> = Vec::new();
+        if t.local.is_dir() {
+            let root = t.local.clone();
+            let found = tokio::task::spawn_blocking(move || {
+                let mut out = Vec::new();
+                shell_sync_local_files(&root, &root, &mut out, &mut 0).map(|_| out)
+            })
+            .await
+            .map_err(|e| format!("local walk: {}", e))??;
+            for f in found {
+                match f {
+                    ShellSyncFound::File(path, sub) => files.push((path, below(&t.rel, &sub))),
+                    ShellSyncFound::Private(path, sub, why) => items.push(private(&path, &below(&t.rel, &sub), why)),
+                }
+            }
+        } else {
+            files.push((t.local.clone(), t.rel.clone()));
+        }
+        for (local, rel) in files {
+            if !taken.insert(rel.clone()) {
+                continue;
+            }
+            if taken.len() > SHELL_SYNC_MAX_FILES {
+                return Err(format!("More than {} files: pick the folders to push more narrowly", SHELL_SYNC_MAX_FILES));
+            }
+            if let Some(why) = shell_sync_private_rel(&rel) {
+                items.push(private(&local, &rel, why));
+                continue;
+            }
+            let meta = tokio::fs::metadata(&local).await
+                .map_err(|e| format!("{}: {}", crate::display_path(&local), e))?;
+            let (crlf, private_key) = shell_sync_inspect(&local, meta.len()).await;
+            if private_key {
+                items.push(private(&local, &rel, "contains a private key"));
+                continue;
+            }
+            let remote = shell_sync_join(&home, &rel);
+            let existing = sftp.symlink_metadata(&remote).await.ok();
+            let action = match &existing {
+                None => "new",
+                Some(a) if a.is_symlink() => "skip-link",
+                Some(a) if a.is_dir() => "skip-folder",
+                Some(a) if a.permissions.is_some() && !a.is_regular() => "skip-other",
+                Some(a) => match compare_files(sftp, &local, &remote, &meta, a).await? {
+                    CompareResult::Identical => continue,
+                    CompareResult::LocalNewer => "update",
+                    CompareResult::RemoteNewer => "server-newer",
+                },
+            };
+            items.push(ShellSyncItem {
+                entry: ShellSyncEntry {
+                    local: crate::display_path(&local),
+                    remote: shell_sync_display(&rel),
+                    size: meta.len(),
+                    action: action.into(),
+                    reason: None,
+                    crlf: crlf && shell_sync_pushes(action),
+                },
+                local,
+                remote,
+                rel,
+                existing,
+            });
+        }
+    }
+    Ok((home, items))
+}
+
+/// Push one file. It's written next to its place with the permissions it's
+/// going to have (the replaced copy's, or the local file's for a new one), so
+/// its content is never readable by more people than it will be. A file that
+/// is there is moved to `backup_root` before the new one is renamed in, and
+/// moved back if that fails. `kept_backup` is set when a copy stays in the
+/// backup folder: replaced, or not moved back.
+async fn shell_sync_put(sftp: &SftpSession, item: &ShellSyncItem, backup_root: &str, kept_backup: &mut bool) -> Result<(), String> {
+    if let Some(parent) = Path::new(&item.remote).parent() {
+        let pstr = parent.to_string_lossy().replace('\\', "/");
+        if !pstr.is_empty() && pstr != "/" {
+            sftp_mkdir_p(sftp, &pstr).await?;
+        }
+    }
+    let mode = match &item.existing {
+        Some(a) => a.permissions.map(|p| p & 0o7777),
+        None => {
+            let meta = tokio::fs::metadata(&item.local).await
+                .map_err(|e| format!("{}: {}", crate::display_path(&item.local), e))?;
+            shell_sync_local_mode(&meta)
+        }
+    };
+    let tmp = format!("{}.submarine-tmp", item.remote);
+    let attrs = FileAttributes { permissions: mode, ..FileAttributes::empty() };
+    sftp_stream_file(sftp, &item.local, &tmp, attrs).await?;
+    // Creating it went through the server's umask: set the exact mode.
+    if let Some(m) = mode {
+        let attrs = FileAttributes { permissions: Some(m), ..FileAttributes::empty() };
+        if let Err(e) = sftp.set_metadata(tmp.as_str(), attrs).await {
+            let _ = sftp.remove_file(tmp.as_str()).await;
+            return Err(format!("couldn't give it the permissions {:o}: {}", m, sftp_reason(&e)));
+        }
+    }
+    if item.existing.is_none() {
+        // Refused if something turned up there since the scan, which is then
+        // left as it is.
+        if let Err(e) = sftp.rename(tmp.as_str(), item.remote.as_str()).await {
+            let _ = sftp.remove_file(tmp.as_str()).await;
+            return Err(sftp_reason(&e));
+        }
+        return Ok(());
+    }
+    let backup = shell_sync_join(backup_root, &item.rel);
+    if let Some(parent) = Path::new(&backup).parent() {
+        let pstr = parent.to_string_lossy().replace('\\', "/");
+        if let Err(e) = sftp_mkdir_p(sftp, &pstr).await {
+            let _ = sftp.remove_file(tmp.as_str()).await;
+            return Err(format!("couldn't make the backup folder: {}", e));
+        }
+    }
+    if let Err(e) = sftp.rename(item.remote.as_str(), backup.as_str()).await {
+        let _ = sftp.remove_file(tmp.as_str()).await;
+        return Err(format!("couldn't move the old copy aside: {}", sftp_reason(&e)));
+    }
+    if let Err(e) = sftp.rename(tmp.as_str(), item.remote.as_str()).await {
+        let restored = sftp.rename(backup.as_str(), item.remote.as_str()).await.is_ok();
+        let _ = sftp.remove_file(tmp.as_str()).await;
+        if restored {
+            return Err(sftp_reason(&e));
+        }
+        *kept_backup = true;
+        return Err(format!("{}; the old copy is in the backup folder", sftp_reason(&e)));
+    }
+    *kept_backup = true;
+    Ok(())
 }
 
 /// Preview-only: what `shell_sync_push` would do, with nothing transferred.
 pub async fn shell_sync_preview(
     handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
-    pairs: Vec<ShellSyncPair>,
-    remote_home: String,
+    targets: Vec<ShellSyncTarget>,
 ) -> Result<ShellSyncReport, String> {
     let sftp = open_sftp(&handle).await?;
-    shell_sync_scan(&sftp, &pairs, &remote_home).await
+    let (home, items) = shell_sync_scan(&sftp, &targets).await?;
+    let total_bytes = items.iter()
+        .filter(|i| shell_sync_pushes(&i.entry.action))
+        .map(|i| i.entry.size)
+        .sum();
+    Ok(ShellSyncReport { home, entries: items.into_iter().map(|i| i.entry).collect(), total_bytes })
 }
 
-/// Scans, then uploads every entry that isn't already identical.
+/// Scans again, then pushes every file that needs it. A file that fails is
+/// reported and the rest still go.
 pub async fn shell_sync_push(
     handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
-    pairs: Vec<ShellSyncPair>,
-    remote_home: String,
-) -> Result<ShellSyncReport, String> {
+    targets: Vec<ShellSyncTarget>,
+) -> Result<ShellSyncPushReport, String> {
+    use chrono::{Datelike, Timelike};
     let sftp = open_sftp(&handle).await?;
-    let report = shell_sync_scan(&sftp, &pairs, &remote_home).await?;
-    for entry in &report.entries {
-        sftp_upload_file(&sftp, Path::new(&entry.local), &entry.remote).await?;
+    let (home, items) = shell_sync_scan(&sftp, &targets).await?;
+    let now = chrono::Local::now();
+    let backup_rel = format!(
+        ".submarine-trash/shell-{:04}{:02}{:02}-{:02}{:02}{:02}",
+        now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second()
+    );
+    let backup_root = shell_sync_join(&home, &backup_rel);
+    let mut report = ShellSyncPushReport { pushed: 0, bytes: 0, failed: Vec::new(), backup: None };
+    let mut kept_backup = false;
+    for item in items.iter().filter(|i| shell_sync_pushes(&i.entry.action)) {
+        match shell_sync_put(&sftp, item, &backup_root, &mut kept_backup).await {
+            Ok(()) => {
+                report.pushed += 1;
+                report.bytes += item.entry.size;
+            }
+            Err(error) => report.failed.push(ShellSyncFailure { remote: item.entry.remote.clone(), error }),
+        }
+    }
+    if kept_backup {
+        report.backup = Some(shell_sync_display(&backup_rel));
     }
     Ok(report)
 }
+
 
 /// Recursive walk over the LOCAL tree. For each file we ask compare_files
 /// whether the remote copy is missing / equal / newer / older, then pick a
@@ -1656,18 +2047,104 @@ mod tests {
     }
 
     #[test]
-    fn shell_sync_resolve_remote_strips_a_leading_tilde_or_slash() {
-        // The user may type any of these for the same server-relative file —
-        // all have to land on the same path under the probed home dir.
-        assert_eq!(shell_sync_resolve_remote("/home/alice", "~/.zshrc"), "/home/alice/.zshrc");
-        assert_eq!(shell_sync_resolve_remote("/home/alice", ".zshrc"), "/home/alice/.zshrc");
-        assert_eq!(shell_sync_resolve_remote("/home/alice", "/.zshrc"), "/home/alice/.zshrc");
-        assert_eq!(shell_sync_resolve_remote("/home/alice/", ".zshrc"), "/home/alice/.zshrc");
+    fn shell_sync_remote_rel_takes_a_place_below_the_home_folder() {
+        assert_eq!(shell_sync_remote_rel(".zshrc").unwrap(), ".zshrc");
+        assert_eq!(shell_sync_remote_rel("~/.zshrc").unwrap(), ".zshrc");
+        assert_eq!(shell_sync_remote_rel(" ~/.config//fish/ ").unwrap(), ".config/fish");
+        assert_eq!(shell_sync_remote_rel("./.config/./nvim").unwrap(), ".config/nvim");
+        assert_eq!(shell_sync_remote_rel(".config\\nvim").unwrap(), ".config/nvim");
+        // The home folder itself.
+        assert_eq!(shell_sync_remote_rel("~").unwrap(), "");
+        assert_eq!(shell_sync_remote_rel("~/").unwrap(), "");
+        assert_eq!(shell_sync_remote_rel("").unwrap(), "");
     }
 
     #[test]
-    fn shell_sync_resolve_remote_bare_tilde_is_the_home_dir_itself() {
-        assert_eq!(shell_sync_resolve_remote("/home/alice", "~"), "/home/alice");
-        assert_eq!(shell_sync_resolve_remote("/home/alice", ""), "/home/alice");
+    fn shell_sync_remote_rel_refuses_to_leave_the_home_folder() {
+        for typed in ["/etc/profile", "~//etc/x", "\\etc\\x", "../.zshrc", "~/../x", ".config/../../x", "~root/.zshrc"] {
+            assert!(shell_sync_remote_rel(typed).is_err(), "{typed}");
+        }
+    }
+
+    #[test]
+    fn shell_sync_join_puts_a_path_below_the_home_folder() {
+        assert_eq!(shell_sync_join("/home/alice", ".zshrc"), "/home/alice/.zshrc");
+        assert_eq!(shell_sync_join("/home/alice/", ".zshrc"), "/home/alice/.zshrc");
+        assert_eq!(shell_sync_join("/home/alice", ""), "/home/alice");
+        // An account that only has SFTP may start in "/".
+        assert_eq!(shell_sync_join("/", ".zshrc"), "/.zshrc");
+        assert_eq!(shell_sync_join("/", ""), "/");
+    }
+
+    #[test]
+    fn shell_sync_local_files_lists_files_and_leaves_private_ones_alone() {
+        let root = std::env::temp_dir().join(format!("sub-shellsync-{}", now_ms()));
+        std::fs::create_dir_all(root.join("a").join("b")).unwrap();
+        std::fs::create_dir_all(root.join(".git").join("objects")).unwrap();
+        std::fs::write(root.join("top"), b"1").unwrap();
+        std::fs::write(root.join("a").join("b").join("deep"), b"2").unwrap();
+        std::fs::write(root.join(".git").join("objects").join("x"), b"3").unwrap();
+        std::fs::write(root.join("a").join(".zsh_history"), b"4").unwrap();
+        let mut out = Vec::new();
+        shell_sync_local_files(&root, &root, &mut out, &mut 0).unwrap();
+        let mut seen: Vec<String> = out.into_iter().map(|f| match f {
+            ShellSyncFound::File(_, rel) => rel,
+            ShellSyncFound::Private(_, rel, why) => format!("{rel} ({why})"),
+        }).collect();
+        seen.sort();
+        // The .git folder is one entry, not walked.
+        assert_eq!(seen, [".git (git history)", "a/.zsh_history (command history)", "a/b/deep", "top"]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn shell_sync_private_knows_keys_credentials_and_history() {
+        let p = |path: &str| shell_sync_private(&path.split('/').map(String::from).collect::<Vec<_>>());
+        for (path, why) in [
+            ("home/u/.ssh/config", "keys or credentials"),
+            ("home/u/.SSH/id_rsa", "keys or credentials"),
+            ("dotfiles/.git/HEAD", "git history"),
+            ("home/u/.gnupg/pubring.kbx", "keys or credentials"),
+            ("home/u/.aws/credentials", "keys or credentials"),
+            ("home/u/.config/gh/hosts.yml", "keys or credentials"),
+            ("home/u/.local/share/keyrings/login.keyring", "keys or credentials"),
+            ("keys/id_ed25519", "keys or credentials"),
+            ("certs/server.pem", "keys or credentials"),
+            ("home/u/.netrc", "keys or credentials"),
+            ("app/.env.local", "keys or credentials"),
+            ("home/u/.zsh_history", "command history"),
+            ("home/u/.local/share/fish/fish_history", "command history"),
+        ] {
+            assert_eq!(p(path), Some(why), "{path}");
+        }
+        for path in ["home/u/.zshrc", "home/u/.config/nvim/init.lua", "keys/id_ed25519.pub", "home/u/.config/fish/config.fish", "home/u/.gitconfig"] {
+            assert_eq!(p(path), None, "{path}");
+        }
+        // On the server: nothing into .ssh (authorized_keys), nor the backups.
+        assert_eq!(shell_sync_private_rel(".ssh/authorized_keys"), Some("keys or credentials"));
+        assert_eq!(shell_sync_private_rel(".submarine-trash/shell-1/.zshrc"), Some("backups"));
+        assert_eq!(shell_sync_private_rel(".config/fish/config.fish"), None);
+    }
+
+    #[tokio::test]
+    async fn shell_sync_inspect_finds_crlf_and_private_keys() {
+        let dir = std::env::temp_dir().join(format!("sub-shellsync-i-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let check = |name: &str, body: &[u8]| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            (path, body.len() as u64)
+        };
+        let (unix, n) = check("unix", b"alias ll='ls -l'\nexport A=1\n");
+        assert_eq!(shell_sync_inspect(&unix, n).await, (false, false));
+        let (dos, n) = check("dos", b"alias ll='ls -l'\r\nexport A=1\r\n");
+        assert_eq!(shell_sync_inspect(&dos, n).await, (true, false));
+        let (binary, n) = check("binary", b"\x00\x01\r\n\x02");
+        assert_eq!(shell_sync_inspect(&binary, n).await, (false, false));
+        let (key, n) = check("rc", b"export X=1\n-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n");
+        assert_eq!(shell_sync_inspect(&key, n).await, (false, true));
+        let (ppk, n) = check("k", b"PuTTY-User-Key-File-3: ssh-ed25519\n");
+        assert_eq!(shell_sync_inspect(&ppk, n).await, (false, true));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

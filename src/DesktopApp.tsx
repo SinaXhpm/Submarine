@@ -37,7 +37,9 @@ const appWindow = getCurrentWindow();
 // connect (one-shot, `serverId === 0` and `quickAuth` populated). SessionView
 // forwards `quickAuth` to `initiate_connection` which uses it instead of
 // looking up the DB row.
-type Session = { id: string; serverId: number; serverName: string; mirrors?: string; syncShellConfig?: boolean; runOnConnect?: string; quickAuth?: QuickAuth | null };
+// `serverUuid` is the saved server's sync id, which keys this device's own
+// per-server settings (the Shell button, see util/shellSync.ts).
+type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; mirrors?: string; runOnConnect?: string; quickAuth?: QuickAuth | null };
 
 const hexToRgb = (hex: string) => {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -239,9 +241,6 @@ function DesktopApp() {
     tunnels: [] as { local: string, remote: string, type: string, name?: string, stopped?: boolean }[],
     autostart: false,
     mirrors: [] as { local: string, remote: string, soft_delete: boolean, excludes: string[], conflict_resolution: string }[],
-    // Shows a "Sync shell config" button in this server's session toolbar
-    // once connected. Off by default — opt in per server (see AddNodePanel).
-    syncShellConfig: false,
     color: null as string | null,
     // Free-form per-node description / runbook text. Lives on the server row
     // in the encrypted vault. Empty string by default — the textarea in the
@@ -600,7 +599,7 @@ function DesktopApp() {
         serverId: s.id,
         serverName: s.name,
         mirrors: s.mirrors,
-        syncShellConfig: !!s.sync_shell_config,
+        serverUuid: s.uuid ?? null,
       }));
       setSessions((prev: any[]) => {
         const seen = new Set(prev.map((p) => p.id));
@@ -699,7 +698,7 @@ function DesktopApp() {
         // MirrorsPanel can pre-populate "Saved on this node" without
         // another round-trip to the backend.
         mirrors: server.mirrors,
-        syncShellConfig: !!server.sync_shell_config,
+        serverUuid: server.uuid ?? null,
         // Commands to auto-run once on the first terminal (see SessionView).
         runOnConnect: server.run_on_connect || "",
       }]);
@@ -769,7 +768,6 @@ function DesktopApp() {
       mirrors: (() => {
         try { return JSON.parse(server.mirrors || "[]"); } catch { return []; }
       })(),
-      syncShellConfig: !!server.sync_shell_config,
       color: server.color ?? null,
       notes: server.notes || "",
       runOnConnect: server.run_on_connect || "",
@@ -1614,6 +1612,7 @@ function DesktopApp() {
               <SettingsPanel
                 settings={appSettings}
                 setSettings={setAppSettings}
+                servers={servers}
                 isMobile={isMobile}
                 onOpenLogs={() => setActiveView("logs")}
               />
@@ -2445,7 +2444,6 @@ function DesktopApp() {
               keyId: newNode.authType === "custom_key" && newNode.keyId ? parseInt(newNode.keyId) : null,
               autostart: !!newNode.autostart,
               mirrors: newNode.mirrors || [],
-              syncShellConfig: !!newNode.syncShellConfig,
               color: newNode.color ?? null,
               // Edit-mode + untouched password field = ask the backend to
               // keep the existing column. Otherwise the bind below sends

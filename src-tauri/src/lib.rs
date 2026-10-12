@@ -771,7 +771,7 @@ const ENTITIES: &[EntitySpec] = &[
     EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password", "edited_by"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys", required: false }] },
     EntitySpec {
         table: "servers",
-        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "sync_shell_config", "color", "notes", "run_on_connect", "position", "edited_by"],
+        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "position", "edited_by"],
         fks: &[
             Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials", required: false },
             Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders", required: false },
@@ -2486,7 +2486,7 @@ mod sync_engine_tests {
             "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
-             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, sync_shell_config INTEGER NOT NULL DEFAULT 0, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);",
@@ -3604,18 +3604,6 @@ async fn setup_master_db_inner(
                 return Err(format!("[DATABASE] MIRRORS_MIGRATION_FAILED: {}", s));
             }
         }
-        // Schema migration for the per-server "sync shell config" opt-in.
-        // Off by default — the whole point is that it's enabled on some of
-        // the user's servers and not others.
-        if let Err(e) = conn.execute(
-            "ALTER TABLE servers ADD COLUMN sync_shell_config INTEGER NOT NULL DEFAULT 0",
-            [],
-        ) {
-            let s = e.to_string();
-            if !s.contains("duplicate column name") {
-                return Err(format!("[DATABASE] SYNC_SHELL_CONFIG_MIGRATION_FAILED: {}", s));
-            }
-        }
         // Schema version metadata. A single-row `schema_meta` table records
         // the highest column-migration the running binary knows about. If a
         // user opens an older binary against a newer vault, we surface a
@@ -3765,7 +3753,7 @@ async fn setup_master_db_inner(
             "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', sync_shell_config INTEGER NOT NULL DEFAULT 0, color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
@@ -4409,7 +4397,6 @@ async fn add_server(
     autostart: Option<bool>,
     mirrors: Option<Vec<serde_json::Value>>,
     color: Option<String>,
-    sync_shell_config: Option<bool>,
 ) -> Result<i64, String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
@@ -4428,10 +4415,9 @@ async fn add_server(
     );
 
     let autostart_i: i32 = if autostart.unwrap_or(false) { 1 } else { 0 };
-    let sync_shell_config_i: i32 = if sync_shell_config.unwrap_or(false) { 1 } else { 0 };
     let res = conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, sync_shell_config) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
-        rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, sync_shell_config_i],
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color],
     ).map_err(|e| format!("[DATABASE] SERVER_INSERT_FAILED: SQL_ERROR={}", e))?;
 
     if res == 0 {
@@ -4545,7 +4531,6 @@ async fn edit_server(
     autostart: Option<bool>,
     mirrors: Option<Vec<serde_json::Value>>,
     color: Option<String>,
-    sync_shell_config: Option<bool>,
     // Frontend opt-out for password persistence. When the user opens the
     // edit sheet, we call `reveal_server_password` to populate the form;
     // if that call ever fails (transient DB error / migration mid-flight)
@@ -4564,7 +4549,6 @@ async fn edit_server(
         &auth_type, username, password, key_id, credential_id,
     );
     let autostart_i: i32 = if autostart.unwrap_or(false) { 1 } else { 0 };
-    let sync_shell_config_i: i32 = if sync_shell_config.unwrap_or(false) { 1 } else { 0 };
 
     // All SQLite work is scoped so the non-Send connection guard is fully
     // dropped before the async cache-invalidation await below — Tauri requires
@@ -4596,13 +4580,13 @@ async fn edit_server(
         // because normalize_server_identity zeros password for the other modes.
         if preserve_password.unwrap_or(false) && auth_type == "custom_pass" {
             conn.execute(
-                "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=COALESCE(?5, password), credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16, sync_shell_config=?18 WHERE id=?17",
-                rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id, sync_shell_config_i],
+                "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=COALESCE(?5, password), credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
+                rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
             ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
         } else {
             conn.execute(
-                "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16, sync_shell_config=?18 WHERE id=?17",
-                rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id, sync_shell_config_i],
+                "UPDATE servers SET name=?1, host=?2, port=?3, username=?4, password=?5, credential_id=?6, folder_id=?7, proxy_type=?8, proxy_host=?9, proxy_port=?10, tunnels=?11, auth_type=?12, key_id=?13, autostart=?14, mirrors=?15, color=?16 WHERE id=?17",
+                rusqlite::params![name, host, port, db_username, db_password, db_credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels_json, auth_type, db_key_id, autostart_i, mirrors_json, color, id],
             ).map_err(|e| format!("[DATABASE] SERVER_UPDATE_FAILED: SQL_ERROR={}", e))?;
         }
 
@@ -4915,7 +4899,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     // ORDER BY (position, id): `position` is the manual drag-to-reorder rank
     // (default 0 for never-reordered rows), and id breaks ties so the order is
     // stable and, before any reorder, identical to the old rowid order.
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, sync_shell_config FROM servers ORDER BY position, id")
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid FROM servers ORDER BY position, id")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -4946,7 +4930,10 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             "edited_by": row.get::<_, Option<String>>(21)?,
             // Manual drag-to-reorder rank (see ORDER BY above).
             "position": row.get::<_, i64>(22).unwrap_or(0),
-            "sync_shell_config": row.get::<_, i32>(23).unwrap_or(0) != 0,
+            // The sync id: the same on every device, and unlike `id` never
+            // reused by another profile's server. Keys this device's own
+            // per-server settings (see src/util/shellSync.ts).
+            "uuid": row.get::<_, Option<String>>(23)?,
         }))
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
@@ -9217,20 +9204,20 @@ async fn pick_local_directory() -> Result<Option<String>, String> {
 }
 
 // ----- Shell config sync commands -------------------------------------------
-// "Sync my shell config to this server": a one-shot push (see mirror.rs'
-// shell_sync_* functions), gated per-server by the servers.sync_shell_config
-// flag and listing which files to push from a device-local Settings list —
-// never automatic on connect, since it would slow down every connect and
-// risks clobbering server-specific tweaks on servers where it's unwanted.
+// "Push my shell config": a one-shot push of this device's dotfiles to the
+// server of an open session (see mirror.rs' shell_sync_* functions). Which
+// files go where, and which servers offer the button, are this device's own
+// settings (src/util/shellSync.ts): nothing about it is in the vault or
+// synced. Never automatic on connect.
 
-const SHELL_SYNC_PROBE_SCRIPT: &str = "echo \"$HOME\"\necho __SUB_SHELL_SYNC_SEP__\necho \"$SHELL\"\n";
+/// Prints the account's login shell between markers, so that whatever its
+/// startup files print can't be taken for it.
+const SHELL_SYNC_PROBE_SCRIPT: &str = "printf '__SUB_SHELL__%s__SUB_SHELL__\\n' \"$SHELL\"\n";
 
 #[derive(serde::Serialize)]
 struct ShellSyncProbe {
-    remote_home: String,
     remote_shell: String,
-    // Empty when $SHELL can't be determined locally (e.g. Windows) — the
-    // frontend treats that as "nothing to compare" rather than a mismatch.
+    // Empty when this device has no login shell to compare (Windows).
     local_shell: String,
     shell_mismatch: bool,
 }
@@ -9242,26 +9229,79 @@ fn shell_basename(path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Resolves the remote home dir + default shell (for the mismatch warning)
-/// for the shell-sync preview/push dialog. Read-only — reuses the same
-/// probe-script-over-a-fresh-exec-channel helper the Info panel uses.
+/// The account's login shell next to this device's, for a note in the push
+/// dialog: the files of one shell do nothing for another. Nothing is run on
+/// the server when this device has no login shell to compare.
 #[tauri::command]
 async fn shell_sync_probe(
     state: tauri::State<'_, SshState>,
     session_id: String,
 ) -> Result<ShellSyncProbe, String> {
-    let result = run_info_script(&state, &session_id, SHELL_SYNC_PROBE_SCRIPT, 10).await?;
-    let mut parts = result.data.splitn(2, "__SUB_SHELL_SYNC_SEP__");
-    let remote_home = parts.next().unwrap_or("").trim().to_string();
-    let remote_shell = parts.next().unwrap_or("").trim().to_string();
-    if remote_home.is_empty() {
-        return Err("Could not determine the remote home directory".into());
-    }
     let local_shell = shell_basename(&std::env::var("SHELL").unwrap_or_default());
-    let remote_shell_name = shell_basename(&remote_shell);
-    let shell_mismatch = !local_shell.is_empty() && !remote_shell_name.is_empty()
-        && local_shell != remote_shell_name;
-    Ok(ShellSyncProbe { remote_home, remote_shell, local_shell, shell_mismatch })
+    if local_shell.is_empty() {
+        return Ok(ShellSyncProbe { remote_shell: String::new(), local_shell, shell_mismatch: false });
+    }
+    let result = run_info_script(&state, &session_id, SHELL_SYNC_PROBE_SCRIPT, 10).await?;
+    let remote_shell = result.data.split("__SUB_SHELL__").nth(1).unwrap_or("").trim().to_string();
+    let remote_name = shell_basename(&remote_shell);
+    let shell_mismatch = !remote_name.is_empty() && local_shell != remote_name;
+    Ok(ShellSyncProbe { remote_shell, local_shell, shell_mismatch })
+}
+
+/// The pairs as typed, checked before anything is opened on the server. A
+/// local path is a full path or starts with `~`, exists, isn't the whole home
+/// folder, and passes the policy an upload's source does; the remote side is
+/// a place below the home folder there. Every problem is reported, one per
+/// line.
+fn shell_sync_targets(pairs: &[mirror::ShellSyncPair]) -> Result<Vec<mirror::ShellSyncTarget>, String> {
+    if pairs.is_empty() {
+        return Err("Nothing to push yet: add files in Settings → Shell config sync.".into());
+    }
+    let home = directories::UserDirs::new().and_then(|d| d.home_dir().canonicalize().ok());
+    let mut targets = Vec::new();
+    let mut problems = Vec::new();
+    for pair in pairs {
+        let local = pair.local.trim();
+        let remote = pair.remote.trim();
+        let remote_shown = if remote.is_empty() { "~" } else { remote };
+        if local.is_empty() {
+            problems.push(format!("→ {}: no local file or folder", remote_shown));
+            continue;
+        }
+        let expanded = expand_home(local);
+        if local == "~" || local == "~/" || local == "~\\" {
+            problems.push(format!("{}: pick files or folders in the home folder, not all of it", local));
+            continue;
+        }
+        if !expanded.is_absolute() {
+            problems.push(format!("{}: give a full path, or one that starts with ~", local));
+            continue;
+        }
+        let resolved = match guard_local_path(&expanded.to_string_lossy(), false) {
+            Ok(p) => p,
+            Err(e) => {
+                problems.push(format!("{}: {}", local, e));
+                continue;
+            }
+        };
+        if home.as_deref() == Some(resolved.as_path()) {
+            problems.push(format!("{}: pick files or folders in the home folder, not all of it", local));
+            continue;
+        }
+        let rel = match mirror::shell_sync_remote_rel(remote) {
+            Ok(r) => r,
+            Err(e) => {
+                problems.push(format!("{} → {}: {}", local, remote_shown, e));
+                continue;
+            }
+        };
+        if rel.is_empty() && !resolved.is_dir() {
+            problems.push(format!("{} → {}: give the file a name on the server", local, remote_shown));
+            continue;
+        }
+        targets.push(mirror::ShellSyncTarget { local: resolved, rel });
+    }
+    if problems.is_empty() { Ok(targets) } else { Err(problems.join("\n")) }
 }
 
 #[tauri::command]
@@ -9269,14 +9309,14 @@ async fn shell_sync_preview(
     ssh: tauri::State<'_, SshState>,
     session_id: String,
     pairs: Vec<mirror::ShellSyncPair>,
-    remote_home: String,
 ) -> Result<mirror::ShellSyncReport, String> {
+    let targets = shell_sync_targets(&pairs)?;
     let handle = {
         let conns = ssh.connections.lock().await;
         conns.get(&session_id).cloned()
             .ok_or_else(|| "Session not connected".to_string())?
     };
-    mirror::shell_sync_preview(handle, pairs, remote_home).await
+    mirror::shell_sync_preview(handle, targets).await
 }
 
 #[tauri::command]
@@ -9284,25 +9324,61 @@ async fn shell_sync_push(
     ssh: tauri::State<'_, SshState>,
     session_id: String,
     pairs: Vec<mirror::ShellSyncPair>,
-    remote_home: String,
-) -> Result<mirror::ShellSyncReport, String> {
+) -> Result<mirror::ShellSyncPushReport, String> {
+    let targets = shell_sync_targets(&pairs)?;
     let handle = {
         let conns = ssh.connections.lock().await;
         conns.get(&session_id).cloned()
             .ok_or_else(|| "Session not connected".to_string())?
     };
-    mirror::shell_sync_push(handle, pairs, remote_home).await
+    mirror::shell_sync_push(handle, targets).await
 }
 
 #[cfg(test)]
 mod shell_sync_tests {
     use super::*;
 
+    fn pair(local: &str, remote: &str) -> mirror::ShellSyncPair {
+        mirror::ShellSyncPair { local: local.into(), remote: remote.into() }
+    }
+
     #[test]
     fn shell_basename_takes_the_last_path_component() {
         assert_eq!(shell_basename("/usr/bin/zsh"), "zsh");
         assert_eq!(shell_basename("/bin/bash\n"), "bash"); // trailing newline from `echo $SHELL`
         assert_eq!(shell_basename(""), "");
+    }
+
+    #[test]
+    fn shell_sync_targets_takes_existing_full_paths_and_places_below_home() {
+        let dir = std::env::temp_dir().join(format!("sub-shellsync-t-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("rc");
+        std::fs::write(&file, b"x").unwrap();
+        let file_s = file.to_string_lossy().into_owned();
+        let dir_s = dir.to_string_lossy().into_owned();
+
+        let ok = shell_sync_targets(&[pair(&file_s, "~/.zshrc"), pair(&dir_s, "~")]).unwrap();
+        assert_eq!(ok.iter().map(|t| t.rel.as_str()).collect::<Vec<_>>(), [".zshrc", ""]);
+
+        assert!(shell_sync_targets(&[]).is_err());
+        for (local, remote) in [
+            ("rc", ".zshrc"),           // relative
+            ("~", "x"),                 // the whole home folder
+            ("", ".zshrc"),             // nothing
+            (file_s.as_str(), "~"),     // a file in the home folder's place
+            (file_s.as_str(), "../x"),  // out of the home folder
+            (file_s.as_str(), "/etc/x"),
+        ] {
+            assert!(shell_sync_targets(&[pair(local, remote)]).is_err(), "{local} -> {remote}");
+        }
+        let missing = dir.join("missing").to_string_lossy().into_owned();
+        assert!(shell_sync_targets(&[pair(&missing, ".x")]).is_err());
+        // Every problem is reported, not just the first.
+        let both = shell_sync_targets(&[pair("rc", ".a"), pair(&missing, ".b")]).unwrap_err();
+        assert_eq!(both.lines().count(), 2, "{both}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 
