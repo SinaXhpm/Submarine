@@ -1556,7 +1556,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   }
                 }}
                 aria-label="Close terminal"
-                className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-white/5 hover:text-red-400 text-zinc-500 transition-all"
+                className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 hover:bg-white/5 hover:text-red-400 text-zinc-500 transition-all"
               >
                 <X size={12} />
               </button>
@@ -1933,7 +1933,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                         }
                       }}
                       title="Remove this pane from the split (keeps the terminal)"
-                      className="absolute top-1 right-1 z-30 h-5 w-5 rounded flex items-center justify-center bg-black/40 border border-white/10 text-zinc-400 hover:text-white hover:bg-black/60 opacity-0 hover:opacity-100 group-hover/pane:opacity-100 transition-opacity"
+                      className="absolute top-1 right-1 z-30 h-5 w-5 rounded flex items-center justify-center bg-black/40 border border-white/10 text-zinc-400 hover:text-white hover:bg-black/60 opacity-0 hover:opacity-100 group-hover/pane:opacity-100 focus-visible:opacity-100 transition-opacity"
                     >
                       <X size={11} />
                     </button>
@@ -2024,7 +2024,9 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             </div>
           ) : (
             terminals.map(t => (
-              <div key={t.id} className={`absolute inset-0 ${activeTab === t.id ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}>
+              // A background tab stays mounted (its shell keeps running) but
+              // inert, so Tab can't land in a terminal that isn't shown.
+              <div key={t.id} inert={activeTab === t.id ? undefined : ""} className={`absolute inset-0 ${activeTab === t.id ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}>
                 <TerminalView
                   sessionId={session.id}
                   terminalId={t.id}

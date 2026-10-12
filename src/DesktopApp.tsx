@@ -15,6 +15,7 @@ import logoUrl from "./assets/logo.png";
 import PasswordField from "./components/PasswordField";
 import QuickConnectModal, { QuickAuth } from "./components/QuickConnectModal";
 import { useConfirm, useTextPrompt } from "./ui/confirm";
+import { useSlideOverFocus } from "./ui/slideOverFocus";
 import { RenameInput } from "./ui/renameInput";
 import { forgetServerBookmarks } from "./util/sftpBookmarks";
 import { useIsNarrow } from "./hooks/useViewport";
@@ -219,6 +220,13 @@ function DesktopApp() {
   const [isKeyPanelOpen, setIsKeyPanelOpen] = useState(false);
   const [editKeyData, setEditKeyData] = useState<any>({ id: null, name: "", public_key: "", private_key: "", passphrase: "" });
   const [formError, setFormError] = useState("");
+  const commandPanelRef = useSlideOverFocus(isCommandPanelOpen);
+  const notePanelRef = useSlideOverFocus(isNotePanelOpen);
+  const credPanelRef = useSlideOverFocus(isCredPanelOpen);
+  const keyPanelRef = useSlideOverFocus(isKeyPanelOpen);
+  // A panel or modal over the app: everything behind it goes inert, so Tab
+  // can't walk into a server list or a terminal under the backdrop.
+  const overlayOpen = isPanelOpen || isQuickConnectOpen || isCommandPanelOpen || isNotePanelOpen || isCredPanelOpen || isKeyPanelOpen;
 
   const defaultNode = {
     id: null as number | null,
@@ -1117,14 +1125,14 @@ function DesktopApp() {
               >
                 <MoreVertical size={13} />
               </button>
-              {/* Desktop-only inline close. Hidden until hover so the tab
-                  reads clean at rest; sizing (w-5 h-5, 12 px icon) matches
-                  the terminal-tab close inside SessionView so both tab
-                  strips look like siblings. */}
+              {/* Desktop-only inline close. Hidden until hover (or keyboard
+                  focus) so the tab reads clean at rest; sizing (w-5 h-5,
+                  12 px icon) matches the terminal-tab close inside
+                  SessionView so both tab strips look like siblings. */}
               <button
                 type="button"
                 aria-label="Close session"
-                className="hidden sm:flex ml-1 h-5 w-5 items-center justify-center rounded hover:bg-white/5 shrink-0 opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-red-400 transition-opacity"
+                className="hidden sm:flex ml-1 h-5 w-5 items-center justify-center rounded hover:bg-white/5 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-zinc-400 hover:text-red-400 transition-opacity"
                 onClick={async (e) => {
                   e.stopPropagation();
                   // Only confirm when there's an actual live connection to
@@ -1549,7 +1557,7 @@ function DesktopApp() {
         // renders at the bottom while staying first in DOM order — keyboard
         // tab-order stays intuitive and <main> grabs the full screen width
         // (terminal gains the ~50px the vertical rail used to eat).
-        <div className={`flex-1 flex ${isMobile ? 'flex-col-reverse' : ''} overflow-hidden pt-10`}>
+        <div inert={overlayOpen ? "" : undefined} className={`flex-1 flex ${isMobile ? 'flex-col-reverse' : ''} overflow-hidden pt-10`}>
           <Sidebar activeTab={activeView.startsWith('session-') ? 'nodes' : activeView} setActiveTab={setActiveView} isMobile={isMobile} onLogout={handleLogout} profileName={activeProfile} syncing={cloudSyncing} />
 
           <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-transparent relative">
@@ -1667,7 +1675,7 @@ function DesktopApp() {
                           <div key={c.id} className="bg-[#16161a] border border-white/5 rounded-xl p-3 group relative hover:border-primary/30 transition-all">
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{c.name}</h4>
-                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity absolute right-3 top-3">
+                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity absolute right-3 top-3">
                                 <button onClick={async () => {
                                   // Credentials list now ships `has_password` instead of plaintext;
                                   // pull the secret on demand for the edit sheet.
@@ -1712,7 +1720,7 @@ function DesktopApp() {
                           <div key={k.id} className="bg-[#16161a] border border-white/5 rounded-xl p-3 group relative hover:border-primary/30 transition-all">
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{k.name}</h4>
-                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity absolute right-3 top-3">
+                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity absolute right-3 top-3">
                                 <button onClick={async () => {
                                   // Same pattern as credentials — pull the private key + passphrase
                                   // on demand instead of leaking them in the list response.
@@ -1783,8 +1791,12 @@ function DesktopApp() {
               const visibleIds = isTiled
                 ? mergedSessionIds.filter(id => sessions.some(s => s.id === id))
                 : (viewIsSession ? [activeView] : []);
+              // Sessions stay mounted behind the other views (and behind each
+              // other) so their terminals keep running: inert while hidden,
+              // or Tab could land in a terminal nobody can see and send what
+              // is typed next to its server.
               return (
-                <div className={`absolute inset-0 flex flex-col overflow-hidden ${!viewIsSession ? 'opacity-0 pointer-events-none' : ''}`}>
+                <div inert={viewIsSession ? undefined : ""} className={`absolute inset-0 flex flex-col overflow-hidden ${!viewIsSession ? 'opacity-0 pointer-events-none' : ''}`}>
                   <div className="flex-1 relative bg-black/40">
                     {sessions.map(sess => {
                       const idx = visibleIds.indexOf(sess.id);
@@ -1808,6 +1820,7 @@ function DesktopApp() {
                         <div
                           key={sess.id}
                           style={style}
+                          inert={isVisible ? undefined : ""}
                           onMouseDownCapture={() => {
                             // Focus shift ONLY — tile positions live in
                             // mergedSessionIds and must stay stable across
@@ -2244,7 +2257,7 @@ function DesktopApp() {
                           <div key={cmd.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[150px]">
                             <div className="flex justify-between items-start mb-2">
                               <h3 className="text-[16px] font-bold text-primary tracking-tight truncate flex-1">{cmd.title}</h3>
-                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity">
                                 <button onClick={() => { setEditCommandData(cmd); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
                                 <button onClick={async () => {
                                   const ok = await confirm({ title: "Delete command?", message: `“${cmd.title}” will be removed.`, destructive: true });
@@ -2271,7 +2284,7 @@ function DesktopApp() {
                           <div key={n.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[170px]">
                             <div className="flex justify-between items-start mb-2 gap-2">
                               <h3 className="text-[15px] font-bold text-primary tracking-tight truncate flex-1">{n.title || "Untitled"}</h3>
-                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0">
+                              <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity shrink-0">
                                 <button onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
                                 <button onClick={async () => {
                                   const ok = await confirm({ title: "Delete note?", message: `“${n.title || "Untitled"}” will be removed.`, destructive: true });
@@ -2499,8 +2512,10 @@ function DesktopApp() {
       />
 
 
-      <div className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCommandPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsCommandPanelOpen(false)}>
-        <div className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col ${isCommandPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
+      {/* The slide-overs stay mounted while closed (to slide out): inert
+          then, so Tab can't reach their fields. */}
+      <div inert={isCommandPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCommandPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsCommandPanelOpen(false)}>
+        <div ref={commandPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCommandPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <TerminalSquare size={18} className="text-primary" />
@@ -2550,8 +2565,8 @@ function DesktopApp() {
         </div>
       </div>
 
-      <div className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isNotePanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsNotePanelOpen(false)}>
-        <div className={`w-full max-w-[480px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col ${isNotePanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
+      <div inert={isNotePanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isNotePanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsNotePanelOpen(false)}>
+        <div ref={notePanelRef} tabIndex={-1} className={`w-full max-w-[480px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isNotePanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <StickyNote size={18} className="text-primary" />
@@ -2601,8 +2616,8 @@ function DesktopApp() {
         </div>
       </div>
 
-      <div className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCredPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsCredPanelOpen(false)}>
-        <div className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col ${isCredPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
+      <div inert={isCredPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCredPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsCredPanelOpen(false)}>
+        <div ref={credPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCredPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <Shield size={18} className="text-primary" />
@@ -2704,8 +2719,8 @@ function DesktopApp() {
         </div>
       </div>
 
-      <div className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isKeyPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsKeyPanelOpen(false)}>
-        <div className={`w-full max-w-[450px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col ${isKeyPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
+      <div inert={isKeyPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isKeyPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsKeyPanelOpen(false)}>
+        <div ref={keyPanelRef} tabIndex={-1} className={`w-full max-w-[450px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isKeyPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <Key size={18} className="text-primary" />
