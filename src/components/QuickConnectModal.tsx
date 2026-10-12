@@ -72,7 +72,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
           <span className="text-[12px] font-bold uppercase tracking-widest text-white flex items-center gap-2">
             <Zap size={13} className="text-primary" /> Quick Connect
           </span>
-          <button onClick={close} className="text-zinc-400 hover:text-white"><X size={16} /></button>
+          <button aria-label="Close" onClick={close} className="text-zinc-400 hover:text-white"><X size={16} /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-3">

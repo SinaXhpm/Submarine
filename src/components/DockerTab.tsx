@@ -1461,7 +1461,7 @@ const ModalShell = ({ title, onClose, actions, children }: { title: string; onCl
           {/* h-9 w-9 = 36 px touch target on phone, vs the old icon
               which was a 14 px icon with no padding zone — easy to miss
               with a thumb. */}
-          <button onClick={onClose} className="h-9 w-9 sm:h-7 sm:w-7 flex items-center justify-center rounded-md text-zinc-500 hover:text-white hover:bg-white/5">
+          <button aria-label="Close" onClick={onClose} className="h-9 w-9 sm:h-7 sm:w-7 flex items-center justify-center rounded-md text-zinc-500 hover:text-white hover:bg-white/5">
             <X size={16} />
           </button>
         </div>

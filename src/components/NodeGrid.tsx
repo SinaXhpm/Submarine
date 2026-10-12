@@ -295,7 +295,11 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
         {/* Name + host — flex-1 + min-w-0 so long values truncate cleanly. */}
         <div className="min-w-0 flex-1">
-          <h3 className="font-bold text-zinc-100 text-[13px] truncate tracking-tight leading-tight">{s.name}</h3>
+          {/* A button so the keyboard can open it too: its click bubbles to
+              the card's own handler. */}
+          <h3 className="font-bold text-zinc-100 text-[13px] truncate tracking-tight leading-tight">
+            <button type="button" className="max-w-full truncate text-left rounded outline-none focus-visible:ring-2 focus-visible:ring-primary/60">{s.name}</button>
+          </h3>
           <div className="flex items-center gap-1 mt-0.5">
             <Globe size={10} className="text-zinc-400 shrink-0" />
             <span className="text-[10.5px] text-zinc-300 font-mono truncate">{s.host}</span>
@@ -376,7 +380,9 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             />
           ) : (
             <>
-              <h3 className="font-bold text-zinc-100 text-[13px] truncate tracking-tight leading-tight">{f.name}</h3>
+              <h3 className="font-bold text-zinc-100 text-[13px] truncate tracking-tight leading-tight">
+                <button type="button" className="max-w-full truncate text-left rounded outline-none focus-visible:ring-2 focus-visible:ring-primary/60">{f.name}</button>
+              </h3>
               <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.12em]">
                 {serverCount === 1 ? '1 server' : `${serverCount} servers`}
               </span>
@@ -450,7 +456,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
         {/* Header navigation if in folder */}
         {!isSearching && activeFolderId !== null && (
           <div className="flex items-center gap-3 mb-6">
-            <button
+            <button aria-label="Back to all servers"
               onClick={() => setActiveFolderId(null)}
               className="w-8 h-8 bg-black rounded-xl border border-white/5 flex items-center justify-center hover:bg-white/10 hover:text-white text-zinc-500 transition-all shadow-inner"
             >

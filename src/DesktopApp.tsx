@@ -1105,7 +1105,15 @@ function DesktopApp() {
                   the same tab pill roughly 30% more legible characters per
                   pixel (uppercase is wider per glyph) without changing the
                   strip height, which stays h-7. */}
-              <span className="text-[11px] font-semibold whitespace-nowrap tracking-tight">{tabLabel(s)}</span>
+              {/* A button so the keyboard reaches the tab: its click bubbles
+                  to the tab's own handler (and a menu key opens its menu). */}
+              <button
+                type="button"
+                aria-current={activeView === s.id ? "page" : undefined}
+                className="text-[11px] font-semibold whitespace-nowrap tracking-tight rounded outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+              >
+                {tabLabel(s)}
+              </button>
               {/* Mobile-only actions trigger. On phone we surface the same
                   tabMenu (Reconnect / Disconnect / Close) here since there
                   is no right-click on touch — a single kebab is a cleaner
@@ -1343,7 +1351,7 @@ function DesktopApp() {
             ? <Copy size={12} className="text-zinc-600 group-hover:text-zinc-300 scale-x-[-1]" />
             : <Square size={11} className="text-zinc-600 group-hover:text-zinc-300" />}
         </button>
-        <button onClick={() => appWindow.close()} className="w-10 h-full flex items-center justify-center hover:bg-red-500 group transition-all"><X size={14} className="text-zinc-600 group-hover:text-white" /></button>
+        <button title="Close" onClick={() => appWindow.close()} className="w-10 h-full flex items-center justify-center hover:bg-red-500 group transition-all"><X size={14} className="text-zinc-600 group-hover:text-white" /></button>
       </div>
       {tabMenu && (() => {
         const targetId = tabMenu.sessionId;
@@ -1675,7 +1683,7 @@ function DesktopApp() {
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{c.name}</h4>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity absolute right-3 top-3">
-                                <button onClick={async () => {
+                                <button aria-label={`Edit ${c.name}`} onClick={async () => {
                                   // Credentials list now ships `has_password` instead of plaintext;
                                   // pull the secret on demand for the edit sheet.
                                   let pw = "";
@@ -1686,7 +1694,7 @@ function DesktopApp() {
                                   setEditCredData({ ...c, password: pw });
                                   setIsCredPanelOpen(true);
                                 }} className="text-zinc-500 hover:text-white"><Edit2 size={14} /></button>
-                                <button onClick={async () => {
+                                <button aria-label={`Delete ${c.name}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete saved password?", message: `“${c.name}” will be removed. Servers using this login will lose it.`, destructive: true });
                                   if (!ok) return;
                                   invoke("delete_credential", { id: c.id }).then(() => { refreshCredentials(); bumpSync(); });
@@ -1720,7 +1728,7 @@ function DesktopApp() {
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{k.name}</h4>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity absolute right-3 top-3">
-                                <button onClick={async () => {
+                                <button aria-label={`Edit ${k.name}`} onClick={async () => {
                                   // Same pattern as credentials — pull the private key + passphrase
                                   // on demand instead of leaking them in the list response.
                                   let secrets: { private_key?: string|null; passphrase?: string|null } = {};
@@ -1735,7 +1743,7 @@ function DesktopApp() {
                                   });
                                   setIsKeyPanelOpen(true);
                                 }} className="text-zinc-500 hover:text-white"><Edit2 size={14} /></button>
-                                <button onClick={async () => {
+                                <button aria-label={`Delete ${k.name}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete SSH key?", message: `“${k.name}” will be removed. This key cannot be recovered.`, destructive: true });
                                   if (!ok) return;
                                   invoke("delete_ssh_key", { id: k.id }).then(() => { refreshSshKeys(); bumpSync(); });
@@ -2067,7 +2075,7 @@ function DesktopApp() {
                         <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
                           Pin terminals
                         </span>
-                        <button
+                        <button aria-label="Close"
                           onClick={() => setWallPickerOpen(false)}
                           className="h-5 w-5 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/[0.05]"
                         >
@@ -2257,8 +2265,8 @@ function DesktopApp() {
                             <div className="flex justify-between items-start mb-2">
                               <h3 className="text-[16px] font-bold text-primary tracking-tight truncate flex-1">{cmd.title}</h3>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity">
-                                <button onClick={() => { setEditCommandData(cmd); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
-                                <button onClick={async () => {
+                                <button aria-label={`Edit ${cmd.title}`} onClick={() => { setEditCommandData(cmd); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
+                                <button aria-label={`Delete ${cmd.title}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete command?", message: `“${cmd.title}” will be removed.`, destructive: true });
                                   if (!ok) return;
                                   invoke("delete_command", { id: cmd.id }).then(() => { refreshCommands(); bumpSync(); });
@@ -2284,8 +2292,8 @@ function DesktopApp() {
                             <div className="flex justify-between items-start mb-2 gap-2">
                               <h3 className="text-[15px] font-bold text-primary tracking-tight truncate flex-1">{n.title || "Untitled"}</h3>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity shrink-0">
-                                <button onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
-                                <button onClick={async () => {
+                                <button aria-label={`Edit ${n.title || "Untitled"}`} onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
+                                <button aria-label={`Delete ${n.title || "Untitled"}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete note?", message: `“${n.title || "Untitled"}” will be removed.`, destructive: true });
                                   if (!ok) return;
                                   invoke("delete_note", { id: n.id }).then(() => { refreshNotes(); bumpSync(); });
@@ -2519,7 +2527,7 @@ function DesktopApp() {
               <TerminalSquare size={18} className="text-primary" />
               {editCommandData.id ? "Edit command" : "New command"}
             </h2>
-            <button onClick={() => { setIsCommandPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label="Close" onClick={() => { setIsCommandPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
@@ -2570,7 +2578,7 @@ function DesktopApp() {
               <StickyNote size={18} className="text-primary" />
               {editNoteData.id ? "Edit note" : "New note"}
             </h2>
-            <button onClick={() => { setIsNotePanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label="Close" onClick={() => { setIsNotePanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
@@ -2621,7 +2629,7 @@ function DesktopApp() {
               <Shield size={18} className="text-primary" />
               {editCredData.id ? "Edit login" : "New login"}
             </h2>
-            <button onClick={() => { setIsCredPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label="Close" onClick={() => { setIsCredPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
@@ -2724,7 +2732,7 @@ function DesktopApp() {
               <Key size={18} className="text-primary" />
               {editKeyData.id ? "Edit SSH key" : "New SSH key"}
             </h2>
-            <button onClick={() => { setIsKeyPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label="Close" onClick={() => { setIsKeyPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>

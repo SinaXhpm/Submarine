@@ -492,6 +492,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, servers = [] }: any)
               </div>
               <button
                 role="switch"
+                aria-label="Auto-sync"
                 aria-checked={settings.autoSync !== false}
                 onClick={() => setSettings((s: any) => ({ ...s, autoSync: !(s.autoSync !== false) }))}
                 className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${settings.autoSync !== false ? 'bg-primary' : 'bg-zinc-700'}`}

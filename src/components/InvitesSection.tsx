@@ -70,7 +70,7 @@ export default function InvitesSection({ onLocalProfilesChanged }: Props) {
         <div className="px-3 py-2 rounded bg-rose-500/10 border border-rose-500/30 text-rose-200 text-[11.5px] flex items-start gap-2">
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span className="flex-1 break-words">{err}</span>
-          <button onClick={() => setErr(null)} className="text-rose-300/70 hover:text-white"><X size={11} /></button>
+          <button aria-label="Dismiss" onClick={() => setErr(null)} className="text-rose-300/70 hover:text-white"><X size={11} /></button>
         </div>
       )}
       {ok && !err && (

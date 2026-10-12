@@ -296,7 +296,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
         <div className="px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-200 text-[12px] flex items-start gap-2">
           <AlertTriangle size={13} className="mt-0.5 shrink-0" />
           <span className="flex-1 break-words">{err}</span>
-          <button onClick={() => setErr(null)} className="text-rose-300/70 hover:text-white"><X size={12} /></button>
+          <button aria-label="Dismiss" onClick={() => setErr(null)} className="text-rose-300/70 hover:text-white"><X size={12} /></button>
         </div>
       )}
       {ok && !err && (

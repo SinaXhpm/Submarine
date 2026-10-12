@@ -41,9 +41,12 @@ const DOCK_FLEX: Record<ToolDock, string> = {
   top: "flex-col-reverse",
 };
 // Above or below the terminal the panel has a height of its own; the
-// terminal always keeps at least MIN_TERMINAL_HEIGHT.
+// terminal always keeps at least MIN_TERMINAL_HEIGHT. Beside it, the same
+// with a width: in a narrow split tile a wide panel would otherwise take the
+// whole tile and leave the terminal 0 px wide (gone, but still typing).
 const MIN_TOOL_HEIGHT = 160;
 const MIN_TERMINAL_HEIGHT = 120;
+const MIN_TERMINAL_WIDTH = 200;
 // The panel can also take the terminal's place ("full screen"); remembered
 // with the dock.
 const TOOL_FULL_KEY = "submarine-tool-full";
@@ -1163,14 +1166,18 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       return;
     }
     const startX = e.clientX;
-    const startWidth = toolPanelWidth;
+    const area = mainAreaRef.current?.clientWidth ?? window.innerWidth;
+    const maxWidth = Math.max(240, Math.min(900, area - MIN_TERMINAL_WIDTH - 4));
+    // Start from what's on screen: a width saved in a wider window shows
+    // capped.
+    const startWidth = Math.min(maxWidth, toolPanelRef.current?.getBoundingClientRect().width ?? toolPanelWidth);
     let latest = startWidth;
 
     const onMove = (ev: MouseEvent) => {
       // Dragging toward the terminal widens the tool pane: left for a pane
       // on the right, right for a pane on the left.
       const pulled = toolDock === "left" ? ev.clientX - startX : startX - ev.clientX;
-      latest = Math.max(240, Math.min(900, startWidth + pulled));
+      latest = Math.round(Math.max(240, Math.min(maxWidth, startWidth + pulled)));
       setToolPanelWidth(latest);
     };
 
@@ -2100,7 +2107,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           style={activeTool && !toolAlone
             ? (dockTopBottom
                 ? { height: `${toolPanelHeight}px`, maxHeight: `calc(100% - ${MIN_TERMINAL_HEIGHT + 4}px)` }
-                : { width: `${toolPanelWidth}px` })
+                : { width: `${toolPanelWidth}px`, maxWidth: `calc(100% - ${MIN_TERMINAL_WIDTH + 4}px)` })
             : undefined}
           className={`${activeTool ? (toolAlone ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-[#121214]/95 flex flex-col ${dockTopBottom && !toolAlone ? 'w-full' : 'h-full'} overflow-hidden ${activeTool ? 'animate-in slide-in-from-right duration-300' : ''}`}
         >

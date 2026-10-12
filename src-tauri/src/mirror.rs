@@ -597,9 +597,9 @@ pub async fn dry_run(
     let mut scanned = 0u32;
     walk_local(&local_root, &local_root, &spec.remote, &spec.excludes, &sftp,
                &spec.conflict_resolution,
-               &mut entries, &mut total_bytes, &mut seen, &mut scanned).await?;
+               &mut entries, &mut total_bytes, &mut seen, &mut scanned, &mut Vec::new()).await?;
     walk_remote(&sftp, &local_root, &spec.remote, &spec.remote, &spec.excludes,
-                &mut entries, &mut total_bytes, &seen, &mut scanned).await?;
+                &mut entries, &mut total_bytes, &seen, &mut scanned, &mut HashSet::new()).await?;
     Ok(DryRunReport { entries, total_bytes })
 }
 
@@ -1121,6 +1121,7 @@ async fn walk_local(
     total: &mut u64,
     seen: &mut HashSet<String>,
     scanned: &mut u32,
+    dirs: &mut Vec<String>,
 ) -> Result<(), String> {
     let mut rd = tokio::fs::read_dir(dir).await.map_err(|e| format!("read_dir {:?}: {}", dir, e))?;
     while let Some(entry) = rd.next_entry().await.map_err(|e| format!("dir iter: {}", e))? {
@@ -1129,7 +1130,10 @@ async fn walk_local(
         if is_excluded(&rel, excludes) { continue; }
         let meta = match entry.metadata().await { Ok(m) => m, Err(_) => continue };
         if meta.is_dir() {
-            Box::pin(walk_local(root, &path, remote_root, excludes, sftp, conflict_mode, out, total, seen, scanned)).await?;
+            // A folder pattern names it with its "/" (`node_modules/`).
+            if is_excluded(&format!("{}/", rel), excludes) { continue; }
+            dirs.push(rel);
+            Box::pin(walk_local(root, &path, remote_root, excludes, sftp, conflict_mode, out, total, seen, scanned, dirs)).await?;
             continue;
         }
         if !meta.is_file() { continue; } // skip symlinks / sockets / pipes
@@ -1186,6 +1190,7 @@ async fn walk_remote(
     total: &mut u64,
     seen: &HashSet<String>,
     scanned: &mut u32,
+    dirs: &mut HashSet<String>,
 ) -> Result<(), String> {
     let read = match sftp.read_dir(remote_dir).await {
         Ok(r) => r,
@@ -1209,7 +1214,9 @@ async fn walk_remote(
         if is_excluded(&rel, excludes) { continue; }
 
         if entry.file_type().is_dir() {
-            Box::pin(walk_remote(sftp, local_root, remote_root, &remote_path, excludes, out, total, seen, scanned)).await?;
+            if is_excluded(&format!("{}/", rel), excludes) { continue; }
+            dirs.insert(rel);
+            Box::pin(walk_remote(sftp, local_root, remote_root, &remote_path, excludes, out, total, seen, scanned, dirs)).await?;
             continue;
         }
         *scanned = scanned.saturating_add(1);
@@ -1362,11 +1369,32 @@ async fn run_mirror(
     let mut total = 0u64;
     let mut seen = HashSet::new();
     let mut scanned = 0u32;
+    let mut local_dirs = Vec::new();
+    let mut remote_dirs = HashSet::new();
     walk_local(&local_root, &local_root, &spec.remote, &spec.excludes,
                &*sftp, &spec.conflict_resolution,
-               &mut work, &mut total, &mut seen, &mut scanned).await?;
+               &mut work, &mut total, &mut seen, &mut scanned, &mut local_dirs).await?;
     walk_remote(&*sftp, &local_root, &spec.remote, &spec.remote, &spec.excludes,
-                &mut work, &mut total, &seen, &mut scanned).await?;
+                &mut work, &mut total, &seen, &mut scanned, &mut remote_dirs).await?;
+    // Folders, empty ones too, end up on both sides: one with files would
+    // come with its first file anyway, an empty one only this way (the
+    // watcher does the same for a folder made while it runs).
+    let local_set: HashSet<&String> = local_dirs.iter().collect();
+    for rel in &local_dirs {
+        if remote_dirs.contains(rel) { continue; }
+        let local_path = local_root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let Some(remote) = local_to_remote(&local_path, &local_root, &spec.remote) else { continue };
+        if let Err(e) = sftp_mkdir_p(&sftp, &remote).await {
+            emit_log(&app, &session_id, &mirror_id, "warn", "mkdir-fail", Some(rel.clone()), Some(e));
+        }
+    }
+    for rel in &remote_dirs {
+        if local_set.contains(rel) { continue; }
+        let local_path = local_root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Err(e) = tokio::fs::create_dir_all(&local_path).await {
+            emit_log(&app, &session_id, &mirror_id, "warn", "mkdir-fail", Some(rel.clone()), Some(e.to_string()));
+        }
+    }
     {
         let mut s = status.lock().await;
         s.scanned = scanned;

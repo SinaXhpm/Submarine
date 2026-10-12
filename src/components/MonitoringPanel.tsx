@@ -515,7 +515,7 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
           <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
               <span className="text-[12px] font-bold uppercase tracking-widest text-white">Add Node to Monitor</span>
-              <button onClick={() => setAddOpen(false)} className="text-zinc-400 hover:text-white"><X size={16} /></button>
+              <button aria-label="Close" onClick={() => setAddOpen(false)} className="text-zinc-400 hover:text-white"><X size={16} /></button>
             </div>
             <div className="p-2 flex-1 overflow-y-auto custom-scrollbar">
               {availableToAdd.length === 0 ? (
@@ -762,7 +762,7 @@ const SettingsModal = ({ onClose, onSaved }: {
           <span className="text-[12px] font-bold uppercase tracking-widest text-white flex items-center gap-2">
             <SettingsIcon size={13} className="text-primary" /> Monitor Settings
           </span>
-          <button onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
+          <button aria-label="Close" onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
         </div>
         <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-4">
           {!s ? (
@@ -935,7 +935,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
             <div className="text-[12px] font-bold uppercase tracking-widest text-white">Configure</div>
             <div className="text-[12px] text-zinc-300 font-mono mt-0.5">{row.name} <span className="text-zinc-500">· {row.host}:{row.port}</span></div>
           </div>
-          <button onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
+          <button aria-label="Close" onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">

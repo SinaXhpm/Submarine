@@ -298,7 +298,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
               </span>
             )}
           </div>
-          <button onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
+          <button aria-label="Close" onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-3">
@@ -306,13 +306,13 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
             <div className="px-3 py-2 bg-rose-500/15 border border-rose-500/30 rounded text-rose-200 text-[12px] flex items-start gap-2">
               <AlertTriangle size={13} className="mt-0.5 shrink-0" />
               <span className="flex-1 break-words whitespace-pre-line">{error}</span>
-              <button onClick={() => setError(null)} className="text-rose-300/70 hover:text-white mt-0.5"><X size={12} /></button>
+              <button aria-label="Dismiss" onClick={() => setError(null)} className="text-rose-300/70 hover:text-white mt-0.5"><X size={12} /></button>
             </div>
           )}
           {info && !error && (
             <div className="px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded text-emerald-100 text-[12px] flex items-center gap-2">
               <CheckCircle2 size={13} /> <span className="flex-1 break-words">{info}</span>
-              <button onClick={() => setInfo(null)} className="text-emerald-200/70 hover:text-white"><X size={12} /></button>
+              <button aria-label="Dismiss" onClick={() => setInfo(null)} className="text-emerald-200/70 hover:text-white"><X size={12} /></button>
             </div>
           )}
 
@@ -347,7 +347,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
           {stage === "sign-in" && (
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
-                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <button aria-label="Back" onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
                 <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">Sign in</span>
               </div>
               {serverLine}
@@ -394,7 +394,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
           {stage === "forgot-email" && (
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
-                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <button aria-label="Back" onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
                 <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">Reset password</span>
               </div>
               {serverLine}
@@ -430,7 +430,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
           {stage === "forgot-reset" && (
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
-                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <button aria-label="Back" onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
                 <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">New password</span>
               </div>
               {serverLine}
@@ -476,7 +476,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
           {stage === "link-email" && (
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
-                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <button aria-label="Back" onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
                 <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">Sign in by email</span>
               </div>
               {serverLine}
@@ -512,7 +512,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
           {stage === "link-verify" && (
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
-                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <button aria-label="Back" onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
                 <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">Sign in by email</span>
               </div>
               {serverLine}
@@ -541,7 +541,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
           {stage === "sign-up-email" && (
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
-                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <button aria-label="Back" onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
                 <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">Create account</span>
               </div>
               {serverLine}
@@ -570,7 +570,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
           {stage === "sign-up-verify" && (
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
-                <button onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
+                <button aria-label="Back" onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
                 <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">Verify email</span>
               </div>
               {serverLine}

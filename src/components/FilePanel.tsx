@@ -480,7 +480,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   // `reveal`: a row to select in the new folder if it is there (going up
   // selects the folder just left).
-  const fetch = async (path: string, reveal?: string) => {
+  // `fallback`: another path to list if this one can't be (see the path box).
+  const fetch = async (path: string, reveal?: string, fallback?: string) => {
     const seq = ++listSeqRef.current;
     setLoading(true);
     try {
@@ -512,7 +513,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       onPathChange?.(result.currentPath);
       pushRecent(result.currentPath);
     } catch (err: any) {
-      if (seq === listSeqRef.current) notify(`List failed: ${err}`, "error");
+      if (seq !== listSeqRef.current) return;
+      if (fallback !== undefined && fallback !== path) {
+        // Its `finally` sees a newer listing under way and leaves the
+        // spinner to that one.
+        fetch(fallback, reveal);
+        return;
+      }
+      notify(`List failed: ${err}`, "error");
     } finally {
       if (seq === listSeqRef.current) setLoading(false);
     }
@@ -1840,14 +1848,18 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 if (activeSuggestion >= 0 && activeSuggestion < suggestions.length) {
                   pickSuggestion(suggestions[activeSuggestion]);
                 } else {
-                  const target = tempInput.trim();
-                  if (target) {
+                  // The path as typed: a name can end in a space. Only when
+                  // there's no such folder are a paste's stray spaces at
+                  // either end dropped. A line break never belongs to it.
+                  const typed = tempInput.replace(/[\r\n]+/g, "");
+                  const trimmed = typed.trim();
+                  if (trimmed) {
                     // Drop the autocomplete dropdown so the user clearly
                     // sees navigation kick off, and blur the input so
                     // browser default form-like behaviour doesn't kick in.
                     setInputFocused(false);
                     (e.currentTarget as HTMLInputElement).blur();
-                    fetch(target);
+                    fetch(typed, undefined, trimmed);
                   }
                 }
               } else if (e.key === "ArrowDown" && suggestions.length > 0) {
@@ -2337,7 +2349,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                  modal.type === "archive" ? ((modal.items?.length ?? 0) > 1 ? `Archive ${modal.items!.length} items` : "Add to archive") :
                  modal.type === "move-bulk" ? `Move ${selectedEntries.length} items to…` : "Properties"}
               </span>
-              <button onClick={() => setModal(null)} className="text-zinc-500 hover:text-white"><X size={12} /></button>
+              <button aria-label="Close" onClick={() => setModal(null)} className="text-zinc-500 hover:text-white"><X size={12} /></button>
             </div>
             <div className="space-y-3">
               {modal.type === "properties" ? (
