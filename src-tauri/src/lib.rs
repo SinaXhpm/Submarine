@@ -11581,7 +11581,20 @@ async fn ssh_info_probe_section(
 // commands from executing arbitrary shell.
 fn is_safe_fw_ident(s: &str) -> bool {
     if s.is_empty() || s.len() > 128 { return false; }
+    // A leading '-' would be read as a flag, not a name: a chain of `-Z`
+    // turns `iptables -L -Z` into "zero the counters" (as root, via the sudo
+    // fallback). No real table or chain name starts with one.
+    if s.starts_with('-') { return false; }
     s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@'))
+}
+
+// Validate a systemd unit name before splicing it into `systemctl <action> <unit>`.
+// systemd units are `[A-Za-z0-9:_.\@-]+` plus a suffix; a leading '-' would be
+// read as an option (`-H host`, `-M machine`) that redirects the action elsewhere.
+fn is_safe_systemctl_unit(unit: &str) -> bool {
+    if unit.is_empty() || unit.len() > 256 { return false; }
+    if unit.starts_with('-') { return false; }
+    unit.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | ':' | '\\'))
 }
 
 // Two-stage firewall probe (lazy detail fetch). The network section returns
@@ -11639,6 +11652,63 @@ printf '%s' \"$OUT\"",
         f = family, t = table, c = chain
     );
     run_exec_capture(&state, &session_id, &cmd, 15).await
+}
+
+#[cfg(test)]
+mod remote_ident_tests {
+    use super::{is_safe_fw_ident, is_safe_systemctl_unit};
+
+    #[test]
+    fn fw_ident_rejects_leading_dash_flags() {
+        // These splice unquoted into `iptables -L <chain>` / `nft list chain
+        // … <chain>`; a leading '-' would become a flag, not a name.
+        for bad in ["-Z", "-F", "--flush", "-", "-n", "-t"] {
+            assert!(!is_safe_fw_ident(bad), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn fw_ident_accepts_real_chain_names() {
+        for ok in ["INPUT", "FORWARD", "f2b-sshd", "DOCKER-USER", "cali_fw.1", "user@host"] {
+            assert!(is_safe_fw_ident(ok), "{ok:?} must be accepted");
+        }
+    }
+
+    #[test]
+    fn fw_ident_rejects_empty_oversize_and_metachars() {
+        assert!(!is_safe_fw_ident(""));
+        assert!(!is_safe_fw_ident(&"a".repeat(129)));
+        assert!(is_safe_fw_ident(&"a".repeat(128)));
+        for bad in ["a;b", "a b", "a|b", "a$b", "a`b", "a/b"] {
+            assert!(!is_safe_fw_ident(bad), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn systemctl_unit_rejects_leading_dash_flags() {
+        // Splices into `systemctl <action> <unit>`; `-H`/`-M` would retarget
+        // the action at a remote host or container.
+        for bad in ["-H", "-Mevil", "--host=evil", "-", "-.mount"] {
+            assert!(!is_safe_systemctl_unit(bad), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn systemctl_unit_accepts_real_units() {
+        for ok in ["nginx.service", "ssh.service", "docker.socket", "getty@tty1.service",
+                   "dev-sda1.device", "my.slice", "run-media.mount"] {
+            assert!(is_safe_systemctl_unit(ok), "{ok:?} must be accepted");
+        }
+    }
+
+    #[test]
+    fn systemctl_unit_rejects_empty_oversize_and_metachars() {
+        assert!(!is_safe_systemctl_unit(""));
+        assert!(!is_safe_systemctl_unit(&"a".repeat(257)));
+        for bad in ["a;b", "a b", "a|b", "a$(id)"] {
+            assert!(!is_safe_systemctl_unit(bad), "{bad:?} must be rejected");
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -11716,10 +11786,7 @@ async fn ssh_systemctl_action(
     // Reject hostile unit names. systemd unit names are restricted to
     // `[A-Za-z0-9:_.\\@-]+\.<suffix>` — adding any shell metachar here would
     // otherwise let the caller smuggle in a command.
-    if unit.is_empty()
-        || unit.len() > 256
-        || !unit.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | ':' | '\\'))
-    {
+    if !is_safe_systemctl_unit(&unit) {
         return Err("invalid unit name".to_string());
     }
 

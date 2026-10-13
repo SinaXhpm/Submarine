@@ -48,6 +48,12 @@ fn is_safe_name(s: &str) -> bool {
     if s.is_empty() || s.len() > 512 {
         return false;
     }
+    // A leading '-' would be read as a flag even though the value is quoted:
+    // `docker inspect '-f{{...}}'` is still a flag to docker, not a name.
+    // No real container/image/volume/network name starts with one.
+    if s.starts_with('-') {
+        return false;
+    }
     s.chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | ':' | '/'))
 }
@@ -56,6 +62,11 @@ fn is_safe_name(s: &str) -> bool {
 // validate only against shell-injection risk (no $`;|&<>(){}newline).
 fn is_safe_path(s: &str) -> bool {
     if s.is_empty() || s.len() > 4096 {
+        return false;
+    }
+    // A leading '-' would be read as a flag where the path is a bare argument
+    // (e.g. `head … <path>`). A real path can always be written `./-name`.
+    if s.starts_with('-') {
         return false;
     }
     !s.chars().any(|c| matches!(c,
@@ -735,4 +746,60 @@ pub async fn open_container_terminal(
     ));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::{is_safe_name, is_safe_path};
+
+    #[test]
+    fn name_rejects_leading_dash_flags() {
+        // Even shell-quoted, `docker inspect '-foo'` passes `-foo` as one argv
+        // token, which docker reads as a flag. A real object name never starts
+        // with '-'.
+        for bad in ["-f", "--privileged", "-H", "-", "-v/etc:/host"] {
+            assert!(!is_safe_name(bad), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn name_accepts_real_object_names() {
+        for ok in ["nginx", "my_app-1", "ghcr.io/org/app:1.2", "redis:7", "web@sha256", "proj_default"] {
+            assert!(is_safe_name(ok), "{ok:?} must be accepted");
+        }
+    }
+
+    #[test]
+    fn name_rejects_empty_oversize_and_metachars() {
+        assert!(!is_safe_name(""));
+        assert!(!is_safe_name(&"a".repeat(513)));
+        assert!(is_safe_name(&"a".repeat(512)));
+        for bad in ["a;b", "a b", "a|b", "a$(id)", "a`b`"] {
+            assert!(!is_safe_name(bad), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn path_rejects_leading_dash_flags() {
+        // A compose path is a bare argument to `head`; a leading '-' would be a
+        // flag. Legit paths can be written `./-name`.
+        for bad in ["-rf", "--help", "-", "-c1"] {
+            assert!(!is_safe_path(bad), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn path_accepts_real_paths() {
+        for ok in ["/srv/app/docker-compose.yml", "./compose.yaml", "~/stack/compose.yml",
+                   "/home/op/my project/compose.yml"] {
+            assert!(is_safe_path(ok), "{ok:?} must be accepted");
+        }
+    }
+
+    #[test]
+    fn path_still_rejects_shell_metachars() {
+        for bad in ["a;b", "a|b", "a`b`", "a$(id)", "a>b", "a\\b"] {
+            assert!(!is_safe_path(bad), "{bad:?} must be rejected");
+        }
+    }
 }
