@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Cloud, CloudOff, RefreshCw, Share2, UserPlus, X, Loader2, Users,
-  AlertTriangle, CheckCircle2, ShieldOff, Pencil, Eye, History, HardDrive,
+  AlertTriangle, CheckCircle2, ShieldOff, Pencil, Eye, History, HardDrive, KeyRound,
 } from "lucide-react";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { RoleBadge, roleBlurb } from "./shareRoles";
@@ -91,6 +91,8 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
   const [members, setMembers] = useState<MemberInfo[] | null>(null);
   // The share key's fingerprint, and a new key's while it waits for an OK.
   const [keys, setKeys] = useState<{ current: string | null; pending: string | null } | null>(null);
+  // A removal went through but replacing the key didn't: Replace the key shows.
+  const [keyRetry, setKeyRetry] = useState(false);
   const [stats, setStats] = useState<SyncStats | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -231,10 +233,33 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
     }))) return;
     setBusy(true);
     try {
+      // Removing someone replaces the key, which needs the sharing identity.
+      if (!(await ensureIdentity())) return;
       const r = await invoke<{ left_out: LeftOut[] }>("share_revoke", { shareId: st!.share_id, memberUserId: m.user_id });
+      setKeyRetry(false);
       await refresh();
+      loadStats(); // the removal synced
       if (r.left_out.length) fail(`${m.email} removed. ${leftOutText(r.left_out)}`);
       else flash(`${m.email} removed.`);
+    } catch (e) {
+      // Out of the share, but the key wasn't replaced: offer to finish it.
+      if (String(e).includes("REVOKED_BUT_KEY_NOT_ROTATED")) setKeyRetry(true);
+      await refresh();
+      loadStats();
+      fail(e);
+    } finally { setBusy(false); }
+  };
+
+  const replaceKey = async () => {
+    setBusy(true); setErr(null);
+    try {
+      if (!(await ensureIdentity())) return;
+      const r = await invoke<{ left_out: LeftOut[] }>("share_replace_key");
+      setKeyRetry(false);
+      await refresh();
+      loadStats();
+      if (r.left_out.length) fail(`Key replaced. ${leftOutText(r.left_out)}`);
+      else flash("Key replaced.");
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
 
@@ -635,6 +660,18 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                 A new key (<span className="font-mono">{keys.pending}</span>) is waiting for your OK in Servers. Until
                 you accept it, your changes aren't uploaded.
               </p>
+            )}
+            {isOwner && keyRetry && (
+              <div className="flex items-center gap-2 text-[11px] text-amber-200/90">
+                <span className="flex-1">The key wasn't replaced, so whoever you removed still holds it.</span>
+                <button
+                  onClick={replaceKey}
+                  disabled={busy}
+                  className="h-7 px-2.5 rounded bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20 text-[11px] font-bold disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  {busy ? <Loader2 size={11} className="animate-spin" /> : <KeyRound size={11} />} Replace the key
+                </button>
+              </div>
             )}
 
             <div className="pt-2 border-t border-white/5">

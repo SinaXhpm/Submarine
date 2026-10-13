@@ -2610,9 +2610,9 @@ async fn share_set_role(
 /// Both writes reuse existing endpoints, which upsert: `/shares/invite` replaces
 /// an existing member's `sealed_dek` without disturbing their `status`, and
 /// `/shares/create` replaces the owner's own grant. The owner's next sync
-/// re-uploads every record under the new key (pushes are always a full set), and
-/// remaining members are offered the new key on their next sync
-/// (`note_share_key`). Returns the members who weren't given it.
+/// re-uploads every record under the new key (`bump_for_new_key` makes the
+/// server take them), and remaining members are offered the new key on their
+/// next sync (`note_share_key`). Returns the members who weren't given it.
 async fn rotate_share_dek(
     app: &tauri::AppHandle,
     db_state: &tauri::State<'_, DbState>,
@@ -2697,18 +2697,58 @@ async fn rotate_share_dek(
         // Only into the profile this was for. If it closed meanwhile, its next
         // sync finds the new key in its own grant and asks for it.
         db_state.still_open(generation)?;
-        conn.execute(
+        // The new key, the members' first-seen keys and every row marked to go
+        // out again under it, together or not at all.
+        let tx = conn.unchecked_transaction().map_err(|e| format!("[SHARE] TX: {e}"))?;
+        tx.execute(
             "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [&hex::encode(fresh)],
         )
         .map_err(|e| format!("[SHARE] SET_DEK: {e}"))?;
         for (email, key) in &first_seen {
-            pin_member_key(conn, share_id, email, key)?;
+            pin_member_key(&tx, share_id, email, key)?;
         }
+        bump_for_new_key(&tx)?;
+        tx.commit().map_err(|e| format!("[SHARE] TX_COMMIT: {e}"))?;
     }
     save_vault_async(db_state).await?;
     Ok(left_out)
 }
+
+/// Marks every synced row to go out again after its share's key is replaced.
+/// The server keeps the copy it has unless a push carries a newer stamp, so
+/// otherwise everything nobody edited since would stay sealed with the old
+/// key, which no one invited later can open. The newer stamp is the smallest
+/// step up (the same moment and device, the counter one higher), so a real
+/// edit made since, anywhere, still wins. Runs with the merge flag on, so no
+/// trigger takes it for an edit.
+fn bump_for_new_key(conn: &Connection) -> Result<usize, String> {
+    conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
+        .map_err(|e| format!("[SHARE] BUMP_FLAG: {e}"))?;
+    let bumped = (|| {
+        let mut n = 0;
+        for t in SYNCED_TABLES {
+            n += conn
+                .execute(
+                    &format!(
+                        "UPDATE {t} SET updated_at = substr(updated_at, 1, 16)
+                             || printf('%05d', CAST(substr(updated_at, 17, 5) AS INTEGER) + 1) || substr(updated_at, 22)
+                         WHERE uuid IS NOT NULL
+                           AND updated_at GLOB '{HLC_GLOB}'
+                           AND CAST(substr(updated_at, 17, 5) AS INTEGER) < 99999"
+                    ),
+                    [],
+                )
+                .map_err(|e| format!("[SHARE] BUMP {t}: {e}"))?;
+        }
+        Ok(n)
+    })();
+    let _ = conn.execute("UPDATE sync_flags SET val=0 WHERE key='merge'", []);
+    bumped
+}
+
+/// A well-formed stamp, `{phys:015}:{counter:05}:{node}`, as a GLOB pattern.
+const HLC_GLOB: &str = "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]:[0-9][0-9][0-9][0-9][0-9]:?*";
 
 /// Owner: remove a member, then rotate the key they walked away with.
 #[tauri::command]
@@ -2719,6 +2759,9 @@ async fn share_revoke(
     share_id: String,
     member_user_id: i64,
 ) -> Result<RevokeResult, String> {
+    // Replacing the key needs the sharing identity. Checked before the member
+    // is removed, so a locked one can't leave them out with the key unchanged.
+    cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: unlock sharing first")?;
     let session = cloud.session().await?;
     // The rotation below works on THIS profile, so the share has to be its
     // own; `generation` keeps it from reading or writing another one opened
@@ -2737,15 +2780,58 @@ async fn share_revoke(
     // consequence and silently swallowing it would misrepresent what happened.
     let not_rotated = |e: String| {
         format!(
-            "[SHARE] REVOKED_BUT_KEY_NOT_ROTATED: {} is out of the share, but the shared key could not be replaced ({e}). \
-             They can no longer reach the server, but they still hold the old key — retry from the members list to rotate it.",
-            member_user_id
+            "[SHARE] REVOKED_BUT_KEY_NOT_ROTATED: the member is out of the share, but the shared key could not be replaced ({e}). \
+             They can no longer reach the server, but they still hold the old key. Use Replace the key to try again."
         )
     };
+    let left_out = replace_share_key(&app, &db_state, &cloud, &session, &share_id, generation)
+        .await
+        .map_err(not_rotated)?;
+    Ok(RevokeResult { left_out })
+}
+
+/// Owner: replace the open shared profile's key, as removing a member does.
+/// What finishes a removal whose key change failed.
+#[tauri::command]
+async fn share_replace_key(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<RevokeResult, String> {
+    cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: unlock sharing first")?;
+    let session = cloud.session().await?;
+    let (share_id, generation) = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        check_profile_server(conn, session.base())?;
+        let share_id: String = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0))
+            .map_err(|_| "[SHARE] NOT_SHARED: this profile isn't shared")?;
+        own_share(conn, &share_id)?;
+        (share_id, db_state.generation_now())
+    };
+    let left_out = replace_share_key(&app, &db_state, &cloud, &session, &share_id, generation).await?;
+    Ok(RevokeResult { left_out })
+}
+
+/// Replace a share's key and put everything on the server under it. A sync
+/// first, with the old key, so what members changed lately is here too; then
+/// the new key, which marks every row to go out again (`rotate_share_dek`);
+/// then a sync that uploads them. Anyone invited later can then read all of
+/// it, not only what was edited after the change.
+async fn replace_share_key(
+    app: &tauri::AppHandle,
+    db_state: &tauri::State<'_, DbState>,
+    cloud: &tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+    session: &cloud::Session,
+    share_id: &str,
+    generation: u64,
+) -> Result<Vec<LeftOut>, String> {
+    sync_with(app, db_state, cloud, session, Some(generation)).await?;
     let name = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-        db_state.still_open(generation).map_err(not_rotated)?;
+        db_state.still_open(generation)?;
         conn.query_row("SELECT value FROM sync_meta WHERE key='share_name'", [], |r| r.get::<_, String>(0))
             .ok()
     };
@@ -2758,10 +2844,12 @@ async fn share_revoke(
             .clone()
             .unwrap_or_else(|| "profile".to_string()),
     };
-    let left_out = rotate_share_dek(&app, &db_state, &cloud, &session, &share_id, &name, generation)
-        .await
-        .map_err(not_rotated)?;
-    Ok(RevokeResult { left_out })
+    let left_out = rotate_share_dek(app, db_state, cloud, session, share_id, &name, generation).await?;
+    // The rows are marked by now, so if this upload fails, the next sync does it.
+    if let Err(e) = sync_with(app, db_state, cloud, session, Some(generation)).await {
+        eprintln!("[SHARE] uploading under the new key failed, the next sync tries again: {e}");
+    }
+    Ok(left_out)
 }
 
 #[derive(serde::Serialize)]
@@ -3542,6 +3630,38 @@ mod sync_engine_tests {
             1,
             "the corrupt record must be skipped, never inserted",
         );
+    }
+
+    // After a share's key is replaced, every row goes out again: its stamp
+    // moves up by the smallest step (same moment and device, counter + 1), so
+    // the server takes the copy sealed with the new key, while an edit made
+    // since, anywhere, still wins. Nothing takes it for an edit.
+    #[test]
+    fn a_new_share_key_sends_every_row_again() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO sync_meta(key,value) VALUES('editor_label','alice@x')", []).unwrap();
+        a.execute("INSERT INTO servers(name,host,port) VALUES('s','h',22)", []).unwrap();
+        a.execute("INSERT INTO notes(title,body) VALUES('n','b')", []).unwrap();
+        // A counter that can't go up any further: left as it is.
+        a.execute("UPDATE notes SET updated_at='000000000000001:99999:x'", []).unwrap();
+        let row = |c: &Connection| -> (String, Option<String>) {
+            c.query_row("SELECT updated_at, edited_by FROM servers", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        let (before, by) = row(&a);
+
+        assert_eq!(bump_for_new_key(&a).unwrap(), 1);
+        let (after, by_after) = row(&a);
+        assert_eq!((&after[..16], &after[21..]), (&before[..16], &before[21..]), "same moment, same device");
+        assert_eq!(after[16..21].parse::<u32>().unwrap(), before[16..21].parse::<u32>().unwrap() + 1);
+        assert_eq!(by_after, by, "not taken for an edit");
+        let note: String = a.query_row("SELECT updated_at FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(note, "000000000000001:99999:x");
+        let merging: i64 = a.query_row("SELECT val FROM sync_flags WHERE key='merge'", [], |r| r.get(0)).unwrap();
+        assert_eq!(merging, 0, "the merge flag is off again");
+
+        // Newer than the copy under the old key, older than any later edit.
+        let later = format!("{:015}:00000:0", hlc::Hlc::phys_of(&before) + 1);
+        assert!(before < after && after < later);
     }
 
     /// A stamp `ms` ahead of now: newer than anything a test device has
@@ -15939,7 +16059,7 @@ pub fn run() {
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
-            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key,
+            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key,
             set_editor_label,
             add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
