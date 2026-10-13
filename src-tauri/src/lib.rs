@@ -6854,11 +6854,42 @@ pub(crate) enum KeyDecodeError {
 /// OpenSSH header's `is_encrypted()`, a legacy `Proc-Type: 4,ENCRYPTED` PEM, or
 /// an encrypted PKCS#8 one) — the same checks `load_key_from_disk` uses — so a
 /// wrong passphrase is reported as `NeedsPassphrase` rather than `Malformed`.
+/// The most bcrypt rounds an OpenSSH private key may ask for. `ssh-keygen`
+/// defaults to 16 and never writes more than a few hundred even when told to;
+/// 1024 leaves generous headroom while keeping a decode bounded to a fraction
+/// of a second, so a key can't make decoding hang.
+const MAX_KEY_KDF_ROUNDS: u32 = 1024;
+
+/// Refuse an OpenSSH private key whose bcrypt KDF asks for more rounds than a
+/// real key ever would, before the expensive derivation runs. The round count
+/// is in the key's cleartext envelope, read here without the passphrase. Keys
+/// in other formats (PEM, PKCS#8) parse past this untouched — their cost is
+/// bounded elsewhere.
+fn guard_key_kdf_cost(pem: &str) -> Result<(), KeyDecodeError> {
+    if let Ok(key) = ssh_key::PrivateKey::from_openssh(pem.trim()) {
+        if let ssh_key::Kdf::Bcrypt { rounds, .. } = key.kdf() {
+            if *rounds > MAX_KEY_KDF_ROUNDS {
+                return Err(KeyDecodeError::Malformed(format!(
+                    "this key asks for {rounds} key-derivation rounds — far more than a real key needs (limit {MAX_KEY_KDF_ROUNDS}); re-save it with `ssh-keygen -p -f <keyfile>`"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn decode_private_key(
     private_key: &str,
     passphrase: Option<&str>,
 ) -> Result<russh::keys::PrivateKey, KeyDecodeError> {
     let normalized = private_key.replace("\r\n", "\n");
+    // Refuse an absurd KDF cost BEFORE running it. An OpenSSH key names its
+    // bcrypt round count in the clear, and decoding runs that many rounds; a
+    // key synced by another member of a shared profile (or handed over by a
+    // broken server) could set it to billions and pin a thread for ages on
+    // every unlock. A real key uses tens of rounds — thousands is already far
+    // past anything `ssh-keygen` makes.
+    guard_key_kdf_cost(&normalized)?;
     let passphrase = passphrase.filter(|p| !p.is_empty());
     // russh decrypts the legacy PEM encryption only for RSA keys: an ECDSA key
     // encrypted that way decrypts and then fails the RSA decode whatever the
@@ -7456,6 +7487,53 @@ mod key_format_tests {
             let sig = key.sign("submarine-test", ssh_key::HashAlg::Sha512, b"hello").expect("signs");
             key.public_key().verify("submarine-test", b"hello", &sig).expect("verifies");
         }
+    }
+
+    // Set the bcrypt round count in an OpenSSH key's cleartext envelope (its
+    // last-4-bytes field) without touching anything else, so a key that asks
+    // for an absurd cost can be built without running that cost.
+    fn patch_bcrypt_rounds(pem: &str, rounds: u32) -> String {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        let mut bytes = STANDARD.decode(body.trim()).unwrap();
+        let str_len = |b: &[u8], p: usize| u32::from_be_bytes([b[p], b[p + 1], b[p + 2], b[p + 3]]) as usize;
+        let mut p = 15; // past "openssh-key-v1\0"
+        p += 4 + str_len(&bytes, p); // ciphername
+        p += 4 + str_len(&bytes, p); // kdfname
+        let opts_end = p + 4 + str_len(&bytes, p); // end of kdfoptions (= rounds, last 4 bytes)
+        bytes[opts_end - 4..opts_end].copy_from_slice(&rounds.to_be_bytes());
+        let b64 = STANDARD.encode(&bytes);
+        let mut out = String::from("-----BEGIN OPENSSH PRIVATE KEY-----\n");
+        for chunk in b64.as_bytes().chunks(70) {
+            out.push_str(std::str::from_utf8(chunk).unwrap());
+            out.push('\n');
+        }
+        out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
+        out
+    }
+
+    // A key whose bcrypt KDF asks for billions of rounds is refused before any
+    // derivation runs, so it can't pin a thread; a normal one still decodes.
+    #[test]
+    fn a_key_with_an_absurd_kdf_cost_is_refused() {
+        use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
+        let kp = ssh_key::PrivateKey::from(Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[7u8; 32])));
+        let enc = kp.encrypt(&mut rand::rng(), "pw").expect("encrypt with default rounds");
+        let pem = enc.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
+        // The normal key (default rounds) passes the guard and decodes.
+        assert!(guard_key_kdf_cost(&pem).is_ok());
+        assert!(decode_private_key(&pem, Some("pw")).is_ok());
+        // With the rounds bumped past the limit, both the guard and the decode
+        // refuse it — the test would hang here if decoding ran the KDF.
+        let huge = patch_bcrypt_rounds(&pem, u32::MAX);
+        assert!(matches!(guard_key_kdf_cost(&huge), Err(KeyDecodeError::Malformed(_))));
+        assert!(decode_private_key(&huge, Some("pw")).is_err());
+        // Just over the limit is refused; the limit itself is allowed.
+        assert!(guard_key_kdf_cost(&patch_bcrypt_rounds(&pem, MAX_KEY_KDF_ROUNDS + 1)).is_err());
+        assert!(guard_key_kdf_cost(&patch_bcrypt_rounds(&pem, MAX_KEY_KDF_ROUNDS)).is_ok());
+        // An unencrypted key (no KDF) is untouched.
+        let plain = kp.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
+        assert!(guard_key_kdf_cost(&plain).is_ok());
     }
 
     #[test]
