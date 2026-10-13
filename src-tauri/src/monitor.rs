@@ -801,7 +801,16 @@ async fn connect_for_monitor(
     }
     let (key_pair, password) = classify_auth(auth)?;
 
-    let config = Arc::new(monitor_client_config());
+    // Asks the host for the kinds of host key on file for it first, as the
+    // session does, so both negotiate the key that's trusted.
+    let mut config = monitor_client_config();
+    if let Ok(guard) = db.lock() {
+        if let Some(conn) = guard.as_ref() {
+            let families = crate::ssh_manager::known_host_families(conn, &auth.host, auth.port);
+            crate::prefer_known_host_keys(&mut config.preferred, &families);
+        }
+    }
+    let config = Arc::new(config);
 
     let handler = MonitorHandler {
         db: Arc::clone(db),

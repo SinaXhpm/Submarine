@@ -8062,6 +8062,40 @@ fn build_ssh_client_config() -> russh::client::Config {
     config
 }
 
+/// `build_ssh_client_config`, asking `host:port` for the kinds of host key
+/// already on file for it first (`prefer_known_host_keys`).
+fn build_ssh_client_config_for(
+    db: &std::sync::Arc<StdMutex<Option<Connection>>>,
+    host: &str,
+    port: u16,
+) -> russh::client::Config {
+    let mut config = build_ssh_client_config();
+    if let Ok(guard) = db.lock() {
+        if let Some(conn) = guard.as_ref() {
+            prefer_known_host_keys(&mut config.preferred, &ssh_manager::known_host_families(conn, host, port));
+        }
+    }
+    config
+}
+
+/// Moves the host-key algorithms for kinds of key already on file for a host
+/// ahead of the others, each group in its usual order. A server with several
+/// host keys then shows the one this device trusts: a host first saved with
+/// its RSA key keeps showing that one after it gains an Ed25519 key, instead
+/// of an unknown key that would now get the "changed" warning
+/// (ssh_manager::judge_host_key).
+pub(crate) fn prefer_known_host_keys(preferred: &mut russh::Preferred, families: &[String]) {
+    if families.is_empty() {
+        return;
+    }
+    let (known, other): (Vec<_>, Vec<_>) = preferred
+        .key
+        .iter()
+        .cloned()
+        .partition(|a| families.contains(&ssh_manager::key_type_family(a.as_str())));
+    preferred.key = std::borrow::Cow::Owned(known.into_iter().chain(other).collect());
+}
+
 /// Timing caps for the connect driver's prompt-aware handshake timeout.
 #[derive(Clone, Copy)]
 struct ConnectTimeoutCaps {
@@ -8238,13 +8272,61 @@ mod connect_timeout_tests {
 
 #[cfg(test)]
 mod ssh_config_tests {
-    use super::{build_ssh_client_config, ssh_preferred_algorithms};
+    use super::{build_ssh_client_config, prefer_known_host_keys, ssh_preferred_algorithms};
     use crate::ssh_test_server::{connect, connect_with_client, TestClient, TestServer};
     use std::borrow::Cow;
     use std::sync::Arc;
 
     fn names<T: AsRef<str>>(list: &[T]) -> Vec<String> {
         list.iter().map(|n| n.as_ref().to_string()).collect()
+    }
+
+    fn host_key_order(p: &russh::Preferred) -> Vec<String> {
+        p.key.iter().map(|a| a.to_string()).collect()
+    }
+
+    // The kinds of host key on file for a host are asked for first, each group
+    // in its usual order; with nothing on file the list stays as it is.
+    #[test]
+    fn the_kinds_of_host_key_on_file_are_asked_for_first() {
+        let usual = host_key_order(&ssh_preferred_algorithms());
+        let mut p = ssh_preferred_algorithms();
+        prefer_known_host_keys(&mut p, &[]);
+        assert_eq!(host_key_order(&p), usual);
+
+        let mut p = ssh_preferred_algorithms();
+        prefer_known_host_keys(&mut p, &["ssh-rsa".to_string()]);
+        let order = host_key_order(&p);
+        assert_eq!(&order[..4], ["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa", "ssh-ed25519"]);
+        assert_eq!(order.len(), usual.len());
+
+        let mut p = ssh_preferred_algorithms();
+        prefer_known_host_keys(&mut p, &["ecdsa-sha2-nistp384".to_string(), "ssh-ed25519".to_string()]);
+        assert_eq!(&host_key_order(&p)[..3], ["ssh-ed25519", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp256"]);
+    }
+
+    /// Against a real (in-process) server with an Ed25519 and an ECDSA host
+    /// key: the usual order gets the Ed25519 one, and with the ECDSA kind on
+    /// file for the host, the ECDSA one, which is the key this device trusts.
+    #[tokio::test]
+    async fn a_server_with_two_host_keys_shows_the_kind_on_file() {
+        let ecdsa = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::Algorithm::Ecdsa { curve: russh::keys::EcdsaCurve::NistP256 },
+        )
+        .unwrap();
+        for (on_file, shown) in [(vec![], "ssh-ed25519"), (vec!["ecdsa-sha2-nistp256".to_string()], "ecdsa-sha2-nistp256")] {
+            let mut config = build_ssh_client_config();
+            prefer_known_host_keys(&mut config.preferred, &on_file);
+            let client = TestClient::default();
+            let negotiated = Arc::clone(&client.negotiated);
+            let ecdsa = ecdsa.clone();
+            let _session = connect_with_client(TestServer::default(), move |c| c.keys.push(ecdsa), config, client)
+                .await
+                .expect("in-process SSH connection");
+            let names = negotiated.lock().unwrap().clone().expect("kex done");
+            assert_eq!(names.key.to_string(), shown);
+        }
     }
 
     #[test]
@@ -8545,7 +8627,7 @@ async fn connect_jump_host(
     };
 
     // 4. Handshake.
-    let config = std::sync::Arc::new(build_ssh_client_config());
+    let config = std::sync::Arc::new(build_ssh_client_config_for(db, &host, port as u16));
     log("Jump host: SSH handshake...", "info");
     // The 15s handshake cap bounds only the pre-prompt transport+kex phase;
     // once check_server_key shows a first-time fingerprint prompt the wait
@@ -9047,6 +9129,9 @@ async fn initiate_connection(
     // session watcher below.
     let last_heard = ssh_manager::LastHeard::default();
 
+    // Built here, while the database handle is still ours: the handshake
+    // asks this host for the kinds of host key on file for it first.
+    let client_config = Arc::new(build_ssh_client_config_for(&db_conn_shared, &host, port as u16));
     let handler = ssh_manager::ClientHandler {
         app: app.clone(),
         session_id: session_id.clone(),
@@ -9342,7 +9427,7 @@ async fn initiate_connection(
         emit_log("Starting SSH Handshake and establishing secure session...", "info");
         // Config (keepalive, windows, algorithm negotiation) is shared with the
         // ProxyJump hop — see build_ssh_client_config for the full rationale.
-        let config = Arc::new(build_ssh_client_config());
+        let config = client_config;
 
         let connect_future = client::connect_stream(config, StreamWrapper(stream), handler);
 
