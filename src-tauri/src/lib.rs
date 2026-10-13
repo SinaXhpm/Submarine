@@ -246,12 +246,16 @@ fn vault_compress(plaintext: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("[VAULT] COMPRESS_FAILED: {}", e))
 }
 
+/// The largest vault (its SQLite image, before compression) this app opens,
+/// so also the largest it saves: one saved past it could never be opened
+/// again. Released builds open up to the same 64 MiB.
+const VAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 /// Decompress the post-decrypt body for vault v2 reads. Bounded by a
 /// generous max-size guard so a corrupt or hostile file can't make us
 /// allocate gigabytes — a real Submarine SQLite snapshot is well under
 /// 64 MiB even with thousands of nodes.
 fn vault_decompress(compressed: &[u8]) -> Result<Vec<u8>, String> {
-    const MAX_DECOMPRESSED: usize = 64 * 1024 * 1024;
     let mut out = Vec::new();
     let mut decoder = zstd::stream::Decoder::new(compressed)
         .map_err(|e| format!("[VAULT] DECOMPRESS_INIT_FAILED: {}", e))?;
@@ -261,7 +265,7 @@ fn vault_decompress(compressed: &[u8]) -> Result<Vec<u8>, String> {
         let n = decoder.read(&mut buf)
             .map_err(|e| format!("[VAULT] DECOMPRESS_FAILED: {}", e))?;
         if n == 0 { break; }
-        if out.len() + n > MAX_DECOMPRESSED {
+        if out.len() + n > VAULT_MAX_BYTES {
             return Err("[VAULT] DECOMPRESS_TOO_LARGE: refusing to inflate past 64 MiB".into());
         }
         out.extend_from_slice(&buf[..n]);
@@ -297,6 +301,11 @@ fn save_vault_blocking(
 ) -> Result<(), String> {
     let serialized = conn.serialize(MAIN_DB)
         .map_err(|e| format!("[DATABASE] SERIALIZE_FAILED: {}", e))?;
+    // Past this, the next unlock would refuse the file, and everything in it
+    // with it. The file on disk stays as it was.
+    if serialized.len() > VAULT_MAX_BYTES {
+        return Err("[VAULT] TOO_LARGE: this profile has grown past 64 MiB, the most it can be opened at, so it wasn't saved. The copy on disk is unchanged.".into());
+    }
     // Compress-then-encrypt. Order matters: compressing AFTER encryption
     // is useless because AES-GCM ciphertext is indistinguishable from
     // random. Doing it before keeps the on-disk file small AND keeps
@@ -828,6 +837,68 @@ const ENTITIES: &[EntitySpec] = &[
     },
 ];
 
+/// What a synced column may hold, where SQLite won't check it: the list
+/// readers (`get_servers` and the rest) take some columns as non-NULL text
+/// and a server's port as a number, and one row that doesn't fit fails the
+/// whole list, on every device the record reaches. A remote record is
+/// checked against this before any of it is written. (A NULL in a NOT NULL
+/// column fails the write itself, which skips the record just the same.)
+#[derive(Clone, Copy)]
+enum ColKind {
+    /// Text, or NULL.
+    Text,
+    /// Text, never NULL: a list reader needs it.
+    RequiredText,
+    /// A whole number a list reads as 32 bits (a port), never NULL.
+    Int32,
+    /// The same, or NULL.
+    OptionalInt32,
+    /// A whole number (true/false count), or NULL.
+    OptionalInt,
+}
+
+fn col_kind(table: &str, col: &str) -> ColKind {
+    match (table, col) {
+        ("ssh_keys", "name" | "public_key")
+        | ("folders", "name")
+        | ("credentials", "name" | "auth_type" | "username")
+        | ("servers", "name" | "host")
+        | ("commands", "title" | "content")
+        | ("notes", "title" | "body") => ColKind::RequiredText,
+        ("servers", "port") => ColKind::Int32,
+        ("servers", "proxy_port") => ColKind::OptionalInt32,
+        ("servers", "autostart" | "position") => ColKind::OptionalInt,
+        _ => ColKind::Text,
+    }
+}
+
+impl ColKind {
+    fn accepts(self, v: Option<&serde_json::Value>) -> bool {
+        use serde_json::Value;
+        let int32 = |v: &Value| v.as_i64().is_some_and(|n| i32::try_from(n).is_ok());
+        match (self, v) {
+            (ColKind::Text, None | Some(Value::Null | Value::String(_))) => true,
+            (ColKind::RequiredText, Some(Value::String(_))) => true,
+            (ColKind::Int32, Some(v)) => int32(v),
+            (ColKind::OptionalInt32, None | Some(Value::Null)) => true,
+            (ColKind::OptionalInt32, Some(v)) => int32(v),
+            (ColKind::OptionalInt, None | Some(Value::Null | Value::Bool(_))) => true,
+            (ColKind::OptionalInt, Some(v)) => v.is_i64(),
+            _ => false,
+        }
+    }
+}
+
+/// The most hex one record's blob may carry: the sync server's own limit
+/// (2 MiB of hex, under 1 MiB of payload). Only a broken or hostile server
+/// sends more.
+const MAX_RECORD_BLOB_HEX: usize = 2 * 1024 * 1024;
+
+/// The most a merge may grow a vault to: three quarters of what it can be
+/// saved at, which leaves this device room for its own use. The server holds
+/// an account to a few MB, so an honest one never comes near it.
+const MERGE_MAX_BYTES: usize = VAULT_MAX_BYTES / 4 * 3;
+
 /// AES-256-GCM a per-entity payload with the profile key; frame is `nonce || ct`
 /// hex-encoded. Same key that protects the whole vault, so the server stays
 /// zero-knowledge.
@@ -913,9 +984,41 @@ fn collect_local_records(conn: &Connection, key: &[u8; 32], since: &str) -> Resu
 fn apply_remote_records(conn: &Connection, key: &[u8; 32], records: &[SyncRecord], hlc: &hlc::Hlc) -> Result<(), String> {
     conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
         .map_err(|e| format!("[SYNC] MERGE_ON: {e}"))?;
-    let r = apply_remote_inner(conn, key, records, hlc);
+    let r = apply_remote_inner(conn, key, records, hlc, MERGE_MAX_BYTES);
     let _ = conn.execute("UPDATE sync_flags SET val=0 WHERE key='merge'", []);
     r
+}
+
+/// The id and stamp a record needs before the merge looks at it, by the
+/// rules the sync server applies to everything it stores: an id of 1–64
+/// lowercase hex, and a stamp a clock could have issued, not far ahead of
+/// now (`Hlc::valid_remote`).
+fn sane_record(rec: &SyncRecord) -> bool {
+    (1..=64).contains(&rec.uuid.len())
+        && rec.uuid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && hlc::Hlc::valid_remote(&rec.updated_at)
+}
+
+/// The vault's size as it would be saved: its SQLite image, free pages and all.
+fn vault_bytes(conn: &Connection) -> Result<usize, String> {
+    let pages: i64 = conn
+        .query_row("PRAGMA page_count", [], |r| r.get(0))
+        .map_err(|e| format!("[SYNC] PAGE_COUNT: {e}"))?;
+    let size: i64 = conn
+        .query_row("PRAGMA page_size", [], |r| r.get(0))
+        .map_err(|e| format!("[SYNC] PAGE_SIZE: {e}"))?;
+    Ok((pages.max(0) as usize).saturating_mul(size.max(0) as usize))
+}
+
+/// Run `f` as one unit inside the merge's transaction. If it fails, whatever
+/// it wrote is rolled back and the merge goes on without it: the inner
+/// result. The outer one fails only when the savepoint itself does.
+fn in_savepoint(conn: &Connection, f: impl FnOnce() -> Result<(), String>) -> Result<Result<(), String>, String> {
+    conn.execute_batch("SAVEPOINT merge_record").map_err(|e| format!("[SYNC] SAVEPOINT: {e}"))?;
+    let r = f();
+    let end = if r.is_ok() { "RELEASE merge_record" } else { "ROLLBACK TO merge_record; RELEASE merge_record" };
+    conn.execute_batch(end).map_err(|e| format!("[SYNC] SAVEPOINT_END: {e}"))?;
+    Ok(r)
 }
 
 /// One deferred foreign-key repair: set `table.fk_col` for the row `uuid` to
@@ -928,8 +1031,22 @@ struct FkFixup {
     ref_uuid: String,
 }
 
-fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord], hlc: &hlc::Hlc) -> Result<(), String> {
-    for rec in records {
+fn apply_remote_inner(
+    conn: &Connection,
+    key: &[u8; 32],
+    records: &[SyncRecord],
+    hlc: &hlc::Hlc,
+    max_bytes: usize,
+) -> Result<(), String> {
+    // What the server wouldn't store doesn't get in here either. A stamp that
+    // isn't one a clock could have issued, or sits far ahead of now, would win
+    // LWW against every later edit and delete of its row; only a broken or
+    // hostile server sends one.
+    let (records, refused): (Vec<&SyncRecord>, Vec<&SyncRecord>) = records.iter().partition(|r| sane_record(r));
+    if !refused.is_empty() {
+        eprintln!("[SYNC] refused {} record(s) with a malformed id or stamp", refused.len());
+    }
+    for rec in &records {
         hlc.observe(hlc::Hlc::phys_of(&rec.updated_at));
     }
     // The whole merge runs inside ONE transaction: either every applicable record
@@ -938,6 +1055,7 @@ fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord],
     // drops uncommitted and SQLite rolls the batch back. This is what keeps a bad
     // sync from corrupting local data.
     let tx = conn.unchecked_transaction().map_err(|e| format!("[SYNC] TX_BEGIN: {e}"))?;
+    let size_before = vault_bytes(&tx)?;
     // FKs to re-resolve once the whole batch has landed. `ref_table` has to ride
     // along: the lookup used to read `SELECT id FROM {table}` — the row's OWN
     // table — which was only ever correct because the sole queued FKs were the
@@ -949,7 +1067,7 @@ fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord],
     // or parse — a corrupt or hostile blob from a broken/compromised server — is
     // logged and skipped, never aborting the merge. One poison record must not be
     // able to block every OTHER record (or every future sync) from applying.
-    let mut skipped = 0usize;
+    let mut skipped = refused.len();
     // In a shared profile, whatever a record newly sets running by itself
     // (commands on connect, autostart, forwards, monitor commands) is held
     // until this device's user allows it — see approvals.rs. Holding is part
@@ -970,7 +1088,7 @@ fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord],
         }
     }
     for rec in records.iter().filter(|r| r.deleted) {
-        if let Err(e) = apply_tombstone(&tx, rec) {
+        if let Err(e) = in_savepoint(&tx, || apply_tombstone(&tx, rec))? {
             skipped += 1;
             eprintln!("[SYNC] skipped tombstone uuid={} type={}: {}", rec.uuid, rec.entity_type, e);
         }
@@ -991,6 +1109,15 @@ fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord],
         ) {
             eprintln!("[SYNC] fk fixup skipped {}.{} uuid={}: {}", f.table, f.fk_col, f.uuid, e);
         }
+    }
+    // Not toward the size the vault can no longer be saved or opened at. An
+    // honest server never sends that much, so none of it lands.
+    let size_after = vault_bytes(&tx)?;
+    if size_after > max_bytes && size_after > size_before {
+        return Err(format!(
+            "[SYNC] TOO_LARGE: what the server sent would grow this profile past {} MiB, so none of it was applied.",
+            max_bytes / (1024 * 1024)
+        ));
     }
     tx.commit().map_err(|e| format!("[SYNC] TX_COMMIT: {e}"))?;
     if skipped > 0 {
@@ -1024,9 +1151,15 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
         return Ok(());
     }
     let blob = rec.blob.as_deref().ok_or("[SYNC] ENTITY_NO_BLOB")?;
+    if blob.len() > MAX_RECORD_BLOB_HEX {
+        return Err("[SYNC] RECORD_TOO_LARGE".into());
+    }
     let plain = decrypt_entity(blob, key)?;
     let payload: serde_json::Value = serde_json::from_slice(&plain).map_err(|e| format!("[SYNC] PAYLOAD_JSON: {e}"))?;
     let obj = payload.as_object().ok_or("[SYNC] PAYLOAD_NOT_OBJ")?;
+    if let Some(c) = spec.cols.iter().find(|c| !col_kind(spec.table, c).accepts(obj.get(**c))) {
+        return Err(format!("[SYNC] BAD_VALUE {}.{c}", spec.table));
+    }
 
     let mut columns: Vec<String> = vec!["uuid".into(), "updated_at".into(), "deleted".into()];
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
@@ -1054,6 +1187,10 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
             params.push(json_to_sql(val));
         }
     }
+    // Queued only once the row itself is written (below): the repair pass
+    // runs after the whole batch, so a record that fails here would still
+    // have set its links on the row it failed to replace.
+    let mut fixups: Vec<FkFixup> = Vec::new();
     for fk in spec.fks {
         let ref_uuid = obj.get(fk.key).and_then(|v| v.as_str());
         let id: Option<i64> = match ref_uuid {
@@ -1084,7 +1221,7 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                     // that no longer exists, permanently and silently: the link
                     // surfaced much later as "jump host not found", or as a
                     // folder that had quietly lost its parent.
-                    fk_fixups.push(FkFixup {
+                    fixups.push(FkFixup {
                         table: spec.table.to_string(),
                         uuid: rec.uuid.clone(),
                         fk_col: fk.col.to_string(),
@@ -1126,13 +1263,55 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     );
     let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|b| b.as_ref()).collect();
     conn.execute(&sql, refs.as_slice()).map_err(|e| format!("[SYNC] UPSERT {}: {e}", spec.table))?;
+    fk_fixups.extend(fixups);
     Ok(())
 }
 
+/// One remote deletion. It can write three things (unlink, delete, record the
+/// tombstone), so the caller runs it in a savepoint: a delete that fails
+/// leaves no tombstone claiming it happened.
 fn apply_tombstone(conn: &Connection, rec: &SyncRecord) -> Result<(), String> {
     // Only tombstones for known entity types are meaningful here.
-    if !ENTITIES.iter().any(|s| s.table == rec.entity_type) {
+    let Some(spec) = ENTITIES.iter().find(|s| s.table == rec.entity_type) else {
         return Ok(());
+    };
+    let local: Option<(i64, Option<String>)> = conn
+        .query_row(
+            &format!("SELECT rowid, updated_at FROM {} WHERE uuid=?1", spec.table),
+            [&rec.uuid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    match local {
+        Some((id, local_ua)) if local_ua.as_deref().unwrap_or("") < rec.updated_at.as_str() => {
+            // Unlink what points at it first: those links would block the
+            // delete (a folder that still holds a server on this device) or
+            // be left dangling. A local repair, like the fixup pass: the merge
+            // guard keeps the triggers from stamping it as an edit.
+            for s in ENTITIES {
+                for fk in s.fks.iter().filter(|fk| fk.ref_table == spec.table && !fk.required) {
+                    conn.execute(&format!("UPDATE {} SET {}=NULL WHERE {}=?1", s.table, fk.col, fk.col), [id])
+                        .map_err(|e| format!("[SYNC] TOMB_UNLINK {}.{}: {e}", s.table, fk.col))?;
+                }
+            }
+            // Merge guard is on → the AFTER DELETE trigger won't create a
+            // competing tombstone; the explicit upsert below stands.
+            conn.execute(&format!("DELETE FROM {} WHERE uuid=?1", spec.table), [&rec.uuid])
+                .map_err(|e| format!("[SYNC] TOMB_DELETE: {e}"))?;
+        }
+        Some(_) => {}
+        None => {
+            // Nothing here to delete. Only a tombstone already here (this
+            // device deleted the row too) is kept current: a new one would
+            // just be pushed back on every sync, forever, however many a
+            // hostile peer sends.
+            let known: bool = conn
+                .query_row("SELECT 1 FROM sync_tombstones WHERE uuid=?1", [&rec.uuid], |_| Ok(()))
+                .is_ok();
+            if !known {
+                return Ok(());
+            }
+        }
     }
     conn.execute(
         "INSERT INTO sync_tombstones(uuid, entity_type, updated_at) VALUES (?1,?2,?3)
@@ -1141,17 +1320,6 @@ fn apply_tombstone(conn: &Connection, rec: &SyncRecord) -> Result<(), String> {
         rusqlite::params![rec.uuid, rec.entity_type, rec.updated_at],
     )
     .map_err(|e| format!("[SYNC] TOMB_UPSERT: {e}"))?;
-    let local_ua: Option<String> = conn
-        .query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", rec.entity_type), [&rec.uuid], |r| r.get(0))
-        .ok();
-    if let Some(l) = local_ua {
-        if l.as_str() < rec.updated_at.as_str() {
-            // Merge guard is on → the AFTER DELETE trigger won't create a
-            // competing tombstone; the explicit upsert above stands.
-            conn.execute(&format!("DELETE FROM {} WHERE uuid=?1", rec.entity_type), [&rec.uuid])
-                .map_err(|e| format!("[SYNC] TOMB_DELETE: {e}"))?;
-        }
-    }
     Ok(())
 }
 
@@ -2613,16 +2781,28 @@ mod sync_engine_tests {
     }
 
     fn device(node: &str) -> (Connection, std::sync::Arc<hlc::Hlc>) {
+        device_with(node, false)
+    }
+
+    /// `fks`: with the foreign keys the app's own schema declares, enforced
+    /// as the app enforces them.
+    fn device_with(node: &str, fks: bool) -> (Connection, std::sync::Arc<hlc::Hlc>) {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
+        let fk = |clause: &str| if fks { format!(", {clause}") } else { String::new() };
+        conn.execute_batch(if fks { "PRAGMA foreign_keys = ON" } else { "PRAGMA foreign_keys = OFF" }).unwrap();
+        conn.execute_batch(&format!(
             "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
-             CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
-             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
              CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
-             CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);",
-        ).unwrap();
+             CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});",
+            fk("FOREIGN KEY(key_id) REFERENCES ssh_keys(id)"),
+            fk("FOREIGN KEY(folder_id) REFERENCES folders(id)"),
+            fk("FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE"),
+        ))
+        .unwrap();
         let hlc = std::sync::Arc::new(hlc::Hlc::new(node.into(), 0));
         register_sync_functions(&conn, &hlc).unwrap();
         create_sync_triggers(&conn).unwrap();
@@ -2890,7 +3070,7 @@ mod sync_engine_tests {
     #[test]
     fn a_pre_0_3_5_peer_server_without_position_still_merges() {
         let (a, _ha) = device("A");
-        a.execute("INSERT INTO servers(name, host, password) VALUES('prod','h','SECRET')", []).unwrap();
+        a.execute("INSERT INTO servers(name, host, port, password) VALUES('prod','h',22,'SECRET')", []).unwrap();
         let mut recs = collect_local_records(&a, &KEY, "").unwrap();
         // Rewrite the server blob to look like an old peer's: strip `position`.
         for r in recs.iter_mut() {
@@ -2924,7 +3104,7 @@ mod sync_engine_tests {
     #[test]
     fn a_pre_0_3_5_peer_edit_preserves_local_drag_position() {
         let (a, _ha) = device("A");
-        a.execute("INSERT INTO servers(name, host, password) VALUES('prod','h1','SECRET')", []).unwrap();
+        a.execute("INSERT INTO servers(name, host, port, password) VALUES('prod','h1',22,'SECRET')", []).unwrap();
 
         // B receives the server, then the user drags it to rank 5.
         let (b, hb) = device("B");
@@ -2934,18 +3114,19 @@ mod sync_engine_tests {
         assert_eq!(pos_before, 5, "test setup: B's local rank is 5");
 
         // A (an old peer) edits the host. Strip `position` from the blob and
-        // force a lexically-max HLC stamp ("9"*15 dwarfs any real millis in the
-        // `{:015}:{:05}:node` format) so the record deterministically WINS LWW on
-        // B and reaches the UPDATE arm — the case this fix guards.
+        // stamp it a minute ahead of now (still a stamp the merge accepts), so
+        // the record deterministically WINS LWW on B and reaches the UPDATE
+        // arm — the case this fix guards.
         a.execute("UPDATE servers SET host='h2' WHERE name='prod'", []).unwrap();
         let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        let ahead = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000;
         for r in recs.iter_mut() {
             if r.entity_type == "servers" {
                 let plain = decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap();
                 let mut obj: serde_json::Value = serde_json::from_slice(&plain).unwrap();
                 obj.as_object_mut().unwrap().remove("position");
                 r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
-                r.updated_at = "999999999999999:99999:zzz".to_string();
+                r.updated_at = format!("{ahead:015}:00000:zzz");
             }
         }
         apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
@@ -2960,7 +3141,7 @@ mod sync_engine_tests {
     #[test]
     fn lww_older_remote_does_not_clobber_newer_local() {
         let (a, _ha) = device("A");
-        a.execute("INSERT INTO servers(name, host) VALUES('s','h1')", []).unwrap();
+        a.execute("INSERT INTO servers(name, host, port) VALUES('s','h1',22)", []).unwrap();
         let old = collect_local_records(&a, &KEY, "").unwrap();
         let (b, hb) = device("B");
         apply_remote_records(&b, &KEY, &old, &hb).unwrap();
@@ -2979,7 +3160,7 @@ mod sync_engine_tests {
     #[test]
     fn stale_inflight_batch_does_not_resurrect_a_deleted_row() {
         let (a, ha) = device("A");
-        a.execute("INSERT INTO servers(name, host, password) VALUES('prod','h','SUPERSECRET')", []).unwrap();
+        a.execute("INSERT INTO servers(name, host, port, password) VALUES('prod','h',22,'SUPERSECRET')", []).unwrap();
 
         // T=0 — sync collects the batch and lets go of the lock.
         let inflight = collect_local_records(&a, &KEY, "").unwrap();
@@ -3002,7 +3183,7 @@ mod sync_engine_tests {
     #[test]
     fn tombstone_does_not_block_a_newer_recreate() {
         let (a, ha) = device("A");
-        a.execute("INSERT INTO servers(name, host) VALUES('s','h1')", []).unwrap();
+        a.execute("INSERT INTO servers(name, host, port) VALUES('s','h1',22)", []).unwrap();
         let uuid: String = a.query_row("SELECT uuid FROM servers WHERE name='s'", [], |r| r.get(0)).unwrap();
         a.execute("DELETE FROM servers WHERE name='s'", []).unwrap();
         assert_eq!(
@@ -3012,7 +3193,7 @@ mod sync_engine_tests {
 
         // Device B re-creates the same uuid later (newer HLC than our tombstone).
         let (b, hb) = device("B");
-        b.execute("INSERT INTO servers(name, host) VALUES('s','h2-recreated')", []).unwrap();
+        b.execute("INSERT INTO servers(name, host, port) VALUES('s','h2-recreated',22)", []).unwrap();
         b.execute("UPDATE servers SET uuid=?1, updated_at=hlc_now() WHERE name='s'", [&uuid]).unwrap();
         let recreate = collect_local_records(&b, &KEY, "").unwrap();
         let _ = hb;
@@ -3029,7 +3210,7 @@ mod sync_engine_tests {
     #[test]
     fn delete_propagates_via_tombstone() {
         let (a, _ha) = device("A");
-        a.execute("INSERT INTO servers(name, host) VALUES('s','h')", []).unwrap();
+        a.execute("INSERT INTO servers(name, host, port) VALUES('s','h',22)", []).unwrap();
         let (b, hb) = device("B");
         apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
         assert_eq!(b.query_row("SELECT COUNT(*) FROM servers WHERE name='s'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
@@ -3046,7 +3227,7 @@ mod sync_engine_tests {
     #[test]
     fn corrupt_record_is_skipped_without_aborting_the_batch() {
         let (a, _ha) = device("A");
-        a.execute("INSERT INTO servers(name, host) VALUES('good','h-good')", []).unwrap();
+        a.execute("INSERT INTO servers(name, host, port) VALUES('good','h-good',22)", []).unwrap();
         let mut recs = collect_local_records(&a, &KEY, "").unwrap();
 
         // A record shaped like a real 'servers' row but whose blob is valid
@@ -3073,6 +3254,348 @@ mod sync_engine_tests {
             1,
             "the corrupt record must be skipped, never inserted",
         );
+    }
+
+    /// A stamp `ms` ahead of now: newer than anything a test device has
+    /// issued, and still one the merge accepts.
+    fn ahead(ms: u64) -> String {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        format!("{:015}:00000:zzz", now + ms)
+    }
+
+    /// `rec` with its payload changed by `edit`, at a newer stamp: what a
+    /// peer, or the server, could send in its place.
+    fn reworked(rec: &SyncRecord, edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) -> SyncRecord {
+        let plain = decrypt_entity(rec.blob.as_deref().unwrap(), &KEY).unwrap();
+        let mut obj: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+        edit(obj.as_object_mut().unwrap());
+        SyncRecord {
+            updated_at: ahead(60_000),
+            blob: Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap()),
+            ..rec.clone()
+        }
+    }
+
+    fn live<'a>(recs: &'a [SyncRecord], table: &str) -> &'a SyncRecord {
+        recs.iter().find(|r| r.entity_type == table && !r.deleted).unwrap()
+    }
+
+    // A stamp far ahead of now, or one no clock issues ("~" sorts after them
+    // all), would win LWW against every later edit and delete of its row, on
+    // every device. Those records are skipped, as are ids that aren't hex;
+    // the rest of the batch lands.
+    #[test]
+    fn records_with_a_bad_stamp_or_id_are_skipped() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port) VALUES('s','h1',22)", []).unwrap();
+        a.execute("INSERT INTO notes(title,body) VALUES('n','b1')", []).unwrap();
+        let seed = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &seed, &hb).unwrap();
+
+        let mut far = reworked(live(&seed, "servers"), |o| {
+            o.insert("host".into(), "elsewhere".into());
+        });
+        far.updated_at = "999999999999999:99999:zzz".into();
+        let undeletable = SyncRecord { deleted: true, blob: None, updated_at: "~".into(), ..live(&seed, "notes").clone() };
+        let mut not_hex = reworked(live(&seed, "servers"), |o| {
+            o.insert("name".into(), "copy".into());
+        });
+        not_hex.uuid = "not-a-hex-id".into();
+        let fine = reworked(live(&seed, "notes"), |o| {
+            o.insert("body".into(), "b2".into());
+        });
+        apply_remote_records(&b, &KEY, &[far, undeletable, not_hex, fine], &hb).unwrap();
+
+        let host: String = b.query_row("SELECT host FROM servers WHERE name='s'", [], |r| r.get(0)).unwrap();
+        assert_eq!(host, "h1", "a stamp far ahead must not apply");
+        let servers: i64 = b.query_row("SELECT COUNT(*) FROM servers", [], |r| r.get(0)).unwrap();
+        assert_eq!(servers, 1, "an id that isn't hex must not land");
+        let body: String = b.query_row("SELECT body FROM notes WHERE title='n'", [], |r| r.get(0)).unwrap();
+        assert_eq!(body, "b2", "the note outlives the bogus delete, and the valid edit lands");
+        let tombs: i64 = b.query_row("SELECT COUNT(*) FROM sync_tombstones", [], |r| r.get(0)).unwrap();
+        assert_eq!(tombs, 0);
+    }
+
+    // A value a list reader can't take (a NULL name, a port that isn't a
+    // number) used to fail the whole list, on every device the record
+    // reached. Each of these is skipped, and the row keeps what it had.
+    #[test]
+    fn values_the_lists_cannot_read_are_skipped() {
+        use serde_json::{json, Value};
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port,autostart) VALUES('s','h',22,0)", []).unwrap();
+        a.execute("INSERT INTO credentials(name,auth_type,username) VALUES('c','password','root')", []).unwrap();
+        a.execute("INSERT INTO notes(title,body) VALUES('n','b')", []).unwrap();
+        let seed = collect_local_records(&a, &KEY, "").unwrap();
+        let (server, cred, note) = (live(&seed, "servers"), live(&seed, "credentials"), live(&seed, "notes"));
+        let bad = [
+            reworked(server, |o| {
+                o.insert("name".into(), Value::Null);
+            }),
+            reworked(server, |o| {
+                o.remove("host");
+            }),
+            reworked(server, |o| {
+                o.insert("port".into(), json!("22"));
+            }),
+            reworked(server, |o| {
+                o.insert("port".into(), json!(1u64 << 40));
+            }),
+            reworked(server, |o| {
+                o.insert("port".into(), json!(22.5));
+            }),
+            reworked(server, |o| {
+                o.insert("proxy_port".into(), json!("1080"));
+            }),
+            reworked(server, |o| {
+                o.insert("autostart".into(), json!("yes"));
+            }),
+            reworked(server, |o| {
+                o.insert("tunnels".into(), json!([1]));
+            }),
+            reworked(cred, |o| {
+                o.insert("username".into(), Value::Null);
+            }),
+            reworked(note, |o| {
+                o.insert("body".into(), json!(7));
+            }),
+        ];
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &seed, &hb).unwrap();
+        apply_remote_records(&b, &KEY, &bad, &hb).unwrap();
+        type Row = (String, String, i64, Option<i64>, i64, Option<String>, String, String);
+        let row: Row = b
+            .query_row(
+                "SELECT s.name, s.host, s.port, s.proxy_port, s.autostart, s.tunnels, c.username, n.body FROM servers s, credentials c, notes n",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("s".into(), "h".into(), 22, None, 0, None, "root".into(), "b".into()));
+
+        // What fits still goes through: a proxy port, autostart as true.
+        let fits = reworked(server, |o| {
+            o.insert("proxy_port".into(), json!(1080));
+            o.insert("autostart".into(), json!(true));
+        });
+        apply_remote_records(&b, &KEY, &[fits], &hb).unwrap();
+        let (proxy, auto): (i64, i64) =
+            b.query_row("SELECT proxy_port, autostart FROM servers", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((proxy, auto), (1080, 1));
+    }
+
+    // A record's links are set after the whole batch, so they used to be set
+    // even when the record itself failed to write: the row it failed to
+    // replace still ended up pointing where the record said (a server routed
+    // through someone else's jump host).
+    #[test]
+    fn a_record_that_fails_to_write_sets_no_links() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port) VALUES('app','a',22)", []).unwrap();
+        a.execute("INSERT INTO servers(name,host,port) VALUES('relay','r',22)", []).unwrap();
+        let seed = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &seed, &hb).unwrap();
+        // Something makes the write fail on B: a trigger here, a constraint
+        // would do the same.
+        b.execute_batch(
+            "CREATE TRIGGER refuse BEFORE UPDATE ON servers WHEN NEW.host = 'boom' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+        let app_uuid: String = a.query_row("SELECT uuid FROM servers WHERE name='app'", [], |r| r.get(0)).unwrap();
+        let relay: String = a.query_row("SELECT uuid FROM servers WHERE name='relay'", [], |r| r.get(0)).unwrap();
+        let app = seed.iter().find(|r| r.uuid == app_uuid).unwrap();
+
+        let failing = reworked(app, |o| {
+            o.insert("host".into(), "boom".into());
+            o.insert("jump_uuid".into(), relay.clone().into());
+        });
+        apply_remote_records(&b, &KEY, &[failing], &hb).unwrap();
+        let (host, jump): (String, Option<i64>) = b
+            .query_row("SELECT host, jump_host_id FROM servers WHERE name='app'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((host.as_str(), jump), ("a", None), "a record that didn't land must not relink the row");
+
+        // The same record without the failure lands, link and all.
+        let lands = reworked(app, |o| {
+            o.insert("jump_uuid".into(), relay.clone().into());
+        });
+        apply_remote_records(&b, &KEY, &[lands], &hb).unwrap();
+        let linked: String = b
+            .query_row("SELECT j.name FROM servers s JOIN servers j ON j.id = s.jump_host_id WHERE s.name='app'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(linked, "relay");
+    }
+
+    // A folder deleted elsewhere can still hold a server here (one added on
+    // this device meanwhile), and a deleted key can still be a login's key.
+    // With foreign keys enforced, as the app enforces them, the delete used
+    // to fail with its tombstone recorded anyway: the row stayed, while this
+    // device told every other one it was gone. Now the links are cleared,
+    // the row goes, and then the tombstone is recorded.
+    #[test]
+    fn a_remote_delete_unlinks_what_still_points_at_it() {
+        let (a, _ha) = device_with("A", true);
+        a.execute("INSERT INTO folders(name) VALUES('f')", []).unwrap();
+        a.execute("INSERT INTO ssh_keys(name,public_key,private_key) VALUES('k','pub','priv')", []).unwrap();
+        let (b, hb) = device_with("B", true);
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        // Meanwhile on B: a server in that folder, a login using that key.
+        b.execute(
+            "INSERT INTO servers(name,host,port,folder_id) VALUES('s','h',22,(SELECT id FROM folders WHERE name='f'))",
+            [],
+        )
+        .unwrap();
+        b.execute(
+            "INSERT INTO credentials(name,auth_type,username,key_id) VALUES('c','key','root',(SELECT id FROM ssh_keys WHERE name='k'))",
+            [],
+        )
+        .unwrap();
+
+        a.execute("DELETE FROM folders WHERE name='f'", []).unwrap();
+        a.execute("DELETE FROM ssh_keys WHERE name='k'", []).unwrap();
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+
+        let left: i64 = b
+            .query_row("SELECT (SELECT COUNT(*) FROM folders) + (SELECT COUNT(*) FROM ssh_keys)", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0, "the folder and the key are deleted");
+        let links: (Option<i64>, Option<i64>) = b
+            .query_row(
+                "SELECT (SELECT folder_id FROM servers WHERE name='s'), (SELECT key_id FROM credentials WHERE name='c')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(links, (None, None), "what pointed at them stays, unlinked");
+        let tombs: i64 = b.query_row("SELECT COUNT(*) FROM sync_tombstones", [], |r| r.get(0)).unwrap();
+        assert_eq!(tombs, 2);
+    }
+
+    // And a delete that fails all the same leaves nothing of itself: no
+    // tombstone saying it happened, no links cleared.
+    #[test]
+    fn a_remote_delete_that_fails_leaves_no_trace() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port) VALUES('relay','r',22)", []).unwrap();
+        a.execute(
+            "INSERT INTO servers(name,host,port,jump_host_id) VALUES('app','a',22,(SELECT id FROM servers WHERE name='relay'))",
+            [],
+        )
+        .unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        b.execute_batch("CREATE TRIGGER keep BEFORE DELETE ON servers WHEN OLD.name = 'relay' BEGIN SELECT RAISE(ABORT, 'kept'); END;")
+            .unwrap();
+
+        a.execute("DELETE FROM servers WHERE name='relay'", []).unwrap();
+        let deletes: Vec<SyncRecord> =
+            collect_local_records(&a, &KEY, "").unwrap().into_iter().filter(|r| r.deleted).collect();
+        assert_eq!(deletes.len(), 1);
+        apply_remote_records(&b, &KEY, &deletes, &hb).unwrap();
+
+        let jump: Option<String> = b
+            .query_row("SELECT j.name FROM servers s LEFT JOIN servers j ON j.id = s.jump_host_id WHERE s.name='app'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(jump.as_deref(), Some("relay"), "the link is as it was");
+        let tombs: i64 = b.query_row("SELECT COUNT(*) FROM sync_tombstones", [], |r| r.get(0)).unwrap();
+        assert_eq!(tombs, 0, "no tombstone for a delete that didn't happen");
+    }
+
+    // Tombstones for rows this device never had used to be stored, and pushed
+    // back on every sync forever, however many a hostile peer sent. Only a
+    // tombstone this device already holds is kept current.
+    #[test]
+    fn tombstones_for_rows_never_here_are_not_kept() {
+        let (b, hb) = device("B");
+        let strangers: Vec<SyncRecord> = (0..50)
+            .map(|i| SyncRecord {
+                uuid: format!("{i:032x}"),
+                entity_type: "servers".into(),
+                updated_at: ahead(1_000),
+                deleted: true,
+                blob: None,
+            })
+            .collect();
+        apply_remote_records(&b, &KEY, &strangers, &hb).unwrap();
+        let n: i64 = b.query_row("SELECT COUNT(*) FROM sync_tombstones", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+
+        // B's own delete, coming back newer, still updates B's tombstone.
+        b.execute("INSERT INTO servers(name,host,port) VALUES('s','h',22)", []).unwrap();
+        let uuid: String = b.query_row("SELECT uuid FROM servers", [], |r| r.get(0)).unwrap();
+        b.execute("DELETE FROM servers", []).unwrap();
+        let newer = SyncRecord {
+            uuid: uuid.clone(),
+            entity_type: "servers".into(),
+            updated_at: ahead(5_000),
+            deleted: true,
+            blob: None,
+        };
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&newer), &hb).unwrap();
+        let at: String = b.query_row("SELECT updated_at FROM sync_tombstones WHERE uuid=?1", [&uuid], |r| r.get(0)).unwrap();
+        assert_eq!(at, newer.updated_at);
+    }
+
+    // Past the server's own per-record limit: only a broken or hostile server
+    // sends that, and it's skipped before it's decrypted.
+    #[test]
+    fn a_record_over_the_size_limit_is_skipped() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO notes(title,body) VALUES('n','b')", []).unwrap();
+        let seed = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &seed, &hb).unwrap();
+        let big = reworked(live(&seed, "notes"), |o| {
+            o.insert("body".into(), "x".repeat(MAX_RECORD_BLOB_HEX / 2).into());
+        });
+        assert!(big.blob.as_ref().unwrap().len() > MAX_RECORD_BLOB_HEX);
+        apply_remote_records(&b, &KEY, &[big], &hb).unwrap();
+        let body: String = b.query_row("SELECT body FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(body, "b");
+    }
+
+    // A merge that would take the vault toward the size it can no longer be
+    // saved or opened at lands nothing at all.
+    #[test]
+    fn a_merge_that_would_outgrow_the_vault_lands_nothing() {
+        let (a, _ha) = device("A");
+        for i in 0..8 {
+            a.execute(
+                "INSERT INTO notes(title,body) VALUES(?1,?2)",
+                rusqlite::params![format!("n{i}"), "x".repeat(64 * 1024)],
+            )
+            .unwrap();
+        }
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = device("B");
+        let limit = vault_bytes(&b).unwrap() + 128 * 1024;
+        let err = apply_remote_inner(&b, &KEY, &recs, &hb, limit).unwrap_err();
+        assert!(err.contains("TOO_LARGE"), "{err}");
+        let n: i64 = b.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "none of it lands");
+
+        apply_remote_inner(&b, &KEY, &recs, &hb, limit * 8).unwrap();
+        let n: i64 = b.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 8);
+    }
+
+    // A vault past what an unlock opens is never written: the file on disk
+    // stays as it was, and still opens.
+    #[test]
+    fn a_vault_too_large_to_open_is_not_saved() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t(b BLOB)").unwrap();
+        conn.execute("INSERT INTO t VALUES(zeroblob(?1))", [VAULT_MAX_BYTES as i64 + 1]).unwrap();
+        let dir = std::env::temp_dir().join(format!("submarine-vault-cap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.submarine");
+        std::fs::write(&path, b"the old vault").unwrap();
+        let err = save_vault_blocking(&conn, &Zeroizing::new([7u8; 32]), &[1u8; SALT_LEN], &path).unwrap_err();
+        assert!(err.contains("TOO_LARGE"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"the old vault");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

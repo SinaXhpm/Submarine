@@ -35,6 +35,13 @@ pub struct Hlc {
 /// error — sync just quietly stopped honouring newer edits, for years.
 const MAX_SKEW_MS: u64 = 10 * 60 * 1000;
 
+/// How far ahead of this device's clock a stamp that arrives in a sync may
+/// be. The sync server refuses anything further ahead, so only a broken or
+/// hostile server hands one over, and a stamp years ahead would win
+/// Last-Write-Wins against every later edit and delete of its row, on every
+/// device, for years. `MAX_SKEW_MS` only keeps it out of our own clock.
+const MAX_REMOTE_AHEAD_MS: u64 = 24 * 60 * 60 * 1000;
+
 impl Hlc {
     /// `seed_phys_ms` should be the maximum physical time already present in the
     /// vault (parsed from existing `updated_at` values) so a freshly-started
@@ -113,6 +120,26 @@ impl Hlc {
     pub fn phys_of(stamp: &str) -> u64 {
         stamp.split(':').next().and_then(|s| s.parse().ok()).unwrap_or(0)
     }
+
+    /// Whether a stamp from a sync is one a clock like this could have
+    /// issued: `{phys:015}:{counter:05}:{node}` with a node of 1–26 letters
+    /// and digits, no more than `MAX_REMOTE_AHEAD_MS` ahead of now. The same
+    /// rule as the sync server's. Anything else sorts wherever it likes (`"~"`
+    /// after every real stamp), so the merge skips it.
+    pub fn valid_remote(stamp: &str) -> bool {
+        let mut parts = stamp.splitn(3, ':');
+        let (Some(phys), Some(counter), Some(node)) = (parts.next(), parts.next(), parts.next()) else {
+            return false;
+        };
+        let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+        digits(phys, 15)
+            && digits(counter, 5)
+            && (1..=26).contains(&node.len())
+            && node.bytes().all(|b| b.is_ascii_alphanumeric())
+            && phys
+                .parse::<u64>()
+                .is_ok_and(|p| p <= Self::wall_ms().saturating_add(MAX_REMOTE_AHEAD_MS))
+    }
 }
 
 #[cfg(test)]
@@ -179,6 +206,32 @@ mod tests {
         let seed = Hlc::wall_ms() + 60_000;
         let h = Hlc::new("nodeA".into(), seed);
         assert!(Hlc::phys_of(&h.tick()) >= seed);
+    }
+
+    // What a sync hands over has to look like a real stamp, and not sit far
+    // ahead of now. A day ahead is still fine (a peer whose clock is off).
+    #[test]
+    fn remote_stamps_are_checked() {
+        let now = Hlc::wall_ms();
+        assert!(Hlc::valid_remote(&Hlc::new("a1b2c3d4e5f60718".into(), 0).tick()));
+        assert!(Hlc::valid_remote("000000000000000:00000:0"));
+        assert!(Hlc::valid_remote("000000000000001:00000:backfill"));
+        assert!(Hlc::valid_remote(&format!("{:015}:00000:peer", now + 60 * 60 * 1000)));
+        for bad in [
+            "~".to_string(),
+            String::new(),
+            "999999999999999:99999:zzz".to_string(),
+            format!("{:015}:00000:peer", now + 2 * MAX_REMOTE_AHEAD_MS),
+            format!("{:015}:00000", now),
+            format!("{:015}:0000:peer", now),
+            format!("{:014}:00000:peer", now),
+            format!("{:015}:00000:pe-er", now),
+            format!("{:015}:00000:{}", now, "n".repeat(27)),
+            format!("{:015}:00000:peer:x", now),
+            format!("{:015}:00000:peer\n", now),
+        ] {
+            assert!(!Hlc::valid_remote(&bad), "{bad:?} must be refused");
+        }
     }
 
     #[test]
