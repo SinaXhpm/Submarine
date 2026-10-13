@@ -1327,6 +1327,9 @@ fn apply_tombstone(conn: &Connection, rec: &SyncRecord) -> Result<(), String> {
 struct SyncReport {
     pushed: usize,
     pulled: usize,
+    /// The shared profile has a new key waiting for the user's OK
+    /// (`accept_share_key`); until then nothing is pushed.
+    key_change: bool,
 }
 
 // A personal profile's DEK, sealed under the profile's OWN password, rides the
@@ -1538,11 +1541,12 @@ async fn sync_with(
     };
 
     // A shared profile's key can change under us: the owner rotates it whenever
-    // a member is revoked, so the copy cached at import time goes stale. Refresh
-    // it BEFORE serialising anything, or this device would encrypt its push with
-    // a key nobody else can open. Cheap (a primary-key point lookup) and
-    // best-effort — offline or a hiccup just means we sync with what we have,
-    // exactly as before this existed.
+    // a member is revoked, so the copy cached at import time goes stale. Fetch
+    // it BEFORE serialising anything. A new key isn't used until the user
+    // accepts it, though (`note_share_key`): until then this device only
+    // pulls. Cheap (a primary-key point lookup) and best-effort — offline or a
+    // hiccup just means we sync with what we have, exactly as before this
+    // existed.
     let existing_share: Option<String> = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
@@ -1558,10 +1562,7 @@ async fn sync_with(
                             let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
                             let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
                             db_state.still_open(generation)?;
-                            let _ = conn.execute(
-                                "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                                [&hex::encode(&opened)],
-                            );
+                            note_share_key(conn, &opened)?;
                         }
                     }
                 }
@@ -1576,7 +1577,7 @@ async fn sync_with(
     // hold the DEK via a sealed grant without ever knowing this vault's
     // password. The DEK is created + persisted at profile-open, so it already
     // exists here; get_or_create is a defensive fallback only.
-    let (records, dek, hlc, share, cloud_profile, master_key, salt) = {
+    let (records, dek, hlc, share, cloud_profile, master_key, salt, key_change) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         db_state.still_open(generation)?;
@@ -1614,13 +1615,19 @@ async fn sync_with(
         // don't know". A viewer that should have been an editor is a visible,
         // fixable annoyance; an editor that should have been a viewer is not.
         let share = share_id.map(|s| (s, share_role.unwrap_or_else(|| "user".to_string())));
-        (records, dek, hlc, share, cloud_profile, master_key, salt)
+        let key_change = conn
+            .query_row("SELECT 1 FROM sync_meta WHERE key='pending_dek'", [], |_| Ok(()))
+            .is_ok();
+        (records, dek, hlc, share, cloud_profile, master_key, salt, key_change)
     };
 
     // Shared profile → /shares/sync (role-gated). A viewer ('user') pushes
-    // nothing — it can only pull, so sending records would just 403.
+    // nothing — it can only pull, so sending records would just 403. Neither
+    // does a device whose share has a new key waiting for the user's OK: no
+    // one else can read a push sealed with the old key, and the new one may
+    // not be the owner's.
     let (remote, pushed) = if let Some((share_id, role)) = &share {
-        let to_push: &[SyncRecord] = if role == "user" { &[] } else { &records };
+        let to_push: &[SyncRecord] = if role == "user" || key_change { &[] } else { &records };
         let remote = cloud::shared_sync_exchange(app, cloud, session, share_id, "", to_push).await?;
         (remote, to_push.len())
     } else {
@@ -1652,7 +1659,7 @@ async fn sync_with(
     }
     // Persist the merged vault so the applied changes survive a restart.
     save_vault_async(db_state).await?;
-    Ok(SyncReport { pushed, pulled })
+    Ok(SyncReport { pushed, pulled, key_change })
 }
 
 #[derive(serde::Serialize)]
@@ -1882,6 +1889,128 @@ fn same_account(asked: &str, answered: &str) -> bool {
     asked.trim().eq_ignore_ascii_case(answered.trim())
 }
 
+/// What the server says a shared profile's key is now. The key in use changes
+/// only when the user accepts a new one (`accept_share_key`); until then it
+/// waits as `pending_dek`, and the sync only pulls. The owner replaces the key
+/// after removing someone, but a server could just as well send a key of its
+/// own, and everything pushed with it would then be readable to the server.
+fn note_share_key(conn: &Connection, key: &[u8]) -> Result<(), String> {
+    let fresh = hex::encode(key);
+    let current: Option<String> =
+        conn.query_row("SELECT value FROM sync_meta WHERE key='dek'", [], |r| r.get(0)).ok();
+    match current.as_deref() {
+        // Nothing to compare it with: the share's first key, as at import.
+        None => conn.execute("INSERT INTO sync_meta(key,value) VALUES('dek',?1)", [&fresh]),
+        Some(c) if c == fresh => conn.execute("DELETE FROM sync_meta WHERE key='pending_dek'", []),
+        Some(_) => conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('pending_dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&fresh],
+        ),
+    }
+    .map_err(|e| format!("[SHARE] NOTE_KEY: {e}"))?;
+    Ok(())
+}
+
+/// A short fingerprint of a share key, for people to compare: the owner's
+/// Profile panel shows the key's, a member's prompt shows a new key's. A
+/// truncated hash of a random 256-bit key gives nothing of the key away.
+fn key_fingerprint(key_hex: &str) -> Option<String> {
+    use sha2::Digest as _;
+    let key = hex::decode(key_hex).ok()?;
+    let mut h = sha2::Sha256::new();
+    h.update(b"submarine-share-key-fingerprint-v1\0");
+    h.update(&key);
+    let d = h.finalize();
+    Some(
+        d[..8]
+            .chunks(2)
+            .map(|c| format!("{:02X}{:02X}", c[0], c[1]))
+            .collect::<Vec<_>>()
+            .join("-"),
+    )
+}
+
+/// Each member's sharing key as it was when this device invited them, per
+/// share. Device-local, never synced. When the share's key is replaced after a
+/// removal, a member whose key changed since isn't given the new one: their
+/// account may have been taken over, and the owner invites them again if the
+/// change is expected.
+fn create_share_pins(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS share_member_keys (share_id TEXT NOT NULL, email TEXT NOT NULL, public_key TEXT NOT NULL, PRIMARY KEY(share_id, email))",
+        [],
+    )
+    .map_err(|e| format!("[SHARE] PINS_TABLE: {e}"))?;
+    Ok(())
+}
+
+fn pin_member_key(conn: &Connection, share_id: &str, email: &str, public_key: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO share_member_keys(share_id,email,public_key) VALUES(?1,?2,?3)
+         ON CONFLICT(share_id,email) DO UPDATE SET public_key=excluded.public_key",
+        rusqlite::params![share_id, email.trim().to_ascii_lowercase(), public_key.to_ascii_lowercase()],
+    )
+    .map_err(|e| format!("[SHARE] PIN: {e}"))?;
+    Ok(())
+}
+
+/// A member who didn't get the share's new key, and why: `key_changed` (their
+/// sharing key isn't the one they were invited with), `other_account` (the
+/// server answered for someone else), `no_key`, `weak_key` or `upload_failed`.
+#[derive(serde::Serialize)]
+struct LeftOut {
+    email: String,
+    reason: &'static str,
+}
+
+#[derive(serde::Serialize)]
+struct ShareKeyState {
+    /// The fingerprint of the shared profile's key.
+    current: Option<String>,
+    /// The fingerprint of a new key waiting for the user's OK.
+    pending: Option<String>,
+}
+
+/// The open profile's share key, and a new one waiting for the user's OK, as
+/// fingerprints. Nothing for a profile that isn't shared.
+#[tauri::command]
+async fn share_key_state(db_state: tauri::State<'_, DbState>) -> Result<ShareKeyState, String> {
+    let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+    let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+    let meta = |k: &str| conn.query_row("SELECT value FROM sync_meta WHERE key=?1", [k], |r| r.get::<_, String>(0)).ok();
+    if meta("share_id").is_none() {
+        return Ok(ShareKeyState { current: None, pending: None });
+    }
+    Ok(ShareKeyState {
+        current: meta("dek").as_deref().and_then(key_fingerprint),
+        pending: meta("pending_dek").as_deref().and_then(key_fingerprint),
+    })
+}
+
+/// Use the new key the server says the open shared profile has (see
+/// `note_share_key`): the user's call, made after comparing its fingerprint
+/// with the owner's. The next sync uploads again, with it.
+#[tauri::command]
+async fn accept_share_key(db_state: tauri::State<'_, DbState>) -> Result<(), String> {
+    {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        let pending: String = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='pending_dek'", [], |r| r.get(0))
+            .map_err(|_| "[SHARE] NO_KEY_CHANGE: there's no new key waiting.")?;
+        let tx = conn.unchecked_transaction().map_err(|e| format!("[SHARE] TX: {e}"))?;
+        tx.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&pending],
+        )
+        .map_err(|e| format!("[SHARE] SET_DEK: {e}"))?;
+        tx.execute("DELETE FROM sync_meta WHERE key='pending_dek'", [])
+            .map_err(|e| format!("[SHARE] CLEAR_PENDING: {e}"))?;
+        tx.commit().map_err(|e| format!("[SHARE] TX_COMMIT: {e}"))?;
+    }
+    save_vault_async(&db_state).await
+}
+
 #[cfg(test)]
 mod share_binding_tests {
     use super::*;
@@ -1898,6 +2027,31 @@ mod share_binding_tests {
         conn.execute("UPDATE sync_meta SET value='owner' WHERE key='share_role'", []).unwrap();
         assert!(own_share(&conn, "s2").is_err(), "another share");
         assert!(own_share(&conn, "s1").is_ok());
+    }
+
+    // A key from the server other than the one in use waits for the user's OK,
+    // and the key in use stays. The same key again ends the wait.
+    #[test]
+    fn a_new_share_key_waits_for_the_users_ok() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []).unwrap();
+        let meta = |k: &str| conn.query_row("SELECT value FROM sync_meta WHERE key=?1", [k], |r| r.get::<_, String>(0)).ok();
+        note_share_key(&conn, &[1u8; 32]).unwrap();
+        assert_eq!(meta("dek"), Some(hex::encode([1u8; 32])), "the share's first key is taken");
+        note_share_key(&conn, &[2u8; 32]).unwrap();
+        assert_eq!(meta("dek"), Some(hex::encode([1u8; 32])), "the key in use stays");
+        assert_eq!(meta("pending_dek"), Some(hex::encode([2u8; 32])));
+        note_share_key(&conn, &[1u8; 32]).unwrap();
+        assert_eq!(meta("pending_dek"), None, "the server agrees again");
+    }
+
+    #[test]
+    fn key_fingerprints_are_short_stable_and_differ() {
+        let a = key_fingerprint(&hex::encode([1u8; 32])).unwrap();
+        assert_eq!(a.len(), "XXXX-XXXX-XXXX-XXXX".len());
+        assert_eq!(Some(a.clone()), key_fingerprint(&hex::encode([1u8; 32])));
+        assert_ne!(Some(a), key_fingerprint(&hex::encode([2u8; 32])));
+        assert_eq!(key_fingerprint("not hex"), None);
     }
 
     #[test]
@@ -2100,14 +2254,14 @@ async fn invite_to_share(
     }
     let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
     let session = cloud.session().await?;
-    let dek = {
+    let (dek, generation) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         own_share(conn, &share_id)?;
         let dek_hex: String = conn
             .query_row("SELECT value FROM sync_meta WHERE key='dek'", [], |r| r.get(0))
             .map_err(|_| "[SHARE] NO_DEK")?;
-        hex_to_32(&dek_hex)?
+        (hex_to_32(&dek_hex)?, db_state.generation_now())
     };
     // My own grant on the server has to hold the same key. If it doesn't, the
     // key changed since this device last synced, or the server's copy isn't
@@ -2127,6 +2281,23 @@ async fn invite_to_share(
     let invitee_pub = hex_to_32(&info.public_key)?;
     let sealed = hex::encode(identity::seal_to(&invitee_pub, &dek)?);
     cloud::invite_member(&app, &cloud, &session, &share_id, &email, &role, &sealed).await?;
+    // The key they were invited with (see create_share_pins). The invite has
+    // gone through either way, so a failure here is only logged: with no pin,
+    // their key is taken as it is the next time the share's key is replaced.
+    let pinned = (|| -> Result<(), String> {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        db_state.still_open(generation)?;
+        pin_member_key(conn, &share_id, &email, &info.public_key)
+    })();
+    match pinned {
+        Ok(()) => {
+            if let Err(e) = save_vault_async(&db_state).await {
+                eprintln!("[SHARE] invite: saving the member's key failed: {e}");
+            }
+        }
+        Err(e) => eprintln!("[SHARE] invite: the member's key wasn't kept: {e}"),
+    }
     Ok(InviteResult { email: info.email })
 }
 
@@ -2440,8 +2611,8 @@ async fn share_set_role(
 /// an existing member's `sealed_dek` without disturbing their `status`, and
 /// `/shares/create` replaces the owner's own grant. The owner's next sync
 /// re-uploads every record under the new key (pushes are always a full set), and
-/// remaining members pick the new key up because `sync_now` now refreshes it
-/// before each shared exchange.
+/// remaining members are offered the new key on their next sync
+/// (`note_share_key`). Returns the members who weren't given it.
 async fn rotate_share_dek(
     app: &tauri::AppHandle,
     db_state: &tauri::State<'_, DbState>,
@@ -2450,27 +2621,58 @@ async fn rotate_share_dek(
     share_id: &str,
     share_name: &str,
     generation: u64,
-) -> Result<(), String> {
+) -> Result<Vec<LeftOut>, String> {
     let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
     let mut fresh = [0u8; 32];
     rand::rng().fill_bytes(&mut fresh);
+    // The keys members were invited with (see create_share_pins).
+    let pins: std::collections::HashMap<String, String> = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        db_state.still_open(generation)?;
+        let mut stmt = conn
+            .prepare("SELECT email, public_key FROM share_member_keys WHERE share_id=?1")
+            .map_err(|e| format!("[SHARE] PINS: {e}"))?;
+        let rows = stmt
+            .query_map([share_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| format!("[SHARE] PINS: {e}"))?;
+        rows.filter_map(Result::ok).collect()
+    };
 
     // Every remaining member's grant is sealed before anything is replaced, so
     // a lookup that fails outright stops the rotation while the old key is
     // still everyone's. A member whose answer doesn't fit (another account, a
-    // key nothing can be sealed to) is left out: they can't decrypt until
-    // they're invited again, which is the safe direction to fail.
+    // key other than the one they were invited with, a key nothing can be
+    // sealed to) is left out: they can't decrypt until they're invited again,
+    // which is the safe direction to fail.
     let roster = cloud::share_members(app, cloud, session, share_id).await?;
     let mut grants = Vec::new();
+    let mut left_out = Vec::new();
+    let mut first_seen = Vec::new();
     for m in roster.iter().filter(|m| m.role != "owner" && m.status != "revoked") {
-        let Some(info) = cloud::lookup_pubkey(app, cloud, session, &m.email).await? else { continue };
+        let leave_out = |reason| LeftOut { email: m.email.clone(), reason };
+        let Some(info) = cloud::lookup_pubkey(app, cloud, session, &m.email).await? else {
+            left_out.push(leave_out("no_key"));
+            continue;
+        };
         if !same_account(&m.email, &info.email) {
-            eprintln!("[SHARE] left out of the new key, the server answered for another account: {}", m.email);
+            left_out.push(leave_out("other_account"));
+            continue;
+        }
+        let pin = pins.get(&m.email.trim().to_ascii_lowercase());
+        if pin.is_some_and(|p| !p.eq_ignore_ascii_case(&info.public_key)) {
+            left_out.push(leave_out("key_changed"));
             continue;
         }
         match hex_to_32(&info.public_key).and_then(|k| identity::seal_to(&k, &fresh)) {
-            Ok(sealed) => grants.push((m, hex::encode(sealed))),
-            Err(e) => eprintln!("[SHARE] left out of the new key: {}: {e}", m.email),
+            Ok(sealed) => {
+                // Invited before keys were kept: their key as it is now.
+                if pin.is_none() {
+                    first_seen.push((m.email.clone(), info.public_key.clone()));
+                }
+                grants.push((m, hex::encode(sealed)));
+            }
+            Err(_) => left_out.push(leave_out("weak_key")),
         }
     }
 
@@ -2485,6 +2687,7 @@ async fn rotate_share_dek(
         // replaced.
         if let Err(e) = cloud::invite_member(app, cloud, session, share_id, &m.email, &m.role, &sealed).await {
             eprintln!("[SHARE] re-seal failed for {}: {e}", m.email);
+            left_out.push(LeftOut { email: m.email.clone(), reason: "upload_failed" });
         }
     }
 
@@ -2492,15 +2695,19 @@ async fn rotate_share_dek(
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         // Only into the profile this was for. If it closed meanwhile, its next
-        // sync fetches the new key from its own grant anyway.
+        // sync finds the new key in its own grant and asks for it.
         db_state.still_open(generation)?;
         conn.execute(
             "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [&hex::encode(fresh)],
         )
         .map_err(|e| format!("[SHARE] SET_DEK: {e}"))?;
+        for (email, key) in &first_seen {
+            pin_member_key(conn, share_id, email, key)?;
+        }
     }
-    save_vault_async(db_state).await
+    save_vault_async(db_state).await?;
+    Ok(left_out)
 }
 
 /// Owner: remove a member, then rotate the key they walked away with.
@@ -2511,7 +2718,7 @@ async fn share_revoke(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
     share_id: String,
     member_user_id: i64,
-) -> Result<(), String> {
+) -> Result<RevokeResult, String> {
     let session = cloud.session().await?;
     // The rotation below works on THIS profile, so the share has to be its
     // own; `generation` keeps it from reading or writing another one opened
@@ -2551,10 +2758,17 @@ async fn share_revoke(
             .clone()
             .unwrap_or_else(|| "profile".to_string()),
     };
-    if let Err(e) = rotate_share_dek(&app, &db_state, &cloud, &session, &share_id, &name, generation).await {
-        return Err(not_rotated(e));
-    }
-    Ok(())
+    let left_out = rotate_share_dek(&app, &db_state, &cloud, &session, &share_id, &name, generation)
+        .await
+        .map_err(not_rotated)?;
+    Ok(RevokeResult { left_out })
+}
+
+#[derive(serde::Serialize)]
+struct RevokeResult {
+    /// Members who weren't given the new key, so can't read what changes from
+    /// now on until they're invited again.
+    left_out: Vec<LeftOut>,
 }
 
 /// Non-owner: leave a share.
@@ -2716,8 +2930,10 @@ async fn stop_sharing(
         // Only the profile this was asked for: another one opened meanwhile
         // would otherwise lose its own share link.
         db_state.still_open(generation)?;
-        conn.execute("DELETE FROM sync_meta WHERE key IN ('share_id','share_role','share_name')", [])
+        conn.execute("DELETE FROM sync_meta WHERE key IN ('share_id','share_role','share_name','pending_dek')", [])
             .map_err(|e| format!("[SHARE] CLEAR_META: {e}"))?;
+        conn.execute("DELETE FROM share_member_keys WHERE share_id=?1", [&share_id])
+            .map_err(|e| format!("[SHARE] CLEAR_PINS: {e}"))?;
     }
     save_vault_async(&db_state).await
 }
@@ -4586,6 +4802,7 @@ async fn setup_master_db_inner(
     // What a shared profile's synced data would run by itself waits here for
     // this device's OK (see approvals.rs).
     approvals::create_schema(&conn)?;
+    create_share_pins(&conn)?;
 
     // Per-profile sync metadata (the DEK, and later the identity/grant state).
     // Created here so an existing vault gains it on first open under a v6 build.
@@ -15722,7 +15939,7 @@ pub fn run() {
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
-            profile_share_status, stop_sharing, profile_sync_stats,
+            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key,
             set_editor_label,
             add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,

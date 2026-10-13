@@ -60,6 +60,18 @@ interface ShareStatus {
 }
 
 interface MemberInfo { user_id: number; email: string; role: string; status: string; }
+// A member who wasn't given a share's new key after a removal, and why.
+interface LeftOut { email: string; reason: string; }
+const LEFT_OUT_WHY: Record<string, string> = {
+  key_changed: "their sharing key changed since you invited them",
+  other_account: "the server answered for another account",
+  no_key: "they have no sharing key on the server",
+  weak_key: "their sharing key can't be used",
+  upload_failed: "the upload failed",
+};
+const leftOutText = (l: LeftOut[]) =>
+  "These people didn't get the new key, so they can't see changes from now on until you invite them again: " +
+  l.map((x) => `${x.email} (${LEFT_OUT_WHY[x.reason] ?? x.reason})`).join(", ") + ".";
 
 type Props = {
   onSync: () => Promise<void> | void;
@@ -77,6 +89,8 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
 
   const [st, setSt] = useState<ShareStatus | null>(null);
   const [members, setMembers] = useState<MemberInfo[] | null>(null);
+  // The share key's fingerprint, and a new key's while it waits for an OK.
+  const [keys, setKeys] = useState<{ current: string | null; pending: string | null } | null>(null);
   const [stats, setStats] = useState<SyncStats | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -104,6 +118,8 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
       } else {
         setMembers(null);
       }
+      try { setKeys(await invoke("share_key_state")); }
+      catch { setKeys(null); }
     } catch (e) { fail(e); }
   }, []);
 
@@ -215,9 +231,10 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
     }))) return;
     setBusy(true);
     try {
-      await invoke("share_revoke", { shareId: st!.share_id, memberUserId: m.user_id });
+      const r = await invoke<{ left_out: LeftOut[] }>("share_revoke", { shareId: st!.share_id, memberUserId: m.user_id });
       await refresh();
-      flash(`${m.email} removed.`);
+      if (r.left_out.length) fail(`${m.email} removed. ${leftOutText(r.left_out)}`);
+      else flash(`${m.email} removed.`);
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
 
@@ -604,6 +621,21 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                 ))
               )}
             </div>
+
+            {keys?.current && (
+              <p className="text-[10.5px] text-zinc-500 leading-relaxed">
+                Key fingerprint <span className="font-mono text-zinc-300">{keys.current}</span>.{" "}
+                {isOwner
+                  ? "When you remove someone, the key is replaced, and members compare the new one with this."
+                  : "If the key changes, compare the new one with the owner's."}
+              </p>
+            )}
+            {keys?.pending && (
+              <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                A new key (<span className="font-mono">{keys.pending}</span>) is waiting for your OK in Servers. Until
+                you accept it, your changes aren't uploaded.
+              </p>
+            )}
 
             <div className="pt-2 border-t border-white/5">
               <button

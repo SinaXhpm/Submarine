@@ -421,6 +421,18 @@ function DesktopApp() {
     ]);
   };
 
+  // A shared profile's new key, as a fingerprint, while it waits for the
+  // user's OK. Until then a sync only pulls (see note_share_key).
+  const [shareKeyChange, setShareKeyChange] = useState<string | null>(null);
+  const refreshShareKey = useCallback(async () => {
+    try {
+      const s = await invoke<{ current: string | null; pending: string | null }>("share_key_state");
+      setShareKeyChange(s.pending);
+    } catch {
+      setShareKeyChange(null);
+    }
+  }, []);
+
   // Per-entity cloud sync of the currently-open profile. Pushes every locally
   // changed record and merges back the server's view (Last-Write-Wins by HLC),
   // without the server ever decrypting anything. A guard prevents overlapping
@@ -428,10 +440,14 @@ function DesktopApp() {
   const handleCloudSync = useCallback(async () => {
     setCloudSyncing(true);
     try {
-      const report = await invoke<{ pushed: number; pulled: number }>("sync_now");
+      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean }>("sync_now");
       await refreshAll();
+      refreshShareKey();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
       addLog(`Cloud sync complete — pushed ${report.pushed}, pulled ${report.pulled}.`, "success");
+      if (report.key_change) {
+        addLog("This shared profile's key has changed. Your changes aren't uploaded until you accept the new key (Servers → Review).", "info");
+      }
     } catch (e) {
       const msg = String(e);
       if (/NO_TOKEN|invalid_token|Missing auth|401/i.test(msg)) {
@@ -460,6 +476,22 @@ function DesktopApp() {
   const autoSyncBusy = useRef(false);
   const isUnlockedRef = useRef(isUnlocked);
   useEffect(() => { isUnlockedRef.current = isUnlocked; }, [isUnlocked]);
+  // A new share key still waiting from an earlier session shows on unlock.
+  useEffect(() => {
+    if (isUnlocked) refreshShareKey();
+    else setShareKeyChange(null);
+  }, [isUnlocked, refreshShareKey]);
+  // The user compared the new key's fingerprint with the owner's: use it, and
+  // sync, which uploads again.
+  const acceptShareKey = useCallback(async () => {
+    try {
+      await invoke("accept_share_key");
+      addLog("This shared profile now uses its new key.", "success");
+    } catch (e) {
+      addLog(`Couldn't switch to the new key: ${e}`, "error");
+    }
+    await handleCloudSync();
+  }, [addLog, handleCloudSync]);
   // Mirror cloudSyncing into a ref so quietSync can see a manual sync in flight
   // WITHOUT depending on the state — otherwise every sync would toggle
   // cloudSyncing, change quietSync's identity, and tear down + restart the
@@ -482,8 +514,9 @@ function DesktopApp() {
     autoSyncBusy.current = true;
     setCloudSyncing(true);
     try {
-      const report = await invoke<{ pushed: number; pulled: number }>("sync_now");
+      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean }>("sync_now");
       if (report.pulled > 0) await refreshAllRef.current();
+      refreshShareKey();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
     } catch {
       // Silent by design — not signed in, offline, or a viewer with nothing to
@@ -1616,6 +1649,8 @@ function DesktopApp() {
                 }}
                 onQuickConnect={() => setIsQuickConnectOpen(true)}
                 onAllowHeld={allowHeld}
+                keyChange={shareKeyChange}
+                onAcceptKey={acceptShareKey}
                 onRemoveServer={removeServer}
                 onRemoveFolder={removeFolder}
                 onRenameFolder={renameFolder}

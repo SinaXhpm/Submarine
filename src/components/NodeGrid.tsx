@@ -1,10 +1,10 @@
-import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert } from "lucide-react";
+import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound } from "lucide-react";
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
 import { HeldReview } from "./HeldReview";
 
-export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, onReorderServers, onAllowHeld, isMobile }: any) => {
+export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, isMobile }: any) => {
   const [search, setSearch] = useState("");
   // Changes someone else made in a shared profile that this device holds
   // back until its user allows them (see HeldReview).
@@ -16,6 +16,22 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
   // silently did nothing on Android after v0.2.32 made the action cluster
   // always-visible on mobile. Route through the themed useConfirm hook.
   const confirm = useConfirm();
+  // A shared profile's new key, waiting for the user's OK: they compare its
+  // fingerprint with the one in the owner's Profile panel first. Cancel has
+  // the focus, so a stray Enter doesn't accept it.
+  const reviewKey = async () => {
+    if (!keyChange || !onAcceptKey) return;
+    const ok = await confirm({
+      title: "Use the new key?",
+      message:
+        `This shared profile's key was replaced, usually because its owner removed someone. The new key's fingerprint is ${keyChange}. ` +
+        "Ask the owner whether their Profile panel shows the same one. If it doesn't, the key didn't come from them: don't use it.",
+      okLabel: "Use the new key",
+      cancelLabel: "Not now",
+      safeDefault: true,
+    });
+    if (ok) onAcceptKey();
+  };
   // Folder navigation is controlled when the parent passes both props, so the
   // selection survives NodeGrid unmount/remount (the parent sticks it onto
   // its own state). Falls back to local state for older callers that don't
@@ -475,6 +491,20 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
       )}
       {reviewOpen && onAllowHeld && (
         <HeldReview servers={servers || []} onAllow={onAllowHeld} onClose={closeReview} />
+      )}
+      {keyChange && onAcceptKey && (
+        <div role="status" className="max-w-xl w-full mx-auto -mt-3 mb-5 shrink-0 flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-100/90">
+          <KeyRound size={14} className="text-amber-400 shrink-0" />
+          <span className="flex-1 min-w-0">
+            This shared profile's key has changed. Your changes aren't uploaded until you accept the new key.
+          </span>
+          <button
+            onClick={reviewKey}
+            className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
+          >
+            Review
+          </button>
+        </div>
       )}
 
       <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 pb-10">
