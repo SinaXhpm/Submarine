@@ -93,6 +93,11 @@ pub fn seal_to(recipient_pub: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, St
     let eph = EphemeralSecret::random_from_rng(&mut rand::rng());
     let eph_pub = PublicKey::from(&eph);
     let shared = eph.diffie_hellman(&recipient);
+    // A low-order "public key" (all zeros, say) leaves a shared secret anyone
+    // can compute: whoever handed that key out could open the grant.
+    if !shared.was_contributory() {
+        return Err("[SHARE] WEAK_KEY: that public key can't be given a sealed key".into());
+    }
     let mut key = derive_seal_key(shared.as_bytes(), &eph_pub.to_bytes(), recipient_pub)?;
     let cipher = Aes256Gcm::new((&key).into());
     key.zeroize();
@@ -120,6 +125,11 @@ pub fn unseal(recipient_secret: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, Strin
     let secret = StaticSecret::from(*recipient_secret);
     let recipient_pub = PublicKey::from(&secret).to_bytes();
     let shared = secret.diffie_hellman(&PublicKey::from(eph));
+    // The same the other way round: a grant built on a low-order point could
+    // have been made by anyone, without our public key's private half.
+    if !shared.was_contributory() {
+        return Err("[SHARE] WEAK_KEY".into());
+    }
     let mut key = derive_seal_key(shared.as_bytes(), &eph, &recipient_pub)?;
     let cipher = Aes256Gcm::new((&key).into());
     key.zeroize();
@@ -182,6 +192,24 @@ mod tests {
         let last = grant.len() - 1;
         grant[last] ^= 0x01; // flip a ciphertext bit
         assert!(unseal(&k.secret, &grant).is_err());
+    }
+
+    // A low-order point leaves a shared secret of all zeros, which anyone can
+    // compute. Sealing to one is refused (whoever handed it out could open
+    // the grant), and so is opening a grant built on one, made here the way
+    // anyone could, without the recipient's private key.
+    #[test]
+    fn low_order_points_are_refused() {
+        assert!(seal_to(&[0u8; 32], &[7u8; 32]).is_err());
+
+        let me = generate_keypair();
+        let key = derive_seal_key(&[0u8; 32], &[0u8; 32], &me.public).unwrap();
+        let nonce = [1u8; NONCE_LEN];
+        let ct = Aes256Gcm::new((&key).into()).encrypt(&Nonce::from(nonce), &[7u8; 32][..]).unwrap();
+        let mut forged = vec![0u8; 32];
+        forged.extend_from_slice(&nonce);
+        forged.extend_from_slice(&ct);
+        assert!(unseal(&me.secret, &forged).is_err());
     }
 
     #[test]

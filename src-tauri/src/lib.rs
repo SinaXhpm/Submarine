@@ -1864,6 +1864,50 @@ fn hex_to_32(s: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
+/// The open profile's share is `share_id`, and this device is its owner.
+/// What an owner does to a share (invite, remove a member, replace its key)
+/// works on that profile's own key, so it has to be that profile that's open.
+fn own_share(conn: &Connection, share_id: &str) -> Result<(), String> {
+    let meta = |k: &str| conn.query_row("SELECT value FROM sync_meta WHERE key=?1", [k], |r| r.get::<_, String>(0)).ok();
+    if meta("share_id").as_deref() == Some(share_id) && meta("share_role").as_deref() == Some("owner") {
+        Ok(())
+    } else {
+        Err("[SHARE] NOT_OPEN_PROFILE: open the shared profile, as its owner, to do this.".into())
+    }
+}
+
+/// A key lookup's answer is for the account that was asked about. If the
+/// server named another one, the profile key would be sealed to that one.
+fn same_account(asked: &str, answered: &str) -> bool {
+    asked.trim().eq_ignore_ascii_case(answered.trim())
+}
+
+#[cfg(test)]
+mod share_binding_tests {
+    use super::*;
+
+    // Owner actions work on the open profile's own key: refused for any other
+    // share, and for a share this device is only a member of.
+    #[test]
+    fn owner_actions_need_the_open_profiles_own_share() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []).unwrap();
+        assert!(own_share(&conn, "s1").is_err(), "not shared at all");
+        conn.execute("INSERT INTO sync_meta VALUES('share_id','s1'),('share_role','editor')", []).unwrap();
+        assert!(own_share(&conn, "s1").is_err(), "a member, not the owner");
+        conn.execute("UPDATE sync_meta SET value='owner' WHERE key='share_role'", []).unwrap();
+        assert!(own_share(&conn, "s2").is_err(), "another share");
+        assert!(own_share(&conn, "s1").is_ok());
+    }
+
+    #[test]
+    fn a_lookup_has_to_answer_for_the_account_asked_about() {
+        assert!(same_account("Bob@Example.com ", "bob@example.com"));
+        assert!(!same_account("bob@example.com", "mallory@example.com"));
+        assert!(!same_account("bob@example.com", ""));
+    }
+}
+
 #[derive(serde::Serialize)]
 struct IdentityStatus {
     exists_on_server: bool,
@@ -2039,11 +2083,13 @@ struct InviteResult {
     email: String,
 }
 
-/// Owner: invite `email` to a share at `role` (editor|user). Obtains the DEK by
-/// unsealing my own grant, then re-seals it to the invitee's public key.
+/// Owner: invite `email` to the open profile's share at `role` (editor|user).
+/// Seals this profile's own key to the invitee's public key, never a key the
+/// server hands back; the server's copy of my own grant only has to agree.
 #[tauri::command]
 async fn invite_to_share(
     app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
     share_id: String,
     email: String,
@@ -2054,21 +2100,30 @@ async fn invite_to_share(
     }
     let (_, my_secret) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
     let session = cloud.session().await?;
-    // Get the DEK by unsealing my own grant for this share.
-    let mine = cloud::share_dek(&app, &cloud, &session, &share_id).await?;
-    let dek_bytes = identity::unseal(&my_secret, &hex::decode(&mine.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
-        .map_err(|_| "[SHARE] UNSEAL_SELF: cannot open your own grant — your identity may have changed")?;
     let dek = {
-        if dek_bytes.len() != 32 {
-            return Err("[SHARE] BAD_DEK_LEN".into());
-        }
-        let mut d = [0u8; 32];
-        d.copy_from_slice(&dek_bytes);
-        d
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        own_share(conn, &share_id)?;
+        let dek_hex: String = conn
+            .query_row("SELECT value FROM sync_meta WHERE key='dek'", [], |r| r.get(0))
+            .map_err(|_| "[SHARE] NO_DEK")?;
+        hex_to_32(&dek_hex)?
     };
+    // My own grant on the server has to hold the same key. If it doesn't, the
+    // key changed since this device last synced, or the server's copy isn't
+    // the one I made: a newcomer given this key couldn't read the share.
+    let mine = cloud::share_dek(&app, &cloud, &session, &share_id).await?;
+    let on_server = identity::unseal(&my_secret, &hex::decode(&mine.sealed_dek).map_err(|_| "[SHARE] BAD_GRANT")?)
+        .map_err(|_| "[SHARE] UNSEAL_SELF: cannot open your own grant — your identity may have changed")?;
+    if on_server.as_slice() != dek.as_slice() {
+        return Err("[SHARE] KEY_MISMATCH: this profile's key isn't the one on the server. Sync the profile, then invite again.".into());
+    }
     let info = cloud::lookup_pubkey(&app, &cloud, &session, &email)
         .await?
         .ok_or("[SHARE] NO_ACCOUNT: that email hasn't set up sharing yet")?;
+    if !same_account(&email, &info.email) {
+        return Err("[SHARE] WRONG_ACCOUNT: the server answered for another account".into());
+    }
     let invitee_pub = hex_to_32(&info.public_key)?;
     let sealed = hex::encode(identity::seal_to(&invitee_pub, &dek)?);
     cloud::invite_member(&app, &cloud, &session, &share_id, &email, &role, &sealed).await?;
@@ -2400,19 +2455,34 @@ async fn rotate_share_dek(
     let mut fresh = [0u8; 32];
     rand::rng().fill_bytes(&mut fresh);
 
+    // Every remaining member's grant is sealed before anything is replaced, so
+    // a lookup that fails outright stops the rotation while the old key is
+    // still everyone's. A member whose answer doesn't fit (another account, a
+    // key nothing can be sealed to) is left out: they can't decrypt until
+    // they're invited again, which is the safe direction to fail.
+    let roster = cloud::share_members(app, cloud, session, share_id).await?;
+    let mut grants = Vec::new();
+    for m in roster.iter().filter(|m| m.role != "owner" && m.status != "revoked") {
+        let Some(info) = cloud::lookup_pubkey(app, cloud, session, &m.email).await? else { continue };
+        if !same_account(&m.email, &info.email) {
+            eprintln!("[SHARE] left out of the new key, the server answered for another account: {}", m.email);
+            continue;
+        }
+        match hex_to_32(&info.public_key).and_then(|k| identity::seal_to(&k, &fresh)) {
+            Ok(sealed) => grants.push((m, hex::encode(sealed))),
+            Err(e) => eprintln!("[SHARE] left out of the new key: {}: {e}", m.email),
+        }
+    }
+
     // Re-seal to the owner FIRST. If this is the step that fails, nobody's grant
     // has changed yet and the old key is still universally valid — a clean no-op
     // rather than a share whose members hold a key the owner can't open.
     cloud::create_share(app, cloud, session, share_id, share_name, &hex::encode(identity::seal_to(&my_pub, &fresh)?)).await?;
 
-    let roster = cloud::share_members(app, cloud, session, share_id).await?;
-    for m in roster.iter().filter(|m| m.role != "owner" && m.status != "revoked") {
-        let Some(info) = cloud::lookup_pubkey(app, cloud, session, &m.email).await? else { continue };
-        let sealed = hex::encode(identity::seal_to(&hex_to_32(&info.public_key)?, &fresh)?);
-        // Best-effort per member: one member whose key lookup fails must not
-        // abort the rotation and leave the rest on a key the owner has already
-        // replaced. They simply can't decrypt until re-invited, which is the
-        // safe direction to fail.
+    for (m, sealed) in grants {
+        // Best-effort per member: one member whose upload fails must not abort
+        // the rotation and leave the rest on a key the owner has already
+        // replaced.
         if let Err(e) = cloud::invite_member(app, cloud, session, share_id, &m.email, &m.role, &sealed).await {
             eprintln!("[SHARE] re-seal failed for {}: {e}", m.email);
         }
@@ -2443,12 +2513,14 @@ async fn share_revoke(
     member_user_id: i64,
 ) -> Result<(), String> {
     let session = cloud.session().await?;
-    // The rotation below works on THIS profile; `generation` keeps it from
-    // reading or writing another one opened while the network calls run.
+    // The rotation below works on THIS profile, so the share has to be its
+    // own; `generation` keeps it from reading or writing another one opened
+    // while the network calls run.
     let generation = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         check_profile_server(conn, session.base())?;
+        own_share(conn, &share_id)?;
         db_state.generation_now()
     };
     cloud::revoke_member(&app, &cloud, &session, &share_id, member_user_id).await?;
