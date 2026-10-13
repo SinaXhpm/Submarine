@@ -35,7 +35,6 @@ use ssh_manager::SshState;
 use monitor::{MonitorMap, SharedSettings};
 use mirror::MirrorMap;
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
 
 // On-disk vault layout:
 //   bytes 0..3   magic ("OMNV")
@@ -12839,9 +12838,15 @@ async fn sftp_download_file(
         .open(&remote_path)
         .await
         .map_err(|e| { emit_progress(0, "error", Some(e.to_string())); format!("Failed to open remote file: {}", e) })?;
-    let mut local_file = tokio::fs::File::create(&local_path)
+    // Download to a sibling temp, then rename over the destination at the end.
+    // A failure or cancel mid-download then costs nothing: the file already at
+    // `local_path` (an overwrite) is untouched until the rename, and only the
+    // temp is removed. Same filesystem, so the rename is atomic.
+    let temp_path = download_temp_path(std::path::Path::new(&local_path));
+    let mut local_file = tokio::fs::File::create(&temp_path)
         .await
         .map_err(|e| { emit_progress(0, "error", Some(e.to_string())); format!("Failed to create local file: {}", e) })?;
+    let scrap_temp = |tmp: &std::path::Path| { let tmp = tmp.to_path_buf(); async move { let _ = tokio::fs::remove_file(&tmp).await; } };
 
     // 256 KiB chunks: large enough to keep the SSH window pipelined on
     // high-latency links (with window_size=8 MiB we want ~16+ chunks in
@@ -12853,22 +12858,19 @@ async fn sftp_download_file(
     use tokio::io::AsyncWriteExt;
     loop {
         if cancel.load(Ordering::Relaxed) {
-            // Drop the partial local file so we don't leave a half-baked
-            // download behind; ignore errors (e.g. on Windows file-locking).
             drop(local_file);
-            let _ = tokio::fs::remove_file(&local_path).await;
+            scrap_temp(&temp_path).await;
             emit_progress(transferred, "cancelled", None);
             return Err("cancelled".into());
         }
-        let n = remote_file
-            .read(&mut buf)
-            .await
-            .map_err(|e| { emit_progress(transferred, "error", Some(e.to_string())); format!("read: {}", e) })?;
+        let n = match remote_file.read(&mut buf).await {
+            Ok(n) => n,
+            Err(e) => { drop(local_file); scrap_temp(&temp_path).await; emit_progress(transferred, "error", Some(e.to_string())); return Err(format!("read: {e}")); }
+        };
         if n == 0 { break; }
-        local_file
-            .write_all(&buf[..n])
-            .await
-            .map_err(|e| { emit_progress(transferred, "error", Some(e.to_string())); format!("write: {}", e) })?;
+        if let Err(e) = local_file.write_all(&buf[..n]).await {
+            drop(local_file); scrap_temp(&temp_path).await; emit_progress(transferred, "error", Some(e.to_string())); return Err(format!("write: {e}"));
+        }
         transferred += n as u64;
         // Throttle progress events: each one crosses the IPC boundary, and
         // 10 Hz is more than enough for a smooth progress bar.
@@ -12880,10 +12882,16 @@ async fn sftp_download_file(
     // tokio's File hands writes to a background thread, so the last chunk's
     // failure (a full disk, say) only shows up here. Without the event the
     // transfer card would stay on "progress" for good.
-    local_file
-        .flush()
-        .await
-        .map_err(|e| { emit_progress(transferred, "error", Some(e.to_string())); format!("flush: {}", e) })?;
+    if let Err(e) = local_file.flush().await {
+        drop(local_file); scrap_temp(&temp_path).await; emit_progress(transferred, "error", Some(e.to_string())); return Err(format!("flush: {e}"));
+    }
+    drop(local_file);
+    // The one touch of the destination: the full download replaces it atomically.
+    if let Err(e) = tokio::fs::rename(&temp_path, &local_path).await {
+        scrap_temp(&temp_path).await;
+        emit_progress(transferred, "error", Some(e.to_string()));
+        return Err(format!("finalize: {e}"));
+    }
     emit_progress(transferred, "done", None);
     Ok(())
 }
@@ -13011,12 +13019,29 @@ async fn sftp_download_dir(
     let mut files: Vec<(String, String, u64)> = Vec::new(); // (remote, rel, size)
     let mut total_bytes: u64 = 0;
     let mut skipped_names: u64 = 0;
-    let mut stack: Vec<String> = vec![remote_root.clone()];
+    // (dir, depth). Depth bounds how deep a hostile server can send us, and
+    // the file/byte caps bound how much the list below can grow — so a broken
+    // or endless tree is refused instead of growing memory without bound.
+    let mut stack: Vec<(String, usize)> = vec![(remote_root.clone(), 0)];
+    let too_big = |files: usize, bytes: u64| {
+        if files > DOWNLOAD_DIR_MAX_FILES {
+            Some(format!("this folder has more than {} files — too many to download at once.", DOWNLOAD_DIR_MAX_FILES))
+        } else if bytes > DOWNLOAD_DIR_MAX_BYTES {
+            Some(format!("this folder is over {} GB — too large to download at once.", DOWNLOAD_DIR_MAX_BYTES / (1024 * 1024 * 1024)))
+        } else {
+            None
+        }
+    };
 
-    while let Some(dir) = stack.pop() {
+    while let Some((dir, depth)) = stack.pop() {
         if cancel.load(Ordering::Relaxed) {
             emit_progress(0, total_bytes, "cancelled", None);
             return Err("cancelled".into());
+        }
+        if depth > DOWNLOAD_DIR_MAX_DEPTH {
+            let msg = format!("folder nesting is deeper than {} levels — refusing to download.", DOWNLOAD_DIR_MAX_DEPTH);
+            emit_progress(0, total_bytes, "error", Some(msg.clone()));
+            return Err(msg);
         }
         let read = match sftp.read_dir(&dir).await {
             Ok(r) => r,
@@ -13026,6 +13051,17 @@ async fn sftp_download_dir(
             }
         };
         for entry in read {
+            // A single directory can hold millions of entries; a Cancel (and
+            // the caps) must take effect inside the walk, not only between
+            // directories.
+            if cancel.load(Ordering::Relaxed) {
+                emit_progress(0, total_bytes, "cancelled", None);
+                return Err("cancelled".into());
+            }
+            if let Some(msg) = too_big(files.len(), total_bytes) {
+                emit_progress(0, total_bytes, "error", Some(msg.clone()));
+                return Err(msg);
+            }
             let name = entry.file_name();
             if name == "." || name == ".." { continue; }
             // Skip any entry whose name isn't a single plain component this OS
@@ -13040,7 +13076,7 @@ async fn sftp_download_dir(
             }
             let full = format!("{}/{}", dir.trim_end_matches('/'), name);
             if entry.file_type().is_dir() {
-                stack.push(full);
+                stack.push((full, depth + 1));
             } else if entry.file_type().is_file() {
                 let size = entry.metadata().size.unwrap_or(0);
                 let rel = full.strip_prefix(&remote_root)
@@ -13121,7 +13157,11 @@ async fn sftp_download_dir(
                 return Err(format!("open {}: {}", remote_file_path, e));
             }
         };
-        let mut local_file = match tokio::fs::File::create(&dest).await {
+        // Each file goes to a sibling temp and is renamed over its final name
+        // at the end (see sftp_download_file), so a failure or cancel part way
+        // through a tree doesn't truncate a file already there.
+        let temp = download_temp_path(&dest);
+        let mut local_file = match tokio::fs::File::create(&temp).await {
             Ok(f) => f,
             Err(e) => {
                 emit_progress(transferred, total_bytes, "error",
@@ -13129,27 +13169,23 @@ async fn sftp_download_dir(
                 return Err(format!("create {}: {}", dest.display(), e));
             }
         };
+        let scrap = |tmp: &std::path::Path| { let tmp = tmp.to_path_buf(); async move { let _ = tokio::fs::remove_file(&tmp).await; } };
 
         loop {
             if cancel.load(Ordering::Relaxed) {
                 drop(local_file);
-                let _ = tokio::fs::remove_file(&dest).await;
+                scrap(&temp).await;
                 emit_progress(transferred, total_bytes, "cancelled", None);
                 return Err("cancelled".into());
             }
-            let n = remote_file.read(&mut buf).await
-                .map_err(|e| {
-                    emit_progress(transferred, total_bytes, "error",
-                        Some(format!("read {}: {}", remote_file_path, e)));
-                    format!("read {}: {}", remote_file_path, e)
-                })?;
+            let n = match remote_file.read(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => { drop(local_file); scrap(&temp).await; emit_progress(transferred, total_bytes, "error", Some(format!("read {}: {}", remote_file_path, e))); return Err(format!("read {}: {}", remote_file_path, e)); }
+            };
             if n == 0 { break; }
-            local_file.write_all(&buf[..n]).await
-                .map_err(|e| {
-                    emit_progress(transferred, total_bytes, "error",
-                        Some(format!("write {}: {}", dest.display(), e)));
-                    format!("write {}: {}", dest.display(), e)
-                })?;
+            if let Err(e) = local_file.write_all(&buf[..n]).await {
+                drop(local_file); scrap(&temp).await; emit_progress(transferred, total_bytes, "error", Some(format!("write {}: {}", dest.display(), e))); return Err(format!("write {}: {}", dest.display(), e));
+            }
             transferred = transferred.saturating_add(n as u64);
             if last_report.elapsed() >= std::time::Duration::from_millis(100) {
                 emit_progress(transferred, total_bytes, "progress", None);
@@ -13157,12 +13193,15 @@ async fn sftp_download_dir(
             }
         }
         // See sftp_download_file: a failed last write surfaces here.
-        local_file.flush().await
-            .map_err(|e| {
-                emit_progress(transferred, total_bytes, "error",
-                    Some(format!("flush {}: {}", dest.display(), e)));
-                format!("flush {}: {}", dest.display(), e)
-            })?;
+        if let Err(e) = local_file.flush().await {
+            drop(local_file); scrap(&temp).await; emit_progress(transferred, total_bytes, "error", Some(format!("flush {}: {}", dest.display(), e))); return Err(format!("flush {}: {}", dest.display(), e));
+        }
+        drop(local_file);
+        if let Err(e) = tokio::fs::rename(&temp, &dest).await {
+            scrap(&temp).await;
+            emit_progress(transferred, total_bytes, "error", Some(format!("finalize {}: {}", dest.display(), e)));
+            return Err(format!("finalize {}: {}", dest.display(), e));
+        }
     }
 
     emit_progress(transferred, total_bytes, "done", skipped_note);
@@ -13762,6 +13801,110 @@ fn transfer_id() -> String {
     format!("{}-{}", ts, seq)
 }
 
+/// Remove this run's temp root (live-edit / drag staging), and any left by a
+/// run that didn't get to. Called on exit, and on startup for the old ones.
+/// Only `submarine-<hex>` dirs older than a day are swept on startup: a newer
+/// one may belong to another copy of the app running right now (the user's
+/// installed app beside a test build, say), whose live files must not go.
+fn sweep_app_temp(include_own: bool) {
+    if include_own {
+        let _ = std::fs::remove_dir_all(app_temp_root());
+    }
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        // `submarine-<32 hex>`, the shape app_temp_root mints.
+        let is_ours = name.strip_prefix("submarine-").is_some_and(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+        if !is_ours {
+            continue;
+        }
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|t| t.elapsed().map(|age| age > day).unwrap_or(false))
+            .unwrap_or(false);
+        if old {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// The most a remote file read whole into memory may be: live-edit opens the
+/// file in an editor and drag stages it, both for ordinary files a person
+/// edits or drags, so a huge or endless one (a 6 GB image, a broken server's
+/// unbounded read) is refused rather than exhausting memory.
+const SFTP_INLINE_MAX_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Caps on one recursive directory download, against a broken or hostile
+/// server: a tree deeper than this, or with more files or bytes, is refused
+/// before it can grow the in-memory file list without bound.
+const DOWNLOAD_DIR_MAX_DEPTH: usize = 64;
+const DOWNLOAD_DIR_MAX_FILES: usize = 200_000;
+const DOWNLOAD_DIR_MAX_BYTES: u64 = 100 * 1024 * 1024 * 1024;
+
+/// A sibling temp name for `dest`, e.g. `foo.txt` → `foo.txt.sub-tmp-<id>`.
+/// A download writes here, then renames over `dest`, so a transfer that fails
+/// or is cancelled never truncates a file that was already there (the rename
+/// is the only thing that touches `dest`, and only once the bytes are in).
+fn download_temp_path(dest: &std::path::Path) -> std::path::PathBuf {
+    let mut name = dest.as_os_str().to_os_string();
+    name.push(format!(".sub-tmp-{}", transfer_id()));
+    std::path::PathBuf::from(name)
+}
+
+/// The remote file's size, or `None` if the server doesn't report it. For a
+/// read-whole-into-memory path (live-edit, drag): over `SFTP_INLINE_MAX_BYTES`
+/// is refused; an unknown size is allowed (and the read itself is bounded by
+/// the cap, below).
+async fn refuse_if_too_big_to_inline(
+    sftp: &russh_sftp::client::SftpSession,
+    remote_path: &str,
+) -> Result<(), String> {
+    if let Ok(meta) = sftp.metadata(remote_path).await {
+        if let Some(size) = meta.size {
+            if size > SFTP_INLINE_MAX_BYTES {
+                return Err(format!(
+                    "[SFTP] FILE_TOO_LARGE: {} is {:.0} MB — too large to open or drag here (limit {} MB). Download it instead.",
+                    remote_path,
+                    size as f64 / (1024.0 * 1024.0),
+                    SFTP_INLINE_MAX_BYTES / (1024 * 1024)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read a remote file whole, up to `SFTP_INLINE_MAX_BYTES`. A server that
+/// under-reported its size (or streams endlessly) is still stopped at the cap
+/// rather than filling memory.
+async fn read_remote_capped(
+    sftp: &russh_sftp::client::SftpSession,
+    remote_path: &str,
+) -> Result<Vec<u8>, String> {
+    use tokio::io::AsyncReadExt;
+    let mut file = sftp.open(remote_path).await.map_err(|e| format!("Failed to read remote file: {e}"))?;
+    let mut data = Vec::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = file.read(&mut buf).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        if data.len() as u64 + n as u64 > SFTP_INLINE_MAX_BYTES {
+            return Err(format!(
+                "[SFTP] FILE_TOO_LARGE: {} is over {} MB — too large to open or drag here. Download it instead.",
+                remote_path,
+                SFTP_INLINE_MAX_BYTES / (1024 * 1024)
+            ));
+        }
+        data.extend_from_slice(&buf[..n]);
+    }
+    Ok(data)
+}
+
 /// Process-global, UNPREDICTABLE temp root for SFTP live-edit / drag staging,
 /// created once with a random name (and 0700 on Unix). The old code used a
 /// fully predictable `submarine_sftp_<session_id>` directory directly in the
@@ -13930,8 +14073,11 @@ async fn sftp_open_remote_file(
     let sftp = get_sftp_session(&state, &session_id).await?;
     let filename = safe_temp_leaf_name(&remote_path)?;
 
-    // Read file data
-    let data = sftp.read(&remote_path).await.map_err(|e| format!("Failed to read remote file: {}", e))?;
+    // Live-edit opens the copy in an editor, so refuse a file too large to
+    // hold in memory (a huge binary, or a broken server's endless read) —
+    // see refuse_if_too_big_to_inline / read_remote_capped.
+    refuse_if_too_big_to_inline(&sftp, &remote_path).await?;
+    let data = read_remote_capped(&sftp, &remote_path).await?;
 
     // Per-session subdirectory so we can sweep everything cleanly on
     // disconnect rather than leaving loose `submarine_sftp_*` files in the global
@@ -14151,19 +14297,11 @@ async fn sftp_prepare_drag(
     remote_path: String,
 ) -> Result<String, String> {
     let sftp = get_sftp_session(&state, &session_id).await?;
-    let mut file = sftp.open(&remote_path).await.map_err(|e| e.to_string())?;
-    
-    // Read remote file data
-    let mut data = Vec::new();
-    let mut buffer = vec![0u8; 32768];
-    loop {
-        let n = file.read(&mut buffer).await.map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        data.extend_from_slice(&buffer[..n]);
-    }
-    
+    // A drag stages the file in a temp dir; refuse one too large to hold in
+    // memory, as live-edit does (read_remote_capped also stops an endless read).
+    refuse_if_too_big_to_inline(&sftp, &remote_path).await?;
+    let data = read_remote_capped(&sftp, &remote_path).await?;
+
     // Sanitize the filename: a hostile (or compromised) SFTP server picks
     // remote_path, and we used to drop the basename straight into the OS
     // temp dir. safe_temp_leaf_name restricts to a safe leaf (no separators,
@@ -14418,7 +14556,7 @@ struct ImportedHost {
 /// import story goes through profile export/import instead — we return a
 /// clear message rather than pretending to look somewhere.
 #[tauri::command]
-fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, String> {
+async fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, String> {
     #[cfg(target_os = "android")]
     {
         let _ = path;
@@ -14481,16 +14619,24 @@ fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, String> {
                 .ok_or_else(|| "Could not resolve home directory".to_string())?,
         };
 
-        if !config_path.exists() {
-            return Err(format!(
-                "SSH config file not found at {}",
-                config_path.display()
-            ));
-        }
-
-        let contents = fs::read_to_string(&config_path).map_err(|e| {
-            format!("Failed to read {}: {}", config_path.display(), e)
-        })?;
+        // Read on a blocking thread, not the UI one (a config on a stuck NFS
+        // mount would otherwise freeze the window). Only a regular file up to
+        // 1 MiB — a FIFO planted at ~/.ssh/config would hang the read forever,
+        // and a real config is a few KB.
+        let read_path = config_path.clone();
+        let contents = tokio::task::spawn_blocking(move || -> Result<String, String> {
+            let meta = fs::metadata(&read_path)
+                .map_err(|e| format!("SSH config file not found at {}: {}", read_path.display(), e))?;
+            if !meta.is_file() {
+                return Err(format!("{} isn't a regular file.", read_path.display()));
+            }
+            if meta.len() > 1024 * 1024 {
+                return Err(format!("{} is too large to be an SSH config.", read_path.display()));
+            }
+            fs::read_to_string(&read_path).map_err(|e| format!("Failed to read {}: {}", read_path.display(), e))
+        })
+        .await
+        .map_err(|e| format!("Failed to read SSH config: {e}"))??;
 
         let mut out: Vec<ImportedHost> = Vec::new();
         let mut cur: Option<Block> = None;
@@ -16387,7 +16533,7 @@ pub fn run() {
     // dispatches through this so the same code path works in the desktop
     // installer AND the Android APK. Capability is granted in default.json.
     let builder = builder.plugin(tauri_plugin_opener::init());
-    builder
+    let builder = builder
         .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)) })
         .manage(SshState::new())
         // Docker live-log stream registry — keyed by frontend-issued stream id,
@@ -16482,9 +16628,22 @@ pub fn run() {
             portable::get_storage_info,
             fonts::list_system_fonts,
             clipboard_read_text
-        ])
-        .run(context)
-        .expect("error while running tauri application");
+        ]);
+
+    // Clear out live-edit / drag temp dirs a crashed earlier run left behind
+    // (only ones older than a day — a newer one may be another copy of the app
+    // running right now). This run's own dir is swept on exit, below.
+    sweep_app_temp(false);
+
+    builder
+        .build(context)
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // The decrypted copies this run staged go with it.
+                sweep_app_temp(true);
+            }
+        });
 }
 
 #[cfg(test)]
