@@ -73,6 +73,37 @@ pub struct DbState {
     /// same clock instance backs both the SQL function and any Rust-side sync
     /// code (the merge engine's `observe`).
     pub hlc: StdMutex<Option<std::sync::Arc<hlc::Hlc>>>,
+    /// Which opening of a profile `conn` belongs to: bumped, under `conn`'s
+    /// lock, every time a profile opens or closes. A command that awaits the
+    /// network between reading the open profile and writing back to it
+    /// checks this under the lock before the write (`still_open`): when it
+    /// moved, the user locked that profile or opened another one meanwhile,
+    /// and the write would land in the wrong vault. An Arc so a vault save
+    /// on the blocking pool can check it too.
+    pub generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl DbState {
+    /// The current generation. Read it while holding `conn`'s lock, so it
+    /// names the profile that lock gives access to.
+    fn generation_now(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// For whatever opens or closes a profile, while it holds `conn`'s lock.
+    fn bump_generation(&self) -> u64 {
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// Before a write that follows an await: is the profile that was open at
+    /// `generation` still the one open? Call it while holding `conn`'s lock.
+    fn still_open(&self, generation: u64) -> Result<(), String> {
+        if self.generation_now() == generation {
+            Ok(())
+        } else {
+            Err("[STATE] PROFILE_CHANGED: the profile was locked, or another one opened, while this was running. Nothing was written to it; open it and try again.".into())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1300,31 +1331,42 @@ async fn sync_now(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<SyncReport, String> {
     let session = cloud.session().await?;
-    sync_with(&app, &db_state, &cloud, &session).await
+    sync_with(&app, &db_state, &cloud, &session, None).await
 }
 
 /// `sync_now` over a session the caller already holds, so a command that also
-/// did other calls first keeps all of them on one server.
+/// did other calls first keeps all of them on one server. `pinned` is the
+/// generation of the profile the caller means (see `DbState::generation`),
+/// when it has one; the sync refuses to run on any other.
 async fn sync_with(
     app: &tauri::AppHandle,
     db_state: &DbState,
     cloud: &cloud::CloudState,
     session: &cloud::Session,
+    pinned: Option<u64>,
 ) -> Result<SyncReport, String> {
-    let profile = db_state
-        .active_profile
-        .lock()
-        .map_err(|_| "[STATE] LOCK_PROFILE")?
-        .clone()
-        .ok_or("[SYNC] NO_PROFILE_OPEN")?;
-
     // Checked before anything goes out, the shared key refresh below included:
     // a server the profile isn't linked to could hand back a key it knows,
     // and every record pushed after that would be readable to it.
-    let unlinked = {
+    //
+    // `generation` pins the profile this sync is for: everything written
+    // back after a network wait checks it first, so a reply that arrives
+    // after the user locked this profile (or opened another) is dropped
+    // instead of landing in whatever profile is open by then.
+    let (profile, unlinked, generation) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-        check_profile_server(conn, session.base())?
+        let generation = db_state.generation_now();
+        if let Some(pinned) = pinned {
+            db_state.still_open(pinned)?;
+        }
+        let profile = db_state
+            .active_profile
+            .lock()
+            .map_err(|_| "[STATE] LOCK_PROFILE")?
+            .clone()
+            .ok_or("[SYNC] NO_PROFILE_OPEN")?;
+        (profile, check_profile_server(conn, session.base())?, generation)
     };
 
     // A shared profile's key can change under us: the owner rotates it whenever
@@ -1336,6 +1378,7 @@ async fn sync_with(
     let existing_share: Option<String> = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        db_state.still_open(generation)?;
         conn.query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0)).ok()
     };
     if let Some(sid) = &existing_share {
@@ -1346,6 +1389,7 @@ async fn sync_with(
                         if opened.len() == 32 {
                             let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
                             let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+                            db_state.still_open(generation)?;
                             let _ = conn.execute(
                                 "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                                 [&hex::encode(&opened)],
@@ -1367,6 +1411,7 @@ async fn sync_with(
     let (records, dek, hlc, share, cloud_profile, master_key, salt) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        db_state.still_open(generation)?;
         let hlc_g = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?;
         let hlc = hlc_g.as_ref().ok_or("[SYNC] NO_HLC")?.clone();
         // The session master key + salt (retained in DbState for the vault
@@ -1431,6 +1476,7 @@ async fn sync_with(
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        db_state.still_open(generation)?;
         apply_remote_records(conn, &dek, &remote, &hlc)?;
         if unlinked {
             link_profile_server(conn, session.base())?;
@@ -1766,7 +1812,7 @@ async fn share_current_profile(
     }
     let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED: set up your sharing identity first")?;
     let session = cloud.session().await?;
-    let (dek, unlinked) = {
+    let (dek, unlinked, generation) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         // A profile is shared on the server it syncs with, or on the one in
@@ -1783,7 +1829,7 @@ async fn share_current_profile(
         if already.is_some() {
             return Err("[SHARE] ALREADY_SHARED: this profile is already shared — stop sharing first if you want a new share.".into());
         }
-        (get_or_create_dek(conn)?.0, unlinked)
+        (get_or_create_dek(conn)?.0, unlinked, db_state.generation_now())
     };
     let sealed_self = hex::encode(identity::seal_to(&my_pub, &dek)?);
     let share_id = new_entity_uuid(); // 32 hex — within the server's {16,64}
@@ -1791,6 +1837,9 @@ async fn share_current_profile(
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        // The share holds THIS profile's key; recording it in another profile
+        // opened meanwhile would mark that one shared under a key it doesn't use.
+        db_state.still_open(generation)?;
         if unlinked {
             link_profile_server(conn, session.base())?;
         }
@@ -1941,13 +1990,18 @@ async fn import_shared_profile(
     *db_state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED")? = Some(local_name.clone());
     // setup_master_db consumes a State handle; hand it a fresh one from `app` so
     // our own `db_state` stays usable for the sync_meta writes + sync below.
-    {
+    // `opened` pins the new profile: the writes and the sync below go to it
+    // and nowhere else.
+    let opened = {
         use tauri::Manager as _;
-        if let Err(e) = setup_master_db(app.clone(), vault_password, app.state::<DbState>()).await {
-            discard_half_built_profile(&app, &local_name);
-            return Err(e);
+        match setup_master_db_inner(app.clone(), vault_password, app.state::<DbState>(), true).await {
+            Ok(generation) => generation,
+            Err(e) => {
+                discard_half_built_profile(&app, &local_name, None);
+                return Err(e);
+            }
         }
-    }
+    };
 
     // Past this point the vault exists on disk — an import that doesn't finish
     // must leave no trace, or the next attempt hits "already exists" forever.
@@ -1956,6 +2010,7 @@ async fn import_shared_profile(
     let seeded = (|| -> Result<(), String> {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        db_state.still_open(opened)?;
         conn.execute(
             "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [&dek_hex],
@@ -1975,14 +2030,14 @@ async fn import_shared_profile(
         Ok(())
     })();
     if let Err(e) = seeded {
-        discard_half_built_profile(&app, &local_name);
+        discard_half_built_profile(&app, &local_name, Some(opened));
         return Err(e);
     }
     // Pull the shared data into the new profile.
-    match sync_with(&app, &db_state, &cloud, &session).await {
+    match sync_with(&app, &db_state, &cloud, &session, Some(opened)).await {
         Ok(report) => Ok(report),
         Err(e) => {
-            discard_half_built_profile(&app, &local_name);
+            discard_half_built_profile(&app, &local_name, Some(opened));
             Err(e)
         }
     }
@@ -2003,15 +2058,28 @@ async fn import_shared_profile(
 ///
 /// Best-effort by design: we're already returning an error, and the caller's
 /// original one is the one worth showing.
-fn discard_half_built_profile(app: &tauri::AppHandle, name: &str) {
+///
+/// `opened` is the generation the half-built profile was opened at (None when
+/// opening it is what failed). If another profile has been opened since, that
+/// one stays open; only the half-built file goes.
+fn discard_half_built_profile(app: &tauri::AppHandle, name: &str, opened: Option<u64>) {
     use tauri::Manager as _;
     let state = app.state::<DbState>();
-    if let Ok(mut g) = state.conn.lock() { *g = None; }
-    if let Ok(mut g) = state.master_key.lock() { *g = None; }
-    if let Ok(mut g) = state.salt.lock() { *g = None; }
-    if let Ok(mut g) = state.db_path.lock() { *g = None; }
-    if let Ok(mut g) = state.hlc.lock() { *g = None; }
-    if let Ok(mut g) = state.active_profile.lock() { *g = None; }
+    // Under the connection's lock when it can be had, as in close_profile.
+    let mut conn = state.conn.lock().ok();
+    let ours = opened.is_none_or(|g| state.generation_now() == g);
+    if ours {
+        if let Some(c) = conn.as_mut() { **c = None; }
+        if let Ok(mut g) = state.master_key.lock() { *g = None; }
+        if let Ok(mut g) = state.salt.lock() { *g = None; }
+        if let Ok(mut g) = state.db_path.lock() { *g = None; }
+        if let Ok(mut g) = state.hlc.lock() { *g = None; }
+        state.bump_generation();
+    }
+    drop(conn);
+    if ours {
+        if let Ok(mut g) = state.active_profile.lock() { *g = None; }
+    }
     if let Ok(p) = profile_path(app, name) {
         let _ = fs::remove_file(p);
     }
@@ -2071,17 +2139,20 @@ async fn restore_personal_profile(
         return Err(format!("Profile '{}' already exists", local_name));
     }
     *db_state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED")? = Some(local_name.clone());
-    {
+    // `opened` pins the new profile: the writes and the sync below go to it
+    // and nowhere else.
+    let opened = {
         use tauri::Manager as _;
         // No strength floor here: the escrow above already proved this is the
         // profile's real password. A pre-existing short one must still restore.
-        if let Err(e) =
-            setup_master_db_inner(app.clone(), vault_password, app.state::<DbState>(), false).await
-        {
-            discard_half_built_profile(&app, &local_name);
-            return Err(e);
+        match setup_master_db_inner(app.clone(), vault_password, app.state::<DbState>(), false).await {
+            Ok(generation) => generation,
+            Err(e) => {
+                discard_half_built_profile(&app, &local_name, None);
+                return Err(e);
+            }
         }
-    }
+    };
 
     // Past this point the vault exists on disk, so every remaining step has to
     // clean up after itself — a restore that didn't finish must leave no trace.
@@ -2091,6 +2162,7 @@ async fn restore_personal_profile(
     let seeded = (|| -> Result<(), String> {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        db_state.still_open(opened)?;
         conn.execute(
             "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [&dek_hex],
@@ -2105,13 +2177,13 @@ async fn restore_personal_profile(
         Ok(())
     })();
     if let Err(e) = seeded {
-        discard_half_built_profile(&app, &local_name);
+        discard_half_built_profile(&app, &local_name, Some(opened));
         return Err(e);
     }
-    match sync_with(&app, &db_state, &cloud, &session).await {
+    match sync_with(&app, &db_state, &cloud, &session, Some(opened)).await {
         Ok(report) => Ok(report),
         Err(e) => {
-            discard_half_built_profile(&app, &local_name);
+            discard_half_built_profile(&app, &local_name, Some(opened));
             Err(e)
         }
     }
@@ -2154,6 +2226,7 @@ async fn rotate_share_dek(
     session: &cloud::Session,
     share_id: &str,
     share_name: &str,
+    generation: u64,
 ) -> Result<(), String> {
     let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
     let mut fresh = [0u8; 32];
@@ -2180,6 +2253,9 @@ async fn rotate_share_dek(
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        // Only into the profile this was for. If it closed meanwhile, its next
+        // sync fetches the new key from its own grant anyway.
+        db_state.still_open(generation)?;
         conn.execute(
             "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [&hex::encode(fresh)],
@@ -2199,19 +2275,30 @@ async fn share_revoke(
     member_user_id: i64,
 ) -> Result<(), String> {
     let session = cloud.session().await?;
-    {
+    // The rotation below works on THIS profile; `generation` keeps it from
+    // reading or writing another one opened while the network calls run.
+    let generation = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         check_profile_server(conn, session.base())?;
-    }
+        db_state.generation_now()
+    };
     cloud::revoke_member(&app, &cloud, &session, &share_id, member_user_id).await?;
     // Revocation itself has succeeded by here. If the rotation leg fails we
     // still report success for the removal — the member IS out — but say plainly
     // that the key wasn't replaced, because that's the part with a security
     // consequence and silently swallowing it would misrepresent what happened.
+    let not_rotated = |e: String| {
+        format!(
+            "[SHARE] REVOKED_BUT_KEY_NOT_ROTATED: {} is out of the share, but the shared key could not be replaced ({e}). \
+             They can no longer reach the server, but they still hold the old key — retry from the members list to rotate it.",
+            member_user_id
+        )
+    };
     let name = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        db_state.still_open(generation).map_err(not_rotated)?;
         conn.query_row("SELECT value FROM sync_meta WHERE key='share_name'", [], |r| r.get::<_, String>(0))
             .ok()
     };
@@ -2224,12 +2311,8 @@ async fn share_revoke(
             .clone()
             .unwrap_or_else(|| "profile".to_string()),
     };
-    if let Err(e) = rotate_share_dek(&app, &db_state, &cloud, &session, &share_id, &name).await {
-        return Err(format!(
-            "[SHARE] REVOKED_BUT_KEY_NOT_ROTATED: {} is out of the share, but the shared key could not be replaced ({e}). \
-             They can no longer reach the server, but they still hold the old key — retry from the members list to rotate it.",
-            member_user_id
-        ));
+    if let Err(e) = rotate_share_dek(&app, &db_state, &cloud, &session, &share_id, &name, generation).await {
+        return Err(not_rotated(e));
     }
     Ok(())
 }
@@ -2353,7 +2436,7 @@ async fn stop_sharing(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<(), String> {
     let session = cloud.session().await?;
-    let (share_id, role) = {
+    let (share_id, role, generation) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let sid: Option<String> = conn
@@ -2366,6 +2449,7 @@ async fn stop_sharing(
         (
             sid.ok_or("[SHARE] NOT_SHARED: this profile isn't shared")?,
             role.unwrap_or_default(),
+            db_state.generation_now(),
         )
     };
     if role == "owner" {
@@ -2389,6 +2473,9 @@ async fn stop_sharing(
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        // Only the profile this was asked for: another one opened meanwhile
+        // would otherwise lose its own share link.
+        db_state.still_open(generation)?;
         conn.execute("DELETE FROM sync_meta WHERE key IN ('share_id','share_role','share_name')", [])
             .map_err(|e| format!("[SHARE] CLEAR_META: {e}"))?;
     }
@@ -2989,24 +3076,36 @@ mod sync_engine_tests {
     }
 }
 
-/// Async-friendly vault save. Snapshots the key/salt/path under the sync
-/// mutexes, clones the Arc'd connection slot, then hands the whole thing
-/// to `spawn_blocking`. The SQLite serialise + zstd + AES-GCM + fsync
-/// chain runs on a blocking-pool thread so concurrent terminal output
-/// and keystrokes don't stall on the tokio worker pool.
+/// Async-friendly vault save: the same as `save_vault_internal`, on a
+/// blocking-pool thread, so the SQLite serialise + zstd + AES-GCM + fsync
+/// chain doesn't stall concurrent terminal output and keystrokes on the
+/// tokio worker pool.
+///
+/// The database, key, salt and path are all read under the connection's
+/// lock, which is also what opening or closing a profile holds while it
+/// swaps them. Taking the key and path first and the database later (as
+/// this used to) could pair one profile's key and file with the next
+/// profile's data when the user switched profiles in between.
 async fn save_vault_async(state: &DbState) -> Result<(), String> {
     let conn_arc = std::sync::Arc::clone(&state.conn);
-    let (key, salt, path) = {
+    let generation = std::sync::Arc::clone(&state.generation);
+    let (key, salt, path, opened) = {
+        let cg = state.conn.lock().map_err(|_| "[STATE] MUTEX_POISON_CONN")?;
         let kg = state.master_key.lock().map_err(|_| "[STATE] MUTEX_POISON_KEY")?;
         let sg = state.salt.lock().map_err(|_| "[STATE] MUTEX_POISON_SALT")?;
         let pg = state.db_path.lock().map_err(|_| "[STATE] MUTEX_POISON_PATH")?;
-        match (kg.as_ref(), sg.as_ref(), pg.as_ref()) {
-            (Some(k), Some(s), Some(p)) => (k.clone(), *s, p.clone()),
+        match (cg.as_ref(), kg.as_ref(), sg.as_ref(), pg.as_ref()) {
+            (Some(_), Some(k), Some(s), Some(p)) => (k.clone(), *s, p.clone(), state.generation_now()),
             _ => return Err("[STATE] MISSING_REQUIRED_RESOURCES_FOR_SAVE".into()),
         }
     };
     tokio::task::spawn_blocking(move || {
         let cg = conn_arc.lock().map_err(|_| "[STATE] MUTEX_POISON_CONN")?;
+        // The database now under the lock has to be the one the key and path
+        // above belong to.
+        if generation.load(std::sync::atomic::Ordering::SeqCst) != opened {
+            return Err("[STATE] PROFILE_CHANGED: the profile was locked, or another one opened, before it could be saved.".to_string());
+        }
         let conn = cg.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
         save_vault_blocking(conn, &key, &salt, &path)
     })
@@ -3103,7 +3202,7 @@ async fn force_push_profile(
         .clone()
         .ok_or("[SYNC] NO_PROFILE_OPEN")?;
     let session = cloud.session().await?;
-    let (share_id, cloud_profile) = {
+    let (share_id, cloud_profile, generation) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         check_profile_server(conn, session.base())?;
@@ -3113,7 +3212,7 @@ async fn force_push_profile(
         let cp: String = conn
             .query_row("SELECT value FROM sync_meta WHERE key='cloud_profile'", [], |r| r.get(0))
             .unwrap_or_else(|_| profile.clone());
-        (sid, cp)
+        (sid, cp, db_state.generation_now())
     };
     if share_id.is_some() {
         return Err("[SYNC] SHARED_PROFILE: this profile is shared with other people, and replacing the cloud copy would delete their changes too. Stop sharing first if you really want to reset it.".into());
@@ -3121,8 +3220,10 @@ async fn force_push_profile(
     let removed = cloud::delete_sync_profile(&app, &cloud, &session, &cloud_profile).await?;
     eprintln!("[SYNC] force push: server dropped {removed} record(s) for '{cloud_profile}'");
     // Pushes are always a full set, so the very next sync repopulates the
-    // partition from this vault — including a fresh DEK escrow record.
-    sync_with(&app, &db_state, &cloud, &session).await
+    // partition from this vault — including a fresh DEK escrow record. Only
+    // this profile's, though: if another opened meanwhile, the sync refuses,
+    // and this profile's next sync fills its partition back up.
+    sync_with(&app, &db_state, &cloud, &session, Some(generation)).await
 }
 
 /// Mark a profile as the active one. Subsequent `check_db_exists` /
@@ -3225,13 +3326,20 @@ async fn close_profile(
     ssh.kbi_txs.lock().await.clear();
 
     // 6. Drop DB state last, so any in-flight write triggered by a
-    // disconnecting handler above had a valid DB to land in.
-    *state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED_CONN")? = None;
+    // disconnecting handler above had a valid DB to land in. All of it under
+    // the connection's lock, in the order a save takes the locks: nothing can
+    // see this profile's key with no database, or the next one's database
+    // with this one's key. The new generation tells a command still waiting
+    // on the network that the profile it read from is gone.
+    let mut conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED_CONN")?;
+    *conn_guard = None;
     *state.master_key.lock().map_err(|_| "[STATE] LOCK_FAILED_KEY")? = None;
     *state.salt.lock().map_err(|_| "[STATE] LOCK_FAILED_SALT")? = None;
     *state.db_path.lock().map_err(|_| "[STATE] LOCK_FAILED_PATH")? = None;
     *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE")? = None;
     *state.hlc.lock().map_err(|_| "[STATE] LOCK_FAILED_HLC")? = None;
+    state.bump_generation();
+    drop(conn_guard);
     Ok(())
 }
 
@@ -3547,7 +3655,7 @@ async fn setup_master_db(app_handle: tauri::AppHandle, password: String, state: 
     // (create a profile, or unlock an existing one), so the strength floor
     // applies. `restore_personal_profile` is the one caller that doesn't get to
     // choose — see `enforce_strength` below.
-    setup_master_db_inner(app_handle, password, state, true).await
+    setup_master_db_inner(app_handle, password, state, true).await.map(|_| ())
 }
 
 /// `enforce_strength = false` is for restoring a profile that ALREADY exists in
@@ -3561,7 +3669,7 @@ async fn setup_master_db_inner(
     mut password: String,
     state: tauri::State<'_, DbState>,
     enforce_strength: bool,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     // The active profile must be picked before this command — the UI does
     // it from the picker screen. Refuse early instead of silently writing
     // to a default path.
@@ -3921,6 +4029,9 @@ async fn setup_master_db_inner(
     *salt_guard = Some(salt_bytes);
     *path_guard = Some(path);
     *hlc_guard = Some(hlc_arc);
+    // A new opening: anything still running for the profile open before
+    // (a sync waiting on the network, say) must not write into this one.
+    let generation = state.bump_generation();
     drop(hlc_guard);
     drop(path_guard);
     drop(salt_guard);
@@ -3930,7 +4041,7 @@ async fn setup_master_db_inner(
     if needs_resave {
         save_vault_internal(&state)?;
     }
-    Ok(())
+    Ok(generation)
 }
 
 /// Flush the in-memory vault to disk. Used by the frontend after a successful
@@ -3968,7 +4079,7 @@ async fn create_profile(
     *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED")? = Some(name);
     // Reuse setup_master_db's fresh-schema branch by deferring to it. Empty
     // profile starts with the same migrations the legacy path would do.
-    setup_master_db(app_handle.clone(), password, state).await?;
+    let opened = setup_master_db_inner(app_handle.clone(), password, state, true).await?;
 
     // New profile: mint a stable UUID and partition its cloud sync by that UUID
     // rather than its name. Two vaults that happen to share a display name then
@@ -3980,6 +4091,9 @@ async fn create_profile(
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        // The ids below belong to the profile just created, not to one opened
+        // since.
+        db_state.still_open(opened)?;
         let mut pid = [0u8; 16];
         rand::rng().fill_bytes(&mut pid);
         let pid_hex = hex::encode(pid); // 32 hex chars — fits the server's 32-char partition column
@@ -14973,7 +15087,7 @@ pub fn run() {
     // installer AND the Android APK. Capability is granted in default.json.
     let builder = builder.plugin(tauri_plugin_opener::init());
     builder
-        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None) })
+        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)) })
         .manage(SshState::new())
         // Docker live-log stream registry — keyed by frontend-issued stream id,
         // values are tokio AbortHandles so the user can stop tailing on demand.
