@@ -39,7 +39,7 @@ const appWindow = getCurrentWindow();
 // looking up the DB row.
 // `serverUuid` is the saved server's sync id, which keys this device's own
 // per-server settings (the Shell button, see util/shellSync.ts).
-type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; mirrors?: string; runOnConnect?: string; quickAuth?: QuickAuth | null };
+type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; mirrors?: string; runOnConnect?: string; runOnConnectHeld?: boolean; quickAuth?: QuickAuth | null };
 
 const hexToRgb = (hex: string) => {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -372,6 +372,24 @@ function DesktopApp() {
     try { setServers((await invoke("get_servers")) as any[]); }
     catch (e) { addLog(`SYNC_SERVERS: ${e}`, "error"); }
   }, [addLog]);
+  // A session allowed something held for this device's OK (on-connect
+  // commands): the servers' `held` lists have changed.
+  useEffect(() => {
+    const onHeldChanged = () => { refreshServers(); };
+    window.addEventListener("submarine-held-changed", onHeldChanged);
+    return () => window.removeEventListener("submarine-held-changed", onHeldChanged);
+  }, [refreshServers]);
+  // Allow what this device holds back for a server (see the review dialog in
+  // the server list), then show the list as it now is.
+  const allowHeld = useCallback(async (serverId: number, items: string[]) => {
+    try {
+      await invoke("allow_held", { serverId, items });
+      addLog(items.length ? `Allowed ${items.length} held change${items.length === 1 ? "" : "s"}.` : "Allowed the held changes.", "success");
+    } catch (e) {
+      addLog(`ALLOW_FAILED: ${e}`, "error");
+    }
+    await refreshServers();
+  }, [addLog, refreshServers]);
   const refreshCredentials = useCallback(async () => {
     try { setCredentials((await invoke("get_credentials")) as any[]); }
     catch (e) { addLog(`SYNC_CREDENTIALS: ${e}`, "error"); }
@@ -592,7 +610,14 @@ function DesktopApp() {
     // each new SessionView component then kicks off its own connect on mount.
     try {
       const list = await invoke<any[]>("get_servers");
-      const toStart = list.filter((s) => s.autostart);
+      // Autostart someone else switched on in a shared profile waits for
+      // this device's OK (Servers → Review) instead of connecting by itself.
+      const isHeld = (s: any) => (s.held || []).includes("autostart");
+      const waiting = list.filter((s) => s.autostart && isHeld(s));
+      if (waiting.length > 0) {
+        addLog(`Autostart: ${waiting.map((s) => s.name).join(", ")} waiting for your OK (Servers → Review).`, "info");
+      }
+      const toStart = list.filter((s) => s.autostart && !isHeld(s));
       if (toStart.length === 0) return;
       const newSessions = toStart.map((s) => ({
         id: `session-${s.id}`,
@@ -701,6 +726,9 @@ function DesktopApp() {
         serverUuid: server.uuid ?? null,
         // Commands to auto-run once on the first terminal (see SessionView).
         runOnConnect: server.run_on_connect || "",
+        // Set or changed by someone this profile is shared with, not allowed
+        // here yet: SessionView asks before typing them.
+        runOnConnectHeld: (server.held || []).includes("run_on_connect"),
       }]);
     }
 
@@ -1587,6 +1615,7 @@ function DesktopApp() {
                   setIsPanelOpen(true);
                 }}
                 onQuickConnect={() => setIsQuickConnectOpen(true)}
+                onAllowHeld={allowHeld}
                 onRemoveServer={removeServer}
                 onRemoveFolder={removeFolder}
                 onRenameFolder={renameFolder}

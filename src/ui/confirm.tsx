@@ -10,12 +10,12 @@ import { AlertTriangle, X } from "lucide-react";
 // instead of tabbing into the underlying app (which is inert to sighted
 // users but reachable via keyboard/AT without this). On close, restore
 // focus to the previously-focused element so keyboard users don't lose
-// their place. Scoped to this file — no callers touch it.
+// their place. The held-changes review dialog uses it too.
 //
 // Keyed on the prompt's id, not on "is one open": when one prompt follows
 // another of the same kind the panel is a new element, and a trap still
 // holding the old one would swallow every Tab.
-const useFocusTrap = (openId: number | null, panelRef: React.RefObject<HTMLDivElement | null>) => {
+export const useFocusTrap = (openId: number | null, panelRef: React.RefObject<HTMLDivElement | null>) => {
   useEffect(() => {
     if (openId === null) return;
     const previouslyFocused = document.activeElement as HTMLElement | null;
@@ -74,6 +74,9 @@ export interface ConfirmOptions {
   okLabel?: string;
   cancelLabel?: string;
   destructive?: boolean;
+  /** Focus starts on Cancel: an Enter meant for something else (the
+   *  terminal the prompt appeared over) can't answer yes. */
+  safeDefault?: boolean;
 }
 
 type Resolver = (value: boolean) => void;
@@ -166,6 +169,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   // determine "inside vs outside" for the Tab-cycle logic.
   const owPanelRef = useRef<HTMLDivElement | null>(null);
   const confirmPanelRef = useRef<HTMLDivElement | null>(null);
+  const confirmOkRef = useRef<HTMLButtonElement | null>(null);
   const tpPanelRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(owState?.id ?? null, owPanelRef);
   useFocusTrap(state?.id ?? null, confirmPanelRef);
@@ -245,12 +249,17 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
 
   // Esc cancels, Enter confirms — matches the native dialog conventions so
   // muscle memory keeps working. A key still held down from before (auto
-  // repeat) answers nothing: it was not pressed for this prompt.
+  // repeat) answers nothing: it was not pressed for this prompt. In a prompt
+  // whose default is Cancel (`safeDefault`), Enter does what the focused
+  // button does, so an Enter alone never says yes.
   useEffect(() => {
     if (!state) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) close(false); }
-      if (e.key === "Enter")  { e.preventDefault(); if (!e.repeat) close(true); }
+      if (e.key === "Enter")  {
+        e.preventDefault();
+        if (!e.repeat) close(state.opts.safeDefault ? document.activeElement === confirmOkRef.current : true);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -378,10 +387,14 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => close(false)}
+                      autoFocus={!!state.opts.safeDefault}
+                      data-default-focus={state.opts.safeDefault ? true : undefined}
                       className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
                 {state.opts.cancelLabel || "Cancel"}
               </button>
-              <button onClick={() => close(true)} autoFocus data-default-focus
+              <button onClick={() => close(true)} ref={confirmOkRef}
+                      autoFocus={!state.opts.safeDefault}
+                      data-default-focus={state.opts.safeDefault ? undefined : true}
                       className={`px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider border ${
                         state.opts.destructive
                           ? "bg-rose-500/15 border-rose-500/40 text-rose-300 hover:bg-rose-500/25"

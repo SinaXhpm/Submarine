@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   Activity, Pause, Play, Trash2, Plus, X, Wifi, WifiOff, AlertTriangle,
-  RefreshCw, Settings2, FileCode2, Settings as SettingsIcon, Bell, BellOff, Volume2,
+  RefreshCw, Settings2, FileCode2, Settings as SettingsIcon, Bell, BellOff, Volume2, ShieldAlert,
 } from "lucide-react";
 import Sparkline from "./Sparkline";
 import { useConfirm } from "../ui/confirm";
@@ -27,6 +27,9 @@ interface MonitorRow {
   port: number;
   enabled_metrics: string[];
   custom_metrics: CustomMetric[];
+  /** Custom metrics someone else added in a shared profile, not allowed on
+   *  this device yet: listed but not run. */
+  held_metric_ids?: string[];
   paused: boolean;
   connected: boolean;
   last_error?: string | null;
@@ -630,6 +633,16 @@ const ServerCard = ({ row, sample, history, busy, onPause, onResume, onConfig, o
           </button>
         </div>
       </div>
+
+      {/* Custom commands held for this device's OK (allowed from the server list) */}
+      {(row.held_metric_ids?.length ?? 0) > 0 && (
+        <div className="px-2 py-1 bg-amber-400/[0.06] border border-amber-400/25 rounded text-[10.5px] text-amber-100/90 font-mono flex items-center gap-1.5">
+          <ShieldAlert size={11} className="shrink-0 text-amber-400" />
+          <span className="truncate">
+            {row.held_metric_ids!.length === 1 ? "A custom command is" : `${row.held_metric_ids!.length} custom commands are`} waiting for your OK (Servers → Review)
+          </span>
+        </div>
+      )}
 
       {/* Outage strip (sticky while down) */}
       {inOutage && (

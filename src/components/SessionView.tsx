@@ -14,6 +14,7 @@ import { fontFamilyCss, readFontFamily, readFontSize } from "../util/terminalFon
 import { readShellSyncPairs, useShellSyncServer, type ShellSyncPair } from "../util/shellSync";
 import { readUseLocalShell } from "../util/terminalShell";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
+import { useConfirm } from "../ui/confirm";
 
 // What the shell-config push commands answer (mirror.rs' ShellSync* types).
 type ShellSyncShells = { remote_shell: string; local_shell: string; shell_mismatch: boolean };
@@ -811,6 +812,11 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // Guards the per-node "run on connect" commands to fire exactly once for
   // this session view — first successful connect only, never on reconnect.
   const ranOnConnectRef = useRef(false);
+  // Asks before typing on-connect commands someone else set in a shared
+  // profile. Read through a ref: the connect listener is registered once.
+  const confirm = useConfirm();
+  const confirmRef = useRef(confirm);
+  confirmRef.current = confirm;
 
   // ---- Auto-reconnect: fixed 5s cadence, retried FOREVER -------------------
   // After a previously-good session drops we retry every 5 seconds, forever —
@@ -980,10 +986,39 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           .map((l: string) => l.trimEnd())
           .filter((l: string) => l.trim().length > 0)
           .join('\n') + '\n';
-        const bytes = Array.from(new TextEncoder().encode(cmds));
-        setTimeout(() => {
-          invoke('write_terminal_data', { terminalId: `${session.id}-term-0`, data: bytes }).catch(() => {});
-        }, 700);
+        const typeThem = () => {
+          const bytes = Array.from(new TextEncoder().encode(cmds));
+          setTimeout(() => {
+            invoke('write_terminal_data', { terminalId: `${session.id}-term-0`, data: bytes }).catch(() => {});
+          }, 700);
+        };
+        if (session.runOnConnectHeld) {
+          // Someone this profile is shared with set or changed these
+          // commands and this device hasn't allowed them: ask, never type
+          // them unasked. Cancel has the focus, so a stray Enter is a no.
+          confirmRef.current({
+            title: "Run the on-connect commands?",
+            message: `Someone you share this profile with set these commands to run when you connect to ${session.serverName}:\n\n${cmds.trimEnd()}\n\nThey would be typed into your terminal on that server.`,
+            okLabel: "Allow and run",
+            cancelLabel: "Not now",
+            safeDefault: true,
+          }).then(async (ok) => {
+            if (!ok) {
+              addLog(`On-connect commands for ${session.serverName} not run: they are waiting for your OK.`, "info");
+              return;
+            }
+            try {
+              await invoke("allow_held", { serverId: session.serverId, items: ["run_on_connect"] });
+              window.dispatchEvent(new Event("submarine-held-changed"));
+            } catch (e) {
+              addLog(`ALLOW_FAILED: ${e}`, "error");
+              return;
+            }
+            typeThem();
+          });
+        } else {
+          typeThem();
+        }
       }
       // The handshake may have inserted a row into `known_hosts` (user just
       // accepted a new fingerprint). Flush the encrypted vault so the entry

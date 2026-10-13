@@ -1,10 +1,16 @@
-import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy, GripVertical } from "lucide-react";
-import { useState, useEffect, useLayoutEffect, useRef } from "react";
+import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert } from "lucide-react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
+import { HeldReview } from "./HeldReview";
 
-export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, onReorderServers, isMobile }: any) => {
+export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, onReorderServers, onAllowHeld, isMobile }: any) => {
   const [search, setSearch] = useState("");
+  // Changes someone else made in a shared profile that this device holds
+  // back until its user allows them (see HeldReview).
+  const heldCount: number = (servers || []).reduce((n: number, s: any) => n + (s.held?.length || 0), 0);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const closeReview = useCallback(() => setReviewOpen(false), []);
   // Native window.confirm() is a silent no-op inside Tauri's Android WebView
   // (same shim gap useTextPrompt was added for), so the delete buttons here
   // silently did nothing on Android after v0.2.32 made the action cluster
@@ -450,6 +456,26 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
+
+      {heldCount > 0 && onAllowHeld && (
+        <div role="status" className="max-w-xl w-full mx-auto -mt-3 mb-5 shrink-0 flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-100/90">
+          <ShieldAlert size={14} className="text-amber-400 shrink-0" />
+          <span className="flex-1 min-w-0">
+            {heldCount === 1
+              ? "A change from someone you share this profile with is waiting for your OK."
+              : `${heldCount} changes from people you share this profile with are waiting for your OK.`}
+          </span>
+          <button
+            onClick={() => setReviewOpen(true)}
+            className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
+          >
+            Review
+          </button>
+        </div>
+      )}
+      {reviewOpen && onAllowHeld && (
+        <HeldReview servers={servers || []} onAllow={onAllowHeld} onClose={closeReview} />
+      )}
 
       <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 pb-10">
 
