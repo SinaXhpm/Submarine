@@ -818,11 +818,26 @@ impl client::Handler for ClientHandler {
         let entry = self.forwarded_targets.lock().await.get(&connected_port).cloned();
         match entry {
             Some(entry) => {
-                // Spawn the bridge so we don't hold up russh's protocol task.
-                // `bridge_forwarded_channel` does the local connect, answers
-                // the open, then runs the always-drained bidirectional pump,
-                // plus bumps the tunnel's connection counter for the UI.
-                tokio::spawn(crate::tunnel::bridge_forwarded_channel(entry, channel, reply));
+                // Cap concurrent inbound bridges per R tunnel so a hostile or
+                // runaway server can't exhaust us (tasks, sockets, memory) by
+                // spamming forwarded-tcpip opens. try_acquire is non-blocking:
+                // at the cap we refuse the open rather than queue it (an
+                // unbounded queue is the same resource-exhaustion problem). The
+                // permit rides into the bridge and frees when the bridge ends.
+                match std::sync::Arc::clone(&entry.conn_limiter).try_acquire_owned() {
+                    Ok(permit) => {
+                        // Spawn the bridge so we don't hold up russh's protocol
+                        // task. `bridge_forwarded_channel` does the local
+                        // connect, answers the open, then runs the always-drained
+                        // bidirectional pump, plus bumps the tunnel's connection
+                        // counter for the UI.
+                        tokio::spawn(crate::tunnel::bridge_forwarded_channel(entry, channel, reply, permit));
+                    }
+                    Err(_) => {
+                        drop(channel);
+                        reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+                    }
+                }
             }
             None => {
                 // No tunnel registered for this port — refuse the open. The
