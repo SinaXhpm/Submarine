@@ -1087,7 +1087,11 @@ fn apply_remote_inner(
             }
         }
     }
-    for rec in records.iter().filter(|r| r.deleted) {
+    // In a shared profile, a sync that would delete much of it at once, or an
+    // SSH key, waits for this device's user (approvals::hold_deletions).
+    let tombstones: Vec<&SyncRecord> = records.iter().filter(|r| r.deleted).copied().collect();
+    let held = if shared { approvals::hold_deletions(&tx, &tombstones)? } else { Default::default() };
+    for rec in tombstones.iter().filter(|r| !held.contains(&r.uuid)) {
         if let Err(e) = in_savepoint(&tx, || apply_tombstone(&tx, rec))? {
             skipped += 1;
             eprintln!("[SYNC] skipped tombstone uuid={} type={}: {}", rec.uuid, rec.entity_type, e);
@@ -3022,8 +3026,95 @@ async fn stop_sharing(
             .map_err(|e| format!("[SHARE] CLEAR_META: {e}"))?;
         conn.execute("DELETE FROM share_member_keys WHERE share_id=?1", [&share_id])
             .map_err(|e| format!("[SHARE] CLEAR_PINS: {e}"))?;
+        // Deletions held from the share don't come again once it's left.
+        conn.execute("DELETE FROM held_deletions", [])
+            .map_err(|e| format!("[SHARE] CLEAR_HELD: {e}"))?;
     }
     save_vault_async(&db_state).await
+}
+
+/// The deletions held in the open shared profile (approvals::hold_deletions).
+#[tauri::command]
+async fn held_deletions_list(db_state: tauri::State<'_, DbState>) -> Result<Vec<approvals::HeldDeletion>, String> {
+    let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+    let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+    Ok(approvals::held_deletions(conn))
+}
+
+/// The user's call on the deletions held in a shared profile: `delete_them`
+/// deletes those rows here too. Otherwise they stay, with a stamp newer than
+/// the deletion's, so the next sync brings them back for everyone.
+#[tauri::command]
+async fn resolve_held_deletions(db_state: tauri::State<'_, DbState>, delete_them: bool) -> Result<usize, String> {
+    let done = {
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        let hlc = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?.as_ref().ok_or("[SYNC] NO_HLC")?.clone();
+        resolve_held(conn, &hlc, delete_them)?
+    };
+    save_vault_async(&db_state).await?;
+    Ok(done)
+}
+
+fn resolve_held(conn: &Connection, hlc: &hlc::Hlc, delete_them: bool) -> Result<usize, String> {
+    let held: Vec<(String, String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT uuid, entity_type, updated_at FROM held_deletions")
+            .map_err(|e| format!("[SYNC] HELD: {e}"))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| format!("[SYNC] HELD: {e}"))?;
+        rows.filter_map(Result::ok).collect()
+    };
+    // Like a merge: the triggers stay out of it (no tombstone of our own for a
+    // deletion, no stamp for a kept row but the one set here).
+    conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
+        .map_err(|e| format!("[SYNC] MERGE_ON: {e}"))?;
+    let done = (|| -> Result<usize, String> {
+        let tx = conn.unchecked_transaction().map_err(|e| format!("[SYNC] TX_BEGIN: {e}"))?;
+        for (uuid, entity_type, stamp) in &held {
+            if !SYNCED_TABLES.contains(&entity_type.as_str()) {
+                continue;
+            }
+            if delete_them {
+                let rec = SyncRecord {
+                    uuid: uuid.clone(),
+                    entity_type: entity_type.clone(),
+                    updated_at: stamp.clone(),
+                    deleted: true,
+                    blob: None,
+                };
+                if let Err(e) = in_savepoint(&tx, || apply_tombstone(&tx, &rec))? {
+                    eprintln!("[SYNC] held deletion not applied uuid={uuid}: {e}");
+                }
+            } else {
+                tx.execute(
+                    &format!("UPDATE {entity_type} SET updated_at=?1 WHERE uuid=?2"),
+                    rusqlite::params![stamp_past(&hlc.tick(), stamp), uuid],
+                )
+                .map_err(|e| format!("[SYNC] KEEP: {e}"))?;
+            }
+        }
+        tx.execute("DELETE FROM held_deletions", []).map_err(|e| format!("[SYNC] HELD_CLEAR: {e}"))?;
+        tx.commit().map_err(|e| format!("[SYNC] TX_COMMIT: {e}"))?;
+        Ok(held.len())
+    })();
+    let _ = conn.execute("UPDATE sync_flags SET val=0 WHERE key='merge'", []);
+    done
+}
+
+/// `fresh` (this device's next stamp), or, when that doesn't sort after
+/// `other`, `other` one counter step on, so a kept row wins against the
+/// deletion it's kept from even when the deleter's clock ran ahead.
+fn stamp_past(fresh: &str, other: &str) -> String {
+    if fresh > other {
+        return fresh.to_string();
+    }
+    let counter = other.get(16..21).and_then(|c| c.parse::<u32>().ok());
+    match (other.get(..16), counter, other.get(21..)) {
+        (Some(head), Some(c), Some(tail)) if c < 99_999 => format!("{head}{:05}{tail}", c + 1),
+        _ => fresh.to_string(),
+    }
 }
 
 /// Set the label stamped onto future local edits (the `edited_by` column). The
@@ -3662,6 +3753,98 @@ mod sync_engine_tests {
         // Newer than the copy under the old key, older than any later edit.
         let later = format!("{:015}:00000:0", hlc::Hlc::phys_of(&before) + 1);
         assert!(before < after && after < later);
+    }
+
+    /// `device`, holding a shared profile, so what approvals.rs holds back applies.
+    fn shared_device(node: &str) -> (Connection, std::sync::Arc<hlc::Hlc>) {
+        let (c, h) = device(node);
+        approvals::create_schema(&c).unwrap();
+        c.execute("INSERT INTO sync_meta(key,value) VALUES('share_id','s1')", []).unwrap();
+        (c, h)
+    }
+
+    fn count(c: &Connection, table: &str) -> i64 {
+        c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+    }
+
+    /// A deletes 12 of its 15 servers; B (shared) holds those deletions.
+    fn mass_deleted() -> (Connection, std::sync::Arc<hlc::Hlc>, Connection, std::sync::Arc<hlc::Hlc>, Vec<SyncRecord>) {
+        let (a, ha) = device("A");
+        for i in 0..15 {
+            a.execute("INSERT INTO servers(name,host,port) VALUES(?1,'h',22)", [format!("s{i:02}")]).unwrap();
+        }
+        let (b, hb) = shared_device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        a.execute("DELETE FROM servers WHERE name >= 's03'", []).unwrap();
+        let batch = collect_local_records(&a, &KEY, "").unwrap();
+        apply_remote_records(&b, &KEY, &batch, &hb).unwrap();
+        assert_eq!((count(&b, "servers"), approvals::held_deletions(&b).len()), (15, 12));
+        (a, ha, b, hb, batch)
+    }
+
+    // In a shared profile, a sync that would delete much of it at once (more
+    // than 10 rows and more than a quarter of it), or any SSH key, waits for
+    // this device's user; a smaller one goes through, and a personal profile
+    // never holds anything.
+    #[test]
+    fn a_shared_profiles_mass_deletion_waits() {
+        let (a, _ha) = device("A");
+        for i in 0..20 {
+            a.execute("INSERT INTO servers(name,host,port) VALUES(?1,'h',22)", [format!("s{i:02}")]).unwrap();
+        }
+        a.execute("INSERT INTO ssh_keys(name,public_key,private_key) VALUES('k','pub','priv')", []).unwrap();
+        let seed = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = shared_device("B");
+        apply_remote_records(&b, &KEY, &seed, &hb).unwrap();
+        let (p, hp) = device("P");
+        apply_remote_records(&p, &KEY, &seed, &hp).unwrap();
+
+        a.execute("DELETE FROM servers WHERE name < 's04'", []).unwrap();
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        assert_eq!(count(&b, "servers"), 16, "four deletions go through");
+
+        a.execute("DELETE FROM servers WHERE name < 's16'", []).unwrap();
+        let batch = collect_local_records(&a, &KEY, "").unwrap();
+        apply_remote_records(&b, &KEY, &batch, &hb).unwrap();
+        assert_eq!(count(&b, "servers"), 16, "twelve at once wait");
+        assert_eq!(approvals::held_deletions(&b).len(), 12);
+        apply_remote_records(&b, &KEY, &batch, &hb).unwrap();
+        assert_eq!((count(&b, "servers"), approvals::held_deletions(&b).len()), (16, 12), "the next sync changes nothing");
+        apply_remote_records(&p, &KEY, &batch, &hp).unwrap();
+        assert_eq!(count(&p, "servers"), 4, "a personal profile takes them all");
+
+        a.execute("DELETE FROM ssh_keys", []).unwrap();
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        assert_eq!(count(&b, "ssh_keys"), 1, "an SSH key waits");
+        assert!(approvals::held_deletions(&b).iter().any(|d| d.entity_type == "ssh_keys" && d.name == "k"));
+    }
+
+    // The user's call: delete them here too, or keep them. Kept rows get
+    // stamps newer than the deletions, so they win them back on every device
+    // and the same deletions coming again don't take them.
+    #[test]
+    fn held_deletions_are_deleted_or_kept_by_the_user() {
+        let (_a, _ha, b, hb, _batch) = mass_deleted();
+        assert_eq!(resolve_held(&b, &hb, true).unwrap(), 12);
+        assert_eq!((count(&b, "servers"), count(&b, "sync_tombstones")), (3, 12));
+        assert!(approvals::held_deletions(&b).is_empty());
+
+        let (a, ha, b, hb, batch) = mass_deleted();
+        assert_eq!(resolve_held(&b, &hb, false).unwrap(), 12);
+        assert_eq!(count(&b, "servers"), 15);
+        assert!(approvals::held_deletions(&b).is_empty());
+        apply_remote_records(&a, &KEY, &collect_local_records(&b, &KEY, "").unwrap(), &ha).unwrap();
+        assert_eq!(count(&a, "servers"), 15, "kept rows come back where they were deleted");
+        apply_remote_records(&b, &KEY, &batch, &hb).unwrap();
+        assert_eq!((count(&b, "servers"), approvals::held_deletions(&b).len()), (15, 0), "the old deletions don't take them");
+    }
+
+    #[test]
+    fn a_kept_rows_stamp_sorts_after_the_deletion() {
+        let del = "999999999999990:00007:peer";
+        assert_eq!(stamp_past("000000000000005:00000:me", del), "999999999999990:00008:peer");
+        assert_eq!(stamp_past("999999999999999:00000:me", del), "999999999999999:00000:me");
+        assert_eq!(stamp_past("000000000000005:00000:me", "999999999999990:99999:peer"), "000000000000005:00000:me");
     }
 
     /// A stamp `ms` ahead of now: newer than anything a test device has
@@ -16059,7 +16242,7 @@ pub fn run() {
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
-            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key,
+            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key, held_deletions_list, resolve_held_deletions,
             set_editor_label,
             add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,

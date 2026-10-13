@@ -23,6 +23,7 @@ import { FONT_FAMILY_KEY, FONT_SIZE_KEY, readFontFamily, readFontSize } from "./
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
+import type { HeldDeletion } from "./components/HeldDeletions";
 import AddNodePanel from "./components/AddNodePanel";
 import TerminalView from "./components/TerminalView";
 import SettingsPanel from "./components/SettingsPanel";
@@ -421,15 +422,22 @@ function DesktopApp() {
     ]);
   };
 
-  // A shared profile's new key, as a fingerprint, while it waits for the
-  // user's OK. Until then a sync only pulls (see note_share_key).
+  // What a shared profile waits on the user for: a new key, as a fingerprint
+  // (until it's accepted a sync only pulls, see note_share_key), and
+  // deletions someone else's sync would have made here (see HeldDeletions).
   const [shareKeyChange, setShareKeyChange] = useState<string | null>(null);
-  const refreshShareKey = useCallback(async () => {
+  const [heldDeletions, setHeldDeletions] = useState<HeldDeletion[]>([]);
+  const refreshSharedState = useCallback(async () => {
     try {
       const s = await invoke<{ current: string | null; pending: string | null }>("share_key_state");
       setShareKeyChange(s.pending);
     } catch {
       setShareKeyChange(null);
+    }
+    try {
+      setHeldDeletions(await invoke<HeldDeletion[]>("held_deletions_list"));
+    } catch {
+      setHeldDeletions([]);
     }
   }, []);
 
@@ -442,7 +450,7 @@ function DesktopApp() {
     try {
       const report = await invoke<{ pushed: number; pulled: number; key_change: boolean }>("sync_now");
       await refreshAll();
-      refreshShareKey();
+      refreshSharedState();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
       addLog(`Cloud sync complete — pushed ${report.pushed}, pulled ${report.pulled}.`, "success");
       if (report.key_change) {
@@ -476,11 +484,11 @@ function DesktopApp() {
   const autoSyncBusy = useRef(false);
   const isUnlockedRef = useRef(isUnlocked);
   useEffect(() => { isUnlockedRef.current = isUnlocked; }, [isUnlocked]);
-  // A new share key still waiting from an earlier session shows on unlock.
+  // What a shared profile still waits on from an earlier session shows on unlock.
   useEffect(() => {
-    if (isUnlocked) refreshShareKey();
-    else setShareKeyChange(null);
-  }, [isUnlocked, refreshShareKey]);
+    if (isUnlocked) refreshSharedState();
+    else { setShareKeyChange(null); setHeldDeletions([]); }
+  }, [isUnlocked, refreshSharedState]);
   // The user compared the new key's fingerprint with the owner's: use it, and
   // sync, which uploads again.
   const acceptShareKey = useCallback(async () => {
@@ -516,7 +524,7 @@ function DesktopApp() {
     try {
       const report = await invoke<{ pushed: number; pulled: number; key_change: boolean }>("sync_now");
       if (report.pulled > 0) await refreshAllRef.current();
-      refreshShareKey();
+      refreshSharedState();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
     } catch {
       // Silent by design — not signed in, offline, or a viewer with nothing to
@@ -532,6 +540,22 @@ function DesktopApp() {
     // interval effect isn't rebuilt on every sync.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The user's call on deletions held in a shared profile (HeldDeletions):
+  // kept rows go out with the sync that follows, which brings them back for
+  // everyone (a viewer's stay on this device).
+  const resolveHeldDeletions = useCallback(async (deleteThem: boolean) => {
+    try {
+      const n = await invoke<number>("resolve_held_deletions", { deleteThem });
+      const s = n === 1 ? "" : "s";
+      addLog(deleteThem ? `Deleted ${n} item${s} here too.` : `Kept ${n} item${s}.`, "success");
+    } catch (e) {
+      addLog(`HELD_DELETIONS: ${e}`, "error");
+    }
+    await refreshAllRef.current();
+    await refreshSharedState();
+    if (!deleteThem) await handleCloudSync();
+  }, [addLog, handleCloudSync, refreshSharedState]);
 
   // After-edit push, debounced so a burst of edits collapses into one sync a few
   // seconds after the user stops. Mutation handlers call this.
@@ -1651,6 +1675,8 @@ function DesktopApp() {
                 onAllowHeld={allowHeld}
                 keyChange={shareKeyChange}
                 onAcceptKey={acceptShareKey}
+                heldDeletions={heldDeletions}
+                onResolveDeletions={resolveHeldDeletions}
                 onRemoveServer={removeServer}
                 onRemoveFolder={removeFolder}
                 onRenameFolder={renameFolder}

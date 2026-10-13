@@ -3,14 +3,20 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
 import { HeldReview } from "./HeldReview";
+import { HeldDeletions } from "./HeldDeletions";
 
-export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, isMobile }: any) => {
+export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, heldDeletions, onResolveDeletions, isMobile }: any) => {
   const [search, setSearch] = useState("");
   // Changes someone else made in a shared profile that this device holds
   // back until its user allows them (see HeldReview).
   const heldCount: number = (servers || []).reduce((n: number, s: any) => n + (s.held?.length || 0), 0);
   const [reviewOpen, setReviewOpen] = useState(false);
   const closeReview = useCallback(() => setReviewOpen(false), []);
+  // Deletions someone else's sync would have made here, held until the user
+  // decides (see HeldDeletions).
+  const deletionCount: number = (heldDeletions || []).length;
+  const [deletionsOpen, setDeletionsOpen] = useState(false);
+  const closeDeletions = useCallback(() => setDeletionsOpen(false), []);
   // Native window.confirm() is a silent no-op inside Tauri's Android WebView
   // (same shim gap useTextPrompt was added for), so the delete buttons here
   // silently did nothing on Android after v0.2.32 made the action cluster
@@ -491,6 +497,24 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
       )}
       {reviewOpen && onAllowHeld && (
         <HeldReview servers={servers || []} onAllow={onAllowHeld} onClose={closeReview} />
+      )}
+      {deletionCount > 0 && onResolveDeletions && (
+        <div role="status" className="max-w-xl w-full mx-auto -mt-3 mb-5 shrink-0 flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-100/90">
+          <Trash2 size={14} className="text-amber-400 shrink-0" />
+          <span className="flex-1 min-w-0">
+            {deletionCount === 1 ? "An item was" : `${deletionCount} items were`} deleted by someone you share this
+            profile with. {deletionCount === 1 ? "It stays" : "They stay"} here until you decide.
+          </span>
+          <button
+            onClick={() => setDeletionsOpen(true)}
+            className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
+          >
+            Review
+          </button>
+        </div>
+      )}
+      {deletionsOpen && onResolveDeletions && (
+        <HeldDeletions items={heldDeletions || []} onResolve={onResolveDeletions} onClose={closeDeletions} />
       )}
       {keyChange && onAcceptKey && (
         <div role="status" className="max-w-xl w-full mx-auto -mt-3 mb-5 shrink-0 flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-100/90">

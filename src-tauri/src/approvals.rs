@@ -17,8 +17,11 @@
 //! An entry is (server uuid, item), the item being one of
 //!   `run_on_connect`, `autostart`, `tunnel:<type>|<local>|<remote>`,
 //!   `metric:<command>`.
+//!
+//! Deletions are held the same way when one sync would take out much of a
+//! shared profile at once, or an SSH key (see `hold_deletions`).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -56,6 +59,7 @@ const NEW_METRIC_ITEMS: &str = "SELECT 'metric:' || json_extract(value, '$.comma
 pub fn create_schema(conn: &Connection) -> Result<(), String> {
     let ddl = format!(
         "CREATE TABLE IF NOT EXISTS held_approvals (uuid TEXT NOT NULL, item TEXT NOT NULL, since INTEGER NOT NULL, PRIMARY KEY (uuid, item));
+         CREATE TABLE IF NOT EXISTS held_deletions (uuid TEXT PRIMARY KEY, entity_type TEXT NOT NULL, updated_at TEXT NOT NULL, since INTEGER NOT NULL);
          DROP TRIGGER IF EXISTS servers_held_au;
          DROP TRIGGER IF EXISTS servers_held_ad;
          DROP TRIGGER IF EXISTS monitor_configs_held_au;
@@ -312,6 +316,108 @@ pub fn without_held_metrics(
     customs
         .into_iter()
         .filter(|m| !held.contains(&metric_item(&m.command)))
+        .collect()
+}
+
+// ---- Deletions ----------------------------------------------------------
+
+/// More rows than this deleted in one sync, when that's also more than a
+/// quarter of the profile, and the deletions wait for the user.
+const MASS_DELETE_MIN: usize = 10;
+
+/// Which of a shared profile's incoming deletions not to apply now. Someone
+/// else's sync can delete things here too, and a sync that deletes much of the
+/// profile at once (more than `MASS_DELETE_MIN` rows and more than a quarter
+/// of it) or any SSH key, which lives nowhere but in vaults, waits for this
+/// device's user: all of that sync's deletions are held. Those held before
+/// stay held. The rows stay until the user deletes them here too, or keeps
+/// them, which brings them back for everyone (`resolve_held_deletions`).
+pub fn hold_deletions(conn: &Connection, tombstones: &[&crate::SyncRecord]) -> Result<HashSet<String>, String> {
+    let mut skip = HashSet::new();
+    let mut fresh = Vec::new();
+    for t in tombstones {
+        if !crate::SYNCED_TABLES.contains(&t.entity_type.as_str()) {
+            continue;
+        }
+        let held = conn
+            .query_row("SELECT 1 FROM held_deletions WHERE uuid = ?1", [&t.uuid], |_| Ok(()))
+            .optional()
+            .map_err(|e| format!("[SYNC] HELD_DELETE: {e}"))?
+            .is_some();
+        if held {
+            conn.execute(
+                "UPDATE held_deletions SET updated_at = ?2 WHERE uuid = ?1 AND updated_at < ?2",
+                params![t.uuid, t.updated_at],
+            )
+            .map_err(|e| format!("[SYNC] HELD_DELETE: {e}"))?;
+            skip.insert(t.uuid.clone());
+            continue;
+        }
+        // Only a deletion that would take a row away here counts.
+        let local: Option<Option<String>> = conn
+            .query_row(&format!("SELECT updated_at FROM {} WHERE uuid = ?1", t.entity_type), [&t.uuid], |r| r.get(0))
+            .optional()
+            .map_err(|e| format!("[SYNC] HELD_DELETE: {e}"))?;
+        if local.is_some_and(|ua| ua.as_deref().unwrap_or("") < t.updated_at.as_str()) {
+            fresh.push(*t);
+        }
+    }
+    let live: usize = crate::SYNCED_TABLES
+        .iter()
+        .map(|t| {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {t} WHERE uuid IS NOT NULL"), [], |r| r.get::<_, i64>(0))
+                .unwrap_or(0) as usize
+        })
+        .sum();
+    let a_key = fresh.iter().any(|t| t.entity_type == "ssh_keys");
+    if a_key || (fresh.len() > MASS_DELETE_MIN && fresh.len() * 4 > live) {
+        for t in &fresh {
+            conn.execute(
+                "INSERT INTO held_deletions (uuid, entity_type, updated_at, since) VALUES (?1, ?2, ?3, strftime('%s','now'))
+                 ON CONFLICT(uuid) DO UPDATE SET updated_at = excluded.updated_at",
+                params![t.uuid, t.entity_type, t.updated_at],
+            )
+            .map_err(|e| format!("[SYNC] HELD_DELETE: {e}"))?;
+            skip.insert(t.uuid.clone());
+        }
+    }
+    Ok(skip)
+}
+
+/// A held deletion, for the user to decide on: what it would delete.
+#[derive(serde::Serialize)]
+pub struct HeldDeletion {
+    pub uuid: String,
+    pub entity_type: String,
+    pub name: String,
+}
+
+/// The deletions held on this device, with the name of what each would
+/// delete. One whose row is gone already (deleted here meanwhile) isn't
+/// listed.
+pub fn held_deletions(conn: &Connection) -> Vec<HeldDeletion> {
+    let Ok(mut stmt) = conn.prepare("SELECT uuid, entity_type FROM held_deletions ORDER BY entity_type, since") else {
+        return Vec::new();
+    };
+    let held: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    held.into_iter()
+        .filter(|(_, t)| crate::SYNCED_TABLES.contains(&t.as_str()))
+        .filter_map(|(uuid, t)| {
+            let name = match t.as_str() {
+                "commands" | "notes" => "title",
+                "monitor_configs" => "(SELECT s.name FROM servers s WHERE s.id = node_id)",
+                _ => "name",
+            };
+            let name: Option<String> = conn
+                .query_row(&format!("SELECT {name} FROM {t} WHERE uuid = ?1"), [&uuid], |r| r.get(0))
+                .optional()
+                .ok()?
+                .map(|n: Option<String>| n.unwrap_or_default());
+            name.map(|name| HeldDeletion { uuid, entity_type: t, name })
+        })
         .collect()
 }
 
