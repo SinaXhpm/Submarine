@@ -20,6 +20,7 @@
 //! one session for all of its calls. Switching servers signs this device out.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -201,14 +202,70 @@ fn token_is_for(tok: &StoredToken, base: &str) -> bool {
 pub struct Endpoint {
     base: String,
     http: reqwest::Client,
+    /// Whether this server takes gzipped request bodies. It says so with an
+    /// `Accept-Encoding: gzip` header on its answers (RFC 7694). Until it has,
+    /// and on a server that never does (an older or a self-hosted one), bodies
+    /// go out plain. Shared by the endpoint's clones; a new server starts over.
+    request_gzip: Arc<AtomicBool>,
 }
 
 impl Endpoint {
+    fn new(base: String, http: reqwest::Client) -> Self {
+        Self { base, http, request_gzip: Arc::new(AtomicBool::new(false)) }
+    }
+
     /// A full URL on this server. The path MUST start with `/`.
     fn url(&self, path: &str) -> String {
         debug_assert!(path.starts_with('/'), "cloud url path must start with '/'");
         format!("{}{}", self.base, path)
     }
+
+    /// Learn from an answer whether the server takes gzipped bodies.
+    fn note_answer(&self, headers: &reqwest::header::HeaderMap) {
+        if takes_gzip(headers) {
+            self.request_gzip.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Request bodies at least this big are gzipped, once the server takes them.
+/// Smaller ones gain too little to be worth it.
+const GZIP_MIN_BODY: usize = 1024;
+
+/// An `Accept-Encoding` header on an answer that lists gzip.
+fn takes_gzip(headers: &reqwest::header::HeaderMap) -> bool {
+    headers
+        .get_all(reqwest::header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .filter_map(|coding| coding.split(';').next())
+        .any(|coding| coding.trim().eq_ignore_ascii_case("gzip"))
+}
+
+fn gzip(data: &[u8]) -> std::io::Result<Vec<u8>> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::with_capacity(data.len() / 2), flate2::Compression::new(6));
+    encoder.write_all(data)?;
+    encoder.finish()
+}
+
+/// `value` as a JSON body for `request`: gzipped when `allow_gzip`, the server
+/// takes it and the body is big enough, plain otherwise. Says which.
+fn json_body<T: Serialize>(
+    endpoint: &Endpoint,
+    request: reqwest::RequestBuilder,
+    value: &T,
+    allow_gzip: bool,
+) -> Result<(reqwest::RequestBuilder, bool), String> {
+    let json = serde_json::to_vec(value).map_err(|e| format!("[CLOUD] ENCODE_FAILED: {}", e))?;
+    let request = request.header(reqwest::header::CONTENT_TYPE, "application/json");
+    if allow_gzip && json.len() >= GZIP_MIN_BODY && endpoint.request_gzip.load(Ordering::Relaxed) {
+        if let Ok(body) = gzip(&json) {
+            return Ok((request.header(reqwest::header::CONTENT_ENCODING, "gzip").body(body), true));
+        }
+    }
+    Ok((request.body(json), false))
 }
 
 /// A sign-in together with the server that issued it. The token is sent to
@@ -287,7 +344,7 @@ impl CloudState {
         let inner = Inner {
             config,
             config_error,
-            endpoint: Endpoint { base, http },
+            endpoint: Endpoint::new(base, http),
             token: stored.as_ref().map(|s| s.token.clone()),
             email: stored.as_ref().map(|s| s.email.clone()),
             identity: None,
@@ -413,7 +470,7 @@ impl CloudState {
         };
         g.config = config;
         g.config_error = None;
-        g.endpoint = Endpoint { base, http };
+        g.endpoint = Endpoint::new(base, http);
         Ok(old)
     }
 }
@@ -805,6 +862,18 @@ async fn send_authed(
         .send()
         .await
         .map_err(network)?;
+    check_authed(app, state, session, resp).await
+}
+
+/// The non-2xx half of `send_authed`; also notes whether the server takes
+/// gzipped bodies.
+async fn check_authed(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    session: &Session,
+    resp: reqwest::Response,
+) -> Result<reqwest::Response, String> {
+    session.endpoint.note_answer(resp.headers());
     if !resp.status().is_success() {
         if let Some(e) = on_unauthorized(app, state, session, resp.status()).await {
             return Err(e);
@@ -812,6 +881,31 @@ async fn send_authed(
         return Err(decode_error(resp).await);
     }
     Ok(resp)
+}
+
+/// POST `value` as JSON to `path`, gzipped when the server takes it (see
+/// `json_body`). If a gzipped body is turned away (400/411/415: say a proxy on
+/// the way mangled it) it goes again plain; when that works, compression stays
+/// off for this server. Only for requests that are safe to repeat — the sync
+/// exchanges, whose merge is idempotent.
+async fn post_json_authed<T: Serialize>(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    session: &Session,
+    path: &str,
+    value: &T,
+) -> Result<reqwest::Response, String> {
+    let (request, gzipped) = json_body(&session.endpoint, session.http().post(session.url(path)), value, true)?;
+    let resp = request.header(AUTH_HEADER, &session.token).send().await.map_err(network)?;
+    if !(gzipped && matches!(resp.status().as_u16(), 400 | 411 | 415)) {
+        return check_authed(app, state, session, resp).await;
+    }
+    let (request, _) = json_body(&session.endpoint, session.http().post(session.url(path)), value, false)?;
+    let retry = send_authed(app, state, session, request).await;
+    if retry.is_ok() {
+        session.endpoint.request_gzip.store(false, Ordering::Relaxed);
+    }
+    retry
 }
 
 // ---------------------------------------------------------------------------
@@ -849,11 +943,7 @@ pub async fn sync_exchange(
     records: &[crate::SyncRecord],
     name: Option<&str>,
 ) -> Result<Vec<crate::SyncRecord>, String> {
-    let request = session
-        .http()
-        .post(session.url("/sync"))
-        .json(&SyncExchangeReq { profile, since, records, name });
-    let resp = send_authed(app, state, session, request).await?;
+    let resp = post_json_authed(app, state, session, "/sync", &SyncExchangeReq { profile, since, records, name }).await?;
     let body: SyncExchangeResp = resp
         .json()
         .await
@@ -961,11 +1051,7 @@ pub async fn shared_sync_exchange(
     since: &str,
     records: &[crate::SyncRecord],
 ) -> Result<Vec<crate::SyncRecord>, String> {
-    let request = session
-        .http()
-        .post(session.url("/shares/sync"))
-        .json(&SharedSyncReq { share_id, since, records });
-    let resp = send_authed(app, state, session, request).await?;
+    let resp = post_json_authed(app, state, session, "/shares/sync", &SharedSyncReq { share_id, since, records }).await?;
     let body: SyncExchangeResp = resp
         .json()
         .await
@@ -1276,6 +1362,60 @@ pub async fn delete_share(app: &tauri::AppHandle, state: &CloudState, session: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn headers(pairs: &[(&'static str, &'static str)]) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        for (k, v) in pairs {
+            h.append(*k, reqwest::header::HeaderValue::from_static(v));
+        }
+        h
+    }
+
+    #[test]
+    fn a_server_takes_gzip_only_when_it_says_so() {
+        assert!(takes_gzip(&headers(&[("accept-encoding", "gzip")])));
+        assert!(takes_gzip(&headers(&[("accept-encoding", "br, GZIP;q=0.8")])));
+        assert!(takes_gzip(&headers(&[("accept-encoding", "identity"), ("accept-encoding", "gzip")])));
+        assert!(!takes_gzip(&headers(&[])), "an older or self-hosted server says nothing");
+        assert!(!takes_gzip(&headers(&[("accept-encoding", "identity")])));
+        assert!(!takes_gzip(&headers(&[("accept-encoding", "x-gzipish")])));
+    }
+
+    fn body_of(request: reqwest::RequestBuilder) -> (Option<String>, Vec<u8>) {
+        let r = request.build().unwrap();
+        let encoding = r.headers().get(reqwest::header::CONTENT_ENCODING).map(|v| v.to_str().unwrap().to_string());
+        (encoding, r.body().and_then(|b| b.as_bytes()).unwrap().to_vec())
+    }
+
+    #[test]
+    fn bodies_are_gzipped_only_when_the_server_takes_it_and_they_are_big() {
+        let endpoint = Endpoint::new("https://sync.example.com".into(), reqwest::Client::new());
+        let big = serde_json::json!({ "records": vec!["a1b2c3d4e5f60718"; 200] });
+        let small = serde_json::json!({ "profile": "p" });
+        let post = || endpoint.http.post(endpoint.url("/sync"));
+
+        // Not yet told: plain.
+        let (enc, body) = body_of(json_body(&endpoint, post(), &big, true).unwrap().0);
+        assert_eq!(enc, None);
+        assert_eq!(body, serde_json::to_vec(&big).unwrap());
+
+        endpoint.note_answer(&headers(&[("accept-encoding", "gzip")]));
+        let (request, gzipped) = json_body(&endpoint, post(), &big, true).unwrap();
+        assert!(gzipped);
+        let (enc, body) = body_of(request);
+        assert_eq!(enc.as_deref(), Some("gzip"));
+        let mut plain = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&body[..]), &mut plain).unwrap();
+        assert_eq!(plain, serde_json::to_vec(&big).unwrap(), "the same JSON, compressed");
+        assert!(body.len() * 3 < plain.len(), "and much smaller: {} -> {}", plain.len(), body.len());
+
+        let (enc, _) = body_of(json_body(&endpoint, post(), &small, true).unwrap().0);
+        assert_eq!(enc, None, "a small body goes plain");
+        let (enc, _) = body_of(json_body(&endpoint, post(), &big, false).unwrap().0);
+        assert_eq!(enc, None, "the plain retry");
+        let r = json_body(&endpoint, post(), &small, true).unwrap().0.build().unwrap();
+        assert_eq!(r.headers().get(reqwest::header::CONTENT_TYPE).unwrap(), "application/json");
+    }
 
     #[test]
     fn a_token_belongs_to_the_server_that_issued_it() {
