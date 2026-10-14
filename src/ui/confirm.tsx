@@ -1,11 +1,15 @@
-import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, X } from "lucide-react";
 
 // Focus trap for our modal portals. When a prompt opens (`openId` is its id,
 // null while that kind of prompt is closed), remember the element that had
-// focus, then move focus into the panel (unless React's autoFocus already
-// did — we check panel.contains(activeElement) first).
+// focus, then move focus into the panel, onto its `data-default-focus`
+// control (else the first focusable one). It runs as a layout effect, in the
+// same commit that shows the panel, so no keystroke lands behind it. The
+// panels must not use `autoFocus`: React applies it earlier in that commit,
+// so the trap would remember the panel's own button instead of the opener
+// and focus would fall to the page when the prompt closes.
 // While open, intercept Tab / Shift+Tab so focus wraps inside the panel
 // instead of tabbing into the underlying app (which is inert to sighted
 // users but reachable via keyboard/AT without this). On close, restore
@@ -16,7 +20,7 @@ import { AlertTriangle, X } from "lucide-react";
 // another of the same kind the panel is a new element, and a trap still
 // holding the old one would swallow every Tab.
 export const useFocusTrap = (openId: number | null, panelRef: React.RefObject<HTMLDivElement | null>) => {
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (openId === null) return;
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const panel = panelRef.current;
@@ -27,10 +31,9 @@ export const useFocusTrap = (openId: number | null, panelRef: React.RefObject<HT
           'button, input, textarea, [tabindex]:not([tabindex="-1"])'
         )
       ).filter((el) => !el.hasAttribute("disabled"));
-    // Only override focus if React's autoFocus didn't already land inside.
-    // It did for a prompt that opens on its own; for one that follows
-    // another, the previous trap's cleanup has just taken focus back out,
-    // so put it on the same default control autoFocus would have picked.
+    // For a prompt that follows another of the same kind, the previous
+    // trap's cleanup has just handed focus back to the opener, which this
+    // trap then remembers in turn.
     if (!panel.contains(document.activeElement)) {
       (panel.querySelector<HTMLElement>("[data-default-focus]") ?? getFocusable()[0])?.focus();
     }
@@ -330,7 +333,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               {owState.opts.name}
             </p>
             <div className="grid grid-cols-2 gap-2">
-              <button onClick={() => closeOverwrite("overwrite")} autoFocus data-default-focus
+              <button onClick={() => closeOverwrite("overwrite")} data-default-focus
                       className="h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
                 Overwrite
               </button>
@@ -387,13 +390,11 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => close(false)}
-                      autoFocus={!!state.opts.safeDefault}
                       data-default-focus={state.opts.safeDefault ? true : undefined}
                       className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
                 {state.opts.cancelLabel || "Cancel"}
               </button>
               <button onClick={() => close(true)} ref={confirmOkRef}
-                      autoFocus={!state.opts.safeDefault}
                       data-default-focus={state.opts.safeDefault ? undefined : true}
                       className={`px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider border ${
                         state.opts.destructive
@@ -431,7 +432,6 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               </p>
             )}
             <input
-              autoFocus
               data-default-focus
               type={tpState.opts.password ? "password" : "text"}
               value={tpValue}
