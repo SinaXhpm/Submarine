@@ -447,10 +447,11 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     if (busy) return;
     setPending("work"); setError(null); setInfo(null);
     try {
-      // Returns the chosen path on success, null if the user cancelled the
-      // save dialog. We only surface a toast in the success case.
+      // Returns the chosen path on success (on Android, the saved file's
+      // name: the system picker doesn't say where it is), null if the user
+      // cancelled the save dialog. We only surface a toast in the success case.
       const saved = await invoke<string | null>("export_profile", { name });
-      if (saved) setInfo(`Exported to ${saved}`);
+      if (saved) setInfo(IS_ANDROID ? `Saved as ${saved}` : `Exported to ${saved}`);
     } catch (e) {
       setError(cleanErr(e));
     } finally {

@@ -31,6 +31,8 @@ mod archive;
 mod approvals;
 mod agent_auth;
 mod ssh_config;
+#[cfg(target_os = "android")]
+mod android_bridge;
 #[cfg(test)]
 mod ssh_test_server;
 use ssh_manager::SshState;
@@ -4730,8 +4732,8 @@ async fn delete_profile(app_handle: tauri::AppHandle, name: String) -> Result<()
 /// backed up or moved between machines. The file is already encrypted at
 /// rest — we just copy bytes; we never decrypt or re-encrypt.
 ///
-/// Returns `Some(path)` on success or `None` if the user cancels the
-/// native save dialog. Errors bubble up as `Err`.
+/// Returns `Some(path)` on success (on Android, the saved document's name) or
+/// `None` if the user cancels the save dialog. Errors bubble up as `Err`.
 #[tauri::command]
 async fn export_profile(
     app_handle: tauri::AppHandle,
@@ -4743,17 +4745,13 @@ async fn export_profile(
         return Err(format!("Profile '{}' not found on disk", name));
     }
 
-    // Android has no native save dialog: drop the (still encrypted) file into
-    // the first shared folder we can write to — Download, then Documents,
-    // then app storage — and report the exact path so the user can find it.
+    // Android: the system's "Save to" picker (android_bridge.rs). The user
+    // picks the place; nothing is left in a shared folder like Download
+    // unless they choose it, where any app with storage access could copy the
+    // vault and try passwords against it offline.
     #[cfg(target_os = "android")]
     {
-        let dir = android_export_dir(&app_handle)
-            .ok_or_else(|| "No writable folder found for the export.".to_string())?;
-        let dst = unique_file_path(&dir, &name, "submarine");
-        fs::copy(&src, &dst)
-            .map_err(|e| format!("[FILE] EXPORT_COPY_FAILED to {:?}: {}", dst, e))?;
-        return Ok(Some(dst.to_string_lossy().to_string()));
+        return android_bridge::save_export(&app_handle, &src, &format!("{}.submarine", name)).await;
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -4775,6 +4773,38 @@ async fn export_profile(
         fs::copy(&src, &dst)
             .map_err(|e| format!("[FILE] EXPORT_COPY_FAILED to {:?}: {}", dst, e))?;
         Ok(Some(dst.to_string_lossy().to_string()))
+    }
+}
+
+/// "Block screenshots" (Android only): whether the app's window is kept out
+/// of screenshots, screen recording and casting (FLAG_SECURE). Always false
+/// elsewhere.
+#[tauri::command]
+async fn get_secure_screen(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    #[cfg(target_os = "android")]
+    {
+        android_bridge::secure_screen(&app_handle, None).await
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app_handle;
+        Ok(false)
+    }
+}
+
+/// Turn "Block screenshots" on or off (Android only). It is kept on the
+/// device, outside any profile, and applies from the next frame. Returns the
+/// state now in effect.
+#[tauri::command]
+async fn set_secure_screen(app_handle: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    #[cfg(target_os = "android")]
+    {
+        android_bridge::secure_screen(&app_handle, Some(enabled)).await
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app_handle, enabled);
+        Err("Blocking screenshots is only available on Android.".into())
     }
 }
 
@@ -4854,36 +4884,6 @@ fn validate_vault_bytes(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// `<dir>/<stem>.<ext>`, or `<stem> (2).<ext>`, `(3)`… if that name is taken,
-/// so an export never overwrites an earlier one.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn unique_file_path(dir: &std::path::Path, stem: &str, ext: &str) -> PathBuf {
-    let first = dir.join(format!("{}.{}", stem, ext));
-    if !first.exists() {
-        return first;
-    }
-    for n in 2..1000 {
-        let candidate = dir.join(format!("{} ({}).{}", stem, n, ext));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    first
-}
-
-/// First shared folder the app can write to, for Android exports.
-#[cfg(target_os = "android")]
-fn android_export_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let mut candidates = vec![
-        PathBuf::from("/storage/emulated/0/Download"),
-        PathBuf::from("/storage/emulated/0/Documents"),
-    ];
-    if let Ok(dir) = app.path().app_local_data_dir() {
-        candidates.push(dir);
-    }
-    candidates.into_iter().find(|p| is_dir_writable(p))
-}
-
 /// Import from bytes — the Android path: the WebView's system file picker
 /// hands the file to the page, which sends it here (base64). Same checks as
 /// `import_profile_save`, and it never overwrites an existing profile.
@@ -4939,18 +4939,6 @@ mod profile_import_tests {
         v[4] = VAULT_VERSION + 1;
         assert!(validate_vault_bytes(&v).is_err());
         assert!(validate_vault_bytes(&fake_vault(HEADER_LEN + 3)).is_err());
-    }
-
-    #[test]
-    fn exports_never_overwrite() {
-        let dir = std::env::temp_dir().join(format!("submarine-export-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let first = unique_file_path(&dir, "work", "submarine");
-        assert_eq!(first.file_name().unwrap(), "work.submarine");
-        std::fs::write(&first, b"x").unwrap();
-        let second = unique_file_path(&dir, "work", "submarine");
-        assert_eq!(second.file_name().unwrap(), "work (2).submarine");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -17527,6 +17515,10 @@ pub fn run() {
     // dispatches through this so the same code path works in the desktop
     // installer AND the Android APK. Capability is granted in default.json.
     let builder = builder.plugin(tauri_plugin_opener::init());
+    // The app's own Android plugin: export through the system's "Save to"
+    // picker and the "Block screenshots" switch (android_bridge.rs).
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(android_bridge::init());
     let builder = builder
         .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None) })
         .manage(SshState::new())
@@ -17559,6 +17551,7 @@ pub fn run() {
             check_db_exists, setup_master_db, persist_vault,
             list_profiles, cloud_list_sync_profiles, cloud_delete_profile, force_push_profile, select_profile, create_profile, delete_profile, close_profile,
             export_profile, import_profile_pick, import_profile_save, import_profile_bytes,
+            get_secure_screen, set_secure_screen,
             cloud::cloud_status, cloud::cloud_signup, cloud::cloud_consume_verify_link,
             cloud::cloud_set_password, cloud::cloud_login, cloud::cloud_logout,
             cloud::cloud_request_password_reset, cloud::cloud_reset_password,

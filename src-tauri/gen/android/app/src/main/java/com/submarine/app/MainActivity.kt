@@ -2,6 +2,7 @@ package com.submarine.app
 
 import android.content.Intent
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import androidx.core.content.ContextCompat
@@ -33,6 +34,15 @@ class MainActivity : TauriActivity() {
   // backgrounds with #0d0d10 so the OS chrome blends into our titlebar.
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+
+    // The Recents screen shows no snapshot of the app (Android 13+), so a
+    // terminal or an open vault never sits there for anyone to see. Taking
+    // screenshots stays possible unless "Block screenshots" is on in
+    // Settings (FLAG_SECURE), applied here before the first frame.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      setRecentsScreenshotEnabled(false)
+    }
+    SubmarinePlugin.applySecureScreen(this, SubmarinePlugin.isSecureScreen(this))
 
     // Keep the OS from killing our process while the user is in another
     // app. All SSH state lives in the Rust backend in this same process,
