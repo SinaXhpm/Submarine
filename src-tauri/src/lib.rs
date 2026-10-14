@@ -8512,6 +8512,10 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
     // The connect attempt asking — its prompts are only shown while it's
     // current (see ssh_manager::ConnectAttempt).
     attempt: &ssh_manager::ConnectAttempt,
+    // The saved password, for a server that asks for it here rather than
+    // through the password method (#145): it answers the server's password
+    // question once, and only that (see is_password_prompt).
+    saved_password: Option<&str>,
 ) -> Option<Result<bool, russh::Error>> {
     use russh::client::KeyboardInteractiveAuthResponse;
     use tauri::Emitter;
@@ -8541,11 +8545,28 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
     // Guards against masking the primary error: only report a definitive
     // result once the server has actually asked us something.
     let mut asked_anything = false;
+    // Not used yet; taken by its one answer.
+    let mut saved_password = saved_password.filter(|p| !p.is_empty());
+    let mut answered_with_saved = false;
 
     loop {
         match resp {
             KeyboardInteractiveAuthResponse::Success => return Some(Ok(true)),
             KeyboardInteractiveAuthResponse::Failure { .. } => {
+                if answered_with_saved {
+                    // The saved password was turned down. Start over and ask
+                    // the user, as without one.
+                    answered_with_saved = false;
+                    log("The saved password was rejected. Asking for it...", "error");
+                    resp = match session
+                        .authenticate_keyboard_interactive_start(user.to_string(), None)
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    continue;
+                }
                 if !asked_anything {
                     // Server declined the method outright — not really offered.
                     return None;
@@ -8570,6 +8591,26 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                     };
                     continue;
                 }
+                // The server's own password question (PAM's "Password:"),
+                // asked here because it doesn't take the password method:
+                // the saved password answers it, as the password method
+                // would have sent it. Only once, so a wrong one ends up with
+                // the user, and never a code or anything else.
+                if prompts.len() == 1 && is_password_prompt(&prompts[0].prompt, prompts[0].echo) {
+                    if let Some(password) = saved_password.take() {
+                        log("Answering the server's password prompt with the saved password...", "info");
+                        answered_with_saved = true;
+                        resp = match session
+                            .authenticate_keyboard_interactive_respond(vec![password.to_string()])
+                            .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => return Some(Err(e)),
+                        };
+                        continue;
+                    }
+                }
+                answered_with_saved = false;
                 asked_anything = true;
 
                 // A superseded or abandoned attempt doesn't put its prompt over
@@ -8636,6 +8677,51 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                 };
             }
         }
+    }
+}
+
+/// Whether a keyboard-interactive question is the server asking for the
+/// account's password (PAM's "Password:", "user@host's password:"), which a
+/// saved password may answer, rather than a one-time code, a PIN or anything
+/// else only the user can answer. A password is never echoed.
+fn is_password_prompt(prompt: &str, echo: bool) -> bool {
+    if echo {
+        return false;
+    }
+    let p = prompt.to_lowercase();
+    let words: Vec<&str> = p.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    const NOT_A_PASSWORD: [&str; 16] = [
+        "code", "codes", "token", "otp", "totp", "pin", "passcode", "verification", "verify", "2fa", "mfa", "factor",
+        "duo", "yubikey", "authenticator", "one",
+    ];
+    if words.iter().any(|w| NOT_A_PASSWORD.contains(w)) {
+        return false;
+    }
+    const PASSWORD: [&str; 19] = [
+        "password", "passwort", "contraseña", "mot de passe", "senha", "wachtwoord", "hasło", "lösenord", "passord",
+        "adgangskode", "salasana", "heslo", "jelszó", "parola", "şifre", "пароль", "密码", "密碼", "パスワード",
+    ];
+    PASSWORD.iter().any(|w| p.contains(w))
+}
+
+#[cfg(test)]
+mod password_prompt_tests {
+    use super::is_password_prompt;
+
+    #[test]
+    fn the_servers_password_question_counts() {
+        for p in ["Password: ", "password:", "subpw@host's password: ", "(user@10.0.0.1) Password:", "Contraseña: ", "Passwort: ", "Пароль: "] {
+            assert!(is_password_prompt(p, false), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn codes_echoed_answers_and_other_questions_do_not() {
+        for p in ["Verification code: ", "One-time password (OATH) for `user':", "Enter PASSCODE:", "Duo two-factor login: Passcode or option (1-3):", "YubiKey for `user': ", "PIN: ", "Token: ", "Enter your OTP password:"] {
+            assert!(!is_password_prompt(p, false), "{p:?}");
+        }
+        assert!(!is_password_prompt("Password: ", true), "an echoed answer is never a password");
+        assert!(!is_password_prompt("Username: ", false));
     }
 }
 
@@ -9432,6 +9518,9 @@ async fn connect_jump_host(
             Some((name, typed)) => (name, typed, false),
             None => (Zeroizing::new(String::new()), false, true),
         };
+    // For a jump host that asks for the password through keyboard-interactive
+    // (#145).
+    let kbi_password = password.clone().map(Zeroizing::new);
     let mut auth_res = if login_cancelled {
         Ok(false)
     } else if let Some((private_key, passphrase, key_name)) = key_data {
@@ -9470,7 +9559,7 @@ async fn connect_jump_host(
         && !prompt_ctx.session_unusable.load(std::sync::atomic::Ordering::Relaxed)
     {
         if let Some(kbi_res) =
-            run_keyboard_interactive(&mut session, &effective_user, app, session_id, &jump_nonce, kbi_txs, attempt).await
+            run_keyboard_interactive(&mut session, &effective_user, app, session_id, &jump_nonce, kbi_txs, attempt, kbi_password.as_ref().map(|p| p.as_str())).await
         {
             auth_res = kbi_res;
         }
@@ -10245,6 +10334,10 @@ async fn initiate_connection(
                     emit_log(&format!("Logging in as {}.", effective_user.as_str()), "info");
                 }
 
+                // For a server that asks for the password through keyboard-
+                // interactive instead of the password method (#145).
+                let kbi_password = custom_password.clone().or_else(|| password.clone()).map(Zeroizing::new);
+
                 let mut auth_res = if login_cancelled {
                     // "Login as" was cancelled — nothing to try. The prompt set
                     // prompt_ctx.cancelled, so this ends as "Login cancelled"
@@ -10308,6 +10401,7 @@ async fn initiate_connection(
                         &connect_nonce,
                         &kbi_txs_clone,
                         &attempt,
+                        kbi_password.as_ref().map(|p| p.as_str()),
                     )
                     .await
                     {
