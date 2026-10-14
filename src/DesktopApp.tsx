@@ -21,6 +21,7 @@ import { forgetServerBookmarks } from "./util/sftpBookmarks";
 import { useIsNarrow } from "./hooks/useViewport";
 import { FONT_FAMILY_KEY, FONT_SIZE_KEY, readFontFamily, readFontSize } from "./util/terminalFont";
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
+import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
 import type { HeldDeletion } from "./components/HeldDeletions";
@@ -281,6 +282,9 @@ function DesktopApp() {
     // Off by default: terminals start the remote account's own shell, same
     // as before this setting existed. See util/terminalShell.
     useLocalShell: readUseLocalShell(),
+    // On by default: logins may use keys from an ssh-agent on this computer.
+    // See util/sshAgent.
+    useSshAgent: readUseSshAgent(),
     // Auto-sync defaults ON. Per-device (localStorage), like the other prefs.
     autoSync: localStorage.getItem('submarine-auto-sync') !== 'off',
     // Background pull cadence in minutes (min 1). Only gates the periodic
@@ -299,6 +303,7 @@ function DesktopApp() {
     localStorage.setItem(FONT_SIZE_KEY, appSettings.terminalFontSize.toString());
     localStorage.setItem(FONT_FAMILY_KEY, appSettings.terminalFontFamily);
     localStorage.setItem(USE_LOCAL_SHELL_KEY, appSettings.useLocalShell ? 'on' : 'off');
+    localStorage.setItem(USE_SSH_AGENT_KEY, appSettings.useSshAgent ? 'on' : 'off');
     localStorage.setItem('submarine-auto-sync', appSettings.autoSync ? 'on' : 'off');
     localStorage.setItem('submarine-sync-interval-min', String(appSettings.syncIntervalMin));
     // Tell already-mounted terminals to re-fit with the new font size / face.

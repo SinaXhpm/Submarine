@@ -13,6 +13,7 @@ import { useIsCompact } from "../hooks/useViewport";
 import { fontFamilyCss, readFontFamily, readFontSize } from "../util/terminalFont";
 import { readShellSyncPairs, useShellSyncServer, type ShellSyncPair } from "../util/shellSync";
 import { readUseLocalShell } from "../util/terminalShell";
+import { readUseSshAgent } from "../util/sshAgent";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { useConfirm } from "../ui/confirm";
 
@@ -421,6 +422,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       quickAuth: session.quickAuth || null,
       sessionRole: "sftp",
       separateSessions: false,
+      useSshAgent: readUseSshAgent(),
     }).catch(console.error);
   };
   const openFwdConn = () => {
@@ -432,6 +434,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       quickAuth: session.quickAuth || null,
       sessionRole: "forward",
       separateSessions: false,
+      useSshAgent: readUseSshAgent(),
     }).catch(console.error);
   };
 
@@ -855,7 +858,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     // into the auth-retry input is picked up by later attempts inside this
     // same effect closure (the effect itself only runs once).
     primarySeparateRef.current = separateFwdRef.current;
-    invoke("initiate_connection", { sessionId: session.id, serverId: session.serverId, customPassword: customPasswordRef.current || null, quickAuth: session.quickAuth || null, sessionRole: "primary", separateSessions: separateFwdRef.current })
+    invoke("initiate_connection", { sessionId: session.id, serverId: session.serverId, customPassword: customPasswordRef.current || null, quickAuth: session.quickAuth || null, sessionRole: "primary", separateSessions: separateFwdRef.current, useSshAgent: readUseSshAgent() })
       .catch(e => {
         pushLog({ msg: `Failed to initiate: ${e}`, type: 'error' });
         setStatus('failed');
@@ -1129,6 +1132,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
         quickAuth: session.quickAuth || null,
         sessionRole: "primary",
         separateSessions: separateFwdRef.current,
+        useSshAgent: readUseSshAgent(),
       }).catch(console.error);
     }, delay);
   };
@@ -1155,6 +1159,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       quickAuth: session.quickAuth || null,
       sessionRole: "primary",
       separateSessions: separateFwdRef.current,
+      useSshAgent: readUseSshAgent(),
     }).catch(console.error);
   };
 
