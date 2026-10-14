@@ -249,10 +249,7 @@ async fn open_sftp(handle: &Arc<Mutex<russh::client::Handle<ClientHandler>>>) ->
         let h = handle.lock().await;
         h.channel_open_session().await.map_err(|e| format!("open session: {}", e))?
     };
-    channel.request_subsystem(true, "sftp").await
-        .map_err(|e| format!("request sftp subsystem: {}", e))?;
-    SftpSession::new_with_config(channel.into_stream(), crate::sftp_client_config()).await
-        .map_err(|e| format!("sftp init: {}", e))
+    crate::start_sftp(channel).await.map_err(|e| format!("sftp init: {}", e))
 }
 
 /// Equivalent of `mkdir -p` over SFTP. Walks the path components and

@@ -35,6 +35,22 @@ pub(crate) struct TestServer {
     /// After that key, ask for a password too (`AuthenticationMethods
     /// publickey,password`).
     second_factor: bool,
+    /// How an `sftp` subsystem request is answered.
+    sftp: SftpAnswer,
+}
+
+/// The test server's answer to an `sftp` subsystem request.
+#[derive(Clone, Copy, Default)]
+pub(crate) enum SftpAnswer {
+    /// No reply at all (russh's default handler).
+    #[default]
+    Silent,
+    /// Turned down: no SFTP set up (an sshd without `Subsystem sftp`, a
+    /// Dropbear built without it).
+    Refuse,
+    /// Accepted, then the channel ends at once: the program behind it is
+    /// missing (Dropbear on a router without an SFTP server).
+    StartThenEnd,
 }
 
 impl TestServer {
@@ -49,6 +65,11 @@ impl TestServer {
     /// password is asked for too. Passwords are always accepted.
     pub(crate) fn accepting_key(key: Option<russh::keys::PublicKey>, second_factor: bool) -> Self {
         Self { accept_key: key, second_factor, ..Self::default() }
+    }
+
+    /// A server that answers an `sftp` subsystem request with `answer`.
+    pub(crate) fn with_sftp(answer: SftpAnswer) -> Self {
+        Self { sftp: answer, ..Self::default() }
     }
 
     fn accepts(&self, key: &russh::keys::PublicKey) -> bool {
@@ -120,6 +141,30 @@ impl server::Handler for TestServer {
             let mut jump_end = jump_end;
             let _ = tokio::io::copy_bidirectional(&mut hop, &mut jump_end).await;
         });
+        Ok(())
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if name != "sftp" {
+            return Ok(());
+        }
+        match self.sftp {
+            SftpAnswer::Silent => {}
+            SftpAnswer::Refuse => session.channel_failure(channel)?,
+            SftpAnswer::StartThenEnd => {
+                session.channel_success(channel)?;
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let _ = handle.eof(channel).await;
+                    let _ = handle.close(channel).await;
+                });
+            }
+        }
         Ok(())
     }
 

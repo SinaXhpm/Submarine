@@ -12757,6 +12757,83 @@ pub(crate) fn sftp_client_config() -> russh_sftp::client::Config {
     }
 }
 
+/// How long SFTP may take to start: the server's answer to the subsystem
+/// request, then the version handshake. Both are one round trip; the long
+/// per-request timeout above is for transfers.
+const SFTP_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The server turned the SFTP subsystem down: none is set up. Most often an
+/// OpenWrt router, whose Dropbear has no SFTP server of its own (#146).
+const SFTP_REFUSED: &str = "This server doesn't offer SFTP: no SFTP server is set up on it. \
+On OpenWrt, add one with: opkg update && opkg install openssh-sftp-server";
+
+/// The subsystem started and ended at once: the program behind it is
+/// missing (Dropbear runs it through the shell, which reports it not found
+/// and exits).
+const SFTP_ENDED: &str = "SFTP ended as soon as it started: the server's SFTP program is probably missing. \
+On OpenWrt, add one with: opkg update && opkg install openssh-sftp-server";
+
+/// Start SFTP on a freshly opened session channel. The server's answer to the
+/// subsystem request is awaited before the handshake: without it, a server
+/// that refuses SFTP left the handshake waiting out the per-request timeout
+/// (four minutes) and then said only "timeout".
+pub(crate) async fn start_sftp(
+    mut channel: russh::Channel<russh::client::Msg>,
+) -> Result<russh_sftp::client::SftpSession, String> {
+    channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
+    let answer = async {
+        loop {
+            match channel.wait().await {
+                Some(russh::ChannelMsg::Success) => return Ok(()),
+                Some(russh::ChannelMsg::Failure) => return Err(SFTP_REFUSED),
+                None | Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) => return Err(SFTP_ENDED),
+                Some(_) => {}
+            }
+        }
+    };
+    tokio::time::timeout(SFTP_START_TIMEOUT, answer)
+        .await
+        .map_err(|_| "The server didn't answer the request to start SFTP.".to_string())?
+        .map_err(String::from)?;
+    let handshake = russh_sftp::client::SftpSession::new_with_config(channel.into_stream(), sftp_client_config());
+    match tokio::time::timeout(SFTP_START_TIMEOUT, handshake).await {
+        Ok(Ok(sftp)) => Ok(sftp),
+        Ok(Err(russh_sftp::client::error::Error::UnexpectedBehavior(_) | russh_sftp::client::error::Error::IO(_))) => {
+            Err(SFTP_ENDED.to_string())
+        }
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("SFTP didn't start: the server didn't answer its handshake.".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod start_sftp_tests {
+    use super::*;
+    use crate::ssh_test_server::{connect, SftpAnswer, TestServer};
+
+    // Each must end in well under the start timeout, not wait it out.
+    async fn start_against(answer: SftpAnswer) -> Result<(), String> {
+        let session = connect(TestServer::with_sftp(answer), |_| {}, build_ssh_client_config())
+            .await
+            .expect("in-process SSH connection");
+        let channel = session.channel_open_session().await.expect("session channel");
+        tokio::time::timeout(std::time::Duration::from_secs(5), start_sftp(channel))
+            .await
+            .expect("answered at once")
+            .map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn a_server_that_refuses_sftp_says_so_at_once() {
+        assert_eq!(start_against(SftpAnswer::Refuse).await, Err(SFTP_REFUSED.to_string()));
+    }
+
+    #[tokio::test]
+    async fn an_sftp_program_that_ends_as_it_starts_says_so_at_once() {
+        assert_eq!(start_against(SftpAnswer::StartThenEnd).await, Err(SFTP_ENDED.to_string()));
+    }
+}
+
 #[cfg(test)]
 mod sftp_config_tests {
     use super::sftp_client_config;
@@ -13174,12 +13251,11 @@ pub async fn get_sftp_session(
     let sftp = match elevation {
         Some(elev) => open_elevated_sftp(&session_arc, &elev).await?,
         None => {
-            let session = session_arc.lock().await;
-            let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
-            channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
-            russh_sftp::client::SftpSession::new_with_config(channel.into_stream(), sftp_client_config())
-                .await
-                .map_err(|e| e.to_string())?
+            let channel = {
+                let session = session_arc.lock().await;
+                session.channel_open_session().await.map_err(|e| e.to_string())?
+            };
+            start_sftp(channel).await?
         }
     };
     let arc = Arc::new(sftp);
@@ -15055,14 +15131,11 @@ async fn sftp_open_remote_file(
                     let sftp = if let Some(elev) = elevation {
                         open_elevated_sftp(&session_arc, &elev).await?
                     } else {
-                        let session = session_arc.lock().await;
-                        let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
-                        channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
-                        let s = russh_sftp::client::SftpSession::new_with_config(channel.into_stream(), sftp_client_config())
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        drop(session);
-                        s
+                        let channel = {
+                            let session = session_arc.lock().await;
+                            session.channel_open_session().await.map_err(|e| e.to_string())?
+                        };
+                        start_sftp(channel).await?
                     };
 
                     use russh_sftp::protocol::OpenFlags;
