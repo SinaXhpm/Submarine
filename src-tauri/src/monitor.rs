@@ -490,9 +490,16 @@ async fn run_poller(
         let poll_timeout = Duration::from_secs(cfg.poll_timeout_secs);
         let interval = Duration::from_secs(cfg.interval_secs);
 
-        // 3) Ensure we have a live SSH handle.
+        // 3) Ensure we have a live SSH handle. Race the connect against the
+        // stop signal so a Stop (profile switch, app close, toggle-off) during
+        // a slow or hung handshake tears the poller down at once, instead of
+        // waiting out the connect/handshake budget (up to connect_timeout * 2).
         if handle.as_ref().map(|h| h.is_closed()).unwrap_or(true) {
-            match connect_for_monitor(&db, &auth, connect_timeout).await {
+            let connected = tokio::select! {
+                _ = &mut stop_rx => break,
+                r = connect_for_monitor(&db, &auth, connect_timeout) => r,
+            };
+            match connected {
                 Ok(h) => {
                     handle = Some(h);
                     backoff = Duration::from_secs(2);
@@ -523,7 +530,13 @@ async fn run_poller(
         // hot-updates from the UI take effect on the NEXT cycle.
         let customs_snap: Vec<CustomMetric> = entry.custom_metrics.lock().await.clone();
         let h = handle.as_ref().unwrap();
-        match poll_once(h, &customs_snap, poll_timeout).await {
+        // Same as the connect: a Stop during a slow poll ends the poller now,
+        // rather than after the per-poll exec timeout.
+        let polled = tokio::select! {
+            _ = &mut stop_rx => break,
+            r = poll_once(h, &customs_snap, poll_timeout) => r,
+        };
+        match polled {
             Ok(raw) => {
                 let enabled_snap = entry.enabled_metrics.lock().await.clone();
                 let sample = compute_sample(node_id, &raw, &last, &enabled_snap, &customs_snap);
