@@ -24,6 +24,7 @@ import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
+import { folderTree } from "./util/folderTree";
 import type { HeldDeletion } from "./components/HeldDeletions";
 import AddNodePanel from "./components/AddNodePanel";
 import TerminalView from "./components/TerminalView";
@@ -628,24 +629,56 @@ function DesktopApp() {
   };
 
   const removeFolder = async (id: number) => {
+    // delete_folder takes its subfolders and every server in them along; note
+    // which servers go, for the same per-server cleanup removeServer does.
+    const tree = folderTree(folders);
+    const inside = tree.subtreeOf(id);
+    const gone: number[] = (servers || []).filter((s: any) => inside.has(tree.serverFolder(s) as number)).map((s: any) => s.id);
     try {
       await invoke("delete_folder", { id });
-      // delete_folder cascades to its servers (see main.rs), so refresh both.
+      if (activeProfile) gone.forEach((sid) => forgetServerBookmarks(activeProfile, sid));
       await Promise.all([refreshFolders(), refreshServers()]);
       bumpSync();
       addLog("Folder removed.", "info");
     } catch (e) { addLog(`DELETE_EXCEPTION: ${e}`, "error"); }
   };
 
-  const createFolder = async (name: string) => {
+  const createFolder = async (name: string, parentId: number | null = null) => {
     try {
-      await invoke("add_folder", { name, parentId: null });
+      await invoke("add_folder", { name, parentId });
       await refreshFolders();
       bumpSync();
       addLog(`Folder "${name}" created.`, "success");
     } catch (e) {
       addLog(`FOLDER_ERROR: ${e}`, "error");
       throw e; // NodeGrid keeps the name input open for a retry
+    }
+  };
+
+  // Drag and drop on the Servers page: a server into a folder, a folder into
+  // another (null: the top level).
+  const moveServerToFolder = async (id: number, folderId: number | null) => {
+    try {
+      await invoke("move_server_to_folder", { id, folderId });
+      await refreshServers();
+      bumpSync();
+      const where = folderId === null ? "the top level" : `"${folders.find((f: any) => f.id === folderId)?.name ?? "folder"}"`;
+      addLog(`Server moved to ${where}.`, "info");
+    } catch (e) {
+      addLog(`MOVE_ERROR: ${e}`, "error");
+      throw e;
+    }
+  };
+  const moveFolder = async (id: number, parentId: number | null) => {
+    try {
+      await invoke("move_folder", { id, parentId });
+      await refreshFolders();
+      bumpSync();
+      const where = parentId === null ? "the top level" : `"${folders.find((f: any) => f.id === parentId)?.name ?? "folder"}"`;
+      addLog(`Folder moved to ${where}.`, "info");
+    } catch (e) {
+      addLog(`MOVE_ERROR: ${e}`, "error");
+      throw e;
     }
   };
 
@@ -1698,6 +1731,8 @@ function DesktopApp() {
                 onRemoveFolder={removeFolder}
                 onRenameFolder={renameFolder}
                 onCreateFolder={createFolder}
+                onMoveServer={moveServerToFolder}
+                onMoveFolder={moveFolder}
                 onCloneServer={async (id: number) => {
                   try { await invoke("clone_server", { id }); refreshServers(); bumpSync(); addLog("Node cloned.", "success"); }
                   catch (e) { addLog(`CLONE_ERROR: ${e}`, "error"); }

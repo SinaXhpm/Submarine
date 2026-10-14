@@ -1,11 +1,12 @@
-import { Search, Plus, Server, Globe, Folder, FolderPlus, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound } from "lucide-react";
+import { Search, Plus, Server, Globe, Folder, FolderPlus, ChevronLeft, ChevronRight, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound } from "lucide-react";
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
 import { HeldReview } from "./HeldReview";
 import { HeldDeletions } from "./HeldDeletions";
+import { folderTree } from "../util/folderTree";
 
-export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCreateFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, heldDeletions, onResolveDeletions, isMobile }: any) => {
+export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCreateFolder, onMoveServer, onMoveFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, heldDeletions, onResolveDeletions, isMobile }: any) => {
   const [search, setSearch] = useState("");
   // Changes someone else made in a shared profile that this device holds
   // back until its user allows them (see HeldReview).
@@ -60,14 +61,24 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
     setRenaming(null);
   };
 
-  // "Add folder" in the toolbar: the name of the folder being made, typed
-  // into a draft card at the head of the grid. null when none is open.
+  // Folders nest (see util/folderTree): the grid shows the folders and
+  // servers directly inside the open folder (or the top level).
+  const tree = folderTree(folders);
+  // The open folder was deleted (here or on another device): back to the top.
+  useEffect(() => {
+    if (activeFolderId !== null && folders && !tree.has(activeFolderId)) setActiveFolderId(null);
+  }, [activeFolderId, folders]);
+
+  // "Add folder": the name of the folder being made inside the open folder,
+  // typed into a draft card at the head of the grid. null when none is open;
+  // closed when another folder is opened.
   const [newFolder, setNewFolder] = useState<string | null>(null);
+  useEffect(() => { setNewFolder(null); }, [activeFolderId]);
   const commitNewFolder = async () => {
     const name = (newFolder ?? "").trim();
     if (!name || !onCreateFolder) { setNewFolder(null); return; }
     try {
-      await onCreateFolder(name);
+      await onCreateFolder(name, activeFolderId);
       setNewFolder(null);
     } catch { /* parent logs it; the input stays open for a retry */ }
   };
@@ -85,7 +96,26 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
   const displayedServers = isSearching
     ? filteredServers
-    : filteredServers.filter((s: any) => s.folder_id === activeFolderId);
+    : filteredServers.filter((s: any) => tree.serverFolder(s) === activeFolderId);
+  const displayedFolders = isSearching ? [] : tree.childrenOf(activeFolderId);
+
+  // Drag a server or a folder onto a folder card (into it) or onto a step of
+  // the path above the grid (up to it). The target under the pointer: a
+  // folder id, or "root" for the top level.
+  type DropTarget = number | "root";
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  const dropTargetRef = useRef<DropTarget | null>(null);
+  const targetAt = (x: number, y: number): DropTarget | null => {
+    const el = (document.elementFromPoint(x, y) as HTMLElement | null)?.closest<HTMLElement>("[data-drop-folder]");
+    if (!el) return null;
+    const v = el.dataset.dropFolder;
+    return v === "root" ? "root" : Number(v);
+  };
+  const setTarget = (t: DropTarget | null) => {
+    if (dropTargetRef.current === t) return;
+    dropTargetRef.current = t;
+    setDropTarget(t);
+  };
 
   // ── Modern floating drag-to-reorder (pointer-based: mouse AND touch) ────────
   // Grabbing the grip lifts the node out of the grid: a fixed-position clone
@@ -107,6 +137,8 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
   const initialOrderRef = useRef<number[]>([]);
   const onReorderRef = useRef<any>(onReorderServers);
   onReorderRef.current = onReorderServers;
+  const onMoveServerRef = useRef<any>(onMoveServer);
+  onMoveServerRef.current = onMoveServer;
   const rafRef = useRef<number | null>(null);
   // The scroll container + its scrollTop at drag start. The slot snapshot is in
   // viewport coords; if the list scrolls mid-drag the cards move but the
@@ -141,10 +173,18 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
       draggedRef.current = true;
       pointerRef.current = { x: e.clientX, y: e.clientY };
       moveClone(e.clientX, e.clientY); // clone tracks the pointer 1:1, every frame
+      // Over a folder card or a step of the path: the drop moves it there.
+      setTarget(onMoveServerRef.current ? targetAt(e.clientX, e.clientY) : null);
       if (rafRef.current != null) return; // coalesce the reflow recompute
       const px = e.clientX, py = e.clientY;
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null;
+        if (dropTargetRef.current !== null) {
+          // Not a new place in this list: show the list as it was.
+          const initial = initialOrderRef.current;
+          setOrder((prev) => (prev && prev.length === initial.length && prev.every((v, i) => v === initial[i]) ? prev : [...initial]));
+          return;
+        }
         // Insertion index = how many grid CELLS sit before the pointer in
         // reading order (earlier row, or same row and left of it), measured
         // against the fixed drag-start snapshot. Counting the dragged card's
@@ -177,6 +217,18 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
       gridRef.current?.querySelectorAll<HTMLElement>('[data-sid]').forEach((el) => {
         el.style.transition = ''; el.style.transform = '';
       });
+      const target = dropTargetRef.current;
+      setTarget(null);
+      if (target !== null) {
+        // Into a folder (or up the path). The card leaves this list once the
+        // move is stored, so the order override goes when it's done.
+        Promise.resolve(onMoveServerRef.current?.(dragId, target === "root" ? null : target))
+          .catch(() => {})
+          .finally(() => setOrder(null));
+        setDragId(null);
+        setTimeout(() => { draggedRef.current = false; }, 0);
+        return;
+      }
       const final = orderRef.current;
       const initial = initialOrderRef.current;
       const changed = !!final && (final.length !== initial.length || final.some((v, i) => v !== initial[i]));
@@ -279,6 +331,64 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
   const draggedServer = dragId != null ? displayedServers.find((s: any) => s.id === dragId) : null;
 
+  // Dragging a folder (by its grip) onto another folder or a step of the
+  // path. Folders keep their order, so there's no reordering here; a folder
+  // can't go into itself or its own subfolders, nor where it already is.
+  const [folderDragId, setFolderDragId] = useState<number | null>(null);
+  const folderCloneRef = useRef<HTMLDivElement | null>(null);
+  const onMoveFolderRef = useRef<any>(onMoveFolder);
+  onMoveFolderRef.current = onMoveFolder;
+  const canMoveFolders = !!onMoveFolder && !isSearching;
+  const beginFolderDrag = (e: any, id: number) => {
+    if (!canMoveFolders) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const card = (e.currentTarget as HTMLElement).closest('[data-drop-folder]') as HTMLElement | null;
+    const r = card?.getBoundingClientRect();
+    grabOffsetRef.current = r ? { x: e.clientX - r.left, y: e.clientY - r.top } : { x: 20, y: 32 };
+    cardSizeRef.current = r ? { w: r.width, h: r.height } : { w: 240, h: 64 };
+    pointerRef.current = { x: e.clientX, y: e.clientY };
+    draggedRef.current = false;
+    setFolderDragId(id);
+  };
+  useEffect(() => {
+    if (folderDragId === null) return;
+    const inside = tree.subtreeOf(folderDragId);
+    const from = tree.parentOf(folderDragId);
+    const allowed = (t: DropTarget | null) =>
+      t !== null && (t === "root" ? from !== null : !inside.has(t) && t !== from);
+    document.body.style.userSelect = 'none';
+    const move = (e: PointerEvent) => {
+      draggedRef.current = true;
+      pointerRef.current = { x: e.clientX, y: e.clientY };
+      const el = folderCloneRef.current;
+      if (el) el.style.transform = `translate(${e.clientX - grabOffsetRef.current.x}px, ${e.clientY - grabOffsetRef.current.y}px) rotate(1.5deg) scale(1.03)`;
+      const t = targetAt(e.clientX, e.clientY);
+      setTarget(allowed(t) ? t : null);
+    };
+    const finish = () => {
+      document.body.style.userSelect = '';
+      const t = dropTargetRef.current;
+      setTarget(null);
+      if (t !== null) {
+        Promise.resolve(onMoveFolderRef.current?.(folderDragId, t === "root" ? null : t)).catch(() => {});
+      }
+      setFolderDragId(null);
+      setTimeout(() => { draggedRef.current = false; }, 0);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      document.body.style.userSelect = '';
+    };
+  }, [folderDragId]);
+  const draggedFolder = folderDragId != null ? folders?.find((f: any) => f.id === folderDragId) : null;
+  const dragging = dragId !== null || folderDragId !== null;
+
   // Compact horizontal node card: a monogram avatar carries identity, the
   // server projects its own colour as a left accent bar. Kept short (h-16) so
   // name + host read clearly. Rendered as a plain keyed <div> (not a nested
@@ -318,7 +428,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             tabIndex={-1}
             onPointerDown={(e) => beginDrag(e, s.id)}
             onClick={(e) => e.stopPropagation()}
-            title="Drag to reorder"
+            title={onMoveServer ? "Drag to reorder, or onto a folder" : "Drag to reorder"}
             className="shrink-0 -ml-1.5 -mr-1 p-1 rounded-md text-zinc-600 hover:text-zinc-300 cursor-grab active:cursor-grabbing opacity-100 sm:opacity-0 sm:group-hover:opacity-100 [@media(hover:none)]:!opacity-100 transition-opacity"
             style={{ touchAction: 'none' }}
           >
@@ -386,15 +496,39 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
   // surface: a tinted folder glyph, name + server count, inline rename in
   // place, and the same hover lift as server cards.
   const FolderCard = ({ f }: { f: any }) => {
-    const serverCount = servers?.filter((s: any) => s.folder_id === f.id).length || 0;
+    const serverCount = servers?.filter((s: any) => tree.serverFolder(s) === f.id).length || 0;
+    const folderCount = tree.childrenOf(f.id).length;
     const isRenaming = renaming?.id === f.id;
     const accent = f.color || 'rgb(var(--primary))';
+    const isTarget = dropTarget === f.id;
+    const isDragged = folderDragId === f.id;
+    const contents = [
+      folderCount > 0 ? (folderCount === 1 ? '1 folder' : `${folderCount} folders`) : null,
+      serverCount === 1 ? '1 server' : `${serverCount} servers`,
+    ].filter(Boolean).join(' · ');
     return (
       <div
-        onClick={() => { if (!isRenaming) setActiveFolderId(f.id); }}
-        className="group relative flex items-center gap-3 h-16 pl-3.5 pr-2 rounded-xl bg-gradient-to-br from-[#1c1c22] to-[#141418] border border-white/5 hover:border-primary/40 hover:bg-white/[0.015] transition-colors duration-150 cursor-pointer overflow-hidden"
+        data-drop-folder={f.id}
+        onClick={() => { if (!isRenaming && !draggedRef.current) setActiveFolderId(f.id); }}
+        className={`group relative flex items-center gap-3 h-16 pl-3.5 pr-2 rounded-xl bg-gradient-to-br from-[#1c1c22] to-[#141418] border transition-colors duration-150 cursor-pointer overflow-hidden ${
+          isTarget ? 'border-primary ring-2 ring-primary/60 bg-primary/10' : 'border-white/5 hover:border-primary/40 hover:bg-white/[0.015]'
+        } ${isDragged ? 'opacity-40' : ''}`}
       >
         <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ background: accent }} />
+
+        {/* Drag handle: drop the folder into another one, or up the path. */}
+        {canMoveFolders && !isRenaming && (
+          <button
+            tabIndex={-1}
+            onPointerDown={(e) => beginFolderDrag(e, f.id)}
+            onClick={(e) => e.stopPropagation()}
+            title="Drag into another folder"
+            className="shrink-0 -ml-1.5 -mr-1 p-1 rounded-md text-zinc-600 hover:text-zinc-300 cursor-grab active:cursor-grabbing opacity-100 sm:opacity-0 sm:group-hover:opacity-100 [@media(hover:none)]:!opacity-100 transition-opacity"
+            style={{ touchAction: 'none' }}
+          >
+            <GripVertical size={14} />
+          </button>
+        )}
 
         {/* Folder glyph avatar. */}
         <div
@@ -424,7 +558,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                 <button type="button" className="max-w-full truncate text-left rounded outline-none focus-visible:ring-2 focus-visible:ring-primary/60">{f.name}</button>
               </h3>
               <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.12em]">
-                {serverCount === 1 ? '1 server' : `${serverCount} servers`}
+                {contents}
               </span>
             </>
           )}
@@ -462,7 +596,18 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
               <button
                 onClick={async (e) => {
                   e.stopPropagation();
-                  if (await confirm({ title: 'Delete folder?', message: `“${f.name}” and every server inside it will be removed.`, destructive: true })) {
+                  // Everything below goes too: say how much.
+                  const inside = tree.subtreeOf(f.id);
+                  const subfolders = inside.size - 1;
+                  const allServers = servers?.filter((s: any) => inside.has(tree.serverFolder(s) as number)).length || 0;
+                  const what = [
+                    subfolders > 0 ? (subfolders === 1 ? '1 folder' : `${subfolders} folders`) : null,
+                    allServers === 1 ? '1 server' : `${allServers} servers`,
+                  ].filter(Boolean).join(' and ');
+                  const message = subfolders > 0
+                    ? `“${f.name}” and everything inside it (${what}) will be removed.`
+                    : `“${f.name}” and every server inside it (${what}) will be removed.`;
+                  if (await confirm({ title: 'Delete folder?', message, destructive: true })) {
                     onRemoveFolder(f.id);
                   }
                 }}
@@ -547,22 +692,60 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
         {/* Header navigation if in folder */}
         {!isSearching && activeFolderId !== null && (
-          <div className="flex items-center gap-3 mb-6">
-            <button aria-label="Back to all servers"
-              onClick={() => setActiveFolderId(null)}
-              className="w-8 h-8 bg-black rounded-xl border border-white/5 flex items-center justify-center hover:bg-white/10 hover:text-white text-zinc-500 transition-all shadow-inner"
+          <div className="flex items-center gap-3 mb-6 flex-wrap">
+            <button aria-label="Back"
+              title="Up one level"
+              onClick={() => setActiveFolderId(tree.parentOf(activeFolderId))}
+              className="w-8 h-8 bg-black rounded-xl border border-white/5 flex items-center justify-center hover:bg-white/10 hover:text-white text-zinc-500 transition-all shadow-inner shrink-0"
             >
               <ChevronLeft size={16} />
             </button>
-            <h2 className="text-[15px] font-bold text-primary tracking-tight flex items-center gap-2 flex-1">
-              <Folder size={16} /> {currentFolder?.name}
-            </h2>
+            {/* The path down to this folder. Each step above it opens that
+                level, and takes a server or folder dropped on it. */}
+            {/* At least 12rem wide: on a narrow window the buttons wrap below
+                it rather than squeezing the path to nothing. */}
+            <nav aria-label="Folder path" className="flex items-center gap-1 flex-1 min-w-[12rem] flex-wrap text-[13px]">
+              {[{ id: "root", name: "All servers" }, ...tree.pathOf(activeFolderId)].map((step: any, i: number, all: any[]) => {
+                const last = i === all.length - 1;
+                const target: DropTarget = step.id === "root" ? "root" : step.id;
+                const hot = dropTarget === target;
+                return (
+                  <span key={String(step.id)} className="flex items-center gap-1 min-w-0">
+                    {i > 0 && <ChevronRight size={13} className="text-zinc-600 shrink-0" />}
+                    {last ? (
+                      <span className="font-bold text-primary tracking-tight flex items-center gap-1.5 truncate">
+                        <Folder size={15} className="shrink-0" /> <span className="truncate">{step.name}</span>
+                      </span>
+                    ) : (
+                      <button
+                        data-drop-folder={target}
+                        onClick={() => setActiveFolderId(step.id === "root" ? null : step.id)}
+                        className={`px-1.5 py-0.5 rounded-md truncate max-w-[12rem] transition-colors ${
+                          hot ? 'bg-primary/20 text-primary ring-2 ring-primary/60' : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                        } ${dragging ? 'ring-1 ring-white/10' : ''}`}
+                      >
+                        {step.name}
+                      </button>
+                    )}
+                  </span>
+                );
+              })}
+            </nav>
+            {onCreateFolder && (
+              <button
+                onClick={() => setNewFolder((v) => v ?? "")}
+                title="Make a folder inside this one"
+                className="h-8 px-3 bg-primary/10 text-primary border border-primary/25 hover:bg-primary/20 rounded-lg flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider shrink-0"
+              >
+                <FolderPlus size={13} /> Add folder
+              </button>
+            )}
             {/* Adding a server from inside a folder pre-selects this folder
                 in the new-node panel, so the user doesn't have to repeat
                 the choice they just clicked into. */}
             <button
               onClick={() => onAddClick(activeFolderId)}
-              className="h-8 px-3 bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 rounded-lg flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider"
+              className="h-8 px-3 bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 rounded-lg flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider shrink-0"
             >
               <Plus size={13} /> Add server
             </button>
@@ -620,7 +803,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
             {/* The folder being made with "Add folder": a card to name it.
                 Plain JSX, not a nested component, so typing keeps focus. */}
-            {!isSearching && activeFolderId === null && newFolder !== null && (
+            {!isSearching && newFolder !== null && (
               <div className="relative flex items-center gap-3 h-16 pl-3.5 pr-2 rounded-xl bg-gradient-to-br from-[#1c1c22] to-[#141418] border border-primary/40 overflow-hidden">
                 <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[3px] bg-primary" />
                 <div className="w-9 h-9 rounded-lg bg-black/40 border border-white/10 flex items-center justify-center shadow-inner shrink-0">
@@ -660,8 +843,8 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
               </div>
             )}
 
-            {/* Render Folders (only in root, and when not searching) */}
-            {!isSearching && activeFolderId === null && folders?.map((f: any) => (
+            {/* The folders inside the open one (or the top level); none while searching. */}
+            {displayedFolders.map((f: any) => (
               <FolderCard key={`folder-${f.id}`} f={f} />
             ))}
 
@@ -669,9 +852,9 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             {orderedServers.map((s: any) => renderServer(s))}
 
             {/* Empty Folder State */}
-            {!isSearching && activeFolderId !== null && displayedServers.length === 0 && (
+            {!isSearching && activeFolderId !== null && displayedServers.length === 0 && displayedFolders.length === 0 && newFolder === null && (
               <div className="col-span-full py-10 text-center text-zinc-600 text-xs italic">
-                Nothing in this folder yet. Add a server here, or move one in from its Edit panel (Folder).
+                Nothing in this folder yet. Add a server or folder here, or drag a server onto this folder from the level above.
               </div>
             )}
 
@@ -713,6 +896,27 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                 <span className="text-[10.5px] text-zinc-300 font-mono truncate">{draggedServer.host}</span>
               </div>
             </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* The same floating copy for a folder being dragged. */}
+      {draggedFolder && createPortal(
+        <div
+          ref={folderCloneRef}
+          className="fixed left-0 top-0 z-[9999] pointer-events-none will-change-transform"
+          style={{
+            width: cardSizeRef.current.w,
+            transform: `translate(${pointerRef.current.x - grabOffsetRef.current.x}px, ${pointerRef.current.y - grabOffsetRef.current.y}px) rotate(1.5deg) scale(1.03)`,
+          }}
+        >
+          <div className="relative flex items-center gap-3 h-16 pl-3.5 pr-2 rounded-xl bg-gradient-to-br from-[#1f1f26] to-[#16161b] border border-primary/50 ring-1 ring-primary/40 shadow-2xl shadow-black/60 overflow-hidden">
+            <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ background: draggedFolder.color || 'rgb(var(--primary))' }} />
+            <div className="w-9 h-9 rounded-lg bg-black/40 border border-white/10 flex items-center justify-center shadow-inner shrink-0" style={{ color: draggedFolder.color || undefined }}>
+              <Folder size={16} className={draggedFolder.color ? '' : 'text-primary'} />
+            </div>
+            <h3 className="font-bold text-zinc-100 text-[13px] truncate tracking-tight leading-tight">{draggedFolder.name}</h3>
           </div>
         </div>,
         document.body

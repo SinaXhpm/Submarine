@@ -5,6 +5,7 @@ import { Cpu, X, Link2, ArrowLeftRight, Shield, Key, User, FolderPlus, Download,
 import PasswordField from "./PasswordField";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
+import { folderTree } from "../util/folderTree";
 
 // Compact "2h ago" style relative time for the attribution line.
 function relTime(d: Date): string {
@@ -445,7 +446,14 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 <div className="flex gap-2">
                   <select className="flex-1 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner" value={newNode.folderId} onChange={e => setNewNode({ ...newNode, folderId: e.target.value })}>
                     <option value="" className="bg-[#1a1a1e] text-zinc-500">-- Root --</option>
-                    {folders?.map((f: any) => <option key={f.id} value={f.id.toString()} className="bg-[#1a1a1e] text-white">{f.name}</option>)}
+                    {/* Nested folders by their full path, in path order. */}
+                    {(() => {
+                      const tree = folderTree(folders);
+                      return (folders ?? [])
+                        .map((f: any) => ({ id: f.id, label: tree.label(f.id) }))
+                        .sort((a: any, b: any) => a.label.localeCompare(b.label))
+                        .map((f: any) => <option key={f.id} value={f.id.toString()} className="bg-[#1a1a1e] text-white">{f.label}</option>);
+                    })()}
                   </select>
                   <button aria-label="New folder" onClick={() => setIsCreatingFolder(true)} className="w-9 h-9 bg-white/5 border border-white/10 rounded-lg text-primary hover:bg-white/10 transition-all flex items-center justify-center shrink-0">
                     <FolderPlus size={14} />

@@ -3529,6 +3529,52 @@ mod sync_engine_tests {
         assert_eq!(key_name, "k", "credential.key_id must resolve to the right ssh_key on B");
     }
 
+    // Nested folders: a folder's parent lands on the right folder on another
+    // device (the child made before its parent, so ids are out of order), a
+    // move to the top level follows, and deleting a folder takes its
+    // subfolders and their servers on the other device too.
+    #[test]
+    fn nested_folders_round_trip_with_moves_and_deletes() {
+        let parent_of = |db: &rusqlite::Connection, name: &str| -> Option<String> {
+            db.query_row(
+                "SELECT (SELECT p.name FROM folders p WHERE p.id=f.parent_id) FROM folders f WHERE f.name=?1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO folders(name) VALUES('child')", []).unwrap();
+        a.execute("INSERT INTO folders(name) VALUES('parent')", []).unwrap();
+        let id = |db: &rusqlite::Connection, name: &str| -> i32 {
+            db.query_row("SELECT id FROM folders WHERE name=?1", [name], |r| r.get(0)).unwrap()
+        };
+        move_folder_in(&a, id(&a, "child"), Some(id(&a, "parent"))).unwrap();
+        a.execute("INSERT INTO folders(name, parent_id) VALUES('grandchild', (SELECT id FROM folders WHERE name='child'))", []).unwrap();
+        a.execute("INSERT INTO servers(name, host, port, folder_id) VALUES('deep','h',22,(SELECT id FROM folders WHERE name='grandchild'))", []).unwrap();
+
+        let (b, hb) = device("B");
+        b.execute("INSERT INTO folders(name) VALUES('other')", []).unwrap();
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        assert_eq!(parent_of(&b, "child").as_deref(), Some("parent"));
+        assert_eq!(parent_of(&b, "grandchild").as_deref(), Some("child"));
+        assert_eq!(parent_of(&b, "parent"), None);
+
+        move_folder_in(&a, id(&a, "child"), None).unwrap();
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        assert_eq!(parent_of(&b, "child"), None, "a move to the top level reaches B");
+        assert_eq!(parent_of(&b, "grandchild").as_deref(), Some("child"));
+
+        delete_folder_tree(&a, id(&a, "child")).unwrap();
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        let left: Vec<String> = b
+            .prepare("SELECT name FROM folders ORDER BY name").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(left, vec!["other".to_string(), "parent".to_string()], "child and grandchild gone on B");
+        let servers: i64 = b.query_row("SELECT COUNT(*) FROM servers WHERE name='deep'", [], |r| r.get(0)).unwrap();
+        assert_eq!(servers, 0, "the server inside went too");
+    }
+
     // Regression: `position` (NOT NULL) was added to servers' synced cols in
     // 0.3.5. A PRE-0.3.5 peer's payload omits the key, so apply_entity used to
     // bind an explicit SQL NULL, hit "NOT NULL constraint failed:
@@ -6411,15 +6457,116 @@ async fn delete_credential(state: tauri::State<'_, DbState>, id: i32) -> Result<
 
 #[tauri::command]
 async fn add_folder(state: tauri::State<'_, DbState>, name: String, parent_id: Option<i32>) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("[VALIDATION] FOLDER_NAME_EMPTY".into());
+    }
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-    
+    if let Some(parent) = parent_id {
+        require_folder(conn, parent)?;
+    }
+
     conn.execute(
         "INSERT INTO folders (name, parent_id) VALUES (?1, ?2)",
         rusqlite::params![name, parent_id],
     ).map_err(|e| format!("[DATABASE] FOLDER_INSERT_FAILED: {}", e))?;
-    
+
     drop(conn_guard);
+    save_vault_internal(&state)?;
+    Ok(())
+}
+
+fn require_folder(conn: &rusqlite::Connection, id: i32) -> Result<(), String> {
+    let found: bool = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM folders WHERE id=?1)", [id], |r| r.get(0))
+        .map_err(|e| format!("[DATABASE] FOLDER_QUERY_FAILED: {}", e))?;
+    if found { Ok(()) } else { Err(format!("[VALIDATION] FOLDER_NOT_FOUND: {}", id)) }
+}
+
+/// The folder `id` and every folder under it, at any depth. The visited list
+/// keeps a parent loop (possible once moves made on two devices are merged)
+/// from running forever.
+fn folder_subtree(conn: &rusqlite::Connection, id: i32) -> Result<Vec<i32>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM folders WHERE parent_id=?1")
+        .map_err(|e| format!("[DATABASE] FOLDER_QUERY_FAILED: {}", e))?;
+    let mut out = vec![id];
+    let mut next = 0;
+    while next < out.len() {
+        let children: Vec<i32> = stmt
+            .query_map([out[next]], |r| r.get(0))
+            .map_err(|e| format!("[DATABASE] FOLDER_QUERY_FAILED: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+        for child in children {
+            if !out.contains(&child) {
+                out.push(child);
+            }
+        }
+        next += 1;
+    }
+    Ok(out)
+}
+
+/// Put folder `id` inside `parent` (`None`: top level). Refuses to put a
+/// folder inside itself or one of its own subfolders. Only a real change
+/// touches the row, so an unchanged folder isn't re-stamped for sync.
+fn move_folder_in(conn: &rusqlite::Connection, id: i32, parent: Option<i32>) -> Result<(), String> {
+    require_folder(conn, id)?;
+    if let Some(p) = parent {
+        require_folder(conn, p)?;
+        if folder_subtree(conn, id)?.contains(&p) {
+            return Err("[VALIDATION] FOLDER_MOVE_INTO_ITSELF: a folder can't go inside itself or its own subfolders".into());
+        }
+    }
+    conn.execute(
+        "UPDATE folders SET parent_id=?1 WHERE id=?2 AND parent_id IS NOT ?1",
+        rusqlite::params![parent, id],
+    )
+    .map_err(|e| format!("[DATABASE] FOLDER_MOVE_FAILED: {}", e))?;
+    Ok(())
+}
+
+/// Put server `id` in `folder` (`None`: top level), last in that folder's
+/// order (as editing its folder does). Only a real change touches the row.
+fn move_server_in(conn: &rusqlite::Connection, id: i32, folder: Option<i32>) -> Result<(), String> {
+    if let Some(f) = folder {
+        require_folder(conn, f)?;
+    }
+    let found: bool = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM servers WHERE id=?1)", [id], |r| r.get(0))
+        .map_err(|e| format!("[DATABASE] SERVER_QUERY_FAILED: {}", e))?;
+    if !found {
+        return Err(format!("[VALIDATION] SERVER_NOT_FOUND: {}", id));
+    }
+    conn.execute(
+        "UPDATE servers SET folder_id=?1, position = COALESCE((SELECT MAX(position) FROM servers WHERE id != ?2 AND folder_id IS ?1), -1) + 1 \
+         WHERE id=?2 AND folder_id IS NOT ?1",
+        rusqlite::params![folder, id],
+    )
+    .map_err(|e| format!("[DATABASE] SERVER_MOVE_FAILED: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn move_folder(state: tauri::State<'_, DbState>, id: i32, parent_id: Option<i32>) -> Result<(), String> {
+    {
+        let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        move_folder_in(conn, id, parent_id)?;
+    }
+    save_vault_internal(&state)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn move_server_to_folder(state: tauri::State<'_, DbState>, id: i32, folder_id: Option<i32>) -> Result<(), String> {
+    {
+        let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        move_server_in(conn, id, folder_id)?;
+    }
     save_vault_internal(&state)?;
     Ok(())
 }
@@ -6451,37 +6598,136 @@ async fn delete_folder(
     id: i32,
 ) -> Result<(), String> {
     // Same orphaned-poller problem as delete_server, one level up: this deletes
-    // every server in the folder, so every one of their monitors has to be
-    // stopped first. Collect the ids while the rows still exist.
+    // every server in the folder and its subfolders, so every one of their
+    // monitors has to be stopped first. Collect the ids while the rows exist.
     let doomed: Vec<i32> = {
         let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
         let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-        let mut stmt = conn
-            .prepare("SELECT id FROM servers WHERE folder_id=?1")
-            .map_err(|e| format!("[DATABASE] FOLDER_SERVERS_QUERY_FAILED: {}", e))?;
-        let rows = stmt
-            .query_map(rusqlite::params![id], |r| r.get::<_, i32>(0))
-            .map_err(|e| format!("[DATABASE] FOLDER_SERVERS_QUERY_FAILED: {}", e))?;
-        rows.filter_map(|r| r.ok()).collect()
+        servers_in_folders(conn, &folder_subtree(conn, id)?)?
     };
     for node_id in doomed {
         monitor::stop_monitor(map.inner().clone(), node_id).await;
     }
 
-    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
-    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-
-    // First, delete all servers in this folder
-    conn.execute("DELETE FROM servers WHERE folder_id=?1", rusqlite::params![id])
-        .map_err(|e| format!("[DATABASE] FOLDER_SERVERS_DELETE_FAILED: {}", e))?;
-
-    // Then delete the folder
-    conn.execute("DELETE FROM folders WHERE id=?1", rusqlite::params![id])
-        .map_err(|e| format!("[DATABASE] FOLDER_DELETE_FAILED: {}", e))?;
-
-    drop(conn_guard);
+    {
+        let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        delete_folder_tree(conn, id)?;
+    }
     save_vault_internal(&state)?;
     Ok(())
+}
+
+fn servers_in_folders(conn: &rusqlite::Connection, folders: &[i32]) -> Result<Vec<i32>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM servers WHERE folder_id=?1")
+        .map_err(|e| format!("[DATABASE] FOLDER_SERVERS_QUERY_FAILED: {}", e))?;
+    let mut out = Vec::new();
+    for folder in folders {
+        let ids = stmt
+            .query_map([folder], |r| r.get::<_, i32>(0))
+            .map_err(|e| format!("[DATABASE] FOLDER_SERVERS_QUERY_FAILED: {}", e))?;
+        out.extend(ids.filter_map(|r| r.ok()));
+    }
+    Ok(out)
+}
+
+/// Delete folder `id`, its subfolders at any depth and every server in them,
+/// all or nothing. Each row goes through the sync delete trigger, so the
+/// deletions reach the profile's other devices.
+fn delete_folder_tree(conn: &rusqlite::Connection, id: i32) -> Result<(), String> {
+    let folders = folder_subtree(conn, id)?;
+    let tx = conn.unchecked_transaction().map_err(|e| format!("[DATABASE] TX_BEGIN: {}", e))?;
+    for folder in &folders {
+        tx.execute("DELETE FROM servers WHERE folder_id=?1", [folder])
+            .map_err(|e| format!("[DATABASE] FOLDER_SERVERS_DELETE_FAILED: {}", e))?;
+    }
+    for folder in &folders {
+        tx.execute("DELETE FROM folders WHERE id=?1", [folder])
+            .map_err(|e| format!("[DATABASE] FOLDER_DELETE_FAILED: {}", e))?;
+    }
+    tx.commit().map_err(|e| format!("[DATABASE] TX_COMMIT: {}", e))
+}
+
+#[cfg(test)]
+mod folder_tree_tests {
+    use super::*;
+
+    // 1 > 2 > 3, and 4 <-> 5 looping (as a merge of two devices' moves can
+    // leave them). Servers 10, 11 in folder 1, 12 in folder 3, 13 at the top.
+    fn setup() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE folders(id INTEGER PRIMARY KEY, name TEXT, parent_id INTEGER);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, folder_id INTEGER, position INTEGER NOT NULL DEFAULT 0,
+                                  FOREIGN KEY(folder_id) REFERENCES folders(id));
+             INSERT INTO folders VALUES (1,'a',NULL),(2,'b',1),(3,'c',2),(4,'d',5),(5,'e',4);
+             INSERT INTO servers VALUES (10,'s10',1,0),(11,'s11',1,1),(12,'s12',3,0),(13,'s13',NULL,0);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn parent(conn: &rusqlite::Connection, id: i32) -> Option<i32> {
+        conn.query_row("SELECT parent_id FROM folders WHERE id=?1", [id], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_subtree_reaches_every_depth_and_survives_a_loop() {
+        let conn = setup();
+        assert_eq!(folder_subtree(&conn, 1).unwrap(), vec![1, 2, 3]);
+        assert_eq!(folder_subtree(&conn, 3).unwrap(), vec![3]);
+        let mut looped = folder_subtree(&conn, 4).unwrap();
+        looped.sort();
+        assert_eq!(looped, vec![4, 5]);
+    }
+
+    #[test]
+    fn a_folder_cannot_go_inside_itself_or_its_subfolders() {
+        let conn = setup();
+        assert!(move_folder_in(&conn, 1, Some(1)).is_err());
+        assert!(move_folder_in(&conn, 1, Some(3)).is_err());
+        assert!(move_folder_in(&conn, 1, Some(99)).is_err(), "no such parent");
+        assert_eq!(parent(&conn, 1), None, "nothing changed");
+        move_folder_in(&conn, 3, None).unwrap();
+        assert_eq!(parent(&conn, 3), None);
+        move_folder_in(&conn, 1, Some(3)).unwrap();
+        assert_eq!(parent(&conn, 1), Some(3), "3 is no longer under 1");
+    }
+
+    #[test]
+    fn a_moved_server_goes_last_in_its_new_folder() {
+        let conn = setup();
+        move_server_in(&conn, 13, Some(1)).unwrap();
+        let (folder, position): (Option<i32>, i64) = conn
+            .query_row("SELECT folder_id, position FROM servers WHERE id=13", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((folder, position), (Some(1), 2));
+        assert!(move_server_in(&conn, 13, Some(99)).is_err(), "no such folder");
+        assert!(move_server_in(&conn, 99, None).is_err(), "no such server");
+        // Back to the top level.
+        move_server_in(&conn, 13, None).unwrap();
+        let folder: Option<i32> = conn.query_row("SELECT folder_id FROM servers WHERE id=13", [], |r| r.get(0)).unwrap();
+        assert_eq!(folder, None);
+    }
+
+    #[test]
+    fn deleting_a_folder_takes_its_subfolders_and_their_servers() {
+        let conn = setup();
+        let mut doomed = servers_in_folders(&conn, &folder_subtree(&conn, 1).unwrap()).unwrap();
+        doomed.sort();
+        assert_eq!(doomed, vec![10, 11, 12]);
+        delete_folder_tree(&conn, 1).unwrap();
+        let folders: Vec<i32> = conn
+            .prepare("SELECT id FROM folders ORDER BY id").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        let servers: Vec<i32> = conn
+            .prepare("SELECT id FROM servers ORDER BY id").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(folders, vec![4, 5]);
+        assert_eq!(servers, vec![13]);
+    }
 }
 
 #[tauri::command]
@@ -16957,7 +17203,7 @@ pub fn run() {
             set_editor_label,
             add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
-            add_folder, rename_folder, delete_folder, get_folders,
+            add_folder, rename_folder, delete_folder, get_folders, move_folder, move_server_to_folder,
             add_command, edit_command, delete_command, get_commands,
             cmd_history_add, cmd_history_list, cmd_history_clear,
             add_note, edit_note, delete_note, get_notes,
