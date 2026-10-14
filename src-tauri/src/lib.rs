@@ -82,6 +82,8 @@ pub struct DbState {
     /// and the write would land in the wrong vault. An Arc so a vault save
     /// on the blocking pool can check it too.
     pub generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Delta sync's memory for the open profile (see `SyncCursor`).
+    sync_cursor: StdMutex<Option<SyncCursor>>,
 }
 
 impl DbState {
@@ -981,8 +983,10 @@ fn collect_local_records(conn: &Connection, key: &[u8; 32], since: &str) -> Resu
 
 /// Merge incoming records into the local vault, Last-Write-Wins per row. Runs
 /// with the auto-stamp triggers suppressed so incoming HLC stamps are written
-/// verbatim, and advances the local clock past everything seen.
-fn apply_remote_records(conn: &Connection, key: &[u8; 32], records: &[SyncRecord], hlc: &hlc::Hlc) -> Result<(), String> {
+/// verbatim, and advances the local clock past everything seen. Returns how
+/// many records it couldn't apply (refused, wouldn't decrypt or parse): delta
+/// sync asks for those again rather than move past them.
+fn apply_remote_records(conn: &Connection, key: &[u8; 32], records: &[SyncRecord], hlc: &hlc::Hlc) -> Result<usize, String> {
     conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
         .map_err(|e| format!("[SYNC] MERGE_ON: {e}"))?;
     let r = apply_remote_inner(conn, key, records, hlc, MERGE_MAX_BYTES);
@@ -1038,7 +1042,7 @@ fn apply_remote_inner(
     records: &[SyncRecord],
     hlc: &hlc::Hlc,
     max_bytes: usize,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     // What the server wouldn't store doesn't get in here either. A stamp that
     // isn't one a clock could have issued, or sits far ahead of now, would win
     // LWW against every later edit and delete of its row; only a broken or
@@ -1128,7 +1132,7 @@ fn apply_remote_inner(
     if skipped > 0 {
         eprintln!("[SYNC] merge committed with {skipped} record(s) skipped");
     }
-    Ok(())
+    Ok(skipped)
 }
 
 fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &SyncRecord, fk_fixups: &mut Vec<FkFixup>) -> Result<(), String> {
@@ -1495,11 +1499,59 @@ mod profile_server_tests {
     }
 }
 
-/// One full per-entity sync of the OPEN profile: collect every local record,
-/// exchange with the server (which LWW-merges + returns its view), merge the
-/// server's records back, and persist. Full-set each call (the dataset is
-/// small — a handful of servers/credentials); a `since` watermark is a later
-/// optimisation, not needed for correctness.
+/// Delta sync's memory for the open profile: how far this device's pushes got
+/// and where the server's last answer left off. In memory only, never saved:
+/// the first sync after a profile opens is a full one (every record up, the
+/// server's whole set down), as before delta sync, which also puts right
+/// anything a delta could have missed. Later syncs push only records stamped
+/// since, and pull only what changed since the server's cursor.
+#[derive(Clone)]
+struct SyncCursor {
+    /// What it belongs to: the profile's opening, the server, the sign-in,
+    /// the partition (personal profile or share) and the key the records are
+    /// sealed with. A cursor for anything else is ignored.
+    generation: u64,
+    server: String,
+    account: [u8; 32],
+    partition: String,
+    key: [u8; 32],
+    /// Local records stamped above this go up in the next push; the server
+    /// took the rest already.
+    pushed_through: String,
+    /// What the server's last answer carried (uuid → stamp). Applied here,
+    /// those rows are stamped above `pushed_through` but the server has them:
+    /// they don't go back up unless they changed here since.
+    server_has: std::collections::HashMap<String, String>,
+    /// The server's cursor: `None` when it has none (an older or self-hosted
+    /// server), or when the last answer couldn't all be applied (a record that
+    /// wouldn't decrypt, a key change waiting), so it is asked for in full.
+    pulled: Option<cloud::DeltaCursor>,
+}
+
+/// The push cursor after a round that collected `sent`: past the latest of
+/// them when they went up, where it was when nothing was pushed (a viewer, a
+/// key change waiting). Stamps are fixed-width HLCs, so they order as text.
+fn pushed_through_after(previous: &str, sent: &[SyncRecord], pushed: bool) -> String {
+    if !pushed {
+        return previous.to_string();
+    }
+    sent.iter().map(|r| r.updated_at.as_str()).chain([previous]).max().unwrap_or("").to_string()
+}
+
+fn key_tag(key: &[u8; 32]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"submarine-sync-key-tag-v1\0");
+    h.update(key);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h.finalize());
+    out
+}
+
+/// One per-entity sync of the OPEN profile: push local records, exchange with
+/// the server (which LWW-merges + returns its view), merge the server's
+/// records back, and persist. A full set the first time after the profile
+/// opens; then only the changes, both ways (`SyncCursor`).
 #[tauri::command]
 async fn sync_now(
     app: tauri::AppHandle,
@@ -1575,6 +1627,35 @@ async fn sync_with(
         }
     }
 
+    let (report, reset) = sync_round(app, db_state, cloud, session, &profile, unlinked, generation, true).await?;
+    if !reset {
+        return Ok(report);
+    }
+    // The server answered a delta request in full: the partition was deleted
+    // and made again (or restored), so it may lack what earlier rounds pushed
+    // as changes only. Push and pull everything now.
+    let (again, _) = sync_round(app, db_state, cloud, session, &profile, unlinked, generation, false).await?;
+    Ok(SyncReport {
+        pushed: report.pushed + again.pushed,
+        pulled: report.pulled + again.pulled,
+        key_change: again.key_change,
+    })
+}
+
+/// One exchange of `sync_with`: from the open profile's `SyncCursor` when
+/// `use_cursor` and there is one, in full otherwise. Also says whether the
+/// server had to answer a delta request in full (its partition was reset).
+#[allow(clippy::too_many_arguments)]
+async fn sync_round(
+    app: &tauri::AppHandle,
+    db_state: &DbState,
+    cloud: &cloud::CloudState,
+    session: &cloud::Session,
+    profile: &str,
+    unlinked: bool,
+    generation: u64,
+    use_cursor: bool,
+) -> Result<(SyncReport, bool), String> {
     // Snapshot the profile DEK + clock and serialise local records, then DROP
     // all locks before the network round-trip (never hold a std Mutex across
     // .await). Per-entity blobs are encrypted with the DEK — NOT the vault
@@ -1582,7 +1663,7 @@ async fn sync_with(
     // hold the DEK via a sealed grant without ever knowing this vault's
     // password. The DEK is created + persisted at profile-open, so it already
     // exists here; get_or_create is a defensive fallback only.
-    let (records, dek, hlc, share, cloud_profile, master_key, salt, key_change) = {
+    let (records, dek, hlc, share, cloud_profile, master_key, salt, key_change, partition, cursor) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         db_state.still_open(generation)?;
@@ -1599,7 +1680,6 @@ async fn sync_with(
             .map(|k| **k);
         let salt = *db_state.salt.lock().map_err(|_| "[STATE] LOCK_SALT")?;
         let (dek, _created) = get_or_create_dek(conn)?;
-        let records = collect_local_records(conn, &dek, "")?;
         // If this profile is shared, sync_meta carries its share_id + my role;
         // that routes the exchange to /shares/sync instead of personal /sync.
         let share_id: Option<String> = conn
@@ -1613,7 +1693,7 @@ async fn sync_with(
         // name in sync_meta; fall back to the local name for everything else.
         let cloud_profile: String = conn
             .query_row("SELECT value FROM sync_meta WHERE key='cloud_profile'", [], |r| r.get(0))
-            .unwrap_or_else(|_| profile.clone());
+            .unwrap_or_else(|_| profile.to_string());
         // Fail CLOSED on a missing role. The push gate below is `role != "user"`,
         // so defaulting to an empty string would have granted write access to a
         // profile whose role row went missing — the least safe reading of "we
@@ -1623,7 +1703,34 @@ async fn sync_with(
         let key_change = conn
             .query_row("SELECT 1 FROM sync_meta WHERE key='pending_dek'", [], |_| Ok(()))
             .is_ok();
-        (records, dek, hlc, share, cloud_profile, master_key, salt, key_change)
+        // The delta cursor, if it is for exactly this: the same opening of the
+        // profile, server, sign-in, partition and key.
+        let partition = match &share {
+            Some((sid, _)) => format!("share:{sid}"),
+            None => format!("profile:{cloud_profile}"),
+        };
+        let cursor: Option<SyncCursor> = if use_cursor {
+            db_state
+                .sync_cursor
+                .lock()
+                .map_err(|_| "[STATE] LOCK_SYNC_CURSOR")?
+                .as_ref()
+                .filter(|c| {
+                    c.generation == generation
+                        && c.server == session.base()
+                        && c.account == session.account_tag()
+                        && c.partition == partition
+                        && c.key == key_tag(&dek)
+                })
+                .cloned()
+        } else {
+            None
+        };
+        // Only what changed since the last push the server took; everything
+        // without a cursor.
+        let since = cursor.as_ref().map(|c| c.pushed_through.as_str()).unwrap_or("");
+        let records = collect_local_records(conn, &dek, since)?;
+        (records, dek, hlc, share, cloud_profile, master_key, salt, key_change, partition, cursor)
     };
 
     // Shared profile → /shares/sync (role-gated). A viewer ('user') pushes
@@ -1631,40 +1738,84 @@ async fn sync_with(
     // does a device whose share has a new key waiting for the user's OK: no
     // one else can read a push sealed with the old key, and the new one may
     // not be the owner's.
-    let (remote, pushed) = if let Some((share_id, role)) = &share {
-        let to_push: &[SyncRecord] = if role == "user" || key_change { &[] } else { &records };
-        let remote = cloud::shared_sync_exchange(app, cloud, session, share_id, "", to_push).await?;
-        (remote, to_push.len())
+    let pull_from = cursor.as_ref().and_then(|c| c.pulled.clone());
+    // Not what the server just sent and that is unchanged here: it has it.
+    let to_send: Vec<SyncRecord> = match &cursor {
+        Some(c) if !c.server_has.is_empty() => records
+            .iter()
+            .filter(|r| c.server_has.get(&r.uuid) != Some(&r.updated_at))
+            .cloned()
+            .collect(),
+        _ => records.clone(),
+    };
+    let (exchange, pushed, pushes) = if let Some((share_id, role)) = &share {
+        let pushes = !(role == "user" || key_change);
+        let to_push: &[SyncRecord] = if pushes { &to_send } else { &[] };
+        let exchange =
+            cloud::shared_sync_exchange_from(app, cloud, session, share_id, "", to_push, pull_from.as_ref()).await?;
+        (exchange, to_push.len(), pushes)
     } else {
         // Personal profile: publish (or refresh) the DEK escrow alongside the
         // data so any device that knows this profile's password can bring it
         // down. Sealed under the profile's OWN master key — always-on, no
-        // sharing identity or separate recovery secret required.
-        let mut to_push = records.clone();
-        if let (Some(mk), Some(salt)) = (master_key, salt) {
-            to_push.push(build_pw_escrow_record(&mk, &salt, &dek)?);
+        // sharing identity or separate recovery secret required. With every
+        // full sync; a delta round only carries what changed.
+        let mut to_push = to_send;
+        if cursor.is_none() {
+            if let (Some(mk), Some(salt)) = (master_key, salt) {
+                to_push.push(build_pw_escrow_record(&mk, &salt, &dek)?);
+            }
         }
         // Send the local display name so the server can label this partition —
         // essential once `cloud_profile` is an opaque UUID for new profiles. For
         // legacy `main` the name equals the partition, so it's a harmless echo.
-        let remote =
-            cloud::sync_exchange(app, cloud, session, &cloud_profile, "", &to_push, Some(profile.as_str())).await?;
-        (remote, to_push.len())
+        let exchange =
+            cloud::sync_exchange_from(app, cloud, session, &cloud_profile, "", &to_push, Some(profile), pull_from.as_ref())
+                .await?;
+        (exchange, to_push.len(), true)
     };
-    let pulled = remote.len();
+    let pulled = exchange.records.len();
+    // The server couldn't answer from the cursor: start over (`sync_with`).
+    let reset = exchange.full && pull_from.is_some();
 
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         db_state.still_open(generation)?;
-        apply_remote_records(conn, &dek, &remote, &hlc)?;
+        let skipped = apply_remote_records(conn, &dek, &exchange.records, &hlc)?;
         if unlinked {
             link_profile_server(conn, session.base())?;
         }
+        // Where the next round starts. The push cursor moves past everything
+        // this round collected: what it sent, and what the server already had
+        // from its last answer. A row edited after the collection is stamped
+        // above all of it (the clock had seen every collected stamp), so it
+        // goes next time. The server's cursor is kept only when its whole
+        // answer landed here, so what didn't is asked for again in full.
+        //
+        // Only with a server that keeps cursors: one that doesn't (an older
+        // or a self-hosted server) can't say when it lost what it was sent,
+        // so every round with it stays a full one, both ways, as before.
+        let previous = cursor.as_ref().map(|c| c.pushed_through.as_str()).unwrap_or("");
+        let pushed_through = pushed_through_after(previous, &records, pushes);
+        let server_has = exchange.records.iter().map(|r| (r.uuid.clone(), r.updated_at.clone())).collect();
+        *db_state.sync_cursor.lock().map_err(|_| "[STATE] LOCK_SYNC_CURSOR")? = match exchange.cursor {
+            Some(server_cursor) if !reset => Some(SyncCursor {
+                generation,
+                server: session.base().to_string(),
+                account: session.account_tag(),
+                partition,
+                key: key_tag(&dek),
+                pushed_through,
+                server_has,
+                pulled: (skipped == 0 && !key_change).then_some(server_cursor),
+            }),
+            _ => None,
+        };
     }
     // Persist the merged vault so the applied changes survive a restart.
     save_vault_async(db_state).await?;
-    Ok(SyncReport { pushed, pulled, key_change })
+    Ok((SyncReport { pushed, pulled, key_change }, reset))
 }
 
 #[derive(serde::Serialize)]
@@ -3527,6 +3678,57 @@ mod sync_engine_tests {
         assert_eq!(folder, "f", "server.folder_id must resolve to the right folder on B");
         let key_name: String = b.query_row("SELECT (SELECT name FROM ssh_keys k WHERE k.id=c.key_id) FROM credentials c WHERE c.name='c'", [], |r| r.get(0)).unwrap();
         assert_eq!(key_name, "k", "credential.key_id must resolve to the right ssh_key on B");
+    }
+
+    // Delta sync, the push side: after a push, collecting from the push
+    // cursor yields exactly what changed since — an edit, a new row, a
+    // deletion's tombstone — and nothing once all of it went up.
+    #[test]
+    fn a_delta_push_carries_only_what_changed() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO folders(name) VALUES('f1')", []).unwrap();
+        a.execute("INSERT INTO folders(name) VALUES('f2')", []).unwrap();
+        a.execute("INSERT INTO servers(name, host, port) VALUES('s1','h',22)", []).unwrap();
+        let first = collect_local_records(&a, &KEY, "").unwrap();
+        assert_eq!(first.len(), 3);
+        let cursor = pushed_through_after("", &first, true);
+        assert!(collect_local_records(&a, &KEY, &cursor).unwrap().is_empty(), "nothing new");
+
+        a.execute("UPDATE folders SET name='f1b' WHERE name='f1'", []).unwrap();
+        a.execute("INSERT INTO notes(title, body) VALUES('n','b')", []).unwrap();
+        a.execute("DELETE FROM folders WHERE name='f2'", []).unwrap();
+        let delta = collect_local_records(&a, &KEY, &cursor).unwrap();
+        let mut kinds: Vec<(String, bool)> = delta.iter().map(|r| (r.entity_type.clone(), r.deleted)).collect();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            vec![("folders".into(), false), ("folders".into(), true), ("notes".into(), false)],
+            "the edit, the new row and the tombstone"
+        );
+        let cursor = pushed_through_after(&cursor, &delta, true);
+        assert!(collect_local_records(&a, &KEY, &cursor).unwrap().is_empty());
+        // Nothing pushed (a viewer, a key change waiting): the cursor stays.
+        a.execute("UPDATE servers SET host='h2'", []).unwrap();
+        let held = collect_local_records(&a, &KEY, &cursor).unwrap();
+        assert_eq!(pushed_through_after(&cursor, &held, false), cursor);
+        assert_eq!(collect_local_records(&a, &KEY, &cursor).unwrap().len(), 1, "so it goes next time");
+    }
+
+    // Delta sync, the pull side: what couldn't be applied is counted, so the
+    // server's cursor isn't kept and the records come again in full.
+    #[test]
+    fn records_that_cannot_be_applied_are_counted() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO folders(name) VALUES('ok')", []).unwrap();
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = device("B");
+        assert_eq!(apply_remote_records(&b, &KEY, &recs, &hb).unwrap(), 0);
+        // Sealed with another key (a key change this device hasn't taken yet).
+        let other = collect_local_records(&a, &[9u8; 32], "").unwrap();
+        recs[0].uuid = "0123456789abcdef0123456789abcdef".into();
+        recs[0].blob = other[0].blob.clone();
+        let (c, hc) = device("C");
+        assert_eq!(apply_remote_records(&c, &KEY, &recs, &hc).unwrap(), 1);
     }
 
     // Nested folders: a folder's parent lands on the right folder on another
@@ -17159,7 +17361,7 @@ pub fn run() {
     // installer AND the Android APK. Capability is granted in default.json.
     let builder = builder.plugin(tauri_plugin_opener::init());
     let builder = builder
-        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)) })
+        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None) })
         .manage(SshState::new())
         // Docker live-log stream registry — keyed by frontend-issued stream id,
         // values are tokio AbortHandles so the user can stop tailing on demand.

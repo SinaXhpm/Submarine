@@ -290,6 +290,20 @@ impl Session {
     fn http(&self) -> &reqwest::Client {
         &self.endpoint.http
     }
+
+    /// A fingerprint of this sign-in (server and token), to tell sign-ins
+    /// apart without keeping another copy of the token.
+    pub fn account_tag(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"submarine-session-tag-v1\0");
+        h.update(self.endpoint.base.as_bytes());
+        h.update(b"\0");
+        h.update(self.token.as_bytes());
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&h.finalize());
+        out
+    }
 }
 
 /// Held in Tauri's state. Everything that has to change together sits under
@@ -923,17 +937,61 @@ struct SyncExchangeReq<'a> {
     // stored label with nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<&'a str>,
+    // Delta sync: the cursor from the server's last answer for this partition.
+    // Omitted for a full exchange (and so by released apps).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    since_rev: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<&'a str>,
 }
 #[derive(Deserialize)]
 struct SyncExchangeResp {
     records: Vec<crate::SyncRecord>,
+    #[serde(default)]
+    rev: Option<u64>,
+    #[serde(default)]
+    epoch: Option<String>,
+    #[serde(default)]
+    full: bool,
+}
+
+/// Where a delta exchange starts: the epoch and revision of the server's last
+/// answer for a partition. The server then sends only the records changed
+/// since, not the ones this exchange pushes, plus its copy of anything pushed
+/// that it already held newer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeltaCursor {
+    pub epoch: String,
+    pub rev: u64,
+}
+
+/// What a sync exchange brought back.
+pub struct Exchange {
+    pub records: Vec<crate::SyncRecord>,
+    /// The partition's cursor after this exchange; `None` from a server
+    /// without delta sync (an older or self-hosted one).
+    pub cursor: Option<DeltaCursor>,
+    /// The server couldn't answer from the cursor sent (the partition was
+    /// deleted and made again, say): this is everything it holds, and what was
+    /// pushed as changes only may not be all it should have.
+    pub full: bool,
+}
+
+impl SyncExchangeResp {
+    fn into_exchange(self) -> Exchange {
+        let cursor = match (self.rev, self.epoch) {
+            (Some(rev), Some(epoch)) if !epoch.is_empty() => Some(DeltaCursor { epoch, rev }),
+            _ => None,
+        };
+        Exchange { records: self.records, cursor, full: self.full }
+    }
 }
 
 /// One per-entity sync round-trip: push our changed records and receive the
 /// server's records changed since `since`. The server Last-Write-Wins-merges
 /// them by `updated_at` WITHOUT decrypting the blobs — zero-knowledge holds.
 /// `name` is the profile's display label (see the field doc); pass `None` for
-/// read-only exchanges (dry runs, restore peeks).
+/// read-only exchanges (dry runs, restore peeks). Always a full exchange.
 pub async fn sync_exchange(
     app: &tauri::AppHandle,
     state: &CloudState,
@@ -943,12 +1001,35 @@ pub async fn sync_exchange(
     records: &[crate::SyncRecord],
     name: Option<&str>,
 ) -> Result<Vec<crate::SyncRecord>, String> {
-    let resp = post_json_authed(app, state, session, "/sync", &SyncExchangeReq { profile, since, records, name }).await?;
+    Ok(sync_exchange_from(app, state, session, profile, since, records, name, None).await?.records)
+}
+
+/// `sync_exchange`, as a delta from `cursor` when there is one.
+#[allow(clippy::too_many_arguments)]
+pub async fn sync_exchange_from(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    session: &Session,
+    profile: &str,
+    since: &str,
+    records: &[crate::SyncRecord],
+    name: Option<&str>,
+    cursor: Option<&DeltaCursor>,
+) -> Result<Exchange, String> {
+    let req = SyncExchangeReq {
+        profile,
+        since,
+        records,
+        name,
+        since_rev: cursor.map(|c| c.rev),
+        epoch: cursor.map(|c| c.epoch.as_str()),
+    };
+    let resp = post_json_authed(app, state, session, "/sync", &req).await?;
     let body: SyncExchangeResp = resp
         .json()
         .await
         .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
-    Ok(body.records)
+    Ok(body.into_exchange())
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,12 +1118,16 @@ struct SharedSyncReq<'a> {
     share_id: &'a str,
     since: &'a str,
     records: &'a [crate::SyncRecord],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    since_rev: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<&'a str>,
 }
 
 /// Per-entity sync of a SHARED profile (keyed by share_id). Same LWW exchange
 /// as `sync_exchange`, but the server gates it by membership + role: viewers
 /// may only pull (the caller must send an empty `records`), owner/editor push.
-#[allow(dead_code)]
+/// Always a full exchange.
 pub async fn shared_sync_exchange(
     app: &tauri::AppHandle,
     state: &CloudState,
@@ -1051,12 +1136,32 @@ pub async fn shared_sync_exchange(
     since: &str,
     records: &[crate::SyncRecord],
 ) -> Result<Vec<crate::SyncRecord>, String> {
-    let resp = post_json_authed(app, state, session, "/shares/sync", &SharedSyncReq { share_id, since, records }).await?;
+    Ok(shared_sync_exchange_from(app, state, session, share_id, since, records, None).await?.records)
+}
+
+/// `shared_sync_exchange`, as a delta from `cursor` when there is one.
+pub async fn shared_sync_exchange_from(
+    app: &tauri::AppHandle,
+    state: &CloudState,
+    session: &Session,
+    share_id: &str,
+    since: &str,
+    records: &[crate::SyncRecord],
+    cursor: Option<&DeltaCursor>,
+) -> Result<Exchange, String> {
+    let req = SharedSyncReq {
+        share_id,
+        since,
+        records,
+        since_rev: cursor.map(|c| c.rev),
+        epoch: cursor.map(|c| c.epoch.as_str()),
+    };
+    let resp = post_json_authed(app, state, session, "/shares/sync", &req).await?;
     let body: SyncExchangeResp = resp
         .json()
         .await
         .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
-    Ok(body.records)
+    Ok(body.into_exchange())
 }
 
 // ---------------------------------------------------------------------------
