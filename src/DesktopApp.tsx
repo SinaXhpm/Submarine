@@ -637,6 +637,18 @@ function DesktopApp() {
     } catch (e) { addLog(`DELETE_EXCEPTION: ${e}`, "error"); }
   };
 
+  const createFolder = async (name: string) => {
+    try {
+      await invoke("add_folder", { name, parentId: null });
+      await refreshFolders();
+      bumpSync();
+      addLog(`Folder "${name}" created.`, "success");
+    } catch (e) {
+      addLog(`FOLDER_ERROR: ${e}`, "error");
+      throw e; // NodeGrid keeps the name input open for a retry
+    }
+  };
+
   const renameFolder = async (id: number, name: string) => {
     try {
       await invoke("rename_folder", { id, name });
@@ -1685,6 +1697,7 @@ function DesktopApp() {
                 onRemoveServer={removeServer}
                 onRemoveFolder={removeFolder}
                 onRenameFolder={renameFolder}
+                onCreateFolder={createFolder}
                 onCloneServer={async (id: number) => {
                   try { await invoke("clone_server", { id }); refreshServers(); bumpSync(); addLog("Node cloned.", "success"); }
                   catch (e) { addLog(`CLONE_ERROR: ${e}`, "error"); }

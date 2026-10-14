@@ -1,11 +1,11 @@
-import { Search, Plus, Server, Globe, Folder, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound } from "lucide-react";
+import { Search, Plus, Server, Globe, Folder, FolderPlus, ChevronLeft, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound } from "lucide-react";
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
 import { HeldReview } from "./HeldReview";
 import { HeldDeletions } from "./HeldDeletions";
 
-export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, heldDeletions, onResolveDeletions, isMobile }: any) => {
+export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCreateFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, heldDeletions, onResolveDeletions, isMobile }: any) => {
   const [search, setSearch] = useState("");
   // Changes someone else made in a shared profile that this device holds
   // back until its user allows them (see HeldReview).
@@ -58,6 +58,18 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
       try { await onRenameFolder(renaming.id, next); } catch { /* parent surfaces error */ }
     }
     setRenaming(null);
+  };
+
+  // "Add folder" in the toolbar: the name of the folder being made, typed
+  // into a draft card at the head of the grid. null when none is open.
+  const [newFolder, setNewFolder] = useState<string | null>(null);
+  const commitNewFolder = async () => {
+    const name = (newFolder ?? "").trim();
+    if (!name || !onCreateFolder) { setNewFolder(null); return; }
+    try {
+      await onCreateFolder(name);
+      setNewFolder(null);
+    } catch { /* parent logs it; the input stays open for a retry */ }
   };
 
   const filteredServers = servers?.filter((s: any) =>
@@ -584,6 +596,15 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                 >
                   <Plus size={13} /> Add server
                 </button>
+                {onCreateFolder && (
+                  <button
+                    onClick={() => setNewFolder((v) => v ?? "")}
+                    title="Group servers in a folder"
+                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-primary/10 border border-primary/25 text-primary text-[11px] font-bold uppercase tracking-wider hover:bg-primary/20 transition-colors"
+                  >
+                    <FolderPlus size={13} /> Add folder
+                  </button>
+                )}
                 {onQuickConnect && (
                   <button
                     onClick={onQuickConnect}
@@ -597,6 +618,48 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
           <div ref={gridRef} className={`grid ${isMobile ? 'grid-cols-1' : 'grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'} gap-3`}>
 
+            {/* The folder being made with "Add folder": a card to name it.
+                Plain JSX, not a nested component, so typing keeps focus. */}
+            {!isSearching && activeFolderId === null && newFolder !== null && (
+              <div className="relative flex items-center gap-3 h-16 pl-3.5 pr-2 rounded-xl bg-gradient-to-br from-[#1c1c22] to-[#141418] border border-primary/40 overflow-hidden">
+                <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[3px] bg-primary" />
+                <div className="w-9 h-9 rounded-lg bg-black/40 border border-white/10 flex items-center justify-center shadow-inner shrink-0">
+                  <FolderPlus size={16} className="text-primary" />
+                </div>
+                <input
+                  autoFocus
+                  aria-label="New folder name"
+                  placeholder="Folder name…"
+                  value={newFolder}
+                  onChange={(e) => setNewFolder(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); commitNewFolder(); }
+                    if (e.key === "Escape") { e.preventDefault(); setNewFolder(null); }
+                  }}
+                  className="min-w-0 flex-1 h-7 px-2 bg-black/40 border border-primary/40 rounded-lg text-[13px] font-bold text-white outline-none placeholder:text-zinc-600 placeholder:font-normal"
+                />
+                <div className="flex items-center gap-0.5 shrink-0">
+                  <button
+                    onClick={commitNewFolder}
+                    disabled={!newFolder.trim()}
+                    title="Create folder"
+                    aria-label="Create folder"
+                    className="p-1.5 text-emerald-400 hover:bg-white/10 rounded-lg disabled:opacity-40 disabled:hover:bg-transparent"
+                  >
+                    <Check size={14} />
+                  </button>
+                  <button
+                    onClick={() => setNewFolder(null)}
+                    title="Cancel"
+                    aria-label="Cancel new folder"
+                    className="p-1.5 text-zinc-400 hover:text-rose-400 hover:bg-white/10 rounded-lg"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Render Folders (only in root, and when not searching) */}
             {!isSearching && activeFolderId === null && folders?.map((f: any) => (
               <FolderCard key={`folder-${f.id}`} f={f} />
@@ -608,7 +671,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             {/* Empty Folder State */}
             {!isSearching && activeFolderId !== null && displayedServers.length === 0 && (
               <div className="col-span-full py-10 text-center text-zinc-600 text-xs italic">
-                Nothing in this folder yet.
+                Nothing in this folder yet. Add a server here, or move one in from its Edit panel (Folder).
               </div>
             )}
 
