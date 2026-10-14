@@ -10,6 +10,9 @@
 //! forwarding is never requested, and agent channels a server tries to open are
 //! refused (`ClientHandler::server_channel_open_agent_forward`).
 //!
+//! Which agent: `IdentityAgent` in `~/.ssh/config` when it applies to the host
+//! (see `find_agent_for`), otherwise the first one found (`find_agent`).
+//!
 //! The node's own credentials are tried exactly as before. The agent is used
 //! only (a) where a passphrase or password would otherwise have to be asked
 //! for, and (b) after the node's own key was turned down. See the callers in
@@ -87,7 +90,7 @@ impl AgentSession {
 /// Windows' own OpenSSH client honours it too), then the Windows OpenSSH agent
 /// service, then Pageant. The first that answers with a key is used.
 #[cfg(windows)]
-pub(crate) async fn find_agent() -> Option<AgentSession> {
+async fn find_agent() -> Option<AgentSession> {
     if let Ok(sock) = std::env::var("SSH_AUTH_SOCK") {
         if is_pipe_path(&sock) {
             if let Some(agent) = named_pipe(sock.trim(), "the agent at SSH_AUTH_SOCK").await {
@@ -127,7 +130,7 @@ fn is_pipe_path(path: &str) -> bool {
 /// Look for an ssh-agent on this device that holds at least one key: the one
 /// `SSH_AUTH_SOCK` points at.
 #[cfg(unix)]
-pub(crate) async fn find_agent() -> Option<AgentSession> {
+async fn find_agent() -> Option<AgentSession> {
     let client = tokio::time::timeout(AGENT_LOOKUP_TIMEOUT, AgentClient::connect_env())
         .await
         .ok()?
@@ -136,8 +139,73 @@ pub(crate) async fn find_agent() -> Option<AgentSession> {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(crate) async fn find_agent() -> Option<AgentSession> {
+async fn find_agent() -> Option<AgentSession> {
     None
+}
+
+/// The source name for an agent `IdentityAgent` chose, in the connect log.
+const IDENTITY_AGENT_SOURCE: &str = "the agent set by IdentityAgent";
+
+/// The agent for a connection to a host known by `names` (the node's address
+/// and name). If `IdentityAgent` in `~/.ssh/config` applies, it decides, as in
+/// OpenSSH: only that agent is used, or none. Otherwise the usual lookup
+/// (`find_agent`). `log` explains when the config ruled an agent out.
+pub(crate) async fn find_agent_for(names: Vec<String>, mut log: impl FnMut(String)) -> Option<AgentSession> {
+    use crate::ssh_config::{identity_agent, IdentityAgent};
+    match identity_agent(names).await {
+        None => find_agent().await,
+        Some(IdentityAgent::Disabled) => {
+            log("~/.ssh/config sets IdentityAgent none for this host, so no ssh-agent is used.".into());
+            None
+        }
+        Some(IdentityAgent::Unusable(value, why)) => {
+            log(format!(
+                "IdentityAgent {value} in ~/.ssh/config can't be used ({why}), so no ssh-agent is used."
+            ));
+            None
+        }
+        Some(IdentityAgent::At(path)) => match agent_at(&path).await {
+            Ok(agent) => Some(agent),
+            Err(why) => {
+                log(format!("The agent IdentityAgent in ~/.ssh/config names ({path}) {why}, so no ssh-agent is used."));
+                None
+            }
+        },
+    }
+}
+
+/// Connect to the agent at `path` and list its keys.
+async fn agent_at(path: &str) -> Result<AgentSession, String> {
+    let client = connect_at(path).await?;
+    AgentSession::new(client, IDENTITY_AGENT_SOURCE)
+        .await
+        .ok_or_else(|| "holds no keys or didn't answer".to_string())
+}
+
+#[cfg(windows)]
+async fn connect_at(path: &str) -> Result<AgentConn, String> {
+    if !is_pipe_path(path) {
+        return Err("isn't a named pipe (\\\\.\\pipe\\…)".into());
+    }
+    let client = tokio::time::timeout(AGENT_LOOKUP_TIMEOUT, AgentClient::connect_named_pipe(path.trim()))
+        .await
+        .map_err(|_| "didn't answer".to_string())?
+        .map_err(|e| format!("couldn't be opened ({e})"))?;
+    Ok(client.dynamic())
+}
+
+#[cfg(unix)]
+async fn connect_at(path: &str) -> Result<AgentConn, String> {
+    let client = tokio::time::timeout(AGENT_LOOKUP_TIMEOUT, AgentClient::connect_uds(path))
+        .await
+        .map_err(|_| "didn't answer".to_string())?
+        .map_err(|e| format!("couldn't be opened ({e})"))?;
+    Ok(client.dynamic())
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn connect_at(_path: &str) -> Result<AgentConn, String> {
+    Err("isn't supported on this platform".into())
 }
 
 /// The public half of a node's key file, without its passphrase: an
