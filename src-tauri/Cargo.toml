@@ -171,3 +171,8 @@ fontdb = "0.24"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 gdk = "0.18"
+
+[dev-dependencies]
+# Tests only: a one-connection listener for russh's in-memory ssh-agent server
+# (agent_auth tests). Already in the dependency tree through russh.
+futures = "0.3"

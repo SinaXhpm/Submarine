@@ -29,6 +29,7 @@ mod webkit_sandbox;
 mod sftp_remove;
 mod archive;
 mod approvals;
+mod agent_auth;
 #[cfg(test)]
 mod ssh_test_server;
 use ssh_manager::SshState;
@@ -7053,6 +7054,90 @@ struct SecretPromptCtx<'a> {
     /// own "Password:" box, i.e. ask again for what the user just declined.
     /// Atomic because the context is borrowed across awaits in a spawned task.
     cancelled: std::sync::atomic::AtomicBool,
+    /// The ssh-agent for this login (see `AgentSlot`).
+    agent: tokio::sync::Mutex<AgentSlot>,
+    /// Set when an agent signature failed or timed out after the server had
+    /// accepted the key. russh's session then waits for that signature and
+    /// drops everything else, so no other method may run on it — the
+    /// keyboard-interactive fallback included.
+    session_unusable: std::sync::atomic::AtomicBool,
+}
+
+/// The ssh-agent for one login. Looked up the first time a step wants it, so a
+/// login that works without one never touches an agent, and let go once the
+/// login is over.
+#[derive(Default)]
+struct AgentSlot {
+    looked: bool,
+    agent: Option<agent_auth::AgentSession>,
+}
+
+/// Whether an ssh-agent holding at least one key is running on this device.
+/// Looks only once per login.
+async fn agent_available(ctx: &SecretPromptCtx<'_>) -> bool {
+    let mut slot = ctx.agent.lock().await;
+    if !slot.looked {
+        slot.looked = true;
+        slot.agent = agent_auth::find_agent().await;
+        if let Some(agent) = &slot.agent {
+            let n = agent.key_count();
+            ctx.log(
+                &format!("Found {} holding {} key{}.", agent.source, n, if n == 1 { "" } else { "s" }),
+                "info",
+            );
+        }
+    }
+    slot.agent.is_some()
+}
+
+/// Offer ssh-agent keys for this login (see `agent_auth`). `Ok(None)` when no
+/// agent with a key is running. An `Err` means an agent signature failed after
+/// the server had accepted the key: the session can't run anything else, so
+/// `session_unusable` is set and the caller must stop.
+async fn try_agent_keys<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    which: agent_auth::Offer<'_>,
+    already_offered: Option<&russh::keys::PublicKey>,
+    ctx: &SecretPromptCtx<'_>,
+) -> Result<Option<agent_auth::AgentOutcome>, russh::Error> {
+    if !agent_available(ctx).await {
+        return Ok(None);
+    }
+    let mut slot = ctx.agent.lock().await;
+    let Some(agent) = slot.agent.as_mut() else {
+        return Ok(None);
+    };
+    if let Some(key) = already_offered {
+        agent.mark_offered(key);
+    }
+    match agent_auth::offer_keys(session, user, agent, which, |m| ctx.log(&m, "info")).await {
+        Ok(outcome) => Ok(Some(outcome)),
+        Err(e) => {
+            ctx.session_unusable.store(true, std::sync::atomic::Ordering::Relaxed);
+            Err(e)
+        }
+    }
+}
+
+/// The agent's keys not offered yet, after the node's own credentials didn't
+/// log in. `Ok(true)` once logged in; a partial success leaves the second
+/// factor to the keyboard-interactive fallback, as with the node's own key.
+async fn agent_keys_after<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    already_offered: Option<&russh::keys::PublicKey>,
+    ctx: &SecretPromptCtx<'_>,
+) -> Result<bool, russh::Error> {
+    Ok(matches!(
+        try_agent_keys(session, user, agent_auth::Offer::Rest, already_offered, ctx).await?,
+        Some(agent_auth::AgentOutcome::Authenticated)
+    ))
+}
+
+/// Let the ssh-agent go once the login is over.
+async fn release_agent(ctx: &SecretPromptCtx<'_>) {
+    ctx.agent.lock().await.agent = None;
 }
 
 impl SecretPromptCtx<'_> {
@@ -7207,9 +7292,15 @@ async fn authenticate_password_prompting<H: russh::client::Handler>(
     let mut prompts_used: u32 = 0;
 
     if nothing_in_hand {
-        if !ctx.allow_prompt {
+        // An ssh-agent on this device may log in without asking for anything.
+        // Looking for one is local and quick, and only happens here, where the
+        // alternative is a prompt (or, on a connection that can't prompt,
+        // giving up). Without an agent this is exactly as before.
+        let agent_ready = agent_available(ctx).await;
+        if !ctx.allow_prompt && !agent_ready {
             return Ok(false);
         }
+        let publickey_offered;
         match session.authenticate_none(user).await? {
             russh::client::AuthResult::Success => return Ok(true),
             // russh also reports a dropped connection as a Failure (with no
@@ -7219,7 +7310,22 @@ async fn authenticate_password_prompting<H: russh::client::Handler>(
             }
             russh::client::AuthResult::Failure { remaining_methods, .. } => {
                 password_offered = remaining_methods.contains(&russh::MethodKind::Password);
+                publickey_offered = remaining_methods.contains(&russh::MethodKind::PublicKey);
             }
+        }
+        if agent_ready && publickey_offered {
+            match try_agent_keys(session, user, agent_auth::Offer::Rest, None, ctx).await? {
+                Some(agent_auth::AgentOutcome::Authenticated) => return Ok(true),
+                // The key counted; finish with a password if that's what the
+                // server wants next.
+                Some(agent_auth::AgentOutcome::PartialSuccess { remaining }) => {
+                    password_offered = remaining.contains(&russh::MethodKind::Password);
+                }
+                _ => {}
+            }
+        }
+        if !ctx.allow_prompt {
+            return Ok(false);
         }
     }
 
@@ -7311,6 +7417,7 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
     let mut attempt = candidates.next();
     let mut rejected = false;
     let mut prompts_used: u32 = 0;
+    let mut agent_checked = false;
 
     loop {
         match decode_private_key(private_key, attempt.as_ref().map(|(p, _)| p.as_str())) {
@@ -7320,7 +7427,22 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
                         cache_store_secret(ctx.cache, ctx.base, slot, passphrase).await;
                     }
                 }
-                return ssh_manager::authenticate_with_key(session, user, keypair).await;
+                let own_key = keypair.public_key().clone();
+                return match ssh_manager::authenticate_with_key_result(session, user, keypair).await? {
+                    russh::client::AuthResult::Success => Ok(true),
+                    // The node's key was turned down. If the server still
+                    // takes public keys, try the other keys an ssh-agent on
+                    // this device holds.
+                    russh::client::AuthResult::Failure { remaining_methods, partial_success: false }
+                        if !session.is_closed() && remaining_methods.contains(&russh::MethodKind::PublicKey) =>
+                    {
+                        agent_keys_after(session, user, Some(&own_key), ctx).await
+                    }
+                    // Accepted with a second factor to follow (the
+                    // keyboard-interactive fallback takes it), public keys no
+                    // longer offered, or the connection dropped: as before.
+                    russh::client::AuthResult::Failure { .. } => Ok(false),
+                };
             }
             Err(KeyDecodeError::NeedsPassphrase) => {
                 if let Some((_, source)) = &attempt {
@@ -7332,6 +7454,29 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
                 if let Some(next) = candidates.next() {
                     attempt = Some(next);
                     continue;
+                }
+                // Before asking for the passphrase (or giving up for want of
+                // one): an ssh-agent on this device may hold this very key
+                // unlocked. Checked once, ahead of the first prompt.
+                if !agent_checked {
+                    agent_checked = true;
+                    if let Some(own_key) = agent_auth::key_file_public_key(private_key) {
+                        match try_agent_keys(session, user, agent_auth::Offer::Only(&own_key), None, ctx).await? {
+                            Some(agent_auth::AgentOutcome::Authenticated) => return Ok(true),
+                            Some(agent_auth::AgentOutcome::PartialSuccess { .. }) => return Ok(false),
+                            Some(agent_auth::AgentOutcome::NotAccepted) => {
+                                // The server turned this key down; unlocking the
+                                // file would only offer it again. Try the agent's
+                                // other keys instead of asking.
+                                ctx.log(
+                                    "The server didn't accept this key (checked through the ssh-agent), so its passphrase isn't asked for.",
+                                    "info",
+                                );
+                                return agent_keys_after(session, user, None, ctx).await;
+                            }
+                            Some(agent_auth::AgentOutcome::NothingToOffer) | None => {}
+                        }
+                    }
                 }
                 if !ctx.allow_prompt || prompts_used >= MAX_SECRET_PROMPTS {
                     ctx.log("Key is passphrase-protected and no correct passphrase was supplied.", "error");
@@ -8784,6 +8929,8 @@ async fn connect_jump_host(
         allow_prompt,
         attempt,
         cancelled: std::sync::atomic::AtomicBool::new(false),
+        agent: Default::default(),
+        session_unusable: std::sync::atomic::AtomicBool::new(false),
     };
     let (effective_user, user_prompted, login_cancelled) =
         match resolve_login_user(&saved_user, &host, SecretSlot::JumpUsername, &prompt_ctx).await {
@@ -8821,14 +8968,19 @@ async fn connect_jump_host(
         .await
     };
 
-    // A declined prompt ends the hop — don't fall back to asking again.
-    if !matches!(auth_res, Ok(true)) && !prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+    // A declined prompt ends the hop — don't fall back to asking again. Nor
+    // after an agent signature failed: the session can't run anything else.
+    if !matches!(auth_res, Ok(true))
+        && !prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed)
+        && !prompt_ctx.session_unusable.load(std::sync::atomic::Ordering::Relaxed)
+    {
         if let Some(kbi_res) =
             run_keyboard_interactive(&mut session, &effective_user, app, session_id, &jump_nonce, kbi_txs, attempt).await
         {
             auth_res = kbi_res;
         }
     }
+    release_agent(&prompt_ctx).await;
     // Belt-and-suspenders: no dangling interactive sender for this hop.
     kbi_txs.lock().await.remove(&jump_nonce);
 
@@ -8850,13 +9002,22 @@ async fn connect_jump_host(
             Err("jump host authentication failed".into())
         }
         Err(e) => {
-            if classify_russh_error(&e).is_auth() {
+            let is_auth = classify_russh_error(&e).is_auth();
+            if is_auth {
                 auth_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if is_auth && prompt_ctx.session_unusable.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(format!("jump host: {}", AGENT_DID_NOT_SIGN));
             }
             Err(format!("jump host auth error: {}", e))
         }
     }
 }
+
+/// Shown when an ssh-agent didn't sign a login it was asked to (a declined
+/// confirmation, a removed card, a PIN or touch not given in time).
+const AGENT_DID_NOT_SIGN: &str =
+    "The ssh-agent didn't sign the login. Unlock the agent, insert the key or approve the request (PIN or touch), then reconnect.";
 
 /// Fully tear down ONE connection map-entry by its exact key. Used to reap the
 /// dedicated `::sftp` / `::fwd` secondary connections the separate-sessions
@@ -9559,6 +9720,8 @@ async fn initiate_connection(
                     allow_prompt: allow_kbi,
                     attempt: &attempt,
                     cancelled: std::sync::atomic::AtomicBool::new(false),
+                    agent: Default::default(),
+                    session_unusable: std::sync::atomic::AtomicBool::new(false),
                 };
 
                 let (effective_user, user_prompted, login_cancelled) =
@@ -9618,10 +9781,12 @@ async fn initiate_connection(
                 // returns None and we keep the original auth result untouched.
                 // If the user just cancelled our password / passphrase prompt,
                 // stop here: the fallback would only ask again (the server's own
-                // "Password:" box on a typical PAM setup).
+                // "Password:" box on a typical PAM setup). Likewise after an
+                // ssh-agent signature failed: the session can't run anything else.
                 if allow_kbi
                     && !matches!(auth_res, Ok(true))
                     && !prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed)
+                    && !prompt_ctx.session_unusable.load(std::sync::atomic::Ordering::Relaxed)
                 {
                     if let Some(kbi_res) = run_keyboard_interactive(
                         &mut session,
@@ -9637,6 +9802,7 @@ async fn initiate_connection(
                         auth_res = kbi_res;
                     }
                 }
+                release_agent(&prompt_ctx).await;
 
                 // A typed "Login as" name is kept for this tab only once it has
                 // logged in, so a typo isn't silently reused on reconnect.
@@ -10149,6 +10315,10 @@ async fn initiate_connection(
                         // KeyIsEncrypted (an auth-kind error); name it plainly.
                         let reason = if prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                             "Login cancelled. Reconnect to try again.".to_string()
+                        } else if prompt_ctx.session_unusable.load(std::sync::atomic::Ordering::Relaxed)
+                            && kind.is_auth()
+                        {
+                            AGENT_DID_NOT_SIGN.to_string()
                         } else {
                             describe_error_kind(kind, &target)
                         };

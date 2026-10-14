@@ -25,9 +25,16 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub(crate) struct TestServer {
     pub received: Arc<AtomicUsize>,
     pub jump_target_received: Arc<AtomicUsize>,
+    /// Public keys offered for `publickey` auth (probes included).
+    pub pk_offers: Arc<AtomicUsize>,
     /// When set, the ONLY group offered for `diffie-hellman-group-exchange-*`.
     gex_group: Option<russh::kex::dh::groups::DhGroup>,
     echo: HashSet<ChannelId>,
+    /// The one public key `publickey` auth accepts; none when unset.
+    accept_key: Option<russh::keys::PublicKey>,
+    /// After that key, ask for a password too (`AuthenticationMethods
+    /// publickey,password`).
+    second_factor: bool,
 }
 
 impl TestServer {
@@ -36,12 +43,45 @@ impl TestServer {
     pub(crate) fn with_gex_group(group: russh::kex::dh::groups::DhGroup) -> Self {
         Self { gex_group: Some(group), ..Self::default() }
     }
+
+    /// A server whose `publickey` auth accepts only `key` (none when `None`);
+    /// with `second_factor` that key then counts as a partial success and a
+    /// password is asked for too. Passwords are always accepted.
+    pub(crate) fn accepting_key(key: Option<russh::keys::PublicKey>, second_factor: bool) -> Self {
+        Self { accept_key: key, second_factor, ..Self::default() }
+    }
+
+    fn accepts(&self, key: &russh::keys::PublicKey) -> bool {
+        self.accept_key.as_ref().is_some_and(|k| k.key_data() == key.key_data())
+    }
 }
 
 impl server::Handler for TestServer {
     type Error = russh::Error;
 
     async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
+        Ok(Auth::Accept)
+    }
+
+    async fn auth_publickey_offered(
+        &mut self,
+        _user: &str,
+        key: &russh::keys::PublicKey,
+    ) -> Result<Auth, Self::Error> {
+        self.pk_offers.fetch_add(1, Ordering::SeqCst);
+        Ok(if self.accepts(key) { Auth::Accept } else { Auth::reject() })
+    }
+
+    async fn auth_publickey(&mut self, _user: &str, key: &russh::keys::PublicKey) -> Result<Auth, Self::Error> {
+        if !self.accepts(key) {
+            return Ok(Auth::reject());
+        }
+        if self.second_factor {
+            return Ok(Auth::Reject {
+                proceed_with_methods: Some(russh::MethodSet::from(&[russh::MethodKind::Password][..])),
+                partial_success: true,
+            });
+        }
         Ok(Auth::Accept)
     }
 
@@ -223,4 +263,23 @@ pub(crate) async fn connect_with_client(
     let (client_io, server_io) = tokio::io::duplex(256 * 1024);
     serve(server, tweak, server_io);
     client_over(client_io, client_config, client).await
+}
+
+/// Run `server` and complete only the handshake: the returned client isn't
+/// authenticated yet, for tests that drive authentication themselves. Turned
+/// down attempts are answered at once (russh otherwise pads each to 1 s).
+pub(crate) async fn handshake(
+    server: TestServer,
+    client_config: client::Config,
+) -> Result<client::Handle<TestClient>, russh::Error> {
+    let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+    serve(
+        server,
+        |c| {
+            c.auth_rejection_time = std::time::Duration::ZERO;
+            c.auth_rejection_time_initial = Some(std::time::Duration::ZERO);
+        },
+        server_io,
+    );
+    client::connect_stream(Arc::new(client_config), client_io, TestClient::default()).await
 }

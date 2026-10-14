@@ -159,13 +159,24 @@ pub async fn authenticate_with_key<H: client::Handler>(
     user: &str,
     key: PrivateKey,
 ) -> Result<bool, russh::Error> {
+    Ok(authenticate_with_key_result(session, user, key).await?.success())
+}
+
+/// [`authenticate_with_key`] with the server's full answer — the methods it
+/// still offers and whether the key was a partial success — so the caller can
+/// decide what to try next.
+pub async fn authenticate_with_key_result<H: client::Handler>(
+    session: &mut client::Handle<H>,
+    user: &str,
+    key: PrivateKey,
+) -> Result<client::AuthResult, russh::Error> {
     let hash_alg = if key.algorithm().is_rsa() {
         session.best_supported_rsa_hash().await?.flatten()
     } else {
         None
     };
     let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
-    Ok(session.authenticate_publickey(user, key).await?.success())
+    session.authenticate_publickey(user, key).await
 }
 
 /// Password auth with the `bool` contract callers relied on under russh 0.40.
