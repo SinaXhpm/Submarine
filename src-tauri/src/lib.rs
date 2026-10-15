@@ -32,6 +32,7 @@ mod archive;
 mod approvals;
 mod agent_auth;
 mod ssh_config;
+mod proxy_command;
 #[cfg(target_os = "android")]
 mod android_bridge;
 #[cfg(test)]
@@ -7536,6 +7537,8 @@ fn server_display_name(conn: &rusqlite::Connection, server_id: i32) -> Option<St
 /// files, proxy) for the steps that use it; `log` says what the config
 /// changed or why something in it was skipped.
 struct ConfigTarget {
+    /// The address as saved (an alias, maybe): ProxyCommand's `%n`.
+    original: String,
     host: String,
     port: u16,
     user: String,
@@ -7559,7 +7562,14 @@ impl ConfigTarget {
     }
 
     fn apply(host: &str, port: u16, user: &str, config: Option<ssh_config::HostConfig>) -> Self {
-        let mut t = Self { host: host.to_string(), port, user: user.to_string(), config: None, log: Vec::new() };
+        let mut t = Self {
+            original: host.to_string(),
+            host: host.to_string(),
+            port,
+            user: user.to_string(),
+            config: None,
+            log: Vec::new(),
+        };
         let Some(c) = config else { return t };
         if let Some(h) = c.hostname.as_deref().filter(|h| !h.is_empty() && !h.eq_ignore_ascii_case(host)) {
             t.log.push(format!("~/.ssh/config: {host} is HostName {h}."));
@@ -7584,6 +7594,93 @@ impl ConfigTarget {
     fn identity_agent(&self) -> Option<ssh_config::IdentityAgent> {
         self.config.as_ref()?.identity_agent.as_deref().map(ssh_config::resolve_identity_agent)
     }
+
+    /// `ProxyCommand` / `ProxyJump` for this host, unless the server has its
+    /// own way there (a jump host, or a SOCKS / HTTP proxy), which wins; that
+    /// case is logged.
+    fn proxy(&mut self, own_route: Option<&str>) -> Option<ssh_config::Proxy> {
+        let proxy = self.config.as_ref()?.proxy.clone()?;
+        let kind = match &proxy {
+            ssh_config::Proxy::Command(_) => "ProxyCommand",
+            ssh_config::Proxy::Jump(_) => "ProxyJump",
+            ssh_config::Proxy::Disabled => return None,
+        };
+        if let Some(route) = own_route {
+            self.log.push(format!("~/.ssh/config: {kind} isn't used: this server goes through its own {route}."));
+            return None;
+        }
+        Some(proxy)
+    }
+}
+
+/// A jump host's transport: TCP, or a ProxyCommand.
+enum HopStream {
+    Tcp(tokio::net::TcpStream),
+    Command(proxy_command::ProxyStream),
+}
+
+impl tokio::io::AsyncRead for HopStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            HopStream::Tcp(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            HopStream::Command(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for HopStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            HopStream::Tcp(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            HopStream::Command(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+        }
+    }
+    fn poll_flush(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            HopStream::Tcp(s) => std::pin::Pin::new(s).poll_flush(cx),
+            HopStream::Command(s) => std::pin::Pin::new(s).poll_flush(cx),
+        }
+    }
+    fn poll_shutdown(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            HopStream::Tcp(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            HopStream::Command(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+/// Run `command` (ProxyCommand from ~/.ssh/config) for a connection to
+/// `target` and return it as the transport; its standard error goes to the
+/// connect log of `session_id` while `attempt` is current.
+fn start_proxy_command(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    attempt: &ssh_manager::ConnectAttempt,
+    command: &str,
+    target: &ConfigTarget,
+    user: &str,
+) -> Result<(proxy_command::ProxyStream, proxy_command::Watch), String> {
+    use tauri::Emitter;
+    let tokens = proxy_command::Tokens { host: &target.host, original: &target.original, port: target.port, user: user.trim() };
+    let expanded = proxy_command::expand(command, &tokens)
+        .map_err(|why| format!("ProxyCommand in ~/.ssh/config {why}, so it wasn't run."))?;
+    let app = app.clone();
+    let session_id = session_id.to_string();
+    let attempt = attempt.clone();
+    proxy_command::spawn(&expanded, move |line| {
+        println!("[LOG-{}] {}", session_id, line);
+        if attempt.is_current_now() {
+            let _ = app.emit(&format!("session-log-{}", session_id), serde_json::json!({"msg": line, "type": "info"}));
+        }
+    })
 }
 
 /// Turn the device's "Use settings from ~/.ssh/config" switch on or off. The
@@ -9032,6 +9129,14 @@ const CONNECT_TIMEOUT_CAPS: ConnectTimeoutCaps = ConnectTimeoutCaps {
     hard: std::time::Duration::from_secs(15 + 90 + 5),
 };
 
+/// Through a ProxyCommand the handshake may wait on the command itself:
+/// cloudflared and tsh can open a browser to sign in first. Two minutes for
+/// that, then the same prompt window.
+const PROXY_COMMAND_TIMEOUT_CAPS: ConnectTimeoutCaps = ConnectTimeoutCaps {
+    handshake: std::time::Duration::from_secs(120),
+    hard: std::time::Duration::from_secs(120 + 90 + 5),
+};
+
 /// Which way the connect driver's deadline falls at a given elapsed time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectDeadline {
@@ -9490,31 +9595,46 @@ async fn connect_jump_host(
             None => return Err("jump host not found".into()),
         }
     };
-    // What ~/.ssh/config says about the bastion (its alias, agent).
-    let target = ConfigTarget::resolve(&host, port as u16, &user, jump_name).await;
+    // What ~/.ssh/config says about the bastion (its alias, agent, proxy).
+    let mut target = ConfigTarget::resolve(&host, port as u16, &user, jump_name).await;
+    let bastion_proxy = target.proxy(None);
     for line in &target.log {
         log(line, "info");
     }
     let identity_agent = target.identity_agent();
-    let (host, port, user) = (target.host, i32::from(target.port), target.user);
+    let (host, port, user) = (target.host.clone(), i32::from(target.port), target.user.clone());
     // A blank bastion username is resolved after the handshake (issue #54).
     let saved_user = user.trim().to_string();
 
-    // 2. Direct TCP to the bastion.
-    log(&format!("Connecting to jump host {}:{}...", host, port), "info");
-    let tcp = match tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::net::TcpStream::connect((host.as_str(), port as u16)),
-    )
-    .await
-    {
-        Ok(Ok(s)) => {
-            let _ = s.set_nodelay(true);
-            apply_tcp_keepalive(&s);
-            s
+    // 2. TCP to the bastion, or the ProxyCommand ~/.ssh/config gives it.
+    let mut proxy_watch: Option<proxy_command::Watch> = None;
+    let transport = if let Some(ssh_config::Proxy::Command(command)) = &bastion_proxy {
+        log(
+            &format!("~/.ssh/config: reaching the jump host through ProxyCommand ({})...", proxy_command::program_name(command)),
+            "info",
+        );
+        let (stream, watch) = start_proxy_command(app, session_id, attempt, command, &target, &saved_user)?;
+        proxy_watch = Some(watch);
+        HopStream::Command(stream)
+    } else {
+        if let Some(ssh_config::Proxy::Jump(spec)) = &bastion_proxy {
+            log(&format!("~/.ssh/config: ProxyJump {spec} isn't used yet; connecting without it."), "info");
         }
-        Ok(Err(e)) => return Err(humanize_network_err(&e.to_string(), &host, port, "Jump host connection")),
-        Err(_) => return Err(format!("jump host {}:{} did not respond within 10 seconds", host, port)),
+        log(&format!("Connecting to jump host {}:{}...", host, port), "info");
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::net::TcpStream::connect((host.as_str(), port as u16)),
+        )
+        .await
+        {
+            Ok(Ok(s)) => {
+                let _ = s.set_nodelay(true);
+                apply_tcp_keepalive(&s);
+                HopStream::Tcp(s)
+            }
+            Ok(Err(e)) => return Err(humanize_network_err(&e.to_string(), &host, port, "Jump host connection")),
+            Err(_) => return Err(format!("jump host {}:{} did not respond within 10 seconds", host, port)),
+        }
     };
 
     // 3. Host-key round-trip: own nonce, shared fp_txs map + frontend session.
@@ -9556,12 +9676,20 @@ async fn connect_jump_host(
     // The 15s handshake cap bounds only the pre-prompt transport+kex phase;
     // once check_server_key shows a first-time fingerprint prompt the wait
     // extends to the hard cap so the 90s human window — not this timer — rules.
-    let connect_res = drive_connect_with_prompt_timeout(
-        russh::client::connect_stream(config, tcp, handler),
-        &prompt_pending_for_driver,
-        CONNECT_TIMEOUT_CAPS,
-    )
-    .await;
+    // The tab closed mid-handshake: stop (and with it the bastion's
+    // ProxyCommand, if any) instead of waiting out the timeout.
+    let connect_res = tokio::select! {
+        r = drive_connect_with_prompt_timeout(
+            russh::client::connect_stream(config, transport, handler),
+            &prompt_pending_for_driver,
+            if proxy_watch.is_some() { PROXY_COMMAND_TIMEOUT_CAPS } else { CONNECT_TIMEOUT_CAPS },
+        ) => r,
+        _ = attempt.superseded() => {
+            attempt.abandon();
+            fp_txs.lock().await.remove(&jump_nonce);
+            return Err("jump host: the connection attempt was cancelled".into());
+        }
+    };
     // Given up on: russh's handshake task may still reach the host-key check
     // later, and must not prompt for an attempt nobody is waiting on.
     if connect_res.is_err() {
@@ -9570,10 +9698,20 @@ async fn connect_jump_host(
     // The host-key prompt (if any) is resolved by now — drop the sender.
     fp_txs.lock().await.remove(&jump_nonce);
 
+    // What the bastion's ProxyCommand said, when there's one.
+    let proxy_said = async {
+        match &proxy_watch {
+            Some(w) => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                w.describe().map(|d| format!(" {d}")).unwrap_or_default()
+            }
+            None => String::new(),
+        }
+    };
     let mut session = match connect_res {
         Ok(Ok(s)) => s,
-        Ok(Err(e)) => return Err(format!("jump host handshake failed: {}", e)),
-        Err(ConnectTimeout::HandshakeStall) => return Err("jump host handshake timed out".into()),
+        Ok(Err(e)) => return Err(format!("jump host handshake failed: {}.{}", e, proxy_said.await)),
+        Err(ConnectTimeout::HandshakeStall) => return Err(format!("jump host handshake timed out.{}", proxy_said.await)),
         Err(ConnectTimeout::PromptHardCap) => {
             return Err("jump host host-key prompt timed out — reconnect and approve the fingerprint within 90 seconds".into())
         }
@@ -10050,7 +10188,7 @@ async fn initiate_connection(
     // What ~/.ssh/config says about this host: an alias's address and port, a
     // User for a node saved without one, the agent (and, for later steps, the
     // rest). Host patterns see the address and the node's name.
-    let config_target = {
+    let mut config_target = {
         let name = if quick_auth.is_some() {
             None
         } else {
@@ -10059,6 +10197,17 @@ async fn initiate_connection(
         let port = u16::try_from(port).map_err(|_| format!("Port {port} isn't a valid port"))?;
         ConfigTarget::resolve(&host, port, &user, name).await
     };
+    // Its ProxyCommand / ProxyJump, unless the server has its own route.
+    let own_route = if jump_host_id.is_some() {
+        Some("jump host")
+    } else {
+        match proxy_type.as_str() {
+            "socks5" => Some("SOCKS5 proxy"),
+            "http" => Some("HTTP proxy"),
+            _ => None,
+        }
+    };
+    let config_proxy = config_target.proxy(own_route);
     let config_log = config_target.log.clone();
     let identity_agent = config_target.identity_agent();
     let (host, port, user) = (config_target.host.clone(), i32::from(config_target.port), config_target.user.clone());
@@ -10224,6 +10373,9 @@ async fn initiate_connection(
         let mut jump_handle_holder: Option<russh::client::Handle<ssh_manager::ClientHandler>> = None;
         // Set by connect_jump_host when the bastion login itself failed.
         let jump_auth_failed = std::sync::atomic::AtomicBool::new(false);
+        // The ProxyCommand this connection goes through, if any: what it said
+        // when the handshake fails.
+        let mut proxy_watch: Option<proxy_command::Watch> = None;
         let stream_res: Result<Box<dyn AsyncStream>, String> = if let Some(jid) = jump_host_id {
             emit_log(&format!("ProxyJump: routing through jump host (server id {})...", jid), "info");
             match connect_jump_host(&app, &db_for_jump, &fp_txs_clone, &kbi_txs_clone, &prompted_secrets_clone, allow_kbi, &jump_auth_failed, &attempt, &session_id_clone, jid, use_agent).await {
@@ -10255,7 +10407,22 @@ async fn initiate_connection(
                 }
                 Err(e) => Err(format!("ProxyJump: {}", e)),
             }
+        } else if let Some(ssh_config::Proxy::Command(command)) = &config_proxy {
+            emit_log(
+                &format!("~/.ssh/config: connecting through ProxyCommand ({})...", proxy_command::program_name(command)),
+                "info",
+            );
+            match start_proxy_command(&app, &session_id_clone, &attempt, command, &config_target, &saved_user) {
+                Ok((stream, watch)) => {
+                    proxy_watch = Some(watch);
+                    Ok(Box::new(stream) as Box<dyn AsyncStream>)
+                }
+                Err(e) => Err(e),
+            }
         } else {
+        if let Some(ssh_config::Proxy::Jump(spec)) = &config_proxy {
+            emit_log(&format!("~/.ssh/config: ProxyJump {spec} isn't used yet; connecting without it."), "info");
+        }
         match proxy_type.as_str() {
             "socks5" => {
                 let p_host = match proxy_host.as_ref().filter(|h| !h.is_empty()) {
@@ -10399,7 +10566,20 @@ async fn initiate_connection(
         // 15s bounds only the pre-prompt handshake; a pending first-time
         // fingerprint prompt extends the wait to the hard cap (see
         // drive_connect_with_prompt_timeout) so the 90s human window governs.
-        match drive_connect_with_prompt_timeout(connect_future, &prompt_pending_for_driver, CONNECT_TIMEOUT_CAPS).await {
+        let caps = if proxy_watch.is_some() { PROXY_COMMAND_TIMEOUT_CAPS } else { CONNECT_TIMEOUT_CAPS };
+        // A tab closed (or reconnected) mid-handshake: stop waiting at once.
+        // Dropping the handshake drops its transport, which stops a
+        // ProxyCommand that would otherwise run until the timeout.
+        let connect_res = tokio::select! {
+            r = drive_connect_with_prompt_timeout(connect_future, &prompt_pending_for_driver, caps) => r,
+            _ = attempt.superseded() => {
+                attempt.abandon();
+                println!("[LOG-{}] Connection attempt cancelled during the handshake.", session_id_clone);
+                cleanup().await;
+                return;
+            }
+        };
+        match connect_res {
             Ok(Ok(mut session)) => {
                 emit_log("SSH Handshake complete. Authenticating user...", "info");
                 
@@ -11061,7 +11241,17 @@ async fn initiate_connection(
                     _ => {
                         let kind = classify_russh_error(&e);
                         let target = format!("{}:{}", host, port);
-                        (describe_error_kind(kind, &target), kind)
+                        // Through a ProxyCommand, what it said is the reason
+                        // (not signed in, host unknown to it, ...). Its exit
+                        // may land a moment after the stream ends.
+                        let said = match &proxy_watch {
+                            Some(w) => {
+                                tokio::time::sleep(Duration::from_millis(400)).await;
+                                w.describe()
+                            }
+                            None => None,
+                        };
+                        (said.unwrap_or_else(|| describe_error_kind(kind, &target)), kind)
                     }
                 };
                 emit_log(&format!("{} (raw: {})", reason, e), "error");
@@ -11084,10 +11274,18 @@ async fn initiate_connection(
                 // pending — the TCP socket is up but the SSH handshake never
                 // completed. Distinct enough from the auth path to deserve its
                 // own message.
-                let msg = format!(
-                    "{}:{} did not finish SSH handshake within 15 seconds — host may be filtering SSH or running a non-SSH service on this port.",
-                    host, port
-                );
+                let msg = match &proxy_watch {
+                    Some(w) => format!(
+                        "{}:{} did not finish the SSH handshake through ProxyCommand within 2 minutes.{}",
+                        host,
+                        port,
+                        w.describe().map(|d| format!(" {d}")).unwrap_or_default()
+                    ),
+                    None => format!(
+                        "{}:{} did not finish SSH handshake within 15 seconds — host may be filtering SSH or running a non-SSH service on this port.",
+                        host, port
+                    ),
+                };
                 emit_log(&msg, "error");
                 emit_connection_failed(
                     &app,

@@ -601,6 +601,16 @@ impl ConnectAttempt {
             .unwrap_or(true)
     }
 
+    /// Resolves once the attempt is no longer current: the tab was
+    /// disconnected or closed, or a newer attempt started. Looked at twice a
+    /// second; a handshake waiting on a ProxyCommand that never answers is
+    /// given up on (and the command stopped) when this resolves.
+    pub async fn superseded(&self) {
+        while self.is_current().await {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+
     /// The connect driver stopped waiting on this attempt (its handshake timed
     /// out), so nothing would act on an answer any more.
     pub fn abandon(&self) {

@@ -495,12 +495,22 @@ async fn run_poller(
         // a slow or hung handshake tears the poller down at once, instead of
         // waiting out the connect/handshake budget (up to connect_timeout * 2).
         if handle.as_ref().map(|h| h.is_closed()).unwrap_or(true) {
+            let target = match with_ssh_config(&auth, &node_name).await {
+                Ok(t) => t,
+                Err(why) => {
+                    // Not a failure: no outage count, no alert. Looked at
+                    // again each interval, in case the config changes.
+                    mark_disconnected(&app, &entry, Some(why)).await;
+                    tokio::select! {
+                        _ = &mut stop_rx => break,
+                        _ = tokio::time::sleep(interval) => {}
+                    }
+                    continue;
+                }
+            };
             let connected = tokio::select! {
                 _ = &mut stop_rx => break,
-                r = async {
-                    let target = with_ssh_config(&auth, &node_name).await;
-                    connect_for_monitor(&db, &target, connect_timeout).await
-                } => r,
+                r = connect_for_monitor(&db, &target, connect_timeout) => r,
             };
             match connected {
                 Ok(h) => {
@@ -805,11 +815,27 @@ fn monitor_client_config() -> client::Config {
 /// The node as `~/.ssh/config` resolves it: an alias's HostName and Port, and
 /// its User when none is saved. The monitor takes nothing else from the config
 /// (no ProxyCommand / ProxyJump, key files or agent): in the background it
-/// never runs commands or asks for anything.
-async fn with_ssh_config(auth: &NodeAuth, node_name: &str) -> NodeAuth {
-    let t = crate::ConfigTarget::resolve(&auth.host, auth.port, &auth.username, Some(node_name.to_string())).await;
-    NodeAuth { host: t.host, port: t.port, username: t.user, ..auth.clone() }
+/// never runs commands or asks for anything. A node the config sends through
+/// a ProxyCommand or ProxyJump (and that has no proxy of its own) isn't
+/// checked at all: `Err` says why.
+async fn with_ssh_config(auth: &NodeAuth, node_name: &str) -> Result<NodeAuth, String> {
+    let mut t = crate::ConfigTarget::resolve(&auth.host, auth.port, &auth.username, Some(node_name.to_string())).await;
+    let own_route = match auth.proxy_type.as_str() {
+        "socks5" => Some("SOCKS5 proxy"),
+        "http" => Some("HTTP proxy"),
+        _ => None,
+    };
+    match t.proxy(own_route) {
+        Some(crate::ssh_config::Proxy::Command(_)) => Err(NOT_CHECKED_PROXY_COMMAND.into()),
+        Some(crate::ssh_config::Proxy::Jump(_)) => Err(NOT_CHECKED_PROXY_JUMP.into()),
+        _ => Ok(NodeAuth { host: t.host, port: t.port, username: t.user, ..auth.clone() }),
+    }
 }
+
+const NOT_CHECKED_PROXY_COMMAND: &str =
+    "Not checked: ~/.ssh/config reaches this server through a ProxyCommand, which status checks don't run.";
+const NOT_CHECKED_PROXY_JUMP: &str =
+    "Not checked: ~/.ssh/config reaches this server through a ProxyJump, which status checks don't use.";
 
 async fn connect_for_monitor(
     db: &Arc<std::sync::Mutex<Option<rusqlite::Connection>>>,
