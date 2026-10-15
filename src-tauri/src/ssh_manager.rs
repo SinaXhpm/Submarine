@@ -207,7 +207,7 @@ pub async fn authenticate_with_certificate<H: client::Handler>(
 /// signature is appended to the data as an SSH string.
 struct KeyFileSigner(Arc<PrivateKey>);
 
-impl russh::auth::Signer for KeyFileSigner {
+impl russh::Signer for KeyFileSigner {
     type Error = russh::AgentAuthError;
 
     fn auth_sign(
@@ -230,7 +230,7 @@ fn sign_appended(key: &PrivateKey, hash_alg: Option<HashAlg>, data: &mut Vec<u8>
         other => Signer::try_sign(other, data.as_slice()),
     }
     .map_err(|_| russh::keys::ssh_key::Error::Crypto)?;
-    signature.encoded()?.encode(data)?;
+    signature.encode_vec()?.encode(data)?;
     Ok(())
 }
 
@@ -1396,6 +1396,35 @@ mod tests {
             .await
             .expect("pump must stop once the terminal is closed")
             .unwrap();
+    }
+
+    /// A key file signs a certificate login as an agent would: the signature,
+    /// with the RSA hash the server asked for, appended to the data as an SSH
+    /// string.
+    #[test]
+    fn key_file_signer_appends_a_signature_with_the_asked_hash() {
+        use russh::keys::signature::Verifier;
+        use russh::keys::ssh_encoding::Decode;
+        use russh::keys::ssh_key::{private::RsaKeypair, Signature};
+        const DATA: &[u8] = b"session id and request";
+        let rsa = PrivateKey::from(RsaKeypair::random(&mut rand::rng(), 2048).unwrap());
+        let ed = PrivateKey::random(&mut rand::rng(), russh::keys::Algorithm::Ed25519).unwrap();
+        for (key, hash, name) in [
+            (&rsa, Some(HashAlg::Sha512), "rsa-sha2-512"),
+            (&rsa, Some(HashAlg::Sha256), "rsa-sha2-256"),
+            (&rsa, None, "ssh-rsa"),
+            (&ed, None, "ssh-ed25519"),
+        ] {
+            let mut data = DATA.to_vec();
+            sign_appended(key, hash, &mut data).unwrap();
+            let (signed, mut rest) = data.split_at(DATA.len());
+            assert_eq!(signed, DATA);
+            let blob = Vec::<u8>::decode(&mut rest).unwrap();
+            assert!(rest.is_empty(), "{name}: nothing after the signature");
+            let signature = Signature::decode(&mut blob.as_slice()).unwrap();
+            assert_eq!(signature.algorithm().as_str(), name);
+            Verifier::verify(key.public_key(), DATA, &signature).unwrap();
+        }
     }
 }
 
