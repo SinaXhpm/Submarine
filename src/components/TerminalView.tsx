@@ -10,6 +10,7 @@ import { MobileKeyBar, ModifiersState, ModKey, SpecialKey } from './MobileKeyBar
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
 import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
+import { readScrollback } from '../util/terminalScrollback';
 import { readUseLocalShell } from '../util/terminalShell';
 import { IS_ANDROID, IS_LINUX } from '../util/platform';
 import { useConfirm } from '../ui/confirm';
@@ -480,6 +481,7 @@ const TerminalView = ({
     const term = new Terminal({
       cursorBlink: true,
       fontSize: readFontSize(),
+      scrollback: readScrollback(),
       // Start on the always-installed fallback stack; the chosen face is
       // switched in below once it has loaded (handleSettingsChange). A bundled
       // font isn't loaded yet at this point, and xterm measures its cell size
@@ -947,6 +949,10 @@ const TerminalView = ({
     // Handle Settings Change — font size and face apply live to open terminals.
     let fontDisposed = false;
     const handleSettingsChange = () => {
+      // So does the scrollback; fewer lines than the terminal holds drops the
+      // oldest ones.
+      const scrollback = readScrollback();
+      if (term.options.scrollback !== scrollback) term.options.scrollback = scrollback;
       const size = readFontSize();
       const family = fontFamilyCss(readFontFamily());
       if (term.options.fontSize === size && term.options.fontFamily === family) return;

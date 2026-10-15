@@ -20,6 +20,7 @@ import { RenameInput } from "./ui/renameInput";
 import { forgetServerBookmarks } from "./util/sftpBookmarks";
 import { useIsNarrow } from "./hooks/useViewport";
 import { FONT_FAMILY_KEY, FONT_SIZE_KEY, readFontFamily, readFontSize } from "./util/terminalFont";
+import { SCROLLBACK_KEY, readScrollback } from "./util/terminalScrollback";
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
 import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
@@ -281,6 +282,8 @@ function DesktopApp() {
     terminalFontSize: readFontSize(),
     // '' = the built-in cross-platform monospace stack (see util/terminalFont).
     terminalFontFamily: readFontFamily(),
+    // Lines each terminal keeps above the screen. See util/terminalScrollback.
+    terminalScrollback: readScrollback(),
     // Off by default: terminals start the remote account's own shell, same
     // as before this setting existed. See util/terminalShell.
     useLocalShell: readUseLocalShell(),
@@ -307,6 +310,7 @@ function DesktopApp() {
     localStorage.setItem('submarine-bg-color', appSettings.backgroundColor);
     localStorage.setItem(FONT_SIZE_KEY, appSettings.terminalFontSize.toString());
     localStorage.setItem(FONT_FAMILY_KEY, appSettings.terminalFontFamily);
+    localStorage.setItem(SCROLLBACK_KEY, String(appSettings.terminalScrollback));
     localStorage.setItem(USE_LOCAL_SHELL_KEY, appSettings.useLocalShell ? 'on' : 'off');
     localStorage.setItem(USE_SSH_AGENT_KEY, appSettings.useSshAgent ? 'on' : 'off');
     localStorage.setItem(USE_SSH_CONFIG_KEY, appSettings.useSshConfig ? 'on' : 'off');

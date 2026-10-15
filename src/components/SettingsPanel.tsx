@@ -12,6 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import CopyValue from "./CopyValue";
 import FontPicker from "./FontPicker";
 import { loadInstalledFonts } from "../util/systemFonts";
+import { MAX_SCROLLBACK, MIN_SCROLLBACK, clampScrollback } from "../util/terminalScrollback";
 import { IS_ANDROID } from "../util/platform";
 
 // Where this install keeps its data (see src-tauri/src/portable.rs). `portable`
@@ -318,6 +319,69 @@ function TerminalFontSettings({ settings, setSettings }: any) {
   );
 }
 
+// Lines each terminal keeps to scroll back through (util/terminalScrollback).
+// A typed number applies on Enter or when the field loses focus: applied on
+// each keystroke, typing 25000 would pass through 2 and clamp to the minimum.
+const SCROLLBACK_STEP = 1000;
+const groupDigits = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+function TerminalScrollbackSetting({ settings, setSettings }: any) {
+  const lines = clampScrollback(settings.terminalScrollback);
+  const [draft, setDraft] = useState(String(lines));
+  useEffect(() => setDraft(String(lines)), [lines]);
+  const set = (n: number) =>
+    setSettings((s: any) => ({ ...s, terminalScrollback: clampScrollback(n) }));
+  const commit = () => {
+    const n = parseInt(draft, 10);
+    const next = Number.isFinite(n) ? clampScrollback(n) : lines;
+    setDraft(String(next));
+    if (next !== lines) set(next);
+  };
+  return (
+    <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-3 shadow-xl">
+      <div className="flex justify-between items-center gap-3">
+        <label htmlFor="term-scrollback" className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">Scrollback (lines)</label>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            aria-label="Fewer scrollback lines"
+            onClick={() => set(lines - SCROLLBACK_STEP)}
+            disabled={lines <= MIN_SCROLLBACK}
+            className="w-8 h-8 flex items-center justify-center bg-black border border-white/10 rounded-lg text-zinc-300 hover:text-white hover:border-primary/40 disabled:opacity-30 transition-colors"
+          >
+            <Minus size={14} />
+          </button>
+          <input
+            id="term-scrollback"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, "").slice(0, 5))}
+            onBlur={commit}
+            onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
+            className="w-20 h-8 bg-black border border-white/10 rounded-lg px-2 text-[12px] font-bold text-white focus:border-primary/50 outline-none text-center"
+          />
+          <button
+            type="button"
+            aria-label="More scrollback lines"
+            onClick={() => set(lines + SCROLLBACK_STEP)}
+            disabled={lines >= MAX_SCROLLBACK}
+            className="w-8 h-8 flex items-center justify-center bg-black border border-white/10 rounded-lg text-zinc-300 hover:text-white hover:border-primary/40 disabled:opacity-30 transition-colors"
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+      </div>
+      <p className="text-[11.5px] text-zinc-500 leading-relaxed">
+        How many lines each terminal keeps to scroll back through, from {groupDigits(MIN_SCROLLBACK)} to{" "}
+        {groupDigits(MAX_SCROLLBACK)}. More lines take more memory in every open terminal. A change applies to open
+        terminals too; a smaller number drops their oldest lines.
+      </p>
+    </div>
+  );
+}
+
 // What the Shell button in a session's toolbar pushes, and which servers show
 // it. Both are this device's own (see util/shellSync.ts): the files are this
 // machine's, so neither is in the vault. Shell-agnostic on purpose: a plain
@@ -553,6 +617,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, servers = [] }: any)
           </div>
 
           <TerminalFontSettings settings={settings} setSettings={setSettings} />
+
+          <TerminalScrollbackSetting settings={settings} setSettings={setSettings} />
 
           <DefaultShellSetting settings={settings} setSettings={setSettings} />
           
