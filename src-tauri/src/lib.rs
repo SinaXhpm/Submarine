@@ -9726,6 +9726,10 @@ async fn connect_jump_host(
     reach_hop(ctx, hop, route, 0).await
 }
 
+/// A route's hops being connected, boxed: the steps below call each other.
+type HopChain<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<russh::client::Handle<ssh_manager::ClientHandler>>, String>> + Send + 'a>>;
+
 /// The `Handle`s of a `ProxyJump` list from `~/.ssh/config`, in order. Each
 /// hop's own config applies (its alias, user, agent); the first one is reached
 /// the way its config says (directly, its ProxyCommand, or its own ProxyJump),
@@ -9735,7 +9739,7 @@ fn config_jump_chain<'a>(
     ctx: &'a HopCtx<'a>,
     spec: &'a str,
     depth: usize,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<russh::client::Handle<ssh_manager::ClientHandler>>, String>> + Send + 'a>> {
+) -> HopChain<'a> {
     Box::pin(async move {
         let hops = parse_proxy_jump(spec)?;
         if depth + hops.len() > MAX_JUMP_HOPS {
@@ -9791,7 +9795,7 @@ fn reach_hop<'a>(
     hop: Hop,
     route: Option<ssh_config::Proxy>,
     depth: usize,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<russh::client::Handle<ssh_manager::ClientHandler>>, String>> + Send + 'a>> {
+) -> HopChain<'a> {
     Box::pin(async move {
         use tokio::time::Duration;
         let (host, port) = (hop.target.host.clone(), hop.target.port);
