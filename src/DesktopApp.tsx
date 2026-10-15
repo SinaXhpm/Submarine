@@ -24,6 +24,7 @@ import { SCROLLBACK_KEY, readScrollback } from "./util/terminalScrollback";
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
 import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
+import { DEFAULT_RDP_OPTIONS, readRdpOptions, writeRdpOptions } from "./util/rdpOptions";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
 import { folderTree } from "./util/folderTree";
@@ -240,6 +241,8 @@ function DesktopApp() {
     id: null as number | null,
     // "ssh" or "rdp" (issue #3): an RDP server opens in the system's RDP app.
     protocol: "ssh" as "ssh" | "rdp",
+    // An RDP server's window and sharing on this device (util/rdpOptions).
+    rdpOptions: { ...DEFAULT_RDP_OPTIONS },
     name: "", host: "", port: 22, username: "", password: "",
     // "custom_pass" picked as default because most users adding a new
     // server have a password in hand; the vault option is mainly useful
@@ -902,6 +905,7 @@ function DesktopApp() {
     setNewNode({
       id: server.id,
       protocol: server.protocol === "rdp" ? "rdp" : "ssh",
+      rdpOptions: readRdpOptions(server.uuid),
       name: server.name || "",
       host: server.host || "",
       port: server.port || 22,
@@ -2684,6 +2688,16 @@ function DesktopApp() {
               await invoke("set_server_protocol", { id: savedId, value: isRdp ? "rdp" : null });
             } catch (e) {
               addLog(`SAVE_PROTOCOL_FAILED: ${e}`, "error");
+            }
+            // An RDP server's options are this device's own, kept by its sync
+            // id (a new server has one once it's saved).
+            if (isRdp) {
+              try {
+                const uuid = (await invoke<any[]>("get_servers")).find((s) => s.id === savedId)?.uuid;
+                if (uuid) writeRdpOptions(uuid, newNode.rdpOptions || DEFAULT_RDP_OPTIONS);
+              } catch (e) {
+                addLog(`SAVE_RDP_OPTIONS_FAILED: ${e}`, "error");
+              }
             }
             setIsPanelOpen(false);
             setFormError("");

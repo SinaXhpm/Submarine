@@ -6,6 +6,7 @@ import PasswordField from "./PasswordField";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { folderTree } from "../util/folderTree";
+import { DEFAULT_RDP_OPTIONS, RDP_WINDOW_SIZES, type RdpOptions } from "../util/rdpOptions";
 
 // Compact "2h ago" style relative time for the attribution line.
 function relTime(d: Date): string {
@@ -726,6 +727,71 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   ))}
               </select>
             </div>
+
+            {/* RDP options: this device's own (util/rdpOptions), not synced. */}
+            {isRdp && (() => {
+              const o: RdpOptions = newNode.rdpOptions || DEFAULT_RDP_OPTIONS;
+              const set = (patch: Partial<RdpOptions>) => setNewNode({ ...newNode, rdpOptions: { ...o, ...patch } });
+              const size = `${o.width}x${o.height}`;
+              const known = RDP_WINDOW_SIZES.some(([w, h]) => w === o.width && h === o.height);
+              return (
+                <div className="space-y-3 pt-1">
+                  <div className="flex justify-between items-center gap-3">
+                    <label className="text-[11px] font-bold text-zinc-400 shrink-0">Window</label>
+                    <select
+                      aria-label="RDP window"
+                      className="flex-1 min-w-0 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
+                      value={o.fullScreen ? "full" : size}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === "full") return set({ fullScreen: true });
+                        const [width, height] = v.split("x").map(Number);
+                        set({ fullScreen: false, width, height });
+                      }}
+                    >
+                      <option value="full" className="bg-[#1a1a1e]">Full screen</option>
+                      {RDP_WINDOW_SIZES.map(([w, h]) => (
+                        <option key={`${w}x${h}`} value={`${w}x${h}`} className="bg-[#1a1a1e]">{w} × {h}</option>
+                      ))}
+                      {!o.fullScreen && !known && <option value={size} className="bg-[#1a1a1e]">{o.width} × {o.height}</option>}
+                    </select>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-bold text-zinc-300">Share the clipboard</div>
+                      <div className="text-[10.5px] text-zinc-500 leading-snug">Copy and paste between this computer and the server.</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => set({ clipboard: !o.clipboard })}
+                      role="switch"
+                      aria-label="Share the clipboard"
+                      aria-checked={o.clipboard}
+                      className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.clipboard ? "bg-primary" : "bg-white/10"}`}
+                    >
+                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.clipboard ? "translate-x-5" : "translate-x-0"}`} />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-bold text-zinc-300">Share this computer's files</div>
+                      <div className="text-[10.5px] text-zinc-500 leading-snug">The server can read and change them (with Remmina: your home folder).</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => set({ drives: !o.drives })}
+                      role="switch"
+                      aria-label="Share this computer's files"
+                      aria-checked={o.drives}
+                      className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.drives ? "bg-primary" : "bg-white/10"}`}
+                    >
+                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.drives ? "translate-x-5" : "translate-x-0"}`} />
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-zinc-500 ml-1">Window and sharing are kept on this device only, not synced.</p>
+                </div>
+              );
+            })()}
 
             {!isRdp && (<>
             <div className="space-y-2.5">

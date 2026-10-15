@@ -35,7 +35,9 @@ pub struct RdpSession {
     /// What the RDP app connects to: `host:port` or the forward's address.
     pub address: String,
     pub username: String,
-    /// The `.rdp` file, deleted with the session.
+    /// The options it was opened with; "Open again" may bring newer ones.
+    pub options: RdpOptions,
+    /// The file the RDP app was given, deleted with the session.
     pub file: Option<PathBuf>,
     /// RDP windows open from this tab that it can follow: "closed" is said
     /// once the last of them is.
@@ -43,8 +45,8 @@ pub struct RdpSession {
 }
 
 impl RdpSession {
-    pub fn direct(address: String, username: String) -> Self {
-        Self { _route: Arc::new(Vec::new()), accept: None, address, username, file: None, windows: Arc::default() }
+    pub fn direct(address: String, username: String, options: RdpOptions) -> Self {
+        Self { _route: Arc::new(Vec::new()), accept: None, address, username, options, file: None, windows: Arc::default() }
     }
 }
 
@@ -101,16 +103,95 @@ pub fn address(host: &str, port: u16) -> String {
     }
 }
 
-/// The `.rdp` file for `address` (already checked): where to connect and who
-/// logs in. Nothing else is set, so the RDP app's own defaults apply, and no
-/// password is written.
-pub fn rdp_file(address: &str, user: &str) -> String {
+/// How the RDP window looks and what it shares with the server. It's this
+/// device's choice for a server, kept in its own settings and never synced:
+/// a window size belongs to a screen, and in a shared profile someone else
+/// mustn't be able to switch on sharing this computer's files. The tab
+/// passes it in.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RdpOptions {
+    pub full_screen: bool,
+    /// The window's size when not full screen.
+    pub width: u32,
+    pub height: u32,
+    pub clipboard: bool,
+    /// This computer's drives (with Remmina: the home folder).
+    pub drives: bool,
+}
+
+impl Default for RdpOptions {
+    /// What Remote Desktop Connection does on its own, files kept private.
+    fn default() -> Self {
+        Self { full_screen: true, width: 1600, height: 900, clipboard: true, drives: false }
+    }
+}
+
+impl RdpOptions {
+    /// A window size RDP servers take: 640×480 up to 8K.
+    pub fn checked(mut self) -> Self {
+        self.width = self.width.clamp(640, 7680);
+        self.height = self.height.clamp(480, 4320);
+        self
+    }
+}
+
+/// The `.rdp` file for `address` (already checked): where to connect, who
+/// logs in, and the options. No password is written.
+pub fn rdp_file(address: &str, user: &str, options: &RdpOptions) -> String {
     let mut out = format!("full address:s:{address}\r\n");
     let user = user.trim();
     if !user.is_empty() {
         out.push_str(&format!("username:s:{user}\r\n"));
     }
+    if options.full_screen {
+        out.push_str("screen mode id:i:2\r\n");
+    } else {
+        out.push_str(&format!("screen mode id:i:1\r\ndesktopwidth:i:{}\r\ndesktopheight:i:{}\r\n", options.width, options.height));
+    }
+    out.push_str(&format!("redirectclipboard:i:{}\r\n", u8::from(options.clipboard)));
+    out.push_str(if options.drives { "drivestoredirect:s:*\r\n" } else { "drivestoredirect:s:\r\n" });
     out
+}
+
+/// The same as a Remmina profile, which (unlike its `.rdp` import) carries
+/// full screen and a shared folder. `home` is the folder shared for
+/// `drives`. Values are checked already; a line break can't reach here.
+pub fn remmina_file(address: &str, user: &str, options: &RdpOptions, home: Option<&Path>) -> String {
+    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+    let mut out = format!("[remmina]\nname={address}\nprotocol=RDP\nserver={address}\n");
+    let user = user.trim();
+    if !user.is_empty() {
+        out.push_str(&format!("username={user}\n"));
+    }
+    // Remmina 1.4: viewmode 4 is full screen, 1 a window; resolution_mode 2
+    // takes the window's (there: the screen's) size, 1 the one given.
+    if options.full_screen {
+        out.push_str("viewmode=4\nresolution_mode=2\n");
+    } else {
+        out.push_str(&format!("viewmode=1\nresolution_mode=1\nresolution_width={}\nresolution_height={}\n", options.width, options.height));
+    }
+    out.push_str(&format!("disableclipboard={}\n", u8::from(!options.clipboard)));
+    let share = match (options.drives, home) {
+        (true, Some(home)) => clean(&home.to_string_lossy()),
+        _ => String::new(),
+    };
+    out.push_str(&format!("sharefolder={share}\n"));
+    out
+}
+
+/// FreeRDP's command line for the same.
+pub fn freerdp_args(address: &str, user: &str, options: &RdpOptions) -> Vec<String> {
+    let mut args = vec![format!("/v:{address}")];
+    if !user.trim().is_empty() {
+        args.push(format!("/u:{}", user.trim()));
+    }
+    args.push(if options.full_screen { "+f".into() } else { format!("/size:{}x{}", options.width, options.height) });
+    args.push(if options.clipboard { "/clipboard".into() } else { "-clipboard".into() });
+    if options.drives {
+        args.push("+drives".into());
+    }
+    args
 }
 
 /// The loopback address a node's forward listens on. RDP apps remember
@@ -206,8 +287,8 @@ pub struct RdpSessionParts {
 }
 
 impl RdpSession {
-    pub fn forwarded(parts: RdpSessionParts, address: String, username: String) -> Self {
-        Self { _route: parts.hops, accept: Some(parts.accept), address, username, file: None, windows: Arc::default() }
+    pub fn forwarded(parts: RdpSessionParts, address: String, username: String, options: RdpOptions) -> Self {
+        Self { _route: parts.hops, accept: Some(parts.accept), address, username, options, file: None, windows: Arc::default() }
     }
 }
 
@@ -215,11 +296,11 @@ fn files_dir() -> PathBuf {
     std::env::temp_dir().join("submarine-rdp")
 }
 
-/// Writes the session's `.rdp` file into this user's temp folder (readable
-/// by this user only on Unix) and returns its path. The name carries this
-/// process's id: another copy of Submarine (a portable one) numbers its tabs
-/// the same way.
-pub fn write_file(session_id: &str, contents: &str) -> Result<PathBuf, String> {
+/// Writes the session's `.rdp` (or `.remmina`) file into this user's temp
+/// folder (readable by this user only on Unix) and returns its path. The
+/// name carries this process's id: another copy of Submarine (a portable
+/// one) numbers its tabs the same way.
+pub fn write_file(session_id: &str, ext: &str, contents: &str) -> Result<PathBuf, String> {
     let dir = files_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't make the folder for the .rdp file: {e}"))?;
     #[cfg(unix)]
@@ -228,7 +309,7 @@ pub fn write_file(session_id: &str, contents: &str) -> Result<PathBuf, String> {
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     }
     let safe: String = session_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
-    let path = dir.join(format!("{}-{safe}.rdp", std::process::id()));
+    let path = dir.join(format!("{}-{safe}.{ext}", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -238,7 +319,8 @@ pub fn write_file(session_id: &str, contents: &str) -> Result<PathBuf, String> {
     }
     use std::io::Write;
     let mut f = options.open(&path).map_err(|e| format!("couldn't write the .rdp file: {e}"))?;
-    f.write_all(&file_bytes(contents)).map_err(|e| format!("couldn't write the .rdp file: {e}"))?;
+    let bytes = if ext == "rdp" { file_bytes(contents) } else { contents.as_bytes().to_vec() };
+    f.write_all(&bytes).map_err(|e| format!("couldn't write the .rdp file: {e}"))?;
     Ok(path)
 }
 
@@ -251,7 +333,7 @@ pub fn clear_old_files() {
     for entry in entries.flatten() {
         let path = entry.path();
         let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > day);
-        if old && path.extension().is_some_and(|e| e == "rdp") {
+        if old && path.extension().is_some_and(|e| e == "rdp" || e == "remmina") {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -272,7 +354,42 @@ fn file_bytes(contents: &str) -> Vec<u8> {
     }
 }
 
-/// An RDP app this system has, and how to start it.
+/// The RDP apps Submarine can start.
+#[derive(Debug, PartialEq)]
+pub enum App {
+    /// Windows' Remote Desktop Connection.
+    Mstsc(PathBuf),
+    /// macOS: whatever opens `.rdp` files (Windows App).
+    MacOpen,
+    Remmina(PathBuf),
+    FreeRdp(PathBuf),
+}
+
+/// The RDP app this system has. Linux and the other Unixes: Remmina first
+/// (it asks for the password in a window), else FreeRDP's SDL client (a
+/// window too), else its X11 client. `find` looks a program up on PATH.
+pub fn pick_app(find: impl Fn(&str) -> Option<PathBuf>) -> Result<App, String> {
+    if cfg!(target_os = "windows") {
+        let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        return Ok(App::Mstsc(root.join("System32").join("mstsc.exe")));
+    }
+    if cfg!(target_os = "macos") {
+        return Ok(App::MacOpen);
+    }
+    if cfg!(target_os = "android") {
+        return Err("RDP isn't available on Android yet: it comes with the built-in RDP client".into());
+    }
+    if let Some(program) = find("remmina") {
+        return Ok(App::Remmina(program));
+    }
+    ["sdl-freerdp3", "sdl-freerdp", "xfreerdp3", "xfreerdp"]
+        .into_iter()
+        .find_map(&find)
+        .map(App::FreeRdp)
+        .ok_or_else(|| "no RDP app was found: install Remmina (with its RDP plugin) or FreeRDP".into())
+}
+
+/// An RDP app, ready to start.
 #[derive(Debug, PartialEq)]
 pub struct Launcher {
     /// What the tab calls it.
@@ -283,39 +400,31 @@ pub struct Launcher {
     /// that hands the file to an app already running (`open`, Remmina) exits
     /// at once, so its end says nothing.
     pub tracked: bool,
+    /// The file written for it, removed with the tab.
+    pub file: Option<PathBuf>,
 }
 
-/// The RDP app to open `file` (for `address`, as `user`) with, on this
-/// system. `find` looks a program up on PATH.
-pub fn launcher(file: &Path, address: &str, user: &str, find: impl Fn(&str) -> Option<PathBuf>) -> Result<Launcher, String> {
-    let file_arg = file.to_string_lossy().into_owned();
-    if cfg!(target_os = "windows") {
-        let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-        return Ok(Launcher { name: "Remote Desktop Connection", program: root.join("System32").join("mstsc.exe"), args: vec![file_arg], tracked: true });
-    }
-    if cfg!(target_os = "macos") {
-        // Whatever opens .rdp files: Windows App (or the older Microsoft
-        // Remote Desktop).
-        return Ok(Launcher { name: "the app that opens .rdp files", program: PathBuf::from("/usr/bin/open"), args: vec![file_arg], tracked: false });
-    }
-    if cfg!(target_os = "android") {
-        return Err("RDP isn't available on Android yet: it comes with the built-in RDP client".into());
-    }
-    // Linux and the other Unixes: Remmina reads the .rdp file and asks for
-    // the password in a window; FreeRDP's SDL client asks in a window too.
-    if let Some(program) = find("remmina") {
-        return Ok(Launcher { name: "Remmina", program, args: vec!["-c".into(), file_arg], tracked: false });
-    }
-    let mut freerdp_args = vec![format!("/v:{address}")];
-    if !user.trim().is_empty() {
-        freerdp_args.push(format!("/u:{}", user.trim()));
-    }
-    for (program, name) in [("sdl-freerdp3", "FreeRDP"), ("sdl-freerdp", "FreeRDP"), ("xfreerdp3", "FreeRDP"), ("xfreerdp", "FreeRDP")] {
-        if let Some(program) = find(program) {
-            return Ok(Launcher { name, program, args: freerdp_args, tracked: true });
+/// Writes what `app` needs for `address` (checked), as `user`, with
+/// `options` (a `.rdp` file, a Remmina profile, or nothing for FreeRDP),
+/// and says how to start it.
+pub fn prepare(app: App, session_id: &str, address: &str, user: &str, options: &RdpOptions) -> Result<Launcher, String> {
+    let path_arg = |p: &PathBuf| p.to_string_lossy().into_owned();
+    Ok(match app {
+        App::Mstsc(program) => {
+            let file = write_file(session_id, "rdp", &rdp_file(address, user, options))?;
+            Launcher { name: "Remote Desktop Connection", program, args: vec![path_arg(&file)], tracked: true, file: Some(file) }
         }
-    }
-    Err("no RDP app was found: install Remmina (with its RDP plugin) or FreeRDP".into())
+        App::MacOpen => {
+            let file = write_file(session_id, "rdp", &rdp_file(address, user, options))?;
+            Launcher { name: "the app that opens .rdp files", program: PathBuf::from("/usr/bin/open"), args: vec![path_arg(&file)], tracked: false, file: Some(file) }
+        }
+        App::Remmina(program) => {
+            let home = crate::ssh_config::home_dir().map(PathBuf::from);
+            let file = write_file(session_id, "remmina", &remmina_file(address, user, options, home.as_deref()))?;
+            Launcher { name: "Remmina", program, args: vec!["-c".into(), path_arg(&file)], tracked: false, file: Some(file) }
+        }
+        App::FreeRdp(program) => Launcher { name: "FreeRDP", program, args: freerdp_args(address, user, options), tracked: true, file: None },
+    })
 }
 
 /// What an RDP app wrote before it failed, for the tab: its error lines (its
@@ -380,11 +489,79 @@ mod tests {
     }
 
     #[test]
-    fn the_file_names_the_address_and_user_only() {
-        assert_eq!(rdp_file("127.0.0.5:51234", r"CORP\alice"), "full address:s:127.0.0.5:51234\r\nusername:s:CORP\\alice\r\n");
-        assert_eq!(rdp_file("[::1]:3389", "  "), "full address:s:[::1]:3389\r\n");
+    fn the_file_names_the_address_user_and_options_only() {
+        let full = RdpOptions::default();
+        assert_eq!(
+            rdp_file("127.0.0.5:51234", r"CORP\alice", &full),
+            concat!(
+                "full address:s:127.0.0.5:51234\r\n",
+                "username:s:CORP\\alice\r\n",
+                "screen mode id:i:2\r\n",
+                "redirectclipboard:i:1\r\n",
+                "drivestoredirect:s:\r\n",
+            )
+        );
+        let window = RdpOptions { full_screen: false, width: 1280, height: 720, clipboard: false, drives: true };
+        assert_eq!(
+            rdp_file("[::1]:3389", "  ", &window),
+            concat!(
+                "full address:s:[::1]:3389\r\n",
+                "screen mode id:i:1\r\n",
+                "desktopwidth:i:1280\r\n",
+                "desktopheight:i:720\r\n",
+                "redirectclipboard:i:0\r\n",
+                "drivestoredirect:s:*\r\n",
+            )
+        );
         assert_eq!(address("fe80::1", 3390), "[fe80::1]:3390");
         assert_eq!(address("server", 3389), "server:3389");
+    }
+
+    #[test]
+    fn options_from_the_tab_are_kept_in_bounds() {
+        let o: RdpOptions = serde_json::from_str(r#"{"fullScreen":false,"width":99999,"height":10}"#).unwrap();
+        assert_eq!((o.clone().checked().width, o.checked().height), (7680, 480));
+        let partial: RdpOptions = serde_json::from_str(r#"{"drives":true}"#).unwrap();
+        assert_eq!(partial, RdpOptions { drives: true, ..RdpOptions::default() }, "missing fields take the defaults");
+        assert!(!RdpOptions::default().drives, "files are never shared unless asked");
+    }
+
+    #[test]
+    fn remmina_and_freerdp_get_the_same_options() {
+        let window = RdpOptions { full_screen: false, width: 1024, height: 700, clipboard: false, drives: true };
+        assert_eq!(
+            remmina_file("127.0.0.5:5000", "alice", &window, Some(Path::new("/home/alice"))),
+            concat!(
+                "[remmina]\n",
+                "name=127.0.0.5:5000\n",
+                "protocol=RDP\n",
+                "server=127.0.0.5:5000\n",
+                "username=alice\n",
+                "viewmode=1\n",
+                "resolution_mode=1\n",
+                "resolution_width=1024\n",
+                "resolution_height=700\n",
+                "disableclipboard=1\n",
+                "sharefolder=/home/alice\n",
+            )
+        );
+        let full = RdpOptions::default();
+        assert_eq!(
+            remmina_file("h:1", "", &full, Some(Path::new("/home/alice"))),
+            concat!(
+                "[remmina]\n",
+                "name=h:1\n",
+                "protocol=RDP\n",
+                "server=h:1\n",
+                "viewmode=4\n",
+                "resolution_mode=2\n",
+                "disableclipboard=0\n",
+                "sharefolder=\n",
+            ),
+            "no folder shared unless asked"
+        );
+        assert_eq!(freerdp_args("h:1", r"CORP\alice", &full), vec!["/v:h:1", r"/u:CORP\alice", "+f", "/clipboard"]);
+        assert_eq!(freerdp_args("h:1", " ", &window), vec!["/v:h:1", "/size:1024x700", "-clipboard", "+drives"], "no /u: without a user");
     }
 
     #[test]
@@ -406,29 +583,32 @@ mod tests {
 
     #[test]
     fn the_rdp_app_for_this_system() {
-        let file = Path::new("/tmp/submarine-rdp/session-7.rdp");
         let none = |_: &str| None;
         if cfg!(target_os = "windows") {
-            let l = launcher(file, "127.0.0.5:5000", "alice", none).unwrap();
-            assert!(l.program.ends_with("mstsc.exe") && l.tracked, "{l:?}");
+            assert!(matches!(pick_app(none), Ok(App::Mstsc(p)) if p.ends_with("mstsc.exe")));
             return;
         }
         if cfg!(target_os = "macos") {
-            assert!(!launcher(file, "a:1", "", none).unwrap().tracked);
+            assert_eq!(pick_app(none), Ok(App::MacOpen));
             return;
         }
-        assert!(launcher(file, "a:1", "", none).is_err(), "none installed");
+        assert!(pick_app(none).is_err(), "none installed");
         let only = |want: &'static str| move |p: &str| (p == want).then(|| PathBuf::from(format!("/usr/bin/{p}")));
-        let r = launcher(file, "127.0.0.5:5000", "alice", only("remmina")).unwrap();
-        assert_eq!((r.name, r.args.clone(), r.tracked), ("Remmina", vec!["-c".to_string(), file.to_string_lossy().into_owned()], false));
-        let f = launcher(file, "127.0.0.5:5000", r"CORP\alice", only("xfreerdp3")).unwrap();
-        assert_eq!(f.args, vec!["/v:127.0.0.5:5000".to_string(), r"/u:CORP\alice".to_string()]);
-        assert!(f.tracked);
-        let blank = launcher(file, "h:1", " ", only("sdl-freerdp3")).unwrap();
-        assert_eq!(blank.args, vec!["/v:h:1".to_string()], "no /u: without a user");
-        // Remmina first when both are there.
+        assert_eq!(pick_app(only("remmina")), Ok(App::Remmina("/usr/bin/remmina".into())));
+        assert_eq!(pick_app(only("xfreerdp3")), Ok(App::FreeRdp("/usr/bin/xfreerdp3".into())));
+        // Remmina first when both are there; FreeRDP's SDL client before its X11 one.
         let both = |p: &str| matches!(p, "remmina" | "xfreerdp3").then(|| PathBuf::from(p));
-        assert_eq!(launcher(file, "h:1", "", both).unwrap().name, "Remmina");
+        assert_eq!(pick_app(both), Ok(App::Remmina("remmina".into())));
+        let freerdps = |p: &str| matches!(p, "sdl-freerdp3" | "xfreerdp3").then(|| PathBuf::from(p));
+        assert_eq!(pick_app(freerdps), Ok(App::FreeRdp("sdl-freerdp3".into())));
+        // FreeRDP needs no file; Remmina gets a profile, tracked or not.
+        let f = prepare(App::FreeRdp("x".into()), "session-rdp-prep", "h:1", "u", &RdpOptions::default()).unwrap();
+        assert_eq!((f.name, f.tracked, f.file), ("FreeRDP", true, None));
+        let r = prepare(App::Remmina("remmina".into()), "session-rdp-prep", "h:1", "u", &RdpOptions::default()).unwrap();
+        let file = r.file.clone().unwrap();
+        assert_eq!((r.name, r.tracked, r.args[0].as_str()), ("Remmina", false, "-c"));
+        assert!(file.to_string_lossy().ends_with(".remmina") && std::fs::read_to_string(&file).unwrap().starts_with("[remmina]\n"));
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]
@@ -448,7 +628,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_file_is_private_and_removed_with_the_session() {
-        let path = write_file("session-rdp-test::x", "full address:s:h:1\r\nusername:s:Jörg\r\n").unwrap();
+        let path = write_file("session-rdp-test::x", "rdp", "full address:s:h:1\r\nusername:s:Jörg\r\n").unwrap();
         assert_eq!(path.file_name().unwrap().to_string_lossy(), format!("{}-session-rdp-test__x.rdp", std::process::id()));
         let bytes = std::fs::read(&path).unwrap();
         let text = if cfg!(target_os = "windows") {
@@ -464,7 +644,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
-        let mut s = RdpSession::direct("h:1".into(), String::new());
+        let mut s = RdpSession::direct("h:1".into(), String::new(), RdpOptions::default());
         s.file = Some(path.clone());
         drop(s);
         assert!(!path.exists());

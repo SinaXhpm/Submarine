@@ -12700,9 +12700,12 @@ async fn initiate_rdp(
     server_id: i32,
     // The device's "Use keys from an ssh-agent" setting, for the SSH server.
     use_ssh_agent: Option<bool>,
+    // This device's RDP options for the server (window, clipboard, drives).
+    options: Option<rdp::RdpOptions>,
 ) -> Result<(), String> {
     use std::sync::Arc;
     use tauri::Emitter;
+    let options = options.unwrap_or_default().checked();
 
     // Android has no RDP app to hand it to; the built-in client comes later.
     if cfg!(target_os = "android") {
@@ -12772,7 +12775,7 @@ async fn initiate_rdp(
         log(&format!("Opening the RDP server {target}..."), "info");
 
         let (mut session, via) = match jump_id {
-            None => (rdp::RdpSession::direct(target.clone(), user.clone()), None),
+            None => (rdp::RdpSession::direct(target.clone(), user.clone(), options.clone()), None),
             Some(jid) => {
                 let via_name = jump_name.clone().unwrap_or_else(|| format!("server {jid}"));
                 log(&format!("Going through the SSH server {via_name}..."), "info");
@@ -12813,7 +12816,7 @@ async fn initiate_rdp(
                     Ok((local, parts)) => {
                         let address = local.to_string();
                         log(&format!("Forwarding {address} to {target} through {via_name}."), "success");
-                        (rdp::RdpSession::forwarded(parts, address, user.clone()), Some(via_name))
+                        (rdp::RdpSession::forwarded(parts, address, user.clone(), options.clone()), Some(via_name))
                     }
                     Err(e) => {
                         log(&e, "error");
@@ -12825,12 +12828,12 @@ async fn initiate_rdp(
         };
 
         let address = session.address.clone();
-        let launched = rdp::write_file(&session_id, &rdp::rdp_file(&address, &user)).and_then(|file| {
-            session.file = Some(file.clone());
-            rdp::launcher(&file, &address, &user, rdp::find_on_path)
-        });
+        let launched = rdp::pick_app(rdp::find_on_path).and_then(|app| rdp::prepare(app, &session_id, &address, &user, &options));
         let launcher = match launched {
-            Ok(l) => l,
+            Ok(l) => {
+                session.file = l.file.clone();
+                l
+            }
             Err(e) => {
                 log(&e, "error");
                 emit_connection_failed(&app, &attempt, &session_id, serde_json::json!({"reason": e})).await;
@@ -12861,6 +12864,13 @@ async fn initiate_rdp(
     Ok(())
 }
 
+/// The rendering workarounds this process set for its own WebKit at startup
+/// (software GL, X11 instead of Wayland), unless the user had set them. A
+/// program it starts would inherit them: they're taken out again for an RDP
+/// app, which should run as if the user had started it.
+#[cfg(target_os = "linux")]
+static OWN_RENDER_ENV: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+
 /// Starts an RDP app. When its process is the RDP window (`tracked`), the
 /// end of the tab's last open window reaches it as `rdp-app-exited-{id}`,
 /// with the last lines it wrote to stderr when it failed.
@@ -12879,6 +12889,10 @@ fn launch_rdp_app(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "linux")]
+    for name in OWN_RENDER_ENV.get().into_iter().flatten() {
+        cmd.env_remove(name);
+    }
     let mut child = cmd.spawn().map_err(|e| format!("Couldn't start {}: {e}", launcher.name))?;
     let (app, attempt, sid, tracked) = (app.clone(), attempt.clone(), session_id.to_string(), launcher.tracked);
     if tracked {
@@ -12918,7 +12932,8 @@ fn launch_rdp_app(
     Ok(())
 }
 
-/// Opens the RDP app again for an open RDP tab, through the same forward.
+/// Opens the RDP app again for an open RDP tab, through the same forward,
+/// with this device's options as they are now (changed since, maybe).
 /// Returns the app (`app`, `tracked`): it may not be the one opened before.
 #[tauri::command]
 async fn rdp_open_again(
@@ -12926,14 +12941,25 @@ async fn rdp_open_again(
     state: tauri::State<'_, SshState>,
     rdp_sessions: tauri::State<'_, rdp::RdpSessions>,
     session_id: String,
+    options: Option<rdp::RdpOptions>,
 ) -> Result<serde_json::Value, String> {
     let (launcher, windows) = {
         let mut map = rdp_sessions.lock().await;
         let session = map.get_mut(&session_id).ok_or("This RDP tab isn't open any more")?;
+        if let Some(options) = options {
+            session.options = options.checked();
+        }
         // Written again: another copy of the app may have cleared old files.
-        let file = rdp::write_file(&session_id, &rdp::rdp_file(&session.address, &session.username))?;
-        session.file = Some(file.clone());
-        (rdp::launcher(&file, &session.address, &session.username, rdp::find_on_path)?, std::sync::Arc::clone(&session.windows))
+        let launcher = rdp::prepare(rdp::pick_app(rdp::find_on_path)?, &session_id, &session.address, &session.username, &session.options)?;
+        // A different app may need a different file: the old one goes.
+        if let Some(new) = &launcher.file {
+            if session.file.as_ref() != Some(new) {
+                if let Some(old) = session.file.replace(new.clone()) {
+                    let _ = std::fs::remove_file(old);
+                }
+            }
+        }
+        (launcher, std::sync::Arc::clone(&session.windows))
     };
     let generation = state.session_generation.lock().await.get(&session_id).copied().unwrap_or(0);
     let attempt = ssh_manager::ConnectAttempt::new(std::sync::Arc::clone(&state.session_generation), session_id.clone(), generation);
@@ -18783,6 +18809,7 @@ pub fn run() {
     // the variable themselves before launching.
     #[cfg(target_os = "linux")]
     {
+        let mut own_render_env: Vec<&'static str> = Vec::new();
         // The single most effective override for the EGL_BAD_PARAMETER abort
         // seen on Fedora 40+ / Mesa 24+: tell WebKit not to attempt hardware
         // accelerated rendering AT ALL. The flag short-circuits the WebKit
@@ -18792,6 +18819,7 @@ pub fn run() {
         // on builds of WebKit that ignore the renderer-specific switches.
         if std::env::var_os("WEBKIT_DISABLE_HARDWARE_ACCELERATION").is_none() {
             std::env::set_var("WEBKIT_DISABLE_HARDWARE_ACCELERATION", "1");
+            own_render_env.push("WEBKIT_DISABLE_HARDWARE_ACCELERATION");
         }
         // Older-renderer + DMA-BUF flags stay as belt-and-braces — they
         // cost nothing on builds where WEBKIT_DISABLE_HARDWARE_ACCELERATION
@@ -18799,18 +18827,25 @@ pub fn run() {
         // patched WebKit honours one but not the other.
         if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
             std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            own_render_env.push("WEBKIT_DISABLE_DMABUF_RENDERER");
         }
         if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
             std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+            own_render_env.push("WEBKIT_DISABLE_COMPOSITING_MODE");
         }
         if std::env::var_os("GDK_BACKEND").is_none() {
             std::env::set_var("GDK_BACKEND", "x11");
+            own_render_env.push("GDK_BACKEND");
         }
         // Mesa software rasteriser flag kept as the final fallback in case
         // WebKit's "no hardware" path still calls into Mesa somewhere.
         if std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none() {
             std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+            own_render_env.push("LIBGL_ALWAYS_SOFTWARE");
         }
+        // Kept out of the programs this process starts (an RDP app): see
+        // OWN_RENDER_ENV.
+        let _ = OWN_RENDER_ENV.set(own_render_env);
         // Sandbox the web process (bubblewrap) when this machine supports it.
         // The rendering flags above still reach it: WebKit's bwrap launcher
         // only sets/unsets a few specific variables, it never clears the

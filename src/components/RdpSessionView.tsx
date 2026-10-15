@@ -5,6 +5,7 @@ import { AlertTriangle, ExternalLink, Loader2, MonitorSmartphone, RotateCw, X } 
 import { AuthPrompts } from "./AuthPrompts";
 import { readUseSshAgent } from "../util/sshAgent";
 import { IS_ANDROID } from "../util/platform";
+import { describeRdpOptions, readRdpOptions } from "../util/rdpOptions";
 
 // An RDP server's tab (issue #3). Submarine opens the system's RDP app, going
 // through the node's SSH server when it has one (a forward on a loopback port
@@ -25,6 +26,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   // Set when an app that hands the file on (macOS `open`, Remmina) failed.
   const [appFailed, setAppFailed] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
+  // The options the RDP app was last opened with (this device's, read then).
+  const [usedOptions, setUsedOptions] = useState("");
 
   const [fingerprintPrompt, setFingerprintPrompt] = useState<any>(null);
   const [kbiPrompt, setKbiPrompt] = useState<any>(null);
@@ -52,13 +55,15 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
     setAppClosed(null);
     setAppFailed(null);
     setReason("");
-    invoke("initiate_rdp", { sessionId: session.id, serverId: session.serverId, useSshAgent: readUseSshAgent() }).catch((e) => {
+    const options = readRdpOptions(session.serverUuid);
+    setUsedOptions(describeRdpOptions(options));
+    invoke("initiate_rdp", { sessionId: session.id, serverId: session.serverId, useSshAgent: readUseSshAgent(), options }).catch((e) => {
       const why = String(e);
       pushLog({ msg: why, type: "error" });
       setReason(why);
       setStatus("failed");
     });
-  }, [session.id, session.serverId, pushLog]);
+  }, [session.id, session.serverId, session.serverUuid, pushLog]);
 
   // Listen first, then connect: a result that comes back at once must find
   // its listener (see #167).
@@ -146,7 +151,10 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
     setAppFailed(null);
     try {
       // Not always the app opened before (one may have been installed since).
-      const again = await invoke<{ app: string; tracked: boolean }>("rdp_open_again", { sessionId: session.id });
+      // With the options as they are now: they may have changed since.
+      const options = readRdpOptions(session.serverUuid);
+      setUsedOptions(describeRdpOptions(options));
+      const again = await invoke<{ app: string; tracked: boolean }>("rdp_open_again", { sessionId: session.id, options });
       setOpened((o) => (o ? { ...o, app: again.app, tracked: again.tracked } : o));
       pushLog({ msg: `Opened ${again.app} again.`, type: "success" });
     } catch (e) {
@@ -244,6 +252,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
               {opened.app} connects to <span className="font-mono text-zinc-100">{opened.address}</span>
               {opened.via ? <> — a port of this computer that goes through the SSH server <span className="text-zinc-100">{opened.via}</span>.</> : "."}
             </p>
+            {usedOptions && <p className="text-zinc-400">{usedOptions}</p>}
             <p className="text-zinc-500">
               It asks for the RDP password itself.{opened.via ? " The connection stays open while this tab does; closing the tab ends it." : ""}
             </p>
