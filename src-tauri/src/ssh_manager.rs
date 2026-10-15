@@ -414,6 +414,9 @@ pub struct SshState {
     /// of the same tab (the next SFTP op re-elevates) and is dropped when the
     /// tab closes.
     pub sftp_elevation: Arc<Mutex<HashMap<String, SftpElevation>>>,
+    /// Tabs whose cached SFTP session is file access over shell commands (the
+    /// server has no SFTP, see `shell_sftp`): the pane says so.
+    pub sftp_shell: Arc<Mutex<std::collections::HashSet<String>>>,
     /// Secrets the user typed at connect time when the saved node / login / key
     /// had none (issue #30), keyed by the BASE session id (the tab). A reconnect
     /// or a dedicated `::sftp` / `::fwd` secondary reuses what the user already
@@ -426,8 +429,10 @@ pub struct SshState {
 /// never on a command line (it is written to sudo's stdin).
 #[derive(Clone)]
 pub struct SftpElevation {
-    /// Absolute path of the server's sftp-server binary (probed once).
-    pub server_path: String,
+    /// Absolute path of the server's sftp-server binary (probed once). `None`:
+    /// the server has none, and file operations run as shell commands under
+    /// sudo (`shell_sftp`).
+    pub server_path: Option<String>,
     /// `None` = passwordless sudo (`sudo -n`).
     pub password: Option<zeroize::Zeroizing<String>>,
 }
@@ -474,6 +479,7 @@ impl SshState {
             session_tunnel_specs: Arc::new(Mutex::new(HashMap::new())),
             session_generation: Arc::new(Mutex::new(HashMap::new())),
             sftp_elevation: Arc::new(Mutex::new(HashMap::new())),
+            sftp_shell: Arc::new(Mutex::new(std::collections::HashSet::new())),
             prompted_secrets: Arc::new(Mutex::new(HashMap::new())),
         }
     }

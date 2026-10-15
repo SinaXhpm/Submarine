@@ -21,6 +21,7 @@ type RawSftpEntry = {
 type RawSftpList = {
   current_path: string;
   entries: RawSftpEntry[];
+  via_shell?: boolean;
 };
 
 export function createRemoteProvider(sessionId: string): RemoteFileProvider {
@@ -51,7 +52,7 @@ export function createRemoteProvider(sessionId: string): RemoteFileProvider {
         isSymlink: !!r.is_symlink,
         brokenLink: !!r.broken_link,
       }));
-      return { currentPath: raw.current_path, entries };
+      return { currentPath: raw.current_path, entries, viaShell: !!raw.via_shell };
     },
 
     joinPath(dir: string, name: string) {

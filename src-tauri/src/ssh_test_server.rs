@@ -22,6 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// bridged to a fresh in-process `TestServer` (the "target"), whose received
 /// byte count is `jump_target_received`.
 #[derive(Clone, Default)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct TestServer {
     pub received: Arc<AtomicUsize>,
     pub jump_target_received: Arc<AtomicUsize>,
@@ -37,6 +38,31 @@ pub(crate) struct TestServer {
     second_factor: bool,
     /// How an `sftp` subsystem request is answered.
     sftp: SftpAnswer,
+    /// Run each `exec` command with this machine's `sh` (unix): a server
+    /// that runs commands for real.
+    shell: Option<ShellOpts>,
+    /// stdin of the commands still running, by channel (`None` = EOF).
+    stdin: std::collections::HashMap<ChannelId, tokio::sync::mpsc::UnboundedSender<Option<Vec<u8>>>>,
+    /// Ends a running command when its channel is closed.
+    kill: std::collections::HashMap<ChannelId, Arc<tokio::sync::Notify>>,
+    /// Commands started, then still running (shared with their tasks).
+    pub running: Arc<AtomicUsize>,
+}
+
+/// How the test server runs `exec` commands with the local `sh` (unix only).
+#[derive(Clone, Default)]
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) struct ShellOpts {
+    /// PATH for the commands (the test process's own when `None`).
+    pub path: Option<String>,
+    /// Their working folder (the "home" folder).
+    pub cwd: Option<std::path::PathBuf>,
+    /// The account's login shell: what runs each command, as
+    /// `<login...> <command>` (`sh -c` when empty).
+    pub login: Vec<String>,
+    /// Like Dropbear: a command keeps running when its channel is closed;
+    /// only a `signal` request ends it.
+    pub keep_running_on_close: bool,
 }
 
 /// The test server's answer to an `sftp` subsystem request.
@@ -70,6 +96,89 @@ impl TestServer {
     /// A server that answers an `sftp` subsystem request with `answer`.
     pub(crate) fn with_sftp(answer: SftpAnswer) -> Self {
         Self { sftp: answer, ..Self::default() }
+    }
+
+    /// A server without SFTP that runs commands with this machine's `sh`.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(crate) fn with_shell(opts: ShellOpts) -> Self {
+        Self { sftp: SftpAnswer::Refuse, shell: Some(opts), ..Self::default() }
+    }
+
+    /// Run `command` with `sh -c` for the channel: stdin from the client's
+    /// data, stdout and stderr back, then its exit status, EOF and close.
+    #[cfg(unix)]
+    fn spawn_shell(&mut self, channel: ChannelId, command: String, handle: server::Handle) {
+        use std::process::Stdio;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Option<Vec<u8>>>();
+        let kill = Arc::new(tokio::sync::Notify::new());
+        self.stdin.insert(channel, tx);
+        self.kill.insert(channel, Arc::clone(&kill));
+        let login = match &self.shell {
+            Some(opts) if !opts.login.is_empty() => opts.login.clone(),
+            _ => vec!["sh".to_string(), "-c".to_string()],
+        };
+        let mut cmd = tokio::process::Command::new(&login[0]);
+        cmd.args(&login[1..]).arg(&command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        if let Some(opts) = &self.shell {
+            if let Some(path) = &opts.path {
+                cmd.env("PATH", path);
+            }
+            if let Some(cwd) = &opts.cwd {
+                cmd.current_dir(cwd);
+            }
+        }
+        let running = Arc::clone(&self.running);
+        tokio::spawn(async move {
+            let Ok(mut child) = cmd.kill_on_drop(true).spawn() else {
+                let _ = handle.exit_status_request(channel, 127).await;
+                let _ = handle.close(channel).await;
+                return;
+            };
+            running.fetch_add(1, Ordering::SeqCst);
+            let mut stdin = child.stdin.take().unwrap();
+            let mut stdout = child.stdout.take().unwrap();
+            let mut stderr = child.stderr.take().unwrap();
+            let feed = tokio::spawn(async move {
+                while let Some(Some(data)) = rx.recv().await {
+                    if stdin.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let h = handle.clone();
+            let out = tokio::spawn(async move {
+                let mut buf = vec![0u8; 32 * 1024];
+                while let Ok(n) = stdout.read(&mut buf).await {
+                    if n == 0 || h.data(channel, buf[..n].to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let h = handle.clone();
+            let err = tokio::spawn(async move {
+                let mut buf = vec![0u8; 8 * 1024];
+                while let Ok(n) = stderr.read(&mut buf).await {
+                    if n == 0 || h.extended_data(channel, 1, buf[..n].to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let code = tokio::select! {
+                s = child.wait() => s.ok().and_then(|s| s.code()).unwrap_or(255) as u32,
+                _ = kill.notified() => {
+                    let _ = child.kill().await;
+                    255
+                }
+            };
+            let _ = out.await;
+            let _ = err.await;
+            feed.abort();
+            running.fetch_sub(1, Ordering::SeqCst);
+            let _ = handle.exit_status_request(channel, code).await;
+            let _ = handle.eof(channel).await;
+            let _ = handle.close(channel).await;
+        });
     }
 
     fn accepts(&self, key: &russh::keys::PublicKey) -> bool {
@@ -175,6 +284,11 @@ impl server::Handler for TestServer {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         let command = String::from_utf8_lossy(data).into_owned();
+        #[cfg(unix)]
+        if self.shell.is_some() {
+            self.spawn_shell(channel, command, session.handle());
+            return Ok(());
+        }
         if command == "echo" {
             self.echo.insert(channel);
         } else if let Some(total) = command
@@ -208,6 +322,34 @@ impl server::Handler for TestServer {
         self.received.fetch_add(data.len(), Ordering::SeqCst);
         if self.echo.contains(&channel) {
             session.data(channel, data.to_vec())?;
+        }
+        if let Some(stdin) = self.stdin.get(&channel) {
+            let _ = stdin.send(Some(data.to_vec()));
+        }
+        Ok(())
+    }
+
+    async fn channel_eof(&mut self, channel: ChannelId, _session: &mut Session) -> Result<(), Self::Error> {
+        if let Some(stdin) = self.stdin.remove(&channel) {
+            let _ = stdin.send(None);
+        }
+        Ok(())
+    }
+
+    async fn channel_close(&mut self, channel: ChannelId, _session: &mut Session) -> Result<(), Self::Error> {
+        self.stdin.remove(&channel);
+        if self.shell.as_ref().is_some_and(|s| s.keep_running_on_close) {
+            return Ok(());
+        }
+        if let Some(kill) = self.kill.remove(&channel) {
+            kill.notify_one();
+        }
+        Ok(())
+    }
+
+    async fn signal(&mut self, channel: ChannelId, _signal: russh::Sig, _session: &mut Session) -> Result<(), Self::Error> {
+        if let Some(kill) = self.kill.remove(&channel) {
+            kill.notify_one();
         }
         Ok(())
     }

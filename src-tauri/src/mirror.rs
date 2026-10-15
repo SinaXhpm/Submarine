@@ -245,11 +245,8 @@ async fn set_state(app: &AppHandle, status: &Arc<Mutex<MirrorStatus>>, new: &str
 /// own subsystem channel so it doesn't contend with the file browser or
 /// another mirror task on a shared one.
 async fn open_sftp(handle: &Arc<Mutex<russh::client::Handle<ClientHandler>>>) -> Result<SftpSession, String> {
-    let channel = {
-        let h = handle.lock().await;
-        h.channel_open_session().await.map_err(|e| format!("open session: {}", e))?
-    };
-    crate::start_sftp(channel).await.map_err(|e| format!("sftp init: {}", e))
+    // A server without SFTP gets file access over shell commands.
+    crate::open_sftp(handle).await.map(|(sftp, _)| sftp).map_err(|e| format!("sftp init: {}", e))
 }
 
 /// Equivalent of `mkdir -p` over SFTP. Walks the path components and

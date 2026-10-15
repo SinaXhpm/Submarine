@@ -274,6 +274,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   archiveOff,
 }, ref) => {
   const [currentPath, setCurrentPath] = useState("");
+  // The server has no SFTP: the remote pane works over shell commands.
+  const [viaShell, setViaShell] = useState(false);
   // Last five distinct directories visited in this panel, MRU first. Lives
   // in component state (cleared per session) — persistence didn't seem
   // worth the complexity given users usually want recents from this work
@@ -489,6 +491,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       if (seq !== listSeqRef.current) return;
       const present = new Set(result.entries.map((e) => e.path));
       setEntries(result.entries);
+      setViaShell(!!result.viaShell);
       setCurrentPath(result.currentPath);
       setTempInput(result.currentPath);
       if (result.currentPath === currentPathRef.current) {
@@ -537,6 +540,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         const result = await provider.list(path);
         if (seq !== listSeqRef.current) return; // the user went elsewhere meanwhile
         setEntries(result.entries);
+        setViaShell(!!result.viaShell);
         setCurrentPath(result.currentPath);
         setTempInput(result.currentPath);
         setSelected(new Set());
@@ -1733,6 +1737,15 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300 pl-1 shrink-0">
               {provider.label}
             </span>
+            {viaShell && (
+              <span
+                title={"This server has no SFTP, so files go over shell commands. Everything works the same, " +
+                  "just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP."}
+                className="text-[9px] font-bold uppercase tracking-wider text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-1 shrink-0 cursor-help"
+              >
+                Shell
+              </span>
+            )}
             {provider.id === "local" && (
               <button
                 onClick={async () => {
