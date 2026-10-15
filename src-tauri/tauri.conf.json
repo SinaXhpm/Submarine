@@ -14,8 +14,8 @@
         "title": "Submarine",
         "width": 1080,
         "height": 720,
-        "minWidth": 820,
-        "minHeight": 600,
+        "minWidth": 480,
+        "minHeight": 320,
         "decorations": false,
         "backgroundColor": "#0a0a0c",
         "center": true

@@ -107,14 +107,16 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
   }
 
   return (
-    <aside className="w-14 h-full bg-background border-r border-white/5 flex flex-col items-center py-6 shrink-0 relative z-10 shadow-2xl brightness-95 transition-all">
+    // Scrolls when the window is too short for every button (a window tiled
+    // to half a small screen), so Lock and Settings never end up out of reach.
+    <aside className="w-14 h-full bg-background border-r border-white/5 flex flex-col items-center py-6 shrink-0 relative z-10 shadow-2xl brightness-95 transition-all overflow-y-auto no-scrollbar">
       {/* Which profile you're in, and everything scoped to it — sits above the
           divider because it answers "where am I?", not "what am I looking at?". */}
-      <div className="w-full px-2 pb-3 mb-3 border-b border-white/5">
+      <div className="w-full px-2 pb-3 mb-3 border-b border-white/5 shrink-0">
         {profileRail}
       </div>
 
-      <nav className="flex flex-col gap-3 w-full px-2">
+      <nav className="flex flex-col gap-3 w-full px-2 shrink-0">
         {items.map((item) => (
           <button
             key={item.id}
@@ -136,7 +138,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
           and settings. Logout sits above settings so the gear stays as the
           last-most icon — matches the muscle memory from when it was the
           only bottom action. */}
-      <div className="mt-auto w-full px-2 flex flex-col gap-2">
+      <div className="mt-auto w-full px-2 pt-3 flex flex-col gap-2 shrink-0">
         {onLogout && (
           <button
             onClick={onLogout}
