@@ -22,6 +22,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const [reason, setReason] = useState("");
   // Set when an RDP window this tab can follow closed: its last words.
   const [appClosed, setAppClosed] = useState<string[] | null>(null);
+  // Set when an app that hands the file on (macOS `open`, Remmina) failed.
+  const [appFailed, setAppFailed] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [fingerprintPrompt, setFingerprintPrompt] = useState<any>(null);
@@ -48,6 +50,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
     setStatus("connecting");
     setOpened(null);
     setAppClosed(null);
+    setAppFailed(null);
     setReason("");
     invoke("initiate_rdp", { sessionId: session.id, serverId: session.serverId, useSshAgent: readUseSshAgent() }).catch((e) => {
       const why = String(e);
@@ -103,6 +106,9 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       listen(`rdp-app-exited-${id}`, (e: any) => {
         setAppClosed(Array.isArray(e.payload?.said) ? e.payload.said : []);
       }),
+      listen(`rdp-app-failed-${id}`, (e: any) => {
+        setAppFailed(Array.isArray(e.payload?.said) ? e.payload.said : []);
+      }),
     ]);
     // Android: nothing to open yet (the built-in client comes later).
     subs.then(() => { if (!cancelled && !IS_ANDROID) connect(); });
@@ -137,6 +143,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       // Not always the app opened before (one may have been installed since).
       const again = await invoke<{ app: string; tracked: boolean }>("rdp_open_again", { sessionId: session.id });
       setAppClosed(null);
+      setAppFailed(null);
       setOpened((o) => (o ? { ...o, app: again.app, tracked: again.tracked } : o));
       pushLog({ msg: `Opened ${again.app} again.`, type: "success" });
     } catch (e) {
@@ -237,6 +244,12 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
             <p className="text-zinc-500">
               It asks for the RDP password itself.{opened.via ? " The connection stays open while this tab does; closing the tab ends it." : ""}
             </p>
+            {appFailed && (
+              <div className="pt-1 text-red-300/90">
+                <p>{opened.app} couldn't open it.</p>
+                {appFailed.map((l, i) => <p key={i} className="font-mono text-[11px] text-zinc-500 break-all">{l}</p>)}
+              </div>
+            )}
             {appClosed && (
               <div className="pt-1 text-amber-300/90">
                 <p>The RDP window was closed. Open it again with “Open again”.</p>

@@ -12900,11 +12900,19 @@ fn launch_rdp_app(
             }
         }
         let status = child.wait().await;
-        if !tracked || windows.fetch_sub(1, Ordering::SeqCst) != 1 || !attempt.is_current_now() {
-            return;
-        }
         let code = status.ok().and_then(|s| s.code());
         let said = if code.unwrap_or(0) != 0 { rdp::last_words(&String::from_utf8_lossy(&tail), 3) } else { Vec::new() };
+        if !tracked {
+            // A launcher that hands the file on (`open`, Remmina) ends at
+            // once; a failure is all its end can tell (no app for .rdp files).
+            if code.unwrap_or(0) != 0 && attempt.is_current_now() {
+                let _ = app.emit(&format!("rdp-app-failed-{sid}"), serde_json::json!({"code": code, "said": said}));
+            }
+            return;
+        }
+        if windows.fetch_sub(1, Ordering::SeqCst) != 1 || !attempt.is_current_now() {
+            return;
+        }
         let _ = app.emit(&format!("rdp-app-exited-{sid}"), serde_json::json!({"code": code, "said": said}));
     });
     Ok(())
@@ -12997,8 +13005,12 @@ async fn disconnect_session(
     // Drop any ProxyJump bastion handle for this session — closes the jump
     // connection once the target it was carrying is gone.
     state.jump_connections.lock().await.remove(&session_id);
-    // An RDP tab: its SSH route, forward and .rdp file (issue #3).
-    rdp_sessions.lock().await.remove(&session_id);
+    // An RDP tab: its SSH route, forward and .rdp file (issue #3). Its view
+    // hears it (the tab menu's Disconnect); a closing tab has gone already.
+    if rdp_sessions.lock().await.remove(&session_id).is_some() {
+        use tauri::Emitter;
+        let _ = app.emit(&format!("session-disconnected-{session_id}"), serde_json::json!({"reason": "Disconnected."}));
+    }
     // Drop terminal tx/resize entries so a subsequent reconnect doesn't try
     // to write into a dead PTY task. Match by the exact `${session_id}-term-`
     // prefix — a `contains` here silently tears down session-10's terminals
