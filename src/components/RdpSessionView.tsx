@@ -134,9 +134,11 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const openAgain = async () => {
     setBusy(true);
     try {
-      const app = await invoke<string>("rdp_open_again", { sessionId: session.id });
+      // Not always the app opened before (one may have been installed since).
+      const again = await invoke<{ app: string; tracked: boolean }>("rdp_open_again", { sessionId: session.id });
       setAppClosed(null);
-      pushLog({ msg: `Opened ${app} again.`, type: "success" });
+      setOpened((o) => (o ? { ...o, app: again.app, tracked: again.tracked } : o));
+      pushLog({ msg: `Opened ${again.app} again.`, type: "success" });
     } catch (e) {
       pushLog({ msg: String(e), type: "error" });
     } finally {

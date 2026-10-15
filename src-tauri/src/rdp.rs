@@ -318,6 +318,25 @@ pub fn launcher(file: &Path, address: &str, user: &str, find: impl Fn(&str) -> O
     Err("no RDP app was found: install Remmina (with its RDP plugin) or FreeRDP".into())
 }
 
+/// What an RDP app wrote before it failed, for the tab: its error lines (its
+/// last lines when none is one), at most `n`, each without FreeRDP's
+/// `[time] [pid:thread] [LEVEL][module] - [function]: ` prefix.
+pub fn last_words(stderr: &str, n: usize) -> Vec<String> {
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let errors: Vec<&str> = lines.iter().copied().filter(|l| l.contains("[ERROR]")).collect();
+    let pick = if errors.is_empty() { &lines } else { &errors };
+    pick[pick.len().saturating_sub(n)..]
+        .iter()
+        .map(|l| {
+            let said = match l.find("]: ") {
+                Some(i) if l.starts_with('[') => &l[i + 3..],
+                _ => l,
+            };
+            said.chars().take(300).collect()
+        })
+        .collect()
+}
+
 /// A program on PATH, as a shell would find it.
 pub fn find_on_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
@@ -410,6 +429,21 @@ mod tests {
         // Remmina first when both are there.
         let both = |p: &str| matches!(p, "remmina" | "xfreerdp3").then(|| PathBuf::from(p));
         assert_eq!(launcher(file, "h:1", "", both).unwrap().name, "Remmina");
+    }
+
+    #[test]
+    fn an_rdp_apps_last_words_are_its_errors() {
+        let freerdp = "[23:15:10:158] [316197:0004d325] [WARN][com.freerdp.client.common.cmdline] - [freerdp_client_warn_experimental]: Developers hang out in https://matrix.to/\n\
+            [23:15:16:907] [316197:0004d325] [ERROR][com.freerdp.utils.signal] - [term_handler]: Caught signal 'Terminated' [15]\n\
+            [23:15:16:907] [316197:0004d325] [ERROR][com.freerdp.core] - [freerdp_abort_connect_context]: ERRCONNECT_CONNECT_CANCELLED [0x0002000B]\n\
+            fuse: writing device: Bad file descriptor\n";
+        assert_eq!(
+            last_words(freerdp, 3),
+            vec!["Caught signal 'Terminated' [15]".to_string(), "ERRCONNECT_CONNECT_CANCELLED [0x0002000B]".to_string()]
+        );
+        assert_eq!(last_words("one\n\ntwo\nthree\n", 2), vec!["two".to_string(), "three".to_string()], "no errors: the last lines");
+        assert!(last_words("", 3).is_empty());
+        assert_eq!(last_words(&"x".repeat(1000), 1)[0].len(), 300);
     }
 
     #[tokio::test]

@@ -12904,27 +12904,21 @@ fn launch_rdp_app(
             return;
         }
         let code = status.ok().and_then(|s| s.code());
-        let said: Vec<String> = if code.unwrap_or(0) != 0 {
-            let text = String::from_utf8_lossy(&tail).into_owned();
-            let lines: Vec<String> = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
-            lines[lines.len().saturating_sub(4)..].to_vec()
-        } else {
-            Vec::new()
-        };
+        let said = if code.unwrap_or(0) != 0 { rdp::last_words(&String::from_utf8_lossy(&tail), 3) } else { Vec::new() };
         let _ = app.emit(&format!("rdp-app-exited-{sid}"), serde_json::json!({"code": code, "said": said}));
     });
     Ok(())
 }
 
 /// Opens the RDP app again for an open RDP tab, through the same forward.
-/// Returns the app's name.
+/// Returns the app (`app`, `tracked`): it may not be the one opened before.
 #[tauri::command]
 async fn rdp_open_again(
     app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
     rdp_sessions: tauri::State<'_, rdp::RdpSessions>,
     session_id: String,
-) -> Result<String, String> {
+) -> Result<serde_json::Value, String> {
     let (launcher, windows) = {
         let mut map = rdp_sessions.lock().await;
         let session = map.get_mut(&session_id).ok_or("This RDP tab isn't open any more")?;
@@ -12936,7 +12930,7 @@ async fn rdp_open_again(
     let generation = state.session_generation.lock().await.get(&session_id).copied().unwrap_or(0);
     let attempt = ssh_manager::ConnectAttempt::new(std::sync::Arc::clone(&state.session_generation), session_id.clone(), generation);
     launch_rdp_app(&app, &attempt, &session_id, &launcher, windows)?;
-    Ok(launcher.name.to_string())
+    Ok(serde_json::json!({"app": launcher.name, "tracked": launcher.tracked}))
 }
 
 #[tauri::command]
