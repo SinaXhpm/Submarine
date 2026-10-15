@@ -179,6 +179,61 @@ pub async fn authenticate_with_key_result<H: client::Handler>(
     session.authenticate_publickey(user, key).await
 }
 
+/// Certificate login with a private key held here (a key file). An RSA
+/// certificate is signed with the hash the server asks for, as a plain RSA
+/// key is: russh's `authenticate_openssh_cert` always names it
+/// `ssh-rsa-cert-v01@openssh.com` (SHA-1), which OpenSSH 8.8 and later refuse.
+pub async fn authenticate_with_certificate<H: client::Handler>(
+    session: &mut client::Handle<H>,
+    user: &str,
+    key: Arc<PrivateKey>,
+    cert: russh::keys::Certificate,
+) -> Result<client::AuthResult, russh::Error> {
+    let hash_alg = if key.algorithm().is_rsa() {
+        session.best_supported_rsa_hash().await?.flatten()
+    } else {
+        None
+    };
+    session
+        .authenticate_certificate_with(user, cert, hash_alg, &mut KeyFileSigner(key))
+        .await
+        .map_err(|e| match e {
+            russh::AgentAuthError::Send(_) => russh::Error::SendError,
+            russh::AgentAuthError::Key(e) => russh::Error::Keys(e),
+        })
+}
+
+/// Signs a login the way an ssh-agent answers one, with a key held here: the
+/// signature is appended to the data as an SSH string.
+struct KeyFileSigner(Arc<PrivateKey>);
+
+impl russh::auth::Signer for KeyFileSigner {
+    type Error = russh::AgentAuthError;
+
+    fn auth_sign(
+        &mut self,
+        _identity: &russh::keys::agent::AgentIdentity,
+        hash_alg: Option<HashAlg>,
+        mut to_sign: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>> + Send {
+        let signed = sign_appended(&self.0, hash_alg, &mut to_sign).map(|()| to_sign);
+        std::future::ready(signed.map_err(russh::AgentAuthError::Key))
+    }
+}
+
+fn sign_appended(key: &PrivateKey, hash_alg: Option<HashAlg>, data: &mut Vec<u8>) -> Result<(), russh::keys::Error> {
+    use russh::keys::signature::Signer;
+    use russh::keys::ssh_encoding::Encode;
+    use russh::keys::ssh_key::private::KeypairData;
+    let signature = match key.key_data() {
+        KeypairData::Rsa(rsa) => Signer::try_sign(&(rsa, hash_alg), data.as_slice()),
+        other => Signer::try_sign(other, data.as_slice()),
+    }
+    .map_err(|_| russh::keys::ssh_key::Error::Crypto)?;
+    signature.encoded()?.encode(data)?;
+    Ok(())
+}
+
 /// Password auth with the `bool` contract callers relied on under russh 0.40.
 pub async fn authenticate_with_password<H: client::Handler>(
     session: &mut client::Handle<H>,

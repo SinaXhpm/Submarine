@@ -7948,7 +7948,7 @@ async fn try_config_identities<H: russh::client::Handler>(
             let result = match cert {
                 Some(cert) => {
                     ctx.log(&format!("Trying the certificate {label} (IdentityFile in ~/.ssh/config)..."), "info");
-                    session.authenticate_openssh_cert(user, std::sync::Arc::clone(&key), cert).await?
+                    ssh_manager::authenticate_with_certificate(session, user, std::sync::Arc::clone(&key), cert).await?
                 }
                 None => {
                     ctx.log(&format!("Trying IdentityFile {label} from ~/.ssh/config..."), "info");
