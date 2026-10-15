@@ -34,6 +34,7 @@ mod agent_auth;
 mod ssh_config;
 mod proxy_command;
 mod known_hosts;
+mod rdp;
 #[cfg(target_os = "android")]
 mod android_bridge;
 #[cfg(test)]
@@ -820,7 +821,7 @@ const ENTITIES: &[EntitySpec] = &[
     EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password", "edited_by"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys", required: false }] },
     EntitySpec {
         table: "servers",
-        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "position", "edited_by"],
+        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "protocol", "position", "edited_by"],
         fks: &[
             Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials", required: false },
             Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders", required: false },
@@ -1183,6 +1184,11 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     // with the coerced 0 — otherwise an ordinary field edit synced from an old
     // peer would silently reset a manual drag-order on this device.
     let mut preserve_local_position = false;
+    // Set when the incoming record has no `protocol` key at all: a peer from
+    // before RDP servers (issue #3). Its edit of an RDP node must not turn
+    // the node back into an SSH server here, so the local value is kept. A
+    // newer peer always sends the key, NULL for an SSH server.
+    let preserve_local_protocol = spec.table == "servers" && !obj.contains_key("protocol");
     for c in spec.cols {
         columns.push((*c).into());
         let val = obj.get(*c);
@@ -1263,6 +1269,8 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                 // Peer didn't know about `position` — don't clobber our local
                 // drag-order with the coerced 0; keep the existing row value.
                 format!("position={}.position", spec.table)
+            } else if c.as_str() == "protocol" && preserve_local_protocol {
+                format!("protocol={}.protocol", spec.table)
             } else {
                 format!("{c}=excluded.{c}")
             }
@@ -3418,7 +3426,7 @@ mod sync_engine_tests {
             "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
-             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
              CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});",
@@ -3857,6 +3865,44 @@ mod sync_engine_tests {
             .unwrap();
         assert_eq!(host, "h2", "the newer remote field edit must apply");
         assert_eq!(pos, 5, "a pre-0.3.5 peer edit must NOT reset the local drag position to 0");
+    }
+
+    // RDP servers (issue #3): `protocol` travels with the server; an RDP node
+    // edited by a peer from before RDP (its payload has no `protocol` key)
+    // stays an RDP node, while a newer peer's explicit NULL makes it SSH.
+    #[test]
+    fn protocol_syncs_and_an_older_peers_edit_keeps_it() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name, host, port, protocol) VALUES('win','w1',3389,'rdp')", []).unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        let proto = |c: &Connection| -> Option<String> { c.query_row("SELECT protocol FROM servers WHERE name='win'", [], |r| r.get(0)).unwrap() };
+        assert_eq!(proto(&b).as_deref(), Some("rdp"), "the protocol syncs");
+
+        // A peer from before RDP edits the host: no `protocol` key, newer stamp.
+        a.execute("UPDATE servers SET host='w2' WHERE name='win'", []).unwrap();
+        let ahead = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            assert!(obj.as_object_mut().unwrap().remove("protocol").is_some(), "a current peer always sends the key");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+            r.updated_at = format!("{ahead:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let host: String = b.query_row("SELECT host FROM servers WHERE name='win'", [], |r| r.get(0)).unwrap();
+        assert_eq!(host, "w2", "the edit applies");
+        assert_eq!(proto(&b).as_deref(), Some("rdp"), "and the node stays an RDP server");
+
+        // A current peer turns it back into an SSH server: an explicit NULL.
+        a.execute("UPDATE servers SET protocol=NULL, host='w3' WHERE name='win'", []).unwrap();
+        let later = ahead + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            r.updated_at = format!("{later:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        assert_eq!(proto(&b), None, "NULL from a current peer makes it SSH again");
     }
 
     #[test]
@@ -5173,6 +5219,10 @@ async fn setup_master_db_inner(
             // = connect directly. Nullable + additive so old binaries ignore
             // it (no SCHEMA_VERSION bump, matching run_on_connect above).
             "ALTER TABLE servers ADD COLUMN jump_host_id INTEGER",
+            // What the node is (issue #3): NULL = an SSH server, 'rdp' = an RDP
+            // server. Nullable + additive like jump_host_id: an older binary
+            // ignores it (and shows an RDP node as an SSH server).
+            "ALTER TABLE servers ADD COLUMN protocol TEXT",
             // Per-algorithm host-key tracking. Legacy rows keep key_type NULL
             // (treated conservatively as "same type" so a real key rotation is
             // never downgraded to a benign first-time prompt); rows recorded
@@ -5259,7 +5309,7 @@ async fn setup_master_db_inner(
             "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
@@ -6377,6 +6427,29 @@ async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: 
     Ok(())
 }
 
+/// What a node is (issue #3): `None` (or "ssh") for an SSH server, "rdp" for
+/// an RDP server. Written through its own command, like set_server_jump_host.
+/// Unchanged values aren't written, so they don't stamp the row for sync.
+#[tauri::command]
+async fn set_server_protocol(state: tauri::State<'_, DbState>, id: i32, value: Option<String>) -> Result<(), String> {
+    let value: Option<&str> = match value.as_deref() {
+        None | Some("ssh") => None,
+        Some("rdp") => Some("rdp"),
+        Some(other) => return Err(format!("[DATABASE] SERVER_PROTOCOL_UNKNOWN: {other}")),
+    };
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    let changed = conn.execute(
+        "UPDATE servers SET protocol=?1 WHERE id=?2 AND protocol IS NOT ?1",
+        rusqlite::params![value, id],
+    ).map_err(|e| format!("[DATABASE] SERVER_PROTOCOL_FAILED: {}", e))?;
+    drop(conn_guard);
+    if changed > 0 {
+        save_vault_internal(&state)?;
+    }
+    Ok(())
+}
+
 /// Duplicate a server row verbatim — including credentials linkage, tunnels,
 /// mirrors, proxy config, colour. The clone gets a "{name} (copy)" suffix so
 /// it shows up beside the original in the grid; everything else is identical
@@ -6387,8 +6460,8 @@ async fn clone_server(state: tauri::State<'_, DbState>, id: i32) -> Result<i64, 
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     let affected = conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id)
-         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color, notes, run_on_connect, jump_host_id
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, protocol)
+         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color, notes, run_on_connect, jump_host_id, protocol
          FROM servers WHERE id = ?1",
         rusqlite::params![id],
     ).map_err(|e| format!("[DATABASE] SERVER_CLONE_FAILED: {}", e))?;
@@ -6448,7 +6521,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     // ORDER BY (position, id): `position` is the manual drag-to-reorder rank
     // (default 0 for never-reordered rows), and id breaks ties so the order is
     // stable and, before any reorder, identical to the old rowid order.
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid FROM servers ORDER BY position, id")
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid, protocol FROM servers ORDER BY position, id")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -6483,6 +6556,8 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             // reused by another profile's server. Keys this device's own
             // per-server settings (see src/util/shellSync.ts).
             "uuid": row.get::<_, Option<String>>(23)?,
+            // "ssh" or "rdp" (issue #3); NULL in the table is an SSH server.
+            "protocol": if row.get::<_, Option<String>>(24)?.as_deref() == Some("rdp") { "rdp" } else { "ssh" },
         }))
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
@@ -9802,7 +9877,8 @@ fn resolve_jump_auth(
                    s.username as s_user, c.username as c_user,
                    s.password as s_pass, c.password as c_pass,
                    s.key_id   as s_key,  c.key_id   as c_key,
-                   s.auth_type, c.auth_type as cred_auth_type
+                   s.auth_type, c.auth_type as cred_auth_type,
+                   s.protocol, s.name
             FROM servers s
             LEFT JOIN credentials c ON s.credential_id = c.id
             WHERE s.id=?1
@@ -9827,6 +9903,11 @@ fn resolve_jump_auth(
         .unwrap_or_default()
         .unwrap_or_else(|| "vault".to_string());
     let cred_auth_type: Option<String> = row.get::<_, Option<String>>(9).unwrap_or_default();
+    // An RDP server can't carry an SSH route (issue #3).
+    if row.get::<_, Option<String>>(10).unwrap_or_default().as_deref() == Some("rdp") {
+        let name: String = row.get::<_, Option<String>>(11).unwrap_or_default().unwrap_or_default();
+        return Err(format!("{name} is an RDP server; only an SSH server can be gone through"));
+    }
 
     let (username, password, key_id) = if server_auth_type == "vault" {
         (c_user.unwrap_or_default(), c_pass, c_key)
@@ -10653,7 +10734,7 @@ async fn initiate_connection(
                    s.key_id   as s_key,  c.key_id   as c_key,
                    s.proxy_type, s.proxy_host, s.proxy_port,
                    s.auth_type, c.auth_type as cred_auth_type, s.tunnels,
-                   s.jump_host_id
+                   s.jump_host_id, s.protocol
             FROM servers s
             LEFT JOIN credentials c ON s.credential_id = c.id
             WHERE s.id=?1
@@ -10683,6 +10764,9 @@ async fn initiate_connection(
             // on this device, come in stopped (see approvals.rs).
             let tunnels_json = approvals::hold_tunnels_json(conn, server_id as i64, tunnels_json);
             let jump_host_id: Option<i32> = row.get::<_, Option<i32>>(14).unwrap_or_default();
+            if row.get::<_, Option<String>>(15).unwrap_or_default().as_deref() == Some("rdp") {
+                return Err("This is an RDP server: it opens in an RDP app, not a terminal".into());
+            }
 
             // Single source of truth per auth_type — no field mixing.
             // - vault: identity comes ENTIRELY from the credential row. Any
@@ -12598,11 +12682,269 @@ mod shell_sync_tests {
     }
 }
 
+/// Open an RDP server (issue #3) in this system's RDP app: straight to it, or
+/// through the SSH server it's saved with (its `jump_host_id`), whose login
+/// asks through this tab's usual prompts (host key, password, 2FA). Then a
+/// loopback port of this node's own forwards to the RDP server for as long as
+/// the tab is open. The tab hears `connection-success-{id}` (`app`,
+/// `address`, `via`, `tracked`) or `connection-failed-{id}`; later
+/// `rdp-app-exited-{id}` when an RDP window it can follow closes, and
+/// `session-disconnected-{id}` when the SSH route drops.
+#[tauri::command]
+async fn initiate_rdp(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    rdp_sessions: tauri::State<'_, rdp::RdpSessions>,
+    session_id: String,
+    server_id: i32,
+    // The device's "Use keys from an ssh-agent" setting, for the SSH server.
+    use_ssh_agent: Option<bool>,
+) -> Result<(), String> {
+    use std::sync::Arc;
+    use tauri::Emitter;
+
+    // Android has no RDP app to hand it to; the built-in client comes later.
+    if cfg!(target_os = "android") {
+        return Err("RDP servers open on a computer for now".into());
+    }
+
+    // A new attempt replaces the tab's last one: its route, listener and file.
+    rdp_sessions.lock().await.remove(&session_id);
+    let generation = {
+        let mut g = state.session_generation.lock().await;
+        let next = g.get(&session_id).copied().unwrap_or(0).wrapping_add(1);
+        g.insert(session_id.clone(), next);
+        next
+    };
+    let attempt = ssh_manager::ConnectAttempt::new(Arc::clone(&state.session_generation), session_id.clone(), generation);
+
+    let (name, host, port, user, node_key, protocol, jump_id, jump_name) = {
+        let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        conn.query_row(
+            "SELECT s.name, s.host, s.port,
+                    CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault' THEN c.username ELSE s.username END,
+                    COALESCE(s.uuid, CAST(s.id AS TEXT)), s.protocol, s.jump_host_id, j.name
+             FROM servers s
+             LEFT JOIN credentials c ON s.credential_id = c.id
+             LEFT JOIN servers j ON j.id = s.jump_host_id
+             WHERE s.id = ?1",
+            [server_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    r.get::<_, String>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<i32>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )
+        .map_err(|_| "Server not found".to_string())?
+    };
+    if protocol.as_deref() != Some("rdp") {
+        return Err(format!("{name} isn't an RDP server"));
+    }
+    let host = host.trim().to_string();
+    let user = user.trim().to_string();
+    rdp::check_host(&host)?;
+    rdp::check_user(&user)?;
+    let port = u16::try_from(port).ok().filter(|p| *p > 0).unwrap_or(rdp::DEFAULT_PORT);
+
+    let fp_txs = Arc::clone(&state.fp_txs);
+    let kbi_txs = Arc::clone(&state.kbi_txs);
+    let cache = Arc::clone(&state.prompted_secrets);
+    let db = Arc::clone(&db_state.conn);
+    let sessions = rdp_sessions.inner().clone();
+    let use_agent = use_ssh_agent.unwrap_or(true);
+    tauri::async_runtime::spawn(async move {
+        let log = |msg: &str, ty: &str| {
+            println!("[LOG-{session_id}] {msg}");
+            if attempt.is_current_now() {
+                let _ = app.emit(&format!("session-log-{session_id}"), serde_json::json!({"msg": msg, "type": ty}));
+            }
+        };
+        let target = rdp::address(&host, port);
+        log(&format!("Opening the RDP server {target}..."), "info");
+
+        let (mut session, via) = match jump_id {
+            None => (rdp::RdpSession::direct(target.clone(), user.clone()), None),
+            Some(jid) => {
+                let via_name = jump_name.clone().unwrap_or_else(|| format!("server {jid}"));
+                log(&format!("Going through the SSH server {via_name}..."), "info");
+                let auth_failed = std::sync::atomic::AtomicBool::new(false);
+                let ctx = HopCtx {
+                    app: &app,
+                    db: &db,
+                    fp_txs: &fp_txs,
+                    kbi_txs: &kbi_txs,
+                    cache: &cache,
+                    allow_prompt: true,
+                    auth_failed: &auth_failed,
+                    attempt: &attempt,
+                    session_id: &session_id,
+                    use_agent,
+                };
+                let chain = match connect_jump_host(&ctx, jid).await {
+                    Ok(chain) => chain,
+                    Err(e) => {
+                        let reason = format!("The SSH server {via_name}: {e}");
+                        log(&reason, "error");
+                        emit_connection_failed(&app, &attempt, &session_id, serde_json::json!({"reason": reason})).await;
+                        return;
+                    }
+                };
+                let closed = {
+                    let (app, attempt, sid, via) = (app.clone(), attempt.clone(), session_id.clone(), via_name.clone());
+                    move || {
+                        if attempt.is_current_now() {
+                            let _ = app.emit(
+                                &format!("session-disconnected-{sid}"),
+                                serde_json::json!({"reason": format!("The connection to the SSH server {via} closed.")}),
+                            );
+                        }
+                    }
+                };
+                match rdp::forward_through(chain, rdp::loopback_for(&node_key), host.clone(), port, closed).await {
+                    Ok((local, parts)) => {
+                        let address = local.to_string();
+                        log(&format!("Forwarding {address} to {target} through {via_name}."), "success");
+                        (rdp::RdpSession::forwarded(parts, address, user.clone()), Some(via_name))
+                    }
+                    Err(e) => {
+                        log(&e, "error");
+                        emit_connection_failed(&app, &attempt, &session_id, serde_json::json!({"reason": e})).await;
+                        return;
+                    }
+                }
+            }
+        };
+
+        let address = session.address.clone();
+        let launched = rdp::write_file(&session_id, &rdp::rdp_file(&address, &user)).and_then(|file| {
+            session.file = Some(file.clone());
+            rdp::launcher(&file, &address, &user, rdp::find_on_path)
+        });
+        let launcher = match launched {
+            Ok(l) => l,
+            Err(e) => {
+                log(&e, "error");
+                emit_connection_failed(&app, &attempt, &session_id, serde_json::json!({"reason": e})).await;
+                return;
+            }
+        };
+        // Closed or opened again meanwhile: dropping `session` closes its route.
+        if !attempt.is_current().await {
+            return;
+        }
+        let windows = std::sync::Arc::clone(&session.windows);
+        sessions.lock().await.insert(session_id.clone(), session);
+        match launch_rdp_app(&app, &attempt, &session_id, &launcher, windows) {
+            Ok(()) => {
+                log(&format!("Opened {} for {address}. It asks for the password itself.", launcher.name), "success");
+                let _ = app.emit(
+                    &format!("connection-success-{session_id}"),
+                    serde_json::json!({"app": launcher.name, "address": address, "via": via, "tracked": launcher.tracked}),
+                );
+            }
+            Err(e) => {
+                sessions.lock().await.remove(&session_id);
+                log(&e, "error");
+                emit_connection_failed(&app, &attempt, &session_id, serde_json::json!({"reason": e})).await;
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Starts an RDP app. When its process is the RDP window (`tracked`), the
+/// end of the tab's last open window reaches it as `rdp-app-exited-{id}`,
+/// with the last lines it wrote to stderr when it failed.
+fn launch_rdp_app(
+    app: &tauri::AppHandle,
+    attempt: &ssh_manager::ConnectAttempt,
+    session_id: &str,
+    launcher: &rdp::Launcher,
+    windows: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    use tauri::Emitter;
+    use tokio::io::AsyncReadExt;
+    let mut cmd = tokio::process::Command::new(&launcher.program);
+    cmd.args(&launcher.args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("Couldn't start {}: {e}", launcher.name))?;
+    let (app, attempt, sid, tracked) = (app.clone(), attempt.clone(), session_id.to_string(), launcher.tracked);
+    if tracked {
+        windows.fetch_add(1, Ordering::SeqCst);
+    }
+    tauri::async_runtime::spawn(async move {
+        // Keep only the end of what it writes: FreeRDP is chatty.
+        let mut tail: Vec<u8> = Vec::new();
+        if let Some(mut err) = child.stderr.take() {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = err.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                tail.extend_from_slice(&buf[..n]);
+                if tail.len() > 16384 {
+                    tail.drain(..tail.len() - 8192);
+                }
+            }
+        }
+        let status = child.wait().await;
+        if !tracked || windows.fetch_sub(1, Ordering::SeqCst) != 1 || !attempt.is_current_now() {
+            return;
+        }
+        let code = status.ok().and_then(|s| s.code());
+        let said: Vec<String> = if code.unwrap_or(0) != 0 {
+            let text = String::from_utf8_lossy(&tail).into_owned();
+            let lines: Vec<String> = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
+            lines[lines.len().saturating_sub(4)..].to_vec()
+        } else {
+            Vec::new()
+        };
+        let _ = app.emit(&format!("rdp-app-exited-{sid}"), serde_json::json!({"code": code, "said": said}));
+    });
+    Ok(())
+}
+
+/// Opens the RDP app again for an open RDP tab, through the same forward.
+/// Returns the app's name.
+#[tauri::command]
+async fn rdp_open_again(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+    rdp_sessions: tauri::State<'_, rdp::RdpSessions>,
+    session_id: String,
+) -> Result<String, String> {
+    let (launcher, windows) = {
+        let mut map = rdp_sessions.lock().await;
+        let session = map.get_mut(&session_id).ok_or("This RDP tab isn't open any more")?;
+        // Written again: another copy of the app may have cleared old files.
+        let file = rdp::write_file(&session_id, &rdp::rdp_file(&session.address, &session.username))?;
+        session.file = Some(file.clone());
+        (rdp::launcher(&file, &session.address, &session.username, rdp::find_on_path)?, std::sync::Arc::clone(&session.windows))
+    };
+    let generation = state.session_generation.lock().await.get(&session_id).copied().unwrap_or(0);
+    let attempt = ssh_manager::ConnectAttempt::new(std::sync::Arc::clone(&state.session_generation), session_id.clone(), generation);
+    launch_rdp_app(&app, &attempt, &session_id, &launcher, windows)?;
+    Ok(launcher.name.to_string())
+}
+
 #[tauri::command]
 async fn disconnect_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
     mirrors: tauri::State<'_, MirrorMap>,
+    rdp_sessions: tauri::State<'_, rdp::RdpSessions>,
     session_id: String,
 ) -> Result<(), String> {
     // Invalidate any connect worker still handshaking for THIS key: bump the
@@ -12661,6 +13003,8 @@ async fn disconnect_session(
     // Drop any ProxyJump bastion handle for this session — closes the jump
     // connection once the target it was carrying is gone.
     state.jump_connections.lock().await.remove(&session_id);
+    // An RDP tab: its SSH route, forward and .rdp file (issue #3).
+    rdp_sessions.lock().await.remove(&session_id);
     // Drop terminal tx/resize entries so a subsequent reconnect doesn't try
     // to write into a dead PTY task. Match by the exact `${session_id}-term-`
     // prefix — a `contains` here silently tears down session-10's terminals
@@ -17897,7 +18241,7 @@ fn resolve_node_auth_for_monitor(
                s.password, c.password,
                s.key_id,   c.key_id,
                s.auth_type, c.auth_type as cred_auth_type,
-               s.proxy_type, s.proxy_host, s.proxy_port
+               s.proxy_type, s.proxy_host, s.proxy_port, s.protocol
         FROM servers s
         LEFT JOIN credentials c ON s.credential_id = c.id
         WHERE s.id = ?1
@@ -17918,6 +18262,10 @@ fn resolve_node_auth_for_monitor(
     let proxy_type: String = row.get::<_, Option<String>>(10).ok().flatten().unwrap_or_else(|| "none".into());
     let proxy_host: Option<String> = row.get(11).ok().flatten();
     let proxy_port: Option<i32> = row.get(12).ok().flatten();
+    // An RDP server has no shell to read numbers from (issue #3).
+    if row.get::<_, Option<String>>(13).ok().flatten().as_deref() == Some("rdp") {
+        return Err("an RDP server can't be monitored".into());
+    }
 
     let (username, password, key_id) = if auth_type == "vault" {
         (c_user.unwrap_or_default(), c_pass, c_key)
@@ -18494,6 +18842,7 @@ pub fn run() {
     let builder = builder
         .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None) })
         .manage(SshState::new())
+        .manage(rdp::RdpSessions::default())
         // Docker live-log stream registry — keyed by frontend-issued stream id,
         // values are tokio AbortHandles so the user can stop tailing on demand.
         .manage(docker::DockerStreams::new())
@@ -18517,6 +18866,8 @@ pub fn run() {
         .setup(|app| {
             let cloud_state = cloud::CloudState::new(&app.handle());
             app.manage(cloud_state);
+            // .rdp files an earlier run left behind (issue #3).
+            std::thread::spawn(rdp::clear_old_files);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -18535,7 +18886,7 @@ pub fn run() {
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
             profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key, held_deletions_list, resolve_held_deletions,
             set_editor_label,
-            add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
+            add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, set_server_protocol, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders, move_folder, move_server_to_folder,
             add_command, edit_command, delete_command, get_commands,
@@ -18547,6 +18898,7 @@ pub fn run() {
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session, set_use_ssh_config,
+            initiate_rdp, rdp_open_again,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
             open_terminal, local_shell, write_terminal_data, resize_terminal, close_terminal,

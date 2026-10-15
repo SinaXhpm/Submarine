@@ -384,7 +384,8 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
   // ---- derived ----------------------------------------------------------------
 
   const availableToAdd = useMemo(
-    () => servers.filter((s: any) => !rows.some((r) => r.node_id === s.id)),
+    // RDP servers have no shell to read numbers from (issue #3).
+    () => servers.filter((s: any) => s.protocol !== "rdp" && !rows.some((r) => r.node_id === s.id)),
     [servers, rows]
   );
   const anyRunning = rows.some((r) => !r.paused);
