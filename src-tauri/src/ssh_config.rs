@@ -111,7 +111,7 @@ pub(crate) async fn for_host(lookup: Lookup) -> Option<HostConfig> {
 /// The home folder `~` stands for. Debug builds take `SUBMARINE_LAB_HOME`
 /// instead when it's set, so the lab app can be tested against a config
 /// without one being written to the tester's real home.
-fn home_dir() -> Option<String> {
+pub(crate) fn home_dir() -> Option<String> {
     #[cfg(debug_assertions)]
     if let Some(home) = std::env::var("SUBMARINE_LAB_HOME").ok().filter(|h| !h.is_empty()) {
         return Some(home);
@@ -531,6 +531,58 @@ fn glob_matches(pattern: &str, name: &str, ignore_case: bool) -> bool {
         }
     }
     p[pi..].iter().all(|&c| c == '*')
+}
+
+/// OpenSSH's host patterns, case ignored (known_hosts uses them too).
+pub(crate) fn pattern_matches(pattern: &str, name: &str) -> bool {
+    glob_matches(pattern, name, true)
+}
+
+/// What `%` tokens in IdentityFile, CertificateFile and UserKnownHostsFile
+/// stand for.
+pub(crate) struct PathTokens<'a> {
+    /// `%h`: the host connected to (after HostName).
+    pub host: &'a str,
+    /// `%n`: the address as saved.
+    pub original: &'a str,
+    pub port: u16,
+    /// `%r`: the remote user; blank when it's only asked for later.
+    pub user: &'a str,
+}
+
+/// A file named in the config, as OpenSSH reads it: `~`, `${VAR}`, and the
+/// tokens `%%`, `%d` (home), `%u` (local user), `%h`, `%n`, `%p`, `%r` and
+/// `%l` (this computer's name). A relative path is taken from the home folder.
+pub(crate) fn expand_path(value: &str, t: &PathTokens) -> Result<String, String> {
+    let env = RealEnv { home: home_dir().unwrap_or_default() };
+    let base = expand_basic(value, &env)?;
+    let mut out = String::new();
+    let mut chars = base.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('%') => out.push('%'),
+            Some('d') => out.push_str(&env.home),
+            Some('u') => out.push_str(&env.local_user().ok_or("uses %u, and the local user name isn't known")?),
+            Some('h') => out.push_str(t.host),
+            Some('n') => out.push_str(t.original),
+            Some('p') => out.push_str(&t.port.to_string()),
+            Some('r') if t.user.is_empty() => return Err("uses %r, and the username is only asked for after connecting".into()),
+            Some('r') => out.push_str(t.user),
+            Some('l') => out.push_str(
+                &std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).map_err(|_| "uses %l, and this computer's name isn't known")?,
+            ),
+            Some(x) => return Err(format!("uses %{x}, which Submarine doesn't fill in here")),
+            None => return Err("ends with a lone %".into()),
+        }
+    }
+    if !is_absolute(&out) {
+        out = Path::new(&env.home).join(out).to_string_lossy().into_owned();
+    }
+    Ok(out)
 }
 
 /// `HostName` takes `%h` (the address as given) and `%%`.

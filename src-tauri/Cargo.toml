@@ -114,6 +114,9 @@ filetime = "0.2"
 # overkill for a "same or not?" question but it's already pulled in
 # transitively by russh/ssh-key, so making the dep explicit costs nothing.
 sha2 = "0.11"
+# known_hosts hashed host names: HMAC-SHA1 (known_hosts.rs); both already in the tree via russh.
+hmac = "0.13"
+sha1 = "0.11"
 regex = "1.10"
 # rustls-tls so we don't drag in OpenSSL on Windows builds. multipart for blob
 # uploads; json for typed request/response bodies.

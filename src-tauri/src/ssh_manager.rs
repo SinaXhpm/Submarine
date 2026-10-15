@@ -560,6 +560,13 @@ pub struct ClientHandler {
     /// Stamped on every packet of channel data or window adjustment the
     /// server sends; the session watcher holds a clone (see `LastHeard`).
     pub last_heard: LastHeard,
+    /// What the user's known_hosts files say about this host (CAs, listed
+    /// and revoked keys), when "Use settings from ~/.ssh/config" is on.
+    pub(crate) host_trust: Option<Arc<crate::known_hosts::HostTrust>>,
+    /// Why the host key was refused without a prompt (known_hosts said no,
+    /// or a certificate nothing can check): the connect driver puts it in
+    /// the failure reason instead of "not approved".
+    pub(crate) host_key_refusal: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// One connect attempt of a session: its id, the session generation it started
@@ -635,11 +642,48 @@ impl client::Handler for ClientHandler {
             self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
             return Ok(false);
         }
+        // What known_hosts says decides first: a certificate from a trusted
+        // CA, a listed key, a revoked one (see known_hosts.rs).
+        let log = |msg: &str, ty: &str| {
+            println!("[LOG-{}] {}", self.session_id, msg);
+            let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({"msg": msg, "type": ty}));
+        };
+        let trust_verdict = match (offered, &self.host_trust) {
+            (PublicKeyOrCertificate::Certificate(cert), Some(trust)) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                Some(trust.check_certificate(cert, now))
+            }
+            (PublicKeyOrCertificate::PublicKey { key, .. }, Some(trust)) => Some(trust.check_key(key)),
+            _ => None,
+        };
+        match trust_verdict {
+            Some(crate::known_hosts::Verdict::Trusted(why)) => {
+                log(&why, "success");
+                self.fp_outcome.store(1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(true);
+            }
+            Some(crate::known_hosts::Verdict::Refused(why)) => {
+                log(&format!("Host key refused: {why}."), "error");
+                if let Ok(mut r) = self.host_key_refusal.lock() {
+                    *r = Some(why);
+                }
+                self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
+                return Ok(false);
+            }
+            Some(crate::known_hosts::Verdict::Undecided(Some(note))) => log(&note, "warn"),
+            Some(crate::known_hosts::Verdict::Undecided(None)) | None => {}
+        }
         let Some(server_public_key) = plain_host_key(offered) else {
-            let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
-                "msg": "Server presented an SSH host CERTIFICATE. Host certificates can't be verified yet (no trusted CA is configured), so the connection was refused.",
-                "type": "error"
-            }));
+            log(
+                "Server presented an SSH host CERTIFICATE, and no @cert-authority line in your known_hosts covers this host, so it can't be checked; the connection was refused.",
+                "error",
+            );
+            if let Ok(mut r) = self.host_key_refusal.lock() {
+                *r = Some("the server presented a host certificate, and no @cert-authority line in your known_hosts covers this host".into());
+            }
             // A host-key failure (not a transport / algorithm error).
             self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
             return Ok(false);
