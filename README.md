@@ -321,6 +321,21 @@ Designed and built by [Sina](https://sinaxhpm.com) in collaboration with [Claude
 
 MIT — see [LICENSE](LICENSE).
 
+## Also by the author: Echoes — network & developer toolkit
+
+<a href="https://github.com/SinaXhpm/Echoes"><img src="https://raw.githubusercontent.com/SinaXhpm/Echoes/master/Echoes.Android/Resources/mipmap-xhdpi/icon.png" alt="Echoes — free, open-source network and developer toolkit for Windows, macOS, Linux and Android" width="64" align="left" /></a>
+
+**[Echoes](https://github.com/SinaXhpm/Echoes)** is a [free, open-source network and developer toolkit for Windows, macOS, Linux, and Android](https://github.com/SinaXhpm/Echoes): ping, port scanner, SSH, DNS/WHOIS, cURL, IP/GeoIP, uptime monitor, encrypted notes, and string/JSON tools in one app. No accounts, no telemetry, MIT licensed.
+
+<br clear="left" />
+
+- **Network tools** — ping and traceroute, a TCP/UDP port scanner, an SSH terminal with SOCKS5, DNS lookup and WHOIS, IP lookup and GeoIP, and global host checks (ping / HTTP / TCP / DNS from servers around the world)
+- **Web & API tools** — a cURL GUI and HTTP client, an HTTP file server for LAN file sharing, a SOCKS5 + HTTP proxy server, a Cloudflare DNS manager, and an SSL/TLS certificate inspector
+- **Developer tools** — an uptime and latency monitor, encrypted notes and encrypted backup, a regex tester, a JSON formatter (JSON ↔ YAML / CSV), a hash identifier, a subnet / CIDR calculator, an epoch converter, and UUID and password generators
+- **Built with** C# · .NET · Avalonia UI · Native AOT — a single self-contained binary on desktop, nothing to install
+
+[Echoes on GitHub](https://github.com/SinaXhpm/Echoes) · [Download Echoes for Windows, macOS, Linux and Android](https://github.com/SinaXhpm/Echoes/releases) · [More projects by Sina Xhpm](https://sinaxhpm.com)
+
 ---
 
 <sub>
