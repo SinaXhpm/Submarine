@@ -146,13 +146,16 @@ async fn find_agent() -> Option<AgentSession> {
 /// The source name for an agent `IdentityAgent` chose, in the connect log.
 const IDENTITY_AGENT_SOURCE: &str = "the agent set by IdentityAgent";
 
-/// The agent for a connection to a host known by `names` (the node's address
-/// and name). If `IdentityAgent` in `~/.ssh/config` applies, it decides, as in
-/// OpenSSH: only that agent is used, or none. Otherwise the usual lookup
-/// (`find_agent`). `log` explains when the config ruled an agent out.
-pub(crate) async fn find_agent_for(names: Vec<String>, mut log: impl FnMut(String)) -> Option<AgentSession> {
-    use crate::ssh_config::{identity_agent, IdentityAgent};
-    match identity_agent(names).await {
+/// The agent for a connection. If `IdentityAgent` in `~/.ssh/config` applies
+/// (`setting`), it decides, as in OpenSSH: only that agent is used, or none.
+/// Otherwise the usual lookup (`find_agent`). `log` explains when the config
+/// ruled an agent out.
+pub(crate) async fn find_agent_for(
+    setting: Option<crate::ssh_config::IdentityAgent>,
+    mut log: impl FnMut(String),
+) -> Option<AgentSession> {
+    use crate::ssh_config::IdentityAgent;
+    match setting {
         None => find_agent().await,
         Some(IdentityAgent::Disabled) => {
             log("~/.ssh/config sets IdentityAgent none for this host, so no ssh-agent is used.".into());
