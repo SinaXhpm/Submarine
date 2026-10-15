@@ -12690,6 +12690,8 @@ mod shell_sync_tests {
 /// `address`, `via`, `tracked`) or `connection-failed-{id}`; later
 /// `rdp-app-exited-{id}` when an RDP window it can follow closes, and
 /// `session-disconnected-{id}` when the SSH route drops.
+// A Tauri command: its arguments are the named fields the tab sends.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn initiate_rdp(
     app: tauri::AppHandle,
