@@ -90,9 +90,10 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         setKbiPrompt(null);
         setKbiValues([]);
       }),
+      // connect() cleared the notes below: an app that ends at once may
+      // already have reported, ahead of this.
       listen(`connection-success-${id}`, (e: any) => {
         setOpened(e.payload as Opened);
-        setAppClosed(null);
         setStatus("connected");
       }),
       listen(`connection-failed-${id}`, (e: any) => {
@@ -139,11 +140,13 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
 
   const openAgain = async () => {
     setBusy(true);
+    // Cleared before asking: an app that fails at once reports before the
+    // answer below arrives.
+    setAppClosed(null);
+    setAppFailed(null);
     try {
       // Not always the app opened before (one may have been installed since).
       const again = await invoke<{ app: string; tracked: boolean }>("rdp_open_again", { sessionId: session.id });
-      setAppClosed(null);
-      setAppFailed(null);
       setOpened((o) => (o ? { ...o, app: again.app, tracked: again.tracked } : o));
       pushLog({ msg: `Opened ${again.app} again.`, type: "success" });
     } catch (e) {
