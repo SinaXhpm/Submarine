@@ -854,17 +854,9 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     if (initiatedRef.current) return;
     initiatedRef.current = true;
 
-    // Start connection. We read from the ref so a password the user types
-    // into the auth-retry input is picked up by later attempts inside this
-    // same effect closure (the effect itself only runs once).
     primarySeparateRef.current = separateFwdRef.current;
-    invoke("initiate_connection", { sessionId: session.id, serverId: session.serverId, customPassword: customPasswordRef.current || null, quickAuth: session.quickAuth || null, sessionRole: "primary", separateSessions: separateFwdRef.current, useSshAgent: readUseSshAgent() })
-      .catch(e => {
-        pushLog({ msg: `Failed to initiate: ${e}`, type: 'error' });
-        setStatus('failed');
-      });
 
-    // Setup listeners
+    // Setup listeners. The connection starts once they're all registered (below).
     const unlistenLog = listen(`session-log-${session.id}`, (event: any) => {
       pushLog(event.payload);
     });
@@ -1080,6 +1072,24 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       } else {
         cancelReconnect();
       }
+    });
+
+    // Start connection — only once every listener above is registered. A
+    // connection can fail before any network round trip (a ~/.ssh/config
+    // value that's refused, say) and report it at once; a report that comes
+    // before its listener is lost, and the tab would sit on "Connecting…" for
+    // good. We read from the ref so a password the user types into the
+    // auth-retry input is picked up by later attempts inside this same effect
+    // closure (the effect itself only runs once).
+    Promise.all([
+      unlistenLog, unlistenPrompt, unlistenPromptDismiss, unlistenKbi, unlistenKbiDismiss,
+      unlistenSftpOk, unlistenSftpFail, unlistenSftpDown, unlistenFwdOk, unlistenFwdFail, unlistenFwdDown,
+      unlistenSuccess, unlistenFailed, unlistenDisconnected,
+    ]).then(() =>
+      invoke("initiate_connection", { sessionId: session.id, serverId: session.serverId, customPassword: customPasswordRef.current || null, quickAuth: session.quickAuth || null, sessionRole: "primary", separateSessions: separateFwdRef.current, useSshAgent: readUseSshAgent() })
+    ).catch(e => {
+      pushLog({ msg: `Failed to initiate: ${e}`, type: 'error' });
+      setStatus('failed');
     });
 
     return () => {
