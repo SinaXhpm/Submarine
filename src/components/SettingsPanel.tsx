@@ -106,7 +106,8 @@ function SshConfigSetting({ settings, setSettings }: any) {
             Connect the way the OpenSSH client would: a server whose address is an alias in
             ~/.ssh/config connects to its HostName and Port, takes its User when no username is
             saved, uses the ssh-agent IdentityAgent names, and goes through its ProxyCommand (such
-            as cloudflared or tsh) unless the server has a jump host or proxy of its own. Host
+            as cloudflared or tsh) or ProxyJump unless the server has a jump host or proxy of its
+            own. Host
             blocks are matched against a server's address and its name; Include and Match are
             followed, Match exec is never run. The file is only read, and nothing from it is
             synced. Turn off to use only what's saved for each server.
