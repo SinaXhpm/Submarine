@@ -17,7 +17,8 @@ type Opened = { app: string; address: string; via: string | null; tracked: boole
 type LogLine = { msg: string; type: string; time: string };
 
 export default function RdpSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, onPromptChange }: any) {
-  const [status, setStatus] = useState<"connecting" | "connected" | "failed" | "disconnected">("connecting");
+  // "idle" on Android: nothing connects there (yet).
+  const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "failed" | "disconnected">(IS_ANDROID ? "idle" : "connecting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [opened, setOpened] = useState<Opened | null>(null);
   const [reason, setReason] = useState("");

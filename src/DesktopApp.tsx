@@ -74,7 +74,8 @@ function DesktopApp() {
   const [activeView, setActiveView] = useState<string>("nodes");
   const [sessions, setSessions] = useState<Session[]>([]);
   // Tracks the live status of each open session ('connecting' | 'connected'
-  // | 'failed' | 'disconnected'). Updated via the callback every SessionView
+  // | 'failed' | 'disconnected', or 'idle' for an RDP tab on Android that
+  // has nothing to connect yet). Updated via the callback every SessionView
   // fires on its own status change — single source of truth for the dot
   // colour on each tab. Cleared when a session is closed.
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, string>>({});
@@ -1039,6 +1040,7 @@ function DesktopApp() {
                       promptSessions.has(s.id) ? 'bg-primary animate-pulse' :
                       st === 'connected'    ? 'bg-emerald-400' :
                       st === 'connecting'   ? 'bg-amber-400 animate-pulse' :
+                      st === 'idle'         ? 'bg-zinc-500' :
                       'bg-rose-500';
                     const isActive = activeView === s.id;
                     const isMerged = mergedSessionIds.includes(s.id);
@@ -2030,6 +2032,7 @@ function DesktopApp() {
                               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                                 (sessionStatuses[sess.id] ?? 'connecting') === 'connected' ? 'bg-emerald-400' :
                                 (sessionStatuses[sess.id] ?? 'connecting') === 'connecting' ? 'bg-amber-400' :
+                                (sessionStatuses[sess.id] ?? 'connecting') === 'idle' ? 'bg-zinc-500' :
                                 'bg-rose-500'
                               }`} />
                               <span className="font-bold text-zinc-200 uppercase tracking-wider truncate flex-1">
