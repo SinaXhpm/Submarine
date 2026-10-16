@@ -270,11 +270,23 @@ mod platform {
     use windows::Security::Cryptography::CryptographicBuffer;
     use zeroize::Zeroizing;
 
+    // Opening a key: NotFound means it's gone (the file is stale).
     fn status_err(s: KeyCredentialStatus) -> String {
         if s == KeyCredentialStatus::UserCanceled || s == KeyCredentialStatus::UserPrefersPassword {
             CANCELLED.into()
         } else if s == KeyCredentialStatus::NotFound {
             STALE.into()
+        } else {
+            format!("{UNAVAILABLE}: Windows Hello said {}", s.0)
+        }
+    }
+
+    // Making a key: NotFound there means Windows Hello isn't set up.
+    fn create_err(s: KeyCredentialStatus) -> String {
+        if s == KeyCredentialStatus::UserCanceled || s == KeyCredentialStatus::UserPrefersPassword {
+            CANCELLED.into()
+        } else if s == KeyCredentialStatus::NotFound {
+            format!("{UNAVAILABLE}: Windows Hello isn't set up on this computer")
         } else {
             format!("{UNAVAILABLE}: Windows Hello said {}", s.0)
         }
@@ -337,7 +349,7 @@ mod platform {
             let created = op.join().map_err(win)?;
             let st = created.Status().map_err(win)?;
             if st != KeyCredentialStatus::Success {
-                return Err(status_err(st));
+                return Err(create_err(st));
             }
             let mut challenge = vec![0u8; 32];
             rand::rng().fill_bytes(&mut challenge);

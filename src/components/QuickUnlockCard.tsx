@@ -50,7 +50,11 @@ export default function QuickUnlockCard({ profile, card, label }: { profile: str
     } catch (e) {
       const raw = String(e);
       if (raw.includes("WRONG_PASSWORD")) setMsg({ text: "That isn't this profile's password.", tone: "err" });
-      else if (!raw.includes("CANCELLED")) setMsg({ text: `Couldn't turn it on: ${raw.replace(/^\[[A-Z_]+\]\s*[A-Z_]*:?\s*/, "")}`, tone: "err" });
+      else if (!raw.includes("CANCELLED")) {
+        // "[QUICK_UNLOCK] UNAVAILABLE: <why>" -> "<why>".
+        const why = raw.replace(/^.*?\[QUICK_UNLOCK\]\s*[A-Z_]+:?\s*/, "").trim();
+        setMsg({ text: `Couldn't turn it on${why ? `: ${why}` : `. ${what} isn't available on this device right now.`}`, tone: "err" });
+      }
     } finally {
       setBusy(false);
     }
