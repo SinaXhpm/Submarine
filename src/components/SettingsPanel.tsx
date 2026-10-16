@@ -340,11 +340,12 @@ function SchemePreview({ scheme, boldBright }: { scheme: TerminalScheme; boldBri
       className="rounded-lg border border-white/10 px-3 py-2 font-mono text-[11px] leading-[1.45] overflow-hidden whitespace-pre"
       style={{ background: t.background, color: fg }}
     >
-      <div><span style={b("green")}>user@server</span>:<span style={b("blue")}>~</span>$ ls -l</div>
-      <div>drwxr-xr-x 2 user user 4096 Oct 16 <span style={b("blue")}>projects</span></div>
-      <div>-rwxr-xr-x 1 user user  812 Oct 16 <span style={b("green")}>deploy.sh</span></div>
-      <div>lrwxrwxrwx 1 user user   11 Oct 16 <span style={b("cyan")}>logs</span> -&gt; /var/log</div>
-      <div>-rw-r--r-- 1 user user 2.1M Oct 16 <span style={b("red")}>backup.tar.gz</span></div>
+      {/* Short lines: they fit a phone's width too. */}
+      <div><span style={b("green")}>user@server</span>:<span style={b("blue")}>~</span>$ ls -lh</div>
+      <div>drwxr-xr-x 4.0K <span style={b("blue")}>projects</span></div>
+      <div>-rwxr-xr-x  812 <span style={b("green")}>deploy.sh</span></div>
+      <div>lrwxrwxrwx   11 <span style={b("cyan")}>logs</span> -&gt; /var/log</div>
+      <div>-rw-r--r-- 2.1M <span style={b("red")}>backup.tar.gz</span></div>
       <div><span style={{ color: c("yellow") }}>warning:</span> <span style={{ color: c("magenta") }}>3</span> files changed <span style={{ color: c("brightBlack") }}># comment</span></div>
     </div>
   );
@@ -392,12 +393,14 @@ function TerminalColoursSetting({ settings, setSettings }: any) {
         role="radio"
         aria-checked={on}
         onClick={() => setSettings((prev: any) => ({ ...prev, terminalTheme: s.id }))}
-        className={`flex items-center gap-2 min-w-0 rounded-lg border px-2 py-1.5 text-left transition-colors ${on ? "border-primary/60 bg-primary/10" : "border-white/10 hover:border-white/25"}`}
+        className={`flex flex-col items-stretch gap-1.5 min-w-0 rounded-lg border p-1.5 text-left transition-colors ${on ? "border-primary/60 bg-primary/10" : "border-white/10 hover:border-white/25"}`}
       >
-        <span className="shrink-0 flex items-center gap-[3px] rounded px-1.5 py-1" style={{ background: t.background }}>
+        {/* The colours on the scheme's background, the name under them: two
+            to a row fit a phone without cutting names short. */}
+        <span className="flex items-center justify-center gap-[3px] rounded h-5" style={{ background: t.background }}>
           {dots.map((d, i) => <span key={i} className="w-1.5 h-1.5 rounded-full" style={{ background: d }} />)}
         </span>
-        <span className={`truncate text-[12px] ${on ? "text-white font-semibold" : "text-zinc-300"}`}>{s.name}</span>
+        <span className={`truncate px-0.5 text-[12px] ${on ? "text-white font-semibold" : "text-zinc-300"}`}>{s.name}</span>
       </button>
     );
   };
