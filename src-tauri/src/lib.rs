@@ -13290,6 +13290,42 @@ async fn write_terminal_data(state: tauri::State<'_, SshState>, terminal_id: Str
     Ok(())
 }
 
+/// Types a saved password into a terminal, for a password prompt there (sudo,
+/// su, …) that the user picked it for (#28): a server's own saved password
+/// (`server_id`) or a saved login's (`credential_id`). It goes from the
+/// profile to the terminal and never reaches the webview. No Enter after it:
+/// the user sees where it went and presses Enter themselves.
+#[tauri::command]
+async fn type_saved_password(
+    ssh: tauri::State<'_, SshState>,
+    db: tauri::State<'_, DbState>,
+    terminal_id: String,
+    server_id: Option<i32>,
+    credential_id: Option<i32>,
+) -> Result<(), String> {
+    use crate::ssh_manager::TerminalCommand;
+    let saved = {
+        let conn_guard = db.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        let (sql, id) = match (server_id, credential_id) {
+            (Some(id), None) => ("SELECT password FROM servers WHERE id = ?1", id),
+            (None, Some(id)) => ("SELECT password FROM credentials WHERE id = ?1", id),
+            _ => return Err("Pick one saved password".into()),
+        };
+        conn.query_row(sql, rusqlite::params![id], |row| row.get::<_, Option<String>>(0))
+            .map_err(|e| format!("[DATABASE] READ_FAILED: {}", e))?
+    };
+    let password = Zeroizing::new(saved.filter(|p| !p.is_empty()).ok_or("There's no saved password there")?);
+    // A line break would press Enter part-way through it.
+    if password.chars().any(char::is_control) {
+        return Err("That password has a line break or another control character, so it isn't typed".into());
+    }
+    let tx = ssh.terminal_txs.lock().await.get(&terminal_id).cloned().ok_or("That terminal isn't open")?;
+    tx.send(TerminalCommand::Data(password.as_bytes().to_vec()))
+        .await
+        .map_err(|_| "That terminal isn't open".to_string())
+}
+
 #[tauri::command]
 async fn resize_terminal(state: tauri::State<'_, SshState>, terminal_id: String, cols: u32, rows: u32) -> Result<(), String> {
     if let Some(tx) = state.resize_txs.lock().await.get(&terminal_id) {
@@ -19027,7 +19063,7 @@ pub fn run() {
             initiate_rdp, rdp_open_again,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
-            open_terminal, local_shell, write_terminal_data, resize_terminal, close_terminal,
+            open_terminal, local_shell, write_terminal_data, type_saved_password, resize_terminal, close_terminal,
             ssh_info_probe_section, ssh_systemctl_action, ssh_kill_process,
             ssh_iptables_chain, ssh_nft_chain,
             docker::ssh_docker_container_action,

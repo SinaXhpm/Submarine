@@ -5,6 +5,7 @@ import { SearchAddon, ISearchOptions } from 'xterm-addon-search';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import 'xterm/css/xterm.css';
+import { KeyRound } from 'lucide-react';
 import { useIsNarrow } from '../hooks/useViewport';
 import { MobileKeyBar, ModifiersState, ModKey, SpecialKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';
@@ -496,6 +497,60 @@ const TerminalView = ({
     toastTimerRef.current = window.setTimeout(() => setToast(null), 1400);
   };
 
+  // The output ends in a password prompt (sudo, su, …): a button offers to
+  // type a saved password there (#28). The next key typed or more output
+  // takes it away. The backend types the password: it never comes here.
+  const [atPasswordPrompt, setAtPasswordPrompt] = useState(false);
+  const atPasswordPromptRef = useRef(false);
+  const showPasswordButton = (on: boolean) => {
+    if (atPasswordPromptRef.current === on) return;
+    atPasswordPromptRef.current = on;
+    setAtPasswordPrompt(on);
+    if (!on) setPasswordMenu(null);
+  };
+  type SavedPassword = { label: string; detail: string; serverId?: number; credentialId?: number };
+  const [passwordMenu, setPasswordMenu] = useState<SavedPassword[] | null>(null);
+  const openPasswordMenu = async () => {
+    try {
+      const [servers, logins] = await Promise.all([
+        invoke<any[]>('get_servers'),
+        invoke<any[]>('get_credentials'),
+      ]);
+      const server = serverId > 0 ? servers.find((s) => s.id === serverId) : undefined;
+      const items: SavedPassword[] = [];
+      if (server?.has_password) {
+        items.push({ label: "This server's password", detail: server.username || server.name, serverId: server.id });
+      }
+      // Its own saved login first, then the others.
+      const withPassword = logins.filter((c) => c.has_password);
+      withPassword.sort((a, b) => Number(b.id === server?.credential_id) - Number(a.id === server?.credential_id));
+      for (const c of withPassword) {
+        items.push({
+          label: c.name,
+          detail: c.id === server?.credential_id ? `${c.username} · this server's login` : c.username,
+          credentialId: c.id,
+        });
+      }
+      setPasswordMenu(items);
+    } catch (e) {
+      notify(`Couldn't read the saved passwords: ${String(e)}`, 'err');
+    }
+  };
+  const typeSavedPassword = async (p: SavedPassword) => {
+    setPasswordMenu(null);
+    try {
+      await invoke('type_saved_password', {
+        terminalId,
+        serverId: p.serverId ?? null,
+        credentialId: p.credentialId ?? null,
+      });
+      showPasswordButton(false);
+    } catch (e) {
+      notify(String(e), 'err');
+    }
+    xtermRef.current?.focus();
+  };
+
   useEffect(() => {
     if (!terminalRef.current) return;
 
@@ -617,6 +672,7 @@ const TerminalView = ({
     // forwarded verbatim because we can't sensibly "Ctrl" a phrase.
     const handleData = (data: string) => {
       if (disabledRef.current) return;
+      showPasswordButton(false);
       // A paste: our right-click path, or xterm's own keyboard paste, which
       // starts with the bracketed-paste marker when the remote program asked
       // for one. Never run through the armed modifiers or into history.
@@ -958,6 +1014,7 @@ const TerminalView = ({
         const txt = new TextDecoder().decode(data);
         const combined = recentOutputRef.current + txt;
         recentOutputRef.current = combined.length > 512 ? combined.slice(-512) : combined;
+        showPasswordButton(looksLikePasswordPrompt(recentOutputRef.current));
       } catch { /* decode hiccup on a split multibyte chunk — ignore */ }
     });
 
@@ -1157,6 +1214,46 @@ const TerminalView = ({
           >
             {'✕'}
           </button>
+        </div>
+      )}
+      {atPasswordPrompt && !disabled && !showSearch && (
+        <div className="absolute top-2 right-2 z-20 flex flex-col items-end gap-1 max-w-[calc(100%-1rem)]">
+          <button
+            type="button"
+            onClick={() => (passwordMenu ? setPasswordMenu(null) : void openPasswordMenu())}
+            aria-haspopup="menu"
+            aria-expanded={!!passwordMenu}
+            title="Type a saved password at this prompt (no Enter)"
+            className="flex items-center gap-1.5 rounded-md bg-zinc-800 border border-white/10 px-2 py-1 shadow-lg text-[11px] text-zinc-200 hover:text-white hover:border-primary/40"
+          >
+            <KeyRound size={12} className="text-primary shrink-0" />
+            <span className="whitespace-nowrap">Saved password</span>
+          </button>
+          {passwordMenu && (
+            <div
+              role="menu"
+              aria-label="Saved passwords"
+              onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setPasswordMenu(null); xtermRef.current?.focus(); } }}
+              className="w-64 max-w-full max-h-60 overflow-y-auto rounded-md bg-zinc-900 border border-white/10 shadow-xl p-1"
+            >
+              {passwordMenu.length === 0 ? (
+                <div className="px-2 py-1.5 text-[11px] text-zinc-400">
+                  No saved passwords. Save one with the server or under Logins.
+                </div>
+              ) : passwordMenu.map((p) => (
+                <button
+                  key={p.serverId != null ? `s${p.serverId}` : `c${p.credentialId}`}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => void typeSavedPassword(p)}
+                  className="w-full text-left px-2 py-1.5 rounded hover:bg-white/[0.06] focus:bg-white/[0.06] focus:outline-none"
+                >
+                  <div className="text-[11.5px] text-zinc-100 truncate">{p.label}</div>
+                  {p.detail && <div className="text-[10px] text-zinc-500 truncate">{p.detail}</div>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {isMobile && !disabled && (
