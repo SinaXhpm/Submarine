@@ -54,3 +54,22 @@ export const localJoin = (dir: string, name: string): string => {
   const sep = splitRoot(folder).posix ? "/" : "\\";
   return folder.endsWith(sep) ? folder + name : folder + sep + name;
 };
+
+// The folders of `path` for the path bar, from its root down, each with the
+// full path to it: "C:\Users\me" gives C: (C:\), Users (C:\Users) and me
+// (C:\Users\me). A root is one folder ("\\server\share"), named without the
+// long form's prefix. SFTP paths are read the same way: they start with "/".
+export const pathCrumbs = (path: string): { label: string; path: string }[] => {
+  const { root, below, posix } = splitRoot(path);
+  const out: { label: string; path: string }[] = [];
+  if (root) {
+    const label = root === "/" ? "/" : root.slice(0, -1).replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\(?=[a-zA-Z]:)/, "");
+    out.push({ label, path: root });
+  }
+  let acc = root;
+  for (const name of below.split(posix ? "/" : /[\\/]/).filter(Boolean)) {
+    acc = acc === root ? root + name : acc + (posix ? "/" : "\\") + name;
+    out.push({ label: name, path: acc });
+  }
+  return out;
+};

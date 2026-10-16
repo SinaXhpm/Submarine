@@ -13,7 +13,7 @@ import {
   ARCHIVE_FORMATS, ArchiveFormat, JOB_CANCELLED, archiveFileName, archiveKind, cancelArchiveJob,
   extractFolderName, newArchiveJobId, suggestArchiveBase,
 } from "../fs/archive";
-import { localDir, localJoin } from "../fs/localPath";
+import { localDir, localJoin, pathCrumbs } from "../fs/localPath";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
 import { IS_ANDROID } from "../util/platform";
 import { nameFilterMatcher } from "../util/nameFilter";
@@ -317,6 +317,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const [tempInput, setTempInput] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  // The path box shows the folders as buttons until it's clicked or tabbed
+  // into, then the path as text to edit.
+  const pathInputRef = useRef<HTMLInputElement | null>(null);
+  const crumbsRef = useRef<HTMLDivElement | null>(null);
+  const pathBlurTimerRef = useRef<number | null>(null);
   // Name filter applied AFTER sort — case-insensitive substring, or a `*` /
   // `?` wildcard pattern for the whole name (util/nameFilter). Kept separate
   // from the path bar so the user can leave a filter active while
@@ -693,6 +698,22 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     if (e.isDir) fetch(e.path);
     setInputFocused(false);
   };
+
+  // ---- path bar folders ---------------------------------------------------------
+
+  const crumbs = useMemo(
+    () => (provider.id === "local" || currentPath.startsWith("/") ? pathCrumbs(currentPath) : []),
+    [currentPath, provider.id],
+  );
+  // A long path scrolls inside the bar: keep its end, the folder open now, in
+  // view.
+  useEffect(() => {
+    const el = crumbsRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [currentPath, inputFocused]);
+  useEffect(() => () => {
+    if (pathBlurTimerRef.current != null) window.clearTimeout(pathBlurTimerRef.current);
+  }, []);
 
   // ---- context menu auto-close ------------------------------------------------
 
@@ -1849,12 +1870,31 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         </div>
         {headerNote}
         <div className="relative flex items-center gap-1">
+          <div className="relative flex-1 min-w-0 h-6">
           <input
+            ref={pathInputRef}
             type="text"
             value={tempInput}
             onChange={(e) => { setTempInput(e.target.value); setActiveSuggestion(-1); }}
-            onFocus={() => setInputFocused(true)}
-            onBlur={() => setTimeout(() => setInputFocused(false), 250)}
+            onFocus={(e) => {
+              if (pathBlurTimerRef.current != null) {
+                window.clearTimeout(pathBlurTimerRef.current);
+                pathBlurTimerRef.current = null;
+              }
+              if (!inputFocused) {
+                // From the folder buttons: the path open now, caret at its end.
+                setTempInput(currentPath);
+                const el = e.currentTarget;
+                requestAnimationFrame(() => el.setSelectionRange(el.value.length, el.value.length));
+              }
+              setInputFocused(true);
+            }}
+            onBlur={() => {
+              pathBlurTimerRef.current = window.setTimeout(() => {
+                pathBlurTimerRef.current = null;
+                setInputFocused(false);
+              }, 250);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -1879,11 +1919,50 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 e.preventDefault(); setActiveSuggestion((p) => (p + 1) % suggestions.length);
               } else if (e.key === "ArrowUp" && suggestions.length > 0) {
                 e.preventDefault(); setActiveSuggestion((p) => (p - 1 + suggestions.length) % suggestions.length);
-              } else if (e.key === "Escape") setInputFocused(false);
+              } else if (e.key === "Escape") {
+                setInputFocused(false);
+                e.currentTarget.blur();
+              }
             }}
             placeholder="Path…"
-            className="flex-1 min-w-0 h-6 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 font-mono focus:outline-none focus:border-indigo-400/50 focus:bg-white/10"
+            className={`w-full h-full px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono focus:outline-none focus:border-indigo-400/50 focus:bg-white/10 ${inputFocused ? "text-zinc-100" : "text-transparent placeholder:text-transparent"}`}
           />
+          {!inputFocused && (
+            // Each folder opens with a click; the rest of the box edits the
+            // path as text.
+            <div
+              ref={crumbsRef}
+              onClick={(e) => { if (!(e.target as HTMLElement).closest("button")) pathInputRef.current?.focus(); }}
+              // A vertical wheel doesn't scroll sideways on its own, and the
+              // start of a long path would be out of reach.
+              onWheel={(e) => { if (!e.deltaX) e.currentTarget.scrollLeft += e.deltaY; }}
+              className="absolute inset-0 flex items-center px-2 text-[11px] font-mono overflow-x-auto no-scrollbar cursor-text"
+            >
+              {crumbs.length === 0 && (
+                <span className="shrink-0 whitespace-nowrap text-zinc-500">{currentPath || "Path…"}</span>
+              )}
+              {crumbs.map((c, i) => (
+                <React.Fragment key={c.path}>
+                  {i > 0 && crumbs[i - 1].label !== "/" && (
+                    <span className="shrink-0 px-px text-zinc-600">{provider.pathSep}</span>
+                  )}
+                  {i < crumbs.length - 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => fetch(c.path)}
+                      title={c.path}
+                      className="shrink-0 whitespace-nowrap px-0.5 rounded text-zinc-300 hover:text-indigo-200 hover:bg-white/10 focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-400/60"
+                    >
+                      {c.label}
+                    </button>
+                  ) : (
+                    <span className="shrink-0 whitespace-nowrap px-0.5 text-zinc-100">{c.label}</span>
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+          )}
+          </div>
           {bookmarksKey && (
             <button
               onClick={() => toggleBookmark(currentPath)}
