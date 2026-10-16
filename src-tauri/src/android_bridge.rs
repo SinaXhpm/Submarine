@@ -91,3 +91,10 @@ pub async fn secure_screen(app: &AppHandle, enabled: Option<bool>) -> Result<boo
     };
     res.map(|r| r.enabled).map_err(|e| format!("Couldn't change the screenshot setting: {}", e))
 }
+
+/// A call for quick unlock (quick_unlock.rs): the Keystore key behind
+/// BiometricPrompt. The error is the plugin's own ("CANCELLED", "KEY_GONE",
+/// …), which quick_unlock reads.
+pub async fn call<T: serde::de::DeserializeOwned>(app: &AppHandle, command: &str, args: serde_json::Value) -> Result<T, String> {
+    bridge(app)?.run_mobile_plugin_async::<T>(command, args).await.map_err(|e| e.to_string())
+}

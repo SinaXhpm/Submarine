@@ -5,6 +5,7 @@ import {
   AlertTriangle, CheckCircle2, ShieldOff, Pencil, Eye, History, HardDrive, KeyRound,
 } from "lucide-react";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
+import QuickUnlockCard from "./QuickUnlockCard";
 import { RoleBadge, roleBlurb } from "./shareRoles";
 import { hostOf } from "./SyncServerSetting";
 
@@ -346,6 +347,9 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
           <CheckCircle2 size={13} /> <span className="flex-1 break-words">{ok}</span>
         </div>
       )}
+
+      {/* ---- Quick unlock on this device (#166) ---- */}
+      {st?.profile && <QuickUnlockCard profile={st.profile} card={card} label={label} />}
 
       {/* ---- Cloud + sync ---- */}
       <section className={card}>

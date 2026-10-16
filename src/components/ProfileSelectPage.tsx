@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle, ArrowBigUp, ArrowRight, ArrowUpCircle, Check, CheckCircle2, Cloud, CloudOff, Download,
-  Eye, EyeOff, Github, HardDrive, Loader2, MoreHorizontal, Plus, RefreshCw, Trash2, Upload, X,
+  Eye, EyeOff, Fingerprint, Github, HardDrive, Loader2, MoreHorizontal, Plus, RefreshCw, Trash2, Upload, X,
 } from "lucide-react";
 import CloudPanel from "./CloudPanel";
 import { CloudConfigView, hostOf } from "./SyncServerSetting";
@@ -50,7 +50,7 @@ const REPO_URL = "https://github.com/SinaXhpm/Submarine";
 interface Row { name: string; local: boolean; cloud: CloudProfile | null; }
 
 // What the page is busy with. One action at a time.
-type Pending = "unlock" | "create" | "import" | "get" | "work";
+type Pending = "unlock" | "quick" | "create" | "import" | "get" | "work";
 
 // The profile opened last on this device is the one picked when the page
 // opens. Only its name is kept, which this page shows anyway. Storage can be
@@ -328,6 +328,60 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     setError(null);
     requestAnimationFrame(() => passwordInputRef.current?.focus());
   }, [selected]);
+
+  // Quick unlock (#166, quick_unlock.rs): this profile opens with Windows
+  // Hello or the fingerprint on this device, if the user turned that on. The
+  // app starting on the profile used last asks for it right away, once;
+  // closing that prompt leaves the password.
+  const [quick, setQuick] = useState<{ name: string; method: string } | null>(null);
+  const autoQuickTried = useRef(false);
+  useEffect(() => {
+    let live = true;
+    const name = selected;
+    setQuick(null);
+    if (!name) return;
+    (async () => {
+      try {
+        const support = await invoke<{ method: string | null; ready: boolean }>("quick_unlock_support");
+        if (!support.method || !support.ready) return;
+        const on = await invoke<boolean>("quick_unlock_status", { name });
+        if (!live || !on) return;
+        setQuick({ name, method: support.method });
+        if (!autoQuickTried.current && name === lastProfile()) {
+          autoQuickTried.current = true;
+          void quickUnlock(name);
+        }
+      } catch { /* the password still works */ }
+    })();
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
+  const quickLabel = quick?.method === "android-biometric" ? "Unlock with fingerprint" : "Unlock with Windows Hello";
+  const quickUnlock = async (name: string) => {
+    if (busy) return;
+    autoQuickTried.current = true;
+    setPending("quick"); setUnlockError(null);
+    try {
+      await invoke("quick_unlock", { name });
+    } catch (e) {
+      const raw = String(e);
+      setPending(null);
+      if (raw.includes("[QUICK_UNLOCK] CANCELLED")) {
+        requestAnimationFrame(() => passwordInputRef.current?.focus());
+        return;
+      }
+      if (raw.includes("[QUICK_UNLOCK] STALE")) {
+        setQuick(null);
+        setUnlockError("Quick unlock no longer fits this profile here. Unlock with the password, then turn it on again.");
+      } else {
+        setUnlockError(cleanErr(e));
+      }
+      requestAnimationFrame(() => passwordInputRef.current?.focus());
+      return;
+    }
+    rememberProfile(name);
+    onUnlocked(name);
+  };
 
   // Merge local + cloud into one ordered list, matched case-insensitively by
   // display name (a local file and its cloud partition are the SAME profile
@@ -941,6 +995,17 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                         <div id="unlock-hint" aria-live="polite">
                           {unlockError ? <Hint tone="error">{unlockError}</Hint> : capsLock ? <Hint tone="warn">Caps Lock is on</Hint> : null}
                         </div>
+                        {quick?.name === row.name && (
+                          <button
+                            type="button"
+                            onClick={() => void quickUnlock(row.name)}
+                            disabled={busy}
+                            className="mt-2 flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-white/10 text-[13px] text-zinc-200 outline-none transition-colors hover:border-primary/40 hover:text-white focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50"
+                          >
+                            {pending === "quick" ? <Loader2 size={15} className="animate-spin" /> : <Fingerprint size={15} className="text-primary" />}
+                            {quickLabel}
+                          </button>
+                        )}
                       </form>
                     ) : (
                       <div className="space-y-2.5 px-3 pb-3">

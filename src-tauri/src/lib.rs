@@ -37,6 +37,7 @@ mod ssh_config;
 mod proxy_command;
 mod known_hosts;
 mod rdp;
+mod quick_unlock;
 #[cfg(target_os = "android")]
 mod android_bridge;
 #[cfg(test)]
@@ -2564,7 +2565,7 @@ async fn import_shared_profile(
     // and nowhere else.
     let opened = {
         use tauri::Manager as _;
-        match setup_master_db_inner(app.clone(), vault_password, app.state::<DbState>(), true).await {
+        match setup_master_db_inner(app.clone(), VaultSecret::Password(vault_password), app.state::<DbState>(), true).await {
             Ok(generation) => generation,
             Err(e) => {
                 discard_half_built_profile(&app, &local_name, None);
@@ -2715,7 +2716,7 @@ async fn restore_personal_profile(
         use tauri::Manager as _;
         // No strength floor here: the escrow above already proved this is the
         // profile's real password. A pre-existing short one must still restore.
-        match setup_master_db_inner(app.clone(), vault_password, app.state::<DbState>(), false).await {
+        match setup_master_db_inner(app.clone(), VaultSecret::Password(vault_password), app.state::<DbState>(), false).await {
             Ok(generation) => generation,
             Err(e) => {
                 discard_half_built_profile(&app, &local_name, None);
@@ -4834,6 +4835,8 @@ async fn delete_profile(app_handle: tauri::AppHandle, name: String) -> Result<()
     // the profile itself is already gone, so a locked tmp shouldn't fail the
     // delete the user asked for.
     let _ = fs::remove_file(path.with_extension("submarine.tmp"));
+    // And its quick unlock on this device (#166), with its Windows Hello key.
+    quick_unlock::forget(&app_handle, &name);
     Ok(())
 }
 
@@ -5112,7 +5115,15 @@ async fn setup_master_db(app_handle: tauri::AppHandle, password: String, state: 
     // (create a profile, or unlock an existing one), so the strength floor
     // applies. `restore_personal_profile` is the one caller that doesn't get to
     // choose — see `enforce_strength` below.
-    setup_master_db_inner(app_handle, password, state, true).await.map(|_| ())
+    setup_master_db_inner(app_handle, VaultSecret::Password(password), state, true).await.map(|_| ())
+}
+
+/// What opens a vault: its password, or the key the password gives (quick
+/// unlock, #166: kept on this device behind Windows Hello or the
+/// fingerprint). A key only opens a vault that's there; it never creates one.
+pub(crate) enum VaultSecret {
+    Password(String),
+    Key(Zeroizing<[u8; 32]>),
 }
 
 /// `enforce_strength = false` is for restoring a profile that ALREADY exists in
@@ -5123,10 +5134,14 @@ async fn setup_master_db(app_handle: tauri::AppHandle, password: String, state: 
 /// creation, where the choice is actually being made.
 async fn setup_master_db_inner(
     app_handle: tauri::AppHandle,
-    mut password: String,
+    secret: VaultSecret,
     state: tauri::State<'_, DbState>,
     enforce_strength: bool,
 ) -> Result<u64, String> {
+    let (mut password, known_key) = match secret {
+        VaultSecret::Password(p) => (p, None),
+        VaultSecret::Key(k) => (String::new(), Some(k)),
+    };
     // The active profile must be picked before this command — the UI does
     // it from the picker screen. Refuse early instead of silently writing
     // to a default path.
@@ -5164,15 +5179,19 @@ async fn setup_master_db_inner(
         // it off to the blocking pool so the runtime stays responsive. The
         // closure also zeroizes the password buffer once the derivation is
         // done, preserving the secret-hygiene the original sync path had.
-        let mut password_owned = std::mem::take(&mut password);
-        let derived = tokio::task::spawn_blocking(move || {
-            let res = derive_key(&password_owned, &salt_fixed);
-            password_owned.zeroize();
-            res
-        })
-            .await
-            .map_err(|e| format!("[CRYPTO] KDF_JOIN: {}", e))??;
-        key = Zeroizing::new(derived);
+        if let Some(k) = known_key {
+            key = k;
+        } else {
+            let mut password_owned = std::mem::take(&mut password);
+            let derived = tokio::task::spawn_blocking(move || {
+                let res = derive_key(&password_owned, &salt_fixed);
+                password_owned.zeroize();
+                res
+            })
+                .await
+                .map_err(|e| format!("[CRYPTO] KDF_JOIN: {}", e))??;
+            key = Zeroizing::new(derived);
+        }
         let raw = Zeroizing::new(decrypt_with_key(&ciphertext, &nonce, &key)?);
         let decrypted_data = Zeroizing::new(vault_decompress(&raw)?);
 
@@ -5337,6 +5356,10 @@ async fn setup_master_db_inner(
             }
         }
     } else {
+        // A key opens a vault; it never makes one (see VaultSecret).
+        if known_key.is_some() {
+            return Err("[STATE] NO_VAULT: this profile's file isn't here".into());
+        }
         // Master-password strength floor — enforced ONLY at vault CREATION, not
         // on unlock (an existing vault with a short password must still open).
         // This password is the single cryptographic root protecting every
@@ -5544,7 +5567,7 @@ async fn create_profile(
     *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED")? = Some(name);
     // Reuse setup_master_db's fresh-schema branch by deferring to it. Empty
     // profile starts with the same migrations the legacy path would do.
-    let opened = setup_master_db_inner(app_handle.clone(), password, state, true).await?;
+    let opened = setup_master_db_inner(app_handle.clone(), VaultSecret::Password(password), state, true).await?;
 
     // New profile: mint a stable UUID and partition its cloud sync by that UUID
     // rather than its name. Two vaults that happen to share a display name then
@@ -19719,6 +19742,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             check_db_exists, setup_master_db, persist_vault,
+            quick_unlock::quick_unlock_support, quick_unlock::quick_unlock_status, quick_unlock::quick_unlock_enable,
+            quick_unlock::quick_unlock_disable, quick_unlock::quick_unlock,
             list_profiles, cloud_list_sync_profiles, cloud_delete_profile, force_push_profile, select_profile, create_profile, delete_profile, close_profile,
             export_profile, import_profile_pick, import_profile_save, import_profile_bytes,
             get_secure_screen, set_secure_screen,

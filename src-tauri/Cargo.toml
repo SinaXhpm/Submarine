@@ -178,6 +178,23 @@ fontdb = "0.24"
 gtk = "0.18"
 gdk = "0.18"
 
+# ---------------------------------------------------------------------------
+# Windows-only. Windows Hello, to open a profile without typing its password
+# when the user turns that on (#166, quick_unlock.rs): KeyCredentialManager
+# keeps a key (in the TPM where there is one) that signs only after the
+# user's PIN, face or finger. Already in the build through Tauri (same
+# version, nothing new to download); these are its parts used here.
+# ---------------------------------------------------------------------------
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Security_Credentials",
+    "Security_Cryptography",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [dev-dependencies]
 # Tests only: a one-connection listener for russh's in-memory ssh-agent server
 # (agent_auth tests). Already in the dependency tree through russh.
