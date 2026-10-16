@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from 
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud } from "lucide-react";
+import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, CircleSlash, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud } from "lucide-react";
 import TerminalView from "./TerminalView";
 import { AuthPrompts } from "./AuthPrompts";
 import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
@@ -362,13 +362,8 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   useEffect(() => { customPasswordRef.current = customPassword; }, [customPassword]);
 
   // Mirror `status` into a ref so the one-shot effect below (which registers
-  // the `connection-success` listener from its INITIAL closure) can see the
-  // latest value. Without this ref, `wasReconnect` was computed against a
-  // status snapshot captured at effect-run time (always `'connecting'`), so
-  // a manual reconnect via the banner — which zeroes reconnectAttemptRef —
-  // failed to bump `connectionEpoch`. TerminalView's per-epoch effect then
-  // never re-called open_terminal against the new SSH handle, and the
-  // reconnected terminal appeared frozen while SFTP/tunnels worked fine.
+  // its listeners from its INITIAL closure) can see the latest value — a
+  // snapshot captured at effect-run time is always `'connecting'`.
   const statusRef = useRef(status);
   useEffect(() => { statusRef.current = status; }, [status]);
 
@@ -843,15 +838,24 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // no backoff ramp, no give-up. The user wants the session/tunnel to keep
   // trying relentlessly on any drop (laptop sleep, mobile-hotspot dropout, a
   // flaky link) so a forward always comes back by itself once the link
-  // returns. Only a genuine AUTH failure (wrong credentials) or an explicit
-  // Cancel stops the cycle — retrying auth-rejected attempts every 5s would
-  // just spam the server and risk locking the account. The terminal/SFTP
-  // overlay stays in place the whole time so the user keeps their context.
+  // returns. A failure waiting can't fix (the backend's `retry` is false) or
+  // an explicit Cancel stops the cycle: retrying auth-rejected attempts every
+  // 5s would just spam the server and risk locking the account, and a host
+  // key that wasn't approved would bring its prompt straight back. The
+  // terminal/SFTP overlay stays in place the whole time so the user keeps
+  // their context.
+  //
+  // A connect that fails before the session was ever up (a timeout, the
+  // server not reachable yet) is retried the same way; the backend's `retry`
+  // flag says when waiting can help. Until the first success there's no
+  // terminal to keep, so those retries stay in the full-screen connect view.
   const RECONNECT_INTERVAL_MS = 5000;
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [nextReconnectAt, setNextReconnectAt] = useState<number | null>(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [everConnected, setEverConnected] = useState(false);
+  const everConnectedRef = useRef(false);
 
   const updateAttempt = (n: number) => {
     reconnectAttemptRef.current = n;
@@ -962,10 +966,12 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     });
 
     const unlistenSuccess = listen(`connection-success-${session.id}`, () => {
-      // statusRef.current is authoritative here — the plain `status` we
-      // could reach through closure is frozen at effect-run time.
-      const prevStatus = statusRef.current;
-      const wasReconnect = reconnectAttemptRef.current > 0 || prevStatus === 'disconnected' || prevStatus === 'failed';
+      // A reconnect is a success after an earlier one. Retries of a first
+      // connect that never got through are still the first connect: the
+      // terminals open fresh and the on-connect commands run.
+      const wasReconnect = everConnectedRef.current;
+      everConnectedRef.current = true;
+      setEverConnected(true);
       setStatus('connected');
       cancelReconnect();
       // Whatever got this connection in — the password typed into the failed
@@ -1073,12 +1079,13 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       setIsAuthError(isAuth);
       resetSecondaryStatus();
       addLog(`SSH_CONNECTION_FAILED [${session.serverName}]: ${event.payload?.reason}`, "error");
-      // If this failure happened during an auto-reconnect attempt, queue the
-      // next try unless we've exhausted them or the credentials are wrong
-      // (retrying auth-rejected attempts just wastes time).
-      if (reconnectAttemptRef.current > 0 && !isAuth) {
+      // Try again in a few seconds — the first connect too — when waiting can
+      // help: a timeout, a refusal, a link that broke. A rejected login, a
+      // host key that wasn't approved (its prompt would come straight back)
+      // or a setting stops the cycle; Reconnect is still there.
+      if (event.payload?.retry === true) {
         scheduleReconnect(reconnectAttemptRef.current + 1);
-      } else if (isAuth) {
+      } else {
         cancelReconnect();
       }
     });
@@ -1166,6 +1173,8 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     reconnectTimerRef.current = setTimeout(() => {
       setNextReconnectAt(null);
       setStatus('connecting');
+      // Seen in the connect view while a first connect is being retried.
+      pushLog({ msg: `Trying again (attempt ${attempt})…`, type: 'info' });
       primarySeparateRef.current = separateFwdRef.current;
       invoke("initiate_connection", {
         sessionId: session.id,
@@ -1175,12 +1184,24 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
         sessionRole: "primary",
         separateSessions: separateFwdRef.current,
         useSshAgent: readUseSshAgent(),
-      }).catch(console.error);
+      }).catch((e) => {
+        // Refused before any connecting (the server was deleted, say): no
+        // failure event follows, so don't sit on "Connecting…".
+        pushLog({ msg: `Failed to initiate: ${e}`, type: 'error' });
+        setStatus('failed');
+        cancelReconnect();
+      });
     }, delay);
   };
 
   const reconnect = () => {
+    // Once the session has been up, a reconnect (the banner's Now, or
+    // Reconnect) is one more attempt of the cycle: the terminals stay on
+    // screen behind the banner — the full-screen connect view would unmount
+    // them and lose their scrollback — and a timeout goes on retrying.
+    const attempt = everConnectedRef.current ? Math.max(1, reconnectAttemptRef.current) : 0;
     cancelReconnect();
+    updateAttempt(attempt);
     setStatus('connecting');
     setLogs([]);
     setIsAuthError(false);
@@ -1362,10 +1383,13 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     </div>
   );
 
-  // Only render the full-screen log view for the FIRST connection — once an
-  // auto-reconnect cycle is running, the user's terminal output and SFTP
-  // state stay visible behind a slim banner.
-  if (reconnectAttempt === 0 && (status === 'connecting' || status === 'failed')) {
+  // Only render the full-screen log view for the FIRST connection (retries of
+  // it included) — once an auto-reconnect cycle is running after the session
+  // was up, the user's terminal output and SFTP state stay visible behind a
+  // slim banner.
+  if ((reconnectAttempt === 0 || !everConnected) && (status === 'connecting' || status === 'failed')) {
+    const retryWaiting = reconnectAttempt > 0 && nextReconnectAt !== null;
+    const retryIn = nextReconnectAt ? Math.max(0, Math.ceil((nextReconnectAt - Date.now()) / 1000)) : 0;
     return (
       <div className="relative flex-1 flex flex-col p-4 sm:p-8 bg-[#0a0a0c] text-white overflow-hidden">
         <div className="max-w-2xl w-full mx-auto flex-1 flex flex-col min-h-0">
@@ -1388,11 +1412,29 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               <h2 className="text-sm font-semibold text-zinc-100 truncate" title={session.serverName}>
                 {displayName || session.serverName}
               </h2>
-              <p className={`text-[11px] mt-0.5 ${status === 'failed' ? 'text-red-400/90' : 'text-zinc-500'}`}>
-                {status === 'connecting' ? 'Connecting…' : 'Connection failed'}
+              {/* One line on a phone too: the retry states have a short form
+                  there, since the buttons beside it leave little room. */}
+              <p className={`text-[11px] mt-0.5 truncate ${status === 'failed' ? 'text-red-400/90' : 'text-zinc-500'}`}>
+                {status === 'connecting'
+                  ? (reconnectAttempt > 0
+                    ? <><span className="sm:hidden">Trying again · #{reconnectAttempt}</span><span className="hidden sm:inline">Trying again · attempt {reconnectAttempt}</span></>
+                    : 'Connecting…')
+                  : retryWaiting
+                    ? <><span className="sm:hidden">Failed · retry in {retryIn}s</span><span className="hidden sm:inline">Connection failed · trying again in {retryIn}s</span></>
+                    : 'Connection failed'}
               </p>
             </div>
             <div className="shrink-0 flex items-center gap-2">
+              {retryWaiting && (
+                <button
+                  onClick={cancelReconnect}
+                  title="Stop trying again"
+                  aria-label="Stop trying again"
+                  className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white text-xs font-semibold transition-colors"
+                >
+                  <CircleSlash size={13} /><span className="hidden sm:inline">Cancel</span>
+                </button>
+              )}
               {status === 'failed' && (
                 <button
                   onClick={reconnect}
@@ -1827,26 +1869,38 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             isAttempting ? `Reconnecting · attempt ${reconnectAttempt}` :
             isWaiting    ? `Auto-reconnect in ${countdown}s · attempt ${reconnectAttempt}` :
                            "Session disconnected";
+          // A phone's banner stays one line: the short form of the heading
+          // (cut with … if even that doesn't fit, never wrapped), no reason,
+          // and icon buttons. The wide one is unchanged.
+          const shortHeading =
+            isAttempting ? `Reconnecting · #${reconnectAttempt}` :
+            isWaiting    ? `Retry in ${countdown}s · #${reconnectAttempt}` :
+                           "Disconnected";
+          const btn = "h-8 min-w-8 sm:h-auto sm:min-h-6 px-2 sm:px-3 sm:py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5";
           return (
-            <div className={`shrink-0 px-4 py-2 border-b flex items-center justify-between gap-3 animate-in fade-in ${tone}`}>
-              <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider">
-                <AlertTriangle size={14} />
-                <span>{heading}</span>
+            <div className={`shrink-0 px-3 sm:px-4 py-1.5 sm:py-2 border-b flex items-center gap-2 sm:gap-3 animate-in fade-in ${tone}`}>
+              <AlertTriangle size={14} className="shrink-0" />
+              <div
+                className="min-w-0 flex-1 truncate text-[11px] font-bold sm:uppercase sm:tracking-wider"
+                title={disconnectReason ? `${heading} — ${disconnectReason}` : heading}
+              >
+                <span className="sm:hidden">{shortHeading}</span>
+                <span className="hidden sm:inline">{heading}</span>
                 {disconnectReason && (
-                  <span className="opacity-70 normal-case font-normal tracking-normal">— {disconnectReason}</span>
+                  <span className="hidden sm:inline opacity-70 normal-case font-normal tracking-normal"> — {disconnectReason}</span>
                 )}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="shrink-0 flex items-center gap-1.5 sm:gap-2">
                 {isWaiting && (
-                  <button onClick={cancelReconnect} className="px-3 py-1.5 sm:py-1 min-h-8 sm:min-h-6 bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors">
-                    Cancel
+                  <button onClick={cancelReconnect} aria-label="Cancel" title="Stop reconnecting" className={`${btn} bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white`}>
+                    <CircleSlash size={13} className="sm:hidden" /><span className="hidden sm:inline">Cancel</span>
                   </button>
                 )}
-                <button onClick={reconnect} className="px-3 py-1.5 sm:py-1 min-h-8 sm:min-h-6 bg-primary/10 text-primary hover:bg-primary/20 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center gap-1.5">
-                  <Play size={12} /> {isWaiting ? "Now" : "Reconnect"}
+                <button onClick={reconnect} aria-label={isWaiting ? "Now" : "Reconnect"} title={isWaiting ? "Reconnect now" : "Reconnect"} className={`${btn} bg-primary/10 text-primary hover:bg-primary/20`}>
+                  <Play size={12} /><span className="hidden sm:inline">{isWaiting ? "Now" : "Reconnect"}</span>
                 </button>
-                <button onClick={onClose} className="px-3 py-1.5 sm:py-1 min-h-8 sm:min-h-6 bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors">
-                  Close
+                <button onClick={onClose} aria-label="Close session" title="Close session" className={`${btn} bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white`}>
+                  <X size={13} className="sm:hidden" /><span className="hidden sm:inline">Close</span>
                 </button>
               </div>
             </div>
