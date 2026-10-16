@@ -55,6 +55,29 @@ const SEARCH_OPTIONS: ISearchOptions = {
 const cycleMod = (s: "off" | "armed" | "locked"): "off" | "armed" | "locked" =>
   s === "off" ? "armed" : s === "armed" ? "locked" : "off";
 
+// A terminal can be shown in two places, its session tab and a Wall tile, but
+// its PTY has one size (#174). A Wall tile only exists while the Wall is on
+// screen, so while one is open it sets the size; the session tab, hidden
+// behind it, still refits but sends nothing. When the tile goes away the tab
+// gives the PTY its own size back. ptySizes remembers what each PTY was last
+// given, so the same size isn't sent twice.
+const ptySizes = new Map<string, { cols: number; rows: number }>();
+const wallTiles = new Map<string, number>();
+const sendPtySize = (terminalId: string, cols: number, rows: number) => {
+  const last = ptySizes.get(terminalId);
+  if (last && last.cols === cols && last.rows === rows) return;
+  ptySizes.set(terminalId, { cols, rows });
+  invoke('resize_terminal', { terminalId, cols, rows }).catch(() => {});
+};
+// Once the PTY is (re)opened: the backend drops resizes while a shell is
+// starting, so the size is sent again, the open Wall tile's if there is one.
+const resendPtySize = (terminalId: string, cols: number, rows: number) => {
+  const size = (wallTiles.get(terminalId) ?? 0) > 0 ? ptySizes.get(terminalId) ?? { cols, rows } : { cols, rows };
+  ptySizes.delete(terminalId);
+  sendPtySize(terminalId, size.cols, size.rows);
+};
+const WALL_TILE_CLOSED = 'submarine-wall-tile-closed';
+
 const TerminalView = ({
   sessionId,
   terminalId,
@@ -307,9 +330,7 @@ const TerminalView = ({
     // was being dragged, a panel opened) is sent once more when it is. Without
     // this the shell kept the size it was reopened with, and wrapped its lines
     // at the wrong column until the next resize.
-    const syncSize = () => {
-      invoke('resize_terminal', { terminalId, cols: term.cols, rows: term.rows }).catch(() => {});
-    };
+    const syncSize = () => resendPtySize(terminalId, term.cols, term.rows);
     const ce = containerExecRef.current;
     if (ce) {
       invoke('open_container_terminal', {
@@ -537,7 +558,10 @@ const TerminalView = ({
     
     setTimeout(() => {
       fitAddon.fit();
-      
+      // A Wall tile sets the size while it's open, also when fit() kept
+      // xterm's default size and so fired no resize.
+      if (attachOnly && (wallTiles.get(terminalId) ?? 0) > 0) sendPtySize(terminalId, term.cols, term.rows);
+
       // Start PTY Session with correct dimensions only ONCE. Attach-only
       // instances skip this entirely — they hitch onto an existing PTY
       // opened by the primary instance and would collide with it if they
@@ -552,9 +576,7 @@ const TerminalView = ({
         // The backend only takes resizes once the shell is up, so a refit
         // that landed while it was starting (e.g. the chosen font finished
         // loading and changed the cell size) is sent again once it's open.
-        const syncSize = () => {
-          invoke('resize_terminal', { terminalId, cols: term.cols, rows: term.rows }).catch(() => {});
-        };
+        const syncSize = () => resendPtySize(terminalId, term.cols, term.rows);
         if (containerExec) {
           invoke('open_container_terminal', {
             sessionId,
@@ -908,8 +930,17 @@ const TerminalView = ({
 
     // Handle Resize
     const onResizeDisposable = term.onResize(({ cols, rows }) => {
-      invoke('resize_terminal', { terminalId, cols, rows }).catch(console.error);
+      if (!attachOnly && (wallTiles.get(terminalId) ?? 0) > 0) return;
+      sendPtySize(terminalId, cols, rows);
     });
+    // The session tab's view: the Wall tile that set the size has closed.
+    const onWallTileClosed = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== terminalId) return;
+      if ((wallTiles.get(terminalId) ?? 0) > 0) return;
+      sendPtySize(terminalId, term.cols, term.rows);
+    };
+    if (attachOnly) wallTiles.set(terminalId, (wallTiles.get(terminalId) ?? 0) + 1);
+    else window.addEventListener(WALL_TILE_CLOSED, onWallTileClosed);
 
     // Handle Output with proper async cleanup for StrictMode
     const unlistenPromise = listen(`terminal-output-${terminalId}`, (event: any) => {
@@ -1048,6 +1079,13 @@ const TerminalView = ({
       // xterm (in the session tab) keeps working.
       if (!attachOnly) {
         invoke('close_terminal', { terminalId }).catch(console.error);
+        window.removeEventListener(WALL_TILE_CLOSED, onWallTileClosed);
+        ptySizes.delete(terminalId);
+      } else {
+        const left = (wallTiles.get(terminalId) ?? 1) - 1;
+        if (left > 0) wallTiles.set(terminalId, left);
+        else wallTiles.delete(terminalId);
+        window.dispatchEvent(new CustomEvent(WALL_TILE_CLOSED, { detail: terminalId }));
       }
     };
   }, [sessionId, terminalId]);
