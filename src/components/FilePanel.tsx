@@ -14,6 +14,7 @@ import {
   extractFolderName, newArchiveJobId, suggestArchiveBase,
 } from "../fs/archive";
 import { localDir, localJoin, pathCrumbs } from "../fs/localPath";
+import { COMPARE_LABEL, CompareMark, compareListings } from "../fs/compare";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
 import { IS_ANDROID } from "../util/platform";
 import { nameFilterMatcher } from "../util/nameFilter";
@@ -240,7 +241,23 @@ export interface FilePanelProps {
   bookmarksKey?: string;
   /** Why archive and extract can't run in this pane right now (remote: sudo root mode). None: they can. */
   archiveOff?: string;
+  /** Compare (#18): the other pane's listing, to mark this one's rows against (fs/compare). None: compare is off. */
+  compareWith?: FileEntry[] | null;
+  /** While comparing: leave out the files that look the same on both sides. Folders on both sides stay, to open. */
+  hideSame?: boolean;
+  /** This pane's listing whenever it changes, for the other pane to compare with. */
+  onEntriesChange?: (entries: FileEntry[]) => void;
 }
+
+// How a compare mark shows on its row (fs/compare): the edge and a tint, as
+// in the legend; what it means is in the row's tooltip.
+const COMPARE_ROW: Record<CompareMark, string> = {
+  only: "border-amber-400 bg-amber-500/[0.08]",
+  type: "border-rose-400 bg-rose-500/[0.08]",
+  size: "border-rose-400 bg-rose-500/[0.08]",
+  newer: "border-emerald-400 bg-emerald-500/[0.08]",
+  older: "border-zinc-500 bg-white/[0.03]",
+};
 
 // The format last picked in the archive dialog, one per side: `zip` is a
 // good default on the desktop, `tar.gz` on a server, where `zip` is often
@@ -272,6 +289,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   rootMode = false,
   bookmarksKey,
   archiveOff,
+  compareWith = null,
+  hideSame = false,
+  onEntriesChange,
 }, ref) => {
   const [currentPath, setCurrentPath] = useState("");
   // The server has no SFTP: the remote pane works over shell commands.
@@ -1413,6 +1433,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const ownerName = (entry: FileEntry) =>
     entry.uid === undefined ? "" : owners.get(entry.uid) ?? String(entry.uid);
 
+  // ---- compare (#18) ------------------------------------------------------------
+
+  useEffect(() => { onEntriesChange?.(entries); }, [entries]); // eslint-disable-line react-hooks/exhaustive-deps
+  const compareMarks = useMemo(
+    () => (compareWith ? compareListings(entries, compareWith) : null),
+    [entries, compareWith],
+  );
+
   // ---- sorting ----------------------------------------------------------------
 
   const sortedEntries = (() => {
@@ -1431,9 +1459,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       return 0;
     });
     const matches = nameFilterMatcher(nameFilter);
-    return matches ? sorted.filter(e => matches(e.name)) : sorted;
+    const named = matches ? sorted.filter(e => matches(e.name)) : sorted;
+    return compareMarks && hideSame ? named.filter((e) => e.isDir || compareMarks.has(e.path)) : named;
   })();
-  const filteredOut = nameFilter.trim() ? entries.length - sortedEntries.length : 0;
+  const filteredOut = nameFilter.trim() || (compareMarks && hideSame) ? entries.length - sortedEntries.length : 0;
 
   // As wide as the folder's longest name needs (see NAME_MIN). Measured on
   // the whole listing, so the columns hold still while a filter is typed.
@@ -2177,13 +2206,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <div className="text-center py-14 text-zinc-400">Loading…</div>
           ) : sortedEntries.length === 0 ? (
             <div className="text-center py-14 px-3 text-zinc-500 break-words">
-              {filteredOut ? `No names match “${nameFilter.trim()}”` : "Empty"}
+              {filteredOut && nameFilter.trim()
+                ? `No names match “${nameFilter.trim()}”`
+                : filteredOut ? "Every file here looks the same on the other side" : "Empty"}
             </div>
           ) : (
             sortedEntries.map((entry) => {
               const isSel = selected.has(entry.path);
               const isCursor = entry.path === cursor;
               const moved = movedColumns.map((c) => columnText(c, entry)).filter(Boolean).join(" · ");
+              const mark = compareMarks?.get(entry.path);
               return (
               <div
                 key={entry.path}
@@ -2200,8 +2232,12 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 } ${
                   isSel
                     ? "bg-indigo-500/15 border-indigo-400 text-indigo-100"
-                    : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
+                    : mark
+                      ? `${COMPARE_ROW[mark]} text-zinc-200 hover:bg-white/5 hover:text-white`
+                      : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
                 } ${keyNav && isCursor ? "ring-1 ring-inset ring-indigo-400/60" : ""}`}
+                title={mark ? COMPARE_LABEL[mark] : undefined}
+                data-fs-compare={mark}
               >
                 {/* Selection mode only. A click anywhere on the row does what
                     a click on its box would. */}
@@ -2228,6 +2264,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                     )}
                   </span>
                   <div title={entry.name} className={`min-w-0 flex-1 truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
+                  {mark && <span className="sr-only">{COMPARE_LABEL[mark]}</span>}
                 </div>
                 {shownColumns.map((c) => (
                   <div key={c} className={`truncate ${COLUMN_CELL[c]}`} title={c === "owner" ? columnText(c, entry) : undefined}>{columnText(c, entry)}</div>
