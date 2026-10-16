@@ -250,11 +250,11 @@ const TerminalView = ({
   // keys. An arrow sends what xterm sends for the real key: `ESC [ A` (or
   // `ESC O A` once the program asked for application cursor keys, as vim and
   // less do), and with modifiers armed `ESC [ 1 ; <m> A`, where m is 1 plus
-  // Shift 1, Alt 2, Ctrl 4. `|` and `~` are typed characters, so the handler
-  // applies the armed modifiers to them itself.
+  // Shift 1, Alt 2, Ctrl 4. The symbols (| ~ / -) are typed characters, so the
+  // handler applies the armed modifiers to them itself.
   const sendSpecialKey = (key: SpecialKey) => {
     if (disabledRef.current) return;
-    if (key === "|" || key === "~") {
+    if (key === "|" || key === "~" || key === "/" || key === "-") {
       inputRef.current?.(key);
       return;
     }

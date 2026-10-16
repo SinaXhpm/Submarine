@@ -1,7 +1,8 @@
 // Mobile-only key bar that sits between xterm and the system on-screen
 // keyboard, exposing the keys Android (and the iOS soft keyboard) don't
 // surface but every terminal user needs: Ctrl, Alt, Shift, Esc, Tab, the
-// arrows, | and ~.
+// arrows, and the symbols a shell line is full of but a phone keyboard
+// hides on another page: | ~ / -.
 //
 // Modifier semantics match Termux / iSH:
 //   - tap once   → "armed"  (highlight in primary color, fires on next typed char)
@@ -15,7 +16,7 @@
 export type ModKey = "ctrl" | "alt" | "shift";
 export type ModState = "off" | "armed" | "locked";
 export interface ModifiersState { ctrl: ModState; alt: ModState; shift: ModState; }
-export type SpecialKey = "esc" | "tab" | "up" | "down" | "left" | "right" | "|" | "~";
+export type SpecialKey = "esc" | "tab" | "up" | "down" | "left" | "right" | "|" | "~" | "/" | "-";
 
 interface MobileKeyBarProps {
   modifiers: ModifiersState;
@@ -51,7 +52,7 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
     );
   };
 
-  // `symbol`: a one-glyph key (arrow, | or ~) — narrower, with a larger glyph.
+  // `symbol`: a one-glyph key (arrow or symbol) — narrower, with a larger glyph.
   const KeyBtn = ({ label, onClick, title, symbol }: { label: string; onClick: () => void; title?: string; symbol?: boolean }) => (
     <button
       type="button"
@@ -100,6 +101,8 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
       <span className="shrink-0 w-px h-6 bg-white/10 mx-1" />
       <KeyBtn symbol label="|" onClick={() => onSpecialKey("|")} title="Pipe (|)" />
       <KeyBtn symbol label="~" onClick={() => onSpecialKey("~")} title="Tilde (~)" />
+      <KeyBtn symbol label="/" onClick={() => onSpecialKey("/")} title="Slash (/)" />
+      <KeyBtn symbol label="-" onClick={() => onSpecialKey("-")} title="Dash (-)" />
     </div>
   );
 }
