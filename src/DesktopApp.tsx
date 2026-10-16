@@ -21,6 +21,10 @@ import { forgetServerBookmarks } from "./util/sftpBookmarks";
 import { useIsNarrow } from "./hooks/useViewport";
 import { FONT_FAMILY_KEY, FONT_SIZE_KEY, readFontFamily, readFontSize } from "./util/terminalFont";
 import { SCROLLBACK_KEY, readScrollback } from "./util/terminalScrollback";
+import {
+  BOLD_BRIGHT_KEY, CUSTOM_THEME_KEY, MIN_CONTRAST_KEY, THEME_KEY,
+  readBoldBright, readCustomScheme, readMinContrast, readThemeId, schemeToWindowsTerminalJson,
+} from "./util/terminalTheme";
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
 import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
@@ -291,6 +295,13 @@ function DesktopApp() {
     terminalFontFamily: readFontFamily(),
     // Lines each terminal keeps above the screen. See util/terminalScrollback.
     terminalScrollback: readScrollback(),
+    // Colours (util/terminalTheme): a scheme's id, the user's own scheme as
+    // Windows Terminal JSON ("" for none), bold in bright colours, and
+    // "keep text readable".
+    terminalTheme: readThemeId(),
+    terminalCustomScheme: (() => { const s = readCustomScheme(); return s ? schemeToWindowsTerminalJson(s) : ""; })(),
+    terminalBoldBright: readBoldBright(),
+    terminalMinContrast: readMinContrast(),
     // Off by default: terminals start the remote account's own shell, same
     // as before this setting existed. See util/terminalShell.
     useLocalShell: readUseLocalShell(),
@@ -318,6 +329,11 @@ function DesktopApp() {
     localStorage.setItem(FONT_SIZE_KEY, appSettings.terminalFontSize.toString());
     localStorage.setItem(FONT_FAMILY_KEY, appSettings.terminalFontFamily);
     localStorage.setItem(SCROLLBACK_KEY, String(appSettings.terminalScrollback));
+    localStorage.setItem(THEME_KEY, appSettings.terminalTheme);
+    if (appSettings.terminalCustomScheme) localStorage.setItem(CUSTOM_THEME_KEY, appSettings.terminalCustomScheme);
+    else localStorage.removeItem(CUSTOM_THEME_KEY);
+    localStorage.setItem(BOLD_BRIGHT_KEY, appSettings.terminalBoldBright ? 'on' : 'off');
+    localStorage.setItem(MIN_CONTRAST_KEY, appSettings.terminalMinContrast ? 'on' : 'off');
     localStorage.setItem(USE_LOCAL_SHELL_KEY, appSettings.useLocalShell ? 'on' : 'off');
     localStorage.setItem(USE_SSH_AGENT_KEY, appSettings.useSshAgent ? 'on' : 'off');
     localStorage.setItem(USE_SSH_CONFIG_KEY, appSettings.useSshConfig ? 'on' : 'off');

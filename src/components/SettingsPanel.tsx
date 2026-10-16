@@ -13,6 +13,10 @@ import CopyValue from "./CopyValue";
 import FontPicker from "./FontPicker";
 import { loadInstalledFonts } from "../util/systemFonts";
 import { MAX_SCROLLBACK, MIN_SCROLLBACK, clampScrollback } from "../util/terminalScrollback";
+import {
+  CUSTOM_THEME_ID, DEFAULT_THEME_ID, SCHEMES, TerminalScheme, XTERM_ANSI,
+  parseWindowsTerminalScheme, schemeToWindowsTerminalJson,
+} from "../util/terminalTheme";
 import { IS_ANDROID } from "../util/platform";
 
 // Where this install keeps its data (see src-tauri/src/portable.rs). `portable`
@@ -319,6 +323,163 @@ function TerminalFontSettings({ settings, setSettings }: any) {
   );
 }
 
+// A few lines of `ls -l` in a scheme's colours, to pick one by.
+function SchemePreview({ scheme, boldBright }: { scheme: TerminalScheme; boldBright: boolean }) {
+  const t = scheme.theme;
+  // The default scheme leaves the ANSI colours to xterm; these are xterm's.
+  const c = (k: keyof typeof XTERM_ANSI) => (t as Record<string, string | undefined>)[k] ?? XTERM_ANSI[k];
+  // Bold text, in the bright colour when the terminal draws it that way.
+  const b = (k: "red" | "green" | "blue" | "cyan") => ({
+    color: c(boldBright ? (`bright${k[0].toUpperCase()}${k.slice(1)}` as keyof typeof XTERM_ANSI) : k),
+    fontWeight: 700,
+  });
+  const fg = t.foreground ?? "#e4e4e7";
+  return (
+    <div
+      aria-hidden="true"
+      className="rounded-lg border border-white/10 px-3 py-2 font-mono text-[11px] leading-[1.45] overflow-hidden whitespace-pre"
+      style={{ background: t.background, color: fg }}
+    >
+      <div><span style={b("green")}>user@server</span>:<span style={b("blue")}>~</span>$ ls -l</div>
+      <div>drwxr-xr-x 2 user user 4096 Oct 16 <span style={b("blue")}>projects</span></div>
+      <div>-rwxr-xr-x 1 user user  812 Oct 16 <span style={b("green")}>deploy.sh</span></div>
+      <div>lrwxrwxrwx 1 user user   11 Oct 16 <span style={b("cyan")}>logs</span> -&gt; /var/log</div>
+      <div>-rw-r--r-- 1 user user 2.1M Oct 16 <span style={b("red")}>backup.tar.gz</span></div>
+      <div><span style={{ color: c("yellow") }}>warning:</span> <span style={{ color: c("magenta") }}>3</span> files changed <span style={{ color: c("brightBlack") }}># comment</span></div>
+    </div>
+  );
+}
+
+// Terminal colours (util/terminalTheme): a scheme, bold in bright colours,
+// "keep text readable", and a scheme of the user's own pasted as Windows
+// Terminal JSON.
+function TerminalColoursSetting({ settings, setSettings }: any) {
+  const custom = useMemo(() => {
+    if (!settings.terminalCustomScheme) return null;
+    try { return parseWindowsTerminalScheme(settings.terminalCustomScheme); } catch { return null; }
+  }, [settings.terminalCustomScheme]);
+  const schemes = custom ? [...SCHEMES, custom] : SCHEMES;
+  const current = schemes.find((s) => s.id === settings.terminalTheme) ?? SCHEMES[0];
+  const [importing, setImporting] = useState(false);
+  const [pasted, setPasted] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
+  const useImported = () => {
+    try {
+      if (pasted.length > 20000) throw new Error("That's too long for one colour scheme.");
+      const s = parseWindowsTerminalScheme(pasted);
+      setSettings((prev: any) => ({ ...prev, terminalCustomScheme: schemeToWindowsTerminalJson(s), terminalTheme: CUSTOM_THEME_ID }));
+      setImporting(false);
+      setPasted("");
+      setImportError(null);
+    } catch (e: any) {
+      setImportError(e?.message ?? String(e));
+    }
+  };
+  const removeCustom = () =>
+    setSettings((prev: any) => ({
+      ...prev,
+      terminalCustomScheme: "",
+      terminalTheme: prev.terminalTheme === CUSTOM_THEME_ID ? DEFAULT_THEME_ID : prev.terminalTheme,
+    }));
+  const swatch = (s: TerminalScheme) => {
+    const t = s.theme as Record<string, string | undefined>;
+    const dots = ["red", "green", "yellow", "blue", "magenta", "cyan"].map((k) => t[k] ?? XTERM_ANSI[k as keyof typeof XTERM_ANSI]);
+    const on = s.id === current.id;
+    return (
+      <button
+        key={s.id}
+        type="button"
+        role="radio"
+        aria-checked={on}
+        onClick={() => setSettings((prev: any) => ({ ...prev, terminalTheme: s.id }))}
+        className={`flex items-center gap-2 min-w-0 rounded-lg border px-2 py-1.5 text-left transition-colors ${on ? "border-primary/60 bg-primary/10" : "border-white/10 hover:border-white/25"}`}
+      >
+        <span className="shrink-0 flex items-center gap-[3px] rounded px-1.5 py-1" style={{ background: t.background }}>
+          {dots.map((d, i) => <span key={i} className="w-1.5 h-1.5 rounded-full" style={{ background: d }} />)}
+        </span>
+        <span className={`truncate text-[12px] ${on ? "text-white font-semibold" : "text-zinc-300"}`}>{s.name}</span>
+      </button>
+    );
+  };
+  const toggle = (key: "terminalBoldBright" | "terminalMinContrast", label: string, text: string) => (
+    <div className="flex items-center justify-between gap-4">
+      <div className="min-w-0">
+        <div className="text-[12.5px] font-semibold text-zinc-100">{label}</div>
+        <p className="text-[11.5px] text-zinc-500 leading-relaxed mt-0.5">{text}</p>
+      </div>
+      <button
+        role="switch"
+        aria-checked={!!settings[key]}
+        aria-label={label}
+        onClick={() => setSettings((s: any) => ({ ...s, [key]: !s[key] }))}
+        className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${settings[key] ? "bg-primary" : "bg-zinc-700"}`}
+      >
+        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${settings[key] ? "left-[22px]" : "left-0.5"}`} />
+      </button>
+    </div>
+  );
+  return (
+    <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
+      <div className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">Colours</div>
+      <div role="radiogroup" aria-label="Colour scheme" className="grid grid-cols-2 gap-2">
+        {schemes.map(swatch)}
+      </div>
+      <SchemePreview scheme={current} boldBright={settings.terminalBoldBright !== false} />
+      {toggle("terminalBoldBright", "Bold text in bright colours",
+        "Bold text in one of the first eight colours uses its bright version, as most terminals do.")}
+      {toggle("terminalMinContrast", "Keep text readable",
+        "Text a program colours too close to the background, like dark blue on black, is drawn lighter or darker so it can be read.")}
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => { setImporting((v) => !v); setImportError(null); }}
+            aria-expanded={importing}
+            className="px-3 py-1.5 rounded-lg border border-white/10 text-[12px] text-zinc-200 hover:border-primary/40 hover:text-white"
+          >
+            {custom ? "Replace my scheme…" : "Use my own scheme…"}
+          </button>
+          {custom && (
+            <button
+              type="button"
+              onClick={removeCustom}
+              className="px-3 py-1.5 rounded-lg border border-white/10 text-[12px] text-zinc-400 hover:border-rose-400/40 hover:text-rose-300"
+            >
+              Remove {custom.name}
+            </button>
+          )}
+        </div>
+        {importing && (
+          <div className="space-y-2">
+            <p className="text-[11.5px] text-zinc-500 leading-relaxed">
+              Paste a Windows Terminal colour scheme (JSON with name, background, foreground and the
+              16 colours from black to brightWhite). Sites that collect terminal schemes offer this format.
+            </p>
+            <textarea
+              value={pasted}
+              onChange={(e) => { setPasted(e.target.value); setImportError(null); }}
+              rows={6}
+              spellCheck={false}
+              aria-label="Windows Terminal colour scheme"
+              placeholder={'{\n  "name": "My scheme",\n  "background": "#1e1e2e",\n  "foreground": "#cdd6f4",\n  …\n}'}
+              className="w-full bg-black border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-mono text-zinc-200 focus:border-primary/50 outline-none"
+            />
+            {importError && <p role="alert" className="text-[11.5px] text-rose-300">{importError}</p>}
+            <button
+              type="button"
+              onClick={useImported}
+              disabled={!pasted.trim()}
+              className="px-3 py-1.5 rounded-lg bg-primary/20 border border-primary/40 text-[12px] text-white disabled:opacity-40"
+            >
+              Use it
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Lines each terminal keeps to scroll back through (util/terminalScrollback).
 // A typed number applies on Enter or when the field loses focus: applied on
 // each keystroke, typing 25000 would pass through 2 and clamp to the minimum.
@@ -617,6 +778,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, servers = [] }: any)
           </div>
 
           <TerminalFontSettings settings={settings} setSettings={setSettings} />
+
+          <TerminalColoursSetting settings={settings} setSettings={setSettings} />
 
           <TerminalScrollbackSetting settings={settings} setSettings={setSettings} />
 
