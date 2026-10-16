@@ -6,7 +6,7 @@ import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
   StickyNote, Search, Square, Copy, ChevronLeft, MoreVertical, Radio,
-  ChevronDown, Columns, LayoutGrid, Pin, PinOff
+  ChevronDown, Columns, LayoutGrid, Pin, PinOff, Server
 } from "lucide-react";
 import { useBroadcast } from "./ui/broadcast";
 
@@ -32,6 +32,8 @@ import { DEFAULT_RDP_OPTIONS, readRdpOptions, writeRdpOptions } from "./util/rdp
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
 import { folderTree } from "./util/folderTree";
+import { CommandScope, describeScope, parseCommandScope, scopeToJson } from "./util/commandScope";
+import CommandScopePicker from "./components/CommandScopePicker";
 import type { HeldDeletion } from "./components/HeldDeletions";
 import AddNodePanel from "./components/AddNodePanel";
 import TerminalView from "./components/TerminalView";
@@ -217,7 +219,8 @@ function DesktopApp() {
   const [commands, setCommands] = useState<any[]>([]);
   const [logs, setLogs] = useState<{ msg: string, type: string, time: string }[]>([]);
   const [isCommandPanelOpen, setIsCommandPanelOpen] = useState(false);
-  const [editCommandData, setEditCommandData] = useState<{ id: number | null, title: string, content: string }>({ id: null, title: "", content: "" });
+  // `scope`: which servers it's for (util/commandScope); null for all of them.
+  const [editCommandData, setEditCommandData] = useState<{ id: number | null, title: string, content: string, scope: CommandScope | null }>({ id: null, title: "", content: "", scope: null });
 
   const [notes, setNotes] = useState<any[]>([]);
   const [isNotePanelOpen, setIsNotePanelOpen] = useState(false);
@@ -2368,7 +2371,7 @@ function DesktopApp() {
               const addLabel = onCommandsTab ? "Add Command" : "Add Note";
               const openAdd = () => {
                 if (onCommandsTab) {
-                  setEditCommandData({ id: null, title: "", content: "" });
+                  setEditCommandData({ id: null, title: "", content: "", scope: null });
                   setIsCommandPanelOpen(true);
                 } else {
                   setEditNoteData({ id: null, title: "", body: "" });
@@ -2458,7 +2461,7 @@ function DesktopApp() {
                             <div className="flex justify-between items-start mb-2">
                               <h3 className="text-[16px] font-bold text-primary tracking-tight truncate flex-1">{cmd.title}</h3>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity">
-                                <button aria-label={`Edit ${cmd.title}`} onClick={() => { setEditCommandData(cmd); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
+                                <button aria-label={`Edit ${cmd.title}`} onClick={() => { setEditCommandData({ id: cmd.id, title: cmd.title, content: cmd.content, scope: parseCommandScope(cmd.scope) }); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
                                 <button aria-label={`Delete ${cmd.title}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete command?", message: `“${cmd.title}” will be removed.`, destructive: true });
                                   if (!ok) return;
@@ -2469,6 +2472,12 @@ function DesktopApp() {
                             <div className="bg-black/30 rounded-xl p-3 border border-white/5 flex-1 relative group-hover:border-primary/20 transition-colors overflow-hidden">
                               <pre className="text-[12px] text-zinc-400 font-mono whitespace-pre-wrap leading-relaxed line-clamp-3">{cmd.content}</pre>
                             </div>
+                            {parseCommandScope(cmd.scope) && (
+                              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-400 min-w-0" data-command-scope>
+                                <Server size={11} className="shrink-0 text-zinc-500" />
+                                <span className="truncate">For {describeScope(parseCommandScope(cmd.scope), servers, folders)}</span>
+                              </div>
+                            )}
                           </div>
                         ))
                       )}
@@ -2773,6 +2782,14 @@ function DesktopApp() {
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Command</label>
               <textarea className="w-full flex-1 bg-black rounded-lg p-3 text-[13px] text-zinc-300 font-mono border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none" placeholder="sudo apt update && sudo apt upgrade -y" value={editCommandData.content} onChange={e => setEditCommandData({ ...editCommandData, content: e.target.value })} />
             </div>
+            {/* Remounted per command opened, so it starts from that command's choice. */}
+            <CommandScopePicker
+              key={`${isCommandPanelOpen}-${editCommandData.id ?? "new"}`}
+              scope={editCommandData.scope}
+              onChange={(scope) => setEditCommandData((d) => ({ ...d, scope }))}
+              servers={servers}
+              folders={folders}
+            />
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">
             <button 
@@ -2781,11 +2798,19 @@ function DesktopApp() {
                   addLog("Title and Content are required.", "error");
                   return;
                 }
+                const scope = editCommandData.scope;
+                if (scope && !scope.servers.length && !scope.folders.length) {
+                  setFormError("Tick at least one server or folder, or choose All servers.");
+                  return;
+                }
                 try {
-                  const action = editCommandData.id 
-                    ? invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content })
-                    : invoke("add_command", { title: editCommandData.title, content: editCommandData.content });
-                  await action;
+                  if (editCommandData.id) {
+                    await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content });
+                    await invoke("set_command_scope", { id: editCommandData.id, scope: scopeToJson(scope) });
+                  } else {
+                    await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope) });
+                  }
+                  setFormError("");
                   setIsCommandPanelOpen(false);
                   refreshCommands();
                   bumpSync();

@@ -829,7 +829,7 @@ const ENTITIES: &[EntitySpec] = &[
             Fk { key: "jump_uuid", col: "jump_host_id", ref_table: "servers", required: false },
         ],
     },
-    EntitySpec { table: "commands", cols: &["title", "content", "edited_by"], fks: &[] },
+    EntitySpec { table: "commands", cols: &["title", "content", "edited_by", "scope"], fks: &[] },
     EntitySpec { table: "notes", cols: &["title", "body", "edited_by"], fks: &[] },
     // Must come after `servers`: its node_id is resolved from the server's uuid,
     // so the server has to already be in place when this is applied.
@@ -1189,6 +1189,9 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     // the node back into an SSH server here, so the local value is kept. A
     // newer peer always sends the key, NULL for an SSH server.
     let preserve_local_protocol = spec.table == "servers" && !obj.contains_key("protocol");
+    // The same for a command's `scope` (#22): a peer from before it would
+    // otherwise turn a command for some servers into one for all of them.
+    let preserve_local_scope = spec.table == "commands" && !obj.contains_key("scope");
     for c in spec.cols {
         columns.push((*c).into());
         let val = obj.get(*c);
@@ -1271,6 +1274,8 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                 format!("position={}.position", spec.table)
             } else if c.as_str() == "protocol" && preserve_local_protocol {
                 format!("protocol={}.protocol", spec.table)
+            } else if c.as_str() == "scope" && preserve_local_scope {
+                format!("scope={}.scope", spec.table)
             } else {
                 format!("{c}=excluded.{c}")
             }
@@ -3427,7 +3432,7 @@ mod sync_engine_tests {
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
              CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
-             CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});",
             fk("FOREIGN KEY(key_id) REFERENCES ssh_keys(id)"),
@@ -3903,6 +3908,57 @@ mod sync_engine_tests {
         }
         apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
         assert_eq!(proto(&b), None, "NULL from a current peer makes it SSH again");
+    }
+
+    // #22: which servers a command is for syncs, and a peer from before it
+    // (no `scope` key) editing the command doesn't make it one for all.
+    #[test]
+    fn command_scope_syncs_and_an_older_peers_edit_keeps_it() {
+        let scope = r#"{"servers":["s-1"],"folders":["f-1"]}"#;
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO commands(title, content, scope) VALUES('restart', 'systemctl restart app', ?1)", [scope]).unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        let got = |c: &Connection| -> Option<String> { c.query_row("SELECT scope FROM commands WHERE title='restart'", [], |r| r.get(0)).unwrap() };
+        assert_eq!(got(&b).as_deref(), Some(scope), "the scope syncs");
+
+        a.execute("UPDATE commands SET content='systemctl restart app2' WHERE title='restart'", []).unwrap();
+        let ahead = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "commands") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            assert!(obj.as_object_mut().unwrap().remove("scope").is_some(), "a current peer always sends the key");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+            r.updated_at = format!("{ahead:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let content: String = b.query_row("SELECT content FROM commands WHERE title='restart'", [], |r| r.get(0)).unwrap();
+        assert_eq!(content, "systemctl restart app2", "the edit applies");
+        assert_eq!(got(&b).as_deref(), Some(scope), "and the command keeps its servers");
+
+        // A current peer makes it a command for all servers: an explicit NULL.
+        a.execute("UPDATE commands SET scope=NULL WHERE title='restart'", []).unwrap();
+        let later = ahead + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "commands") {
+            r.updated_at = format!("{later:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        assert_eq!(got(&b), None, "NULL from a current peer is all servers again");
+
+        // And a command that is new to this device, from an older peer, lands
+        // as one for all servers.
+        let (c, _hc) = device("C");
+        c.execute("INSERT INTO commands(title, content) VALUES('uptime', 'uptime')", []).unwrap();
+        let mut recs = collect_local_records(&c, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "commands") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            obj.as_object_mut().unwrap().remove("scope");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let s: Option<String> = b.query_row("SELECT scope FROM commands WHERE title='uptime'", [], |r| r.get(0)).unwrap();
+        assert_eq!(s, None);
     }
 
     #[test]
@@ -5267,6 +5323,9 @@ async fn setup_master_db_inner(
             // `get_servers` sorts by (position, id) so ties fall back to id.
             // Synced (it's in the servers ENTITIES cols), so order LWW-merges.
             "ALTER TABLE servers ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+            // Which servers a command is for (#22): JSON of server and folder
+            // uuids, NULL for all servers (normalize_command_scope). Synced.
+            "ALTER TABLE commands ADD COLUMN scope TEXT",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let s = e.to_string();
@@ -5310,7 +5369,7 @@ async fn setup_master_db_inner(
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
              CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
-             CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
+             CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
              CREATE TABLE monitor_configs (node_id INTEGER PRIMARY KEY, enabled_metrics TEXT NOT NULL DEFAULT '[\"cpu\",\"mem\",\"disk\",\"load\"]', custom_metrics TEXT NOT NULL DEFAULT '[]', paused INTEGER NOT NULL DEFAULT 1, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE);
@@ -7004,7 +7063,7 @@ mod folder_tree_tests {
 async fn get_folders(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json::Value>, String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-    let mut stmt = conn.prepare("SELECT id, name, parent_id, color FROM folders").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, name, parent_id, color, uuid FROM folders").map_err(|e| e.to_string())?;
 
     let rows = stmt.query_map([], |row| {
         Ok(json!({
@@ -7012,6 +7071,8 @@ async fn get_folders(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             "name": row.get::<_, String>(1)?,
             "parent_id": row.get::<_, Option<i32>>(2)?,
             "color": row.get::<_, Option<String>>(3)?,
+            // What a command's scope names a folder by (#22).
+            "uuid": row.get::<_, Option<String>>(4)?,
         }))
     }).map_err(|e| e.to_string())?;
     
@@ -7022,14 +7083,89 @@ async fn get_folders(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     Ok(list)
 }
 
+/// Which servers a command is for (#22), as kept in `commands.scope`:
+/// `{"servers":[uuid…],"folders":[uuid…]}`, the uuids of saved servers and of
+/// folders (a folder takes in the folders inside it). `None`, or both lists
+/// empty, is every server. Checked and rewritten in one form; a uuid this
+/// device doesn't have (not synced yet, or deleted) is kept, and just matches
+/// nothing.
+fn normalize_command_scope(scope: Option<&str>) -> Result<Option<String>, String> {
+    const MAX_IDS: usize = 1000;
+    let Some(text) = scope.map(str::trim).filter(|s| !s.is_empty() && *s != "null") else {
+        return Ok(None);
+    };
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|_| "[INPUT] BAD_SCOPE".to_string())?;
+    let obj = v.as_object().ok_or("[INPUT] BAD_SCOPE")?;
+    let ids = |key: &str| -> Result<Vec<String>, String> {
+        let mut out: Vec<String> = Vec::new();
+        let Some(list) = obj.get(key) else { return Ok(out) };
+        for id in list.as_array().ok_or("[INPUT] BAD_SCOPE")? {
+            let id = id.as_str().ok_or("[INPUT] BAD_SCOPE")?;
+            let ok = (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+            if !ok {
+                return Err("[INPUT] BAD_SCOPE".into());
+            }
+            if !out.iter().any(|x| x == id) {
+                out.push(id.to_string());
+            }
+        }
+        Ok(out)
+    };
+    let (servers, folders) = (ids("servers")?, ids("folders")?);
+    if servers.len() + folders.len() > MAX_IDS {
+        return Err("[INPUT] BAD_SCOPE".into());
+    }
+    if servers.is_empty() && folders.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(json!({ "servers": servers, "folders": folders }).to_string()))
+}
+
+#[cfg(test)]
+mod command_scope_tests {
+    use super::normalize_command_scope as n;
+
+    #[test]
+    fn all_servers_is_none() {
+        assert_eq!(n(None).unwrap(), None);
+        assert_eq!(n(Some("")).unwrap(), None);
+        assert_eq!(n(Some("null")).unwrap(), None);
+        assert_eq!(n(Some(r#"{"servers":[],"folders":[]}"#)).unwrap(), None);
+        assert_eq!(n(Some("{}")).unwrap(), None);
+    }
+
+    #[test]
+    fn one_form_without_repeats() {
+        assert_eq!(
+            n(Some(r#"{"folders":["f-1"],"servers":["a1","a1","b-2"],"other":1}"#)).unwrap().as_deref(),
+            Some(r#"{"folders":["f-1"],"servers":["a1","b-2"]}"#),
+        );
+    }
+
+    #[test]
+    fn anything_else_is_refused() {
+        for bad in [
+            "[]", "\"x\"", "not json", r#"{"servers":"a"}"#, r#"{"servers":[1]}"#,
+            r#"{"servers":["a b"]}"#, r#"{"servers":["a/../b"]}"#, r#"{"folders":[""]}"#,
+        ] {
+            assert!(n(Some(bad)).is_err(), "{bad}");
+        }
+        let long = format!(r#"{{"servers":["{}"]}}"#, "a".repeat(65));
+        assert!(n(Some(&long)).is_err());
+        let many: Vec<String> = (0..1001).map(|i| format!("\"s{i}\"")).collect();
+        assert!(n(Some(&format!(r#"{{"servers":[{}]}}"#, many.join(",")))).is_err());
+    }
+}
+
 #[tauri::command]
-async fn add_command(state: tauri::State<'_, DbState>, title: String, content: String) -> Result<(), String> {
+async fn add_command(state: tauri::State<'_, DbState>, title: String, content: String, scope: Option<String>) -> Result<(), String> {
+    let scope = normalize_command_scope(scope.as_deref())?;
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-    
+
     conn.execute(
-        "INSERT INTO commands (title, content) VALUES (?1, ?2)",
-        rusqlite::params![title, content],
+        "INSERT INTO commands (title, content, scope) VALUES (?1, ?2, ?3)",
+        rusqlite::params![title, content, scope],
     ).map_err(|e| format!("[DATABASE] COMMAND_INSERT_FAILED: {}", e))?;
     
     drop(conn_guard);
@@ -7052,6 +7188,26 @@ async fn edit_command(state: tauri::State<'_, DbState>, id: i32, title: String, 
     Ok(())
 }
 
+/// Sets which servers a command is for (see normalize_command_scope); `None`
+/// for all. Apart from edit_command, so that an edit of the title or the
+/// command (the session's Library edits those) leaves it as it is. An
+/// unchanged scope doesn't touch the row, so it isn't synced again.
+#[tauri::command]
+async fn set_command_scope(state: tauri::State<'_, DbState>, id: i32, scope: Option<String>) -> Result<(), String> {
+    let scope = normalize_command_scope(scope.as_deref())?;
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    let changed = conn.execute(
+        "UPDATE commands SET scope=?1 WHERE id=?2 AND scope IS NOT ?1",
+        rusqlite::params![scope, id],
+    ).map_err(|e| format!("[DATABASE] COMMAND_UPDATE_FAILED: {}", e))?;
+    drop(conn_guard);
+    if changed > 0 {
+        save_vault_internal(&state)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn delete_command(state: tauri::State<'_, DbState>, id: i32) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
@@ -7071,13 +7227,16 @@ async fn delete_command(state: tauri::State<'_, DbState>, id: i32) -> Result<(),
 async fn get_commands(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json::Value>, String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-    let mut stmt = conn.prepare("SELECT id, title, content FROM commands").map_err(|e| e.to_string())?;
-    
+    let mut stmt = conn.prepare("SELECT id, title, content, scope FROM commands").map_err(|e| e.to_string())?;
+
     let rows = stmt.query_map([], |row| {
         Ok(json!({
-            "id": row.get::<_, i32>(0)?, 
-            "title": row.get::<_, String>(1)?, 
-            "content": row.get::<_, String>(2)?
+            "id": row.get::<_, i32>(0)?,
+            "title": row.get::<_, String>(1)?,
+            "content": row.get::<_, String>(2)?,
+            // As a synced peer sent it: the frontend reads it defensively
+            // (util/commandScope), so a broken one counts as all servers.
+            "scope": row.get::<_, Option<String>>(3)?
         }))
     }).map_err(|e| e.to_string())?;
     
@@ -19051,7 +19210,7 @@ pub fn run() {
             add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, set_server_protocol, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders, move_folder, move_server_to_folder,
-            add_command, edit_command, delete_command, get_commands,
+            add_command, edit_command, set_command_scope, delete_command, get_commands,
             cmd_history_add, cmd_history_list, cmd_history_clear,
             add_note, edit_note, delete_note, get_notes,
             mirror_dry_run, start_mirror, stop_mirror, list_mirrors, pick_local_directory,

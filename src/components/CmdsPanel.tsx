@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from "react";
+import { Fragment, useState, useEffect, useRef } from "react";
+import { parseCommandScope, scopeMatches, serverScopeIds } from "../util/commandScope";
 import { invoke } from "@tauri-apps/api/core";
 import { Play, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, ChevronDown, ChevronRight, Pencil, Check, Server } from "lucide-react";
 
@@ -20,7 +21,8 @@ import { Play, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, Chevro
 // drop into the prompt for review), and Copy (clipboard) actions. Search
 // runs client-side over the active tab's title + body fields.
 
-interface CommandItem { id: number; title: string; content: string; }
+// `scope`: which servers it's for (util/commandScope), as stored.
+interface CommandItem { id: number; title: string; content: string; scope?: string | null; }
 interface NoteItem { id: number; title: string; body: string; }
 type Tab = "commands" | "notes" | "node";
 
@@ -39,6 +41,9 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   const [notes, setNotes] = useState<NoteItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(false);
+  // This session's server and its folders, by uuid, for the commands that
+  // are for some servers only (util/commandScope). Null: not a saved server.
+  const [scopeIds, setScopeIds] = useState<{ server: string | null; folders: string[] } | null>(null);
 
   // Node notes — the per-server free-form notes from AddNodePanel, surfaced
   // here so the user can read/edit them next to commands + notes without
@@ -90,7 +95,8 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
       // Pull node notes from get_servers when this Library is scoped to a
       // session. The backend exposes only the bulk list — cheap enough
       // (handful of rows) and avoids a new single-server command.
-      if (hasNode) tasks.push(invoke<any[]>("get_servers"));
+      // And the folders, for which of the commands are for this server.
+      if (hasNode) tasks.push(invoke<any[]>("get_servers"), invoke<any[]>("get_folders"));
       const out = await Promise.all(tasks);
       setCommands((out[0] as CommandItem[]) || []);
       setNotes((out[1] as NoteItem[]) || []);
@@ -100,6 +106,9 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         const text: string = server?.notes ?? "";
         setNodeOriginal(text);
         setNodeDraft(text);
+        setScopeIds(server ? serverScopeIds(server, (out[3] as any[]) || []) : null);
+      } else {
+        setScopeIds(null);
       }
     } catch (e) {
       console.error("Failed to fetch Library data:", e);
@@ -221,9 +230,19 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   };
 
   const q = searchQuery.toLowerCase();
-  const filteredCommands = commands.filter(
+  // Commands for this server first (#22), then those for every server; the
+  // ones for other servers aren't shown. A session that isn't a saved server
+  // (quick connect) shows those for every server.
+  const matching = commands.filter(
     (c) => c.title.toLowerCase().includes(q) || c.content.toLowerCase().includes(q)
   );
+  const forThisServer = matching.filter((c) => {
+    const s = parseCommandScope(c.scope);
+    return !!s && !!scopeIds && scopeMatches(s, scopeIds);
+  });
+  const filteredCommands = [...forThisServer, ...matching.filter((c) => !parseCommandScope(c.scope))];
+  const headingAt = (i: number) =>
+    forThisServer.length === 0 ? null : i === 0 ? "For this server" : i === forThisServer.length ? "All servers" : null;
   const filteredNotes = notes.filter(
     (n) => (n.title || "").toLowerCase().includes(q) || (n.body || "").toLowerCase().includes(q)
   );
@@ -372,11 +391,17 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           </div>
         ) : tab === "commands" ? (
           filteredCommands.length > 0 ? (
-            filteredCommands.map((c) => {
+            filteredCommands.map((c, i) => {
               const editing = edit?.kind === "command" && edit.id === c.id;
+              const heading = headingAt(i);
               return (
+                <Fragment key={c.id}>
+                {heading && (
+                  <div className="px-1 pt-1 text-[9.5px] font-bold uppercase tracking-widest text-zinc-500" data-command-group>
+                    {heading}
+                  </div>
+                )}
                 <div
-                  key={c.id}
                   className="group relative rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10 transition-all"
                 >
                   {editing ? (
@@ -462,6 +487,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                     </div>
                   )}
                 </div>
+                </Fragment>
               );
             })
           ) : (
