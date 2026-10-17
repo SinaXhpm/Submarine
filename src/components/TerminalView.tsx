@@ -79,6 +79,13 @@ const resendPtySize = (terminalId: string, cols: number, rows: number) => {
   sendPtySize(terminalId, size.cols, size.rows);
 };
 const WALL_TILE_CLOSED = 'submarine-wall-tile-closed';
+// How long a terminal's size must hold before its PTY gets it. A layout
+// change passes through sizes for a few frames: the narrow and the wide
+// layout swap at 640 px (the terminal is 2 columns wide for a frame) and
+// panels animate their width. The shell redraws its prompt for every size
+// it is given, so each of those left the screen garbled and the cursor out
+// of place.
+const PTY_SIZE_SETTLE_MS = 150;
 
 const TerminalView = ({
   sessionId,
@@ -985,10 +992,14 @@ const TerminalView = ({
     window.addEventListener('blur', onWindowBlur);
     terminalRef.current.addEventListener('contextmenu', onContextMenu);
 
-    // Handle Resize
-    const onResizeDisposable = term.onResize(({ cols, rows }) => {
-      if (!attachOnly && (wallTiles.get(terminalId) ?? 0) > 0) return;
-      sendPtySize(terminalId, cols, rows);
+    // Handle Resize, once the size has settled (PTY_SIZE_SETTLE_MS).
+    let sizeTimer = 0;
+    const onResizeDisposable = term.onResize(() => {
+      window.clearTimeout(sizeTimer);
+      sizeTimer = window.setTimeout(() => {
+        if (!attachOnly && (wallTiles.get(terminalId) ?? 0) > 0) return;
+        sendPtySize(terminalId, term.cols, term.rows);
+      }, PTY_SIZE_SETTLE_MS);
     });
     // The session tab's view: the Wall tile that set the size has closed.
     const onWallTileClosed = (e: Event) => {
@@ -1130,6 +1141,7 @@ const TerminalView = ({
       onDataDisposable.dispose();
       if (inputRef.current === handleData) inputRef.current = null;
       onResizeDisposable.dispose();
+      window.clearTimeout(sizeTimer);
       if (container) {
         container.removeEventListener('mousedown', onMouseDown);
         container.removeEventListener('contextmenu', onContextMenu);
