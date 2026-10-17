@@ -126,6 +126,15 @@ function DesktopApp() {
   // wide-monitor (6) comfortably; anything past 6 makes xterm columns
   // useless.
   const [wallCols, setWallCols] = useState<number>(2);
+  // Rows on screen at once (#174): 0 = as many as the tiles need, each at
+  // least WALL_MIN_ROW tall; a number = that many rows fill the screen, and
+  // tiles past columns × rows scroll.
+  const [wallRows, setWallRows] = useState<number>(0);
+  // The grid area's height, so each row gets an explicit one. A flexible
+  // row grew with the terminal in it, which fits itself to the row: a row
+  // that had filled the screen kept doing so, and the Wall scrolled.
+  const wallAreaRef = useRef<HTMLDivElement | null>(null);
+  const [wallAreaH, setWallAreaH] = useState(0);
   const [wallPickerOpen, setWallPickerOpen] = useState(false);
   // Per-session terminals + active terminal id, bubbled up from each
   // SessionView via onTerminalsChange. Sourced here so the Wall picker
@@ -155,6 +164,24 @@ function DesktopApp() {
   const unpinSessionFromWall = (sid: string) => {
     setWallItems(prev => prev.filter(i => i.sessionId !== sid));
   };
+  useEffect(() => {
+    const el = wallAreaRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setWallAreaH(el.clientHeight));
+    ro.observe(el);
+    setWallAreaH(el.clientHeight);
+    return () => ro.disconnect();
+  }, [activeView]);
+  // The grid's padding and gaps (p-1.5, gap-1.5), and the smallest row:
+  // as many rows as needed don't go below 220 px (more scroll), a chosen
+  // number of rows not below 120 px.
+  const WALL_SPACE = 6;
+  const wallRowHeight = (() => {
+    const rows = wallRows || Math.max(1, Math.ceil(wallItems.length / wallCols));
+    if (!wallAreaH) return "minmax(220px, 1fr)";
+    const h = Math.floor((wallAreaH - 2 * WALL_SPACE - (rows - 1) * WALL_SPACE) / rows);
+    return `${Math.max(wallRows ? 120 : 220, h)}px`;
+  })();
   // Mobile-only session picker toggle. Horizontally-scrolling tabs eat
   // the whole title row on a 400 px phone; replacing them with a compact
   // dropdown gives the tab strip predictable width and matches iOS/
@@ -2128,32 +2155,53 @@ function DesktopApp() {
                 session tab. */}
             {activeView === "wall" && (
               <div className="absolute inset-0 flex flex-col overflow-hidden bg-[#0a0a0d]">
-                {/* Toolbar: cols selector + Add + Clear. Rows are
-                    derived automatically from tile count so users only
-                    have to pick the horizontal density they want. */}
+                {/* Toolbar: cols and rows selectors + Add + Clear. Rows
+                    default to as many as the tiles need; a number fits
+                    that many on screen. On a narrow screen the selectors
+                    scroll sideways. */}
                 <div className="h-10 shrink-0 border-b border-white/5 bg-[#111114] flex items-center gap-2 px-3">
                   <LayoutGrid size={12} className="text-primary/70 shrink-0" />
                   <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 shrink-0">
                     Wall {wallItems.length > 0 ? `· ${wallItems.length}` : ''}
                   </span>
-                  <div className="flex items-center gap-1 ml-2 shrink-0">
-                    <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">Cols</span>
-                    {[1, 2, 3, 4, 5, 6].map(n => (
-                      <button
-                        key={n}
-                        onClick={() => setWallCols(n)}
-                        title={`${n} column${n === 1 ? '' : 's'} per row`}
-                        className={`h-6 w-6 rounded flex items-center justify-center text-[10px] font-bold transition-all ${
-                          wallCols === n
-                            ? 'bg-primary/20 text-primary border border-primary/40'
-                            : 'text-zinc-400 hover:bg-white/[0.06] border border-transparent'
-                        }`}
-                      >
-                        {n}
-                      </button>
-                    ))}
+                  <div className="flex-1 min-w-0 flex items-center gap-3 ml-2 overflow-x-auto no-scrollbar">
+                    <div className="flex items-center gap-1 shrink-0" role="group" aria-label="Columns">
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">Cols</span>
+                      {[1, 2, 3, 4, 5, 6].map(n => (
+                        <button
+                          key={n}
+                          onClick={() => setWallCols(n)}
+                          title={`${n} column${n === 1 ? '' : 's'} per row`}
+                          aria-pressed={wallCols === n}
+                          className={`h-6 w-6 rounded flex items-center justify-center text-[10px] font-bold transition-all ${
+                            wallCols === n
+                              ? 'bg-primary/20 text-primary border border-primary/40'
+                              : 'text-zinc-400 hover:bg-white/[0.06] border border-transparent'
+                          }`}
+                        >
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0" role="group" aria-label="Rows">
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">Rows</span>
+                      {[0, 1, 2, 3, 4].map(n => (
+                        <button
+                          key={n}
+                          onClick={() => setWallRows(n)}
+                          title={n === 0 ? 'As many rows as the tiles need' : `${n} row${n === 1 ? '' : 's'} on screen; more tiles scroll`}
+                          aria-pressed={wallRows === n}
+                          className={`h-6 ${n === 0 ? 'px-1.5' : 'w-6'} rounded flex items-center justify-center text-[10px] font-bold transition-all ${
+                            wallRows === n
+                              ? 'bg-primary/20 text-primary border border-primary/40'
+                              : 'text-zinc-400 hover:bg-white/[0.06] border border-transparent'
+                          }`}
+                        >
+                          {n === 0 ? 'Auto' : n}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex-1" />
                   <button
                     onClick={() => setWallPickerOpen(v => !v)}
                     title="Pick terminals to pin"
@@ -2175,7 +2223,7 @@ function DesktopApp() {
                 {/* Grid canvas. Empty state overlaid when nothing is
                     pinned so we don't just show a black rectangle to a
                     first-time visitor. */}
-                <div className="flex-1 relative bg-black/40 overflow-auto custom-scrollbar">
+                <div ref={wallAreaRef} className="flex-1 relative bg-black/40 overflow-auto custom-scrollbar">
                   {wallItems.length === 0 ? (
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-center px-6 pointer-events-none">
                       <LayoutGrid size={40} className="text-zinc-600" />
@@ -2189,7 +2237,7 @@ function DesktopApp() {
                       className="min-h-full grid gap-1.5 p-1.5"
                       style={{
                         gridTemplateColumns: `repeat(${wallCols}, minmax(0, 1fr))`,
-                        gridAutoRows: `minmax(220px, 1fr)`,
+                        gridAutoRows: wallRowHeight,
                       }}
                     >
                       {wallItems.map(item => {
