@@ -15,6 +15,7 @@ use serde_json::json;
 use ssh_key::{private::{Ed25519Keypair, Ed25519PrivateKey}, PrivateKey};
 mod ssh_manager;
 mod tunnel;
+mod telnet;
 mod monitor;
 mod cloud;
 mod cloud_config;
@@ -6486,14 +6487,26 @@ async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: 
     Ok(())
 }
 
-/// What a node is (issue #3): `None` (or "ssh") for an SSH server, "rdp" for
-/// an RDP server. Written through its own command, like set_server_jump_host.
-/// Unchanged values aren't written, so they don't stamp the row for sync.
+/// What a node is that isn't an SSH server, for messages: "an RDP" (issue #3)
+/// or "a telnet" (#179); `None` for an SSH server.
+fn non_ssh_kind(protocol: Option<&str>) -> Option<&'static str> {
+    match protocol {
+        Some("rdp") => Some("an RDP"),
+        Some("telnet") => Some("a telnet"),
+        _ => None,
+    }
+}
+
+/// What a node is: `None` (or "ssh") for an SSH server, "rdp" for an RDP
+/// server (issue #3), "telnet" for a telnet one (#179). Written through its
+/// own command, like set_server_jump_host. Unchanged values aren't written,
+/// so they don't stamp the row for sync.
 #[tauri::command]
 async fn set_server_protocol(state: tauri::State<'_, DbState>, id: i32, value: Option<String>) -> Result<(), String> {
     let value: Option<&str> = match value.as_deref() {
         None | Some("ssh") => None,
         Some("rdp") => Some("rdp"),
+        Some("telnet") => Some("telnet"),
         Some(other) => return Err(format!("[DATABASE] SERVER_PROTOCOL_UNKNOWN: {other}")),
     };
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
@@ -6615,8 +6628,13 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             // reused by another profile's server. Keys this device's own
             // per-server settings (see src/util/shellSync.ts).
             "uuid": row.get::<_, Option<String>>(23)?,
-            // "ssh" or "rdp" (issue #3); NULL in the table is an SSH server.
-            "protocol": if row.get::<_, Option<String>>(24)?.as_deref() == Some("rdp") { "rdp" } else { "ssh" },
+            // "ssh", "rdp" (issue #3) or "telnet" (#179); NULL in the table
+            // (and anything a newer version may add) is an SSH server.
+            "protocol": match row.get::<_, Option<String>>(24)?.as_deref() {
+                Some("rdp") => "rdp",
+                Some("telnet") => "telnet",
+                _ => "ssh",
+            },
         }))
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
@@ -10132,10 +10150,10 @@ fn resolve_jump_auth(
         .unwrap_or_default()
         .unwrap_or_else(|| "vault".to_string());
     let cred_auth_type: Option<String> = row.get::<_, Option<String>>(9).unwrap_or_default();
-    // An RDP server can't carry an SSH route (issue #3).
-    if row.get::<_, Option<String>>(10).unwrap_or_default().as_deref() == Some("rdp") {
+    // An RDP (issue #3) or telnet (#179) server can't carry an SSH route.
+    if let Some(kind) = non_ssh_kind(row.get::<_, Option<String>>(10).unwrap_or_default().as_deref()) {
         let name: String = row.get::<_, Option<String>>(11).unwrap_or_default().unwrap_or_default();
-        return Err(format!("{name} is an RDP server; only an SSH server can be gone through"));
+        return Err(format!("{name} is {kind} server; only an SSH server can be gone through"));
     }
 
     let (username, password, key_id) = if server_auth_type == "vault" {
@@ -11019,8 +11037,10 @@ async fn initiate_connection(
             // on this device, come in stopped (see approvals.rs).
             let tunnels_json = approvals::hold_tunnels_json(conn, server_id as i64, tunnels_json);
             let jump_host_id: Option<i32> = row.get::<_, Option<i32>>(14).unwrap_or_default();
-            if row.get::<_, Option<String>>(15).unwrap_or_default().as_deref() == Some("rdp") {
-                return Err("This is an RDP server: it opens in an RDP app, not a terminal".into());
+            match row.get::<_, Option<String>>(15).unwrap_or_default().as_deref() {
+                Some("rdp") => return Err("This is an RDP server: it opens in an RDP app, not a terminal".into()),
+                Some("telnet") => return Err("This is a telnet server: it opens over telnet, not SSH".into()),
+                _ => {}
             }
 
             // Single source of truth per auth_type — no field mixing.
@@ -13252,11 +13272,174 @@ async fn rdp_open_again(
     Ok(serde_json::json!({"app": launcher.name, "tracked": launcher.tracked}))
 }
 
+/// Open a telnet server (#179): straight to it, or through the SSH server
+/// it's saved with (its `jump_host_id`), whose login asks through this tab's
+/// usual prompts (host key, password, 2FA), over a `direct-tcpip` channel.
+/// The connection then waits for the tab's terminal (`telnet_open_terminal`).
+/// The tab hears `connection-success-{id}` (`address`, `via`) or
+/// `connection-failed-{id}`.
+#[tauri::command]
+async fn telnet_connect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    telnet_pending: tauri::State<'_, telnet::Pending>,
+    session_id: String,
+    server_id: i32,
+    use_ssh_agent: Option<bool>,
+) -> Result<(), String> {
+    use std::sync::Arc;
+    use tauri::Emitter;
+
+    // A new attempt replaces the tab's last one.
+    telnet_pending.lock().await.remove(&session_id);
+    let generation = {
+        let mut g = state.session_generation.lock().await;
+        let next = g.get(&session_id).copied().unwrap_or(0).wrapping_add(1);
+        g.insert(session_id.clone(), next);
+        next
+    };
+    let attempt = ssh_manager::ConnectAttempt::new(Arc::clone(&state.session_generation), session_id.clone(), generation);
+
+    let (name, host, port, protocol, jump_id, jump_name) = {
+        let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        conn.query_row(
+            "SELECT s.name, s.host, s.port, s.protocol, s.jump_host_id, j.name
+             FROM servers s
+             LEFT JOIN servers j ON j.id = s.jump_host_id
+             WHERE s.id = ?1",
+            [server_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<i32>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )
+        .map_err(|_| "Server not found".to_string())?
+    };
+    if protocol.as_deref() != Some("telnet") {
+        return Err(format!("{name} isn't a telnet server"));
+    }
+    let host = host.trim().to_string();
+    telnet::check_host(&host)?;
+    let port = u16::try_from(port).ok().filter(|p| *p > 0).unwrap_or(telnet::DEFAULT_PORT);
+
+    let fp_txs = Arc::clone(&state.fp_txs);
+    let kbi_txs = Arc::clone(&state.kbi_txs);
+    let cache = Arc::clone(&state.prompted_secrets);
+    let db = Arc::clone(&db_state.conn);
+    let pending = telnet_pending.inner().clone();
+    let use_agent = use_ssh_agent.unwrap_or(true);
+    tauri::async_runtime::spawn(async move {
+        let log = |msg: &str, ty: &str| {
+            println!("[LOG-{session_id}] {msg}");
+            if attempt.is_current_now() {
+                let _ = app.emit(&format!("session-log-{session_id}"), serde_json::json!({"msg": msg, "type": ty}));
+            }
+        };
+        let target = telnet::address(&host, port);
+        log(&format!("Opening the telnet server {target}..."), "info");
+
+        let (stream, route, via) = match jump_id {
+            None => match telnet::connect_direct(&host, port).await {
+                Ok(stream) => (stream, Vec::new(), None),
+                Err(e) => {
+                    log(&e, "error");
+                    emit_connection_failed(&app, &attempt, &session_id, serde_json::json!({"reason": e})).await;
+                    return;
+                }
+            },
+            Some(jid) => {
+                let via_name = jump_name.clone().unwrap_or_else(|| format!("server {jid}"));
+                log(&format!("Going through the SSH server {via_name}..."), "info");
+                let auth_failed = std::sync::atomic::AtomicBool::new(false);
+                // A telnet tab doesn't retry on its own, so nothing reads this.
+                let network_failed = std::sync::atomic::AtomicBool::new(false);
+                let ctx = HopCtx {
+                    app: &app,
+                    db: &db,
+                    fp_txs: &fp_txs,
+                    kbi_txs: &kbi_txs,
+                    cache: &cache,
+                    allow_prompt: true,
+                    auth_failed: &auth_failed,
+                    network_failed: &network_failed,
+                    attempt: &attempt,
+                    session_id: &session_id,
+                    use_agent,
+                };
+                let chain = match connect_jump_host(&ctx, jid).await {
+                    Ok(chain) => chain,
+                    Err(e) => {
+                        let reason = format!("The SSH server {via_name}: {e}");
+                        log(&reason, "error");
+                        emit_connection_failed(&app, &attempt, &session_id, serde_json::json!({"reason": reason})).await;
+                        return;
+                    }
+                };
+                match telnet::connect_through(&chain, &host, port).await {
+                    Ok(stream) => (stream, chain, Some(via_name)),
+                    Err(e) => {
+                        log(&e, "error");
+                        emit_connection_failed(&app, &attempt, &session_id, serde_json::json!({"reason": e})).await;
+                        return;
+                    }
+                }
+            }
+        };
+        // Closed or opened again meanwhile: dropping it closes it.
+        if !attempt.is_current().await {
+            return;
+        }
+        pending.lock().await.insert(
+            session_id.clone(),
+            telnet::Conn { stream, route, telnet_port: port == telnet::DEFAULT_PORT },
+        );
+        match &via {
+            Some(v) => log(&format!("Connected to {target} through {v}. From {v} on, it isn't encrypted."), "success"),
+            None => log(&format!("Connected to {target}."), "success"),
+        }
+        let _ = app.emit(&format!("connection-success-{session_id}"), serde_json::json!({"address": target, "via": via}));
+    });
+    Ok(())
+}
+
+/// A telnet tab's terminal: takes the connection `telnet_connect` left and
+/// runs it (`telnet::run_pump`). Keys, resizes and the saved-password button
+/// reach it through the usual terminal maps, so the terminal view works with
+/// it as with an SSH shell.
+#[tauri::command]
+async fn telnet_open_terminal(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+    telnet_pending: tauri::State<'_, telnet::Pending>,
+    session_id: String,
+    terminal_id: String,
+    cols: u32,
+    rows: u32,
+) -> Result<(), String> {
+    use crate::ssh_manager::{PtySize, TerminalCommand};
+    let conn = telnet_pending.lock().await.remove(&session_id).ok_or("Not connected")?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<TerminalCommand>(32);
+    let (resize_tx, resize_rx) = tokio::sync::watch::channel(PtySize { cols, rows });
+    state.terminal_txs.lock().await.insert(terminal_id.clone(), tx);
+    state.resize_txs.lock().await.insert(terminal_id.clone(), resize_tx);
+    tauri::async_runtime::spawn(telnet::run_pump(app, session_id, terminal_id, conn, rx, resize_rx));
+    Ok(())
+}
+
 #[tauri::command]
 async fn disconnect_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
     mirrors: tauri::State<'_, MirrorMap>,
+    telnet_pending: tauri::State<'_, telnet::Pending>,
     rdp_sessions: tauri::State<'_, rdp::RdpSessions>,
     session_id: String,
 ) -> Result<(), String> {
@@ -13319,6 +13502,12 @@ async fn disconnect_session(
     // An RDP tab: its SSH route, forward and .rdp file (issue #3). Its view
     // hears it (the tab menu's Disconnect); a closing tab has gone already.
     if rdp_sessions.lock().await.remove(&session_id).is_some() {
+        use tauri::Emitter;
+        let _ = app.emit(&format!("session-disconnected-{session_id}"), serde_json::json!({"reason": "Disconnected."}));
+    }
+    // A telnet tab (#179) whose terminal hadn't opened yet; one that had
+    // ends with its terminal below (its view hears `terminal-closed`).
+    if telnet_pending.lock().await.remove(&session_id).is_some() {
         use tauri::Emitter;
         let _ = app.emit(&format!("session-disconnected-{session_id}"), serde_json::json!({"reason": "Disconnected."}));
     }
@@ -19213,6 +19402,7 @@ pub fn run() {
         .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None) })
         .manage(SshState::new())
         .manage(rdp::RdpSessions::default())
+        .manage(telnet::Pending::default())
         // Docker live-log stream registry — keyed by frontend-issued stream id,
         // values are tokio AbortHandles so the user can stop tailing on demand.
         .manage(docker::DockerStreams::new())
@@ -19268,7 +19458,7 @@ pub fn run() {
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session, set_use_ssh_config,
-            initiate_rdp, rdp_open_again,
+            initiate_rdp, rdp_open_again, telnet_connect, telnet_open_terminal,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
             open_terminal, local_shell, write_terminal_data, type_saved_password, resize_terminal, close_terminal,

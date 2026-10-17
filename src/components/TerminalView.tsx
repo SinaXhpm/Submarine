@@ -99,6 +99,7 @@ const TerminalView = ({
   serverId = 0,
   serverName = "",
   attachOnly = false,
+  telnet = false,
 }: {
   sessionId: string;
   terminalId: string;
@@ -134,6 +135,10 @@ const TerminalView = ({
   /// Docker tab in InfoPanel to open an interactive session inside a
   /// specific container without leaving the app.
   containerExec?: { container: string; useSudo: boolean };
+  /// A telnet server's terminal (#179): it opens the connection its tab
+  /// made (`telnet_open_terminal`) instead of a shell over SSH. The rest —
+  /// keys, sizes, the saved-password button — works the same.
+  telnet?: boolean;
   /// Bumped by the parent SessionView on every successful reconnect.
   /// When the value changes we re-open a fresh PTY against the new SSH
   /// handle WITHOUT disposing xterm — the user keeps their scroll-back
@@ -341,7 +346,16 @@ const TerminalView = ({
     // at the wrong column until the next resize.
     const syncSize = () => resendPtySize(terminalId, term.cols, term.rows);
     const ce = containerExecRef.current;
-    if (ce) {
+    if (telnet) {
+      invoke('telnet_open_terminal', {
+        sessionId,
+        terminalId,
+        cols: term.cols || 80,
+        rows: term.rows || 24,
+      }).then(syncSize, e => {
+        term.writeln(`\x1b[31mReconnect failed: ${e}\x1b[0m`);
+      });
+    } else if (ce) {
       invoke('open_container_terminal', {
         sessionId,
         terminalId,
@@ -640,7 +654,16 @@ const TerminalView = ({
         // that landed while it was starting (e.g. the chosen font finished
         // loading and changed the cell size) is sent again once it's open.
         const syncSize = () => resendPtySize(terminalId, term.cols, term.rows);
-        if (containerExec) {
+        if (telnet) {
+          invoke('telnet_open_terminal', {
+            sessionId,
+            terminalId,
+            cols: term.cols || 80,
+            rows: term.rows || 24,
+          }).then(syncSize, e => {
+            term.writeln(`\x1b[31mFailed to open terminal: ${e}\x1b[0m`);
+          });
+        } else if (containerExec) {
           invoke('open_container_terminal', {
             sessionId,
             terminalId,
