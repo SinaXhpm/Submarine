@@ -6,8 +6,8 @@
 //! What's kept is the profile's vault key (what its password gives through
 //! Argon2, see `derive_key`), sealed so that only this device can open it, and
 //! only right after the user is verified there:
-//! - Windows: a Windows Hello key (KeyCredentialManager; in the TPM where
-//!   there is one) signs a random challenge kept next to the sealed key. The
+//! - Windows: a Windows Hello key (KeyCredentialManager; in the TPM, and not
+//!   offered without one) signs a random challenge kept next to the sealed key. The
 //!   signature (RSA PKCS#1 v1.5 with SHA-256: the same every time for the same
 //!   key and challenge) goes through HKDF into the AES-GCM key that seals the
 //!   vault key. Every signature needs the user's PIN, face or finger.
@@ -340,10 +340,26 @@ mod platform {
         Ok(Zeroizing::new(out.to_vec()))
     }
 
+    // Without a TPM, Windows Hello keeps its keys in software, where a program
+    // running as the user could copy them: not offered then. With one, Windows
+    // keeps them in it (its Passport key provider marks them hardware). Asking
+    // Windows to attest the key doesn't tell: a home PC's Windows Hello keys get
+    // NotSupported even in a TPM 2.0 that is ready for attestation.
+    fn tpm_present() -> bool {
+        use windows::Win32::System::TpmBaseServices::{Tbsi_GetDeviceInfo, TBS_SUCCESS, TPM_DEVICE_INFO};
+        let mut info = TPM_DEVICE_INFO::default();
+        let rc = unsafe { Tbsi_GetDeviceInfo(std::mem::size_of::<TPM_DEVICE_INFO>() as u32, &mut info as *mut _ as *mut core::ffi::c_void) };
+        rc == TBS_SUCCESS && info.tpmVersion != 0
+    }
+
     pub async fn seal(_app: &tauri::AppHandle, id: &str, key: &[u8; 32]) -> Result<Sealed, String> {
         let id = id.to_string();
         let key = Zeroizing::new(*key);
         tokio::task::spawn_blocking(move || {
+            // Before Windows asks for the PIN: nothing to make without a TPM.
+            if !tpm_present() {
+                return Err(format!("{UNAVAILABLE}: this computer has no TPM security chip, so Windows Hello would keep the key in software"));
+            }
             let op = KeyCredentialManager::RequestCreateAsync(&HSTRING::from(id.as_str()), KeyCredentialCreationOption::ReplaceExisting).map_err(win)?;
             bring_prompt_forward();
             let created = op.join().map_err(win)?;
