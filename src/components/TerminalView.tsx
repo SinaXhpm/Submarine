@@ -1037,6 +1037,16 @@ const TerminalView = ({
     const resizeObserver = new ResizeObserver(() => {
       if (!xtermRef.current) return;
       if (!isActiveRef.current) return;
+      // A terminal at its bottom stays there. On a phone, the box changing
+      // while output comes in (the key bar back after a reconnect, the
+      // keyboard) is at times taken by xterm for the user scrolling up, and
+      // the view then stops following what comes in: a reconnected session
+      // kept showing the old one's last lines, its new prompt out of sight
+      // below. Put it back at the bottom once the change has settled.
+      const buf = xtermRef.current.buffer.active;
+      if (buf.viewportY === buf.baseY) {
+        requestAnimationFrame(() => requestAnimationFrame(() => xtermRef.current?.scrollToBottom()));
+      }
       if (rafId) return; // a rAF is already queued; coalesce
       rafId = requestAnimationFrame(() => {
         rafId = 0;
