@@ -5026,9 +5026,7 @@ dependencies = [
  "tauri-plugin-window-state",
  "tokio",
  "tokio-socks",
-<<<<<<< HEAD
  "vnc-rs",
-=======
  "windows 0.62.2",
  "x25519-dalek",
  "zeroize",
