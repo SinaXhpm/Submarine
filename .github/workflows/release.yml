@@ -345,6 +345,10 @@ jobs:
   # unsigned release APK — the keystore secrets are gating, not blocking.
   android:
     runs-on: ubuntu-22.04
+    env:
+      # The NDK this job installs and builds with (the runner image has its
+      # own, newer one as ANDROID_NDK_ROOT).
+      NDK_VERSION: "27.1.12297006"
     steps:
       - uses: actions/checkout@v4
         # Nothing here pushes — see the build job.
@@ -400,7 +404,23 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: "platforms;android-36 build-tools;36.0.0 ndk;27.1.12297006"
+          packages: "platforms;android-36 build-tools;36.0.0 ndk;${{ env.NDK_VERSION }}"
+
+      # Every later step uses that NDK. The runner's ANDROID_NDK_ROOT is a
+      # machine variable, which `${{ env.ANDROID_NDK_ROOT }}` doesn't see:
+      # the APK step got an empty NDK_HOME ("Android NDK invalid"), and the
+      # symlinks below went into the runner's own NDK. Written to
+      # GITHUB_ENV, it is the job's for both.
+      - name: Use the installed NDK
+        shell: bash
+        run: |
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -f "$NDK/source.properties" ]; then
+            echo "::error::NDK $NDK_VERSION not found at $NDK"
+            exit 1
+          fi
+          echo "ANDROID_NDK_ROOT=$NDK" >> "$GITHUB_ENV"
+          echo "Using the NDK at $NDK"
 
       - name: Install Rust with Android targets
         # Only the two ABIs that ship in real Android phones — aarch64
