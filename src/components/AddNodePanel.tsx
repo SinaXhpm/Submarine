@@ -47,16 +47,17 @@ type ImportedSshKey = {
 
 const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, refreshSshKeys, folders, refreshFolders, refreshServers, servers, isEditMode, formError, isMobile }: any) => {
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
-  // An RDP (issue #3) or telnet (#179) server has a host, port, user and
-  // maybe an SSH server to go through; the SSH-only parts of the form are
-  // hidden for it.
+  // An RDP (issue #3), telnet (#179) or VNC server has a host, port, login
+  // and maybe an SSH server to go through; the SSH-only parts of the form
+  // are hidden for it.
   const isRdp = newNode.protocol === "rdp";
   const isTelnet = newNode.protocol === "telnet";
-  const isSsh = !isRdp && !isTelnet;
-  const setProtocol = (protocol: "ssh" | "rdp" | "telnet") => {
+  const isVnc = newNode.protocol === "vnc";
+  const isSsh = !isRdp && !isTelnet && !isVnc;
+  const setProtocol = (protocol: "ssh" | "rdp" | "telnet" | "vnc") => {
     if (protocol === newNode.protocol) return;
     // The usual port of the new kind, unless another was typed.
-    const usual: Record<string, number> = { ssh: 22, rdp: 3389, telnet: 23 };
+    const usual: Record<string, number> = { ssh: 22, rdp: 3389, telnet: 23, vnc: 5900 };
     const port = !newNode.port || Object.values(usual).includes(newNode.port) ? usual[protocol] : newNode.port;
     const authType = protocol !== "ssh" && newNode.authType === "custom_key" ? "custom_pass" : newNode.authType;
     setNewNode({ ...newNode, protocol, port, authType });
@@ -450,26 +451,33 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
           {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
 
           <div className="grid grid-cols-1 gap-4">
-            {/* SSH, RDP or telnet. An RDP server opens in this computer's RDP
-                app, a telnet one in a terminal; both directly or through an
-                SSH server. */}
+            {/* SSH, RDP, telnet or VNC. An RDP server opens in this
+                computer's RDP app, a telnet one in a terminal, a VNC one as
+                its screen in the tab; all directly or through an SSH server. */}
             <div className="space-y-1.5">
               <label htmlFor="server-type" className="text-[11px] font-bold text-zinc-400 ml-1">Type</label>
               <select
                 id="server-type"
                 aria-label="Server type"
-                value={isRdp ? "rdp" : isTelnet ? "telnet" : "ssh"}
-                onChange={(e) => setProtocol(e.target.value as "ssh" | "rdp" | "telnet")}
+                value={isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : "ssh"}
+                onChange={(e) => setProtocol(e.target.value as "ssh" | "rdp" | "telnet" | "vnc")}
                 className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
               >
                 <option value="ssh" className="bg-[#1a1a1e] text-white">SSH</option>
                 <option value="rdp" className="bg-[#1a1a1e] text-white">RDP (Remote Desktop)</option>
                 <option value="telnet" className="bg-[#1a1a1e] text-white">Telnet (not encrypted)</option>
+                <option value="vnc" className="bg-[#1a1a1e] text-white">VNC</option>
               </select>
               {isTelnet && (
                 <p role="note" className="flex gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-[11px] leading-snug text-amber-200/90">
                   <ShieldAlert size={13} className="shrink-0 mt-px" aria-hidden="true" />
                   <span>Telnet isn't encrypted: what is typed, passwords too, crosses the network as plain text. Use it on a network you trust, or through an SSH server: then only the part after that server isn't encrypted.</span>
+                </p>
+              )}
+              {isVnc && !newNode.jumpHostId && (
+                <p role="note" className="flex gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-[11px] leading-snug text-amber-200/90">
+                  <ShieldAlert size={13} className="shrink-0 mt-px" aria-hidden="true" />
+                  <span>VNC isn't encrypted: the screen and what is typed cross the network as they are. Pick an SSH server to go through (below) to keep it private up to that server.</span>
                 </p>
               )}
             </div>
@@ -594,12 +602,12 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
 
             {newNode.authType === 'custom_pass' && !isRdp && (
               <div className="space-y-3 animate-in fade-in">
-                <div className="space-y-1.5">
+                {!isVnc && <div className="space-y-1.5">
                   <label className="text-[11px] font-bold text-zinc-400 ml-1">Username</label>
                   <input type="text" placeholder={isTelnet ? "For your reference" : "Ask when connecting"} value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} autoCapitalize="none" autoCorrect="off" spellCheck={false} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
-                </div>
+                </div>}
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-400 ml-1">Password</label>
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">{isVnc ? "VNC password" : "Password"}</label>
                   <PasswordField
                     value={newNode.password || ""}
                     onChange={(v) => setNewNode({ ...newNode, password: v, password_dirty: true })}
@@ -609,7 +617,9 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   <p className="text-[10px] text-zinc-500 ml-1">
                     {isTelnet
                       ? "A telnet server asks for the login in the terminal. Type it there; at the password prompt, the terminal's key button types the saved one."
-                      : "Leave empty to be asked when connecting."}
+                      : isVnc
+                        ? "Leave empty to be asked when the server wants one. VNC uses its first 8 characters."
+                        : "Leave empty to be asked when connecting."}
                   </p>
                 </div>
               </div>
