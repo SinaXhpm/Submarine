@@ -8,7 +8,7 @@ use rusqlite::{ffi, Connection, MAIN_DB};
 use rusqlite::serialize::OwnedData;
 use std::ptr::NonNull;
 use std::sync::Mutex as StdMutex;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::fs;
 use tauri::Manager;
 use serde_json::json;
@@ -95,6 +95,12 @@ pub struct DbState {
     pub generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Delta sync's memory for the open profile (see `SyncCursor`).
     sync_cursor: StdMutex<Option<SyncCursor>>,
+    /// The lock on the open profile's file (`<name>.submarine.lock`), held while
+    /// the profile is open so that only one Submarine window at a time has it:
+    /// two windows saving the same vault would each write over the other's
+    /// changes (see `lock_profile`). Let go by `close_profile`, or by the system
+    /// when the app exits or dies.
+    profile_lock: StdMutex<Option<(PathBuf, fs::File)>>,
 }
 
 impl DbState {
@@ -136,6 +142,52 @@ pub(crate) fn profiles_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// validated the name with `validate_profile_name`.
 pub(crate) fn profile_path(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
     Ok(profiles_dir(app)?.join(format!("{}.submarine", name)))
+}
+
+/// What the user is told when a profile is open in another window.
+const PROFILE_IN_USE: &str = "[PROFILE] This profile is open in another Submarine window. Lock it there, or close that window, then try again.";
+
+/// What `lock_profile` found.
+enum ProfileLock {
+    /// This process already holds the lock on this profile: the page was
+    /// reloaded while the profile was open.
+    Held,
+    /// A new lock, kept in `DbState` once the profile is open.
+    New(fs::File),
+    /// The profile's folder or file system can't lock: nothing guards the
+    /// profile, but nothing stops it either.
+    Unsupported,
+}
+
+/// Takes the lock on a profile before it is opened, so that one profile is
+/// open in one Submarine window at a time. Each save writes the whole vault
+/// from the memory of the window that does it; a second window on the same
+/// profile would write over the first one's changes (and the other way round)
+/// without a word, and nothing but a cloud sync would bring them back.
+///
+/// The lock is a held lock on `<name>.submarine.lock`, not the file's mere
+/// existence, so it can never be left behind: the system lets go of it when the
+/// process ends, however it ends.
+fn lock_profile(state: &DbState, path: &Path) -> Result<ProfileLock, String> {
+    let held_here = state.profile_lock.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE_LOCK")?
+        .as_ref()
+        .is_some_and(|(held, _)| held == path);
+    if held_here {
+        return Ok(ProfileLock::Held);
+    }
+    try_lock_file(&path.with_extension("submarine.lock"))
+}
+
+fn try_lock_file(lock_path: &Path) -> Result<ProfileLock, String> {
+    let file = match fs::OpenOptions::new().create(true).write(true).open(lock_path) {
+        Ok(file) => file,
+        Err(_) => return Ok(ProfileLock::Unsupported),
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(ProfileLock::New(file)),
+        Err(fs::TryLockError::WouldBlock) => Err(PROFILE_IN_USE.into()),
+        Err(fs::TryLockError::Error(_)) => Ok(ProfileLock::Unsupported),
+    }
 }
 
 /// Reject names that would let a user escape the profiles dir or collide
@@ -1480,6 +1532,45 @@ fn link_profile_server(conn: &Connection, base: &str) -> Result<(), String> {
     )
     .map_err(|e| format!("[SYNC] SET_CLOUD_SERVER: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod profile_lock_tests {
+    use super::*;
+
+    fn temp_lock(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("submarine-lock-test-{}-{name}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("p.submarine.lock")
+    }
+
+    #[test]
+    fn a_second_window_cannot_take_a_profile_the_first_one_has() {
+        let lock = temp_lock("two");
+        let first = try_lock_file(&lock).unwrap();
+        assert!(matches!(first, ProfileLock::New(_)));
+        let second = try_lock_file(&lock);
+        assert_eq!(second.err().as_deref(), Some(PROFILE_IN_USE));
+        // The first one lets go (the window locks the profile, or dies): it is free again.
+        drop(first);
+        assert!(matches!(try_lock_file(&lock).unwrap(), ProfileLock::New(_)));
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+    }
+
+    #[test]
+    fn two_different_profiles_do_not_get_in_each_others_way() {
+        let a = temp_lock("a");
+        let b = a.with_file_name("q.submarine.lock");
+        let _first = try_lock_file(&a).unwrap();
+        assert!(matches!(try_lock_file(&b).unwrap(), ProfileLock::New(_)));
+        let _ = fs::remove_dir_all(a.parent().unwrap());
+    }
+
+    #[test]
+    fn the_message_says_what_to_do_and_has_no_word_the_unlock_screen_reads_as_a_wrong_password() {
+        assert!(!PROFILE_IN_USE.to_lowercase().contains("decrypt"));
+        assert!(PROFILE_IN_USE.contains("another Submarine window"));
+    }
 }
 
 #[cfg(test)]
@@ -4812,6 +4903,7 @@ async fn close_profile(
     *state.db_path.lock().map_err(|_| "[STATE] LOCK_FAILED_PATH")? = None;
     *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE")? = None;
     *state.hlc.lock().map_err(|_| "[STATE] LOCK_FAILED_HLC")? = None;
+    *state.profile_lock.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE_LOCK")? = None;
     state.bump_generation();
     drop(conn_guard);
     Ok(())
@@ -4822,13 +4914,28 @@ async fn close_profile(
 /// file). UI enforces this by only showing the delete button on the picker
 /// screen.
 #[tauri::command]
-async fn delete_profile(app_handle: tauri::AppHandle, name: String) -> Result<(), String> {
+async fn delete_profile(app_handle: tauri::AppHandle, name: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
     validate_profile_name(&name)?;
     let path = profile_path(&app_handle, &name)?;
+    // This window's own lock on it (the page was reloaded with the profile
+    // still open) is let go of first, or the probe below would meet it.
+    {
+        let mut held = state.profile_lock.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE_LOCK")?;
+        if held.as_ref().is_some_and(|(p, _)| *p == path) {
+            *held = None;
+        }
+    }
+    // Not one that another window has open: it would keep saving into a file
+    // that is gone. (The lock is let go of when this probe ends.)
+    let lock_path = path.with_extension("submarine.lock");
+    if let ProfileLock::New(probe) = try_lock_file(&lock_path)? {
+        drop(probe);
+    }
     if path.exists() {
         fs::remove_file(&path)
             .map_err(|e| format!("[FILE] DELETE_PROFILE_FAILED at {:?}: {}", path, e))?;
     }
+    let _ = fs::remove_file(&lock_path);
     // A save that died between writing the tmp and renaming it leaves a
     // `<name>.submarine.tmp` holding a complete vault. `list_profiles` filters
     // on the `.submarine` extension so nothing ever surfaces it, which means
@@ -5158,6 +5265,9 @@ async fn setup_master_db_inner(
     }
 
     let path = profile_path(&app_handle, &profile_name)?;
+    // Before anything is read: another window on this profile stops it here.
+    // If the password turns out wrong the lock is let go with this function.
+    let profile_lock = lock_profile(&state, &path)?;
     let mut conn;
     let salt_bytes: [u8; SALT_LEN];
     // Wrap the derived AES key so it's wiped on every early-return path
@@ -5517,8 +5627,12 @@ async fn setup_master_db_inner(
     *conn_guard = Some(conn);
     *key_guard = Some(key);
     *salt_guard = Some(salt_bytes);
-    *path_guard = Some(path);
+    *path_guard = Some(path.clone());
     *hlc_guard = Some(hlc_arc);
+    if let ProfileLock::New(file) = profile_lock {
+        // Another profile's lock, if one was held, is let go of by this.
+        *state.profile_lock.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE_LOCK")? = Some((path.clone(), file));
+    }
     // A new opening: anything still running for the profile open before
     // (a sync waiting on the network, say) must not write into this one.
     let generation = state.bump_generation();
@@ -20145,7 +20259,7 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder.plugin(android_bridge::init());
     let builder = builder
-        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None) })
+        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None), profile_lock: StdMutex::new(None) })
         .manage(SshState::new())
         .manage(rdp::RdpSessions::default())
         .manage(telnet::Pending::default())
