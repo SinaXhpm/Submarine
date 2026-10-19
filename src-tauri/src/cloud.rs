@@ -525,6 +525,41 @@ fn network(e: reqwest::Error) -> String {
     format!("[CLOUD] NETWORK: {}", describe_send_error(&e))
 }
 
+/// The most of a sync answer that is read into memory: a `/sync` or
+/// `/shares/sync` exchange (the vault's records for a round).
+pub const MAX_SYNC_ANSWER: usize = 64 * 1024 * 1024;
+/// ...and of every other answer (a login, a list of shares, a key): these are
+/// a few hundred bytes in practice.
+pub const MAX_ANSWER: usize = 1024 * 1024;
+/// ...and of the text of an error.
+const MAX_ERROR_ANSWER: usize = 16 * 1024;
+
+/// An answer's body, refused once it is past `max` bytes. The server decides
+/// how much it sends, and reqwest inflates gzip on its own, so a few KB on the
+/// wire can be gigabytes in memory: the count is of the bytes `chunk()` gives,
+/// which are the inflated ones. Without a limit a server that is hostile, or
+/// only broken, ends the whole app (and every session in it) when memory runs out.
+pub async fn read_capped(mut resp: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
+    let too_large = || format!("[CLOUD] RESPONSE_TOO_LARGE: the server's answer is bigger than {} KB, so it was dropped.", max / 1024);
+    if resp.content_length().is_some_and(|n| n > max as u64) {
+        return Err(too_large());
+    }
+    let mut out = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(network)? {
+        if out.len() + chunk.len() > max {
+            return Err(too_large());
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
+/// `read_capped`, parsed as JSON.
+pub async fn json_capped<T: serde::de::DeserializeOwned>(resp: reqwest::Response, max: usize) -> Result<T, String> {
+    let bytes = read_capped(resp, max).await?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))
+}
+
 /// Decode a non-2xx response into a human-readable error. We try JSON
 /// first (the server's standard shape), then fall back to the raw body.
 /// A redirect is never followed (`cloud_config::build_client`); it is
@@ -545,7 +580,7 @@ pub async fn decode_error(resp: reqwest::Response) -> String {
             status, location
         );
     }
-    let body = resp.text().await.unwrap_or_default();
+    let body = String::from_utf8_lossy(&read_capped(resp, MAX_ERROR_ANSWER).await.unwrap_or_default()).into_owned();
     if let Ok(api) = serde_json::from_str::<ApiError>(&body) {
         let code = api.error.unwrap_or_else(|| status.to_string());
         let msg = api.message.unwrap_or_default();
@@ -605,9 +640,7 @@ pub async fn cloud_signup(
     if !resp.status().is_success() {
         return Err(decode_error(resp).await);
     }
-    resp.json::<SignupResponse>()
-        .await
-        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))
+    json_capped::<SignupResponse>(resp, MAX_ANSWER).await
 }
 
 /// Exchange a verification token (delivered by email) for a short-lived
@@ -635,9 +668,7 @@ pub async fn cloud_consume_verify_link(
     if !resp.status().is_success() {
         return Err(decode_error(resp).await);
     }
-    resp.json::<VerifyResponse>()
-        .await
-        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))
+    json_capped::<VerifyResponse>(resp, MAX_ANSWER).await
 }
 
 #[tauri::command]
@@ -664,10 +695,7 @@ pub async fn cloud_set_password(
     if !resp.status().is_success() {
         return Err(decode_error(resp).await);
     }
-    let body: AuthTokenResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    let body: AuthTokenResponse = json_capped(resp, MAX_ANSWER).await?;
     state.set_token(&app, &ep, body.token, body.email).await?;
     Ok(state.status().await)
 }
@@ -694,10 +722,7 @@ pub async fn cloud_login(
     if !resp.status().is_success() {
         return Err(decode_error(resp).await);
     }
-    let body: AuthTokenResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    let body: AuthTokenResponse = json_capped(resp, MAX_ANSWER).await?;
     state.set_token(&app, &ep, body.token, body.email).await?;
     Ok(state.status().await)
 }
@@ -772,10 +797,7 @@ pub async fn cloud_reset_password(
     if !resp.status().is_success() {
         return Err(decode_error(resp).await);
     }
-    let body: AuthTokenResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    let body: AuthTokenResponse = json_capped(resp, MAX_ANSWER).await?;
     state.set_token(&app, &ep, body.token, body.email).await?;
     Ok(state.status().await)
 }
@@ -830,10 +852,7 @@ pub async fn cloud_login_with_link(
     if !resp.status().is_success() {
         return Err(decode_error(resp).await);
     }
-    let body: AuthTokenResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    let body: AuthTokenResponse = json_capped(resp, MAX_ANSWER).await?;
     state.set_token(&app, &ep, body.token, body.email).await?;
     Ok(state.status().await)
 }
@@ -1025,10 +1044,7 @@ pub async fn sync_exchange_from(
         epoch: cursor.map(|c| c.epoch.as_str()),
     };
     let resp = post_json_authed(app, state, session, "/sync", &req).await?;
-    let body: SyncExchangeResp = resp
-        .json()
-        .await
-        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    let body: SyncExchangeResp = json_capped(resp, MAX_SYNC_ANSWER).await?;
     Ok(body.into_exchange())
 }
 
@@ -1071,10 +1087,7 @@ pub async fn list_sync_profiles(
 ) -> Result<Vec<SyncProfileInfo>, String> {
     let request = session.http().get(session.url("/sync/profiles"));
     let resp = send_authed(app, state, session, request).await?;
-    let body: SyncProfilesResp = resp
-        .json()
-        .await
-        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    let body: SyncProfilesResp = json_capped(resp, MAX_ANSWER).await?;
     Ok(body.profiles)
 }
 
@@ -1106,10 +1119,7 @@ pub async fn delete_sync_profile(
         .post(session.url("/sync/delete"))
         .json(&SyncDeleteReq { profile });
     let resp = send_authed(app, state, session, request).await?;
-    let body: SyncDeleteResp = resp
-        .json()
-        .await
-        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    let body: SyncDeleteResp = json_capped(resp, MAX_ANSWER).await?;
     Ok(body.deleted)
 }
 
@@ -1157,10 +1167,7 @@ pub async fn shared_sync_exchange_from(
         epoch: cursor.map(|c| c.epoch.as_str()),
     };
     let resp = post_json_authed(app, state, session, "/shares/sync", &req).await?;
-    let body: SyncExchangeResp = resp
-        .json()
-        .await
-        .map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?;
+    let body: SyncExchangeResp = json_capped(resp, MAX_SYNC_ANSWER).await?;
     Ok(body.into_exchange())
 }
 
@@ -1199,7 +1206,7 @@ pub async fn publish_identity(
         .post(session.url("/keys/publish"))
         .json(&PublishKeyReq { public_key, wrapped_privkey, enc_salt });
     let resp = send_authed(app, state, session, request).await?;
-    resp.json().await.map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))
+    json_capped(resp, MAX_ANSWER).await
 }
 
 #[derive(Deserialize)]
@@ -1216,7 +1223,7 @@ pub struct MyKeys {
 pub async fn fetch_my_keys(app: &tauri::AppHandle, state: &CloudState, session: &Session) -> Result<MyKeys, String> {
     let request = session.http().get(session.url("/keys/me"));
     let resp = send_authed(app, state, session, request).await?;
-    resp.json().await.map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))
+    json_capped(resp, MAX_ANSWER).await
 }
 
 #[derive(Serialize)]
@@ -1259,7 +1266,7 @@ pub async fn lookup_pubkey(
         return Err(decode_error(resp).await);
     }
     Ok(Some(
-        resp.json().await.map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))?,
+        json_capped(resp, MAX_ANSWER).await?,
     ))
 }
 
@@ -1277,7 +1284,7 @@ async fn shares_post<B: Serialize, R: for<'de> Deserialize<'de>>(
 ) -> Result<R, String> {
     let request = session.http().post(session.url(path)).json(body);
     let resp = send_authed(app, state, session, request).await?;
-    resp.json().await.map_err(|e| format!("[CLOUD] BAD_RESPONSE: {}", e))
+    json_capped(resp, MAX_ANSWER).await
 }
 
 #[derive(Deserialize)]
@@ -1533,5 +1540,99 @@ mod tests {
         // A file from before servers could be chosen still reads.
         let parsed: StoredToken = serde_json::from_str(r#"{"token":"t","email":"e"}"#).unwrap();
         assert!(parsed.server.is_none());
+    }
+}
+
+#[cfg(test)]
+mod body_cap_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// A one-shot HTTP server: it answers the first request with `head` and `body`
+    /// (raw bytes, whatever the head says) and closes. Gives the URL.
+    fn serve(head: &str, body: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let head = head.to_string();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(head.as_bytes());
+                // The client may hang up on a body it refuses: not an error here.
+                for piece in body.chunks(64 * 1024) {
+                    if s.write_all(piece).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        format!("http://{}/", addr)
+    }
+
+    async fn get(url: &str) -> reqwest::Response {
+        reqwest::Client::builder().gzip(true).build().unwrap().get(url).send().await.unwrap()
+    }
+
+    fn gzip_of_zeros(megabytes: usize) -> Vec<u8> {
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        let zeros = vec![0u8; 1 << 20];
+        for _ in 0..megabytes {
+            enc.write_all(&zeros).unwrap();
+        }
+        enc.finish().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_small_answer_is_read() {
+        let url = serve("HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\n", b"{\"ok\": true} ".to_vec());
+        let bytes = read_capped(get(&url).await, 1024).await.unwrap();
+        assert_eq!(bytes, b"{\"ok\": true} ");
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_says_it_is_too_big_is_refused_up_front() {
+        let url = serve("HTTP/1.1 200 OK\r\nContent-Length: 5000000\r\nConnection: close\r\n\r\n", vec![b'x'; 100]);
+        let err = read_capped(get(&url).await, 1024 * 1024).await.unwrap_err();
+        assert!(err.contains("RESPONSE_TOO_LARGE"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_never_says_how_long_it_is_stops_at_the_limit() {
+        // No Content-Length: the body runs until the server closes (3 MB here).
+        let url = serve("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", vec![b'x'; 3 * 1024 * 1024]);
+        let err = read_capped(get(&url).await, 1024 * 1024).await.unwrap_err();
+        assert!(err.contains("RESPONSE_TOO_LARGE"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_gzip_bomb_is_stopped_by_what_it_inflates_to() {
+        let bomb = gzip_of_zeros(300); // about 300 KB on the wire, 300 MB inflated
+        assert!(bomb.len() < 2 * 1024 * 1024, "the test bomb should be small on the wire: {}", bomb.len());
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bomb.len());
+        let url = serve(&head, bomb);
+        let started = std::time::Instant::now();
+        let err = read_capped(get(&url).await, 1024 * 1024).await.unwrap_err();
+        assert!(err.contains("RESPONSE_TOO_LARGE"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    }
+
+    #[tokio::test]
+    async fn json_is_parsed_and_junk_is_a_bad_response() {
+        let url = serve("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n", b"{\"a\": 1}".to_vec());
+        let v: serde_json::Value = json_capped(get(&url).await, 1024).await.unwrap();
+        assert_eq!(v["a"], 1);
+        let url = serve("HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n", b"nope".to_vec());
+        let err = json_capped::<serde_json::Value>(get(&url).await, 1024).await.unwrap_err();
+        assert!(err.contains("BAD_RESPONSE"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_error_page_as_big_as_you_like_is_read_only_in_part() {
+        let url = serve("HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n", vec![b'e'; 2 * 1024 * 1024]);
+        let msg = decode_error(get(&url).await).await;
+        assert!(msg.starts_with("[CLOUD] HTTP 500"), "{}", &msg[..msg.len().min(80)]);
+        assert!(msg.len() < 1024, "the text of the error stays short: {}", msg.len());
     }
 }

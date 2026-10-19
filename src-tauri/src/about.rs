@@ -103,10 +103,9 @@ pub async fn check_for_updates() -> Result<UpdateInfo, String> {
     }
 
     // An empty repo returns `[]` (200), not 404 — handled naturally below.
-    let releases: Vec<GhRelease> = resp
-        .json()
-        .await
-        .map_err(|e| format!("[UPDATE] BAD_JSON: {}", e))?;
+    // The list of releases is a few hundred KB at most; read no more than 8 MB.
+    let bytes = crate::cloud::read_capped(resp, 8 * 1024 * 1024).await.map_err(|e| format!("[UPDATE] {}", e))?;
+    let releases: Vec<GhRelease> = serde_json::from_slice(&bytes).map_err(|e| format!("[UPDATE] BAD_JSON: {}", e))?;
 
     // Highest published, non-prerelease semver wins. Drafts are only visible
     // with auth (we're anonymous) but we skip them defensively all the same.
