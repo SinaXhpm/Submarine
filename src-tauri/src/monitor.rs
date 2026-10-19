@@ -283,6 +283,28 @@ pub async fn stop_monitor(map: MonitorMap, node_id: i32) {
     }
 }
 
+/// Ends every poller and empties the list (a profile is locked or switched).
+/// Each one is told to stop, so one that is in the middle of a connect or a poll
+/// that the server never answers hears it too, lets go of its connection and
+/// of the node's password or key, and stops sending events. Pausing alone
+/// left it to find out at the top of its loop, which it never reached.
+pub async fn stop_all(map: MonitorMap) {
+    let all: Vec<Arc<MonitorEntry>> = map.lock().await.drain().map(|(_, e)| e).collect();
+    for e in all {
+        if let Some(tx) = e.stop_tx.lock().await.take() {
+            let _ = tx.send(());
+        }
+        *e.paused.lock().await = true;
+    }
+}
+
+/// `fut` with a deadline, for steps that wait on a server and had none: a
+/// connection that was accepted and never answered kept the poller waiting for
+/// good, so the node was never reported as down.
+async fn within<T>(limit: Duration, fut: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    tokio::time::timeout(limit, fut).await.unwrap_or_else(|_| Err("The server didn't answer in time".to_string()))
+}
+
 pub async fn set_paused(map: MonitorMap, node_id: i32, paused: bool) -> Result<(), String> {
     let entry = map
         .lock()
@@ -510,7 +532,8 @@ async fn run_poller(
             };
             let connected = tokio::select! {
                 _ = &mut stop_rx => break,
-                r = connect_for_monitor(&db, &target, connect_timeout) => r,
+                // The handshake has its own budget; the logins after it had none.
+                r = within(connect_timeout * 4, connect_for_monitor(&db, &target, connect_timeout)) => r,
             };
             match connected {
                 Ok(h) => {
@@ -547,7 +570,8 @@ async fn run_poller(
         // rather than after the per-poll exec timeout.
         let polled = tokio::select! {
             _ = &mut stop_rx => break,
-            r = poll_once(h, &customs_snap, poll_timeout) => r,
+            // Opening the channel and starting the probe had no limit; reading its answer has `poll_timeout`.
+            r = within(poll_timeout * 3, poll_once(h, &customs_snap, poll_timeout)) => r,
         };
         match polled {
             Ok(raw) => {
@@ -1523,7 +1547,54 @@ mod probe_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::monitor_client_config;
+    use super::{monitor_client_config, stop_all, within, MonitorEntry, MonitorMap, MonitorState};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::{oneshot, Mutex};
+
+    fn entry(id: i32, stop: oneshot::Sender<()>) -> Arc<MonitorEntry> {
+        Arc::new(MonitorEntry {
+            node_id: id,
+            enabled_metrics: Arc::new(Mutex::new(Vec::new())),
+            custom_metrics: Arc::new(Mutex::new(Vec::new())),
+            paused: Arc::new(Mutex::new(false)),
+            state: Arc::new(Mutex::new(MonitorState::default())),
+            stop_tx: Mutex::new(Some(stop)),
+        })
+    }
+
+    #[tokio::test]
+    async fn locking_a_profile_tells_every_poller_to_stop_and_empties_the_list() {
+        let map: MonitorMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let mut heard = Vec::new();
+        let mut entries = Vec::new();
+        for id in 1..=3 {
+            let (tx, rx) = oneshot::channel::<()>();
+            heard.push(rx);
+            let e = entry(id, tx);
+            entries.push(Arc::clone(&e));
+            map.lock().await.insert(id, e);
+        }
+        stop_all(Arc::clone(&map)).await;
+        assert!(map.lock().await.is_empty());
+        for rx in heard {
+            assert!(tokio::time::timeout(Duration::from_secs(5), rx).await.expect("the poller hears the stop").is_ok());
+        }
+        for e in entries {
+            assert!(*e.paused.lock().await, "node {} is paused too", e.node_id);
+            assert!(e.stop_tx.lock().await.is_none());
+        }
+        // Nothing left to stop: harmless.
+        stop_all(map).await;
+    }
+
+    #[tokio::test]
+    async fn a_step_that_never_answers_ends_with_an_error_and_one_that_does_is_left_alone() {
+        let hung = within(Duration::from_millis(50), std::future::pending::<Result<u8, String>>()).await;
+        assert!(hung.unwrap_err().contains("didn't answer"));
+        assert_eq!(within(Duration::from_secs(5), async { Ok::<u8, String>(7) }).await, Ok(7));
+        assert_eq!(within(Duration::from_secs(5), async { Err::<u8, String>("refused".into()) }).await, Err("refused".to_string()));
+    }
 
     /// S4 / S1: the monitor must negotiate exactly like the interactive
     /// session (same algorithm lists + DH-GEX bounds) and must not drop a

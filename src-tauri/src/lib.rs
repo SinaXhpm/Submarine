@@ -4923,11 +4923,10 @@ async fn close_profile(
     // preferable to leaking session state.
     let _ = save_vault_async(&state).await;
 
-    // 1. Stop monitor pollers. Flip `paused` first so the next loop iteration
-    // releases the SSH handle, then drop the map so the Arc strong_count
-    // falls to 1 and the poller exits.
-    monitor::pause_all(monitor_map.inner().clone()).await;
-    monitor_map.lock().await.clear();
+    // 1. Stop monitor pollers: each is told to stop (one waiting on a server
+    // that never answers would otherwise keep its connection, the node's
+    // password or key and its events going), and the list is emptied.
+    monitor::stop_all(monitor_map.inner().clone()).await;
 
     // 2. Collect every active session id, then run the standard
     // disconnect path for each one. This frees tunnel listener sockets,
