@@ -1525,6 +1525,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // RUSTSEC-2026-0369: a zip's link member pointing out of the destination,
+    // with permissions of its own, must not change its target while the
+    // archive is unpacked. zip 8 applied a member's mode through the link it
+    // had just made, before the staged tree is checked and refused.
+    #[cfg(unix)]
+    #[test]
+    fn local_extract_zip_link_leaves_its_target_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_root("zip-link-mode");
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let secret = root.join("secret");
+        std::fs::write(&secret, b"keep").unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let opts = zip::write::SimpleFileOptions::default().unix_permissions(0o777);
+        for (case, target) in [("abs", secret.to_string_lossy().to_string()), ("up", "../../secret".to_string())] {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            zw.add_symlink("link", target.as_str(), opts).unwrap();
+            let name = format!("{}.zip", case);
+            std::fs::write(work.join(&name), zw.finish().unwrap().into_inner()).unwrap();
+            for folder in [None, Some("out")] {
+                assert!(extract_here(&work, &name, folder).is_err(), "{} {:?}", case, folder);
+                no_staging_left(&work);
+                let mode = std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600, "{} {:?}: the target's mode changed", case, folder);
+            }
+        }
+        assert_eq!(std::fs::read(&secret).unwrap(), b"keep");
+        // RUSTSEC-2026-0368: a later member written through such a link while
+        // the archive is being unpacked, before the staged tree is checked.
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        for (case, target) in [("abs-dir", outside.to_string_lossy().to_string()), ("up-dir", "../../outside".to_string())] {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            zw.add_symlink("link", target.as_str(), opts).unwrap();
+            zw.start_file("link/evil", zip::write::SimpleFileOptions::default()).unwrap();
+            zw.write_all(b"evil").unwrap();
+            let name = format!("{}.zip", case);
+            std::fs::write(work.join(&name), zw.finish().unwrap().into_inner()).unwrap();
+            for folder in [None, Some("out")] {
+                assert!(extract_here(&work, &name, folder).is_err(), "{} {:?}", case, folder);
+                no_staging_left(&work);
+                assert!(!outside.join("evil").exists(), "{} {:?}: written through the link", case, folder);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // The result goes through the local path policy like any other write: an
     // archive can't put files where the OS runs them at login, and nothing is
     // extracted inside a system folder.
@@ -1660,7 +1708,7 @@ mod tests {
         let bytes = std::fs::read(&zip_path).unwrap();
         assert!(!bytes.windows(10).any(|w| w == b"TOP SECRET"));
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-        let listed: Vec<String> = zip.file_names().map(|n| n.to_string()).collect();
+        let listed: Vec<String> = zip.file_names().map(|n| n.unwrap().to_string()).collect();
         assert!(!listed.iter().any(|n| n.starts_with("dirlink/")), "{:?}", listed);
         for (name, target) in [("folder/link", "../../outside/secret"), ("dirlink", "../outside")] {
             let mut entry = zip.by_name(name).unwrap();

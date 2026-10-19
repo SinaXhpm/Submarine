@@ -135,7 +135,7 @@ zstd = { version = "0.14", default-features = false }
 # and unzip on the server). tar 0.4.46 has the fixes for its link and PAX
 # header advisories. flate2 and chrono are in the tree already: deflate for
 # zip and gzip, and the local time a zip entry is stamped with.
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 tar = { version = "0.4.46", default-features = false }
 flate2 = "1.1.10"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
