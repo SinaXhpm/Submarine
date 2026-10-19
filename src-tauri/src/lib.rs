@@ -317,6 +317,70 @@ fn vault_compress(plaintext: &[u8]) -> Result<Vec<u8>, String> {
 /// again. Released builds open up to the same 64 MiB.
 const VAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
 
+/// The most a profile's file can be: the vault's limit, with room for the
+/// compression and encryption around it. Anything bigger is not a profile; it is
+/// refused before it is read into memory (a mistaken pick of a big file once
+/// read in whole, and then unlocking it needed about three times its size).
+const VAULT_FILE_MAX_BYTES: u64 = VAULT_MAX_BYTES as u64 + 1024 * 1024;
+
+/// A profile's file, read in whole: refused past `VAULT_FILE_MAX_BYTES` first.
+fn read_vault_file(path: &Path) -> Result<Vec<u8>, String> {
+    let len = fs::metadata(path).map_err(|e| format!("[FILE] VAULT_READ_FAILED: {}", e))?.len();
+    if len > VAULT_FILE_MAX_BYTES {
+        return Err(format!(
+            "[VAULT] TOO_LARGE: this file is {} MB, and a profile is never that big, so it isn't one. It wasn't read.",
+            len / (1024 * 1024)
+        ));
+    }
+    fs::read(path).map_err(|e| format!("[FILE] VAULT_READ_FAILED: {}", e))
+}
+
+/// Puts a new profile file in place without ever leaving half of it under its
+/// final name, and without replacing a profile that is already there: written
+/// beside it (private to the user on Unix, like every save), flushed, then moved
+/// in. A power cut or a full disk used to leave a truncated `.submarine` that
+/// the picker listed and the unlock then called a wrong password.
+fn write_new_profile_file(dst: &Path, bytes: &[u8], name: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let exists = || format!("Profile '{}' already exists", name);
+    let tmp = dst.with_extension("submarine.tmp");
+    let _ = fs::remove_file(&tmp);
+    {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&tmp).map_err(|e| format!("[FILE] IMPORT_WRITE_FAILED to {:?}: {}", tmp, e))?;
+        file.write_all(bytes).map_err(|e| format!("[FILE] IMPORT_WRITE_FAILED to {:?}: {}", tmp, e))?;
+        file.sync_all().map_err(|e| format!("[FILE] IMPORT_WRITE_FAILED to {:?}: {}", tmp, e))?;
+    }
+    // A link fails if the name is taken, and takes it in one step if not.
+    match fs::hard_link(&tmp, dst) {
+        Ok(()) => {
+            let _ = fs::remove_file(&tmp);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&tmp);
+            Err(exists())
+        }
+        // No hard links here (FAT, some network drives): move it, after looking.
+        Err(_) => {
+            if dst.exists() {
+                let _ = fs::remove_file(&tmp);
+                return Err(exists());
+            }
+            fs::rename(&tmp, dst).map_err(|e| {
+                let _ = fs::remove_file(&tmp);
+                format!("[FILE] IMPORT_WRITE_FAILED to {:?}: {}", dst, e)
+            })
+        }
+    }
+}
+
 /// Decompress the post-decrypt body for vault v2 reads. Bounded by a
 /// generous max-size guard so a corrupt or hostile file can't make us
 /// allocate gigabytes — a real Submarine SQLite snapshot is well under
@@ -5020,6 +5084,12 @@ async fn export_profile(
             None => return Ok(None),
         };
 
+        // Not onto the profile's own file: a copy of a file onto itself can empty it.
+        if let (Ok(a), Ok(b)) = (fs::canonicalize(&src), fs::canonicalize(&dst)) {
+            if a == b {
+                return Err("[FILE] EXPORT_SAME_FILE: that is this profile's own file. Choose another place for the copy.".into());
+            }
+        }
         fs::copy(&src, &dst)
             .map_err(|e| format!("[FILE] EXPORT_COPY_FAILED to {:?}: {}", dst, e))?;
         Ok(Some(dst.to_string_lossy().to_string()))
@@ -5147,8 +5217,7 @@ async fn import_profile_bytes(
     validate_profile_name(&name)?;
     // Real vaults are a few MB at most; refuse anything absurd before
     // allocating for it.
-    const MAX_VAULT_BYTES: usize = 256 * 1024 * 1024;
-    if data.len() / 4 * 3 > MAX_VAULT_BYTES {
+    if (data.len() / 4 * 3) as u64 > VAULT_FILE_MAX_BYTES {
         return Err("The file is too large to be a Submarine profile.".into());
     }
     let bytes = base64::engine::general_purpose::STANDARD
@@ -5162,8 +5231,53 @@ async fn import_profile_bytes(
     if dst.exists() {
         return Err(format!("Profile '{}' already exists", name));
     }
-    fs::write(&dst, &bytes).map_err(|e| format!("[FILE] IMPORT_WRITE_FAILED to {:?}: {}", dst, e))?;
-    Ok(())
+    write_new_profile_file(&dst, &bytes, &name)
+}
+
+#[cfg(test)]
+mod profile_file_safety_tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("submarine-profile-files-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_file_far_bigger_than_any_profile_is_refused_unread() {
+        let dir = temp_dir("big");
+        let path = dir.join("huge.submarine");
+        // Sparse: the length is what counts, no disk is used.
+        let f = fs::File::create(&path).unwrap();
+        f.set_len(VAULT_FILE_MAX_BYTES + 1).unwrap();
+        let err = read_vault_file(&path).unwrap_err();
+        assert!(err.contains("TOO_LARGE") && !err.to_lowercase().contains("decrypt"), "{err}");
+        // At the limit it is read.
+        f.set_len(1024).unwrap();
+        assert_eq!(read_vault_file(&path).unwrap().len(), 1024);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_profile_file_lands_whole_and_never_replaces_one_that_is_there() {
+        let dir = temp_dir("new");
+        let dst = dir.join("p.submarine");
+        write_new_profile_file(&dst, b"first", "p").unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"first");
+        assert!(!dst.with_extension("submarine.tmp").exists(), "no half-written file is left");
+        let err = write_new_profile_file(&dst, b"second", "p").unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+        assert_eq!(fs::read(&dst).unwrap(), b"first", "the profile that was there is untouched");
+        assert!(!dst.with_extension("submarine.tmp").exists());
+        // A stale temp from a crash does not get in the way.
+        let other = dir.join("q.submarine");
+        fs::write(other.with_extension("submarine.tmp"), b"left by a crash").unwrap();
+        write_new_profile_file(&other, b"fresh", "q").unwrap();
+        assert_eq!(fs::read(&other).unwrap(), b"fresh");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
@@ -5219,7 +5333,7 @@ async fn import_profile_save(
     // previous "read 5 bytes to validate, then fs::copy" was TOCTOU —
     // an attacker (or a script running in parallel) could swap the file
     // between the header read and the copy and we'd import garbage.
-    let bytes = fs::read(&src).map_err(|e| format!("[FILE] IMPORT_READ_FAILED: {}", e))?;
+    let bytes = read_vault_file(&src)?;
     if bytes.len() < 5 || &bytes[..4] != VAULT_MAGIC || bytes[4] != VAULT_VERSION {
         return Err("Source file is no longer a valid Submarine profile.".into());
     }
@@ -5227,9 +5341,7 @@ async fn import_profile_save(
         return Err("Source file is truncated — header is valid but the body is too small.".into());
     }
 
-    fs::write(&dst, &bytes)
-        .map_err(|e| format!("[FILE] IMPORT_WRITE_FAILED to {:?}: {}", dst, e))?;
-    Ok(())
+    write_new_profile_file(&dst, &bytes, &name)
 }
 
 /// Whether the *currently selected* profile's encrypted file exists on
@@ -5306,8 +5418,7 @@ async fn setup_master_db_inner(
     let mut needs_resave;
 
     if path.exists() {
-        let encrypted_data = fs::read(&path)
-            .map_err(|e| format!("[FILE] VAULT_READ_FAILED: {}", e))?;
+        let encrypted_data = read_vault_file(&path)?;
         let (parsed_salt, nonce, ciphertext) = parse_vault_blob(&encrypted_data)?;
         // Normalise the Vec<u8> salt into a fixed-size array up front so we
         // can copy it into both the spawn_blocking closure (move-by-Copy) and
