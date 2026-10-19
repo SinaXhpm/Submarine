@@ -19091,33 +19091,36 @@ fn parse_putty_reg(text: &str) -> Result<Vec<ImportedHost>, String> {
 
 /// PuTTY registry keys with special characters (space, backslash, non-
 /// ASCII) are percent-escaped in the exported name. `%20` → space,
-/// `%25` → `%`. Anything else is passed through as-is. Not a full URL
-/// decoder — PuTTY's escape table is narrower.
+/// `%25` → `%`, and the bytes of a non-ASCII name (`%C3%A9` → é) are its
+/// UTF-8. A name that isn't valid UTF-8 (an older PuTTY wrote the Windows code
+/// page) keeps one character per byte, as before. Anything else is passed
+/// through as-is. Not a full URL decoder — PuTTY's escape table is narrower.
 fn putty_unescape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    let mut out: Vec<u8> = Vec::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         // Only treat `%HH` as an escape when both following bytes are ASCII
-        // hex digits. The is_ascii_hexdigit guard also keeps the `&s[..]`
-        // slice on char boundaries — without it, a `%` before a multi-byte
-        // UTF-8 char (e.g. `%€`) would slice mid-codepoint and panic.
+        // hex digits (so the `%` before a multi-byte UTF-8 char, e.g. `%€`,
+        // is just a `%`).
         if bytes[i] == b'%'
             && i + 2 < bytes.len()
             && bytes[i + 1].is_ascii_hexdigit()
             && bytes[i + 2].is_ascii_hexdigit()
         {
-            let hex = &s[i + 1..i + 3];
-            if let Ok(n) = u8::from_str_radix(hex, 16) {
-                out.push(n as char);
+            if let Ok(n) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(n);
                 i += 3;
                 continue;
             }
         }
-        out.push(bytes[i] as char);
+        out.push(bytes[i]);
         i += 1;
     }
-    out
+    match String::from_utf8(out) {
+        Ok(name) => name,
+        Err(bad) => bad.into_bytes().into_iter().map(|b| b as char).collect(),
+    }
 }
 
 /// `.reg` string entries look like `"HostName"="1.2.3.4"`. Strip the
@@ -19166,6 +19169,8 @@ fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
     let mut out: Vec<ImportedHost> = Vec::new();
     // Session names repeat across folders; the import list keys rows by name.
     let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The next number to try for a name that is already taken.
+    let mut next_number: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut in_bookmarks = false;
     for raw in text.lines() {
         let line = raw.trim();
@@ -19198,10 +19203,18 @@ fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
             .filter(|p| !p.is_empty())
             .map(|p| p.replace("_CurrentDrive_", "C"));
         let mut alias = name.to_string();
-        let mut n = 2;
-        while !names.insert(alias.clone()) {
-            alias = format!("{} ({})", name, n);
-            n += 1;
+        if !names.insert(alias.clone()) {
+            // Go on from where this name left off, not from 2 each time: a
+            // list of N sessions with one name must not cost N² tries (an
+            // export of 20,000 of them froze the window for a minute).
+            let next = next_number.entry(name.to_string()).or_insert(2);
+            loop {
+                alias = format!("{} ({})", name, next);
+                *next += 1;
+                if names.insert(alias.clone()) {
+                    break;
+                }
+            }
         }
         out.push(ImportedHost {
             host_alias: alias,
@@ -19319,6 +19332,55 @@ mod client_import_tests {
         let text = export(&[session("desktop", 91, "4%c.example%3389%carol%%-1%0%0")]);
         let err = parse_client_import(text).err().expect("an RDP-only export must be refused");
         assert!(err.contains("No MobaXterm SSH sessions"), "{err}");
+    }
+
+    #[test]
+    fn a_long_run_of_one_name_imports_in_linear_time() {
+        // 40,000 sessions called "web": the number to try next is kept per name.
+        // Counting from 2 every time took 200 s for this input.
+        let line = session("web", 109, "0%a.example%22%u%%-1%-1%%%%%0%0%0%%%-1");
+        let text = export(&vec![line; 40_000]);
+        let started = std::time::Instant::now();
+        let hosts = parse_client_import(text).unwrap();
+        let took = started.elapsed();
+        assert_eq!(hosts.len(), 40_000);
+        assert!(took < std::time::Duration::from_secs(10), "took {took:?}");
+        assert_eq!(hosts[0].host_alias, "web");
+        assert_eq!(hosts[1].host_alias, "web (2)");
+        assert_eq!(hosts[39_999].host_alias, "web (40000)");
+        let mut unique: Vec<&str> = hosts.iter().map(|h| h.host_alias.as_str()).collect();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 40_000, "every row has its own name");
+    }
+
+    #[test]
+    fn a_session_really_called_web_2_is_not_overwritten_by_the_counter() {
+        let s = |name: &str| session(name, 109, "0%a.example%22%u%%-1%-1%%%%%0%0%0%%%-1");
+        let hosts = parse_client_import(export(&[s("web"), s("web (2)"), s("web"), s("web"), s("web (2)")])).unwrap();
+        let names: Vec<&str> = hosts.iter().map(|h| h.host_alias.as_str()).collect();
+        assert_eq!(names, vec!["web", "web (2)", "web (3)", "web (4)", "web (2) (2)"]);
+    }
+
+    #[test]
+    fn putty_names_come_out_as_they_were_typed() {
+        use super::putty_unescape;
+        assert_eq!(putty_unescape("My%20Server"), "My Server");
+        assert_eq!(putty_unescape("100%25"), "100%");
+        // UTF-8 bytes of non-ASCII names (Persian, accented, CJK).
+        assert_eq!(putty_unescape("%C3%A9t%C3%A9"), "été");
+        assert_eq!(putty_unescape("%D8%B3%D8%B1%D9%88%D8%B1"), "سرور");
+        assert_eq!(putty_unescape("%E6%9C%8D%E5%8A%A1%E5%99%A8%201"), "服务器 1");
+        // Already-decoded text is left alone, not turned into two characters each.
+        assert_eq!(putty_unescape("été سرور"), "été سرور");
+        // A name from an older PuTTY (Windows-1252 bytes, not UTF-8) keeps one character per byte.
+        assert_eq!(putty_unescape("caf%E9"), "café");
+        // Not an escape: nothing to decode, and nothing to cut in half.
+        assert_eq!(putty_unescape("50%€"), "50%€");
+        assert_eq!(putty_unescape("%"), "%");
+        assert_eq!(putty_unescape("%4"), "%4");
+        assert_eq!(putty_unescape("%zz"), "%zz");
+        assert_eq!(putty_unescape(""), "");
     }
 
     #[test]
