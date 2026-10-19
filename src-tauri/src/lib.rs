@@ -35,6 +35,7 @@ mod approvals;
 mod agent_auth;
 mod ssh_config;
 mod proxy_command;
+mod open_policy;
 mod known_hosts;
 mod rdp;
 mod quick_unlock;
@@ -18289,6 +18290,12 @@ async fn sftp_open_remote_file(
 
     let sftp = get_sftp_session(&state, &session_id).await?;
     let filename = safe_temp_leaf_name(&remote_path)?;
+    // Opening is what a double-click does: it would RUN a program or a script
+    // the server named (open_policy.rs). Decided before anything is fetched.
+    let opening = open_policy::decide(&filename);
+    if let open_policy::Opening::Refuse(why) = &opening {
+        return Err(why.clone());
+    }
 
     // Live-edit opens the copy in an editor, so refuse a file too large to
     // hold in memory (a huge binary, or a broken server's endless read) —
@@ -18329,7 +18336,10 @@ async fn sftp_open_remote_file(
     }
     #[cfg(not(target_os = "android"))]
     {
-        let open_res = open::that(&temp_file_path);
+        let open_res = match opening {
+            open_policy::Opening::Editor => open_policy::open_in_editor(&temp_file_path),
+            _ => open::that(&temp_file_path).map_err(|e| e.to_string()),
+        };
         if let Err(e) = open_res {
             return Err(format!("Failed to open file: {}", e));
         }
