@@ -511,8 +511,11 @@ where
                     let mut activation = activation_factory.create();
                     let mut buf = WriteBuf::new();
                     loop {
-                        let written = single_sequence_step_read(&mut reader, &mut activation, &mut buf)
+                        // A server that starts the desktop over and then says nothing
+                        // would hold this loop for good, deaf to Close.
+                        let written = tokio::time::timeout(STEP_TIMEOUT, single_sequence_step_read(&mut reader, &mut activation, &mut buf))
                             .await
+                            .map_err(|_| "RDP: the server stopped answering while it restarted the desktop".to_string())?
                             .map_err(|e| format!("RDP: {e}"))?;
                         if written.size().is_some() {
                             writer.write_all(buf.filled()).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;

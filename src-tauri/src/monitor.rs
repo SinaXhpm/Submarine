@@ -744,6 +744,9 @@ async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Bo
             .map_err(|_| format!("HTTP proxy {} timed out", proxy_addr))?
             .map_err(|e| format!("HTTP proxy TCP: {}", e))?;
             let _ = tcp.set_nodelay(true);
+            if !crate::http_connect_host_ok(&auth.host) {
+                return Err(format!("'{}' can't be asked of an HTTP proxy: a host has no spaces or control characters.", auth.host.escape_debug()));
+            }
             tokio::time::timeout(
                 connect_timeout,
                 async_http_proxy::http_connect_tokio(&mut tcp, &auth.host, auth.port),
