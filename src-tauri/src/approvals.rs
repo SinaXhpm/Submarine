@@ -428,6 +428,21 @@ pub fn server_uuid(conn: &Connection, server_id: i64) -> Option<String> {
         .flatten()
 }
 
+/// A copy of a server takes the held command and held forwards of the
+/// original with it. What is held is held wherever it goes: cloning a server
+/// whose command a co-member planted used to turn it into a row nobody had to
+/// allow, with the command typed on its first connect. (The clone's autostart is
+/// off, and monitor settings aren't copied, so those two kinds stay behind.)
+pub fn copy_held(conn: &Connection, from_uuid: &str, to_uuid: &str) -> Result<usize, String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO held_approvals (uuid, item, since)
+         SELECT ?2, item, since FROM held_approvals
+          WHERE uuid = ?1 AND (item = ?3 OR item LIKE 'tunnel:%')",
+        params![from_uuid, to_uuid, RUN_ON_CONNECT],
+    )
+    .map_err(|e| format!("[SYNC] HELD_COPY: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,6 +461,24 @@ mod tests {
         .unwrap();
         create_schema(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn a_copy_of_a_server_keeps_what_was_held_on_the_original() {
+        let conn = db();
+        conn.execute("INSERT INTO servers(id, name, uuid, run_on_connect, autostart, tunnels) VALUES (1, 'web', 'u-orig', 'curl x | sh', 1, '[]')", []).unwrap();
+        conn.execute("INSERT INTO servers(id, name, uuid, run_on_connect) VALUES (2, 'web (copy)', 'u-copy', 'curl x | sh')", []).unwrap();
+        for item in [RUN_ON_CONNECT, AUTOSTART, "tunnel:R|0.0.0.0:9000|127.0.0.1:22", "metric:uptime"] {
+            conn.execute("INSERT INTO held_approvals(uuid, item, since) VALUES ('u-orig', ?1, 1)", [item]).unwrap();
+        }
+        assert_eq!(copy_held(&conn, "u-orig", "u-copy").unwrap(), 2);
+        let held = held_for(&conn, "u-copy");
+        assert_eq!(held.into_iter().collect::<Vec<_>>(), vec![RUN_ON_CONNECT.to_string(), "tunnel:R|0.0.0.0:9000|127.0.0.1:22".to_string()]);
+        // The original keeps all four, and doing it twice changes nothing.
+        assert_eq!(held_for(&conn, "u-orig").len(), 4);
+        assert_eq!(copy_held(&conn, "u-orig", "u-copy").unwrap(), 0);
+        // A server with nothing held copies nothing.
+        assert_eq!(copy_held(&conn, "u-copy-none", "u-copy").unwrap(), 0);
     }
 
     fn merging(conn: &Connection, on: bool) {
