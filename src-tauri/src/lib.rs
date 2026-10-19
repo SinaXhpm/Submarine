@@ -921,6 +921,9 @@ enum ColKind {
     OptionalInt32,
     /// A whole number (true/false count), or NULL.
     OptionalInt,
+    /// Text holding a JSON list of objects (a server's tunnels, mirrors), or
+    /// NULL or empty: the edit form takes the entries as objects.
+    ObjectList,
 }
 
 fn col_kind(table: &str, col: &str) -> ColKind {
@@ -934,6 +937,7 @@ fn col_kind(table: &str, col: &str) -> ColKind {
         ("servers", "port") => ColKind::Int32,
         ("servers", "proxy_port") => ColKind::OptionalInt32,
         ("servers", "autostart" | "position") => ColKind::OptionalInt,
+        ("servers", "tunnels" | "mirrors") => ColKind::ObjectList,
         _ => ColKind::Text,
     }
 }
@@ -950,6 +954,12 @@ impl ColKind {
             (ColKind::OptionalInt32, Some(v)) => int32(v),
             (ColKind::OptionalInt, None | Some(Value::Null | Value::Bool(_))) => true,
             (ColKind::OptionalInt, Some(v)) => v.is_i64(),
+            (ColKind::ObjectList, None | Some(Value::Null)) => true,
+            (ColKind::ObjectList, Some(Value::String(text))) => {
+                text.is_empty()
+                    || serde_json::from_str::<Value>(text)
+                        .is_ok_and(|list| list.as_array().is_some_and(|a| a.iter().all(Value::is_object)))
+            }
             _ => false,
         }
     }
@@ -2279,6 +2289,25 @@ async fn accept_share_key(db_state: tauri::State<'_, DbState>) -> Result<(), Str
         tx.commit().map_err(|e| format!("[SHARE] TX_COMMIT: {e}"))?;
     }
     save_vault_async(&db_state).await
+}
+
+#[cfg(test)]
+mod object_list_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tunnels_and_mirrors_must_be_a_list_of_objects() {
+        let kind = col_kind("servers", "tunnels");
+        assert!(matches!(col_kind("servers", "mirrors"), ColKind::ObjectList));
+        for good in [json!(null), json!(""), json!("[]"), json!("[{\"type\":\"L\",\"local\":\"8080\"}]"), json!("[{},{}]")] {
+            assert!(kind.accepts(Some(&good)), "{good}");
+        }
+        assert!(kind.accepts(None));
+        for bad in [json!("[null]"), json!("{}"), json!("[1]"), json!("[\"x\"]"), json!("[[]]"), json!("not json"), json!("[{},null]"), json!(5), json!([1]), json!({})] {
+            assert!(!kind.accepts(Some(&bad)), "{bad}");
+        }
+    }
 }
 
 #[cfg(test)]

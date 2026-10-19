@@ -17,6 +17,7 @@ import { readUseLocalShell } from "../util/terminalShell";
 import { readUseSshAgent } from "../util/sshAgent";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { useConfirm } from "../ui/confirm";
+import { parseObjectList } from "../util/serverJson";
 
 // What the shell-config push commands answer (mirror.rs' ShellSync* types).
 type ShellSyncShells = { remote_shell: string; local_shell: string; shell_mismatch: boolean };
@@ -2156,9 +2157,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   disabled={status !== 'connected'}
                   serverId={session.serverId}
                   profile={profile}
-                  mirrorsConfig={(() => {
-                    try { return JSON.parse(session.mirrors || "[]"); } catch { return []; }
-                  })()}
+                  mirrorsConfig={parseObjectList(session.mirrors)}
                   view={sftpView}
                 />
               </div>
