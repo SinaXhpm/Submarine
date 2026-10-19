@@ -9,7 +9,9 @@ blocks inline `<script>` tags, and AI crawlers don't reach the shell.
 
 - **software-application.jsonld** — `SoftwareApplication` schema. Tells
   Google, Bing, ChatGPT search, and Perplexity what the app is, who made
-  it, where to download it, and what it costs. Highest-impact AEO asset.
+  it, where to download it, what it costs, and what it looks like (the
+  `screenshot` URLs point at `docs/screenshots/` on `main`). Highest-impact
+  AEO asset.
 - **faq.jsonld** — `FAQPage` schema mirroring the README FAQ. Answer
   engines quote the `acceptedAnswer` text verbatim for matching queries.
 
@@ -28,6 +30,20 @@ Inside the `<head>` of the landing page, one `<script>` block per file:
 
 Validate with <https://validator.schema.org/> after deploying.
 
+## Keep the claims true
+
+Answer engines quote these files word for word, so a claim that the app
+doesn't meet gets repeated. When a feature or a privacy property changes,
+change these together: the README (Security & privacy, FAQ), `llms.txt`,
+`faq.jsonld`, and the `featureList` here. The points most likely to drift:
+
+- what cloud sync encrypts, and what the server still sees (metadata, and
+  a copy of the vault key sealed with the master password);
+- the one anonymous GitHub releases request when the profile page opens;
+- Quick connect saves the host (and what was typed) to the root folder;
+- which protocols are labelled unencrypted (Telnet, plain VNC) and which
+  features are experimental (the built-in RDP client).
+
 ## What to update on every release
 
 The `softwareVersion` field is intentionally NOT pinned in
@@ -35,3 +51,13 @@ The `softwareVersion` field is intentionally NOT pinned in
 either templatize it from your site's build (preferred) or update it
 manually each release. The current shipping version lives in
 `package.json` at the repo root.
+
+## Repository metadata (set on GitHub, not in the repo)
+
+GitHub's About box and topics are search signals too, and live in the
+repository settings:
+
+- **Description**: `Free, open-source SSH & SFTP client with RDP, VNC and Telnet — terminal, dual-pane SFTP, port forwarding, folder mirror, encrypted profiles. Windows · macOS · Linux · Android. Rust + Tauri.`
+- **Website**: `https://sinaxhpm.com`
+- **Topics**: `ssh`, `ssh-client`, `sftp`, `sftp-client`, `telnet`, `vnc`, `rdp`, `remote-desktop`, `terminal`, `port-forwarding`, `ssh-tunnel`, `socks5`, `folder-sync`, `ssh-agent`, `putty-alternative`, `winscp-alternative`, `mobaxterm-alternative`, `termius-alternative`, `tauri`, `rust`, `react`, `xterm`, `android`, `cross-platform`, `desktop-app`
+- **Social preview** (Settings → General): a 1280×640 image; `docs/screenshots/hero.png` cropped to that ratio works.

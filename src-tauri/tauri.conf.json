@@ -29,6 +29,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "homepage": "https://sinaxhpm.com/submarine",
+    "copyright": "Copyright (c) Sina Xhpm. MIT License.",
+    "license": "MIT",
+    "category": "DeveloperTool",
+    "shortDescription": "SSH, SFTP, RDP, VNC and Telnet client",
+    "longDescription": "Submarine is a free, open-source SSH and SFTP client with RDP, VNC and Telnet. It puts a terminal, a dual-pane SFTP browser, port forwarding, folder mirror, server info and Docker panels, monitoring and remote desktops in one native window, with encrypted profiles and optional cloud sync.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
