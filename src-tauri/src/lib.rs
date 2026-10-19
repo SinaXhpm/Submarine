@@ -18345,7 +18345,56 @@ mod live_edit_tests {
             assert!(name.chars().all(|c| c.is_ascii_hexdigit()), "a plain folder name: {name}");
         }
     }
+
+    /// An editor that saves by writing a new file and renaming it over the copy
+    /// (gedit, vim, JetBrains' safe write) must be seen on every save. A watch on
+    /// the file itself is lost with its inode on Linux after the first one, so the
+    /// folder that holds the copy is watched, as `sftp_open_remote_file` does, and
+    /// only events for the copy's own name count.
+    #[test]
+    fn a_save_by_rename_is_seen_every_time_and_a_swap_file_is_not_a_save() {
+        use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebouncedEventKind};
+        use std::ffi::OsString;
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir().join(format!("submarine-liveedit-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("doc.txt");
+        std::fs::write(&copy, "v0").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut debouncer = new_debouncer(Duration::from_millis(200), tx).unwrap();
+        debouncer.watcher().watch(&dir, RecursiveMode::NonRecursive).unwrap();
+        // Names of the files that had a change, until things go quiet for a while.
+        let names = |rx: &std::sync::mpsc::Receiver<notify_debouncer_mini::DebounceEventResult>| -> Vec<OsString> {
+            let mut seen = Vec::new();
+            while let Ok(res) = rx.recv_timeout(Duration::from_millis(1500)) {
+                for ev in res.unwrap_or_default() {
+                    if matches!(ev.kind, DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous) {
+                        seen.extend(ev.path.file_name().map(|n| n.to_os_string()));
+                    }
+                }
+            }
+            seen
+        };
+        let copy_name = OsString::from("doc.txt");
+        for n in 1..=3 {
+            let swap = dir.join(format!(".doc.txt.{n}.swp"));
+            std::fs::write(&swap, format!("v{n}")).unwrap();
+            std::fs::rename(&swap, &copy).unwrap();
+            let seen = names(&rx);
+            assert!(seen.contains(&copy_name), "save {n} by rename was not seen: {seen:?}");
+        }
+        // A file the editor keeps beside the copy is not the copy.
+        std::fs::write(dir.join("doc.txt~"), "backup").unwrap();
+        let seen = names(&rx);
+        assert!(!seen.contains(&copy_name), "a backup file counted as a save: {seen:?}");
+        drop(debouncer);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
+
+/// How long a live-edit copy may go without a save before its watcher ends.
+const LIVE_EDIT_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
 
 #[tauri::command]
 async fn sftp_open_remote_file(
@@ -18392,6 +18441,42 @@ async fn sftp_open_remote_file(
         Sha256::digest(&data).to_vec()
     };
 
+    // The watcher is made here, before the editor opens, so one that can't start
+    // (inotify's limits, say) is an error the user sees, not a file that never
+    // uploads. It watches the folder that holds the copy (nothing else is in it)
+    // and not the file: an editor that saves by writing a new file and renaming
+    // it over the old one (gedit, vim, JetBrains' safe write) gives the path a
+    // new inode, and a watch on the old one is gone after the first save.
+    use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebouncedEventKind};
+    let (raw_tx, raw_rx) = std::sync::mpsc::channel();
+    let (tok_tx, mut tok_rx) = tokio::sync::mpsc::channel::<()>(8);
+    let mut debouncer = new_debouncer(std::time::Duration::from_millis(750), raw_tx).map_err(|e| {
+        let _ = std::fs::remove_file(&temp_file_path);
+        let _ = std::fs::remove_dir(&copy_dir);
+        format!("Can't watch the file for changes, so edits to it wouldn't be uploaded: {e}")
+    })?;
+    if let Err(e) = debouncer.watcher().watch(&copy_dir, RecursiveMode::NonRecursive) {
+        let _ = std::fs::remove_file(&temp_file_path);
+        let _ = std::fs::remove_dir(&copy_dir);
+        return Err(format!("Can't watch the file for changes, so edits to it wouldn't be uploaded: {e}"));
+    }
+    // Forward bridge: std::mpsc::recv blocks, so it has to live on the blocking
+    // pool. Only the copy's own file counts, not an editor's swap or backup file.
+    let copy_name = temp_file_path.file_name().map(|n| n.to_os_string());
+    tokio::task::spawn_blocking(move || {
+        while let Ok(res) = raw_rx.recv() {
+            if let Ok(events) = res {
+                let ours = events.iter().any(|ev| {
+                    matches!(ev.kind, DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous)
+                        && ev.path.file_name().map(|n| n.to_os_string()) == copy_name
+                });
+                if ours && tok_tx.blocking_send(()).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
     // Open local temp file in system default application. The whole
     // live-edit-in-default-editor feature is desktop-only — Android's
     // intent-based "open with" model would need a Tauri plugin instead,
@@ -18423,52 +18508,24 @@ async fn sftp_open_remote_file(
     let temp_file_path_clone = temp_file_path.clone();
 
     tokio::spawn(async move {
-        // Notify-driven save detection instead of the old 1.5s poll. Wires
-        // the same `notify-debouncer-mini` crate the mirror module uses:
-        //   - std::mpsc::Sender feeds the debouncer (a blocking pool task
-        //     forwards into a tokio mpsc so this async loop can await it)
-        //   - 750ms debounce coalesces an editor's swap-then-rename
-        //     save pattern (vim, vscode) into one upload instead of
-        //     several. The previous polling burned a syscall every
-        //     1.5s for up to 4800 iterations per open file.
-        use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebouncedEventKind};
-        let (raw_tx, raw_rx) = std::sync::mpsc::channel();
-        let (tok_tx, mut tok_rx) = tokio::sync::mpsc::channel::<()>(8);
-        let mut debouncer = match new_debouncer(std::time::Duration::from_millis(750), raw_tx) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("[sftp-live-edit] debouncer init failed: {} — falling back to no autosync", e);
-                let _ = std::fs::remove_file(&temp_file_path_clone);
-                return;
-            }
-        };
-        if let Err(e) = debouncer.watcher().watch(&temp_file_path_clone, RecursiveMode::NonRecursive) {
-            eprintln!("[sftp-live-edit] watch failed: {} — falling back to no autosync", e);
-            let _ = std::fs::remove_file(&temp_file_path_clone);
-            return;
-        }
-        // Forward bridge: std::mpsc::recv blocks, so it has to live on the
-        // blocking pool.
-        tokio::task::spawn_blocking(move || {
-            while let Ok(res) = raw_rx.recv() {
-                if let Ok(events) = res {
-                    if events.iter().any(|ev| matches!(ev.kind, DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous)) {
-                        if tok_tx.blocking_send(()).is_err() { break; }
-                    }
-                }
-            }
-        });
-
-        // Overall 2-hour ceiling so an editor left open forever doesn't
-        // keep the watcher alive past any reasonable session.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2 * 60 * 60);
+        // Saves are noticed by the watcher made above, not polled: its 750 ms
+        // debounce turns an editor's swap-then-rename save (vim, vscode) into one
+        // upload. The limit is on idleness, not on the session: any save starts
+        // it again. It used to end two hours after the file was opened, and a save
+        // after that was neither uploaded nor reported.
+        let mut deadline = tokio::time::Instant::now() + LIVE_EDIT_IDLE_LIMIT;
+        let mut idle_end = false;
         let mut synced_hash = synced_hash;
         loop {
             let wait = tokio::time::sleep_until(deadline);
             tokio::select! {
-                _ = wait => break,
+                _ = wait => {
+                    idle_end = true;
+                    break;
+                }
                 maybe = tok_rx.recv() => {
                     if maybe.is_none() { break; }
+                    deadline = tokio::time::Instant::now() + LIVE_EDIT_IDLE_LIMIT;
                     if !temp_file_path_clone.exists() { break; }
                     let content = match std::fs::read(&temp_file_path_clone) {
                         Ok(c) => c,
@@ -18563,15 +18620,33 @@ async fn sftp_open_remote_file(
                 }
             }
         }
-        // The watcher exited (timeout, file disappeared, or session gone).
-        // Wipe the temp file so the remote contents aren't left lying around
-        // in OS temp once editing is done. Errors are intentionally ignored
-        // — on Windows the editor may still hold a lock on the file, and the
-        // worst case is the file persists until the OS cleans temp.
+        // The watcher exited (idle for a long time, the file disappeared, or the
+        // session is gone). The copy is wiped so the remote contents aren't left
+        // lying around in OS temp once editing is done, unless it holds edits that
+        // were never uploaded: those stay, and the user is told. Errors are
+        // intentionally ignored: on Windows the editor may still hold a lock on the
+        // file, and the worst case is the file persists until the OS cleans temp.
         drop(debouncer);
-        let _ = std::fs::remove_file(&temp_file_path_clone);
-        if let Some(dir) = temp_file_path_clone.parent() {
-            let _ = std::fs::remove_dir(dir); // the file's own folder, if now empty
+        let unsynced = {
+            use sha2::{Digest, Sha256};
+            std::fs::read(&temp_file_path_clone).map(|c| Sha256::digest(&c).to_vec() != synced_hash).unwrap_or(false)
+        };
+        if unsynced || idle_end {
+            let message = if unsynced {
+                format!("{filename_clone} has changes that were not uploaded; the copy on this computer was kept")
+            } else {
+                format!("Auto-sync for {filename_clone} stopped after {} hours without a change; open the file again to go on", LIVE_EDIT_IDLE_LIMIT.as_secs() / 3600)
+            };
+            let _ = app_handle_clone.emit(
+                &format!("sftp-sync-status-{}", session_id_clone),
+                serde_json::json!({ "status": "error", "message": message }),
+            );
+        }
+        if !unsynced {
+            let _ = std::fs::remove_file(&temp_file_path_clone);
+            if let Some(dir) = temp_file_path_clone.parent() {
+                let _ = std::fs::remove_dir(dir); // the file's own folder, if now empty
+            }
         }
     });
 
