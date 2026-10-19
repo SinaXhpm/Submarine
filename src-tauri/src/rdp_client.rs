@@ -277,6 +277,22 @@ fn rect_frame(image: &DecodedImage, r: &InclusiveRectangle) -> Option<Vec<u8>> {
     Some(f)
 }
 
+/// The changed places as they go out: many of them, or together more than the
+/// picture (the same place changing again and again), become one rectangle around
+/// them, so a batch is never more than about one picture.
+fn tidy(rects: Vec<InclusiveRectangle>, picture_area: u64) -> Vec<InclusiveRectangle> {
+    let area: u64 = rects
+        .iter()
+        .map(|r| (u64::from(r.right.saturating_sub(r.left)) + 1) * (u64::from(r.bottom.saturating_sub(r.top)) + 1))
+        .sum();
+    if rects.len() > MAX_RECTS || area > picture_area {
+        if let Some(first) = rects.first() {
+            return vec![rects.iter().fold(first.clone(), |acc, r| union(&acc, r))];
+        }
+    }
+    rects
+}
+
 fn union(a: &InclusiveRectangle, b: &InclusiveRectangle) -> InclusiveRectangle {
     InclusiveRectangle {
         left: a.left.min(b.left),
@@ -335,6 +351,7 @@ pub async fn run<S, V, VF>(
     verify_cert: V,
     connected: impl FnOnce(u16, u16),
     frame: impl Fn(Vec<u8>) -> bool,
+    flow: Arc<crate::screen_flow::Flow>,
     mut cmds: mpsc::UnboundedReceiver<Cmd>,
 ) -> Result<String, String>
 where
@@ -477,8 +494,10 @@ where
                     Vec::new()
                 }
             },
-            _ = tick.tick(), if !dirty.is_empty() => {
-                let rects = std::mem::take(&mut dirty);
+            // While the page is far behind on what it was sent, what changes
+            // waits here as one rectangle at most (see screen_flow.rs).
+            _ = tick.tick(), if !dirty.is_empty() && flow.has_room() => {
+                let rects = tidy(std::mem::take(&mut dirty), u64::from(image.width()) * u64::from(image.height()));
                 for r in &rects {
                     if let Some(f) = rect_frame(&image, r) {
                         if !frame(f) {
@@ -488,6 +507,9 @@ where
                 }
                 Vec::new()
             }
+            // The page has caught up: what it is owed goes now, not with the
+            // next thing the server says.
+            _ = flow.room(), if !dirty.is_empty() && !flow.has_room() => Vec::new(),
         };
 
         for out in outputs {
@@ -575,6 +597,25 @@ mod tests {
         assert_eq!(split_domain("alice"), ("alice".into(), None));
         assert_eq!(split_domain("alice@corp.example"), ("alice@corp.example".into(), None));
         assert_eq!(split_domain("\\alice"), ("\\alice".into(), None));
+    }
+
+    #[test]
+    fn changed_places_that_add_up_to_more_than_the_picture_become_one() {
+        let rect = |left, top, right, bottom| InclusiveRectangle { left, top, right, bottom };
+        let all = rect(0, 0, 99, 99);
+        // The whole picture thirty times in one tick: one frame of it.
+        let out = tidy(vec![all.clone(); 30], 100 * 100);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].left, out[0].top, out[0].right, out[0].bottom), (0, 0, 99, 99));
+        // Two small places that don't add up to the picture stay two frames.
+        let out = tidy(vec![rect(0, 0, 9, 9), rect(50, 50, 59, 59)], 100 * 100);
+        assert_eq!(out.len(), 2);
+        // More places than the limit become one rectangle around them, as before.
+        let many: Vec<_> = (0..40u16).map(|i| rect(i, i, i, i)).collect();
+        let out = tidy(many, 1_000_000);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].left, out[0].top, out[0].right, out[0].bottom), (0, 0, 39, 39));
+        assert!(tidy(Vec::new(), 10).is_empty());
     }
 
     #[test]

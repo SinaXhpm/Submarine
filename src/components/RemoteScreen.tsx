@@ -74,6 +74,24 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
     const sending = useRef<Promise<unknown>>(Promise.resolve());
     // The channel of the session now open: a replaced one's frames are dropped.
     const channelGen = useRef(0);
+    // Bytes of frames that have come and aren't yet told to the backend, which
+    // holds the next ones back while the page is far behind (screen_ack).
+    const unacked = useRef(0);
+    const ackTimer = useRef(0);
+    const ack = useCallback(
+      (n: number) => {
+        unacked.current += n;
+        if (ackTimer.current) return;
+        ackTimer.current = window.setTimeout(() => {
+          ackTimer.current = 0;
+          const bytes = unacked.current;
+          unacked.current = 0;
+          if (bytes > 0) invoke("screen_ack", { sessionId, bytes }).catch(() => {});
+        }, 20);
+      },
+      [sessionId],
+    );
+    useEffect(() => () => window.clearTimeout(ackTimer.current), []);
     // A phone's keyboard is up (it takes part of the tab while it is).
     const typing = useRef(false);
     // The tab size the desktop was last sized for.
@@ -133,11 +151,15 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
         paintedRef.current = false;
         setPainted(false);
         const gen = ++channelGen.current;
+        unacked.current = 0;
         const ch = new Channel<ArrayBuffer>();
         ch.onmessage = (raw: ArrayBuffer | number[]) => {
           // A session this tab has since replaced (Reconnect) may still
           // send a frame or two: it must not resize or paint over the new one.
           if (gen !== channelGen.current) return;
+          // Every frame of this session is told to the backend, whatever it
+          // turns out to hold: it counts the bytes it sent.
+          ack(raw instanceof ArrayBuffer ? raw.byteLength : Array.isArray(raw) ? raw.length : 0);
           // Bytes, or a list of numbers when Tauri had to fall back from its
           // binary IPC (slower, still drawn).
           const buf = raw instanceof ArrayBuffer ? raw : Array.isArray(raw) ? new Uint8Array(raw).buffer : null;

@@ -280,7 +280,17 @@ impl Screen {
                 px[3] = 255;
             }
         }
-        self.dirty.push(c);
+        self.mark(c);
+    }
+
+    /// Remember that `r` changed. Past `MAX_RECTS` places the list becomes one
+    /// rectangle around them all: while the page isn't taking frames, a server's
+    /// small updates must not make it grow for good.
+    fn mark(&mut self, r: Rect) {
+        self.dirty.push(r);
+        if self.dirty.len() > MAX_RECTS {
+            self.dirty = vec![bounds(&self.dirty)];
+        }
     }
 
     /// A part of the picture copied to another place (CopyRect).
@@ -299,17 +309,18 @@ impl Screen {
             let at = (usize::from(d.y) + y) * stride + usize::from(d.x) * 4;
             self.rgba[at..at + row].copy_from_slice(&block[y * row..(y + 1) * row]);
         }
-        self.dirty.push(Rect { x: d.x, y: d.y, width: w, height: h });
+        self.mark(Rect { x: d.x, y: d.y, width: w, height: h });
     }
 
     /// The frames for what changed since the last time.
     fn frames(&mut self) -> Vec<Vec<u8>> {
         let mut rects = std::mem::take(&mut self.dirty);
-        if rects.len() > MAX_RECTS {
-            let (x0, y0) = (rects.iter().map(|r| r.x).min().unwrap_or(0), rects.iter().map(|r| r.y).min().unwrap_or(0));
-            let x1 = rects.iter().map(|r| r.x + r.width).max().unwrap_or(0);
-            let y1 = rects.iter().map(|r| r.y + r.height).max().unwrap_or(0);
-            rects = vec![Rect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }];
+        // Many parts, or parts that together are more than the picture (the same
+        // place changed again and again): one rectangle around them, so a batch
+        // is never more than about one picture.
+        let area: u64 = rects.iter().map(|r| u64::from(r.width) * u64::from(r.height)).sum();
+        if rects.len() > MAX_RECTS || area > u64::from(self.w) * u64::from(self.h) {
+            rects = vec![bounds(&rects)];
         }
         rects.iter().filter_map(|r| self.rect_frame(*r)).collect()
     }
@@ -328,6 +339,14 @@ impl Screen {
         }
         Some(f)
     }
+}
+
+/// The smallest rectangle that holds all of `rects` (which are inside the picture).
+fn bounds(rects: &[Rect]) -> Rect {
+    let (x0, y0) = (rects.iter().map(|r| r.x).min().unwrap_or(0), rects.iter().map(|r| r.y).min().unwrap_or(0));
+    let x1 = rects.iter().map(|r| u32::from(r.x) + u32::from(r.width)).max().unwrap_or(0);
+    let y1 = rects.iter().map(|r| u32::from(r.y) + u32::from(r.height)).max().unwrap_or(0);
+    Rect { x: x0, y: y0, width: (x1 - u32::from(x0)) as u16, height: (y1 - u32::from(y0)) as u16 }
 }
 
 fn size_frame(w: u16, h: u16) -> Vec<u8> {
@@ -363,6 +382,7 @@ pub async fn run<S, P, C, F>(
     password: P,
     connected: C,
     mut frame: F,
+    flow: std::sync::Arc<crate::screen_flow::Flow>,
     mut rx: mpsc::UnboundedReceiver<Cmd>,
     wanted: (u16, u16),
 ) -> Result<String, String>
@@ -489,7 +509,12 @@ where
                 if let Some(end) = ended {
                     break end;
                 }
-                let sent = screen.frames();
+                // While the page is far behind on what it was sent, what
+                // changes stays in the picture here (see screen_flow.rs) and no
+                // new update is asked for: the server, which only sends on a
+                // request, waits too.
+                let held = !flow.has_room();
+                let sent = if held { Vec::new() } else { screen.frames() };
                 let changed = !sent.is_empty();
                 for f in sent {
                     if !frame(f) {
@@ -499,7 +524,7 @@ where
                 // The next incremental update: right after one came, else a
                 // few times a second.
                 since_refresh += 1;
-                if changed || since_refresh >= 6 {
+                if !held && (changed || since_refresh >= 6) {
                     since_refresh = 0;
                     if client.input(X11Event::Refresh).await.is_err() {
                         break Ok("The VNC server closed the connection.".to_string());
@@ -627,6 +652,44 @@ mod tests {
         let f = s.frames();
         assert_eq!(f.len(), 1);
         assert_eq!(&f[0][..9], &[2, 0, 0, 0, 0, 4, 0, 3, 0]);
+    }
+
+    #[test]
+    fn what_changes_while_the_page_is_behind_stays_one_rectangle() {
+        let mut s = Screen::new();
+        s.resize(1000, 1000);
+        // 50,000 small updates in two corners and nothing sent: the list of places never grows.
+        for i in 0..50_000u32 {
+            let at = if i % 2 == 0 { 0 } else { 998 };
+            s.put(Rect { x: at, y: at, width: 2, height: 2 }, &[1; 16]);
+            assert!(s.dirty.len() <= MAX_RECTS, "{} places after {} updates", s.dirty.len(), i + 1);
+        }
+        let f = s.frames();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].len(), 9 + 1000 * 1000 * 4, "one frame around both corners: the whole picture");
+        // Copies count the same way.
+        for _ in 0..1000 {
+            s.copy(Rect { x: 10, y: 10, width: 1, height: 1 }, Rect { x: 20, y: 20, width: 1, height: 1 });
+            s.copy(Rect { x: 500, y: 500, width: 1, height: 1 }, Rect { x: 20, y: 20, width: 1, height: 1 });
+        }
+        assert!(s.dirty.len() <= MAX_RECTS);
+    }
+
+    #[test]
+    fn parts_that_overlap_cost_one_picture_at_most() {
+        let mut s = Screen::new();
+        s.resize(100, 100);
+        // The same full-screen part thirty times in one tick (under the count that already collapsed).
+        for _ in 0..30 {
+            s.put(Rect { x: 0, y: 0, width: 100, height: 100 }, &vec![1; 40_000]);
+        }
+        let f = s.frames();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].len(), 9 + 40_000);
+        // Parts that don't add up to more than the picture are sent as they are.
+        s.put(Rect { x: 0, y: 0, width: 10, height: 10 }, &vec![1; 400]);
+        s.put(Rect { x: 50, y: 50, width: 10, height: 10 }, &vec![1; 400]);
+        assert_eq!(s.frames().len(), 2);
     }
 
     #[test]

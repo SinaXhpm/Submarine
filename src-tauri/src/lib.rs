@@ -17,6 +17,7 @@ mod ssh_manager;
 mod tunnel;
 mod telnet;
 mod vnc_client;
+mod screen_flow;
 mod monitor;
 mod cloud;
 mod cloud_config;
@@ -13876,6 +13877,7 @@ async fn rdp_builtin_open(
     state: tauri::State<'_, SshState>,
     db_state: tauri::State<'_, DbState>,
     rdp_clients: tauri::State<'_, RdpClients>,
+    screen_flows: tauri::State<'_, screen_flow::ScreenFlows>,
     session_id: String,
     server_id: i32,
     use_ssh_agent: Option<bool>,
@@ -13944,6 +13946,7 @@ async fn rdp_builtin_open(
     let cache = Arc::clone(&state.prompted_secrets);
     let db = Arc::clone(&db_state.conn);
     let clients = rdp_clients.inner().clone();
+    let screens = screen_flows.inner().clone();
     let use_agent = use_ssh_agent.unwrap_or(true);
     tauri::async_runtime::spawn(async move {
         let log = |msg: &str, ty: &str| {
@@ -14173,13 +14176,15 @@ async fn rdp_builtin_open(
                 connected(w, h)
             }
         };
-        let frame = move |bytes: Vec<u8>| frames.send(tauri::ipc::InvokeResponseBody::Raw(bytes)).is_ok();
+        let flow = screens.start(&session_id, generation);
+        let frame = screen_frame_sender(frames, Arc::clone(&flow));
         // A decoder that panics on a bad screen update ends this tab only.
-        let run = tauri::async_runtime::spawn(rdp_client::run(stream, client_addr, login, verify, connected, frame, rx));
+        let run = tauri::async_runtime::spawn(rdp_client::run(stream, client_addr, login, verify, connected, frame, flow, rx));
         let outcome = match run.await {
             Ok(r) => r,
             Err(_) => Err("The RDP session stopped on bad data from the server".into()),
         };
+        screens.end(&session_id, generation);
         // The last words (a shutdown request) get a moment to go out; then the
         // connection is closed, whether or not the server has closed its side.
         if tokio::time::timeout(std::time::Duration::from_secs(2), &mut carrier).await.is_err() {
@@ -14225,6 +14230,33 @@ async fn rdp_builtin_resize(rdp_clients: tauri::State<'_, RdpClients>, session_i
     if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
         let _ = tx.send(rdp_client::Cmd::Resize(width, height));
     }
+    Ok(())
+}
+
+/// What a screen session (VNC, built-in RDP) sends its frames with: to the
+/// page, counted in `flow` until the page says it drew them (`screen_ack`).
+/// False when the page is gone.
+fn screen_frame_sender(
+    frames: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    flow: std::sync::Arc<screen_flow::Flow>,
+) -> impl Fn(Vec<u8>) -> bool {
+    move |bytes: Vec<u8>| {
+        let len = bytes.len();
+        // Counted first: the page can answer before this call returns.
+        flow.sent(len);
+        let sent = frames.send(tauri::ipc::InvokeResponseBody::Raw(bytes)).is_ok();
+        if !sent {
+            flow.drawn(len as u64);
+        }
+        sent
+    }
+}
+
+/// A VNC or RDP tab's page drew `bytes` of the frames it was sent: the session
+/// may send more (see screen_flow.rs).
+#[tauri::command]
+async fn screen_ack(screen_flows: tauri::State<'_, screen_flow::ScreenFlows>, session_id: String, bytes: u64) -> Result<(), String> {
+    screen_flows.drawn(&session_id, bytes);
     Ok(())
 }
 
@@ -14515,6 +14547,7 @@ async fn vnc_open(
     state: tauri::State<'_, SshState>,
     db_state: tauri::State<'_, DbState>,
     vnc_clients: tauri::State<'_, vnc_client::VncClients>,
+    screen_flows: tauri::State<'_, screen_flow::ScreenFlows>,
     session_id: String,
     server_id: i32,
     use_ssh_agent: Option<bool>,
@@ -14579,6 +14612,7 @@ async fn vnc_open(
     let cache = Arc::clone(&state.prompted_secrets);
     let db = Arc::clone(&db_state.conn);
     let clients = vnc_clients.inner().clone();
+    let screens = screen_flows.inner().clone();
     let use_agent = use_ssh_agent.unwrap_or(true);
     tauri::async_runtime::spawn(async move {
         let log = |msg: &str, ty: &str| {
@@ -14730,13 +14764,15 @@ async fn vnc_open(
                 }
             }
         };
-        let frame = move |bytes: Vec<u8>| frames.send(tauri::ipc::InvokeResponseBody::Raw(bytes)).is_ok();
+        let flow = screens.start(&session_id, generation);
+        let frame = screen_frame_sender(frames, Arc::clone(&flow));
         // A decoder that panics on a bad screen update ends this tab only.
-        let run = tauri::async_runtime::spawn(vnc_client::run(stream, password, connected, frame, rx, wanted));
+        let run = tauri::async_runtime::spawn(vnc_client::run(stream, password, connected, frame, flow, rx, wanted));
         let outcome = match run.await {
             Ok(r) => r,
             Err(_) => Err("The VNC session stopped on bad data from the server".into()),
         };
+        screens.end(&session_id, generation);
         if tokio::time::timeout(std::time::Duration::from_secs(2), &mut carrier).await.is_err() {
             carrier.abort();
         }
@@ -20972,6 +21008,7 @@ pub fn run() {
         .manage(rdp::RdpSessions::default())
         .manage(telnet::Pending::default())
         .manage(vnc_client::VncClients::default())
+        .manage(screen_flow::ScreenFlows::default())
         .manage(RdpClients::default())
         // Docker live-log stream registry — keyed by frontend-issued stream id,
         // values are tokio AbortHandles so the user can stop tailing on demand.
@@ -21031,7 +21068,7 @@ pub fn run() {
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session, set_use_ssh_config,
             initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_resize, rdp_builtin_close,
-            telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize,
+            telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
             open_terminal, local_shell, write_terminal_data, type_saved_password, resize_terminal, close_terminal,
