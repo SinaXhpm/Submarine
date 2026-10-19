@@ -15495,6 +15495,16 @@ fn is_safe_systemctl_unit(unit: &str) -> bool {
     unit.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | ':' | '\\'))
 }
 
+/// The command line for `systemctl <action> <unit>` (`sudo -n` in front for
+/// the retry), for a unit that passed `is_safe_systemctl_unit`. The unit goes
+/// in single quotes (that check lets no quote through): the login shell
+/// reads this line, and a backslash is how systemd writes a dash inside an
+/// instance name (`dev-disk-by\x2duuid-….service`), which the shell would
+/// otherwise eat or decode.
+fn systemctl_command(sudo: bool, action: &str, unit: &str) -> String {
+    format!("{}systemctl {} '{}' 2>&1; echo __SUB_EXITCODE:$?", if sudo { "sudo -n " } else { "" }, action, unit)
+}
+
 // Two-stage firewall probe (lazy detail fetch). The network section returns
 // a per-chain summary only; this command pulls the raw rules for one chain
 // on user expand. Wire cost stays proportional to what the user actually
@@ -15554,7 +15564,7 @@ printf '%s' \"$OUT\"",
 
 #[cfg(test)]
 mod remote_ident_tests {
-    use super::{is_safe_fw_ident, is_safe_systemctl_unit};
+    use super::{is_safe_fw_ident, is_safe_systemctl_unit, systemctl_command};
 
     #[test]
     fn fw_ident_rejects_leading_dash_flags() {
@@ -15594,8 +15604,31 @@ mod remote_ident_tests {
     #[test]
     fn systemctl_unit_accepts_real_units() {
         for ok in ["nginx.service", "ssh.service", "docker.socket", "getty@tty1.service",
-                   "dev-sda1.device", "my.slice", "run-media.mount"] {
+                   "dev-sda1.device", "my.slice", "run-media.mount",
+                   r"a\x2db.service", r"systemd-fsck@dev-disk-by\x2duuid-1234\x2dabcd.service"] {
             assert!(is_safe_systemctl_unit(ok), "{ok:?} must be accepted");
+        }
+    }
+
+    #[test]
+    fn the_command_has_the_unit_in_single_quotes() {
+        assert_eq!(systemctl_command(false, "restart", "nginx.service"), "systemctl restart 'nginx.service' 2>&1; echo __SUB_EXITCODE:$?");
+        assert_eq!(systemctl_command(true, "status", r"a\x2db.service"), r"sudo -n systemctl status 'a\x2db.service' 2>&1; echo __SUB_EXITCODE:$?");
+        // Nothing the check lets through can close the quote.
+        assert!(!is_safe_systemctl_unit("a'b"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_escaped_unit_name_reaches_the_program_as_it_is() {
+        // What the login shell does with the line: put `printf` where systemctl
+        // goes and see what it is given. Unquoted, `\x2d` came out as `x2d`.
+        for unit in [r"a\x2db.service", r"systemd-fsck@dev-disk-by\x2duuid-1234.service", "nginx.service", "getty@tty1.service", "a:b.service"] {
+            let line = systemctl_command(false, "restart", unit).replacen("systemctl", "printf '<%s>'", 1);
+            let out = std::process::Command::new("sh").arg("-c").arg(&line).output().expect("sh runs");
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            assert!(text.starts_with(&format!("<restart><{unit}>")), "{unit:?}: {text:?}");
+            assert!(text.contains("__SUB_EXITCODE:0"), "{text:?}");
         }
     }
 
@@ -15692,7 +15725,7 @@ async fn ssh_systemctl_action(
     // If that fails with permission-denied semantics, retry with `sudo -n` —
     // works on hosts that gave this user NOPASSWD sudo. The `-n` ensures we
     // never block on a tty password prompt that nobody can answer.
-    let plain_cmd = format!("systemctl {} {} 2>&1; echo __SUB_EXITCODE:$?", action, unit);
+    let plain_cmd = systemctl_command(false, &action, &unit);
     let raw1 = run_exec_capture(&state, &session_id, &plain_cmd, 30).await?;
     let (code1, out1) = parse_exit_marker(&raw1);
     let needs_sudo = code1 != 0 && (
@@ -15713,7 +15746,7 @@ async fn ssh_systemctl_action(
         });
     }
 
-    let sudo_cmd = format!("sudo -n systemctl {} {} 2>&1; echo __SUB_EXITCODE:$?", action, unit);
+    let sudo_cmd = systemctl_command(true, &action, &unit);
     let raw2 = run_exec_capture(&state, &session_id, &sudo_cmd, 30).await?;
     let (code2, out2) = parse_exit_marker(&raw2);
     Ok(SystemctlActionResult {
@@ -19868,6 +19901,51 @@ mod symlink_fs_tests {
     }
 
     #[tokio::test]
+    async fn renaming_onto_an_existing_file_or_folder_is_refused_and_nothing_is_lost() {
+        let root = scratch("mvclash");
+        let (a, b, dir) = (root.join("report.txt"), root.join("report-final.txt"), root.join("docs"));
+        std::fs::write(&a, b"new").unwrap();
+        std::fs::write(&b, b"old, the one to keep").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("report.txt"), b"in the folder").unwrap();
+        let s = |p: &Path| p.to_string_lossy().to_string();
+
+        let e = local_rename(s(&a), s(&b)).await.unwrap_err();
+        assert!(e.contains("report-final.txt") && e.contains("already exists"), "{e}");
+        assert_eq!(std::fs::read(&b).unwrap(), b"old, the one to keep");
+        assert_eq!(std::fs::read(&a).unwrap(), b"new", "the file that was being moved is where it was");
+        // A move into a folder that has the name is the same thing.
+        let e = local_rename(s(&a), s(&dir.join("report.txt"))).await.unwrap_err();
+        assert!(e.contains("already exists"), "{e}");
+        assert_eq!(std::fs::read(dir.join("report.txt")).unwrap(), b"in the folder");
+        // A file onto a folder.
+        assert!(local_rename(s(&a), s(&dir)).await.is_err());
+        assert!(dir.is_dir());
+        // A name that is free still works.
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        local_rename(s(&a), s(&root.join("sub").join("moved.txt"))).await.unwrap();
+        assert_eq!(std::fs::read(root.join("sub").join("moved.txt")).unwrap(), b"new");
+        assert!(!a.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_rename_to_another_spelling_of_the_same_name_is_not_a_clash() {
+        let root = scratch("mvcase");
+        let a = root.join("report.txt");
+        std::fs::write(&a, b"data").unwrap();
+        let upper = root.join("Report.txt");
+        local_rename(a.to_string_lossy().to_string(), upper.to_string_lossy().to_string()).await.unwrap();
+        let names: Vec<String> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["Report.txt".to_string()], "one file, under its new spelling");
+        assert_eq!(std::fs::read(&upper).unwrap(), b"data");
+        // To its own name: nothing happens, nothing fails.
+        local_rename(upper.to_string_lossy().to_string(), upper.to_string_lossy().to_string()).await.unwrap();
+        assert_eq!(std::fs::read(&upper).unwrap(), b"data");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
     async fn listing_reports_folder_links_as_folders() {
         let root = scratch("list");
         let target = root.join("real");
@@ -19904,6 +19982,25 @@ mod symlink_fs_tests {
     }
 }
 
+/// Whether two paths are one file or folder (a rename to another spelling of
+/// its own name, on a file system that ignores case).
+fn same_entry(a: &std::path::Path, b: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+            (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // A link at the destination is a different entry even when it leads here.
+        let b_is_link = std::fs::symlink_metadata(b).map_or(true, |m| m.file_type().is_symlink());
+        !b_is_link && matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    }
+}
+
 #[tauri::command]
 async fn local_rename(from: String, to: String) -> Result<(), String> {
     // No-follow on both ends: renaming a link must move the link, and an
@@ -19911,6 +20008,17 @@ async fn local_rename(from: String, to: String) -> Result<(), String> {
     // target.
     let safe_from = guard_local_path_nofollow(&from, true)?;
     let safe_to = guard_local_path_nofollow(&to, false)?;
+    // Never onto something that is there: rename(2) and MoveFileEx both put the
+    // moved file in the old one's place, with no question and no recycle bin
+    // (the remote pane refuses, as SFTP does). The same entry under another
+    // spelling of its name (report.txt -> Report.txt) is not a clash.
+    if safe_from == safe_to {
+        return Ok(());
+    }
+    if std::fs::symlink_metadata(&safe_to).is_ok() && !same_entry(&safe_from, &safe_to) {
+        let name = safe_to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        return Err(format!("'{name}' already exists there. Nothing was replaced."));
+    }
     // Same auto-mkdir-parent UX as sftp_rename: moving a file into a
     // subfolder that doesn't exist yet would otherwise fail with a
     // confusing "system cannot find the path specified" / ENOENT.

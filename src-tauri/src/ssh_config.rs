@@ -197,8 +197,20 @@ struct Evaluator<'a> {
     final_pass: bool,
 }
 
+/// Notes kept for the connect log. A file of bad lines makes one per line,
+/// and each new one was compared with every one before it.
+const MAX_NOTES: usize = 50;
+
 impl Evaluator<'_> {
     fn note(&mut self, text: String) {
+        let kept = self.out.notes.len();
+        if kept > MAX_NOTES {
+            return;
+        }
+        if kept == MAX_NOTES {
+            self.out.notes.push("more lines in the ssh config were skipped; only the first few are listed".to_string());
+            return;
+        }
         if !self.out.notes.contains(&text) {
             self.out.notes.push(text);
         }
@@ -886,6 +898,37 @@ mod tests {
         let c = cfg("Host x\n HostName %r.example\n", "x");
         assert_eq!(c.hostname, None);
         assert!(c.notes[0].contains("%r"));
+    }
+
+    #[test]
+    fn a_file_of_bad_lines_gets_a_short_list_of_notes_and_costs_time_in_proportion() {
+        // Every one of these lines is a note of its own (the text has the line
+        // number). Kept in full, 60,000 of them were compared one by one.
+        let mut config = String::from("Host x\n");
+        for _ in 0..60_000 {
+            config.push_str(" Port abc\n");
+        }
+        let started = std::time::Instant::now();
+        let c = cfg(&config, "x");
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(10), "took {took:?}");
+        assert_eq!(c.notes.len(), MAX_NOTES + 1, "the first {MAX_NOTES}, then one line that says there are more");
+        assert!(c.notes[0].contains("Port abc"), "{:?}", c.notes[0]);
+        assert!(c.notes[MAX_NOTES].contains("more lines"), "{:?}", c.notes[MAX_NOTES]);
+        assert_eq!(c.port, None);
+    }
+
+    #[test]
+    fn a_few_notes_are_all_kept_and_the_same_one_is_said_once() {
+        let mut config = String::from("Host x\n");
+        for _ in 0..MAX_NOTES {
+            config.push_str(" HostName a_b%r\n");
+        }
+        let c = cfg(&config, "x");
+        assert_eq!(c.notes.len(), MAX_NOTES, "exactly the limit: nothing is cut and nothing is added");
+        assert!(!c.notes.iter().any(|n| n.contains("more lines")), "{:?}", c.notes);
+        let c = cfg("Host x\n Port 99999\nHost x\n Port 99999\n", "x");
+        assert_eq!(c.notes.len(), 2, "two lines, two notes");
     }
 
     #[test]

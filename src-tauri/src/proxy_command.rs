@@ -80,14 +80,21 @@ pub(crate) fn expand(command: &str, t: &Tokens) -> Result<String, String> {
 }
 
 /// A host name or address with nothing a shell or a program's option parser
-/// would read specially.
+/// would read specially. An IPv6 literal comes without its brackets, as
+/// OpenSSH hands it to `%h`: a `[` in a command line is a pattern to most
+/// shells (`[::1]:22` may become a file name, or "no match").
 fn safe_host(host: &str) -> Result<&str, String> {
-    let ok = !host.is_empty()
-        && host.len() <= 255
-        && !host.starts_with('-')
-        && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']'));
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .filter(|h| h.contains(':'))
+        .unwrap_or(host);
+    let ok = !bare.is_empty()
+        && bare.len() <= 255
+        && !bare.starts_with('-')
+        && bare.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'));
     if ok {
-        Ok(host)
+        Ok(bare)
     } else {
         Err(format!("would put the host name {host:?} into a command, and it has characters that aren't safe there"))
     }
@@ -357,6 +364,20 @@ mod tests {
         }
         // Unused tokens don't matter.
         assert!(expand("nc fixed.example 22", &t("bad;host", "bad user")).is_ok());
+    }
+
+    #[test]
+    fn an_ipv6_host_comes_without_brackets_and_no_other_bracket_gets_through() {
+        for (host, want) in [("[::1]", "::1"), ("[fe80::1]", "fe80::1"), ("::1", "::1"), ("fe80::1", "fe80::1")] {
+            assert_eq!(expand("nc %h %p", &t(host, "")).unwrap(), format!("nc {want} 2222"), "{host:?}");
+            assert_eq!(expand("nc %n", &Tokens { host: "h", original: host, port: 22, user: "" }).unwrap(), format!("nc {want}"), "{host:?}");
+        }
+        // The command's own brackets are the user's: `[%h]` still works with the bare address.
+        assert_eq!(expand("ssh -W [%h]:%p b", &t("[fe80::1]", "")).unwrap(), "ssh -W [fe80::1]:2222 b");
+        // A bracket that isn't around an IPv6 literal is a pattern, not a name.
+        for host in ["[a]", "[]", "[abc]", "a[b]", "[::1", "::1]", "[[::1]]", "[::1]x", "x[::1]", "[-::1]"] {
+            assert!(expand("nc %h %p", &t(host, "")).is_err(), "{host:?}");
+        }
     }
 
     #[test]
