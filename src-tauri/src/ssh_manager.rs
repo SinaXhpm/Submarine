@@ -366,6 +366,9 @@ async fn pty_pump<F>(
     const FLUSH_CAP: usize = 256 * 1024;
     const FLUSH_WINDOW: std::time::Duration = std::time::Duration::from_millis(8);
     let mut out_buf: Vec<u8> = Vec::new();
+    // What the page shows is cut down first: a number past four digits in a
+    // control sequence can freeze the page (term_filter.rs).
+    let mut limiter = crate::term_filter::CsiLimiter::default();
     // A flush timer armed ONLY while bytes are buffered. When the buffer is
     // empty its deadline is parked far in the future, so an open-but-idle
     // terminal wakes this task zero times (a free-running interval would fire
@@ -380,7 +383,7 @@ async fn pty_pump<F>(
                 Some(ChannelMsg::Data { ref data })
                 | Some(ChannelMsg::ExtendedData { ref data, .. }) => {
                     let was_empty = out_buf.is_empty();
-                    out_buf.extend_from_slice(data);
+                    limiter.filter(data, &mut out_buf);
                     if out_buf.len() >= FLUSH_CAP {
                         flush(&mut out_buf);
                     } else if was_empty {

@@ -458,6 +458,8 @@ pub async fn run_pump(
     let flush_timer = tokio::time::sleep_until(park());
     tokio::pin!(flush_timer);
     let mut out: Vec<u8> = Vec::new();
+    // Numbers in control sequences are cut down, as in an SSH terminal (term_filter.rs).
+    let mut limiter = crate::term_filter::CsiLimiter::default();
     let mut buf = vec![0u8; 16 * 1024];
     // Whether the server (or the route) ended it, rather than the tab.
     let server_ended = loop {
@@ -467,9 +469,11 @@ pub async fn run_pump(
                 Ok(0) | Err(_) => break true,
                 Ok(n) => {
                     let mut reply = Vec::new();
+                    let mut text = Vec::new();
                     if let Ok(mut t) = telnet.lock() {
-                        t.receive(&buf[..n], &mut out, &mut reply);
+                        t.receive(&buf[..n], &mut text, &mut reply);
                     }
+                    limiter.filter(&text, &mut out);
                     // A server that floods requests past the queue loses the
                     // answers; one that negotiates gets each.
                     if !reply.is_empty() {
