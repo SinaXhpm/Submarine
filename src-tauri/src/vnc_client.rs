@@ -33,7 +33,9 @@ const MAX_RECTS: usize = 32;
 const WHEEL_NOTCH: i32 = 120;
 
 /// The running sessions, by tab: where the page's input and sizes go.
-pub type VncClients = std::sync::Arc<tokio::sync::Mutex<HashMap<String, mpsc::UnboundedSender<Cmd>>>>;
+/// Each tab's session, with the attempt that started it (see
+/// `forget_screen_client`).
+pub type VncClients = std::sync::Arc<tokio::sync::Mutex<HashMap<String, (u64, mpsc::UnboundedSender<Cmd>)>>>;
 
 /// What the page asks of a running session.
 pub enum Cmd {

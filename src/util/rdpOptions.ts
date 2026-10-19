@@ -5,6 +5,10 @@
 // files. The RDP tab hands them to the backend (src-tauri/src/rdp.rs).
 
 export interface RdpOptions {
+  /** Where it opens: in this computer's RDP app, or in its Submarine tab (the
+   *  built-in client: experimental, built from an IronRDP commit rather than
+   *  a release, so only when chosen). The options below are the RDP app's. */
+  app: "builtin" | "system";
   fullScreen: boolean;
   /** The window's size when not full screen. */
   width: number;
@@ -17,7 +21,11 @@ export interface RdpOptions {
 export const RDP_OPTIONS_KEY = "submarine-rdp-options";
 
 // What Remote Desktop Connection does on its own, files kept private.
-export const DEFAULT_RDP_OPTIONS: RdpOptions = { fullScreen: true, width: 1600, height: 900, clipboard: true, drives: false };
+export const DEFAULT_RDP_OPTIONS: RdpOptions = { app: "system", fullScreen: true, width: 1600, height: 900, clipboard: true, drives: false };
+
+/** What the tab and the form say about the built-in client. */
+export const RDP_BUILTIN_EXPERIMENTAL =
+  "Experimental: the built-in RDP client is built from an IronRDP commit, not an official IronRDP release, and may be unstable.";
 
 export const RDP_WINDOW_SIZES: [number, number][] = [
   [1280, 720],
@@ -42,6 +50,7 @@ export function readRdpOptions(uuid?: string | null): RdpOptions {
   const kept = uuid ? (readAll()[uuid] as Partial<RdpOptions> | undefined) : undefined;
   const o = { ...DEFAULT_RDP_OPTIONS };
   if (kept && typeof kept === "object") {
+    if (kept.app === "builtin" || kept.app === "system") o.app = kept.app;
     if (typeof kept.fullScreen === "boolean") o.fullScreen = kept.fullScreen;
     if (Number.isFinite(kept.width)) o.width = Number(kept.width);
     if (Number.isFinite(kept.height)) o.height = Number(kept.height);

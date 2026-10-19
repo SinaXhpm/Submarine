@@ -147,6 +147,21 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 # those crates.
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
 vnc-rs = "0.6"
+# The built-in RDP client (#3, rdp_client.rs): Devolutions' IronRDP
+# (MIT/Apache-2.0). It runs here, in the backend, so the password (NLA
+# through its sspi) and the check of the server's certificate never reach
+# the webview. Its own TLS isn't used (its `upgrade` doesn't check
+# certificates): the connection is upgraded with tokio-rustls on ring, both
+# already in the tree, and the certificate is pinned the way SSH host keys
+# are.
+# Pinned to one IronRDP commit, not a release: no release works with russh
+# yet (each pins pre-release curve25519 / ed25519 crates; their master moved
+# to the finals). That's why the built-in client is offered as experimental,
+# off unless chosen. Move to the first release that has it.
+ironrdp = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31", default-features = false, features = ["core", "pdu", "connector", "session", "graphics", "input", "displaycontrol", "dvc", "svc"] }
+ironrdp-tokio = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31", default-features = false }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 
 # ---------------------------------------------------------------------------
 # Desktop-only deps. These crates either don't compile on Android at all

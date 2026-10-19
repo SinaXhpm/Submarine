@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Cpu, X, Link2, ArrowLeftRight, Shield, ShieldAlert, Key, User, FolderPlus, Download, CheckSquare, Square, History, Plus, Copy, Play } from "lucide-react";
+import { Cpu, X, Link2, ArrowLeftRight, Shield, ShieldAlert, Key, User, FolderPlus, Download, CheckSquare, Square, History, Plus, Copy, Play, FlaskConical } from "lucide-react";
 import PasswordField from "./PasswordField";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { folderTree } from "../util/folderTree";
-import { DEFAULT_RDP_OPTIONS, RDP_WINDOW_SIZES, type RdpOptions } from "../util/rdpOptions";
+import { DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_WINDOW_SIZES, type RdpOptions } from "../util/rdpOptions";
+import { IS_ANDROID } from "../util/platform";
 
 // Compact "2h ago" style relative time for the attribution line.
 function relTime(d: Date): string {
@@ -752,8 +753,33 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               const set = (patch: Partial<RdpOptions>) => setNewNode({ ...newNode, rdpOptions: { ...o, ...patch } });
               const size = `${o.width}x${o.height}`;
               const known = RDP_WINDOW_SIZES.some(([w, h]) => w === o.width && h === o.height);
+              const builtin = IS_ANDROID || o.app === "builtin";
               return (
                 <div className="space-y-3 pt-1">
+                  {/* A phone has only the built-in client (offered in the tab). */}
+                  {!IS_ANDROID && (
+                    <div className="flex justify-between items-center gap-3">
+                      <label className="text-[11px] font-bold text-zinc-400 shrink-0">Open in</label>
+                      <select
+                        aria-label="Open in"
+                        className="flex-1 min-w-0 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
+                        value={o.app}
+                        onChange={(e) => set({ app: e.target.value === "builtin" ? "builtin" : "system" })}
+                      >
+                        <option value="system" className="bg-[#1a1a1e]">This computer's RDP app</option>
+                        <option value="builtin" className="bg-[#1a1a1e]">Submarine's tab (experimental)</option>
+                      </select>
+                    </div>
+                  )}
+                  {builtin ? (
+                    <div role="note" className="flex gap-2 p-2.5 rounded-lg border border-amber-500/25 bg-amber-500/5 text-[10.5px] leading-snug text-amber-200/90">
+                      <FlaskConical size={13} className="shrink-0 mt-px text-amber-300" aria-hidden="true" />
+                      <span>
+                        {RDP_BUILTIN_EXPERIMENTAL} The desktop opens in the server's tab, sized to it; the saved password is used, or asked for there.
+                        Clipboard and file sharing work in the computer's RDP app for now.
+                      </span>
+                    </div>
+                  ) : (<>
                   <div className="flex justify-between items-center gap-3">
                     <label className="text-[11px] font-bold text-zinc-400 shrink-0">Window</label>
                     <select
@@ -806,7 +832,8 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.drives ? "translate-x-5" : "translate-x-0"}`} />
                     </button>
                   </div>
-                  <p className="text-[10px] text-zinc-500 ml-1">Window and sharing are kept on this device only, not synced.</p>
+                  </>)}
+                  <p className="text-[10px] text-zinc-500 ml-1">These are kept on this device only, not synced.</p>
                 </div>
               );
             })()}

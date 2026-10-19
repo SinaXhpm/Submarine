@@ -34,6 +34,10 @@ function desktopFor(w: number, h: number): { width: number; height: number } {
   return { width: Math.floor(w * k), height: Math.floor(h * k) };
 }
 
+/** The most input events the backend takes in one call (`vnc_input`,
+ *  `rdp_builtin_input`). */
+const MAX_EVENTS = 512;
+
 type Ev =
   | { t: "key"; code: number; key: string; down: boolean }
   | { t: "text"; ch: string; down: boolean }
@@ -66,6 +70,10 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
     const [box, setBox] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
     const queue = useRef<Ev[]>([]);
     const flushing = useRef(false);
+    // The batches on their way, one after the other.
+    const sending = useRef<Promise<unknown>>(Promise.resolve());
+    // The channel of the session now open: a replaced one's frames are dropped.
+    const channelGen = useRef(0);
     // A phone's keyboard is up (it takes part of the tab while it is).
     const typing = useRef(false);
     // The tab size the desktop was last sized for.
@@ -106,8 +114,15 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
         flushing.current = true;
         requestAnimationFrame(() => {
           flushing.current = false;
-          const events = queue.current.splice(0, queue.current.length);
-          if (events.length) invoke(inputCommand, { sessionId, events }).catch(() => {});
+          // Moves in a row: only the last one matters.
+          const events = queue.current.splice(0, queue.current.length).filter((e, i, all) => !(e.t === "move" && all[i + 1]?.t === "move"));
+          // In order, one batch after the other, and none over what the
+          // backend takes at once (a long paste or IME commit, a release
+          // after a press, were dropped whole).
+          for (let i = 0; i < events.length; i += MAX_EVENTS) {
+            const batch = events.slice(i, i + MAX_EVENTS);
+            sending.current = sending.current.then(() => invoke(inputCommand, { sessionId, events: batch })).catch(() => {});
+          }
         });
       },
       [sessionId, inputCommand],
@@ -117,8 +132,12 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
       newChannel: () => {
         paintedRef.current = false;
         setPainted(false);
+        const gen = ++channelGen.current;
         const ch = new Channel<ArrayBuffer>();
         ch.onmessage = (raw: ArrayBuffer | number[]) => {
+          // A session this tab has since replaced (Reconnect) may still
+          // send a frame or two: it must not resize or paint over the new one.
+          if (gen !== channelGen.current) return;
           // Bytes, or a list of numbers when Tauri had to fall back from its
           // binary IPC (slower, still drawn).
           const buf = raw instanceof ArrayBuffer ? raw : Array.isArray(raw) ? new Uint8Array(raw).buffer : null;

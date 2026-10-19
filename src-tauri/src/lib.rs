@@ -38,6 +38,7 @@ mod proxy_command;
 mod known_hosts;
 mod rdp;
 mod quick_unlock;
+mod rdp_client;
 #[cfg(target_os = "android")]
 mod android_bridge;
 #[cfg(test)]
@@ -13197,6 +13198,426 @@ async fn initiate_rdp(
     Ok(())
 }
 
+/// The built-in RDP sessions (rdp_client.rs) by tab: what the page sends them.
+type RdpClients = std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, (u64, tokio::sync::mpsc::UnboundedSender<rdp_client::Cmd>)>>>;
+
+/// Drops a remote-screen tab's session (RDP, VNC) when it is still the one
+/// this attempt started: a Reconnect may have put a newer one in its place,
+/// which the old attempt's ending must not take away (its tab would freeze).
+async fn forget_screen_client<C>(
+    clients: &tokio::sync::Mutex<std::collections::HashMap<String, (u64, tokio::sync::mpsc::UnboundedSender<C>)>>,
+    session_id: &str,
+    generation: u64,
+) {
+    let mut map = clients.lock().await;
+    if map.get(session_id).is_some_and(|(g, _)| *g == generation) {
+        map.remove(session_id);
+    }
+}
+
+/// An RDP server's certificate in known_hosts: rows of their own kind, so
+/// pinning one never touches an SSH host key of the same host.
+const RDP_CERT_KIND: &str = "rdp-certificate";
+
+/// What known_hosts says about this certificate: on file, or the ones on
+/// file instead (a changed certificate), or none.
+fn rdp_cert_verdict(conn: &rusqlite::Connection, host: &str, port: u16, fingerprint: &str) -> (bool, Vec<String>) {
+    let known: Vec<String> = conn
+        .prepare("SELECT fingerprint FROM known_hosts WHERE host=?1 AND port=?2 AND key_type=?3")
+        .and_then(|mut s| {
+            s.query_map(rusqlite::params![host, port, RDP_CERT_KIND], |r| r.get::<_, String>(0))
+                .map(|rows| rows.flatten().collect())
+        })
+        .unwrap_or_default();
+    let on_file = known.iter().any(|f| f == fingerprint);
+    (on_file, if on_file { Vec::new() } else { known })
+}
+
+fn save_rdp_cert(conn: &rusqlite::Connection, host: &str, port: u16, fingerprint: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM known_hosts WHERE host=?1 AND port=?2 AND key_type=?3",
+        rusqlite::params![host, port, RDP_CERT_KIND],
+    )?;
+    conn.execute(
+        "INSERT INTO known_hosts (host, port, fingerprint, key_type) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![host, port, fingerprint, RDP_CERT_KIND],
+    )?;
+    Ok(())
+}
+
+/// Opens an RDP server in its tab with the built-in client (rdp_client.rs):
+/// straight to it, or through its SSH server over a direct-tcpip channel (no
+/// local port). The screen goes to the page over `frames`; mouse, keyboard
+/// and size come back through `rdp_builtin_input` / `rdp_builtin_resize`.
+/// The password is the server's saved one (or its saved login's), else asked
+/// for in the tab; it stays here.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn rdp_builtin_open(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    rdp_clients: tauri::State<'_, RdpClients>,
+    session_id: String,
+    server_id: i32,
+    use_ssh_agent: Option<bool>,
+    width: u16,
+    height: u16,
+    frames: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<(), String> {
+    use std::sync::Arc;
+    use tauri::Emitter;
+
+    // A new attempt replaces the tab's last one.
+    if let Some((_, old)) = rdp_clients.lock().await.remove(&session_id) {
+        let _ = old.send(rdp_client::Cmd::Close);
+    }
+    let generation = {
+        let mut g = state.session_generation.lock().await;
+        let next = g.get(&session_id).copied().unwrap_or(0).wrapping_add(1);
+        g.insert(session_id.clone(), next);
+        next
+    };
+    let attempt = ssh_manager::ConnectAttempt::new(Arc::clone(&state.session_generation), session_id.clone(), generation);
+
+    let (name, host, port, user, password, protocol, jump_id, jump_name) = {
+        let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        conn.query_row(
+            "SELECT s.name, s.host, s.port,
+                    CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault' THEN c.username ELSE s.username END,
+                    CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault' THEN c.password ELSE s.password END,
+                    s.protocol, s.jump_host_id, j.name
+             FROM servers s
+             LEFT JOIN credentials c ON s.credential_id = c.id
+             LEFT JOIN servers j ON j.id = s.jump_host_id
+             WHERE s.id = ?1",
+            [server_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    zeroize::Zeroizing::new(r.get::<_, Option<String>>(4)?.unwrap_or_default()),
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<i32>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )
+        .map_err(|_| "Server not found".to_string())?
+    };
+    if protocol.as_deref() != Some("rdp") {
+        return Err(format!("{name} isn't an RDP server"));
+    }
+    let host = host.trim().to_string();
+    let user = user.trim().to_string();
+    rdp::check_host(&host)?;
+    rdp::check_user(&user)?;
+    let port = u16::try_from(port).ok().filter(|p| *p > 0).unwrap_or(rdp::DEFAULT_PORT);
+    let (width, height) = rdp_client::clamp_size(width, height);
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<rdp_client::Cmd>();
+    rdp_clients.lock().await.insert(session_id.clone(), (generation, tx));
+
+    let fp_txs = Arc::clone(&state.fp_txs);
+    let kbi_txs = Arc::clone(&state.kbi_txs);
+    let cache = Arc::clone(&state.prompted_secrets);
+    let db = Arc::clone(&db_state.conn);
+    let clients = rdp_clients.inner().clone();
+    let use_agent = use_ssh_agent.unwrap_or(true);
+    tauri::async_runtime::spawn(async move {
+        let log = |msg: &str, ty: &str| {
+            if attempt.is_current_now() {
+                let _ = app.emit(&format!("session-log-{session_id}"), serde_json::json!({"msg": msg, "type": ty}));
+            }
+        };
+        let fail = |reason: String| {
+            let (app, attempt, sid) = (app.clone(), attempt.clone(), session_id.clone());
+            async move {
+                emit_connection_failed(&app, &attempt, &sid, serde_json::json!({"reason": reason})).await;
+            }
+        };
+        let target = rdp::address(&host, port);
+        log(&format!("Opening the RDP server {target} in this tab..."), "info");
+
+        // The password: saved, else asked for here (it goes nowhere else).
+        let password = if password.is_empty() {
+            let nonce = format!("rdp-{session_id}-{generation}");
+            let (ptx, prx) = tokio::sync::oneshot::channel::<Option<Vec<String>>>();
+            kbi_txs.lock().await.insert(nonce.clone(), ptx);
+            let shown = if user.is_empty() { target.clone() } else { format!("{user} on {target}") };
+            let _ = app.emit(
+                &format!("kbi-prompt-{session_id}"),
+                serde_json::json!({ "nonce": nonce, "name": "", "instructions": "", "prompts": [{ "prompt": format!("Password for {shown}"), "echo": false }] }),
+            );
+            let answer = tokio::time::timeout(std::time::Duration::from_secs(120), prx).await;
+            kbi_txs.lock().await.remove(&nonce);
+            let _ = app.emit(&format!("kbi-prompt-dismiss-{session_id}"), serde_json::json!({ "nonce": nonce }));
+            match answer {
+                // The answers are wiped when dropped; the password is taken out.
+                Ok(Ok(Some(a))) if !a.is_empty() => {
+                    let mut a = zeroize::Zeroizing::new(a);
+                    zeroize::Zeroizing::new(std::mem::take(&mut a[0]))
+                }
+                _ => {
+                    log("No password given.", "error");
+                    forget_screen_client(&clients, &session_id, generation).await;
+                    fail("No password given".into()).await;
+                    return;
+                }
+            }
+        } else {
+            password
+        };
+
+        // The way there: straight, or a channel through the SSH server. The
+        // task that carries the bytes is kept: it ends with the session.
+        type Route = (tokio::io::DuplexStream, std::net::SocketAddr, Vec<russh::client::Handle<ssh_manager::ClientHandler>>, tokio::task::JoinHandle<()>);
+        let (stream, client_addr, route, mut carrier): Route = match jump_id {
+            None => {
+                let tcp = match tokio::time::timeout(std::time::Duration::from_secs(15), tokio::net::TcpStream::connect((host.as_str(), port))).await {
+                    Ok(Ok(s)) => s,
+                    Ok(Err(e)) => {
+                        let reason = format!("Couldn't reach {target}: {e}");
+                        log(&reason, "error");
+                        forget_screen_client(&clients, &session_id, generation).await;
+                        fail(reason).await;
+                        return;
+                    }
+                    Err(_) => {
+                        let reason = format!("{target} didn't answer within 15 seconds");
+                        log(&reason, "error");
+                        forget_screen_client(&clients, &session_id, generation).await;
+                        fail(reason).await;
+                        return;
+                    }
+                };
+                let local = tcp.local_addr().unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
+                let _ = tcp.set_nodelay(true);
+                // One stream type for both ways (the session wants Send + Sync).
+                let (ours, theirs) = tokio::io::duplex(256 * 1024);
+                let carrier = tokio::spawn(async move {
+                    let (mut tcp, mut theirs) = (tcp, theirs);
+                    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut theirs).await;
+                });
+                (ours, local, Vec::new(), carrier)
+            }
+            Some(jid) => {
+                let via_name = jump_name.clone().unwrap_or_else(|| format!("server {jid}"));
+                log(&format!("Going through the SSH server {via_name}..."), "info");
+                let auth_failed = std::sync::atomic::AtomicBool::new(false);
+                let network_failed = std::sync::atomic::AtomicBool::new(false);
+                let ctx = HopCtx {
+                    app: &app,
+                    db: &db,
+                    fp_txs: &fp_txs,
+                    kbi_txs: &kbi_txs,
+                    cache: &cache,
+                    allow_prompt: true,
+                    auth_failed: &auth_failed,
+                    network_failed: &network_failed,
+                    attempt: &attempt,
+                    session_id: &session_id,
+                    use_agent,
+                };
+                let chain = match connect_jump_host(&ctx, jid).await {
+                    Ok(chain) => chain,
+                    Err(e) => {
+                        let reason = format!("The SSH server {via_name}: {e}");
+                        log(&reason, "error");
+                        forget_screen_client(&clients, &session_id, generation).await;
+                        fail(reason).await;
+                        return;
+                    }
+                };
+                let Some(last) = chain.last() else {
+                    forget_screen_client(&clients, &session_id, generation).await;
+                    fail("No SSH server to go through".into()).await;
+                    return;
+                };
+                // Bounded: a server that never answers the request would keep
+                // the tab connecting forever.
+                let opened = tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    last.channel_open_direct_tcpip(host.clone(), u32::from(port), "127.0.0.1".to_string(), 0),
+                )
+                .await
+                .unwrap_or_else(|_| Err(russh::Error::ConnectionTimeout));
+                let channel = match opened {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let reason = format!("{via_name} couldn't reach {target}: {e}");
+                        log(&reason, "error");
+                        forget_screen_client(&clients, &session_id, generation).await;
+                        fail(reason).await;
+                        return;
+                    }
+                };
+                log(&format!("Reaching {target} through {via_name}."), "success");
+                let (ours, theirs) = tokio::io::duplex(256 * 1024);
+                let carrier = tokio::spawn(async move {
+                    let mut theirs = theirs;
+                    let mut stream = crate::tunnel::drained_stream(channel);
+                    crate::tunnel::pump_channel(&mut theirs, &mut stream).await;
+                });
+                (ours, std::net::SocketAddr::from(([127, 0, 0, 1], 0)), chain, carrier)
+            }
+        };
+
+        // The certificate, pinned like an SSH host key.
+        let verify = {
+            let (app, db, fp_txs, attempt, sid, host) = (app.clone(), Arc::clone(&db), Arc::clone(&fp_txs), attempt.clone(), session_id.clone(), host.clone());
+            move |cert: Vec<u8>| async move {
+                let fingerprint = rdp_client::cert_fingerprint(&cert);
+                let (on_file, prior) = {
+                    let guard = db.lock();
+                    match guard.as_ref().ok().and_then(|g| g.as_ref()) {
+                        Some(conn) => rdp_cert_verdict(conn, &host, port, &fingerprint),
+                        None => return false,
+                    }
+                };
+                let say = |msg: &str, ty: &str| {
+                    if attempt.is_current_now() {
+                        let _ = app.emit(&format!("session-log-{sid}"), serde_json::json!({"msg": msg, "type": ty}));
+                    }
+                };
+                if on_file {
+                    // Not for an attempt the tab has closed or replaced: it
+                    // would log in for nobody (and could end the account's
+                    // other session on a Windows server).
+                    if !attempt.is_current_now() {
+                        return false;
+                    }
+                    say("The RDP server's certificate is the one on file.", "success");
+                    return true;
+                }
+                if !attempt.may_prompt().await {
+                    return false;
+                }
+                let mismatch = !prior.is_empty();
+                say(
+                    if mismatch {
+                        "⚠ The RDP server's certificate has CHANGED since the last time. Check it before accepting."
+                    } else {
+                        "The RDP server's certificate is new. Waiting for you to check it..."
+                    },
+                    if mismatch { "error" } else { "warn" },
+                );
+                let nonce = format!("rdp-cert-{sid}-{}", rand::random::<u64>());
+                let (ftx, frx) = tokio::sync::oneshot::channel::<bool>();
+                fp_txs.lock().await.insert(nonce.clone(), ftx);
+                let _ = app.emit(
+                    &format!("fingerprint-prompt-{sid}"),
+                    serde_json::json!({
+                        "host": host,
+                        "keyType": "RDP certificate",
+                        "fingerprint": fingerprint,
+                        "mismatch": mismatch,
+                        "priorFingerprints": prior,
+                        "nonce": nonce,
+                    }),
+                );
+                let accepted = matches!(tokio::time::timeout(std::time::Duration::from_secs(90), frx).await, Ok(Ok(true)));
+                fp_txs.lock().await.remove(&nonce);
+                let _ = app.emit(&format!("fingerprint-prompt-dismiss-{sid}"), serde_json::json!({ "nonce": nonce }));
+                if accepted {
+                    if let Ok(guard) = db.lock() {
+                        if let Some(conn) = guard.as_ref() {
+                            let _ = save_rdp_cert(conn, &host, port, &fingerprint);
+                        }
+                    }
+                    say("Certificate accepted and saved.", "success");
+                } else {
+                    say("The certificate wasn't accepted.", "error");
+                }
+                accepted
+            }
+        };
+
+        let (login_user, domain) = rdp_client::split_domain(&user);
+        let login = rdp_client::Login { host: host.clone(), username: login_user, domain, password, width, height };
+        let connected = {
+            let (app, attempt, sid, target) = (app.clone(), attempt.clone(), session_id.clone(), target.clone());
+            move |w: u16, h: u16| {
+                if attempt.is_current_now() {
+                    let _ = app.emit(&format!("session-log-{sid}"), serde_json::json!({"msg": format!("Connected to {target} ({w}×{h})."), "type": "success"}));
+                    let _ = app.emit(&format!("connection-success-{sid}"), serde_json::json!({"builtin": true, "address": target, "width": w, "height": h}));
+                }
+            }
+        };
+        let was_connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let connected = {
+            let flag = Arc::clone(&was_connected);
+            move |w: u16, h: u16| {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                connected(w, h)
+            }
+        };
+        let frame = move |bytes: Vec<u8>| frames.send(tauri::ipc::InvokeResponseBody::Raw(bytes)).is_ok();
+        // A decoder that panics on a bad screen update ends this tab only.
+        let run = tauri::async_runtime::spawn(rdp_client::run(stream, client_addr, login, verify, connected, frame, rx));
+        let outcome = match run.await {
+            Ok(r) => r,
+            Err(_) => Err("The RDP session stopped on bad data from the server".into()),
+        };
+        // The last words (a shutdown request) get a moment to go out; then the
+        // connection is closed, whether or not the server has closed its side.
+        if tokio::time::timeout(std::time::Duration::from_secs(2), &mut carrier).await.is_err() {
+            carrier.abort();
+        }
+        drop(route);
+        forget_screen_client(&clients, &session_id, generation).await;
+        if !attempt.is_current_now() {
+            return;
+        }
+        match outcome {
+            Ok(reason) if reason == "closed" => {}
+            Ok(reason) => {
+                log(&format!("The RDP session ended: {reason}"), "info");
+                let _ = app.emit(&format!("session-disconnected-{session_id}"), serde_json::json!({"reason": format!("The RDP session ended: {reason}")}));
+            }
+            Err(e) => {
+                log(&e, "error");
+                if was_connected.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = app.emit(&format!("session-disconnected-{session_id}"), serde_json::json!({"reason": e}));
+                } else {
+                    fail(e).await;
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn rdp_builtin_input(rdp_clients: tauri::State<'_, RdpClients>, session_id: String, events: Vec<rdp_client::InputEvent>) -> Result<(), String> {
+    if events.len() > 512 {
+        return Err("too many input events at once".into());
+    }
+    if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
+        let _ = tx.send(rdp_client::Cmd::Input(events));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn rdp_builtin_resize(rdp_clients: tauri::State<'_, RdpClients>, session_id: String, width: u16, height: u16) -> Result<(), String> {
+    if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
+        let _ = tx.send(rdp_client::Cmd::Resize(width, height));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn rdp_builtin_close(rdp_clients: tauri::State<'_, RdpClients>, session_id: String) -> Result<(), String> {
+    if let Some((_, tx)) = rdp_clients.lock().await.remove(&session_id) {
+        let _ = tx.send(rdp_client::Cmd::Close);
+    }
+    Ok(())
+}
+
 /// The rendering workarounds this process set for its own WebKit at startup
 /// (software GL, X11 instead of Wayland), unless the user had set them. A
 /// program it starts would inherit them: they're taken out again for an RDP
@@ -13487,7 +13908,7 @@ async fn vnc_open(
     use tauri::Emitter;
 
     // A new attempt replaces the tab's last one.
-    if let Some(old) = vnc_clients.lock().await.remove(&session_id) {
+    if let Some((_, old)) = vnc_clients.lock().await.remove(&session_id) {
         let _ = old.send(vnc_client::Cmd::Close);
     }
     let generation = {
@@ -13533,7 +13954,7 @@ async fn vnc_open(
     let wanted = vnc_client::clamp_size(width, height);
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<vnc_client::Cmd>();
-    vnc_clients.lock().await.insert(session_id.clone(), tx);
+    vnc_clients.lock().await.insert(session_id.clone(), (generation, tx));
 
     let fp_txs = Arc::clone(&state.fp_txs);
     let kbi_txs = Arc::clone(&state.kbi_txs);
@@ -13567,14 +13988,14 @@ async fn vnc_open(
                     Ok(Err(e)) => {
                         let reason = format!("Couldn't reach {target}: {e}");
                         log(&reason, "error");
-                        clients.lock().await.remove(&session_id);
+                        forget_screen_client(&clients, &session_id, generation).await;
                         fail(reason).await;
                         return;
                     }
                     Err(_) => {
                         let reason = format!("{target} didn't answer within 15 seconds");
                         log(&reason, "error");
-                        clients.lock().await.remove(&session_id);
+                        forget_screen_client(&clients, &session_id, generation).await;
                         fail(reason).await;
                         return;
                     }
@@ -13611,22 +14032,30 @@ async fn vnc_open(
                     Err(e) => {
                         let reason = format!("The SSH server {via_name}: {e}");
                         log(&reason, "error");
-                        clients.lock().await.remove(&session_id);
+                        forget_screen_client(&clients, &session_id, generation).await;
                         fail(reason).await;
                         return;
                     }
                 };
                 let Some(last) = chain.last() else {
-                    clients.lock().await.remove(&session_id);
+                    forget_screen_client(&clients, &session_id, generation).await;
                     fail("No SSH server to go through".into()).await;
                     return;
                 };
-                let channel = match last.channel_open_direct_tcpip(host.clone(), u32::from(port), "127.0.0.1".to_string(), 0).await {
+                // Bounded: a server that never answers the request would keep
+                // the tab connecting forever.
+                let opened = tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    last.channel_open_direct_tcpip(host.clone(), u32::from(port), "127.0.0.1".to_string(), 0),
+                )
+                .await
+                .unwrap_or_else(|_| Err(russh::Error::ConnectionTimeout));
+                let channel = match opened {
                     Ok(c) => c,
                     Err(e) => {
                         let reason = format!("{via_name} couldn't reach {target}: {e}");
                         log(&reason, "error");
-                        clients.lock().await.remove(&session_id);
+                        forget_screen_client(&clients, &session_id, generation).await;
                         fail(reason).await;
                         return;
                     }
@@ -13694,7 +14123,7 @@ async fn vnc_open(
             carrier.abort();
         }
         drop(route);
-        clients.lock().await.remove(&session_id);
+        forget_screen_client(&clients, &session_id, generation).await;
         if !attempt.is_current_now() {
             return;
         }
@@ -13722,7 +14151,7 @@ async fn vnc_input(vnc_clients: tauri::State<'_, vnc_client::VncClients>, sessio
     if events.len() > 512 {
         return Err("too many input events at once".into());
     }
-    if let Some(tx) = vnc_clients.lock().await.get(&session_id) {
+    if let Some((_, tx)) = vnc_clients.lock().await.get(&session_id) {
         let _ = tx.send(vnc_client::Cmd::Input(events));
     }
     Ok(())
@@ -13730,7 +14159,7 @@ async fn vnc_input(vnc_clients: tauri::State<'_, vnc_client::VncClients>, sessio
 
 #[tauri::command]
 async fn vnc_resize(vnc_clients: tauri::State<'_, vnc_client::VncClients>, session_id: String, width: u16, height: u16) -> Result<(), String> {
-    if let Some(tx) = vnc_clients.lock().await.get(&session_id) {
+    if let Some((_, tx)) = vnc_clients.lock().await.get(&session_id) {
         let _ = tx.send(vnc_client::Cmd::Resize(width, height));
     }
     Ok(())
@@ -13743,6 +14172,7 @@ async fn disconnect_session(
     mirrors: tauri::State<'_, MirrorMap>,
     telnet_pending: tauri::State<'_, telnet::Pending>,
     vnc_clients: tauri::State<'_, vnc_client::VncClients>,
+    rdp_clients: tauri::State<'_, RdpClients>,
     rdp_sessions: tauri::State<'_, rdp::RdpSessions>,
     session_id: String,
 ) -> Result<(), String> {
@@ -13815,9 +14245,15 @@ async fn disconnect_session(
         let _ = app.emit(&format!("session-disconnected-{session_id}"), serde_json::json!({"reason": "Disconnected."}));
     }
     // A VNC tab: its session ends (and its route with it).
-    if let Some(tx) = vnc_clients.lock().await.remove(&session_id) {
+    if let Some((_, tx)) = vnc_clients.lock().await.remove(&session_id) {
         use tauri::Emitter;
         let _ = tx.send(vnc_client::Cmd::Close);
+        let _ = app.emit(&format!("session-disconnected-{session_id}"), serde_json::json!({"reason": "Disconnected."}));
+    }
+    // A built-in RDP tab, the same way.
+    if let Some((_, tx)) = rdp_clients.lock().await.remove(&session_id) {
+        use tauri::Emitter;
+        let _ = tx.send(rdp_client::Cmd::Close);
         let _ = app.emit(&format!("session-disconnected-{session_id}"), serde_json::json!({"reason": "Disconnected."}));
     }
     // Drop terminal tx/resize entries so a subsequent reconnect doesn't try
@@ -19713,6 +20149,7 @@ pub fn run() {
         .manage(rdp::RdpSessions::default())
         .manage(telnet::Pending::default())
         .manage(vnc_client::VncClients::default())
+        .manage(RdpClients::default())
         // Docker live-log stream registry — keyed by frontend-issued stream id,
         // values are tokio AbortHandles so the user can stop tailing on demand.
         .manage(docker::DockerStreams::new())
@@ -19770,7 +20207,8 @@ pub fn run() {
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session, set_use_ssh_config,
-            initiate_rdp, rdp_open_again, telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize,
+            initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_resize, rdp_builtin_close,
+            telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
             open_terminal, local_shell, write_terminal_data, type_saved_password, resize_terminal, close_terminal,
