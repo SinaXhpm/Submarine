@@ -8,6 +8,7 @@ import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { folderTree } from "../util/folderTree";
 import { DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_WINDOW_SIZES, type RdpOptions } from "../util/rdpOptions";
 import { IS_ANDROID } from "../util/platform";
+import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
 
 // Compact "2h ago" style relative time for the attribution line.
 function relTime(d: Date): string {
@@ -519,27 +520,41 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             <div className="space-y-1.5">
               <label className="text-[11px] font-bold text-zinc-400 ml-1">Tag colour</label>
               <div className="flex items-center gap-2 flex-wrap">
-                {[
-                  { name: "Default", value: null,      cls: "bg-zinc-500" },
-                  { name: "Rose",    value: "#f43f5e", cls: "bg-rose-500" },
-                  { name: "Amber",   value: "#f59e0b", cls: "bg-amber-500" },
-                  { name: "Emerald", value: "#10b981", cls: "bg-emerald-500" },
-                  { name: "Sky",     value: "#0ea5e9", cls: "bg-sky-500" },
-                  { name: "Indigo",  value: "#6366f1", cls: "bg-indigo-500" },
-                  { name: "Fuchsia", value: "#d946ef", cls: "bg-fuchsia-500" },
-                  { name: "Slate",   value: "#64748b", cls: "bg-slate-500" },
-                ].map((p) => {
+                {TAG_COLOURS.map((p) => {
                   const selected = (newNode.color ?? null) === p.value;
                   return (
                     <button
                       key={p.name}
                       type="button"
                       title={p.name}
+                      aria-label={p.name}
+                      aria-pressed={selected}
                       onClick={() => setNewNode({ ...newNode, color: p.value })}
-                      className={`w-6 h-6 rounded-full ${p.cls} ring-2 ring-transparent hover:ring-white/30 transition-all ${selected ? "ring-white" : ""}`}
+                      className={`w-6 h-6 rounded-full ${p.value ? "" : "bg-zinc-500"} ring-2 ring-transparent hover:ring-white/30 transition-all ${selected ? "ring-white" : ""}`}
+                      style={p.value ? { background: p.value } : undefined}
                     />
                   );
                 })}
+                {/* Any other colour: the system's colour picker, as a swatch of its own
+                    (it shows the colour once one is chosen). */}
+                {(() => {
+                  const custom = customTagColour(newNode.color);
+                  return (
+                    <label
+                      title="Another colour…"
+                      className={`relative w-6 h-6 rounded-full cursor-pointer ring-2 ring-transparent hover:ring-white/30 transition-all ${custom ? "ring-white" : ""}`}
+                      style={{ background: custom ?? "conic-gradient(#ef4444, #eab308, #22c55e, #06b6d4, #3b82f6, #a855f7, #ef4444)" }}
+                    >
+                      <input
+                        type="color"
+                        aria-label="Another colour"
+                        value={pickerValue(newNode.color ?? null)}
+                        onChange={(e) => setNewNode({ ...newNode, color: e.target.value })}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                    </label>
+                  );
+                })()}
               </div>
             </div>
 
