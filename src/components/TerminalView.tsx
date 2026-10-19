@@ -12,6 +12,7 @@ import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
 import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
 import { readScrollback } from '../util/terminalScrollback';
+import { withoutPasteControls } from '../util/pasteText';
 import { READABLE_CONTRAST, readBoldBright, readMinContrast, readScheme } from '../util/terminalTheme';
 import { readUseLocalShell } from '../util/terminalShell';
 import { IS_ANDROID, IS_LINUX } from '../util/platform';
@@ -933,6 +934,10 @@ const TerminalView = ({
       try { text = await readClipboardText(); }
       catch { notify('Clipboard read denied', 'err'); return; }
       if (!text) return;
+      // No escape sequence or other control character gets through (see pasteText.ts).
+      const clean = withoutPasteControls(text);
+      if (clean !== text) { text = clean; notify('Control characters left out of the paste'); }
+      if (!text) return;
       // More than one line into a program that hasn't turned bracketed-paste
       // mode on (an older bash, a plain sh): each line would run the moment it
       // lands, so ask first and show what would run. With the mode on, the
@@ -967,6 +972,25 @@ const TerminalView = ({
         pastingRef.current = false;
       }
       if (toast) notify('Pasted');
+    };
+    // Ctrl+V, Ctrl+Shift+V, Shift+Insert and a phone's paste menu reach xterm's
+    // own paste. When there is something to take out of the text, it is pasted
+    // without it instead (the capture phase runs before xterm's handler); text
+    // with nothing to take out goes the way it always did.
+    const onPasteEvent = (ev: ClipboardEvent) => {
+      const raw = ev.clipboardData?.getData('text/plain') ?? '';
+      const clean = withoutPasteControls(raw);
+      if (clean === raw) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      if (disabledRef.current || !clean) return;
+      pastingRef.current = true;
+      try {
+        term.paste(clean);
+      } finally {
+        pastingRef.current = false;
+      }
+      notify('Control characters left out of the paste');
     };
     // Right-click → paste. preventDefault swallows the platform context menu
     // so the user gets the terminal-style behavior they asked for.
@@ -1014,6 +1038,7 @@ const TerminalView = ({
     document.addEventListener('mouseup', onDocMouseUp);
     window.addEventListener('blur', onWindowBlur);
     terminalRef.current.addEventListener('contextmenu', onContextMenu);
+    terminalRef.current.addEventListener('paste', onPasteEvent, true);
 
     // Handle Resize, once the size has settled (PTY_SIZE_SETTLE_MS).
     let sizeTimer = 0;
@@ -1178,6 +1203,7 @@ const TerminalView = ({
       if (container) {
         container.removeEventListener('mousedown', onMouseDown);
         container.removeEventListener('contextmenu', onContextMenu);
+        container.removeEventListener('paste', onPasteEvent, true);
       }
       document.removeEventListener('mouseup', onDocMouseUp);
       window.removeEventListener('blur', onWindowBlur);
