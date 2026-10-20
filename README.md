@@ -277,6 +277,12 @@ Not portable: the Microsoft Edge WebView2 runtime (a Windows system component, p
 
 Submarine on Android is a native build of the same Rust core — same SSH stack, same encrypted vault format, same profile sync. Reach a server from your phone with the credentials you saved on your desktop.
 
+<p align="center">
+  <img src="docs/screenshots/android-terminal.png" alt="Submarine on Android: an SSH terminal session with the key bar (Ctrl, Alt, Shift, Esc, Tab, arrows) above the keyboard and the bottom navigation bar" width="240" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/android-server-form.png" alt="Submarine on Android: the server form with the tag colour picker wrapping into rows to fit a narrow screen" width="240" />
+</p>
+
 - **Same encrypted vault.** With cloud sync on, your profiles appear on the phone as they were on the desktop.
 - **Touch-friendly terminal.** An inline **key bar** between the terminal and the keyboard has Esc, Tab, arrows, `|`, `~`, `/`, `-` and Termux-style sticky modifiers (tap to arm, double-tap to lock), so Ctrl+letter, Alt+letter and Shift+Tab work.
 - **Auto-scroll on focus** so the prompt never sits behind the keyboard.
