@@ -6,7 +6,7 @@ import { AuthPrompts } from "./AuthPrompts";
 import RemoteScreen, { type RemoteScreenHandle } from "./RemoteScreen";
 import { readUseSshAgent } from "../util/sshAgent";
 import { IS_ANDROID } from "../util/platform";
-import { RDP_BUILTIN_EXPERIMENTAL, describeRdpOptions, readRdpOptions, writeRdpOptions } from "../util/rdpOptions";
+import { RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, describeRdpOptions, readRdpOptions, writeRdpOptions } from "../util/rdpOptions";
 
 // An RDP server's tab (issue #3). By default Submarine opens the system's RDP
 // app (through a forward on a loopback port while the node has an SSH
@@ -87,6 +87,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         useSshAgent: readUseSshAgent(),
         width,
         height,
+        allowNoNla: readRdpOptions(session.serverUuid).allowNoNla,
         frames: canvas.newChannel(),
       }).catch(failed);
       return;
@@ -199,6 +200,15 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const name = displayName || session.serverName;
   const working = status === "connecting";
   const broken = status === "failed" || status === "disconnected";
+  // A server without NLA was refused before anything was sent: the tab offers
+  // to allow it for this server on this device, and connects again.
+  const noNla = status === "failed" && reason.startsWith(RDP_NO_NLA_PREFIX) && !!session.serverUuid;
+  const allowWithoutNla = () => {
+    if (!session.serverUuid) return;
+    writeRdpOptions(session.serverUuid, { ...readRdpOptions(session.serverUuid), allowNoNla: true });
+    pushLog({ msg: "Servers without NLA are allowed for this server now.", type: "warning" });
+    connect();
+  };
 
   const prompts = promptWaiting && (
     <div
@@ -317,6 +327,15 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
                 className={`h-7 px-2 rounded-md text-[11px] font-semibold transition-colors ${showLog ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-400 hover:text-zinc-200"}`}
               >
                 Log
+              </button>
+            )}
+            {noNla && (
+              <button
+                onClick={allowWithoutNla}
+                title="Log in to this server without NLA: the password then goes inside TLS only"
+                className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-amber-500/15 text-amber-200 hover:bg-amber-500/25 text-[11px] font-semibold transition-colors"
+              >
+                <AlertTriangle size={12} aria-hidden="true" />Allow without NLA
               </button>
             )}
             {broken && (

@@ -786,7 +786,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       </select>
                     </div>
                   )}
-                  {builtin ? (
+                  {builtin ? (<>
                     <div role="note" className="flex gap-2 p-2.5 rounded-lg border border-amber-500/25 bg-amber-500/5 text-[10.5px] leading-snug text-amber-200/90">
                       <FlaskConical size={13} className="shrink-0 mt-px text-amber-300" aria-hidden="true" />
                       <span>
@@ -794,7 +794,25 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         Clipboard and file sharing work in the computer's RDP app for now.
                       </span>
                     </div>
-                  ) : (<>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-bold text-zinc-300">Allow servers without NLA</div>
+                        <div className="text-[10.5px] text-zinc-500 leading-snug">
+                          NLA makes the server prove it knows the password before it is sent. Off, a server without it is refused and nothing is sent; on, the password goes inside TLS only.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => set({ allowNoNla: !o.allowNoNla })}
+                        role="switch"
+                        aria-label="Allow servers without NLA"
+                        aria-checked={!!o.allowNoNla}
+                        className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.allowNoNla ? "bg-primary" : "bg-white/10"}`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.allowNoNla ? "translate-x-5" : "translate-x-0"}`} />
+                      </button>
+                    </div>
+                  </>) : (<>
                   <div className="flex justify-between items-center gap-3">
                     <label className="text-[11px] font-bold text-zinc-400 shrink-0">Window</label>
                     <select

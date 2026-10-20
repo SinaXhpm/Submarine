@@ -16,12 +16,20 @@ export interface RdpOptions {
   clipboard: boolean;
   /** This computer's drives (with Remmina: the home folder). */
   drives: boolean;
+  /** The built-in client may log in to this server without NLA. Off: a server
+   *  that doesn't do NLA is refused before anything is sent (audit 2, #4). */
+  allowNoNla: boolean;
 }
 
 export const RDP_OPTIONS_KEY = "submarine-rdp-options";
 
 // What Remote Desktop Connection does on its own, files kept private.
-export const DEFAULT_RDP_OPTIONS: RdpOptions = { app: "system", fullScreen: true, width: 1600, height: 900, clipboard: true, drives: false };
+export const DEFAULT_RDP_OPTIONS: RdpOptions = { app: "system", fullScreen: true, width: 1600, height: 900, clipboard: true, drives: false, allowNoNla: false };
+
+/** How the built-in client's refusal of a server without NLA starts: the tab
+ *  offers the one-click opt-in for it. Kept equal to `rdp_client::NO_NLA`
+ *  (a Rust test checks it). */
+export const RDP_NO_NLA_PREFIX = "This server doesn't use NLA";
 
 /** What the tab and the form say about the built-in client. */
 export const RDP_BUILTIN_EXPERIMENTAL =
@@ -56,6 +64,7 @@ export function readRdpOptions(uuid?: string | null): RdpOptions {
     if (Number.isFinite(kept.height)) o.height = Number(kept.height);
     if (typeof kept.clipboard === "boolean") o.clipboard = kept.clipboard;
     if (typeof kept.drives === "boolean") o.drives = kept.drives;
+    if (typeof kept.allowNoNla === "boolean") o.allowNoNla = kept.allowNoNla;
   }
   return o;
 }
