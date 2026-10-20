@@ -111,8 +111,8 @@ Distributed as a sideloadable APK from the GitHub releases page. Not on the Play
 - Quick unlock (opt-in) seals the vault key to a TPM-backed Windows Hello key or an Android Keystore key; the password itself is never kept.
 - Cloud sync (optional): the account uses an email address (verified by a link) and an account password, with reset by email. Record contents are encrypted on your device before upload. The server still sees metadata: record IDs and types, timestamps and deleted flags, the profile display name, record counts, and for shared profiles the share names and member emails. It also holds a copy of the vault key sealed with your master password, so a weak master password could be guessed offline by someone with the server's data; use a long one. You can run your own sync server.
 - Network: no analytics SDK, no crash reporter. When the profile page opens, one anonymous request goes to the GitHub releases API to check for a new version. Cloud sync talks to api.sinaxhpm.com (or your own server) only if you sign in.
-- Telnet and plain VNC are unencrypted and labelled so. The built-in RDP client is experimental.
-- Builds are currently unsigned.
+- Telnet and plain VNC are unencrypted and labelled so. The built-in RDP client is experimental, and it refuses a server without NLA unless that server is allowed.
+- The Windows and macOS builds are not code-signed; the Android APK is signed with the author's key.
 
 ## Install
 
@@ -128,7 +128,7 @@ Pick a binary from <https://github.com/sinaxhpm/submarine/releases>.
 | Any Linux | `.AppImage` |
 | Android 7.0+ | `.apk` (sideload) |
 
-Builds are currently unsigned. Windows SmartScreen prompts on first run; on macOS use `xattr -d com.apple.quarantine`; on Android allow "Install unknown apps" for the installer source.
+The Windows and macOS builds are not code-signed: Windows SmartScreen prompts on first run; on macOS use `xattr -d com.apple.quarantine`. The Android APK is signed with the author's key; allow "Install unknown apps" for the installer source. Releases from 0.4.0 on carry a SHA256SUMS file.
 
 ## Build from source
 
