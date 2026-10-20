@@ -256,7 +256,7 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | Fedora / RHEL / openSUSE | `.rpm` — `sudo dnf install ./submarine-*.rpm` |
 | Arch / Manjaro / EndeavourOS | `.pkg.tar.zst` — `sudo pacman -U submarine-*.pkg.tar.zst` |
 | Any Linux | `.AppImage` — `chmod +x` and double-click |
-| Android 8.0+ | `.apk` — sideload, no Play Store required |
+| Android 7.0+ | `.apk` — sideload, no Play Store required |
 
 > Builds are currently **unsigned**. Windows SmartScreen will prompt — click "More info → Run anyway". On macOS you may need `xattr -d com.apple.quarantine /Applications/Submarine.app`. Android sideloading needs "Install unknown apps" enabled for the installer source.
 
@@ -292,7 +292,7 @@ Submarine on Android is a native build of the same Rust core — same SSH stack,
 - **Port forwarding** (SOCKS / local / remote) runs as long as the app is open.
 - **Folder mirror is desktop-only for now.**
 
-Tested on Android 8.0+ (API 26+): phones, tablets and Android-on-ChromeOS.
+Built for Android 7.0 (API 24) and newer, on phones, tablets and Android-on-ChromeOS; the current builds are tested on Android 16.
 
 ## Security and privacy
 
