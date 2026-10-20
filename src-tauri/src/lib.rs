@@ -42,6 +42,7 @@ mod rdp;
 mod quick_unlock;
 mod rdp_client;
 mod term_filter;
+mod vault_backup;
 #[cfg(target_os = "android")]
 mod android_bridge;
 #[cfg(test)]
@@ -1427,6 +1428,24 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     Ok(())
 }
 
+/// How many live rows the tombstones in `records` are about to delete: what
+/// `apply_tombstone` does, counted first, so a profile can be kept as it is
+/// before the merge deletes from it (vault_backup.rs).
+fn rows_to_delete(conn: &Connection, records: &[SyncRecord]) -> usize {
+    records
+        .iter()
+        .filter(|r| r.deleted && sane_record(r))
+        .filter(|r| {
+            ENTITIES.iter().find(|s| s.table == r.entity_type).is_some_and(|spec| {
+                conn.query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", spec.table), [&r.uuid], |row| {
+                    row.get::<_, Option<String>>(0)
+                })
+                .is_ok_and(|ua| ua.as_deref().unwrap_or("") < r.updated_at.as_str())
+            })
+        })
+        .count()
+}
+
 /// One remote deletion. It can write three things (unlink, delete, record the
 /// tombstone), so the caller runs it in a savepoint: a delete that fails
 /// leaves no tombstone claiming it happened.
@@ -1490,6 +1509,11 @@ struct SyncReport {
     /// The shared profile has a new key waiting for the user's OK
     /// (`accept_share_key`); until then nothing is pushed.
     key_change: bool,
+    /// Rows this sync is deleting here, because they were deleted elsewhere.
+    removed: usize,
+    /// When it deletes any, the copy of the profile kept first: its file name
+    /// (vault_backup.rs). None when nothing was deleted or no copy could be made.
+    backup: Option<String>,
 }
 
 // A personal profile's DEK, sealed under the profile's OWN password, rides the
@@ -1829,6 +1853,8 @@ async fn sync_with(
         pushed: report.pushed + again.pushed,
         pulled: report.pulled + again.pulled,
         key_change: again.key_change,
+        removed: report.removed + again.removed,
+        backup: again.backup.or(report.backup),
     })
 }
 
@@ -1967,11 +1993,24 @@ async fn sync_round(
     let pulled = exchange.records.len();
     // The server couldn't answer from the cursor: start over (`sync_with`).
     let reset = exchange.full && pull_from.is_some();
+    let mut removed = 0usize;
+    let mut backup: Option<String> = None;
 
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         db_state.still_open(generation)?;
+        // About to delete rows? A tombstone proves nothing about who sent it, so
+        // the profile is kept as it stands first (vault_backup.rs); the file on
+        // disk is still the state from before this merge.
+        removed = rows_to_delete(conn, &exchange.records);
+        if removed > 0 {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            match profile_path(app, profile).and_then(|p| vault_backup::keep(&p, now)) {
+                Ok(name) => backup = name,
+                Err(e) => eprintln!("[SYNC] no copy of the profile before a merge that deletes: {e}"),
+            }
+        }
         let skipped = apply_remote_records(conn, &dek, &exchange.records, &hlc)?;
         if unlinked {
             link_profile_server(conn, session.base())?;
@@ -2005,7 +2044,7 @@ async fn sync_round(
     }
     // Persist the merged vault so the applied changes survive a restart.
     save_vault_async(db_state).await?;
-    Ok((SyncReport { pushed, pulled, key_change }, reset))
+    Ok((SyncReport { pushed, pulled, key_change, removed, backup }, reset))
 }
 
 #[derive(serde::Serialize)]
@@ -4364,6 +4403,29 @@ mod sync_engine_tests {
         apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
         assert_eq!(count(&b, "ssh_keys"), 1, "an SSH key waits");
         assert!(approvals::held_deletions(&b).iter().any(|d| d.entity_type == "ssh_keys" && d.name == "k"));
+    }
+
+    // Before a merge deletes anything, the profile is kept as it stands
+    // (vault_backup.rs); this is the count that says whether it will.
+    #[test]
+    fn rows_a_merge_is_about_to_delete_are_counted_first() {
+        let (a, _ha) = device("A");
+        for i in 0..6 {
+            a.execute("INSERT INTO servers(name,host,port) VALUES(?1,'h',22)", [format!("s{i}")]).unwrap();
+        }
+        a.execute("INSERT INTO ssh_keys(name,public_key,private_key) VALUES('k','pub','priv')", []).unwrap();
+        let seed = collect_local_records(&a, &KEY, "").unwrap();
+        let (p, hp) = device("P");
+        apply_remote_records(&p, &KEY, &seed, &hp).unwrap();
+        assert_eq!(rows_to_delete(&p, &seed), 0, "a batch of rows to add or update deletes nothing");
+
+        a.execute("DELETE FROM servers WHERE name < 's4'", []).unwrap();
+        a.execute("DELETE FROM ssh_keys", []).unwrap();
+        let batch = collect_local_records(&a, &KEY, "").unwrap();
+        assert_eq!(rows_to_delete(&p, &batch), 5, "four servers and the key");
+        apply_remote_records(&p, &KEY, &batch, &hp).unwrap();
+        assert_eq!((count(&p, "servers"), count(&p, "ssh_keys")), (2, 0));
+        assert_eq!(rows_to_delete(&p, &batch), 0, "once they are gone there is nothing left to delete");
     }
 
     // The user's call: delete them here too, or keep them. Kept rows get

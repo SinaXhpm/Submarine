@@ -440,6 +440,18 @@ function DesktopApp() {
     setLogs(prev => [...prev.slice(-99), { id, msg, type, time: new Date().toLocaleTimeString() }]);
   }, []);
 
+  // A sync that deleted rows (deleted on another device, or by whoever sent
+  // the server's answer) says so, and where the profile as it was is kept.
+  const logRemoved = useCallback((report: { removed?: number; backup?: string | null }) => {
+    const n = report.removed ?? 0;
+    if (n <= 0) return;
+    addLog(
+      `Sync removed ${n} item${n === 1 ? "" : "s"} from this profile (deleted elsewhere).` +
+        (report.backup ? ` The profile as it was is kept next to its file as ${report.backup}.` : ""),
+      "info",
+    );
+  }, [addLog]);
+
   // Wrapped in useCallback because these are handed to memoised children
   // (SessionView, MirrorsPanel, etc.). Without stable identity every parent
   // render hands a fresh reference and defeats the child's memo gate.
@@ -522,11 +534,12 @@ function DesktopApp() {
   const handleCloudSync = useCallback(async () => {
     setCloudSyncing(true);
     try {
-      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean }>("sync_now");
+      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; backup?: string | null }>("sync_now");
       await refreshAll();
       refreshSharedState();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
       addLog(`Cloud sync complete — pushed ${report.pushed}, pulled ${report.pulled}.`, "success");
+      logRemoved(report);
       if (report.key_change) {
         addLog("This shared profile's key has changed. Your changes aren't uploaded until you accept the new key (Servers → Review).", "info");
       }
@@ -545,7 +558,7 @@ function DesktopApp() {
     // refreshAll closes over stable setters; addLog is memoised. Intentionally
     // excluded to keep this handler identity stable across renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addLog]);
+  }, [addLog, logRemoved]);
 
   // ---- Auto-sync (hybrid: after-edit debounce + window focus + interval) ----
   //
@@ -596,10 +609,11 @@ function DesktopApp() {
     autoSyncBusy.current = true;
     setCloudSyncing(true);
     try {
-      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean }>("sync_now");
+      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; backup?: string | null }>("sync_now");
       if (report.pulled > 0) await refreshAllRef.current();
       refreshSharedState();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
+      logRemoved(report);
     } catch {
       // Silent by design — not signed in, offline, or a viewer with nothing to
       // push. The manual Sync-now button is where errors surface loudly.
