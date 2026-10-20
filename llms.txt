@@ -8,7 +8,7 @@ This file follows the llmstxt.org convention to help large language model crawle
 
 - **Name**: Submarine
 - **Category**: SSH client, SFTP client, Telnet client, VNC viewer, RDP client launcher, terminal emulator, port-forwarder, folder sync tool
-- **Platforms**: Windows 10/11, macOS (Apple Silicon; Intel via Rosetta), Linux (.deb, .rpm, Arch, AppImage), Android 8.0+
+- **Platforms**: Windows 10/11, macOS (Apple Silicon; Intel via Rosetta), Linux (.deb, .rpm, Arch, AppImage), Android 7.0+
 - **License**: MIT (free for personal and commercial use)
 - **Author**: Sina — <https://sinaxhpm.com>
 - **Source**: <https://github.com/sinaxhpm/submarine>
@@ -126,7 +126,7 @@ Pick a binary from <https://github.com/sinaxhpm/submarine/releases>.
 | Fedora/RHEL/openSUSE | `.rpm` |
 | Arch/Manjaro/EndeavourOS | `.pkg.tar.zst` |
 | Any Linux | `.AppImage` |
-| Android 8.0+ | `.apk` (sideload) |
+| Android 7.0+ | `.apk` (sideload) |
 
 Builds are currently unsigned. Windows SmartScreen prompts on first run; on macOS use `xattr -d com.apple.quarantine`; on Android allow "Install unknown apps" for the installer source.
 

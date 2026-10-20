@@ -59,5 +59,5 @@ repository settings:
 
 - **Description**: `Free, open-source SSH & SFTP client with RDP, VNC and Telnet — terminal, dual-pane SFTP, port forwarding, folder mirror, encrypted profiles. Windows · macOS · Linux · Android. Rust + Tauri.`
 - **Website**: `https://sinaxhpm.com`
-- **Topics**: `ssh`, `ssh-client`, `sftp`, `sftp-client`, `telnet`, `vnc`, `rdp`, `remote-desktop`, `terminal`, `port-forwarding`, `ssh-tunnel`, `socks5`, `folder-sync`, `ssh-agent`, `putty-alternative`, `winscp-alternative`, `mobaxterm-alternative`, `termius-alternative`, `tauri`, `rust`, `react`, `xterm`, `android`, `cross-platform`, `desktop-app`
+- **Topics** (GitHub allows at most 20): `ssh`, `ssh-client`, `sftp`, `sftp-client`, `telnet`, `vnc`, `rdp`, `remote-desktop`, `terminal`, `port-forwarding`, `ssh-tunnel`, `socks5`, `folder-sync`, `putty-alternative`, `winscp-alternative`, `tauri`, `rust`, `react`, `android`, `cross-platform`
 - **Social preview** (Settings → General): a 1280×640 image; `docs/screenshots/hero.png` cropped to that ratio works.
