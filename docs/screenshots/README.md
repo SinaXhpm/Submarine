@@ -23,6 +23,8 @@ README picks it up; no code changes needed.
 | `settings.png` | Settings: accent colour, background, ssh-agent and ssh config switches, terminal font. |
 | `terminal-colours.png` | Settings: terminal colour schemes with a live preview (cropped). |
 | `terminal.png` | A full-width terminal session with coloured output. |
+| `android-terminal.png` | Android: an SSH session with the key bar and the bottom navigation (the app's own screen, no status bar). |
+| `android-server-form.png` | Android: the server form; the tag colours wrap into rows on a narrow screen. |
 
 ## How they are made
 
