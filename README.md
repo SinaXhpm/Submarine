@@ -214,7 +214,7 @@ Pick a local folder, pick a remote folder, and Submarine keeps them in sync.
 ### Remote desktops: VNC, RDP and Telnet
 
 - **VNC** opens as the remote screen in the tab, directly or through an SSH server, on the PC and on the phone (touch, zoom, a keyboard button). Tight, ZRLE, TRLE, CopyRect and Raw encodings; the desktop takes the tab's size where the server allows it. Plain VNC is **not encrypted**, and the form, the list and the tab say so.
-- **RDP** opens in **this computer's RDP app** by default (Windows Remote Desktop Connection, Remmina or FreeRDP on Linux, the system handler on macOS), with per-server full-screen, window size, clipboard and drive-sharing options kept on this device. The **built-in RDP client** (in the tab, on the PC and the phone) is **experimental** and opt-in; its certificate is pinned like an SSH host key and checked before anything secret is sent.
+- **RDP** opens in **this computer's RDP app** by default (Windows Remote Desktop Connection, Remmina or FreeRDP on Linux, the system handler on macOS), with per-server full-screen, window size, clipboard and drive-sharing options kept on this device. The **built-in RDP client** (in the tab, on the PC and the phone) is **experimental** and opt-in; its certificate is pinned like an SSH host key and checked before anything secret is sent. It also needs **NLA** (the server proves it knows the password before the client sends it): a server that answers "TLS only" is refused with nothing sent, unless you allow that one server ("Allow without NLA").
 - **Telnet** opens in a terminal tab, directly or through an SSH server, with proper option negotiation. It is **not encrypted** and says so.
 - All three can go **through an SSH server** you already have.
 
@@ -241,6 +241,7 @@ A read-only inspection pane for the active session — no terminal commands need
 
 - Turn it on to keep your profiles in step across your computers and your phone; sync sends **only what changed**, compressed
 - **Share a profile** with other accounts as **Owner, Editor or Viewer**; changes by others that would run something, and mass deletions, wait for your OK
+- Before a sync deletes rows from one of your profiles (a deletion arrives from the server), the profile is **copied next to its file** (`<name>.submarine.bak-<time>`, the newest five kept), and the sync log says how many rows went and where the copy is
 - Use the hosted server, or **point Submarine at your own sync server** (Cloud Sync → Sync server), with an optional proxy for the sync connection
 - What the server can and can't see is spelled out under [Security and privacy](#security-and-privacy)
 
@@ -258,7 +259,7 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | Any Linux | `.AppImage` — `chmod +x` and double-click |
 | Android 7.0+ | `.apk` — sideload, no Play Store required |
 
-> Builds are currently **unsigned**. Windows SmartScreen will prompt — click "More info → Run anyway". On macOS you may need `xattr -d com.apple.quarantine /Applications/Submarine.app`. Android sideloading needs "Install unknown apps" enabled for the installer source.
+> The Windows and macOS builds are **not code-signed**. Windows SmartScreen will prompt — click "More info → Run anyway". On macOS you may need `xattr -d com.apple.quarantine /Applications/Submarine.app`. The Android APK **is signed** with the author's key: `apksigner verify --print-certs` should show the certificate SHA-256 `e9e350dc9f8628bee461be3424c0c2b2180f00685cc380de80c86808ae669f1c`. Android sideloading needs "Install unknown apps" enabled for the installer source. Releases from 0.4.0 on carry a `SHA256SUMS` file to check a download against.
 
 ### Portable mode (Windows)
 
@@ -298,11 +299,11 @@ Built for Android 7.0 (API 24) and newer, on phones, tablets and Android-on-Chro
 
 **What is encrypted, and where**
 
-1. **Your master password becomes a vault key on your device.** When you unlock, the password is run through Argon2id to derive a key, and the Rust backend keeps that key in zeroized memory and drops it on lock. (The password you type passes through the webview, so a copy can linger in its memory until garbage collection.)
+1. **Your master password becomes a vault key on your device.** When you unlock, the password is run through Argon2id to derive a key, and the Rust backend keeps that key in zeroized memory and drops it on lock (the sharing key of a signed-in account is locked with the profile too). (The password you type passes through the webview, so a copy can linger in its memory until garbage collection.)
 2. **Profiles are sealed with AES-256-GCM on your device.** Saved servers, credentials, keys, tunnels, notes, commands and mirrors are encrypted with that key; what reaches disk is ciphertext. Window position, the last-used profile name, recent folders and similar preferences are stored in the clear in the app's own settings.
 3. **Quick unlock is opt-in.** If you turn on Windows Hello or an Android fingerprint, the vault key is sealed to a key in the TPM or the Android Keystore — never the password.
 4. **Unencrypted protocols say so.** Telnet and plain VNC are labelled *not encrypted* in the form, the list and the tab. The built-in RDP client is labelled *experimental*.
-5. **Connections are checked.** SSH host keys are pinned after the first use, and a changed key (or a key of a different kind) is flagged before anything secret is sent. An RDP certificate is pinned the same way.
+5. **Connections are checked.** SSH host keys are pinned after the first use, and a changed key (or a key of a different kind) is flagged before anything secret is sent. An RDP certificate is pinned the same way, and the built-in RDP client refuses a server without NLA unless you allow that server.
 
 **Cloud sync (optional) — what the server sees**
 
@@ -318,7 +319,7 @@ Built for Android 7.0 (API 24) and newer, on phones, tablets and Android-on-Chro
 - When the profile page opens, Submarine makes **one anonymous request to the GitHub releases API** to see whether a newer version exists (the request carries the app name and version, nothing else). There is a button to run the same check by hand.
 - If you sign in to cloud sync, it talks to the sync server (`api.sinaxhpm.com`, or the one you chose).
 
-**Other defences:** a strict Content Security Policy, a minimal Tauri permission ACL, and no shell or filesystem plugin exposed to the UI. Builds are currently unsigned.
+**Other defences:** a strict Content Security Policy, a minimal Tauri permission ACL, and no shell or filesystem plugin exposed to the UI. The desktop builds are not code-signed (see [Install](#install)); the Android APK is signed.
 
 Found a vulnerability? Please don't post exploit details in public: open an issue that says only that you found one, and the maintainer will reply with a private way to send the details.
 
