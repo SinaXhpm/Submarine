@@ -81,7 +81,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         # Don't leave the checkout token in .git/config where a later build
         # step (or a compromised dependency) could use it — nothing here pushes.
         with:
@@ -160,18 +160,21 @@ jobs:
           "
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch, as of 2026-10-20
         with:
+          # Named here: the action takes it from its ref otherwise ("stable"
+          # was the ref), and a commit SHA says nothing.
+          toolchain: stable
           targets: ${{ matrix.rust_target }}
 
       - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
 
@@ -203,12 +206,12 @@ jobs:
       # invocation would just duplicate work and risk version drift
       # between the two passes.
       - name: Build Tauri bundles
-        # Pinned to v0 (major) — Tauri maintainers move that tag in lockstep
-        # with stable releases. For tighter reproducibility pin to a SHA.
+        # Pinned to a commit (v0.6.2): a moving tag would let a compromised
+        # release of the action change what is built and attached.
         # russh >= 0.63 implements RSA / legacy DH / SHA-1 MACs in pure
         # Rust, so release and local builds share one algorithm set and no
         # OpenSSL (or Perl) is needed anymore.
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         with:
           args: --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
 
@@ -326,7 +329,7 @@ jobs:
           ls -la artifacts/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: submarine-${{ matrix.os_name }}
           path: artifacts/*
@@ -334,15 +337,14 @@ jobs:
 
   # Android: separate job because the setup (JDK 17 + Android SDK/NDK +
   # cargo-ndk + Android Rust targets) is wholly different from the
-  # desktop matrix. Produces a signed universal release APK plus per-ABI
-  # APKs when Tauri splits them.
+  # desktop matrix. Produces the UNSIGNED universal release APK.
   #
-  # Signing: the release keystore is base64-encoded in the
-  # SUBMARINE_KEYSTORE_B64 secret. We decode it into a workspace-local
-  # file and pass its path + passwords to Gradle via the
-  # SUBMARINE_KEYSTORE_* env vars that build.gradle.kts reads. If any
-  # secret is missing, the build still runs but Gradle will produce an
-  # unsigned release APK — the keystore secrets are gating, not blocking.
+  # Signing is a separate job (`android-sign`, below). This job runs the whole
+  # toolchain of the app (npm and vite plugins, every crate's build.rs and
+  # proc macros, cargo-ndk, Gradle plugins), any of which could read a key
+  # that is in its environment or on its disk. So no signing secret is given
+  # to it: build.gradle.kts finds no SUBMARINE_KEYSTORE_* and leaves the
+  # release APK unsigned, and the job that holds the keystore only signs.
   android:
     runs-on: ubuntu-22.04
     env:
@@ -350,7 +352,7 @@ jobs:
       # own, newer one as ANDROID_NDK_ROOT).
       NDK_VERSION: "27.1.12297006"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         # Nothing here pushes — see the build job.
         with:
           persist-credentials: false
@@ -390,19 +392,19 @@ jobs:
           "
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
 
       - name: Install JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
         with:
           packages: "platforms;android-36 build-tools;36.0.0 ndk;${{ env.NDK_VERSION }}"
 
@@ -426,18 +428,21 @@ jobs:
         # Only the two ABIs that ship in real Android phones — aarch64
         # (modern arm64) and armv7 (older 32-bit arm). x86 / x86_64 are
         # emulator-only and we explicitly drop them to keep APKs lean.
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch, as of 2026-10-20
         with:
+          toolchain: stable
           targets: aarch64-linux-android,armv7-linux-androideabi
 
       - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
           key: android
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
+        # A version, not whatever is newest on the day: this tool runs in the job
+        # that builds the APK.
+        run: cargo install cargo-ndk --locked --version 4.1.2
 
       # Some C build scripts in the tree (cc-rs driven, e.g. ring / zstd /
       # sqlite) may spawn binutils via the legacy `<target>-ranlib` /
@@ -471,44 +476,6 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
-      # Decode the base64-encoded keystore secret into a real .jks on disk
-      # and write the matching SUBMARINE_KEYSTORE_PATH env var so Gradle's
-      # signingConfig picks it up. Fail the build loudly if any of the four
-      # signing secrets are missing — silent fallback to an unsigned APK
-      # ("Submarine-vX.Y.Z-app-universal-release-unsigned.apk") produces a
-      # file Android rejects at install with "package appears to be invalid".
-      # The four required secrets:
-      #   SUBMARINE_KEYSTORE_B64        — base64 of the .jks
-      #   SUBMARINE_KEYSTORE_PASSWORD   — keystore password
-      #   SUBMARINE_KEY_ALIAS           — alias inside the keystore
-      #   SUBMARINE_KEY_PASSWORD        — key password
-      - name: Materialize release keystore
-        shell: bash
-        env:
-          SUBMARINE_KEYSTORE_B64: ${{ secrets.SUBMARINE_KEYSTORE_B64 }}
-          SUBMARINE_KEYSTORE_PASSWORD: ${{ secrets.SUBMARINE_KEYSTORE_PASSWORD }}
-          SUBMARINE_KEY_ALIAS: ${{ secrets.SUBMARINE_KEY_ALIAS }}
-          SUBMARINE_KEY_PASSWORD: ${{ secrets.SUBMARINE_KEY_PASSWORD }}
-        run: |
-          missing=()
-          [ -z "$SUBMARINE_KEYSTORE_B64" ]      && missing+=("SUBMARINE_KEYSTORE_B64")
-          [ -z "$SUBMARINE_KEYSTORE_PASSWORD" ] && missing+=("SUBMARINE_KEYSTORE_PASSWORD")
-          [ -z "$SUBMARINE_KEY_ALIAS" ]         && missing+=("SUBMARINE_KEY_ALIAS")
-          [ -z "$SUBMARINE_KEY_PASSWORD" ]      && missing+=("SUBMARINE_KEY_PASSWORD")
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Missing GitHub Secrets required for signing: ${missing[*]}"
-            echo "::error::Add them at https://github.com/${{ github.repository }}/settings/secrets/actions"
-            exit 1
-          fi
-          mkdir -p "$RUNNER_TEMP/signing"
-          echo "$SUBMARINE_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/signing/release.jks"
-          if [ ! -s "$RUNNER_TEMP/signing/release.jks" ]; then
-            echo "::error::SUBMARINE_KEYSTORE_B64 decoded to an empty file — verify the secret is valid base64."
-            exit 1
-          fi
-          echo "SUBMARINE_KEYSTORE_PATH=$RUNNER_TEMP/signing/release.jks" >> "$GITHUB_ENV"
-          echo "Release keystore materialized ($(wc -c < "$RUNNER_TEMP/signing/release.jks") bytes)."
-
       # Universal APK — single .apk users sideload from GitHub. Split APKs
       # were tried in v0.2.18/v0.2.19 but Android rejects them as "invalid
       # package" when installed standalone because split APKs need their
@@ -520,45 +487,131 @@ jobs:
       # doubled the Android build time on CI. If Play Store distribution
       # becomes a goal later, re-add `android:build:aab` to package.json
       # and the matching find/copy loop here.
+      #
+      # No signing secret in this step or this job (see the comment on the
+      # job): Gradle leaves the release APK unsigned.
       - name: Build Android APK
         env:
           NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
-          SUBMARINE_KEYSTORE_PASSWORD: ${{ secrets.SUBMARINE_KEYSTORE_PASSWORD }}
-          SUBMARINE_KEY_ALIAS: ${{ secrets.SUBMARINE_KEY_ALIAS }}
-          SUBMARINE_KEY_PASSWORD: ${{ secrets.SUBMARINE_KEY_PASSWORD }}
         run: npm run android:build
 
-      - name: Stage Android artifacts
+      - name: Stage the unsigned APK
         shell: bash
         run: |
           mkdir -p artifacts
-          # APKs land under app/build/outputs/apk/<abi>/release/*.apk
-          # Rename to include the version so release asset names are readable.
-          # `-name "*-unsigned.apk"` is the unsigned variant Gradle produces
-          # when signingConfig is absent — explicitly excluded so a
-          # mis-wired keystore cannot leak an uninstallable APK to a release.
+          # APKs land under app/build/outputs/apk/<abi>/release/*-release-unsigned.apk
+          # when Gradle has no keystore. Renamed to carry the version, so the
+          # release asset names are readable.
           shopt -s nullglob
           found=0
-          for apk in $(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-release*.apk" ! -name "*-unsigned.apk"); do
+          for apk in $(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-release-unsigned.apk"); do
             base="$(basename "$apk" .apk)"
             cp "$apk" "artifacts/Submarine-v${{ env.VERSION }}-${base}.apk"
             found=$((found + 1))
           done
           if [ "$found" -eq 0 ]; then
-            echo "::error::No signed APK produced — Gradle likely ran without signingConfig."
+            echo "::error::No unsigned release APK was produced."
             exit 1
           fi
-          # Verify each APK is actually signed before we ship it.
-          apksigner="$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -1)"
-          for apk in artifacts/*.apk; do
-            echo "--- apksigner verify $apk ---"
-            "$apksigner" verify --verbose "$apk"
+          # A signed one here would mean this job had a keystore after all.
+          if find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-release.apk" | grep -q .; then
+            echo "::error::A signed APK came out of the build job, which must not have a keystore."
+            exit 1
+          fi
+          ls -la artifacts/
+
+      - name: Upload the unsigned APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: submarine-android-unsigned
+          path: artifacts/*
+          if-no-files-found: error
+
+  # Signs the APK the `android` job built, and nothing else. The only job that
+  # holds the release keystore, and all it runs is apksigner (from the runner
+  # image's Android SDK) on one file: none of the app's build scripts, crates or
+  # plugins run here, so none of them can read the key.
+  #
+  # The keystore is base64 in the SUBMARINE_KEYSTORE_B64 secret, with
+  # SUBMARINE_KEYSTORE_PASSWORD, SUBMARINE_KEY_ALIAS and SUBMARINE_KEY_PASSWORD.
+  # A missing secret fails the job loudly: an unsigned APK is a file Android
+  # rejects at install ("package appears to be invalid"). Signed with v1, v2
+  # and v3 as build.gradle.kts did (v4 off: it needs a side file that
+  # standalone sideloading doesn't use).
+  android-sign:
+    needs: android
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download the unsigned APK
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: submarine-android-unsigned
+          path: unsigned
+
+      - name: Sign and verify
+        shell: bash
+        env:
+          SUBMARINE_KEYSTORE_B64: ${{ secrets.SUBMARINE_KEYSTORE_B64 }}
+          SUBMARINE_KEYSTORE_PASSWORD: ${{ secrets.SUBMARINE_KEYSTORE_PASSWORD }}
+          SUBMARINE_KEY_ALIAS: ${{ secrets.SUBMARINE_KEY_ALIAS }}
+          SUBMARINE_KEY_PASSWORD: ${{ secrets.SUBMARINE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -z "$SUBMARINE_KEYSTORE_B64" ]      && missing+=("SUBMARINE_KEYSTORE_B64")
+          [ -z "$SUBMARINE_KEYSTORE_PASSWORD" ] && missing+=("SUBMARINE_KEYSTORE_PASSWORD")
+          [ -z "$SUBMARINE_KEY_ALIAS" ]         && missing+=("SUBMARINE_KEY_ALIAS")
+          [ -z "$SUBMARINE_KEY_PASSWORD" ]      && missing+=("SUBMARINE_KEY_PASSWORD")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing GitHub Secrets required for signing: ${missing[*]}"
+            echo "::error::Add them at https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+          sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          tools="$(find "$sdk/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          apksigner="$tools/apksigner"
+          zipalign="$tools/zipalign"
+          if [ ! -x "$apksigner" ] || [ ! -x "$zipalign" ]; then
+            echo "::error::apksigner / zipalign not found under $sdk/build-tools"
+            exit 1
+          fi
+          echo "Using $tools"
+          umask 077
+          ks="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$ks"' EXIT
+          echo "$SUBMARINE_KEYSTORE_B64" | base64 -d > "$ks"
+          if [ ! -s "$ks" ]; then
+            echo "::error::SUBMARINE_KEYSTORE_B64 decoded to an empty file — verify the secret is valid base64."
+            exit 1
+          fi
+          mkdir -p artifacts
+          shopt -s nullglob
+          found=0
+          for apk in unsigned/*-unsigned.apk; do
+            name="$(basename "$apk")"
+            out="artifacts/${name%-unsigned.apk}.apk"
+            # Gradle aligns what it writes; a signature over a file that isn't
+            # would break the alignment later, so check it first.
+            "$zipalign" -c 4 "$apk"
+            "$apksigner" sign \
+              --ks "$ks" --ks-key-alias "$SUBMARINE_KEY_ALIAS" \
+              --ks-pass env:SUBMARINE_KEYSTORE_PASSWORD --key-pass env:SUBMARINE_KEY_PASSWORD \
+              --min-sdk-version 24 \
+              --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false \
+              --out "$out" "$apk"
+            echo "--- apksigner verify $out ---"
+            "$apksigner" verify --verbose --print-certs "$out"
+            found=$((found + 1))
           done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No unsigned APK to sign."
+            exit 1
+          fi
           ls -la artifacts/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: submarine-android
           path: artifacts/*
@@ -567,7 +620,7 @@ jobs:
   # Gather every platform's artifacts and attach them to a GitHub Release.
   # Skips when triggered via workflow_dispatch unless `publish_release=true`.
   release:
-    needs: [build, android]
+    needs: [build, android-sign]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish_release == 'true'
     # Only this job writes: it attaches the built artifacts to the Release.
@@ -604,7 +657,7 @@ jobs:
           echo "Resolved release tag: $TAG"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
 
@@ -618,10 +671,20 @@ jobs:
             -o -name "*.pkg.tar.zst" \
             -o -name "*.apk" \
             \) -exec cp {} release-files/ \;
+          # The unsigned APK is only the signing job's input.
+          rm -f release-files/*-unsigned.apk
           ls -la release-files/
 
+      # What the files were when they were attached: to check a download against.
+      - name: Checksums
+        run: |
+          cd release-files
+          sha256sum -- * > ../SHA256SUMS
+          mv ../SHA256SUMS .
+          cat SHA256SUMS
+
       - name: Create / update GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ steps.tag.outputs.TAG }}
           name: Submarine ${{ steps.tag.outputs.TAG }}
