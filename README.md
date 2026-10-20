@@ -412,18 +412,19 @@ Designed and built by [Sina](https://sinaxhpm.com) in collaboration with [Claude
 
 MIT — see [LICENSE](LICENSE).
 
-## Also by the author: Echoes — network & developer toolkit
+## Also by the author: Echoes — free network & developer toolkit
 
-<a href="https://github.com/SinaXhpm/Echoes"><img src="https://raw.githubusercontent.com/SinaXhpm/Echoes/master/Echoes.Android/Resources/mipmap-xhdpi/icon.png" alt="Echoes — free, open-source network and developer toolkit for Windows, macOS, Linux and Android" width="64" align="left" /></a>
+<a href="https://github.com/SinaXhpm/Echoes"><img src="https://raw.githubusercontent.com/SinaXhpm/Echoes/master/Echoes.Android/Resources/mipmap-xhdpi/icon.png" alt="Echoes — free, open-source network toolkit and developer tools for Windows, macOS, Linux and Android" width="64" align="left" /></a>
 
-**[Echoes](https://github.com/SinaXhpm/Echoes)** is a [free, open-source network and developer toolkit for Windows, macOS, Linux, and Android](https://github.com/SinaXhpm/Echoes): ping, port scanner, SSH, DNS/WHOIS, cURL, IP/GeoIP, uptime monitor, encrypted notes, and string/JSON tools in one app. No accounts, no telemetry, MIT licensed.
+**[Echoes](https://github.com/SinaXhpm/Echoes)** is a [free, open-source network toolkit for Windows, macOS, Linux and Android](https://github.com/SinaXhpm/Echoes) with **20 network and developer tools in one app**: the things you would run one by one (ping, traceroute, nmap, curl, dig, whois, PuTTY, netcat, a speed-test site, the Cloudflare dashboard) behind one simple window. No account, no ads, no telemetry. MIT licensed.
 
 <br clear="left" />
 
-- **Network tools** — ping and traceroute, a TCP/UDP port scanner, an SSH terminal with SOCKS5, DNS lookup and WHOIS, IP lookup and GeoIP, and global host checks (ping / HTTP / TCP / DNS from servers around the world)
-- **Web & API tools** — a cURL GUI and HTTP client, an HTTP file server for LAN file sharing, a SOCKS5 + HTTP proxy server, a Cloudflare DNS manager, and an SSL/TLS certificate inspector
-- **Developer tools** — an uptime and latency monitor, encrypted notes and encrypted backup, a regex tester, a JSON formatter (JSON ↔ YAML / CSV), a hash identifier, a subnet / CIDR calculator, an epoch converter, and UUID and password generators
-- **Built with** C# · .NET · Avalonia UI · Native AOT — a single self-contained binary on desktop, nothing to install
+- **Diagnose** — a **connection doctor** that says in one sentence why a site won't open (DNS tampering, SNI filtering, a blocked IP, a filter page, or down for everyone), **ping, TCP ping, traceroute and MTR** (loss per hop, no admin rights needed), an **internet speed test** with a bufferbloat grade, a **TCP/UDP port scanner** with service and version detection (an nmap alternative), **check host** from servers around the world, and **network info** with a Wi-Fi analyzer, ARP neighbours, open ports and the routing table
+- **DNS and web** — **DNS lookup** over UDP, DNS over HTTPS and DNS over TLS with resolver comparison and an email (SPF, DKIM, DMARC) check, **WHOIS / RDAP**, a **cURL / HTTP client** that imports curl commands (a Postman alternative), an **SSL/TLS certificate inspector**, **IP and GeoIP lookup**, a **Cloudflare manager** with dynamic DNS, and a **Telegram Bot API tester**
+- **Servers and connections** — an **SSH client** (terminal, SFTP, port forwarding, server health), a **TCP / UDP / WebSocket tool** (a netcat alternative), **LAN file sharing and chat** in any browser with a QR code plus a webhook catcher, a **SOCKS5 + HTTP proxy server** with a **proxy checker**, and an **uptime monitor** with Telegram alerts and certificate and domain expiry warnings
+- **Workspace** — **String Lab** (Base64, hashes, JWT, JSON ↔ YAML / CSV, regex, subnet / CIDR calculator, cron, UUID and password generators), **encrypted notes**, and **history with one encrypted backup file**
+- **Built with** C# · .NET · Avalonia UI · Native AOT — self-contained native apps for Windows, macOS (Intel and Apple Silicon), Linux and Android 6.0+, with nothing extra to install, dark and light themes, and secrets encrypted on your device
 
 [Echoes on GitHub](https://github.com/SinaXhpm/Echoes) · [Download Echoes for Windows, macOS, Linux and Android](https://github.com/SinaXhpm/Echoes/releases) · [More projects by Sina Xhpm](https://sinaxhpm.com)
 
@@ -431,6 +432,8 @@ MIT — see [LICENSE](LICENSE).
 
 <sub>
 <b>Keywords</b>: SSH client, SFTP client, Telnet client, VNC viewer, RDP client, remote desktop client, terminal emulator, port forwarding, SSH tunnel manager, SOCKS proxy, HTTP proxy, jump host, ProxyJump, ssh-agent, Pageant, SSH certificates, Teleport, folder mirror, folder sync, remote file edit, encrypted profile sync, self-hosted sync, Windows Hello unlock, Argon2id, AES-256-GCM, TOFU host keys, Rust, Tauri, React, xterm.js, Windows SSH client, macOS SSH client, Linux SSH client, Android SSH client, open source SSH, MIT licensed, PuTTY alternative, WinSCP alternative, MobaXterm alternative, Bitvise alternative, Termius alternative, SecureCRT alternative, Royal TSX alternative, Remmina alternative, ConnectBot alternative, JuiceSSH alternative, rsync GUI, sshfs alternative, Tabby alternative.
+<br/>
+<b>Echoes</b>: network toolkit, network tools, connection doctor, website not loading, DNS tampering test, SNI filtering test, ping, TCP ping, traceroute, MTR, WinMTR alternative, internet speed test, bufferbloat test, port scanner, nmap alternative, check host, Wi-Fi analyzer, DNS over HTTPS, DNS over TLS, DNS benchmark, SPF DKIM DMARC checker, WHOIS, RDAP, cURL GUI, Postman alternative, SSL checker, TLS inspector, IP lookup, GeoIP, Cloudflare manager, Cloudflare DDNS, dynamic DNS client, uptime monitor, Telegram alerts, netcat alternative, WebSocket client, webhook tester, LAN file sharing, QR code file transfer, SOCKS5 proxy server, proxy checker, JWT decoder, CyberChef alternative, encrypted notes.
 </sub>
 
 <sub><i>Bitvise, forever in my heart.</i></sub>
