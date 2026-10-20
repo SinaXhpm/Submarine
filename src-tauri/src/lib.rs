@@ -4914,6 +4914,7 @@ async fn close_profile(
     state: tauri::State<'_, DbState>,
     ssh: tauri::State<'_, SshState>,
     monitor_map: tauri::State<'_, MonitorMap>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<(), String> {
     // 0. Persist any accumulated in-memory changes (chief among them:
     // cmd_history rows written by TerminalView's Enter-key handler, which
@@ -4927,6 +4928,12 @@ async fn close_profile(
     // that never answers would otherwise keep its connection, the node's
     // password or key and its events going), and the list is emptied.
     monitor::stop_all(monitor_map.inner().clone()).await;
+
+    // 1b. Lock sharing too. The account's sharing identity (its secret half
+    // is wiped) outlived a lock until now: someone at the picker could take a
+    // shared profile in under a password of their own. The Profile panel asks
+    // for the sharing passphrase again when sharing is used.
+    cloud.forget_identity().await;
 
     // 2. Collect every active session id, then run the standard
     // disconnect path for each one. This frees tunnel listener sockets,

@@ -326,6 +326,22 @@ struct Inner {
     identity: Option<([u8; 32], [u8; 32])>,
 }
 
+impl Inner {
+    /// Drops the session identity, wiping its secret half first: setting the
+    /// option to `None` alone leaves the bytes where they were.
+    fn forget_identity(&mut self) {
+        wipe_identity(&mut self.identity);
+    }
+}
+
+/// The identity keypair out of memory: the secret is overwritten, then gone.
+fn wipe_identity(identity: &mut Option<([u8; 32], [u8; 32])>) {
+    if let Some((_, secret)) = identity.as_mut() {
+        zeroize::Zeroize::zeroize(secret);
+    }
+    *identity = None;
+}
+
 impl CloudState {
     pub fn new(app: &tauri::AppHandle) -> Arc<Self> {
         let (mut config, mut config_error) = cloud_config::load(app);
@@ -425,7 +441,7 @@ impl CloudState {
         let mut g = self.inner.lock().await;
         delete_stored_token(app);
         g.email = None;
-        g.identity = None;
+        g.forget_identity();
         let token = g.token.take()?;
         Some(Session { endpoint: g.endpoint.clone(), token })
     }
@@ -438,7 +454,7 @@ impl CloudState {
             delete_stored_token(app);
             g.token = None;
             g.email = None;
-            g.identity = None;
+            g.forget_identity();
         }
     }
 
@@ -450,6 +466,13 @@ impl CloudState {
     /// The session identity, if `setup_identity` has run this session.
     pub async fn identity(&self) -> Option<([u8; 32], [u8; 32])> {
         self.inner.lock().await.identity
+    }
+
+    /// Locks sharing again: the next use asks for the sharing passphrase.
+    /// Locking a profile does this, so a computer left at the picker can't
+    /// take a shared profile in under a password of someone else's choosing.
+    pub async fn forget_identity(&self) {
+        self.inner.lock().await.forget_identity();
     }
 
     pub async fn config_view(&self) -> CloudConfigView {
@@ -477,7 +500,7 @@ impl CloudState {
         let old = if g.endpoint.base != base {
             delete_stored_token(app);
             g.email = None;
-            g.identity = None;
+            g.forget_identity();
             g.token.take().map(|token| Session { endpoint: g.endpoint.clone(), token })
         } else {
             None
@@ -1474,6 +1497,16 @@ pub async fn delete_share(app: &tauri::AppHandle, state: &CloudState, session: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wiping_the_identity_leaves_none_and_is_harmless_when_there_is_none() {
+        let mut id = Some(([1u8; 32], [2u8; 32]));
+        wipe_identity(&mut id);
+        assert!(id.is_none());
+        // Locking twice, or locking with sharing never set up, is fine.
+        wipe_identity(&mut id);
+        assert!(id.is_none());
+    }
 
     fn headers(pairs: &[(&'static str, &'static str)]) -> reqwest::header::HeaderMap {
         let mut h = reqwest::header::HeaderMap::new();
