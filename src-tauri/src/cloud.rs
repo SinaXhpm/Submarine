@@ -80,6 +80,11 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[derive(Serialize)]
+struct DeleteAccountRequest<'a> {
+    password: &'a str,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EmailOnlyRequest {
     pub email: String,
@@ -763,6 +768,45 @@ pub async fn cloud_logout(
         revoke(&session).await;
     }
     Ok(())
+}
+
+/// Deletes the signed-in account on its server: the synced profiles, the
+/// sharing key, and the shares it owns (for every member). The password is
+/// asked again, since a token alone can't do this. This device is signed out
+/// after; the profiles on it stay as they are.
+#[tauri::command]
+pub async fn cloud_delete_account(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<CloudState>>,
+    password: String,
+) -> Result<CloudStatus, String> {
+    let password = zeroize::Zeroizing::new(password);
+    if password.is_empty() {
+        return Err("[CLOUD] MISSING_CREDENTIALS".into());
+    }
+    let session = state.session().await?;
+    let request = session
+        .http()
+        .post(session.url("/auth/delete-account"))
+        .json(&DeleteAccountRequest { password: password.as_str() });
+    if let Err(e) = send_authed(&app, &state, &session, request).await {
+        return Err(delete_account_error(e));
+    }
+    // The server dropped the account and every session of it: forget the
+    // sign-in here too, without asking it to revoke what is gone.
+    let _ = state.take_session(&app).await;
+    Ok(state.status().await)
+}
+
+/// What the user is told when the server turns a deletion away.
+fn delete_account_error(e: String) -> String {
+    if e.contains("reauth_required") {
+        "[CLOUD] WRONG_PASSWORD: that isn't this account's password. Nothing was deleted.".to_string()
+    } else if e.contains("no_route") || e.contains("HTTP 404") {
+        "[CLOUD] NOT_SUPPORTED: this sync server can't delete accounts yet, so nothing was deleted. Ask whoever runs it to update it.".to_string()
+    } else {
+        e
+    }
 }
 
 /// Request a password-reset email. We treat 200 from the server as
@@ -1497,6 +1541,18 @@ pub async fn delete_share(app: &tauri::AppHandle, state: &CloudState, session: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_deletion_says_why_in_plain_words() {
+        let wrong = "[CLOUD] reauth_required: Deleting your account needs your account password (password).".to_string();
+        assert!(delete_account_error(wrong).starts_with("[CLOUD] WRONG_PASSWORD"));
+        for old in ["[CLOUD] no_route: POST /auth/delete-account not handled", "[CLOUD] HTTP 404 Not Found"] {
+            assert!(delete_account_error(old.to_string()).starts_with("[CLOUD] NOT_SUPPORTED"), "{old}");
+        }
+        // Anything else (a limit, a network error) goes on as it came.
+        let other = "[CLOUD] rate_limited: slow down".to_string();
+        assert_eq!(delete_account_error(other.clone()), other);
+    }
 
     #[test]
     fn wiping_the_identity_leaves_none_and_is_harmless_when_there_is_none() {
