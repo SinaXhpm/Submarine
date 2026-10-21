@@ -15,7 +15,7 @@
       "name": "Which platforms does Submarine support?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Windows 10 and 11, macOS (Apple Silicon, and Intel via Rosetta), all major Linux distributions (.deb, .rpm, Arch package, AppImage), and Android 7.0+ as a sideloadable APK."
+        "text": "Windows 10 and 11, macOS on Apple Silicon (M1 and later), all major Linux distributions (.deb, .rpm, Arch package, AppImage), and Android 7.0+ as a sideloadable APK."
       }
     },
     {

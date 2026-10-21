@@ -1,7 +1,7 @@
 # SEO / AEO assets for the Submarine website
 
 These structured-data templates belong on whatever public page advertises
-Submarine — currently `sinaxhpm.com/submarine`. They are **not** loaded by
+Submarine — now `submarine.sinaxhpm.com` (the website's own pages carry their own copies). They are **not** loaded by
 the desktop or mobile app: the Tauri WebView CSP (`script-src 'self'`)
 blocks inline `<script>` tags, and AI crawlers don't reach the shell.
 

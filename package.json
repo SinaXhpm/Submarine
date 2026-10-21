@@ -22,7 +22,7 @@
     "xterm",
     "android"
   ],
-  "homepage": "https://sinaxhpm.com/submarine",
+  "homepage": "https://submarine.sinaxhpm.com",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sinaxhpm/submarine.git"
