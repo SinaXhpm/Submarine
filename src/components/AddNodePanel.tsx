@@ -6,9 +6,45 @@ import PasswordField from "./PasswordField";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { folderTree } from "../util/folderTree";
-import { DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_WINDOW_SIZES, type RdpOptions } from "../util/rdpOptions";
+import {
+  DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_COLOR_CHOICES, RDP_EFFECT_CHOICES, RDP_NETWORK_CHOICES, RDP_WINDOW_SIZES,
+  type RdpColors, type RdpEffects, type RdpNetwork, type RdpOptions,
+} from "../util/rdpOptions";
+import {
+  DEFAULT_VNC_OPTIONS, VNC_COLOR_CHOICES, VNC_ENCODING_CHOICES, VNC_FPS_CHOICES, normalizeVncOptions,
+  type VncColors, type VncEncoding, type VncMaxFps, type VncOptions,
+} from "../util/vncOptions";
 import { IS_ANDROID } from "../util/platform";
 import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
+
+// One choice of a server's speed and quality: its label and select, and under
+// them what it does.
+function ChoiceRow({ label, hint, value, onChange, choices }: {
+  label: string;
+  hint?: string;
+  value: string | number;
+  onChange: (value: string) => void;
+  choices: { value: string | number; label: string; disabled?: boolean }[];
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between items-center gap-3">
+        <label className="text-[11px] font-bold text-zinc-400 shrink-0">{label}</label>
+        <select
+          aria-label={label}
+          className="flex-1 min-w-0 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {choices.map((c) => (
+            <option key={c.value} value={c.value} disabled={c.disabled} className="bg-[#1a1a1e]">{c.label}</option>
+          ))}
+        </select>
+      </div>
+      {hint && <p className="text-[10.5px] text-zinc-500 leading-snug ml-1">{hint}</p>}
+    </div>
+  );
+}
 
 // Compact "2h ago" style relative time for the attribution line.
 function relTime(d: Date): string {
@@ -812,6 +848,48 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.allowNoNla ? "translate-x-5" : "translate-x-0"}`} />
                       </button>
                     </div>
+                    <div className="pt-1 space-y-2.5">
+                      <div className="text-[11px] font-bold text-zinc-300">Speed and quality</div>
+                      <ChoiceRow
+                        label="Colours"
+                        hint="Fewer bits is less to send; smooth gradients may show bands."
+                        value={o.colors}
+                        onChange={(v) => set({ colors: Number(v) as RdpColors })}
+                        choices={RDP_COLOR_CHOICES}
+                      />
+                      <ChoiceRow
+                        label="Desktop effects"
+                        hint="Windows servers only. Minimal leaves out the wallpaper, visual styles and animations, for a faster picture on a slow link; Full turns them all on."
+                        value={o.effects}
+                        onChange={(v) => set({ effects: v as RdpEffects })}
+                        choices={RDP_EFFECT_CHOICES}
+                      />
+                      <ChoiceRow
+                        label="Network"
+                        hint="Tells the server how fast the link is. On a slower setting it may send less detail."
+                        value={o.network}
+                        onChange={(v) => set({ network: v as RdpNetwork })}
+                        choices={RDP_NETWORK_CHOICES}
+                      />
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-bold text-zinc-300">Offer RemoteFX</div>
+                          <div className="text-[10.5px] text-zinc-500 leading-snug">
+                            A picture codec of Windows servers. Used only if the server has it; if the picture looks wrong, turn it off.
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => set({ remoteFx: !o.remoteFx })}
+                          role="switch"
+                          aria-label="Offer RemoteFX"
+                          aria-checked={!!o.remoteFx}
+                          className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.remoteFx ? "bg-primary" : "bg-white/10"}`}
+                        >
+                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.remoteFx ? "translate-x-5" : "translate-x-0"}`} />
+                        </button>
+                      </div>
+                    </div>
                   </>) : (<>
                   <div className="flex justify-between items-center gap-3">
                     <label className="text-[11px] font-bold text-zinc-400 shrink-0">Window</label>
@@ -866,6 +944,39 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     </button>
                   </div>
                   </>)}
+                  <p className="text-[10px] text-zinc-500 ml-1">These are kept on this device only, not synced.</p>
+                </div>
+              );
+            })()}
+
+            {/* VNC speed and quality: this device's own (util/vncOptions), not synced. */}
+            {isVnc && (() => {
+              const o: VncOptions = newNode.vncOptions || DEFAULT_VNC_OPTIONS;
+              const set = (patch: Partial<VncOptions>) => setNewNode({ ...newNode, vncOptions: normalizeVncOptions({ ...o, ...patch }) });
+              return (
+                <div className="space-y-2.5 pt-1">
+                  <div className="text-[11px] font-bold text-zinc-300">Speed and quality</div>
+                  <ChoiceRow
+                    label="Encoding"
+                    hint="How the server packs the screen. Automatic suits most links. Tight packs the most but needs full colour; ZRLE packs well at any depth; Raw is the least work for both ends and the most to send."
+                    value={o.encoding}
+                    onChange={(v) => set({ encoding: v as VncEncoding })}
+                    choices={VNC_ENCODING_CHOICES.map((c) => ({ ...c, disabled: c.value === "tight" && o.colors !== 32 }))}
+                  />
+                  <ChoiceRow
+                    label="Colours"
+                    hint="Fewer colours is less to send on a slow link."
+                    value={o.colors}
+                    onChange={(v) => set({ colors: Number(v) as VncColors })}
+                    choices={VNC_COLOR_CHOICES}
+                  />
+                  <ChoiceRow
+                    label="Updates"
+                    hint="Fewer updates a second use less bandwidth and battery; the screen moves less smoothly."
+                    value={o.maxFps}
+                    onChange={(v) => set({ maxFps: Number(v) as VncMaxFps })}
+                    choices={VNC_FPS_CHOICES}
+                  />
                   <p className="text-[10px] text-zinc-500 ml-1">These are kept on this device only, not synced.</p>
                 </div>
               );

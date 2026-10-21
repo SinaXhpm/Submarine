@@ -6,7 +6,7 @@ import { AuthPrompts } from "./AuthPrompts";
 import RemoteScreen, { type RemoteScreenHandle } from "./RemoteScreen";
 import { readUseSshAgent } from "../util/sshAgent";
 import { IS_ANDROID } from "../util/platform";
-import { RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, describeRdpOptions, readRdpOptions, writeRdpOptions } from "../util/rdpOptions";
+import { RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, describeRdpOptions, rdpGraphics, readRdpOptions, writeRdpOptions } from "../util/rdpOptions";
 
 // An RDP server's tab (issue #3). By default Submarine opens the system's RDP
 // app (through a forward on a loopback port while the node has an SSH
@@ -81,13 +81,15 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       if (!canvas) return failed("The tab isn't ready yet. Try again.");
       pushLog({ msg: RDP_BUILTIN_EXPERIMENTAL, type: "warning" });
       const { width, height } = canvas.wantedSize();
+      const options = readRdpOptions(session.serverUuid);
       invoke("rdp_builtin_open", {
         sessionId: session.id,
         serverId: session.serverId,
         useSshAgent: readUseSshAgent(),
         width,
         height,
-        allowNoNla: readRdpOptions(session.serverUuid).allowNoNla,
+        allowNoNla: options.allowNoNla,
+        graphics: rdpGraphics(options),
         frames: canvas.newChannel(),
       }).catch(failed);
       return;

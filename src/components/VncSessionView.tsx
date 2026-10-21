@@ -5,6 +5,7 @@ import { AlertTriangle, Loader2, MonitorSmartphone, RotateCw, ShieldAlert, X } f
 import { AuthPrompts } from "./AuthPrompts";
 import RemoteScreen, { type RemoteScreenHandle } from "./RemoteScreen";
 import { readUseSshAgent } from "../util/sshAgent";
+import { readVncOptions } from "../util/vncOptions";
 
 // A VNC server's tab: the server's screen in the tab itself (vnc_client.rs),
 // straight to it or through the node's SSH server, whose host-key and login
@@ -65,9 +66,10 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       useSshAgent: readUseSshAgent(),
       width,
       height,
+      options: readVncOptions(session.serverUuid),
       frames: screen.newChannel(),
     }).catch(failed);
-  }, [session.id, session.serverId, pushLog]);
+  }, [session.id, session.serverId, session.serverUuid, pushLog]);
 
   // Listen first, then connect: a result that comes back at once must find
   // its listener (see #167).

@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD as B64, Engine as _};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
-use ironrdp::connector::{self, ClientConnector, ClientConnectorState, Credentials, DesktopSize};
+use ironrdp::connector::{self, BitmapConfig, ClientConnector, ClientConnectorState, Credentials, DesktopSize};
 use ironrdp::core::WriteBuf;
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
@@ -29,7 +29,7 @@ use ironrdp::input::{Database, MouseButton, MousePosition, Operation, Scancode, 
 use ironrdp::pdu::gcc::{ConnectionType, KeyboardType};
 use ironrdp::pdu::geometry::InclusiveRectangle;
 use ironrdp::pdu::nego::SecurityProtocol;
-use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
+use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, BitmapCodecs, MajorPlatformType, RailSupportLevel};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
@@ -108,6 +108,124 @@ fn nla_gate(selected: SecurityProtocol, allow_without_nla: bool) -> Result<(), S
     ))
 }
 
+/// Which of the server's desktop effects may be drawn (and sent over the link):
+/// the "experience" choices of Remote Desktop Connection. Only a Windows server
+/// acts on them; others (xrdp) draw what they draw.
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Effects {
+    /// What this client always asked for: the wallpaper and visual styles,
+    /// smooth fonts, no animations and no windows dragged with their contents.
+    #[default]
+    Standard,
+    /// None of them but the picture itself: the least to send on a slow link.
+    Minimal,
+    /// All of them, for a fast link.
+    Full,
+}
+
+/// How fast the link is said to be. The server may send less detail on a slower one.
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Network {
+    #[default]
+    Lan,
+    Broadband,
+    Slow,
+}
+
+/// What the page asks of the picture for one server (the "Speed and quality"
+/// choices of the tab, `rdpOptions.ts`). The default is what this client asked
+/// for before they existed, byte for byte (`connector_config` is tested for it).
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Graphics {
+    /// Bits a pixel: 32, 24 or 16. Less is less to send, and gradients band.
+    pub colors: u8,
+    pub effects: Effects,
+    pub network: Network,
+    /// Offer RemoteFX, a picture codec of Windows servers; it is used only if the server has it.
+    pub remote_fx: bool,
+}
+
+impl Default for Graphics {
+    fn default() -> Self {
+        Self { colors: 32, effects: Effects::Standard, network: Network::Lan, remote_fx: false }
+    }
+}
+
+impl Graphics {
+    /// The choices as the page sent them, or why they can't be used.
+    pub fn checked(self) -> Result<Self, String> {
+        if matches!(self.colors, 16 | 24 | 32) {
+            Ok(self)
+        } else {
+            Err(format!("{}-bit colour isn't one of 16, 24 and 32", self.colors))
+        }
+    }
+
+    /// A one-line account for the tab's log, where the choices are not the standard ones.
+    pub fn describe(&self) -> Option<String> {
+        if *self == Self::default() {
+            return None;
+        }
+        let effects = match self.effects {
+            Effects::Standard => "standard desktop effects",
+            Effects::Minimal => "minimal desktop effects",
+            Effects::Full => "all desktop effects",
+        };
+        let network = match self.network {
+            Network::Lan => "a fast network",
+            Network::Broadband => "broadband",
+            Network::Slow => "a slow network",
+        };
+        let mut parts = vec![format!("{}-bit colour", self.colors), effects.to_string(), network.to_string()];
+        if self.remote_fx {
+            parts.push("RemoteFX offered".to_string());
+        }
+        Some(format!("Speed and quality: {}.", parts.join(", ")))
+    }
+
+    fn connection_type(&self) -> ConnectionType {
+        match self.network {
+            Network::Lan => ConnectionType::Lan,
+            Network::Broadband => ConnectionType::BroadbandHigh,
+            Network::Slow => ConnectionType::BroadbandLow,
+        }
+    }
+
+    fn performance_flags(&self) -> PerformanceFlags {
+        match self.effects {
+            Effects::Standard => PerformanceFlags::default(),
+            Effects::Minimal => {
+                PerformanceFlags::DISABLE_WALLPAPER
+                    | PerformanceFlags::DISABLE_FULLWINDOWDRAG
+                    | PerformanceFlags::DISABLE_MENUANIMATIONS
+                    | PerformanceFlags::DISABLE_THEMING
+                    | PerformanceFlags::DISABLE_CURSOR_SHADOW
+                    | PerformanceFlags::DISABLE_CURSORSETTINGS
+            }
+            Effects::Full => PerformanceFlags::ENABLE_FONT_SMOOTHING | PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
+        }
+    }
+
+    /// The picture settings of the connection; none (the connector's own
+    /// defaults: 32 bits, no codecs, lossless) where nothing was asked for.
+    fn bitmap(&self) -> Option<BitmapConfig> {
+        // On a link that isn't fast, the server may lower the picture's detail.
+        let lossy = self.network != Network::Lan;
+        if self.colors == 32 && !lossy && !self.remote_fx {
+            return None;
+        }
+        let codecs = if self.remote_fx {
+            client_codecs_capabilities(&[]).unwrap_or(BitmapCodecs(Vec::new()))
+        } else {
+            BitmapCodecs(Vec::new())
+        };
+        Some(BitmapConfig { lossy_compression: lossy, color_depth: u32::from(self.colors), codecs })
+    }
+}
+
 /// Who to log in as, and the first size of the desktop.
 pub struct Login {
     /// The server's name as the user gave it (TLS name and CredSSP target).
@@ -119,6 +237,7 @@ pub struct Login {
     pub height: u16,
     /// This server may be logged in to without NLA (see `nla_gate`).
     pub allow_no_nla: bool,
+    pub graphics: Graphics,
 }
 
 /// "DOMAIN\user" or "user@domain" as the login name and domain NLA wants.
@@ -220,12 +339,12 @@ fn connector_config(login: &Login) -> connector::Config {
         keyboard_subtype: 0,
         keyboard_layout: 0,
         keyboard_functional_keys_count: 12,
-        connection_type: ConnectionType::Lan,
+        connection_type: login.graphics.connection_type(),
         ime_file_name: String::new(),
         dig_product_id: String::new(),
         desktop_size: DesktopSize { width: login.width, height: login.height },
         monitor_layout: None,
-        bitmap: None,
+        bitmap: login.graphics.bitmap(),
         client_build: 0,
         client_name: "Submarine".to_owned(),
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
@@ -251,7 +370,7 @@ fn connector_config(login: &Login) -> connector::Config {
         compression_type: None,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
-        performance_flags: PerformanceFlags::default(),
+        performance_flags: login.graphics.performance_flags(),
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,
@@ -625,6 +744,7 @@ fn login_error(e: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ironrdp::pdu::rdp::capability_sets::CodecProperty;
 
     #[test]
     fn domain_forms() {
@@ -648,6 +768,122 @@ mod tests {
         }
         // Nothing selected is no NLA either.
         assert!(nla_gate(SecurityProtocol::empty(), false).is_err());
+    }
+
+    fn login_with(graphics: Graphics) -> Login {
+        Login {
+            host: "server".into(),
+            username: "user".into(),
+            domain: None,
+            password: Zeroizing::new("secret".into()),
+            width: 1280,
+            height: 720,
+            allow_no_nla: false,
+            graphics,
+        }
+    }
+
+    // A server nobody changed the speed and quality of must be asked exactly
+    // what it was asked before they existed.
+    #[test]
+    fn untouched_speed_and_quality_ask_what_the_client_always_asked() {
+        let c = connector_config(&login_with(Graphics::default()));
+        assert!(c.bitmap.is_none(), "no picture settings of its own");
+        assert_eq!(c.performance_flags, PerformanceFlags::default());
+        assert_eq!(c.connection_type, ConnectionType::Lan);
+        assert_eq!(Graphics::default().describe(), None, "nothing to say about the standard ones");
+        // What the page keeps for a server that never had them is the default too.
+        assert_eq!(serde_json::from_str::<Graphics>("{}").unwrap(), Graphics::default());
+        assert!(Graphics::default().checked().is_ok());
+    }
+
+    #[test]
+    fn fewer_colours_and_a_slower_link_change_the_picture_settings() {
+        let b = connector_config(&login_with(Graphics { colors: 16, ..Graphics::default() })).bitmap.expect("16 bits is a setting");
+        assert_eq!((b.color_depth, b.lossy_compression, b.codecs.0.len()), (16, false, 0));
+        let b = connector_config(&login_with(Graphics { colors: 24, ..Graphics::default() })).bitmap.unwrap();
+        assert_eq!(b.color_depth, 24);
+        // A link that isn't fast: the server may lower the detail, and is told how fast it is.
+        for (network, kind) in [(Network::Broadband, ConnectionType::BroadbandHigh), (Network::Slow, ConnectionType::BroadbandLow)] {
+            let c = connector_config(&login_with(Graphics { network, ..Graphics::default() }));
+            assert_eq!(c.connection_type, kind);
+            let b = c.bitmap.expect("a slower link is a setting");
+            assert_eq!((b.color_depth, b.lossy_compression, b.codecs.0.len()), (32, true, 0));
+        }
+        assert_eq!(connector_config(&login_with(Graphics::default())).connection_type, ConnectionType::Lan);
+    }
+
+    #[test]
+    fn remotefx_is_offered_only_when_asked_for() {
+        let b = connector_config(&login_with(Graphics { remote_fx: true, ..Graphics::default() })).bitmap.expect("RemoteFX is a setting");
+        assert_eq!((b.color_depth, b.lossy_compression), (32, false));
+        assert!(!b.codecs.0.is_empty() && b.codecs.0.iter().all(|c| matches!(c.property, CodecProperty::RemoteFx(_))));
+        // With the other choices it stays one codec (RemoteFX), nothing else is offered.
+        let b = connector_config(&login_with(Graphics { colors: 16, network: Network::Slow, remote_fx: true, ..Graphics::default() })).bitmap.unwrap();
+        assert_eq!((b.color_depth, b.lossy_compression, b.codecs.0.len()), (16, true, 1));
+    }
+
+    #[test]
+    fn desktop_effects_map_to_the_servers_flags() {
+        let flags = |effects| connector_config(&login_with(Graphics { effects, ..Graphics::default() })).performance_flags;
+        assert_eq!(flags(Effects::Standard), PerformanceFlags::default());
+        let minimal = flags(Effects::Minimal);
+        for f in [
+            PerformanceFlags::DISABLE_WALLPAPER,
+            PerformanceFlags::DISABLE_THEMING,
+            PerformanceFlags::DISABLE_MENUANIMATIONS,
+            PerformanceFlags::DISABLE_FULLWINDOWDRAG,
+        ] {
+            assert!(minimal.contains(f), "{f:?}");
+        }
+        assert!(!minimal.intersects(PerformanceFlags::ENABLE_FONT_SMOOTHING | PerformanceFlags::ENABLE_DESKTOP_COMPOSITION));
+        let full = flags(Effects::Full);
+        assert!(full.contains(PerformanceFlags::ENABLE_FONT_SMOOTHING | PerformanceFlags::ENABLE_DESKTOP_COMPOSITION));
+        assert!(!full.intersects(
+            PerformanceFlags::DISABLE_WALLPAPER
+                | PerformanceFlags::DISABLE_THEMING
+                | PerformanceFlags::DISABLE_MENUANIMATIONS
+                | PerformanceFlags::DISABLE_FULLWINDOWDRAG
+        ));
+    }
+
+    #[test]
+    fn the_page_sends_camel_case_and_a_depth_that_isnt_offered_is_refused() {
+        let g: Graphics = serde_json::from_str(r#"{"colors":16,"effects":"minimal","network":"broadband","remoteFx":true}"#).unwrap();
+        assert_eq!(g, Graphics { colors: 16, effects: Effects::Minimal, network: Network::Broadband, remote_fx: true });
+        // A part left out is the standard one.
+        assert_eq!(serde_json::from_str::<Graphics>(r#"{"colors":16}"#).unwrap(), Graphics { colors: 16, ..Graphics::default() });
+        for colors in [0u8, 8, 15, 33, 255] {
+            assert!(Graphics { colors, ..Graphics::default() }.checked().is_err(), "{colors}");
+        }
+        for colors in [16u8, 24, 32] {
+            assert!(Graphics { colors, ..Graphics::default() }.checked().is_ok(), "{colors}");
+        }
+        // A word this client doesn't know is an error, not the standard.
+        assert!(serde_json::from_str::<Graphics>(r#"{"effects":"wild"}"#).is_err());
+        assert!(serde_json::from_str::<Graphics>(r#"{"network":"dialup"}"#).is_err());
+        assert!(serde_json::from_str::<Graphics>(r#"{"colors":"16"}"#).is_err());
+    }
+
+    #[test]
+    fn the_log_line_says_what_was_chosen() {
+        let g = Graphics { colors: 16, effects: Effects::Minimal, network: Network::Slow, remote_fx: true };
+        assert_eq!(
+            g.describe().as_deref(),
+            Some("Speed and quality: 16-bit colour, minimal desktop effects, a slow network, RemoteFX offered.")
+        );
+        assert_eq!(
+            Graphics { effects: Effects::Full, ..Graphics::default() }.describe().as_deref(),
+            Some("Speed and quality: 32-bit colour, all desktop effects, a fast network.")
+        );
+    }
+
+    #[test]
+    fn the_tab_and_the_backend_use_the_same_words() {
+        let ts = include_str!("../../src/util/rdpOptions.ts");
+        for word in ["\"minimal\"", "\"full\"", "\"standard\"", "\"broadband\"", "\"slow\"", "\"lan\"", "remoteFx"] {
+            assert!(ts.contains(word), "src/util/rdpOptions.ts must use {word}, as rdp_client::Graphics does");
+        }
     }
 
     #[test]
