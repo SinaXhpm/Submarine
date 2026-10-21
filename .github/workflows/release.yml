@@ -17,9 +17,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version tag (e.g. v0.1.0)"
+        description: "Version tag (e.g. v0.1.0); at least 0.0.1, which is the lowest an Android package may have"
         required: true
-        default: "v0.0.0-test"
+        default: "v0.0.1-test"
       publish_release:
         description: "Attach artifacts to a GitHub Release"
         required: false
