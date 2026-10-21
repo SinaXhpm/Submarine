@@ -1,0 +1,611 @@
+{
+  "meta": {
+    "name": "Türkçe",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "İçeriğe geç",
+    "features": "Özellikler",
+    "security": "Güvenlik",
+    "privacy": "Gizlilik",
+    "download": "İndir",
+    "github": "GitHub",
+    "language": "Dil",
+    "home": "Submarine ana sayfası",
+    "menu": "Menü"
+  },
+  "common": {
+    "tagline": "SSH, SFTP, RDP, VNC ve Telnet istemcisi",
+    "freeLine": "Ücretsiz ve açık kaynak · MIT lisansı",
+    "newIn": "0.4'te yeni",
+    "readMore": "Devamını okuyun",
+    "learnHow": "Nasıl çalıştığını görün",
+    "updated": "Son güncelleme: {date}",
+    "translationNote": "Bu sayfa bir çeviridir. İngilizce sürümden farklı olduğu durumlarda geçerli olan İngilizce sürümdür.",
+    "englishVersion": "İngilizce sürüm",
+    "screenshotOf": "Ekran görüntüsü: {what}",
+    "openFull": "Görseli tam boyutta açın",
+    "codeLink": "{file}, satır {from}–{to}",
+    "example": "Örnek"
+  },
+  "footer": {
+    "madeBy": "{author} tarafından geliştirildi.",
+    "license": "MIT lisansıyla ücretsiz ve açık kaynaklı.",
+    "deleteAccount": "Hesabınızı silin",
+    "releases": "Sürümler",
+    "issues": "Sorun bildirin",
+    "author": "sinaxhpm.com",
+    "noTracking": "Bu web sitesi çerez, analitik ya da üçüncü taraf betik kullanmaz."
+  },
+  "home": {
+    "title": "Submarine – Windows, macOS, Linux ve Android için ücretsiz SSH, SFTP, RDP, VNC ve Telnet istemcisi",
+    "description": "Submarine, ücretsiz ve açık kaynaklı bir uzaktan erişim uygulamasıdır: SSH terminali, iki panelli SFTP, port yönlendirme, uzak masaüstü (RDP, VNC) ve Telnet tek pencerede. Sunucularınız, parolalarınız ve anahtarlarınız cihazlarınızda şifreli olarak kalır.",
+    "hero": {
+      "eyebrow": "Ücretsiz ve açık kaynak",
+      "title": "Tüm sunucularınız tek bir şifreli uygulamada",
+      "lede": "Submarine; Windows, macOS, Linux ve Android için bir SSH, SFTP, RDP, VNC ve Telnet istemcisidir. Sunucularınız, parolalarınız ve anahtarlarınız cihazınızda şifrelenir ve yalnızca siz isterseniz cihazlarınız arasında eşitlenir.",
+      "download": "İndir",
+      "security": "Verileriniz nasıl korunuyor",
+      "points": [
+        "Reklam yok",
+        "Takip yok",
+        "Ücretli plan yok",
+        "Hesap gerekmez"
+      ],
+      "imageAlt": "Bilgisayarda Submarine: solda bir SSH terminali, sağda iki panelli dosya tarayıcısı"
+    },
+    "features": {
+      "title": "Sunucularınız için her şey tek pencerede",
+      "lede": "Terminal, dosya aktarım aracı, tünel yöneticisi ve uzak masaüstü görüntüleyicisi yerine tek bir uygulama.",
+      "items": [
+        {
+          "id": "terminal",
+          "title": "Size ayak uyduran bir terminal",
+          "text": "Sekmeler, bölünmüş görünüm ve birçok sunucuyu yan yana gösterip hepsine aynı anda yazmanızı sağlayan Wall görünümü. 24 bit renk (true color), 10.000 satırlık geri kaydırma, renk şemaları ve Nerd Fonts.",
+          "alt": "Wall görünümü: tek pencerede yan yana üç sunucu"
+        },
+        {
+          "id": "files",
+          "title": "Dosyalar yan yana",
+          "text": "Sürükle-bırak destekli, iki panelli SFTP. İki klasörü karşılaştırın, uzak dosyaları doğrudan düzenleyin, arşiv oluşturup açın ve sudo ile root olarak çalışın – SFTP olmayan sunucularda bile.",
+          "alt": "Yerel bir klasörün uzaktaki bir klasörle karşılaştırılması: Farklı olan dosyalar işaretli"
+        },
+        {
+          "id": "desktops",
+          "title": "Uzak masaüstü de var",
+          "text": "RDP ve VNC, doğrudan ya da SSH sunucularınızdan biri üzerinden bir sekmede açılır. Eski switch ve yönlendiriciler için Telnet de var. Şifrelenmemiş bağlantılar açıkça işaretlenir.",
+          "alt": "Bir Submarine sekmesinde RDP ile açılmış bir uzak masaüstü",
+          "new": true
+        },
+        {
+          "id": "tunnels",
+          "title": "Komut satırına gerek kalmadan tüneller",
+          "text": "Ad verebileceğiniz yerel, uzak ve SOCKS yönlendirmeleri. İsterseniz uygulamayla birlikte başlarlar ve her bağlantı canlı bir günlükte görünür.",
+          "alt": "Port yönlendirme paneli: üç tünel ve durumları"
+        },
+        {
+          "id": "fits",
+          "title": "Zaten kullandıklarınızla çalışır",
+          "text": "~/.ssh/config dosyanızı okur; SSH ajanınızı (Pageant, Windows'un OpenSSH ajanı, 1Password, donanım anahtarları), OpenSSH sertifikalarını, atlama sunucularını (jump host) ve proxy'leri kullanır. PuTTY, MobaXterm ve OpenSSH yapılandırmalarını içe aktarır.",
+          "alt": "~/.ssh/config dosyasından içe aktarma seçeneğiyle yeni sunucu formu"
+        },
+        {
+          "id": "monitor",
+          "title": "Bir şey bozulduğunda haberiniz olsun",
+          "text": "CPU, bellek, disk ve ağı SSH üzerinden izler ve bir sunucu çöktüğünde size haber verir. Sunucu bilgileri, servisler ve Docker konteynerleri tek bir yerde.",
+          "alt": "İzleme: canlı grafiklerle üç sunucu"
+        },
+        {
+          "id": "vault",
+          "title": "Kimlik bilgileriniz kilit altında",
+          "text": "Parolalar ve anahtarlar, yalnızca sizin parolanızın açabildiği şifreli bir profilde durur. Profilin kilidini Windows Hello ile ya da Android'de parmak izinizle açabilirsiniz.",
+          "alt": "Şifreli profilde kayıtlı kimlik bilgileri ve SSH anahtarları"
+        },
+        {
+          "id": "phone",
+          "title": "Telefonunuzda da",
+          "text": "Android'de aynı profil: tuş çubuklu bir terminal, dosya aktarımı, uzak masaüstü ve tüneller.",
+          "alt": "Android telefonda Submarine: tuş çubuklu bir SSH terminali"
+        }
+      ]
+    },
+    "privacy": {
+      "title": "Gizlilik odaklı tasarım",
+      "lede": "Verileriniz kaydedilmeden önce de cihazınızdan çıkmadan önce de şifrelenir. Sunucumuzun tam olarak neyi görebildiğini ve neyi göremediğini yayımlıyoruz.",
+      "items": [
+        {
+          "title": "Cihazınızda şifrelenir",
+          "text": "Profiller AES-256-GCM ile şifrelenir. Anahtar, parolanızdan Argon2id ile türetilir. Parolanın kendisi hiçbir zaman saklanmaz ve gönderilmez."
+        },
+        {
+          "title": "Eşitleme isteğe bağlıdır",
+          "text": "Eşitlemeyi açarsanız her öğe önce cihazınızda şifrelenir. Sunucu yalnızca şifreli hâlini saklar. Yine de çevresindeki bazı ayrıntıları, örneğin e-posta adresinizi ve ne zaman eşitleme yaptığınızı görür; bunların hepsini listeliyoruz."
+        },
+        {
+          "title": "Takip yok",
+          "text": "Reklam yok, analitik yok, çökme raporu yok. Uygulama yalnızca sizin sunucularınızla, giriş yaparsanız eşitleme sunucusuyla ve yeni bir sürüm olup olmadığını denetlemek için GitHub ile iletişim kurar."
+        }
+      ],
+      "link": "Nasıl çalıştığı ve bunu kendiniz nasıl doğrulayabileceğiniz"
+    },
+    "free": {
+      "title": "Ücretsiz. Gerçekten.",
+      "items": [
+        "Submarine, MIT lisansıyla ücretsiz ve açık kaynaklıdır. Ücretli plan, deneme süresi ya da reklam yoktur.",
+        "Hesap açmanıza gerek yok. Hesap yalnızca cihazlarınız arasındaki isteğe bağlı eşitleme içindir.",
+        "Eşitleme hizmeti de makul sınırlar içinde ücretsizdir: hesap başına {limitMb} MB şifreli veri, {limitItems} öğe ve {limitProfiles} profil.",
+        "Kaynak kodu herkese açıktır. Kodu okuyabilir, uygulamayı kendiniz derleyebilir ya da kendi eşitleme sunucunuzu kullanabilirsiniz."
+      ]
+    },
+    "download": {
+      "title": "Submarine'i indirin",
+      "lede": "Tüm indirmeler, projenin GitHub'daki sürümlerinden (releases) gelir.",
+      "button": "İndir",
+      "platforms": [
+        {
+          "id": "windows",
+          "name": "Windows",
+          "detail": "Windows 10 ve 11 · yükleyici (.exe, .msi) ya da taşınabilir .zip"
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "detail": "Apple Silicon (M1 ve sonrası) · .dmg"
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "detail": ".deb, .rpm, Arch paketi ve AppImage"
+        },
+        {
+          "id": "android",
+          "name": "Android",
+          "detail": "Android 7.0 ve üzeri · .apk"
+        }
+      ],
+      "betaNote": "0.4 sürümü şu anda test ediliyor. “0.4'te yeni” olarak işaretlenen özellikler bu sürümle gelir; o zamana kadar sunulan sürüm, en son kararlı sürümdür.",
+      "verifyTitle": "İndirdiğiniz dosyayı doğrulayın",
+      "verify": [
+        "0.4 sürümünden itibaren her sürümde, indirilebilen her dosyanın sağlama toplamını içeren bir SHA256SUMS dosyası bulunur.",
+        "Android uygulaması geliştiricinin anahtarıyla imzalanmıştır. Sertifikanın SHA-256 parmak izi: <code class=\"hash\">{certSha256}</code>.",
+        "Windows ve macOS derlemeleri henüz kod imzalı değil; bu yüzden onları ilk açtığınızda sisteminiz sizi uyarabilir."
+      ]
+    },
+    "faq": {
+      "title": "Sorular",
+      "items": [
+        {
+          "q": "Submarine gerçekten ücretsiz mi?",
+          "a": "Evet. Uygulama MIT lisansıyla ücretsiz ve açık kaynaklıdır; ücretli plan ya da reklam yoktur. Eşitleme hizmeti de yukarıdaki sınırlar içinde ücretsizdir."
+        },
+        {
+          "q": "Hesap açmam gerekiyor mu?",
+          "a": "Hayır. Her şey hesap olmadan da çalışır. Hesap yalnızca profilleri cihazlarınız arasında eşitlemek istiyorsanız gerekir."
+        },
+        {
+          "q": "Eşitleme sunucusu parolalarımı okuyabilir mi?",
+          "a": "Hayır. Her öğe, yüklenmeden önce cihazınızda şifrelenir ve anahtar hiçbir zaman sunucuya ulaşmaz. Ancak sunucu, verilerinizin çevresindeki bazı ayrıntıları görür; örneğin e-posta adresinizi, ne zaman eşitleme yaptığınızı ve kaç öğeniz olduğunu. Güvenlik sayfası bunların hepsini listeler."
+        },
+        {
+          "q": "Profil parolamı unutursam ne olur?",
+          "a": "O zaman o profili kimse açamaz, biz de açamayız. Parola hiçbir yerde saklanmadığı için kurtarma yolu yoktur. Parolanızı güvenli bir yerde tutun."
+        },
+        {
+          "q": "Hangi sistemlerde çalışıyor?",
+          "a": "Windows 10 ve 11, Apple Silicon üzerinde macOS (M1 ve sonrası), Linux (.deb, .rpm, Arch, AppImage) ve Android 7.0 veya üzeri."
+        },
+        {
+          "q": "Kendi eşitleme sunucumu kullanabilir miyim?",
+          "a": "Evet. Uygulamada Cloud sync bölümünü açın ve eşitleme sunucusunu değiştirin. Sunucumuzun kodu yayımlanmamıştır; bu yüzden kendi sunucunuzun aynı API'yi sunması gerekir. Bu API, uygulamanın kaynak kodunda açıklanmıştır."
+        },
+        {
+          "q": "Hesabımı nasıl silerim?",
+          "a": "Uygulamada (0.4 ve sonraki sürümler): Cloud sync → Delete account. Bunu <a href=\"{deleteUrl}\">hesap silme sayfasından</a> da yapabilirsiniz."
+        }
+      ]
+    }
+  },
+  "security": {
+    "title": "Submarine verilerinizi nasıl korur ve bunu nasıl doğrulayabilirsiniz",
+    "description": "Submarine'in neyi nasıl şifrelediği, eşitleme sunucusunun neyi görüp neyi göremediği, kötü niyetli bir sunucunun yine de neler yapabileceği ve her iddiayı açık kaynak kodda adım adım doğrulamanın yolları.",
+    "heading": "Verileriniz nasıl korunuyor",
+    "lede": "Sizden bize güvenmenizi istemiyoruz. Bu sayfa tam olarak neyin şifrelendiğini, sunucumuzun neyi görüp neyi göremediğini ve her iddiayı kendiniz nasıl doğrulayabileceğinizi açıklıyor.",
+    "summaryTitle": "Bir dakikada özet",
+    "summary": [
+      "Submarine'de kaydettiğiniz her şey, cihazınızda AES-256-GCM ile şifrelenmiş tek bir dosyada tutulur.",
+      "Bu dosyanın anahtarı, profil parolanızdan Argon2id ile türetilir. Argon2id, tahmin denemelerini maliyetli kılmak için bilerek yavaş çalışan bir yöntemdir. Parola hiçbir zaman saklanmaz ve hiçbir yere gönderilmez.",
+      "Eşitlemeyi açarsanız her öğe, yüklenmeden önce cihazınızda şifrelenir. Sunucu, şifresini çözemediği verileri saklar.",
+      "Ancak sunucu, verilerinizin dışarıdan görünen kısmını görür: e-posta adresinizi, ne zaman ve hangi IP adresinden eşitleme yaptığınızı, her türden kaç öğeniz olduğunu ve bunların ne kadar büyük olduğunu, profil adlarınızı; paylaşılan profillerde de paylaşım adlarını ve üyelerin e-posta adreslerini.",
+      "Uygulamada reklam, analitik ya da çökme raporlama yoktur."
+    ],
+    "canCannot": {
+      "cannotTitle": "Sunucunun okuyamadıkları",
+      "cannot": [
+        "Öğelerinizin içeriği: adlar, adresler, portlar, kullanıcı adları, parolalar, özel anahtarlar ve bunların parolaları, tüneller, notlar, komutlar, klasör adları",
+        "Hangi kimlik bilgisinin ya da anahtarın hangi sunucuya ait olduğu",
+        "Bir öğeyi kimin değiştirdiği",
+        "Profil parolanız, paylaşım parolanız ve profillerinizi açan anahtarlar"
+      ],
+      "canTitle": "Sunucunun görebildikleri",
+      "can": [
+        "E-posta adresiniz ve giriş yaptığınızda hesap parolanız (sunucu, parolanın yalnızca bcrypt hash'ini saklar)",
+        "Giriş ve eşitlemelerin IP adresi ve zamanı",
+        "Bir profilde her türden kaç öğe olduğu, öğelerin boyutları, her birinin ne zaman ve hangi cihaz (rastgele bir ID) tarafından değiştirildiği",
+        "Profil adlarınız",
+        "Paylaşılan profillerde: paylaşım adları, üyelerin e-posta adresleri ve rolleri"
+      ]
+    },
+    "diagram": {
+      "title": "Eşitleme sırasında neler olur",
+      "device": "Cihazınız",
+      "password": "Profil parolası",
+      "kdf": "Argon2id",
+      "key": "Profil anahtarı",
+      "encrypt": "AES-256-GCM",
+      "items": "Şifreli öğeler",
+      "https": "HTTPS",
+      "server": "Eşitleme sunucusu",
+      "stores": "Şifreli öğeleri ve yukarıda listelenen ayrıntıları saklar",
+      "never": "Cihazınızdan hiç çıkmaz",
+      "caption": "Parola ve anahtarlar cihazınızda kalır. Yalnızca şifreli öğeler ve bunların çevresindeki ayrıntılar gönderilir."
+    },
+    "sections": [
+      {
+        "id": "device",
+        "title": "1. Cihazınızda",
+        "paragraphs": [
+          "Her profil tek bir dosyadır. Dosyanın içinde sunucularınızı, kimlik bilgilerinizi, SSH anahtarlarınızı, notlarınızı ve ayarlarınızı tutan küçük bir veritabanı vardır. Veritabanının tamamı önce sıkıştırılır, sonra AES-256-GCM ile şifrelenir. Dosya her kaydedildiğinde yeni ve rastgele bir nonce kullanılır. Dosya önce geçici bir kopyaya yazılır; böylece bir çökme geride yarım kalmış bir dosya bırakamaz.",
+          "Anahtar, profil parolanızdan Argon2id ile türetilir; bunun için {argonMem} bellek, {argonPasses} geçiş, {argonLanes} şerit (lane) ve her profile özel rastgele bir tuz (salt) kullanılır. Bu ayarlar uygulamanın içinde sabittir; bu yüzden değiştirilmiş bir dosya onları zayıflatamaz.",
+          "Parola hiçbir zaman diske yazılmaz ve hiçbir yere gönderilmez. Anahtar türetildikten sonra parolanın uygulama çekirdeğindeki kopyası bellekten silinir; anahtar da profili kilitlediğinizde bellekten silinir. Parolanızı unutursanız profil açılamaz. Sıfırlama yolu yoktur, çünkü profili açabilecek hiçbir şey hiçbir yerde tutulmaz.",
+          "Hızlı kilit açma isteğe bağlıdır ve varsayılan olarak kapalıdır. Windows'ta Windows Hello ve TPM, Android'de parmak izi sensörü ve Android Keystore kullanılır. Sistemin sakladığı şey profilin anahtarıdır, asla parolanız değil; bu anahtar da hiçbir zaman eşitlenmez. Android'de, sistemin uygulama verilerini buluta yedeklemesi kapalıdır."
+        ],
+        "code": [
+          "deriveKey",
+          "encrypt",
+          "saveVault"
+        ]
+      },
+      {
+        "id": "sync",
+        "title": "2. Cloud sync (bulut eşitleme)",
+        "paragraphs": [
+          "Eşitleme, siz giriş yapana kadar kapalıdır. Her profilin kendine ait, rastgele 256 bitlik bir veri anahtarı vardır ve bu anahtar şifreli profilin içinde durur. Yüklenmeden önce her öğe (bir sunucu, bir kimlik bilgisi, bir anahtar, bir not…) bu anahtarla, AES-256-GCM ve yeni, rastgele bir nonce kullanılarak ayrı ayrı şifrelenir.",
+          "Sunucu, her şifreli öğeyle birlikte şunları alır: rastgele bir ID, öğenin türü, bir zaman damgası ve öğenin silinip silinmediğini gösteren bir işaret. Zaman damgası, değişikliği yapan cihazın rastgele bir ID'sini içerir. Şifreli öğenin boyutu, öğenin aşağı yukarı ne kadar büyük olduğunu gösterir. Sunucu ayrıca her profilin adını saklar. Bilinen sunucu anahtarları (known hosts), komut geçmişi ve izleme ayarları hiçbir zaman eşitlenmez."
+        ],
+        "example": "Sunucunun tek bir öğe için sakladığı veri şöyledir:",
+        "code": [
+          "encryptEntity",
+          "collectRecords"
+        ]
+      },
+      {
+        "id": "newdevice",
+        "title": "3. Bir profili yeni bir cihazda açmak",
+        "paragraphs": [
+          "Eşitlenmiş bir profili başka bir cihazda açmak için o cihazın, profilin veri anahtarına ihtiyacı vardır. Bu yüzden sunucu bir kayıt daha tutar: profil parolanızdan aynı Argon2id ayarlarıyla türetilen bir anahtarla şifrelenmiş veri anahtarı. Sunucu bu kaydı açamaz.",
+          "Sunucunun verileri bir gün çalınırsa, bir saldırganın deneyebileceği başlıca şey de budur: profil parolanızı çevrim dışı tahmin etmek. Her tahmin tam bir Argon2id çalıştırmasına mal olur; bu yüzden başka hiçbir yerde kullanmadığınız uzun bir parola verilerinizi güvende tutar."
+        ],
+        "code": [
+          "escrowBuild",
+          "escrowOpen"
+        ]
+      },
+      {
+        "id": "account",
+        "title": "4. Hesap parolanız",
+        "paragraphs": [
+          "Eşitleme hesabınızın, profil parolanızdan ayrı, kendine ait bir parolası vardır. Bu parola, giriş yaptığınızda HTTPS üzerinden sunucuya gönderilir ve sunucu onun yalnızca bcrypt hash'ini saklar. {lockoutTries} kez yanlış parola girildikten sonra parolayla giriş {lockoutMinutes} dakika duraklatılır.",
+          "Hizmet, Cloudflare'in arkasında çalışır; hizmetin HTTPS bağlantısını Cloudflare yönetir. Bu yüzden Cloudflare de tıpkı sunucu gibi giriş yaptığınızda hesap parolanızı görebilir; öğelerinizi ise yalnızca şifreli hâlleriyle görebilir.",
+          "Profil parolanızı asla hesap parolanız olarak kullanmayın. Böylece sunucunun ya da Cloudflare'in gördüğü hiçbir şey profillerinizi açamaz."
+        ],
+        "code": [
+          "loginRequest"
+        ]
+      },
+      {
+        "id": "sharing",
+        "title": "5. Bir profili paylaşmak",
+        "paragraphs": [
+          "Profil paylaşabilmek için her hesabın bir X25519 anahtar çifti vardır. Özel anahtar, paylaşım parolanızdan (yine Argon2id ile) türetilen bir anahtarla şifrelenir ve paylaşım parolası cihazınızdan hiç çıkmaz. Paylaşılan bir profilin her üyesi, profilin veri anahtarını kendi açık anahtarıyla mühürlenmiş olarak alır.",
+          "Birini davet ettiğinizde uygulama, sunucunun o e-posta adresi için verdiği açık anahtarı kullanır. Bir üyenin anahtarı sonradan değişirse uygulama bunu size bildirir ve o kişiyle karşılaştırabileceğiniz bir parmak izi gösterir. Sunucu, paylaşılan profillerin adlarını ve kimlerin üye olduğunu bilir, ama içlerinde ne olduğunu bilmez."
+        ],
+        "code": [
+          "sealTo",
+          "invite"
+        ]
+      },
+      {
+        "id": "hostile",
+        "title": "6. Sunucu kötü niyetli olsaydı",
+        "paragraphs": [
+          "İyi bir güvenlik, yalnızca bir sunucunun yapması gerekenlerle ilgili değildir. Sunucunun tam kontrolü elinde olan birinin neler yapabileceği ve neler yapamayacağı aşağıdadır."
+        ],
+        "cannotTitle": "Yapamayacakları",
+        "cannot": [
+          "Öğelerinizi okumak ya da içeriklerini fark edilmeden değiştirmek",
+          "Profil anahtarınızın saklanan kopyasını profil parolanız olmadan açmak",
+          "Uygulamanın hiçbir zaman göndermediği profil parolanızı ya da paylaşım parolanızı öğrenmek",
+          "Cihazınızdaki uygulamayı değiştirmek: Otomatik güncelleme yoktur, uygulama yalnızca yeni bir sürüm olduğunu gösterir"
+        ],
+        "canTitle": "Yapabilecekleri",
+        "can": [
+          "Zayıf bir profil parolasını çevrim dışı tahmin etmeye çalışmak; her tahmin için yavaş bir Argon2id çalıştırması gerekir",
+          "Bir sonraki girişinizde hesap parolanızı ele geçirmek",
+          "Öğeleri silmek, eski sürümlerini geri getirmek ya da değişiklikleri alıkoymak. Bir eşitleme herhangi bir şeyi silmeden önce uygulama, profilinizin bir kopyasını cihazınızda saklar",
+          "Paylaşılan bir profile birini davet ettiğinizde yanlış bir açık anahtar vermek",
+          "Yukarıdaki tabloda listelenen ayrıntıları görmek"
+        ]
+      },
+      {
+        "id": "network",
+        "title": "7. Uygulamanın bağlandığı her yer",
+        "paragraphs": [
+          "Kendi sunucularınız ve bunlar için ayarladığınız proxy'ler ile atlama sunucuları (jump host). Eşitleme sunucusu, ama yalnızca giriş yapmışsanız. Bir de daha yeni bir sürüm olup olmadığını denetlemek için GitHub: Profil listesi açıldığında ve “Check for updates” düğmesine bastığınızda uygulama, GitHub'ın herkese açık sürüm listesini sorgular. Bu istek yalnızca uygulamanın adını ve sürümünü taşır.",
+          "Uygulamada analitik, çökme raporlama ya da reklam kodu yoktur. Uygulama, eşitleme için yalnızca kendi yerleşik sertifika yetkilisi listesine güvenir ve hiçbir yönlendirmeyi (redirect) izlemez; bu yüzden fark ettirmeden başka bir sunucuya yöneltilemez."
+        ],
+        "code": [
+          "updateCheck"
+        ]
+      }
+    ],
+    "verify": {
+      "title": "Kendiniz doğrulayın",
+      "lede": "Bunların hiçbiri için sözümüze güvenmek zorunda değilsiniz. İşte kolaydan ileri düzeye doğru doğrulama yolları.",
+      "items": [
+        {
+          "title": "Kodu okuyun",
+          "text": "Uygulama açık kaynaklıdır. Bu sayfadaki bağlantılar, bu sayfanın anlattığı sürümde ({commit}) işi yapan satırların tam yerine gider."
+        },
+        {
+          "title": "Ağ bağlantılarını izleyin",
+          "text": "Bir güvenlik duvarı ya da ağ izleme aracı kullanın. Kendi sunucularınızı, yalnızca giriş yapmışken eşitleme sunucusunu ve profil listesi açıldığında api.github.com adresini göreceksiniz. Bunların dışında hiçbir şey görmezsiniz."
+        },
+        {
+          "title": "Sunucunun ne sakladığına bakın",
+          "text": "İleri düzey: Giriş belirtecinizi (token) uygulamanın veri klasöründeki cloud_token.json dosyasından alın ve X-Auth-Token başlığıyla API'den verilerinizi isteyin: GET /api/sync/profiles ya da boş bir kayıt listesiyle POST /api/sync. Geri yalnızca ID'ler, türler, zamanlar, işaretler ve şifreli metin gelir. Ardından bu oturumu sonlandırmak için uygulamada çıkış yapın."
+        },
+        {
+          "title": "Trafiği okuyun",
+          "text": "İleri düzey: Bilgisayarınızda, istekleri gerçek sunucuya ileten küçük bir proxy çalıştırın ve uygulamada eşitleme sunucusu olarak http://127.0.0.1 adresini ve proxy'nin portunu ayarlayın. Uygulama, düz HTTP bağlantısına yalnızca kendi bilgisayarınız için izin verir. Uygulamanın ne gönderdiğini ve öğelerinizin şifreli olduğunu göreceksiniz. (Sisteminize eklenen bir proxy sertifikası işe yaramaz, çünkü uygulama kendi sertifika yetkilisi listesini kullanır.)"
+        },
+        {
+          "title": "Kendi verilerinizin şifresini çözün",
+          "text": "İleri düzey: Parolanızla, aşağıdaki tablodaki ayarları kullanarak kendi verilerinizi herhangi bir Argon2id ve AES-GCM aracıyla açabilirsiniz. Parola olmadan bunu kimse yapamaz."
+        },
+        {
+          "title": "İndirdiğiniz dosyayı doğrulayın",
+          "text": "Sağlama toplamını sürümdeki SHA256SUMS dosyasıyla karşılaştırın (0.4 sürümünden itibaren), Android uygulamasının sertifikasını apksigner ile denetleyin ya da uygulamayı kaynak koddan derleyin."
+        }
+      ],
+      "paramsTitle": "Kendi araçlarınız için ayarlar",
+      "params": [
+        [
+          "Anahtar türetme",
+          "Argon2id, sürüm 0x13, {argonMem} bellek, {argonPasses} geçiş, {argonLanes} şerit, 32 baytlık anahtar, 16 baytlık rastgele tuz"
+        ],
+        [
+          "Profil dosyası",
+          "“OMNV” · sürüm 1 · tuz (16 bayt) · nonce (12 bayt) · zstd ile sıkıştırılmış SQLite veritabanının AES-256-GCM ile şifrelenmiş hâli ve 16 baytlık etiketi"
+        ],
+        [
+          "Eşitlenen öğe",
+          "hex(nonce (12 bayt) · AES-256-GCM şifreli metni ve etiketi), profilin 256 bitlik veri anahtarıyla"
+        ],
+        [
+          "Profil anahtarının saklanan kopyası",
+          "hex(0x02 · tuz (16 bayt) · nonce (12 bayt) · 32 baytlık veri anahtarının AES-256-GCM ile şifrelenmiş hâli), profil parolanızdan türetilen anahtarla"
+        ],
+        [
+          "Paylaşım",
+          "X25519, HKDF-SHA256, AES-256-GCM"
+        ]
+      ]
+    },
+    "limits": {
+      "title": "Bu sayfanın vaat etmedikleri",
+      "items": [
+        "Submarine için bağımsız bir güvenlik denetimi yapılmadı. Şimdiye kadarki incelemeleri geliştiricisi yaptı.",
+        "Zayıf ya da başka yerlerde de kullanılan bir parola en zayıf noktadır. Uzun ve benzersiz bir profil parolası, hesabınız için de farklı bir parola kullanın.",
+        "Telnet ve düz VNC, tasarımları gereği şifreli değildir. Uygulama bunları işaretler ve bir SSH sunucusu üzerinden çalıştırabilir.",
+        "Bu sayfa, uygulamanın {commit} sürümünü anlatır. Kod değişirse bu sayfa da onunla birlikte değişir."
+      ]
+    },
+    "codeLabels": {
+      "deriveKey": "Anahtar türetme (Argon2id ayarları)",
+      "encrypt": "Yeni bir nonce ile AES-256-GCM",
+      "saveVault": "Profil dosyasının kaydedilmesi",
+      "encryptEntity": "Eşitlenen her öğenin şifrelenmesi",
+      "collectRecords": "Her öğe için gönderilenler",
+      "escrowBuild": "Profil anahtarının saklanan kopyası",
+      "escrowOpen": "Kopyanın yeni bir cihazda açılması",
+      "loginRequest": "Giriş isteği",
+      "sealTo": "Anahtarın bir üye için mühürlenmesi",
+      "invite": "Üye davet etme",
+      "updateCheck": "Güncelleme denetimi"
+    }
+  },
+  "privacy": {
+    "title": "Gizlilik politikası – Submarine",
+    "description": "Submarine uygulamasının ve isteğe bağlı eşitleme hizmetinin neleri sakladığı, neleri okuyup neleri okuyamadığı, bunları ne kadar süre tuttuğu ve nasıl silebileceğiniz.",
+    "heading": "Gizlilik politikası",
+    "intro": "Bu politika; Submarine uygulamasını (Windows, macOS, Linux, Android ve iOS), uygulamanın kullanabildiği isteğe bağlı Submarine eşitleme hizmetini ve bu web sitesini kapsar.",
+    "shortTitle": "Kısaca",
+    "short": [
+      "Sunucularınız, parolalarınız, SSH anahtarlarınız ve notlarınız, profil parolanızdan türetilen bir anahtarla şifrelenmiş olarak cihazınızda kalır. Uygulamada analitik, reklam, takip ve çökme raporlama yoktur.",
+      "Cloud sync (bulut eşitleme) isteğe bağlıdır. Açarsanız eşitleme sunucusu, hesabınızın e-posta adresini ve profillerinizin şifreli hâlini saklar. Profillerin içinde ne olduğunu okuyamaz.",
+      "Hesabınızı ve sunucunun bu hesap için tuttuğu her şeyi uygulamanın içinden ya da bu web sitesinden silebilirsiniz."
+    ],
+    "sections": [
+      {
+        "title": "Sorumlu kişi",
+        "paragraphs": [
+          "Submarine, Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) tarafından geliştirilir. <code>submarine.sinaxhpm.com</code> adresindeki eşitleme hizmetini de Sina Xhpm işletir (uygulamanın eski sürümleri <code>api.sinaxhpm.com</code> adresini kullanır). Uygulamanın kaynak kodu <a href=\"{repoUrl}\">github.com/SinaXhpm/Submarine</a> adresinde herkese açıktır (MIT lisansı); bu yüzden bu politikanın uygulama hakkında söyledikleri kodda doğrulanabilir."
+        ]
+      },
+      {
+        "title": "Cihazınızda kalanlar",
+        "list": [
+          "<strong>Profilleriniz</strong> (sunucular, kimlik bilgileri, SSH anahtarları, tüneller, notlar, komutlar, bilinen sunucu anahtarları) uygulamanın veri klasöründe saklanır. Profil parolanızdan Argon2id ile türetilen bir anahtar kullanılarak AES-256-GCM ile şifrelenirler. Profil parolası hiçbir zaman saklanmaz ve hiçbir yere gönderilmez. Parolayı kurtarmanın hiçbir yolu yoktur: Unutursanız profil açılamaz.",
+          "<strong>Hızlı kilit açma</strong> (isteğe bağlı, varsayılan olarak kapalı): Windows Hello'yu ya da Android'de parmak iziyle kilit açmayı etkinleştirirseniz profilin anahtarı, sistemin tuttuğu bir anahtarla (TPM ya da Android Keystore) mühürlenir. Parmak izinizi ya da PIN'inizi sistem denetler; uygulama bunu hiçbir zaman görmez.",
+          "Pencere konumu, son kullanılan profilin adı ve renk teması gibi <strong>ayarlar</strong>, şifrelenmeden uygulamanın kendi ayarlarında saklanır.",
+          "<strong>Pano</strong>, yalnızca uygulamaya bir şey yapıştırdığınızda okunur ve hiçbir yere gönderilmez.",
+          "Uygulamadaki <strong>etkinlik günlüğü</strong> bellekte tutulur ve uygulama kapandığında kaybolur."
+        ]
+      },
+      {
+        "title": "Uygulamanın bağlandığı yerler",
+        "list": [
+          "<strong>Kendi sunucularınız.</strong> Uygulama yalnızca eklediğiniz ya da açtığınız sunuculara bağlanır; bunu SSH, SFTP, Telnet, VNC veya RDP ile, varsa ayarladığınız proxy ya da atlama sunucusu (jump host) üzerinden yapar. Yazdıklarınız ve aktardıklarınız bize değil, o sunucuya gider. Düz Telnet ve düz VNC şifrelenmez; uygulama da bunu belirtir.",
+          "<strong>Eşitleme hizmeti</strong>, yalnızca bulut eşitlemeye giriş yaparsanız (aşağıya bakın). Bunun yerine uygulamayı kendi sunucunuza yönlendirebilirsiniz; bu durumda verileri o sunucunun işletmecisi işler.",
+          "<strong>GitHub</strong>, daha yeni bir sürüm olup olmadığına bakmak için (yalnızca masaüstü ve Android uygulamaları; iOS uygulaması App Store üzerinden güncellenir ve bunu yapmaz). Profil listesi açıldığında ve “Check for updates” düğmesine bastığınızda uygulama, GitHub'ın herkese açık sürüm listesine (<code>api.github.com</code>) daha yeni bir sürüm olup olmadığını sorar. İstek, uygulamanın adını ve sürümünü (<code>submarine-app/x.y.z</code>) taşır, başka hiçbir şeyi taşımaz; her web isteğinde olduğu gibi GitHub IP adresinizi görür.",
+          "Tıkladığınız <strong>bağlantılar</strong> sisteminizin varsayılan tarayıcısında açılır."
+        ],
+        "after": "Bunların dışında cihazınızdan hiçbir şey çıkmaz. Uygulamada üçüncü taraf analitik, reklam ya da takip kodu yoktur."
+      }
+    ],
+    "table": {
+      "title": "Cloud sync (isteğe bağlı): eşitleme sunucusunun sakladıkları",
+      "intro": "Bir hesap oluşturursanız sunucu şunları saklar:",
+      "head": [
+        "Ne",
+        "Neden",
+        "Sunucu okuyabilir mi?"
+      ],
+      "rows": [
+        [
+          "E-posta adresiniz",
+          "Giriş yapmanızı sağlamak ve giriş ile sıfırlama kodlarını göndermek için",
+          "Evet"
+        ],
+        [
+          "Hesap parolanız",
+          "Giriş yapmanızı sağlamak için",
+          "Giriş yaptığınızda parolayı HTTPS üzerinden alır ve parolanın yalnızca tuzlanmış bir bcrypt hash'ini saklar"
+        ],
+        [
+          "Giriş oturumları: hash'lenmiş bir belirteç (token), belirtecin verildiği IP adresi, en son ne zaman kullanıldığı ve bir geçerlilik süresi ({sessionDays} gün)",
+          "Oturumunuzun açık kalması için",
+          "Belirteç hash'lenmiştir; geri kalanı okunabilir"
+        ],
+        [
+          "Profillerinizin kayıtları",
+          "Kayıtları cihazlarınız arasında eşitlemek için",
+          "<strong>Hayır.</strong> Her kayıt, yüklenmeden önce cihazınızda profilin anahtarıyla şifrelenir. Sunucu her kayıt için şunları görür: bir ID, kaydın türü (sunucu, kimlik bilgisi, anahtar, not…), zaman damgaları (bunlar, değişikliği yapan cihazın rastgele bir ID'sini içerir), bir silinme işareti ve kaydın boyutu. Ayrıca profilin adını ve profilde kaç kayıt olduğunu görür"
+        ],
+        [
+          "Her profilin anahtarının, profil parolanızla mühürlenmiş bir kopyası",
+          "Bir profili yeni bir cihaza aktarmak için",
+          "Profil parolanız olmadan okuyamaz. Sunucunun verilerini ele geçiren biri, zayıf bir parolayı çevrim dışı tahmin etmeye çalışabilir; bu yüzden uzun bir parola kullanın"
+        ],
+        [
+          "Paylaşım: açık anahtarınız, paylaşım parolanızla şifrelenmiş özel anahtarınız, paylaşılan profillerin adları, paylaştığınız kişilerin e-posta adresleri ile rolleri ve onlar için mühürlenmiş anahtarlar",
+          "Bir profili başka hesaplarla paylaşmak için",
+          "Adları ve e-posta adreslerini okuyabilir; anahtarları okuyamaz"
+        ],
+        [
+          "Hesap olayları günlüğü: ne olduğu (hesap oluşturma, giriş, başarısız giriş, çıkış, kilitlenme, parola sıfırlama, bir eşitleme, bir paylaşım daveti ya da değişikliği ve benzerleri), biliniyorsa e-posta adresi, IP adresi, zaman ve Cloudflare'in istek ID'si. Neyin eşitlendiği hiçbir zaman yer almaz",
+          "Hesapları korumak ve kötüye kullanımı önlemek için",
+          "Evet. {auditDays} gün saklanır, sonra silinir"
+        ],
+        [
+          "IP adresine ve e-posta adresine göre tutulan hız sınırı sayaçları",
+          "Tahmin denemelerini ve istek sellerini yavaşlatmak için",
+          "Evet. {rateDays} gün saklanır"
+        ]
+      ],
+      "after": [
+        "Hiç doğrulanmayan yeni hesaplar {unverifiedDays} gün sonra silinir.",
+        "Hizmet, Cloudflare'in arkasında çalışır. Hizmetin HTTPS bağlantısını Cloudflare yönetir ve istekleri sunucuya iletir. Bu nedenle Cloudflare, hizmet adına IP adreslerini, istek başlıklarını ve istek içeriklerini işler; giriş bilgileriniz ve zaten şifrelenmiş kayıtlarınız da buna dâhildir. Sunucu, doğrulama ve sıfırlama e-postalarını barındırma sağlayıcısının e-posta sistemi üzerinden gönderir.",
+        "Verilerinizi satmayız, reklamcılarla paylaşmayız, reklam, analitik ya da profilleme için kullanmayız ve başka hiçbir şeyle birleştirmeyiz."
+      ]
+    },
+    "website": {
+      "title": "Bu web sitesi",
+      "paragraphs": [
+        "Bu web sitesi çerez, analitik, reklam ya da üçüncü taraf betik veya yazı tipi kullanmaz. Her web sitesinde olduğu gibi Cloudflare ve barındırma sağlayıcısı, sayfayı size ulaştırmak için IP adresinizi, istediğiniz sayfayı ve tarayıcınızın bilgilerini işler; barındırma sağlayıcısı ayrıca standart sunucu günlüklerini sınırlı bir süre saklar.",
+        "Hesabınızı bu web sitesinden silerseniz, yazdıklarınız HTTPS üzerinden yalnızca eşitleme hizmetine gönderilir ve sayfa tarafından saklanmaz."
+      ]
+    },
+    "deleting": {
+      "title": "Verilerinizi silme",
+      "list": [
+        "<strong>Hesabınızı silmek için</strong> uygulamada (0.4 ve sonraki sürümler) <em>Cloud sync → (giriş yapmışken) → Delete account…</em> yolunu izleyin ya da bu web sitesindeki <a href=\"{deleteUrl}\">hesap silme sayfasını</a> kullanın. Hesap parolanızla onaylarsınız. Bu işlem şunları anında kaldırır: tüm profillerinizin buluttaki kopyaları, paylaşım anahtarınız, paylaştığınız her profil (paylaştığınız kişiler erişimini kaybeder), başkalarının paylaşımlarındaki üyeliğiniz, oturumlarınız ve hesabınızın günlük girdileri. Başka birinin paylaşılan profiline yazdığınız kayıtlar, yazan kişi belirtilmeden o profilde kalır. Cihazlarınızdaki profillere dokunulmaz.",
+        "<strong>Silme işleminden sonra yazılan günlük satırları</strong> en fazla {auditDays} gün saklanır: silme işleminin kendisi (e-posta adresi içermez) ve o e-posta adresiyle sonradan yapılan her giriş denemesi. Sunucu yazılımının güncellemeleri sırasında alınan yedekler yalnızca kısa bir süre tutulur.",
+        "<strong>Tek bir profilin buluttaki kopyasını kaldırmak için</strong> uygulamada, profil listesinde ilgili profilin menüsünden <em>Delete from cloud…</em> komutunu seçin.",
+        "<strong>Bir cihazdaki verileri silmek için</strong> uygulamayı kaldırın (Windows'un taşınabilir sürümünde programın yanındaki klasörü silin).",
+        "Eski bir sürüm kullanıyorsanız ya da uygulamayı artık açamıyorsanız bizimle iletişime geçin (aşağıya bakın); hesabın size ait olduğunu gösterebildiğinizde hesabı sileriz."
+      ]
+    },
+    "security": {
+      "title": "Güvenlik",
+      "paragraphs": [
+        "Eşitleme hizmetine giden tüm trafik HTTPS kullanır. Profil parolanız ve paylaşım parolanız cihazınızdan hiç çıkmaz; profillerinizi açan anahtarlar da sunucuda hiçbir zaman sunucunun açabileceği bir biçimde saklanmaz. Sunucu giriş denemelerini sınırlar, art arda yanlış parola girildiğinde parolayla girişi bir süre duraklatır ve en hassas işlemler (paylaşım anahtarınızı değiştirmek, hesabınızı silmek) için parolanızı yeniden ister. <a href=\"{securityUrl}\">Güvenlik sayfası</a> bunların hepsini ayrıntılı olarak açıklar."
+      ]
+    },
+    "children": {
+      "title": "Çocuklar",
+      "paragraphs": [
+        "Submarine, sistem yöneticileri ve geliştiriciler için bir araçtır. Çocuklara yönelik değildir ve çocuklardan bilerek veri toplamayız."
+      ]
+    },
+    "changes": {
+      "title": "Bu politikadaki değişiklikler",
+      "paragraphs": [
+        "Bu politika değiştiğinde en üstteki tarih de değişir. Değişikliklerin tam geçmişi <a href=\"{repoUrl}/commits/main/PRIVACY.md\">depoda</a> yer alır."
+      ]
+    },
+    "contact": {
+      "title": "İletişim",
+      "paragraphs": [
+        "Verilerinizle ilgili soru ve talepleriniz için <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> adresinde bir issue açın (lütfen oraya özel bilgi yazmayın) ya da <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a> üzerinden yazın."
+      ]
+    }
+  },
+  "delete": {
+    "title": "Submarine hesabınızı silin",
+    "description": "Submarine eşitleme hesabınızı ve sunucunun bu hesap için tuttuğu her şeyi uygulamada ya da bu sayfada nasıl silebileceğiniz.",
+    "heading": "Hesabınızı silin",
+    "lede": "Eşitleme hesabınızı silmek, sunucunun bu hesap için tuttuğu her şeyi anında kaldırır. Bu işlem geri alınamaz.",
+    "whatTitle": "Silinenler",
+    "what": [
+      "Tüm profillerinizin buluttaki kopyaları",
+      "Paylaşım anahtarınız ve paylaştığınız her profil (paylaştığınız kişiler erişimini kaybeder)",
+      "Başkalarının paylaşılan profillerindeki üyeliğiniz",
+      "Oturumlarınız; böylece her yerden çıkış yapmış olursunuz",
+      "Hesabınızın günlük girdileri"
+    ],
+    "staysTitle": "Kalanlar",
+    "stays": [
+      "Cihazlarınızdaki profillere dokunulmaz. Bunları kaldırmak için profili uygulamada silin ya da uygulamayı kaldırın.",
+      "Başka birinin paylaşılan profiline yazdığınız kayıtlar, yazan kişi belirtilmeden o profilde kalır.",
+      "Silme işleminden sonra yazılan günlük satırları en fazla {auditDays} gün saklanır: silme işleminin kendisi (e-posta adresiniz olmadan) ve sonraki giriş denemeleri."
+    ],
+    "inAppTitle": "Uygulamada",
+    "inApp": "0.4 ve sonraki sürümler: Giriş yapmışken <em>Cloud sync</em> bölümünü açın, <em>Delete account…</em> komutunu seçin ve hesap parolanızla onaylayın.",
+    "formTitle": "Bu sayfada",
+    "formLede": "Eşitleme hesabınızın e-posta adresi ve parolasıyla giriş yapın. Hesabınız hemen silinir.",
+    "email": "E-posta adresi",
+    "password": "Hesap parolası",
+    "passwordHint": "Profil parolanız değil, eşitleme hesabınızın parolası.",
+    "confirm": "Bunun hesabımı ve hesabımın buluttaki verilerini kalıcı olarak sileceğini anlıyorum.",
+    "submit": "Hesabımı sil",
+    "working": "Siliniyor…",
+    "done": "Hesabınız silindi. Cihazlarınızdaki profillere dokunulmadı.",
+    "errors": {
+      "wrong": "E-posta adresi veya parola yanlış. Birkaç yanlış denemeden sonra parolayla giriş bir süreliğine duraklatılır.",
+      "noScript": "Bu form JavaScript gerektirir. Hesabınızı uygulamadan da silebilirsiniz.",
+      "rate": "Çok fazla deneme yapıldı. Lütfen bir süre bekleyip yeniden deneyin.",
+      "network": "Sunucuya ulaşılamadı. Bağlantınızı kontrol edip yeniden deneyin.",
+      "other": "Bir sorun oluştu ({code}). Hiçbir şey silinmedi. Lütfen daha sonra yeniden deneyin ya da uygulamayı kullanın.",
+      "confirm": "Onaylamak için lütfen kutuyu işaretleyin."
+    },
+    "helpTitle": "Parolanız ya da erişiminiz yok mu?",
+    "help": "Giriş için her zaman e-postayla gelen bir kod kullanıyorsanız önce uygulamada bir parola belirleyin (Cloud sync → Forgot password?). Uygulamayı ya da bu formu kullanamıyorsanız, hiçbir özel bilgi eklemeden <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> adresinde bir issue açın; hesabın size ait olduğunu gösterebildiğinizde hesabı sileriz."
+  },
+  "notFound": {
+    "title": "Sayfa bulunamadı – Submarine",
+    "heading": "Böyle bir sayfa yok",
+    "text": "Adres yanlış olabilir ya da sayfa taşınmış olabilir.",
+    "home": "Ana sayfaya gidin"
+  }
+}

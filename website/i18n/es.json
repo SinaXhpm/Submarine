@@ -1,0 +1,611 @@
+{
+  "meta": {
+    "name": "Español",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "Saltar al contenido",
+    "features": "Funciones",
+    "security": "Seguridad",
+    "privacy": "Privacidad",
+    "download": "Descargar",
+    "github": "GitHub",
+    "language": "Idioma",
+    "home": "Página de inicio de Submarine",
+    "menu": "Menú"
+  },
+  "common": {
+    "tagline": "Cliente SSH, SFTP, RDP, VNC y Telnet",
+    "freeLine": "Gratis y de código abierto · licencia MIT",
+    "newIn": "Nuevo en la 0.4",
+    "readMore": "Leer más",
+    "learnHow": "Ver cómo funciona",
+    "updated": "Última actualización: {date}",
+    "translationNote": "Esta página es una traducción. En caso de diferencias, prevalece la versión en inglés.",
+    "englishVersion": "Versión en inglés",
+    "screenshotOf": "Captura de pantalla: {what}",
+    "openFull": "Abrir la imagen a tamaño completo",
+    "codeLink": "{file}, líneas {from}–{to}",
+    "example": "Ejemplo"
+  },
+  "footer": {
+    "madeBy": "Hecho por {author}.",
+    "license": "Gratis y de código abierto, con licencia MIT.",
+    "deleteAccount": "Eliminar tu cuenta",
+    "releases": "Versiones",
+    "issues": "Informar de un problema",
+    "author": "sinaxhpm.com",
+    "noTracking": "Este sitio web no usa cookies, ni analítica, ni scripts de terceros."
+  },
+  "home": {
+    "title": "Submarine – cliente SSH, SFTP, RDP, VNC y Telnet gratuito para Windows, macOS, Linux y Android",
+    "description": "Submarine es una aplicación de acceso remoto gratuita y de código abierto: terminal SSH, SFTP de dos paneles, reenvío de puertos, escritorios remotos (RDP, VNC) y Telnet en una sola ventana. Tus servidores, contraseñas y claves permanecen cifrados en tus dispositivos.",
+    "hero": {
+      "eyebrow": "Gratis y de código abierto",
+      "title": "Todos tus servidores en una sola aplicación cifrada",
+      "lede": "Submarine es un cliente SSH, SFTP, RDP, VNC y Telnet para Windows, macOS, Linux y Android. Tus servidores, contraseñas y claves se cifran en tu dispositivo, y solo se sincronizan entre tus dispositivos si tú quieres.",
+      "download": "Descargar",
+      "security": "Cómo se protegen tus datos",
+      "points": [
+        "Sin anuncios",
+        "Sin rastreo",
+        "Sin plan de pago",
+        "Sin necesidad de cuenta"
+      ],
+      "imageAlt": "Submarine en una computadora: una terminal SSH a la izquierda y el explorador de archivos de dos paneles a la derecha"
+    },
+    "features": {
+      "title": "Todo para tus servidores, en una sola ventana",
+      "lede": "Una sola aplicación en lugar de una terminal, una herramienta de transferencia de archivos, un gestor de túneles y un visor de escritorio remoto.",
+      "items": [
+        {
+          "id": "terminal",
+          "title": "Una terminal a la altura",
+          "text": "Pestañas, pantalla dividida y la vista Wall, que muestra muchos servidores uno junto a otro y permite escribir en todos a la vez. Color de 24 bits, 10.000 líneas de historial, esquemas de color y Nerd Fonts.",
+          "alt": "La vista Wall: tres servidores uno junto a otro en una sola ventana"
+        },
+        {
+          "id": "files",
+          "title": "Archivos, lado a lado",
+          "text": "SFTP de dos paneles con arrastrar y soltar. Compara dos carpetas, edita archivos remotos en vivo, comprime y descomprime archivos y trabaja como root mediante sudo, incluso en servidores sin SFTP.",
+          "alt": "Comparación de una carpeta local con una remota: los archivos que difieren aparecen marcados"
+        },
+        {
+          "id": "desktops",
+          "title": "También escritorios remotos",
+          "text": "RDP y VNC se abren en una pestaña, directamente o a través de uno de tus servidores SSH. Telnet está disponible para switches y routers antiguos. Las conexiones sin cifrar se marcan claramente.",
+          "alt": "Un escritorio remoto abierto por RDP en una pestaña de Submarine",
+          "new": true
+        },
+        {
+          "id": "tunnels",
+          "title": "Túneles sin línea de comandos",
+          "text": "Reenvíos locales, remotos y SOCKS con nombre, que se inician junto con la aplicación si quieres, con un registro en tiempo real de cada conexión.",
+          "alt": "El panel de reenvío de puertos con tres túneles y su estado"
+        },
+        {
+          "id": "fits",
+          "title": "Funciona con lo que ya tienes",
+          "text": "Lee tu ~/.ssh/config y usa tu agente SSH (Pageant, el agente de OpenSSH de Windows, 1Password, llaves de hardware), certificados de OpenSSH, servidores de salto y proxies. Importa desde PuTTY, MobaXterm y OpenSSH.",
+          "alt": "El formulario para un servidor nuevo, con importación desde ~/.ssh/config"
+        },
+        {
+          "id": "monitor",
+          "title": "Entérate cuando algo falle",
+          "text": "Vigila la CPU, la memoria, el disco y la red por SSH y te avisa cuando un servidor se cae. Información del servidor, servicios y contenedores de Docker en un solo lugar.",
+          "alt": "Supervisión: tres servidores con gráficos en tiempo real"
+        },
+        {
+          "id": "vault",
+          "title": "Tus credenciales, bajo llave",
+          "text": "Las contraseñas y las claves se guardan en un perfil cifrado que solo se abre con tu contraseña. Desbloquéalo con Windows Hello o, en Android, con tu huella dactilar.",
+          "alt": "Credenciales guardadas y claves SSH en el perfil cifrado"
+        },
+        {
+          "id": "phone",
+          "title": "También en tu teléfono",
+          "text": "El mismo perfil en Android: una terminal con barra de teclas, transferencia de archivos, escritorios remotos y túneles.",
+          "alt": "Submarine en un teléfono Android: una terminal SSH con barra de teclas"
+        }
+      ]
+    },
+    "privacy": {
+      "title": "Privacidad desde el diseño",
+      "lede": "Tus datos se cifran antes de guardarse y antes de salir de tu dispositivo. Publicamos con exactitud lo que nuestro servidor puede ver y lo que no.",
+      "items": [
+        {
+          "title": "Cifrado en tu dispositivo",
+          "text": "Los perfiles se cifran con AES-256-GCM. La clave se genera a partir de tu contraseña con Argon2id. La contraseña en sí nunca se guarda ni se envía."
+        },
+        {
+          "title": "La sincronización es opcional",
+          "text": "Si la activas, cada elemento se cifra primero en tu dispositivo. El servidor solo guarda la versión cifrada. Sí ve algunos datos asociados, como tu dirección de correo electrónico y cuándo sincronizas, y los enumeramos todos."
+        },
+        {
+          "title": "Sin rastreo",
+          "text": "Sin anuncios, sin analítica, sin informes de fallos. La aplicación solo se comunica con tus servidores, con el servidor de sincronización si inicias sesión y con GitHub para comprobar si hay una versión nueva."
+        }
+      ],
+      "link": "Cómo funciona y cómo comprobarlo por tu cuenta"
+    },
+    "free": {
+      "title": "Gratis. De verdad.",
+      "items": [
+        "Submarine es gratuito y de código abierto, con licencia MIT. No hay plan de pago, ni periodo de prueba, ni anuncios.",
+        "No necesitas una cuenta. La cuenta solo sirve para la sincronización opcional entre tus dispositivos.",
+        "El servicio de sincronización también es gratuito, dentro de unos límites razonables: {limitMb} MB de datos cifrados, {limitItems} elementos y {limitProfiles} perfiles por cuenta.",
+        "El código fuente es público. Puedes leerlo, compilar la aplicación por tu cuenta o usar tu propio servidor de sincronización."
+      ]
+    },
+    "download": {
+      "title": "Descargar Submarine",
+      "lede": "Todas las descargas proceden de las versiones publicadas del proyecto en GitHub.",
+      "button": "Descargar",
+      "platforms": [
+        {
+          "id": "windows",
+          "name": "Windows",
+          "detail": "Windows 10 y 11 · instalador (.exe, .msi) o .zip portable"
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "detail": "Apple Silicon (M1 o posterior) · .dmg"
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "detail": ".deb, .rpm, paquete para Arch y AppImage"
+        },
+        {
+          "id": "android",
+          "name": "Android",
+          "detail": "Android 7.0 o posterior · .apk"
+        }
+      ],
+      "betaNote": "La versión 0.4 está en pruebas. Las funciones marcadas como «Nuevo en la 0.4» llegan con ella; hasta entonces, se ofrece la última versión estable.",
+      "verifyTitle": "Comprueba tu descarga",
+      "verify": [
+        "A partir de la 0.4, cada versión publicada incluye un archivo SHA256SUMS con la suma de verificación de cada descarga.",
+        "La aplicación de Android está firmada con la clave del autor. La huella digital SHA-256 de su certificado es <code class=\"hash\">{certSha256}</code>.",
+        "Las compilaciones para Windows y macOS aún no tienen firma de código, así que tu sistema puede mostrarte una advertencia la primera vez que las abras."
+      ]
+    },
+    "faq": {
+      "title": "Preguntas frecuentes",
+      "items": [
+        {
+          "q": "¿Submarine es realmente gratis?",
+          "a": "Sí. La aplicación es gratuita y de código abierto, con licencia MIT, sin plan de pago y sin anuncios. El servicio de sincronización también es gratuito, dentro de los límites indicados arriba."
+        },
+        {
+          "q": "¿Necesito una cuenta?",
+          "a": "No. Todo funciona sin ella. Solo necesitas una cuenta si quieres sincronizar perfiles entre tus dispositivos."
+        },
+        {
+          "q": "¿Puede el servidor de sincronización leer mis contraseñas?",
+          "a": "No. Cada elemento se cifra en tu dispositivo antes de subirse, y el servidor nunca recibe la clave. Sí ve algunos datos asociados, como tu dirección de correo electrónico, cuándo sincronizas y cuántos elementos tienes. La página de seguridad los enumera todos."
+        },
+        {
+          "q": "¿Y si olvido la contraseña de mi perfil?",
+          "a": "Entonces nadie puede abrir ese perfil, ni siquiera nosotros. No hay recuperación posible, porque la contraseña nunca se guarda en ningún sitio. Consérvala en un lugar seguro."
+        },
+        {
+          "q": "¿En qué sistemas funciona?",
+          "a": "Windows 10 y 11, macOS en Apple Silicon (M1 o posterior), Linux (.deb, .rpm, Arch, AppImage) y Android 7.0 o posterior."
+        },
+        {
+          "q": "¿Puedo usar mi propio servidor de sincronización?",
+          "a": "Sí. En la aplicación, abre Cloud sync y cambia el servidor de sincronización. El código de nuestro servidor no está publicado, así que un servidor propio tiene que ofrecer la misma API, que se describe en el código fuente de la aplicación."
+        },
+        {
+          "q": "¿Cómo elimino mi cuenta?",
+          "a": "En la aplicación (versión 0.4 o posterior): Cloud sync → Delete account. También puedes hacerlo en la <a href=\"{deleteUrl}\">página para eliminar la cuenta</a>."
+        }
+      ]
+    }
+  },
+  "security": {
+    "title": "Cómo protege Submarine tus datos y cómo comprobarlo",
+    "description": "Qué cifra Submarine y cómo, qué puede ver el servidor de sincronización y qué no, qué podría hacer aun así un servidor hostil y cómo comprobar paso a paso cada afirmación en el código abierto.",
+    "heading": "Cómo se protegen tus datos",
+    "lede": "No te pedimos que confíes en nosotros. Esta página explica con exactitud qué se cifra, qué puede ver nuestro servidor y qué no, y cómo puedes comprobar por tu cuenta cada afirmación.",
+    "summaryTitle": "En un minuto",
+    "summary": [
+      "Todo lo que guardas en Submarine se conserva en un solo archivo en tu dispositivo, cifrado con AES-256-GCM.",
+      "Su clave se genera a partir de la contraseña de tu perfil con Argon2id, un método lento a propósito para que adivinarla resulte costoso. La contraseña nunca se guarda ni se envía a ningún sitio.",
+      "Si activas la sincronización, cada elemento se cifra en tu dispositivo antes de subirse. El servidor guarda datos que no puede descifrar.",
+      "Lo que el servidor sí ve es lo que rodea a tus datos: tu dirección de correo electrónico, cuándo sincronizas y desde qué dirección IP, cuántos elementos de cada tipo tienes y qué tamaño tienen, los nombres de tus perfiles y, en los perfiles compartidos, sus nombres y las direcciones de correo electrónico de los miembros.",
+      "La aplicación no tiene anuncios, ni analítica, ni informes de fallos."
+    ],
+    "canCannot": {
+      "cannotTitle": "El servidor no puede leer",
+      "cannot": [
+        "El contenido de tus elementos: nombres, direcciones, puertos, nombres de usuario, contraseñas, claves privadas y sus frases de contraseña, túneles, notas, comandos, nombres de carpetas",
+        "Qué credencial o qué clave corresponde a qué servidor",
+        "Quién modificó un elemento",
+        "La contraseña de tu perfil, tu frase de contraseña para compartir y las claves que abren tus perfiles"
+      ],
+      "canTitle": "El servidor puede ver",
+      "can": [
+        "Tu dirección de correo electrónico y, cuando inicias sesión, la contraseña de tu cuenta (solo guarda un hash bcrypt de ella)",
+        "La dirección IP y la hora de los inicios de sesión y de las sincronizaciones",
+        "Cuántos elementos de cada tipo tiene un perfil, su tamaño, y cuándo se modificó cada uno y desde qué dispositivo (un identificador aleatorio)",
+        "Los nombres de tus perfiles",
+        "En los perfiles compartidos: su nombre, las direcciones de correo electrónico de los miembros y el rol de cada uno"
+      ]
+    },
+    "diagram": {
+      "title": "Qué pasa cuando sincronizas",
+      "device": "Tu dispositivo",
+      "password": "Contraseña del perfil",
+      "kdf": "Argon2id",
+      "key": "Clave del perfil",
+      "encrypt": "AES-256-GCM",
+      "items": "Elementos cifrados",
+      "https": "HTTPS",
+      "server": "Servidor de sincronización",
+      "stores": "Guarda los elementos cifrados y los datos indicados arriba",
+      "never": "Nunca sale de tu dispositivo",
+      "caption": "La contraseña y las claves se quedan en tu dispositivo. Solo se envían los elementos cifrados y los datos asociados a ellos."
+    },
+    "sections": [
+      {
+        "id": "device",
+        "title": "1. En tu dispositivo",
+        "paragraphs": [
+          "Cada perfil es un archivo. Dentro hay una pequeña base de datos con tus servidores, credenciales, claves SSH, notas y ajustes. Toda la base de datos se comprime y después se cifra con AES-256-GCM. Cada vez que se guarda el archivo, se usa un nonce aleatorio nuevo, y el archivo se escribe primero en una copia temporal, de modo que un fallo no puede dejar un archivo a medias.",
+          "La clave se obtiene de la contraseña de tu perfil mediante Argon2id con {argonMem} de memoria, {argonPasses} pasadas y {argonLanes} carriles, y una sal aleatoria para cada perfil. Estos parámetros están fijados en la aplicación, así que un archivo modificado no puede debilitarlos.",
+          "La contraseña nunca se escribe en el disco ni se envía a ningún sitio. Una vez generada la clave, se borra la copia de la contraseña que hay en el núcleo de la aplicación, y la clave se borra cuando bloqueas el perfil. Si olvidas la contraseña, el perfil no se puede abrir. No hay forma de restablecerla, porque no se guarda en ningún sitio nada que pueda abrirlo.",
+          "El desbloqueo rápido es opcional y está desactivado de forma predeterminada. En Windows usa Windows Hello y el TPM; en Android, el sensor de huellas dactilares y el Android Keystore. El sistema guarda la clave del perfil, nunca tu contraseña, y esa clave nunca se sincroniza. En Android, la copia de seguridad en la nube que hace el sistema está desactivada para los datos de la aplicación."
+        ],
+        "code": [
+          "deriveKey",
+          "encrypt",
+          "saveVault"
+        ]
+      },
+      {
+        "id": "sync",
+        "title": "2. Cloud sync (sincronización en la nube)",
+        "paragraphs": [
+          "La sincronización está desactivada hasta que inicias sesión. Cada perfil tiene su propia clave de datos aleatoria de 256 bits, que se guarda dentro del perfil cifrado. Antes de subirse, cada elemento (un servidor, una credencial, una clave, una nota…) se cifra por separado con esta clave, usando AES-256-GCM y un nonce aleatorio nuevo.",
+          "Junto a cada elemento cifrado, el servidor recibe un identificador aleatorio, el tipo de elemento, una marca de tiempo y un indicador que dice si se eliminó. La marca de tiempo contiene un identificador aleatorio del dispositivo que hizo el cambio. El tamaño del elemento cifrado deja ver aproximadamente cuánto ocupa el elemento. El servidor también guarda el nombre de cada perfil. Las claves de host conocidas, el historial de comandos y los ajustes de supervisión nunca se sincronizan."
+        ],
+        "example": "Esto es lo que el servidor guarda de un elemento:",
+        "code": [
+          "encryptEntity",
+          "collectRecords"
+        ]
+      },
+      {
+        "id": "newdevice",
+        "title": "3. Abrir un perfil en un dispositivo nuevo",
+        "paragraphs": [
+          "Para abrir un perfil sincronizado en otro dispositivo, ese dispositivo necesita la clave de datos del perfil. Por eso, el servidor guarda un registro más: la clave de datos, cifrada con una clave generada a partir de la contraseña de tu perfil, con los mismos parámetros de Argon2id. El servidor no puede abrirla.",
+          "Esto es también lo principal que podría intentar un atacante si alguna vez robara los datos del servidor: adivinar la contraseña de tu perfil sin conexión. Cada intento cuesta una ejecución completa de Argon2id, así que una contraseña larga que no uses en ningún otro sitio mantiene tus datos a salvo."
+        ],
+        "code": [
+          "escrowBuild",
+          "escrowOpen"
+        ]
+      },
+      {
+        "id": "account",
+        "title": "4. La contraseña de tu cuenta",
+        "paragraphs": [
+          "Tu cuenta de sincronización tiene su propia contraseña, distinta de la contraseña de tu perfil. Se envía al servidor cuando inicias sesión, por HTTPS, y el servidor solo guarda un hash bcrypt de ella. Tras {lockoutTries} contraseñas incorrectas, el inicio de sesión con contraseña se suspende durante {lockoutMinutes} minutos.",
+          "El servicio está detrás de Cloudflare, que gestiona la conexión HTTPS en su nombre. Por eso, al igual que el servidor, Cloudflare podría ver la contraseña de tu cuenta cuando inicias sesión, pero tus elementos solo en su forma cifrada.",
+          "Nunca uses la contraseña de tu perfil como contraseña de la cuenta. Así, nada de lo que lleguen a ver el servidor o Cloudflare podrá abrir tus perfiles."
+        ],
+        "code": [
+          "loginRequest"
+        ]
+      },
+      {
+        "id": "sharing",
+        "title": "5. Compartir un perfil",
+        "paragraphs": [
+          "Para compartir perfiles, cada cuenta tiene un par de claves X25519. La clave privada se cifra con una clave generada a partir de tu frase de contraseña para compartir (de nuevo con Argon2id), y esa frase de contraseña nunca sale de tu dispositivo. Cada miembro de un perfil compartido recibe la clave de datos del perfil sellada con su propia clave pública.",
+          "Cuando invitas a alguien, la aplicación usa la clave pública que el servidor proporciona para esa dirección de correo electrónico. Si más adelante cambia la clave de un miembro, la aplicación te avisa y te muestra una huella digital que puedes comparar con esa persona. El servidor conoce los nombres de los perfiles compartidos y quién es miembro, pero no su contenido."
+        ],
+        "code": [
+          "sealTo",
+          "invite"
+        ]
+      },
+      {
+        "id": "hostile",
+        "title": "6. Si el servidor fuera hostil",
+        "paragraphs": [
+          "La buena seguridad no depende solo de lo que se supone que debe hacer un servidor. Esto es lo que podría y lo que no podría hacer alguien con control total del servidor."
+        ],
+        "cannotTitle": "No podría",
+        "cannot": [
+          "Leer tus elementos, ni cambiar su contenido sin que se note",
+          "Abrir la copia guardada de la clave de tu perfil sin la contraseña del perfil",
+          "Averiguar la contraseña de tu perfil ni tu frase de contraseña para compartir, que la aplicación nunca envía",
+          "Cambiar la aplicación en tu dispositivo: no hay actualizaciones automáticas; la aplicación solo muestra que existe una versión nueva"
+        ],
+        "canTitle": "Podría",
+        "can": [
+          "Intentar adivinar sin conexión una contraseña débil del perfil, a razón de una lenta ejecución de Argon2id por intento",
+          "Capturar la contraseña de tu cuenta la próxima vez que inicies sesión",
+          "Eliminar elementos, restaurar versiones anteriores o retener cambios. Antes de que una sincronización elimine algo, la aplicación guarda una copia de tu perfil en tu dispositivo",
+          "Entregar una clave pública equivocada cuando invites a alguien a un perfil compartido",
+          "Ver los datos indicados en la tabla de arriba"
+        ]
+      },
+      {
+        "id": "network",
+        "title": "7. Todas las conexiones de la aplicación",
+        "paragraphs": [
+          "Tus propios servidores, y los proxies y servidores de salto que configures para ellos. El servidor de sincronización, solo cuando tienes la sesión iniciada. Y GitHub, para comprobar si hay una versión más reciente: cuando se abre la lista de perfiles y cuando pulsas «Check for updates» (buscar actualizaciones), la aplicación consulta la lista pública de versiones de GitHub. Esa solicitud solo lleva el nombre y la versión de la aplicación.",
+          "La aplicación no contiene código de analítica, de informes de fallos ni de publicidad. Para la sincronización, la aplicación solo confía en su propia lista integrada de autoridades de certificación y nunca sigue una redirección, así que no se la puede desviar en silencio hacia otro servidor."
+        ],
+        "code": [
+          "updateCheck"
+        ]
+      }
+    ],
+    "verify": {
+      "title": "Compruébalo por tu cuenta",
+      "lede": "No tienes que fiarte de nuestra palabra en nada de esto. Aquí tienes formas de comprobarlo, de las más sencillas a las más avanzadas.",
+      "items": [
+        {
+          "title": "Lee el código",
+          "text": "La aplicación es de código abierto. Los enlaces de esta página llevan a las líneas exactas que hacen el trabajo, en la versión que describe esta página ({commit})."
+        },
+        {
+          "title": "Observa las conexiones",
+          "text": "Usa un cortafuegos o un monitor de red. Verás tus propios servidores, el servidor de sincronización solo mientras tengas la sesión iniciada, y api.github.com cuando se abra la lista de perfiles. Nada más."
+        },
+        {
+          "title": "Mira lo que guarda el servidor",
+          "text": "Avanzado: toma tu token de inicio de sesión de la carpeta de datos de la aplicación (cloud_token.json) y pide tus datos a la API con la cabecera X-Auth-Token: GET /api/sync/profiles, o POST /api/sync con una lista de registros vacía. Solo recibirás identificadores, tipos, marcas de tiempo, indicadores y texto cifrado. Después, cierra sesión en la aplicación para terminar esa sesión."
+        },
+        {
+          "title": "Lee el tráfico",
+          "text": "Avanzado: ejecuta en tu computadora un pequeño proxy que reenvíe las solicitudes al servidor real y, en la aplicación, cambia el servidor de sincronización a http://127.0.0.1 con el puerto del proxy. La aplicación solo permite HTTP sin cifrar para tu propia computadora. Verás lo que envía la aplicación y que tus elementos van cifrados. (Un certificado de proxy añadido a tu sistema no funcionará, porque la aplicación usa su propia lista de autoridades de certificación.)"
+        },
+        {
+          "title": "Descifra tus propios datos",
+          "text": "Avanzado: con tu contraseña, puedes abrir tus propios datos con cualquier herramienta de Argon2id y AES-GCM, usando los parámetros de la tabla de abajo. Sin la contraseña, nadie puede."
+        },
+        {
+          "title": "Comprueba tu descarga",
+          "text": "Compara la suma de verificación con el archivo SHA256SUMS de la versión publicada (a partir de la 0.4), comprueba el certificado de la aplicación de Android con apksigner o compila la aplicación a partir del código fuente."
+        }
+      ],
+      "paramsTitle": "Los parámetros, para tus propias herramientas",
+      "params": [
+        [
+          "Derivación de la clave",
+          "Argon2id, versión 0x13, {argonMem} de memoria, {argonPasses} pasadas, {argonLanes} carriles, clave de 32 bytes, sal aleatoria de 16 bytes"
+        ],
+        [
+          "Archivo del perfil",
+          "“OMNV” · versión 1 · sal (16 bytes) · nonce (12 bytes) · AES-256-GCM de la base de datos SQLite comprimida con zstd, con su etiqueta de 16 bytes"
+        ],
+        [
+          "Elemento sincronizado",
+          "hex(nonce (12 bytes) · texto cifrado y etiqueta de AES-256-GCM), con la clave de datos de 256 bits del perfil"
+        ],
+        [
+          "Copia guardada de la clave del perfil",
+          "hex(0x02 · sal (16 bytes) · nonce (12 bytes) · AES-256-GCM de la clave de datos de 32 bytes), con la clave generada a partir de la contraseña de tu perfil"
+        ],
+        [
+          "Uso compartido",
+          "X25519, HKDF-SHA256, AES-256-GCM"
+        ]
+      ]
+    },
+    "limits": {
+      "title": "Lo que esta página no promete",
+      "items": [
+        "Submarine no se ha sometido a una auditoría de seguridad independiente. Hasta ahora, sus revisiones las ha hecho el autor.",
+        "Una contraseña débil o reutilizada es el punto más débil. Usa una contraseña larga y única para el perfil, y otra distinta para la cuenta.",
+        "Telnet y VNC en su forma básica no están cifrados por diseño. La aplicación los marca y puede hacer que pasen por un servidor SSH.",
+        "Esta página describe la aplicación tal como está en {commit}. Si el código cambia, esta página cambia con él."
+      ]
+    },
+    "codeLabels": {
+      "deriveKey": "Derivación de la clave (parámetros de Argon2id)",
+      "encrypt": "AES-256-GCM con un nonce nuevo",
+      "saveVault": "Guardar el archivo del perfil",
+      "encryptEntity": "Cifrar cada elemento sincronizado",
+      "collectRecords": "Lo que se envía de cada elemento",
+      "escrowBuild": "La copia guardada de la clave del perfil",
+      "escrowOpen": "Abrirla en un dispositivo nuevo",
+      "loginRequest": "La solicitud de inicio de sesión",
+      "sealTo": "Sellar una clave para un miembro",
+      "invite": "Invitar a un miembro",
+      "updateCheck": "La búsqueda de actualizaciones"
+    }
+  },
+  "privacy": {
+    "title": "Política de privacidad – Submarine",
+    "description": "Qué guardan la aplicación Submarine y su servicio opcional de sincronización, qué pueden leer y qué no, cuánto tiempo se conserva y cómo eliminarlo.",
+    "heading": "Política de privacidad",
+    "intro": "Esta política se aplica a la aplicación Submarine (Windows, macOS, Linux, Android e iOS), al servicio opcional de sincronización de Submarine que la aplicación puede usar y a este sitio web.",
+    "shortTitle": "En resumen",
+    "short": [
+      "Tus servidores, contraseñas, claves SSH y notas se quedan en tu dispositivo, cifrados con una clave generada a partir de la contraseña de tu perfil. La aplicación no tiene analítica, ni publicidad, ni rastreo, ni informes de fallos.",
+      "La función Cloud sync (sincronización en la nube) es opcional. Si la activas, el servidor de sincronización guarda la dirección de correo electrónico de tu cuenta y tus perfiles cifrados. No puede leer lo que contienen.",
+      "Puedes eliminar tu cuenta, y todo lo que el servidor guarda de ella, desde la propia aplicación o en este sitio web."
+    ],
+    "sections": [
+      {
+        "title": "Quién es el responsable",
+        "paragraphs": [
+          "Submarine lo desarrolla Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>), que también gestiona el servicio de sincronización en <code>submarine.sinaxhpm.com</code> (las versiones anteriores de la aplicación usan <code>api.sinaxhpm.com</code>). El código fuente de la aplicación es público en <a href=\"{repoUrl}\">github.com/SinaXhpm/Submarine</a> (licencia MIT), así que lo que esta política dice sobre la aplicación se puede comprobar en el código."
+        ]
+      },
+      {
+        "title": "Lo que se queda en tu dispositivo",
+        "list": [
+          "<strong>Tus perfiles</strong> (servidores, credenciales, claves SSH, túneles, notas, comandos, claves de host conocidas) se guardan en la carpeta de datos de la aplicación. Están cifrados con AES-256-GCM, con una clave generada a partir de la contraseña de tu perfil mediante Argon2id. La contraseña del perfil nunca se guarda ni se envía a ningún sitio. No hay forma de recuperarla: si la olvidas, el perfil no se puede abrir.",
+          "<strong>Desbloqueo rápido</strong> (opcional, desactivado de forma predeterminada): si activas Windows Hello o la huella dactilar en Android, la clave del perfil se sella con una clave que guarda el sistema (el TPM o el Android Keystore). El sistema comprueba tu huella dactilar o tu PIN; la aplicación nunca los ve.",
+          "<strong>Los ajustes</strong>, como la posición de la ventana, el nombre del último perfil usado y el tema de color, se guardan en la configuración propia de la aplicación, sin cifrar.",
+          "<strong>El portapapeles</strong> solo se lee cuando pegas algo en la aplicación, y nunca se envía a ningún sitio.",
+          "<strong>El registro de actividad</strong> de la aplicación se guarda en memoria y desaparece al cerrarla."
+        ]
+      },
+      {
+        "title": "A qué se conecta la aplicación",
+        "list": [
+          "<strong>Tus propios servidores.</strong> La aplicación solo se conecta a los hosts que añades o abres, mediante SSH, SFTP, Telnet, VNC o RDP, a través de cualquier proxy o servidor de salto que configures. Lo que escribes y transfieres va a ese servidor, no a nosotros. Telnet y VNC en su forma básica no están cifrados, y la aplicación lo indica.",
+          "<strong>El servicio de sincronización</strong>, solo si inicias sesión en la sincronización en la nube (ver más abajo). En su lugar, puedes configurar la aplicación para que use un servidor propio; en ese caso, los datos los gestiona el operador de ese servidor.",
+          "<strong>GitHub</strong>, para buscar una versión más reciente (solo en las aplicaciones de escritorio y de Android: la aplicación de iOS se actualiza a través de la App Store y no hace esta comprobación). Cuando se abre la lista de perfiles, y cuando pulsas «Check for updates» (buscar actualizaciones), la aplicación consulta en la lista pública de versiones de GitHub (<code>api.github.com</code>) si existe una versión más reciente. La solicitud lleva el nombre y la versión de la aplicación (<code>submarine-app/x.y.z</code>) y nada más; GitHub ve tu dirección IP, como en cualquier solicitud web.",
+          "<strong>Los enlaces</strong> en los que haces clic se abren en el navegador de tu sistema."
+        ],
+        "after": "Nada más sale de tu dispositivo. La aplicación no contiene código de analítica, publicidad ni rastreo de terceros."
+      }
+    ],
+    "table": {
+      "title": "Cloud sync (opcional): lo que guarda el servidor de sincronización",
+      "intro": "Si creas una cuenta, el servidor guarda:",
+      "head": [
+        "Qué",
+        "Para qué",
+        "¿Puede leerlo el servidor?"
+      ],
+      "rows": [
+        [
+          "Tu dirección de correo electrónico",
+          "Para que puedas iniciar sesión, y para enviarte códigos de inicio de sesión y de restablecimiento",
+          "Sí"
+        ],
+        [
+          "La contraseña de tu cuenta",
+          "Para que puedas iniciar sesión",
+          "Recibe la contraseña por HTTPS cuando inicias sesión y solo guarda de ella un hash bcrypt con sal"
+        ],
+        [
+          "Sesiones iniciadas: un token guardado como hash, la dirección IP a la que se emitió, cuándo se usó por última vez y un plazo de expiración ({sessionDays} días)",
+          "Para mantener tu sesión iniciada",
+          "El token se guarda como hash; el resto se puede leer"
+        ],
+        [
+          "Los registros de tus perfiles",
+          "Para sincronizarlos entre tus dispositivos",
+          "<strong>No.</strong> Cada registro se cifra en tu dispositivo con la clave del perfil antes de subirse. El servidor ve un identificador de cada registro, su tipo (servidor, credencial, clave, nota…), marcas de tiempo (que incluyen un identificador aleatorio del dispositivo que hizo el cambio), un indicador de eliminación y el tamaño, además del nombre del perfil y cuántos registros tiene"
+        ],
+        [
+          "Una copia de la clave de cada perfil, sellada con la contraseña de tu perfil",
+          "Para llevar un perfil a un dispositivo nuevo",
+          "No sin la contraseña de tu perfil. Alguien que obtuviera los datos del servidor podría intentar adivinar sin conexión una contraseña débil, así que usa una larga"
+        ],
+        [
+          "Uso compartido: tu clave pública, tu clave privada cifrada con tu frase de contraseña para compartir, los nombres de los perfiles compartidos, las direcciones de correo electrónico y los roles de las personas con quienes compartes, y las claves selladas para ellas",
+          "Para compartir un perfil con otras cuentas",
+          "Los nombres y las direcciones de correo electrónico, sí; las claves, no"
+        ],
+        [
+          "Un registro de eventos de la cuenta: qué ocurrió (creación de la cuenta, inicio de sesión, inicio de sesión fallido, cierre de sesión, bloqueo, restablecimiento de contraseña, una sincronización, una invitación o un cambio en un perfil compartido, y similares), la dirección de correo electrónico cuando se conoce, la dirección IP, la hora y el identificador de solicitud de Cloudflare. Nunca lo que se sincronizó",
+          "Para proteger las cuentas y detener abusos",
+          "Sí. Se conserva durante {auditDays} días y después se elimina"
+        ],
+        [
+          "Contadores para limitar el número de solicitudes, por dirección IP y por correo electrónico",
+          "Para frenar los intentos de adivinación y las avalanchas de solicitudes",
+          "Sí. Se conservan durante {rateDays} días"
+        ]
+      ],
+      "after": [
+        "Las cuentas creadas que nunca se verifican se eliminan pasados {unverifiedDays} días.",
+        "El servicio está detrás de Cloudflare, que gestiona la conexión HTTPS en su nombre y pasa las solicitudes al servidor. Por eso, Cloudflare trata, por cuenta del servicio, direcciones IP, cabeceras y contenido de las solicitudes, incluidos tus datos de inicio de sesión y tus registros ya cifrados. El servidor envía los correos de verificación y de restablecimiento a través del sistema de correo de su proveedor de alojamiento.",
+        "No vendemos tus datos, no los compartimos con anunciantes, no los usamos para publicidad, analítica ni elaboración de perfiles, ni los combinamos con nada más."
+      ]
+    },
+    "website": {
+      "title": "Este sitio web",
+      "paragraphs": [
+        "Este sitio web no usa cookies, ni analítica, ni publicidad, ni scripts ni fuentes de terceros. Como en cualquier sitio web, Cloudflare y el proveedor de alojamiento tratan tu dirección IP, la página que solicitas y los datos de tu navegador para poder entregarte la página, y el proveedor de alojamiento conserva los registros habituales del servidor durante un tiempo limitado.",
+        "Si eliminas tu cuenta en este sitio web, lo que escribes se envía solo al servicio de sincronización, por HTTPS, y la página no lo guarda."
+      ]
+    },
+    "deleting": {
+      "title": "Eliminar tus datos",
+      "list": [
+        "<strong>Elimina tu cuenta</strong> en la aplicación (versión 0.4 o posterior): <em>Cloud sync → (con la sesión iniciada) → Delete account…</em>, o en la <a href=\"{deleteUrl}\">página para eliminar la cuenta</a> de este sitio web. Se confirma con la contraseña de tu cuenta. Esto elimina de inmediato: las copias en la nube de todos tus perfiles, tu clave para compartir, todos los perfiles que compartes (las personas con quienes los compartes pierden el acceso), tu pertenencia a perfiles compartidos de otras personas, tus sesiones y las entradas de tu cuenta en el registro de eventos. Los registros que hayas escrito en el perfil compartido de otra persona se quedan en ese perfil, sin que figure quién los escribió. Los perfiles de tus dispositivos no se ven afectados.",
+        "<strong>Las entradas del registro de eventos escritas después</strong> (la propia eliminación, que no incluye ninguna dirección de correo electrónico, y cualquier intento posterior de iniciar sesión con esa dirección) se conservan durante un máximo de {auditDays} días. Las copias de seguridad hechas en torno a las actualizaciones del software del servidor solo se conservan durante poco tiempo.",
+        "<strong>Quita la copia en la nube de un perfil</strong> en la aplicación: el menú del perfil en la lista de perfiles, <em>Delete from cloud…</em>.",
+        "<strong>Elimina lo que hay en un dispositivo</strong> desinstalando la aplicación (en la versión portable de Windows, borrando la carpeta que está junto al programa).",
+        "Si usas una versión anterior o ya no puedes abrir la aplicación, ponte en contacto con nosotros (ver más abajo) y eliminaremos la cuenta cuando puedas demostrar que es tuya."
+      ]
+    },
+    "security": {
+      "title": "Seguridad",
+      "paragraphs": [
+        "Todo el tráfico hacia el servicio de sincronización usa HTTPS. La contraseña de tu perfil y tu frase de contraseña para compartir nunca salen de tu dispositivo, y las claves que abren tus perfiles nunca se guardan en el servidor de forma que este pueda abrirlas. El servidor limita los intentos de inicio de sesión, suspende durante un tiempo el inicio de sesión con contraseña tras repetidos intentos con una contraseña incorrecta y vuelve a pedir tu contraseña para las acciones más delicadas (sustituir tu clave para compartir, eliminar tu cuenta). La <a href=\"{securityUrl}\">página de seguridad</a> lo explica todo en detalle."
+      ]
+    },
+    "children": {
+      "title": "Niños",
+      "paragraphs": [
+        "Submarine es una herramienta para administradores de sistemas y desarrolladores. No está dirigida a niños, y no recopilamos datos suyos a sabiendas."
+      ]
+    },
+    "changes": {
+      "title": "Cambios en esta política",
+      "paragraphs": [
+        "Cuando esta política cambia, también cambia la fecha que aparece arriba. El historial completo de cambios está en el <a href=\"{repoUrl}/commits/main/PRIVACY.md\">repositorio</a>."
+      ]
+    },
+    "contact": {
+      "title": "Contacto",
+      "paragraphs": [
+        "Preguntas o solicitudes sobre tus datos: abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (por favor, no publiques ahí información privada) o escribe a través de <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+      ]
+    }
+  },
+  "delete": {
+    "title": "Eliminar tu cuenta de Submarine",
+    "description": "Cómo eliminar tu cuenta de sincronización de Submarine y todo lo que el servidor guarda de ella, en la aplicación o en esta página.",
+    "heading": "Eliminar tu cuenta",
+    "lede": "Al eliminar tu cuenta de sincronización, se borra de inmediato todo lo que el servidor guarda de ella. No se puede deshacer.",
+    "whatTitle": "Qué se elimina",
+    "what": [
+      "Las copias en la nube de todos tus perfiles",
+      "Tu clave para compartir y todos los perfiles que compartes (las personas con quienes los compartes pierden el acceso)",
+      "Tu pertenencia a perfiles compartidos de otras personas",
+      "Tus sesiones, así que se cierra tu sesión en todas partes",
+      "Las entradas de tu cuenta en el registro de eventos"
+    ],
+    "staysTitle": "Qué se conserva",
+    "stays": [
+      "Los perfiles de tus dispositivos no se ven afectados. Para quitarlos, elimina el perfil en la aplicación o desinstálala.",
+      "Los registros que hayas escrito en el perfil compartido de otra persona se quedan en ese perfil, sin que figure quién los escribió.",
+      "Las entradas del registro de eventos escritas después de la eliminación (la propia eliminación, sin tu dirección de correo electrónico, y los intentos posteriores de iniciar sesión) se conservan durante un máximo de {auditDays} días."
+    ],
+    "inAppTitle": "En la aplicación",
+    "inApp": "Versión 0.4 o posterior: con la sesión iniciada, abre <em>Cloud sync</em>, elige <em>Delete account…</em> y confirma con la contraseña de tu cuenta.",
+    "formTitle": "En esta página",
+    "formLede": "Inicia sesión con la dirección de correo electrónico y la contraseña de tu cuenta de sincronización. Tu cuenta se elimina de inmediato.",
+    "email": "Correo electrónico",
+    "password": "Contraseña de la cuenta",
+    "passwordHint": "La contraseña de tu cuenta de sincronización, no la contraseña de tu perfil.",
+    "confirm": "Entiendo que esto elimina mi cuenta y sus datos en la nube de forma definitiva.",
+    "submit": "Eliminar mi cuenta",
+    "working": "Eliminando…",
+    "done": "Tu cuenta se ha eliminado. Los perfiles de tus dispositivos no se ven afectados.",
+    "errors": {
+      "wrong": "Correo electrónico o contraseña incorrectos. Tras varios intentos fallidos, el inicio de sesión con contraseña se suspende durante un tiempo.",
+      "noScript": "Este formulario necesita JavaScript. También puedes eliminar tu cuenta en la aplicación.",
+      "rate": "Demasiados intentos. Espera un rato y vuelve a intentarlo.",
+      "network": "No se ha podido conectar con el servidor. Comprueba tu conexión y vuelve a intentarlo.",
+      "other": "Algo ha fallado ({code}). No se ha eliminado nada. Vuelve a intentarlo más tarde o usa la aplicación.",
+      "confirm": "Marca la casilla para confirmar."
+    },
+    "helpTitle": "¿Sin contraseña o sin acceso?",
+    "help": "Si siempre inicias sesión con un código que recibes por correo electrónico, primero establece una contraseña en la aplicación (Cloud sync → Forgot password?). Si no puedes usar la aplicación ni este formulario, abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> sin ningún dato privado, y eliminaremos la cuenta cuando puedas demostrar que es tuya."
+  },
+  "notFound": {
+    "title": "Página no encontrada – Submarine",
+    "heading": "Esta página no existe",
+    "text": "Puede que la dirección sea incorrecta o que la página se haya movido.",
+    "home": "Ir a la página de inicio"
+  }
+}

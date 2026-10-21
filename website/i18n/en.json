@@ -1,0 +1,611 @@
+{
+  "meta": {
+    "name": "English",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "Skip to content",
+    "features": "Features",
+    "security": "Security",
+    "privacy": "Privacy",
+    "download": "Download",
+    "github": "GitHub",
+    "language": "Language",
+    "home": "Submarine home page",
+    "menu": "Menu"
+  },
+  "common": {
+    "tagline": "SSH, SFTP, RDP, VNC and Telnet client",
+    "freeLine": "Free and open source · MIT license",
+    "newIn": "New in 0.4",
+    "readMore": "Read more",
+    "learnHow": "See how it works",
+    "updated": "Last updated: {date}",
+    "translationNote": "This page is a translation. If it differs from the English version, the English version is the one that counts.",
+    "englishVersion": "English version",
+    "screenshotOf": "Screenshot: {what}",
+    "openFull": "Open the full-size picture",
+    "codeLink": "{file}, lines {from}–{to}",
+    "example": "Example"
+  },
+  "footer": {
+    "madeBy": "Made by {author}.",
+    "license": "Free and open source under the MIT license.",
+    "deleteAccount": "Delete your account",
+    "releases": "Releases",
+    "issues": "Report a problem",
+    "author": "sinaxhpm.com",
+    "noTracking": "This website uses no cookies, no analytics and no third-party scripts."
+  },
+  "home": {
+    "title": "Submarine – free SSH, SFTP, RDP, VNC and Telnet client for Windows, macOS, Linux and Android",
+    "description": "Submarine is a free, open-source remote access app: SSH terminal, two-pane SFTP, port forwarding, remote desktops (RDP, VNC) and Telnet in one window. Your servers, passwords and keys stay encrypted on your devices.",
+    "hero": {
+      "eyebrow": "Free and open source",
+      "title": "All your servers in one encrypted app",
+      "lede": "Submarine is an SSH, SFTP, RDP, VNC and Telnet client for Windows, macOS, Linux and Android. Your servers, passwords and keys are encrypted on your device, and they sync between your devices only if you want them to.",
+      "download": "Download",
+      "security": "How your data is protected",
+      "points": [
+        "No ads",
+        "No tracking",
+        "No paid plan",
+        "No account needed"
+      ],
+      "imageAlt": "Submarine on a computer: an SSH terminal on the left and the two-pane file browser on the right"
+    },
+    "features": {
+      "title": "Everything for your servers, in one window",
+      "lede": "One app instead of a terminal, a file transfer tool, a tunnel manager and a remote desktop viewer.",
+      "items": [
+        {
+          "id": "terminal",
+          "title": "A terminal that keeps up",
+          "text": "Tabs, split view and the Wall, which shows many servers side by side and can type into all of them at once. True colour, 10,000 lines of scrollback, colour schemes and Nerd Fonts.",
+          "alt": "The Wall: three servers side by side in one window"
+        },
+        {
+          "id": "files",
+          "title": "Files, side by side",
+          "text": "Two-pane SFTP with drag and drop. Compare two folders, edit remote files live, pack and unpack archives, and work as root through sudo, even on servers without SFTP.",
+          "alt": "Comparing a local folder with a remote one: files that differ are marked"
+        },
+        {
+          "id": "desktops",
+          "title": "Remote desktops too",
+          "text": "RDP and VNC open in a tab, directly or through one of your SSH servers. Telnet is there for old switches and routers. Connections that are not encrypted are clearly marked.",
+          "alt": "A remote desktop open in a Submarine tab over RDP",
+          "new": true
+        },
+        {
+          "id": "tunnels",
+          "title": "Tunnels without the command line",
+          "text": "Local, remote and SOCKS forwarding with names, started together with the app if you like, with a live log of every connection.",
+          "alt": "The port forwarding panel with three tunnels and their status"
+        },
+        {
+          "id": "fits",
+          "title": "Works with what you already have",
+          "text": "Reads your ~/.ssh/config, uses your SSH agent (Pageant, the Windows OpenSSH agent, 1Password, hardware keys), OpenSSH certificates, jump hosts and proxies. Imports from PuTTY, MobaXterm and OpenSSH.",
+          "alt": "The form for a new server, with import from ~/.ssh/config"
+        },
+        {
+          "id": "monitor",
+          "title": "Know when something breaks",
+          "text": "Watches CPU, memory, disk and network over SSH and tells you when a server goes down. Server info, services and Docker containers in one place.",
+          "alt": "Monitoring: three servers with live charts"
+        },
+        {
+          "id": "vault",
+          "title": "Your logins, locked",
+          "text": "Passwords and keys live in an encrypted profile that only your password opens. Unlock it with Windows Hello, or with your fingerprint on Android.",
+          "alt": "Saved logins and SSH keys in the encrypted profile"
+        },
+        {
+          "id": "phone",
+          "title": "On your phone as well",
+          "text": "The same profile on Android: a terminal with a key bar, file transfer, remote desktops and tunnels.",
+          "alt": "Submarine on an Android phone: an SSH terminal with a key bar"
+        }
+      ]
+    },
+    "privacy": {
+      "title": "Private by design",
+      "lede": "Your data is encrypted before it is saved, and before it leaves your device. We publish exactly what our server can and cannot see.",
+      "items": [
+        {
+          "title": "Encrypted on your device",
+          "text": "Profiles are encrypted with AES-256-GCM. The key is made from your password with Argon2id. The password itself is never stored or sent."
+        },
+        {
+          "title": "Sync is optional",
+          "text": "If you turn it on, every item is encrypted on your device first. The server keeps only the encrypted version. It does see some details around it, such as your email address and when you sync, and we list them all."
+        },
+        {
+          "title": "No tracking",
+          "text": "No ads, no analytics, no crash reports. The app talks only to your servers, to the sync server if you sign in, and to GitHub to check for a new version."
+        }
+      ],
+      "link": "How it works, and how to check it yourself"
+    },
+    "free": {
+      "title": "Free. Really.",
+      "items": [
+        "Submarine is free and open source under the MIT license. There is no paid plan, no trial and no ads.",
+        "You don't need an account. An account is only for the optional sync between your devices.",
+        "The sync service is free as well, within fair limits: {limitMb} MB of encrypted data, {limitItems} items and {limitProfiles} profiles per account.",
+        "The source code is public. You can read it, build the app yourself, or use a sync server of your own."
+      ]
+    },
+    "download": {
+      "title": "Download Submarine",
+      "lede": "All downloads come from the project's releases on GitHub.",
+      "button": "Download",
+      "platforms": [
+        {
+          "id": "windows",
+          "name": "Windows",
+          "detail": "Windows 10 and 11 · installer (.exe, .msi) or portable .zip"
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "detail": "Apple Silicon (M1 and later) · .dmg"
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "detail": ".deb, .rpm, Arch package and AppImage"
+        },
+        {
+          "id": "android",
+          "name": "Android",
+          "detail": "Android 7.0 and later · .apk"
+        }
+      ],
+      "betaNote": "Version 0.4 is being tested. Features marked “New in 0.4” come with it; until then the latest stable version is the one offered.",
+      "verifyTitle": "Check your download",
+      "verify": [
+        "From version 0.4, every release has a SHA256SUMS file with the checksum of each download.",
+        "The Android app is signed with the author's key. Its certificate's SHA-256 fingerprint is <code class=\"hash\">{certSha256}</code>.",
+        "The Windows and macOS builds are not code-signed yet, so your system may warn you the first time you open them."
+      ]
+    },
+    "faq": {
+      "title": "Questions",
+      "items": [
+        {
+          "q": "Is Submarine really free?",
+          "a": "Yes. The app is free and open source under the MIT license, with no paid plan and no ads. The sync service is free too, within the limits above."
+        },
+        {
+          "q": "Do I need an account?",
+          "a": "No. Everything works without one. You only need an account if you want to sync profiles between your devices."
+        },
+        {
+          "q": "Can the sync server read my passwords?",
+          "a": "No. Every item is encrypted on your device before it is uploaded, and the server never gets the key. It does see some details around your data, such as your email address, when you sync, and how many items you have. The security page lists all of them."
+        },
+        {
+          "q": "What if I forget my profile password?",
+          "a": "Then nobody can open that profile, not even us. There is no recovery, because the password is never stored anywhere. Keep it somewhere safe."
+        },
+        {
+          "q": "Which systems does it run on?",
+          "a": "Windows 10 and 11, macOS on Apple Silicon (M1 and later), Linux (.deb, .rpm, Arch, AppImage) and Android 7.0 or later."
+        },
+        {
+          "q": "Can I use my own sync server?",
+          "a": "Yes. In the app, open Cloud sync and change the sync server. Our server's code is not published, so a server of your own has to offer the same API, which is described in the app's source code."
+        },
+        {
+          "q": "How do I delete my account?",
+          "a": "In the app (version 0.4 and later): Cloud sync → Delete account. You can also do it on the <a href=\"{deleteUrl}\">delete account page</a>."
+        }
+      ]
+    }
+  },
+  "security": {
+    "title": "How Submarine protects your data, and how to check it",
+    "description": "What Submarine encrypts and how, what the sync server can and cannot see, what a hostile server could still do, and step-by-step ways to check every claim in the open-source code.",
+    "heading": "How your data is protected",
+    "lede": "We don't ask you to trust us. This page explains exactly what is encrypted, what our server can and cannot see, and how you can check every claim yourself.",
+    "summaryTitle": "In one minute",
+    "summary": [
+      "Everything you save in Submarine is kept in one file on your device, encrypted with AES-256-GCM.",
+      "Its key is made from your profile password with Argon2id, a method that is slow on purpose so that guessing is expensive. The password is never stored or sent anywhere.",
+      "If you turn on sync, each item is encrypted on your device before it is uploaded. The server stores data it cannot decrypt.",
+      "The server does see the outside of your data: your email address, when you sync and from which IP address, how many items of each kind you have and how big they are, your profile names, and for shared profiles the share names and the members' email addresses.",
+      "The app has no ads, no analytics and no crash reporting."
+    ],
+    "canCannot": {
+      "cannotTitle": "The server cannot read",
+      "cannot": [
+        "What is inside your items: names, addresses, ports, user names, passwords, private keys and their passphrases, tunnels, notes, commands, folder names",
+        "Which login or key belongs to which server",
+        "Who changed an item",
+        "Your profile password, your sharing passphrase and the keys that open your profiles"
+      ],
+      "canTitle": "The server can see",
+      "can": [
+        "Your email address, and your account password when you sign in (it stores only a bcrypt hash of it)",
+        "The IP address and time of sign-ins and syncs",
+        "How many items of each kind a profile has, their sizes, and when each one was changed and by which device (a random ID)",
+        "Your profile names",
+        "For shared profiles: the share names, the members' email addresses and their roles"
+      ]
+    },
+    "diagram": {
+      "title": "What happens when you sync",
+      "device": "Your device",
+      "password": "Profile password",
+      "kdf": "Argon2id",
+      "key": "Profile key",
+      "encrypt": "AES-256-GCM",
+      "items": "Encrypted items",
+      "https": "HTTPS",
+      "server": "Sync server",
+      "stores": "Stores encrypted items and the details listed above",
+      "never": "Never leaves your device",
+      "caption": "The password and the keys stay on your device. Only encrypted items, and the details around them, are sent."
+    },
+    "sections": [
+      {
+        "id": "device",
+        "title": "1. On your device",
+        "paragraphs": [
+          "Each profile is one file. Inside is a small database with your servers, logins, SSH keys, notes and settings. The whole database is compressed and then encrypted with AES-256-GCM. A new random nonce is used every time the file is saved, and the file is written to a temporary copy first, so a crash cannot leave half a file behind.",
+          "The key comes from your profile password through Argon2id with {argonMem} of memory, {argonPasses} passes and {argonLanes} lanes, and a random salt for each profile. These settings are fixed in the app, so a changed file cannot make them weaker.",
+          "The password is never written to disk and never sent anywhere. After the key is made, the copy of the password in the app's core is wiped, and the key is wiped when you lock the profile. If you forget the password, the profile cannot be opened. There is no reset, because nothing that could open it is kept anywhere.",
+          "Quick unlock is optional and off by default. On Windows it uses Windows Hello and the TPM, on Android the fingerprint sensor and the Android Keystore. The system keeps the profile's key, never your password, and the key is never synced. On Android, the system's cloud backup of the app's data is turned off."
+        ],
+        "code": [
+          "deriveKey",
+          "encrypt",
+          "saveVault"
+        ]
+      },
+      {
+        "id": "sync",
+        "title": "2. Cloud sync",
+        "paragraphs": [
+          "Sync is off until you sign in. Each profile has its own random 256-bit data key, which lives inside the encrypted profile. Before upload, every item (a server, a login, a key, a note…) is encrypted on its own with this key, using AES-256-GCM and a new random nonce.",
+          "Next to each encrypted item, the server gets a random ID, the kind of item, a timestamp, and a flag that says whether it was deleted. The timestamp contains a random ID of the device that made the change. The size of the encrypted item shows roughly how big the item is. The server also stores each profile's name. Known host keys, command history and monitoring settings are never synced."
+        ],
+        "example": "This is what the server stores for one item:",
+        "code": [
+          "encryptEntity",
+          "collectRecords"
+        ]
+      },
+      {
+        "id": "newdevice",
+        "title": "3. Opening a profile on a new device",
+        "paragraphs": [
+          "To open a synced profile on another device, that device needs the profile's data key. So the server keeps one more record: the data key, encrypted with a key made from your profile password, with the same Argon2id settings. The server cannot open it.",
+          "This is also the main thing an attacker could try if they ever stole the server's data: guess your profile password offline. Every guess costs a full Argon2id run, so a long password that you use nowhere else keeps your data safe."
+        ],
+        "code": [
+          "escrowBuild",
+          "escrowOpen"
+        ]
+      },
+      {
+        "id": "account",
+        "title": "4. Your account password",
+        "paragraphs": [
+          "Your sync account has its own password, separate from your profile password. It is sent to the server when you sign in, inside HTTPS, and the server stores only a bcrypt hash of it. After {lockoutTries} wrong passwords, password sign-in pauses for {lockoutMinutes} minutes.",
+          "The service sits behind Cloudflare, which handles the HTTPS connection for it. So, like the server, Cloudflare could see your account password when you sign in, but your items only in their encrypted form.",
+          "Never use your profile password as your account password. Then nothing the server or Cloudflare ever sees can open your profiles."
+        ],
+        "code": [
+          "loginRequest"
+        ]
+      },
+      {
+        "id": "sharing",
+        "title": "5. Sharing a profile",
+        "paragraphs": [
+          "To share profiles, each account has an X25519 key pair. The private key is encrypted with a key made from your sharing passphrase (Argon2id again), and the passphrase never leaves your device. Each member of a shared profile gets the profile's data key sealed to their own public key.",
+          "When you invite someone, the app uses the public key that the server gives for that email address. If a member's key changes later, the app tells you and shows a fingerprint you can compare with them. The server knows the names of shared profiles and who is a member, but not what is inside."
+        ],
+        "code": [
+          "sealTo",
+          "invite"
+        ]
+      },
+      {
+        "id": "hostile",
+        "title": "6. If the server were hostile",
+        "paragraphs": [
+          "Good security is not only about what a server is supposed to do. Here is what someone in full control of the server could and could not do."
+        ],
+        "cannotTitle": "They could not",
+        "cannot": [
+          "Read your items, or change what is inside them without it being noticed",
+          "Open the stored copy of your profile key without your profile password",
+          "Learn your profile password or sharing passphrase, which the app never sends",
+          "Change the app on your device: there are no automatic updates, the app only shows that a new version exists"
+        ],
+        "canTitle": "They could",
+        "can": [
+          "Try to guess a weak profile password offline, one slow Argon2id run per guess",
+          "Catch your account password the next time you sign in",
+          "Delete items, bring back older versions, or hold changes back. Before a sync deletes anything, the app keeps a copy of your profile on your device",
+          "Hand out the wrong public key when you invite someone to a shared profile",
+          "See the details listed in the table above"
+        ]
+      },
+      {
+        "id": "network",
+        "title": "7. Everything the app connects to",
+        "paragraphs": [
+          "Your own servers, and the proxies and jump hosts you set up for them. The sync server, only when you are signed in. And GitHub, to check for a newer version: when the profile list opens and when you press “Check for updates”, the app asks GitHub's public list of releases. That request carries only the app's name and version.",
+          "There is no analytics, crash reporting or advertising code in the app. The app trusts only its own built-in list of certificate authorities for sync, and it never follows a redirect, so it cannot be quietly pointed at another server."
+        ],
+        "code": [
+          "updateCheck"
+        ]
+      }
+    ],
+    "verify": {
+      "title": "Check it yourself",
+      "lede": "You don't have to take our word for any of this. Here are ways to check, from easy to advanced.",
+      "items": [
+        {
+          "title": "Read the code",
+          "text": "The app is open source. The links on this page go to the exact lines that do the work, at the version this page describes ({commit})."
+        },
+        {
+          "title": "Watch the connections",
+          "text": "Use a firewall or network monitor. You will see your own servers, the sync server only while you are signed in, and api.github.com when the profile list opens. Nothing else."
+        },
+        {
+          "title": "Look at what the server stores",
+          "text": "Advanced: take your sign-in token from the app's data folder (cloud_token.json) and ask the API for your data, with the header X-Auth-Token: GET /api/sync/profiles, or POST /api/sync with an empty list of records. You get back only IDs, kinds, times, flags and encrypted text. Sign out in the app afterwards to end that session."
+        },
+        {
+          "title": "Read the traffic",
+          "text": "Advanced: run a small proxy on your computer that passes requests on to the real server, and set the app's sync server to http://127.0.0.1 and the proxy's port. The app allows plain HTTP only for your own computer. You will see what the app sends, and that your items are encrypted. (A proxy certificate added to your system will not work, because the app uses its own list of certificate authorities.)"
+        },
+        {
+          "title": "Decrypt your own data",
+          "text": "Advanced: with your password, you can open your own data with any Argon2id and AES-GCM tool, using the settings in the table below. Without the password, nobody can."
+        },
+        {
+          "title": "Check your download",
+          "text": "Compare the checksum with SHA256SUMS in the release (from version 0.4), check the Android app's certificate with apksigner, or build the app from source."
+        }
+      ],
+      "paramsTitle": "The settings, for your own tools",
+      "params": [
+        [
+          "Key derivation",
+          "Argon2id, version 0x13, {argonMem} memory, {argonPasses} passes, {argonLanes} lanes, 32-byte key, 16-byte random salt"
+        ],
+        [
+          "Profile file",
+          "“OMNV” · version 1 · salt (16 bytes) · nonce (12 bytes) · AES-256-GCM of the zstd-compressed SQLite database, with its 16-byte tag"
+        ],
+        [
+          "Synced item",
+          "hex(nonce (12 bytes) · AES-256-GCM ciphertext and tag), with the profile's 256-bit data key"
+        ],
+        [
+          "Stored copy of the profile key",
+          "hex(0x02 · salt (16 bytes) · nonce (12 bytes) · AES-256-GCM of the 32-byte data key), with the key made from your profile password"
+        ],
+        [
+          "Sharing",
+          "X25519, HKDF-SHA256, AES-256-GCM"
+        ]
+      ]
+    },
+    "limits": {
+      "title": "What this page does not promise",
+      "items": [
+        "Submarine has not had an independent security audit. Its reviews so far were done by the author.",
+        "A weak or reused password is the weakest point. Use a long, unique profile password, and a different account password.",
+        "Telnet and plain VNC are not encrypted by design. The app labels them, and can run them through an SSH server.",
+        "This page describes the app at {commit}. If the code changes, this page changes with it."
+      ]
+    },
+    "codeLabels": {
+      "deriveKey": "Key derivation (Argon2id settings)",
+      "encrypt": "AES-256-GCM with a fresh nonce",
+      "saveVault": "Saving the profile file",
+      "encryptEntity": "Encrypting each synced item",
+      "collectRecords": "What is sent for each item",
+      "escrowBuild": "The stored copy of the profile key",
+      "escrowOpen": "Opening it on a new device",
+      "loginRequest": "The sign-in request",
+      "sealTo": "Sealing a key to a member",
+      "invite": "Inviting a member",
+      "updateCheck": "The update check"
+    }
+  },
+  "privacy": {
+    "title": "Privacy policy – Submarine",
+    "description": "What the Submarine app and its optional sync service keep, what they can and cannot read, how long it is kept, and how to delete it.",
+    "heading": "Privacy policy",
+    "intro": "This policy covers the Submarine app (Windows, macOS, Linux, Android and iOS), the optional Submarine sync service that the app can use, and this website.",
+    "shortTitle": "In short",
+    "short": [
+      "Your servers, passwords, SSH keys and notes stay on your device, encrypted with a key made from your profile password. The app has no analytics, no advertising, no tracking and no crash reporting.",
+      "Cloud sync is optional. If you turn it on, the sync server keeps your account's email address and your profiles in encrypted form. It cannot read what is inside them.",
+      "You can delete your account, and everything the server holds for it, from inside the app or on this website."
+    ],
+    "sections": [
+      {
+        "title": "Who is responsible",
+        "paragraphs": [
+          "Submarine is made by Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>), who also runs the sync service at <code>submarine.sinaxhpm.com</code> (older versions of the app use <code>api.sinaxhpm.com</code>). The source code of the app is public at <a href=\"{repoUrl}\">github.com/SinaXhpm/Submarine</a> (MIT license), so what this policy says about the app can be checked in the code."
+        ]
+      },
+      {
+        "title": "What stays on your device",
+        "list": [
+          "<strong>Your profiles</strong> (servers, logins, SSH keys, tunnels, notes, commands, known host keys) are stored in the app's data folder. They are encrypted with AES-256-GCM, using a key made from your profile password with Argon2id. The profile password is never stored and never sent anywhere. There is no way to recover it: if you forget it, the profile cannot be opened.",
+          "<strong>Quick unlock</strong> (optional, off by default): if you turn on Windows Hello or an Android fingerprint, the profile's key is sealed to a key held by the system (the TPM or the Android Keystore). The system checks your fingerprint or PIN; the app never sees it.",
+          "<strong>Settings</strong> such as the window position, the last-used profile name and the colour theme are stored in the app's own settings, not encrypted.",
+          "<strong>The clipboard</strong> is read only when you paste into the app, and never sent anywhere.",
+          "<strong>The activity log</strong> in the app lives in memory and goes away when the app closes."
+        ]
+      },
+      {
+        "title": "What the app connects to",
+        "list": [
+          "<strong>Your own servers.</strong> The app connects only to the hosts you add or open, using SSH, SFTP, Telnet, VNC or RDP, through any proxy or jump host you set up. What you type and transfer goes to that server, not to us. Plain Telnet and plain VNC are not encrypted, and the app says so.",
+          "<strong>The sync service</strong>, only if you sign in to cloud sync (see below). You can point the app at a server of your own instead; then that server's operator handles the data.",
+          "<strong>GitHub</strong>, to look for a newer version (desktop and Android apps only: the iOS app is updated by the App Store and does not do this). When the profile list opens, and when you press “Check for updates”, the app asks GitHub's public list of releases (<code>api.github.com</code>) whether a newer version exists. The request carries the app's name and version (<code>submarine-app/x.y.z</code>) and nothing else; GitHub sees your IP address, as with any web request.",
+          "<strong>Links</strong> you click open in your system browser."
+        ],
+        "after": "Nothing else leaves your device. The app contains no third-party analytics, advertising or tracking code."
+      }
+    ],
+    "table": {
+      "title": "Cloud sync (optional): what the sync server keeps",
+      "intro": "If you create an account, the server stores:",
+      "head": [
+        "What",
+        "Why",
+        "Can the server read it?"
+      ],
+      "rows": [
+        [
+          "Your email address",
+          "To sign you in, and to send sign-in and reset codes",
+          "Yes"
+        ],
+        [
+          "Your account password",
+          "To sign you in",
+          "It receives the password over HTTPS when you sign in and stores only a salted bcrypt hash of it"
+        ],
+        [
+          "Sign-in sessions: a hashed token, the IP address it was issued to, when it was last used, and an expiry ({sessionDays} days)",
+          "To keep you signed in",
+          "The token is hashed; the rest is readable"
+        ],
+        [
+          "Your profiles' records",
+          "To sync them between your devices",
+          "<strong>No.</strong> Each record is encrypted on your device with the profile's key before it is uploaded. The server sees an ID for each record, its type (server, login, key, note…), timestamps (which include a random ID of the device that made the change), a deleted flag and the size, plus the profile's name and how many records it has"
+        ],
+        [
+          "A copy of each profile's key, sealed with your profile password",
+          "To bring a profile onto a new device",
+          "Not without your profile password. Someone who got the server's data could try to guess a weak password offline, so use a long one"
+        ],
+        [
+          "Sharing: your public key, your private key wrapped with your sharing passphrase, the names of shared profiles, the emails and roles of the people you share with, and the keys sealed to them",
+          "To share a profile with other accounts",
+          "The names and emails, yes; the keys, no"
+        ],
+        [
+          "A log of account events: what happened (sign-up, sign-in, failed sign-in, sign-out, lock-out, password reset, a sync, a share invitation or change, and similar), the email address when it is known, the IP address, the time and Cloudflare's request ID. Never what was synced",
+          "To protect accounts and stop abuse",
+          "Yes. Kept for {auditDays} days, then deleted"
+        ],
+        [
+          "Rate-limit counters, keyed by IP address and email",
+          "To slow down guessing and floods",
+          "Yes. Kept for {rateDays} days"
+        ]
+      ],
+      "after": [
+        "Sign-ups that are never verified are deleted after {unverifiedDays} days.",
+        "The service sits behind Cloudflare, which handles the HTTPS connection for it and passes requests on to the server. So Cloudflare processes IP addresses, request headers and request contents, including your sign-in details and your already-encrypted records, on the service's behalf. The server sends verification and reset emails through its hosting provider's mail system.",
+        "We do not sell your data, share it with advertisers, use it for advertising, analytics or profiling, or combine it with anything else."
+      ]
+    },
+    "website": {
+      "title": "This website",
+      "paragraphs": [
+        "This website uses no cookies, no analytics, no advertising and no third-party scripts or fonts. Like any website, Cloudflare and the hosting provider process your IP address, the page you ask for and your browser's details in order to deliver the page, and the hosting provider keeps standard server logs for a limited time.",
+        "If you delete your account on this website, what you type is sent only to the sync service, over HTTPS, and is not stored by the page."
+      ]
+    },
+    "deleting": {
+      "title": "Deleting your data",
+      "list": [
+        "<strong>Delete your account</strong> in the app (version 0.4 and later): <em>Cloud sync → (signed in) → Delete account…</em>, or on the <a href=\"{deleteUrl}\">delete account page</a> of this website. You confirm with your account password. This removes, at once: the cloud copies of all your profiles, your sharing key, every profile you shared (the people you shared it with lose access), your membership in other people's shares, your sessions, and the log entries of your account. Records you wrote into someone else's shared profile stay with that profile, with no writer named. Profiles on your devices are not touched.",
+        "<strong>Log lines written after that</strong> (the deletion itself, which carries no email, and any later sign-in attempt for that email) stay for up to {auditDays} days. Backups taken around updates of the server software are kept only briefly.",
+        "<strong>Remove one profile's cloud copy</strong> in the app: the profile's menu on the profile list, <em>Delete from cloud…</em>.",
+        "<strong>Delete what is on a device</strong> by removing the app (for the Windows portable version, the folder next to the program).",
+        "If you use an older version, or can't open the app any more, contact us (below) and we will delete the account when you can show that it is yours."
+      ]
+    },
+    "security": {
+      "title": "Security",
+      "paragraphs": [
+        "All traffic to the sync service uses HTTPS. Your profile password and your sharing passphrase never leave your device, and the keys that open your profiles are never stored on the server in a form it can open. The server limits sign-in attempts, pauses password sign-in for a while after repeated wrong passwords, and needs your password again for the most sensitive actions (replacing your sharing key, deleting your account). The <a href=\"{securityUrl}\">security page</a> explains all of this in detail."
+      ]
+    },
+    "children": {
+      "title": "Children",
+      "paragraphs": [
+        "Submarine is a tool for system administrators and developers. It is not directed at children, and we do not knowingly collect data from them."
+      ]
+    },
+    "changes": {
+      "title": "Changes to this policy",
+      "paragraphs": [
+        "When this policy changes, the date at the top changes too. The full history of changes is in the <a href=\"{repoUrl}/commits/main/PRIVACY.md\">repository</a>."
+      ]
+    },
+    "contact": {
+      "title": "Contact",
+      "paragraphs": [
+        "Questions or requests about your data: open an issue at <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (please don't post private information there), or write through <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+      ]
+    }
+  },
+  "delete": {
+    "title": "Delete your Submarine account",
+    "description": "How to delete your Submarine sync account and everything the server keeps for it, in the app or on this page.",
+    "heading": "Delete your account",
+    "lede": "Deleting your sync account removes everything the server keeps for it, at once. It cannot be undone.",
+    "whatTitle": "What is deleted",
+    "what": [
+      "The cloud copies of all your profiles",
+      "Your sharing key, and every profile you shared (the people you shared it with lose access)",
+      "Your membership in other people's shared profiles",
+      "Your sessions, so you are signed out everywhere",
+      "The log entries of your account"
+    ],
+    "staysTitle": "What stays",
+    "stays": [
+      "Profiles on your devices are not touched. To remove them, delete the profile in the app, or remove the app.",
+      "Records you wrote into someone else's shared profile stay with that profile, with no writer named.",
+      "Log lines written after the deletion (the deletion itself, without your email, and later sign-in attempts) are kept for up to {auditDays} days."
+    ],
+    "inAppTitle": "In the app",
+    "inApp": "Version 0.4 and later: open <em>Cloud sync</em> while signed in, choose <em>Delete account…</em>, and confirm with your account password.",
+    "formTitle": "On this page",
+    "formLede": "Sign in with your sync account's email address and password. Your account is deleted right away.",
+    "email": "Email address",
+    "password": "Account password",
+    "passwordHint": "Your sync account's password, not your profile password.",
+    "confirm": "I understand that this deletes my account and its cloud data for good.",
+    "submit": "Delete my account",
+    "working": "Deleting…",
+    "done": "Your account has been deleted. Profiles on your devices are not touched.",
+    "errors": {
+      "wrong": "Wrong email or password. After several wrong tries, password sign-in pauses for a while.",
+      "noScript": "This form needs JavaScript. You can also delete your account in the app.",
+      "rate": "Too many tries. Please wait a while and try again.",
+      "network": "The server could not be reached. Check your connection and try again.",
+      "other": "Something went wrong ({code}). Nothing was deleted. Please try again later, or use the app.",
+      "confirm": "Please tick the box to confirm."
+    },
+    "helpTitle": "No password, or no access?",
+    "help": "If you always sign in with an emailed code, set a password first in the app (Cloud sync → Forgot password?). If you can't use the app or this form, open an issue at <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> without any private details, and we will delete the account when you can show that it is yours."
+  },
+  "notFound": {
+    "title": "Page not found – Submarine",
+    "heading": "This page does not exist",
+    "text": "The address may be wrong, or the page has moved.",
+    "home": "Go to the home page"
+  }
+}

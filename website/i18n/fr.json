@@ -1,0 +1,611 @@
+{
+  "meta": {
+    "name": "Français",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "Aller au contenu",
+    "features": "Fonctionnalités",
+    "security": "Sécurité",
+    "privacy": "Confidentialité",
+    "download": "Télécharger",
+    "github": "GitHub",
+    "language": "Langue",
+    "home": "Page d’accueil de Submarine",
+    "menu": "Menu"
+  },
+  "common": {
+    "tagline": "Client SSH, SFTP, RDP, VNC et Telnet",
+    "freeLine": "Gratuit et open source · licence MIT",
+    "newIn": "Nouveau en 0.4",
+    "readMore": "En savoir plus",
+    "learnHow": "Voir comment cela fonctionne",
+    "updated": "Dernière mise à jour : {date}",
+    "translationNote": "Cette page est une traduction. En cas de différence avec la version anglaise, c’est la version anglaise qui fait foi.",
+    "englishVersion": "Version anglaise",
+    "screenshotOf": "Capture d’écran : {what}",
+    "openFull": "Ouvrir l’image en taille réelle",
+    "codeLink": "{file}, lignes {from}–{to}",
+    "example": "Exemple"
+  },
+  "footer": {
+    "madeBy": "Développé par {author}.",
+    "license": "Gratuit et open source, sous licence MIT.",
+    "deleteAccount": "Supprimer votre compte",
+    "releases": "Versions publiées",
+    "issues": "Signaler un problème",
+    "author": "sinaxhpm.com",
+    "noTracking": "Ce site n’utilise aucun cookie, aucun outil de mesure d’audience et aucun script tiers."
+  },
+  "home": {
+    "title": "Submarine – client SSH, SFTP, RDP, VNC et Telnet gratuit pour Windows, macOS, Linux et Android",
+    "description": "Submarine est une application d’accès à distance gratuite et open source : terminal SSH, SFTP à deux panneaux, redirection de ports, bureaux à distance (RDP, VNC) et Telnet dans une seule fenêtre. Vos serveurs, mots de passe et clés restent chiffrés sur vos appareils.",
+    "hero": {
+      "eyebrow": "Gratuit et open source",
+      "title": "Tous vos serveurs dans une seule application chiffrée",
+      "lede": "Submarine est un client SSH, SFTP, RDP, VNC et Telnet pour Windows, macOS, Linux et Android. Vos serveurs, mots de passe et clés sont chiffrés sur votre appareil, et ne sont synchronisés entre vos appareils que si vous le souhaitez.",
+      "download": "Télécharger",
+      "security": "Comment vos données sont protégées",
+      "points": [
+        "Pas de publicité",
+        "Pas de pistage",
+        "Pas d’offre payante",
+        "Pas besoin de compte"
+      ],
+      "imageAlt": "Submarine sur un ordinateur : un terminal SSH à gauche et l’explorateur de fichiers à deux panneaux à droite"
+    },
+    "features": {
+      "title": "Tout pour vos serveurs, dans une seule fenêtre",
+      "lede": "Une seule application au lieu d’un terminal, d’un outil de transfert de fichiers, d’un gestionnaire de tunnels et d’une visionneuse de bureau à distance.",
+      "items": [
+        {
+          "id": "terminal",
+          "title": "Un terminal qui suit le rythme",
+          "text": "Onglets, vue divisée et le Wall, qui affiche de nombreux serveurs côte à côte et peut envoyer votre saisie à tous en même temps. Couleurs 24 bits, 10 000 lignes d’historique, jeux de couleurs et Nerd Fonts.",
+          "alt": "Le Wall : trois serveurs côte à côte dans une seule fenêtre"
+        },
+        {
+          "id": "files",
+          "title": "Vos fichiers, côte à côte",
+          "text": "SFTP à deux panneaux, avec glisser-déposer. Comparez deux dossiers, modifiez des fichiers distants en direct, créez et extrayez des archives, et travaillez en root via sudo, même sur les serveurs sans SFTP.",
+          "alt": "Comparaison d’un dossier local avec un dossier distant : les fichiers qui diffèrent sont signalés"
+        },
+        {
+          "id": "desktops",
+          "title": "Les bureaux à distance aussi",
+          "text": "RDP et VNC s’ouvrent dans un onglet, directement ou via l’un de vos serveurs SSH. Telnet est là pour les anciens commutateurs et routeurs. Les connexions non chiffrées sont clairement signalées.",
+          "alt": "Un bureau à distance ouvert en RDP dans un onglet Submarine",
+          "new": true
+        },
+        {
+          "id": "tunnels",
+          "title": "Des tunnels sans ligne de commande",
+          "text": "Redirections locales, distantes et SOCKS, chacune avec son nom, lancées au démarrage de l’application si vous le souhaitez, avec un journal en direct de chaque connexion.",
+          "alt": "Le panneau de redirection de ports, avec trois tunnels et leur état"
+        },
+        {
+          "id": "fits",
+          "title": "Fonctionne avec ce que vous avez déjà",
+          "text": "Lit votre ~/.ssh/config, utilise votre agent SSH (Pageant, l’agent OpenSSH de Windows, 1Password, clés matérielles), les certificats OpenSSH, les hôtes de rebond et les proxys. Importe depuis PuTTY, MobaXterm et OpenSSH.",
+          "alt": "Le formulaire d’ajout d’un serveur, avec import depuis ~/.ssh/config"
+        },
+        {
+          "id": "monitor",
+          "title": "Sachez quand quelque chose tombe en panne",
+          "text": "Surveille le CPU, la mémoire, le disque et le réseau via SSH, et vous prévient quand un serveur tombe. Informations sur le serveur, services et conteneurs Docker au même endroit.",
+          "alt": "La supervision : trois serveurs avec des graphiques en direct"
+        },
+        {
+          "id": "vault",
+          "title": "Vos identifiants, sous clé",
+          "text": "Les mots de passe et les clés sont conservés dans un profil chiffré que seul votre mot de passe peut ouvrir. Déverrouillez-le avec Windows Hello, ou avec votre empreinte digitale sur Android.",
+          "alt": "Identifiants enregistrés et clés SSH dans le profil chiffré"
+        },
+        {
+          "id": "phone",
+          "title": "Sur votre téléphone aussi",
+          "text": "Le même profil sur Android : un terminal avec barre de touches, le transfert de fichiers, les bureaux à distance et les tunnels.",
+          "alt": "Submarine sur un téléphone Android : un terminal SSH avec barre de touches"
+        }
+      ]
+    },
+    "privacy": {
+      "title": "Conçu pour protéger votre vie privée",
+      "lede": "Vos données sont chiffrées avant d’être enregistrées, et avant de quitter votre appareil. Nous publions exactement ce que notre serveur peut voir et ne peut pas voir.",
+      "items": [
+        {
+          "title": "Chiffré sur votre appareil",
+          "text": "Les profils sont chiffrés avec AES-256-GCM. La clé est calculée à partir de votre mot de passe avec Argon2id. Le mot de passe lui-même n’est jamais enregistré ni envoyé."
+        },
+        {
+          "title": "La synchronisation est facultative",
+          "text": "Si vous l’activez, chaque élément est d’abord chiffré sur votre appareil. Le serveur ne conserve que la version chiffrée. Il voit tout de même certaines informations qui l’entourent, comme votre adresse e-mail et les moments où vous synchronisez, et nous les listons toutes."
+        },
+        {
+          "title": "Pas de pistage",
+          "text": "Pas de publicité, pas de statistiques d’utilisation, pas de rapports de plantage. L’application ne communique qu’avec vos serveurs, avec le serveur de synchronisation si vous vous connectez, et avec GitHub pour vérifier s’il existe une nouvelle version."
+        }
+      ],
+      "link": "Comment cela fonctionne, et comment le vérifier vous-même"
+    },
+    "free": {
+      "title": "Gratuit. Vraiment.",
+      "items": [
+        "Submarine est gratuit et open source, sous licence MIT. Il n’y a ni offre payante, ni période d’essai, ni publicité.",
+        "Vous n’avez pas besoin de compte. Un compte ne sert qu’à la synchronisation facultative entre vos appareils.",
+        "Le service de synchronisation est gratuit lui aussi, dans des limites raisonnables : {limitMb} Mo de données chiffrées, {limitItems} éléments et {limitProfiles} profils par compte.",
+        "Le code source est public. Vous pouvez le lire, compiler l’application vous-même, ou utiliser votre propre serveur de synchronisation."
+      ]
+    },
+    "download": {
+      "title": "Télécharger Submarine",
+      "lede": "Tous les téléchargements proviennent des versions publiées du projet sur GitHub.",
+      "button": "Télécharger",
+      "platforms": [
+        {
+          "id": "windows",
+          "name": "Windows",
+          "detail": "Windows 10 et 11 · programme d’installation (.exe, .msi) ou .zip portable"
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "detail": "Apple Silicon (M1 ou plus récent) · .dmg"
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "detail": ".deb, .rpm, paquet Arch et AppImage"
+        },
+        {
+          "id": "android",
+          "name": "Android",
+          "detail": "Android 7.0 ou version ultérieure · .apk"
+        }
+      ],
+      "betaNote": "La version 0.4 est en cours de test. Les fonctionnalités marquées « Nouveau en 0.4 » arrivent avec elle ; d’ici là, c’est la dernière version stable qui est proposée.",
+      "verifyTitle": "Vérifiez votre téléchargement",
+      "verify": [
+        "À partir de la version 0.4, chaque version publiée comporte un fichier SHA256SUMS avec la somme de contrôle de chaque téléchargement.",
+        "L’application Android est signée avec la clé de l’auteur. L’empreinte SHA-256 de son certificat est <code class=\"hash\">{certSha256}</code>.",
+        "Les applications Windows et macOS n’ont pas encore de signature de code : votre système peut donc vous avertir la première fois que vous les ouvrez."
+      ]
+    },
+    "faq": {
+      "title": "Questions",
+      "items": [
+        {
+          "q": "Submarine est-il vraiment gratuit ?",
+          "a": "Oui. L’application est gratuite et open source, sous licence MIT, sans offre payante ni publicité. Le service de synchronisation est gratuit lui aussi, dans les limites indiquées plus haut."
+        },
+        {
+          "q": "Ai-je besoin d’un compte ?",
+          "a": "Non. Tout fonctionne sans compte. Vous n’avez besoin d’un compte que si vous voulez synchroniser des profils entre vos appareils."
+        },
+        {
+          "q": "Le serveur de synchronisation peut-il lire mes mots de passe ?",
+          "a": "Non. Chaque élément est chiffré sur votre appareil avant d’être envoyé, et le serveur ne reçoit jamais la clé. Il voit tout de même certaines informations qui entourent vos données, comme votre adresse e-mail, les moments où vous synchronisez et le nombre d’éléments que vous avez. La page Sécurité les liste toutes."
+        },
+        {
+          "q": "Et si j’oublie le mot de passe de mon profil ?",
+          "a": "Alors personne ne peut ouvrir ce profil, pas même nous. Aucune récupération n’est possible, car le mot de passe n’est enregistré nulle part. Conservez-le en lieu sûr."
+        },
+        {
+          "q": "Sur quels systèmes fonctionne-t-il ?",
+          "a": "Windows 10 et 11, macOS sur Apple Silicon (M1 ou plus récent), Linux (.deb, .rpm, Arch, AppImage) et Android 7.0 ou version ultérieure."
+        },
+        {
+          "q": "Puis-je utiliser mon propre serveur de synchronisation ?",
+          "a": "Oui. Dans l’application, ouvrez Cloud sync et modifiez le serveur de synchronisation. Le code de notre serveur n’est pas publié : votre propre serveur doit donc proposer la même API, qui est décrite dans le code source de l’application."
+        },
+        {
+          "q": "Comment supprimer mon compte ?",
+          "a": "Dans l’application (à partir de la version 0.4) : Cloud sync → Delete account. Vous pouvez aussi le faire sur la <a href=\"{deleteUrl}\">page de suppression du compte</a>."
+        }
+      ]
+    }
+  },
+  "security": {
+    "title": "Comment Submarine protège vos données, et comment le vérifier",
+    "description": "Ce que Submarine chiffre et comment, ce que le serveur de synchronisation peut voir et ne peut pas voir, ce qu’un serveur malveillant pourrait encore faire, et comment vérifier pas à pas chaque affirmation dans le code open source.",
+    "heading": "Comment vos données sont protégées",
+    "lede": "Nous ne vous demandons pas de nous faire confiance. Cette page explique exactement ce qui est chiffré, ce que notre serveur peut voir et ne peut pas voir, et comment vérifier vous-même chaque affirmation.",
+    "summaryTitle": "En une minute",
+    "summary": [
+      "Tout ce que vous enregistrez dans Submarine est conservé dans un fichier sur votre appareil, chiffré avec AES-256-GCM.",
+      "Sa clé est calculée à partir du mot de passe de votre profil avec Argon2id, une méthode volontairement lente, pour que deviner le mot de passe coûte cher. Le mot de passe n’est jamais enregistré ni envoyé nulle part.",
+      "Si vous activez la synchronisation, chaque élément est chiffré sur votre appareil avant d’être envoyé. Le serveur stocke des données qu’il ne peut pas déchiffrer.",
+      "Le serveur voit tout de même ce qui entoure vos données : votre adresse e-mail, quand vous synchronisez et depuis quelle adresse IP, combien d’éléments de chaque type vous avez et quelle est leur taille, les noms de vos profils et, pour les profils partagés, les noms des partages et les adresses e-mail des membres.",
+      "L’application n’a ni publicité, ni statistiques d’utilisation, ni rapports de plantage."
+    ],
+    "canCannot": {
+      "cannotTitle": "Le serveur ne peut pas lire",
+      "cannot": [
+        "Le contenu de vos éléments : noms, adresses, ports, noms d’utilisateur, mots de passe, clés privées et leurs phrases secrètes, tunnels, notes, commandes, noms de dossiers",
+        "Quel identifiant ou quelle clé appartient à quel serveur",
+        "Qui a modifié un élément",
+        "Le mot de passe de votre profil, votre phrase secrète de partage et les clés qui ouvrent vos profils"
+      ],
+      "canTitle": "Le serveur peut voir",
+      "can": [
+        "Votre adresse e-mail, et le mot de passe de votre compte lorsque vous vous connectez (il n’en stocke qu’un hachage bcrypt)",
+        "L’adresse IP et l’heure des connexions et des synchronisations",
+        "Le nombre d’éléments de chaque type dans un profil, leur taille, et pour chacun, quand et par quel appareil il a été modifié (un ID aléatoire)",
+        "Les noms de vos profils",
+        "Pour les profils partagés : les noms des partages, les adresses e-mail des membres et leurs rôles"
+      ]
+    },
+    "diagram": {
+      "title": "Ce qui se passe quand vous synchronisez",
+      "device": "Votre appareil",
+      "password": "Mot de passe du profil",
+      "kdf": "Argon2id",
+      "key": "Clé du profil",
+      "encrypt": "AES-256-GCM",
+      "items": "Éléments chiffrés",
+      "https": "HTTPS",
+      "server": "Serveur de synchronisation",
+      "stores": "Stocke les éléments chiffrés et les informations listées plus haut",
+      "never": "Ne quitte jamais votre appareil",
+      "caption": "Le mot de passe et les clés restent sur votre appareil. Seuls les éléments chiffrés, et les informations qui les entourent, sont envoyés."
+    },
+    "sections": [
+      {
+        "id": "device",
+        "title": "1. Sur votre appareil",
+        "paragraphs": [
+          "Chaque profil est un fichier. Il contient une petite base de données avec vos serveurs, identifiants, clés SSH, notes et réglages. La base de données entière est compressée, puis chiffrée avec AES-256-GCM. Un nouveau nonce aléatoire est utilisé à chaque enregistrement du fichier, et le fichier est d’abord écrit dans une copie temporaire : un plantage ne peut donc pas laisser derrière lui un fichier à moitié écrit.",
+          "La clé est calculée à partir du mot de passe de votre profil par Argon2id, avec {argonMem} de mémoire, {argonPasses} passes et {argonLanes} voies, et un sel aléatoire propre à chaque profil. Ces paramètres sont fixés dans l’application : un fichier modifié ne peut donc pas les affaiblir.",
+          "Le mot de passe n’est jamais écrit sur le disque ni envoyé nulle part. Une fois la clé calculée, la copie du mot de passe dans le cœur de l’application est effacée, et la clé est effacée quand vous verrouillez le profil. Si vous oubliez le mot de passe, le profil ne peut pas être ouvert. Il n’y a pas de réinitialisation possible, car rien qui pourrait l’ouvrir n’est conservé nulle part.",
+          "Le déverrouillage rapide est facultatif et désactivé par défaut. Sous Windows, il utilise Windows Hello et le TPM ; sous Android, le capteur d’empreintes digitales et l’Android Keystore. Le système conserve la clé du profil, jamais votre mot de passe, et cette clé n’est jamais synchronisée. Sous Android, la sauvegarde dans le cloud effectuée par le système est désactivée pour les données de l’application."
+        ],
+        "code": [
+          "deriveKey",
+          "encrypt",
+          "saveVault"
+        ]
+      },
+      {
+        "id": "sync",
+        "title": "2. La synchronisation (Cloud sync)",
+        "paragraphs": [
+          "La synchronisation reste désactivée jusqu’à ce que vous vous connectiez. Chaque profil a sa propre clé de données aléatoire de 256 bits, conservée à l’intérieur du profil chiffré. Avant l’envoi, chaque élément (un serveur, un identifiant, une clé, une note…) est chiffré individuellement avec cette clé, au moyen d’AES-256-GCM et d’un nouveau nonce aléatoire.",
+          "Avec chaque élément chiffré, le serveur reçoit un ID aléatoire, le type d’élément, un horodatage et un indicateur précisant si l’élément a été supprimé. L’horodatage contient un ID aléatoire de l’appareil qui a fait la modification. La taille de l’élément chiffré indique à peu près la taille de l’élément lui-même. Le serveur stocke aussi le nom de chaque profil. Les clés d’hôtes connues, l’historique des commandes et les réglages de supervision ne sont jamais synchronisés."
+        ],
+        "example": "Voici ce que le serveur stocke pour un élément :",
+        "code": [
+          "encryptEntity",
+          "collectRecords"
+        ]
+      },
+      {
+        "id": "newdevice",
+        "title": "3. Ouvrir un profil sur un nouvel appareil",
+        "paragraphs": [
+          "Pour ouvrir un profil synchronisé sur un autre appareil, cet appareil a besoin de la clé de données du profil. Le serveur conserve donc un enregistrement de plus : la clé de données, chiffrée avec une clé calculée à partir du mot de passe de votre profil, avec les mêmes paramètres Argon2id. Le serveur ne peut pas l’ouvrir.",
+          "C’est aussi la principale chose qu’un attaquant pourrait tenter s’il volait un jour les données du serveur : deviner le mot de passe de votre profil hors ligne. Chaque essai coûte un calcul Argon2id complet ; un mot de passe long que vous n’utilisez nulle part ailleurs protège donc vos données."
+        ],
+        "code": [
+          "escrowBuild",
+          "escrowOpen"
+        ]
+      },
+      {
+        "id": "account",
+        "title": "4. Le mot de passe de votre compte",
+        "paragraphs": [
+          "Votre compte de synchronisation a son propre mot de passe, distinct du mot de passe de votre profil. Il est envoyé au serveur par HTTPS lorsque vous vous connectez, et le serveur n’en stocke qu’un hachage bcrypt. Après {lockoutTries} mots de passe erronés, la connexion par mot de passe est suspendue pendant {lockoutMinutes} minutes.",
+          "Le service se trouve derrière Cloudflare, qui gère la connexion HTTPS pour lui. Comme le serveur, Cloudflare pourrait donc voir le mot de passe de votre compte lorsque vous vous connectez, mais vos éléments uniquement sous leur forme chiffrée.",
+          "N’utilisez jamais le mot de passe de votre profil comme mot de passe de compte. Ainsi, rien de ce que le serveur ou Cloudflare pourra jamais voir ne permettra d’ouvrir vos profils."
+        ],
+        "code": [
+          "loginRequest"
+        ]
+      },
+      {
+        "id": "sharing",
+        "title": "5. Partager un profil",
+        "paragraphs": [
+          "Pour partager des profils, chaque compte a une paire de clés X25519. La clé privée est chiffrée avec une clé calculée à partir de votre phrase secrète de partage (là encore avec Argon2id), et la phrase secrète ne quitte jamais votre appareil. Chaque membre d’un profil partagé reçoit la clé de données du profil, scellée avec sa propre clé publique.",
+          "Quand vous invitez quelqu’un, l’application utilise la clé publique que le serveur fournit pour cette adresse e-mail. Si la clé d’un membre change plus tard, l’application vous prévient et affiche une empreinte que vous pouvez comparer avec ce membre. Le serveur connaît les noms des profils partagés et qui en est membre, mais pas leur contenu."
+        ],
+        "code": [
+          "sealTo",
+          "invite"
+        ]
+      },
+      {
+        "id": "hostile",
+        "title": "6. Si le serveur était malveillant",
+        "paragraphs": [
+          "Une bonne sécurité ne se résume pas à ce qu’un serveur est censé faire. Voici ce que quelqu’un qui contrôlerait entièrement le serveur pourrait faire, et ce qu’il ne pourrait pas faire."
+        ],
+        "cannotTitle": "Il ne pourrait pas",
+        "cannot": [
+          "Lire vos éléments, ni modifier leur contenu sans que cela se remarque",
+          "Ouvrir la copie stockée de la clé de votre profil sans le mot de passe de ce profil",
+          "Découvrir le mot de passe de votre profil ou votre phrase secrète de partage, que l’application n’envoie jamais",
+          "Modifier l’application sur votre appareil : il n’y a pas de mise à jour automatique, l’application indique seulement qu’une nouvelle version existe"
+        ],
+        "canTitle": "Il pourrait",
+        "can": [
+          "Tenter de deviner hors ligne un mot de passe de profil faible, à raison d’un calcul Argon2id lent par essai",
+          "Capturer le mot de passe de votre compte lors de votre prochaine connexion",
+          "Supprimer des éléments, rétablir d’anciennes versions ou retenir des modifications. Avant qu’une synchronisation ne supprime quoi que ce soit, l’application garde une copie de votre profil sur votre appareil",
+          "Fournir une mauvaise clé publique quand vous invitez quelqu’un dans un profil partagé",
+          "Voir les informations listées dans le tableau ci-dessus"
+        ]
+      },
+      {
+        "id": "network",
+        "title": "7. Tout ce à quoi l’application se connecte",
+        "paragraphs": [
+          "Vos propres serveurs, ainsi que les proxys et hôtes de rebond que vous configurez pour eux. Le serveur de synchronisation, uniquement quand vous êtes connecté. Et GitHub, pour vérifier s’il existe une version plus récente : à l’ouverture de la liste des profils et quand vous appuyez sur « Check for updates », l’application consulte la liste publique des versions sur GitHub. Cette requête ne transmet que le nom et la version de l’application.",
+          "L’application ne contient aucun code de statistiques d’utilisation, de rapports de plantage ou de publicité. Pour la synchronisation, elle ne fait confiance qu’à sa propre liste intégrée d’autorités de certification, et elle ne suit jamais de redirection : on ne peut donc pas la faire pointer discrètement vers un autre serveur."
+        ],
+        "code": [
+          "updateCheck"
+        ]
+      }
+    ],
+    "verify": {
+      "title": "Vérifiez par vous-même",
+      "lede": "Vous n’avez pas à nous croire sur parole. Voici des moyens de vérifier, du plus simple au plus avancé.",
+      "items": [
+        {
+          "title": "Lisez le code",
+          "text": "L’application est open source. Les liens de cette page mènent aux lignes exactes qui font ce travail, dans la version que décrit cette page ({commit})."
+        },
+        {
+          "title": "Observez les connexions",
+          "text": "Utilisez un pare-feu ou un outil de surveillance du réseau. Vous verrez vos propres serveurs, le serveur de synchronisation uniquement pendant que vous êtes connecté, et api.github.com à l’ouverture de la liste des profils. Rien d’autre."
+        },
+        {
+          "title": "Regardez ce que le serveur stocke",
+          "text": "Niveau avancé : récupérez votre jeton de connexion dans le dossier de données de l’application (cloud_token.json), puis demandez vos données à l’API avec GET /api/sync/profiles, ou avec POST /api/sync et une liste d’enregistrements vide, en envoyant le jeton dans l’en-tête X-Auth-Token. Vous ne recevez que des ID, des types, des horodatages, des indicateurs et du texte chiffré. Déconnectez-vous ensuite dans l’application pour mettre fin à cette session."
+        },
+        {
+          "title": "Inspectez le trafic",
+          "text": "Niveau avancé : lancez sur votre ordinateur un petit proxy qui transmet les requêtes au vrai serveur, et réglez le serveur de synchronisation de l’application sur http://127.0.0.1 avec le port du proxy. L’application n’autorise le HTTP en clair que pour votre propre ordinateur. Vous verrez ce que l’application envoie, et que vos éléments sont chiffrés. (Un certificat de proxy ajouté à votre système ne fonctionnera pas, car l’application utilise sa propre liste d’autorités de certification.)"
+        },
+        {
+          "title": "Déchiffrez vos propres données",
+          "text": "Niveau avancé : avec votre mot de passe, vous pouvez ouvrir vos propres données avec n’importe quel outil Argon2id et AES-GCM, en utilisant les paramètres du tableau ci-dessous. Sans le mot de passe, personne ne le peut."
+        },
+        {
+          "title": "Vérifiez votre téléchargement",
+          "text": "Comparez la somme de contrôle avec le fichier SHA256SUMS de la version publiée (à partir de la version 0.4), vérifiez le certificat de l’application Android avec apksigner, ou compilez l’application à partir du code source."
+        }
+      ],
+      "paramsTitle": "Les paramètres, pour vos propres outils",
+      "params": [
+        [
+          "Dérivation de clé",
+          "Argon2id, version 0x13, {argonMem} de mémoire, {argonPasses} passes, {argonLanes} voies, clé de 32 octets, sel aléatoire de 16 octets"
+        ],
+        [
+          "Fichier de profil",
+          "“OMNV” · version 1 · sel (16 octets) · nonce (12 octets) · AES-256-GCM de la base de données SQLite compressée avec zstd, avec son tag de 16 octets"
+        ],
+        [
+          "Élément synchronisé",
+          "hex(nonce (12 octets) · texte chiffré AES-256-GCM et tag), avec la clé de données de 256 bits du profil"
+        ],
+        [
+          "Copie stockée de la clé du profil",
+          "hex(0x02 · sel (16 octets) · nonce (12 octets) · AES-256-GCM de la clé de données de 32 octets), avec la clé calculée à partir du mot de passe de votre profil"
+        ],
+        [
+          "Partage",
+          "X25519, HKDF-SHA256, AES-256-GCM"
+        ]
+      ]
+    },
+    "limits": {
+      "title": "Ce que cette page ne promet pas",
+      "items": [
+        "Submarine n’a pas fait l’objet d’un audit de sécurité indépendant. Jusqu’ici, ses revues ont été faites par l’auteur.",
+        "Un mot de passe faible ou réutilisé est le point le plus faible. Utilisez un mot de passe de profil long et unique, et un mot de passe de compte différent.",
+        "Telnet et le VNC simple ne sont pas chiffrés, de par leur conception. L’application les signale, et peut les faire passer par un serveur SSH.",
+        "Cette page décrit l’application au commit {commit}. Si le code change, cette page change avec lui."
+      ]
+    },
+    "codeLabels": {
+      "deriveKey": "Dérivation de clé (paramètres Argon2id)",
+      "encrypt": "AES-256-GCM avec un nonce neuf",
+      "saveVault": "Enregistrement du fichier de profil",
+      "encryptEntity": "Chiffrement de chaque élément synchronisé",
+      "collectRecords": "Ce qui est envoyé pour chaque élément",
+      "escrowBuild": "La copie stockée de la clé du profil",
+      "escrowOpen": "Ouverture sur un nouvel appareil",
+      "loginRequest": "La requête de connexion",
+      "sealTo": "Scellement d’une clé pour un membre",
+      "invite": "Invitation d’un membre",
+      "updateCheck": "La recherche de mises à jour"
+    }
+  },
+  "privacy": {
+    "title": "Politique de confidentialité – Submarine",
+    "description": "Ce que conservent l’application Submarine et son service de synchronisation facultatif, ce qu’ils peuvent lire et ne peuvent pas lire, combien de temps ces données sont conservées, et comment les supprimer.",
+    "heading": "Politique de confidentialité",
+    "intro": "Cette politique s’applique à l’application Submarine (Windows, macOS, Linux, Android et iOS), au service de synchronisation facultatif de Submarine, que l’application peut utiliser, et à ce site web.",
+    "shortTitle": "En bref",
+    "short": [
+      "Vos serveurs, mots de passe, clés SSH et notes restent sur votre appareil, chiffrés avec une clé calculée à partir du mot de passe de votre profil. L’application n’a ni statistiques d’utilisation, ni publicité, ni pistage, ni rapports de plantage.",
+      "La synchronisation (Cloud sync) est facultative. Si vous l’activez, le serveur de synchronisation conserve l’adresse e-mail de votre compte, ainsi que vos profils sous forme chiffrée. Il ne peut pas lire leur contenu.",
+      "Vous pouvez supprimer votre compte, et tout ce que le serveur conserve pour ce compte, depuis l’application ou sur ce site web."
+    ],
+    "sections": [
+      {
+        "title": "Qui est responsable",
+        "paragraphs": [
+          "Submarine est développé par Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>), qui exploite aussi le service de synchronisation à l’adresse <code>submarine.sinaxhpm.com</code> (les anciennes versions de l’application utilisent <code>api.sinaxhpm.com</code>). Le code source de l’application est public, sur <a href=\"{repoUrl}\">github.com/SinaXhpm/Submarine</a> (licence MIT) : ce que cette politique dit de l’application peut donc être vérifié dans le code."
+        ]
+      },
+      {
+        "title": "Ce qui reste sur votre appareil",
+        "list": [
+          "<strong>Vos profils</strong> (serveurs, identifiants, clés SSH, tunnels, notes, commandes, clés d’hôtes connues) sont stockés dans le dossier de données de l’application. Ils sont chiffrés avec AES-256-GCM, au moyen d’une clé calculée à partir du mot de passe de votre profil avec Argon2id. Le mot de passe du profil n’est jamais enregistré et n’est jamais envoyé nulle part. Il n’existe aucun moyen de le récupérer : si vous l’oubliez, le profil ne peut pas être ouvert.",
+          "<strong>Le déverrouillage rapide</strong> (facultatif, désactivé par défaut) : si vous activez Windows Hello ou une empreinte digitale sur Android, la clé du profil est scellée avec une clé détenue par le système (le TPM ou l’Android Keystore). Le système vérifie votre empreinte digitale ou votre code PIN ; l’application ne les voit jamais.",
+          "<strong>Les réglages</strong>, comme la position de la fenêtre, le nom du dernier profil utilisé et le thème de couleurs, sont stockés dans les réglages propres à l’application, sans chiffrement.",
+          "<strong>Le presse-papiers</strong> n’est lu que lorsque vous collez dans l’application, et n’est jamais envoyé nulle part.",
+          "<strong>Le journal d’activité</strong> de l’application est conservé en mémoire et disparaît à la fermeture de l’application."
+        ]
+      },
+      {
+        "title": "Ce à quoi l’application se connecte",
+        "list": [
+          "<strong>Vos propres serveurs.</strong> L’application se connecte uniquement aux hôtes que vous ajoutez ou ouvrez, en SSH, SFTP, Telnet, VNC ou RDP, via tout proxy ou hôte de rebond que vous configurez. Ce que vous tapez et transférez va à ce serveur, pas à nous. Le Telnet simple et le VNC simple ne sont pas chiffrés, et l’application l’indique.",
+          "<strong>Le service de synchronisation</strong>, uniquement si vous vous connectez à la synchronisation dans le cloud (voir plus bas). Vous pouvez à la place faire pointer l’application vers votre propre serveur ; c’est alors l’exploitant de ce serveur qui traite les données.",
+          "<strong>GitHub</strong>, pour chercher une version plus récente (applications de bureau et Android uniquement : l’application iOS est mise à jour par l’App Store et ne fait pas cette recherche). À l’ouverture de la liste des profils, et quand vous appuyez sur « Check for updates », l’application consulte la liste publique des versions sur GitHub (<code>api.github.com</code>) pour savoir si une version plus récente existe. La requête transmet le nom et la version de l’application (<code>submarine-app/x.y.z</code>), et rien d’autre ; GitHub voit votre adresse IP, comme pour toute requête web.",
+          "<strong>Les liens</strong> sur lesquels vous cliquez s’ouvrent dans le navigateur de votre système."
+        ],
+        "after": "Rien d’autre ne quitte votre appareil. L’application ne contient aucun code tiers de statistiques d’utilisation, de publicité ou de pistage."
+      }
+    ],
+    "table": {
+      "title": "Synchronisation facultative (Cloud sync) : ce que conserve le serveur",
+      "intro": "Si vous créez un compte, le serveur stocke :",
+      "head": [
+        "Donnée",
+        "Pourquoi",
+        "Le serveur peut-il la lire ?"
+      ],
+      "rows": [
+        [
+          "Votre adresse e-mail",
+          "Pour vous connecter, et pour envoyer les codes de connexion et de réinitialisation",
+          "Oui"
+        ],
+        [
+          "Le mot de passe de votre compte",
+          "Pour vous connecter",
+          "Il reçoit le mot de passe par HTTPS lors de la connexion et n’en stocke qu’un hachage bcrypt salé"
+        ],
+        [
+          "Les sessions de connexion : un jeton haché, l’adresse IP à laquelle il a été délivré, la date de sa dernière utilisation et une date d’expiration (au bout de {sessionDays} jours)",
+          "Pour que votre session reste ouverte",
+          "Le jeton est haché ; le reste est lisible"
+        ],
+        [
+          "Les enregistrements de vos profils",
+          "Pour les synchroniser entre vos appareils",
+          "<strong>Non.</strong> Chaque enregistrement est chiffré sur votre appareil avec la clé du profil avant d’être envoyé. Le serveur voit un ID pour chaque enregistrement, son type (serveur, identifiant, clé, note…), des horodatages (qui contiennent un ID aléatoire de l’appareil qui a fait la modification), un indicateur de suppression et la taille, ainsi que le nom du profil et son nombre d’enregistrements"
+        ],
+        [
+          "Une copie de la clé de chaque profil, scellée avec le mot de passe de votre profil",
+          "Pour retrouver un profil sur un nouvel appareil",
+          "Pas sans le mot de passe de votre profil. Quelqu’un qui obtiendrait les données du serveur pourrait tenter de deviner hors ligne un mot de passe faible : utilisez donc un mot de passe long"
+        ],
+        [
+          "Le partage : votre clé publique, votre clé privée chiffrée avec votre phrase secrète de partage, les noms des profils partagés, les adresses e-mail et les rôles des personnes avec qui vous partagez, et les clés scellées pour elles",
+          "Pour partager un profil avec d’autres comptes",
+          "Les noms et les adresses e-mail, oui ; les clés, non"
+        ],
+        [
+          "Un journal des événements du compte : ce qui s’est passé (inscription, connexion, échec de connexion, déconnexion, blocage, réinitialisation du mot de passe, synchronisation, invitation ou modification d’un partage, et événements similaires), l’adresse e-mail quand elle est connue, l’adresse IP, l’heure et l’ID de requête de Cloudflare. Jamais ce qui a été synchronisé",
+          "Pour protéger les comptes et empêcher les abus",
+          "Oui. Conservé {auditDays} jours, puis supprimé"
+        ],
+        [
+          "Des compteurs de limitation de fréquence, par adresse IP et par adresse e-mail",
+          "Pour ralentir les essais répétés et les afflux de requêtes",
+          "Oui. Conservés {rateDays} jours"
+        ]
+      ],
+      "after": [
+        "Les inscriptions qui ne sont jamais vérifiées sont supprimées au bout de {unverifiedDays} jours.",
+        "Le service se trouve derrière Cloudflare, qui gère la connexion HTTPS pour lui et transmet les requêtes au serveur. Cloudflare traite donc, pour le compte du service, les adresses IP, les en-têtes et le contenu des requêtes, y compris vos informations de connexion et vos enregistrements déjà chiffrés. Le serveur envoie les e-mails de vérification et de réinitialisation par le système de messagerie de son hébergeur.",
+        "Nous ne vendons pas vos données, nous ne les partageons pas avec des annonceurs, nous ne les utilisons pas à des fins de publicité, de statistiques d’utilisation ou de profilage, et nous ne les combinons avec rien d’autre."
+      ]
+    },
+    "website": {
+      "title": "Ce site web",
+      "paragraphs": [
+        "Ce site web n’utilise ni cookies, ni outil de mesure d’audience, ni publicité, ni scripts ou polices tiers. Comme pour tout site web, Cloudflare et l’hébergeur traitent votre adresse IP, la page que vous demandez et les informations de votre navigateur afin de vous fournir la page, et l’hébergeur conserve des journaux de serveur standard pendant une durée limitée.",
+        "Si vous supprimez votre compte sur ce site web, ce que vous saisissez est envoyé uniquement au service de synchronisation, par HTTPS, et n’est pas conservé par la page."
+      ]
+    },
+    "deleting": {
+      "title": "Supprimer vos données",
+      "list": [
+        "<strong>Supprimez votre compte</strong> dans l’application (à partir de la version 0.4) : <em>Cloud sync → (une fois connecté) → Delete account…</em>, ou sur la <a href=\"{deleteUrl}\">page de suppression du compte</a> de ce site web. Vous confirmez avec le mot de passe de votre compte. Cela supprime immédiatement : les copies dans le cloud de tous vos profils, votre clé de partage, chaque profil que vous avez partagé (les personnes avec qui vous l’avez partagé perdent l’accès), votre appartenance aux partages d’autres personnes, vos sessions, et les entrées du journal de votre compte. Les enregistrements que vous avez écrits dans le profil partagé de quelqu’un d’autre restent dans ce profil, sans nom d’auteur. Les profils présents sur vos appareils ne sont pas touchés.",
+        "<strong>Les lignes de journal écrites ensuite</strong> (la suppression elle-même, qui ne comporte aucune adresse e-mail, et toute tentative de connexion ultérieure avec cette adresse e-mail) sont conservées jusqu’à {auditDays} jours. Les sauvegardes faites lors des mises à jour du logiciel du serveur ne sont conservées que peu de temps.",
+        "<strong>Supprimez la copie dans le cloud d’un profil</strong> dans l’application : menu du profil dans la liste des profils, <em>Delete from cloud…</em>.",
+        "<strong>Supprimez ce qui se trouve sur un appareil</strong> en désinstallant l’application (pour la version portable de Windows, en supprimant le dossier situé à côté du programme).",
+        "Si vous utilisez une version plus ancienne, ou si vous ne pouvez plus ouvrir l’application, contactez-nous (voir ci-dessous) et nous supprimerons le compte lorsque vous pourrez montrer qu’il vous appartient."
+      ]
+    },
+    "security": {
+      "title": "Sécurité",
+      "paragraphs": [
+        "Tout le trafic vers le service de synchronisation passe par HTTPS. Le mot de passe de votre profil et votre phrase secrète de partage ne quittent jamais votre appareil, et les clés qui ouvrent vos profils ne sont jamais stockées sur le serveur sous une forme qu’il puisse ouvrir. Le serveur limite les tentatives de connexion, suspend pendant un certain temps la connexion par mot de passe après des erreurs de mot de passe répétées, et vous redemande votre mot de passe pour les actions les plus sensibles (remplacer votre clé de partage, supprimer votre compte). La <a href=\"{securityUrl}\">page Sécurité</a> explique tout cela en détail."
+      ]
+    },
+    "children": {
+      "title": "Enfants",
+      "paragraphs": [
+        "Submarine est un outil destiné aux administrateurs système et aux développeurs. Il ne s’adresse pas aux enfants, et nous ne collectons pas sciemment de données auprès d’eux."
+      ]
+    },
+    "changes": {
+      "title": "Modifications de cette politique",
+      "paragraphs": [
+        "Quand cette politique change, la date indiquée en haut de la page change aussi. L’historique complet des modifications se trouve dans le <a href=\"{repoUrl}/commits/main/PRIVACY.md\">dépôt</a>."
+      ]
+    },
+    "contact": {
+      "title": "Contact",
+      "paragraphs": [
+        "Pour toute question ou demande concernant vos données : ouvrez un ticket sur <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (merci de ne pas y publier d’informations privées), ou écrivez-nous via <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+      ]
+    }
+  },
+  "delete": {
+    "title": "Supprimer votre compte Submarine",
+    "description": "Comment supprimer votre compte de synchronisation Submarine et tout ce que le serveur conserve pour ce compte, dans l’application ou sur cette page.",
+    "heading": "Supprimer votre compte",
+    "lede": "Supprimer votre compte de synchronisation efface immédiatement tout ce que le serveur conserve pour ce compte. Cette opération est irréversible.",
+    "whatTitle": "Ce qui est supprimé",
+    "what": [
+      "Les copies dans le cloud de tous vos profils",
+      "Votre clé de partage, et chaque profil que vous avez partagé (les personnes avec qui vous l’avez partagé perdent l’accès)",
+      "Votre appartenance aux profils partagés d’autres personnes",
+      "Vos sessions, ce qui vous déconnecte partout",
+      "Les entrées du journal de votre compte"
+    ],
+    "staysTitle": "Ce qui reste",
+    "stays": [
+      "Les profils présents sur vos appareils ne sont pas touchés. Pour les effacer, supprimez le profil dans l’application, ou désinstallez l’application.",
+      "Les enregistrements que vous avez écrits dans le profil partagé de quelqu’un d’autre restent dans ce profil, sans nom d’auteur.",
+      "Les lignes de journal écrites après la suppression (la suppression elle-même, sans votre adresse e-mail, et les tentatives de connexion ultérieures) sont conservées jusqu’à {auditDays} jours."
+    ],
+    "inAppTitle": "Dans l’application",
+    "inApp": "À partir de la version 0.4 : une fois connecté, ouvrez <em>Cloud sync</em>, choisissez <em>Delete account…</em> et confirmez avec le mot de passe de votre compte.",
+    "formTitle": "Sur cette page",
+    "formLede": "Connectez-vous avec l’adresse e-mail et le mot de passe de votre compte de synchronisation. Votre compte est supprimé immédiatement.",
+    "email": "Adresse e-mail",
+    "password": "Mot de passe du compte",
+    "passwordHint": "Le mot de passe de votre compte de synchronisation, pas celui de votre profil.",
+    "confirm": "Je comprends que cela supprime définitivement mon compte et ses données dans le cloud.",
+    "submit": "Supprimer mon compte",
+    "working": "Suppression en cours…",
+    "done": "Votre compte a été supprimé. Les profils présents sur vos appareils ne sont pas touchés.",
+    "errors": {
+      "wrong": "Adresse e-mail ou mot de passe incorrect. Après plusieurs essais erronés, la connexion par mot de passe est suspendue pendant un certain temps.",
+      "noScript": "Ce formulaire nécessite JavaScript. Vous pouvez aussi supprimer votre compte dans l’application.",
+      "rate": "Trop d’essais. Veuillez patienter un moment, puis réessayer.",
+      "network": "Impossible de joindre le serveur. Vérifiez votre connexion et réessayez.",
+      "other": "Une erreur s’est produite ({code}). Rien n’a été supprimé. Veuillez réessayer plus tard, ou utiliser l’application.",
+      "confirm": "Veuillez cocher la case pour confirmer."
+    },
+    "helpTitle": "Pas de mot de passe, ou pas d’accès ?",
+    "help": "Si vous vous connectez toujours avec un code reçu par e-mail, définissez d’abord un mot de passe dans l’application (Cloud sync → Forgot password?). Si vous ne pouvez utiliser ni l’application ni ce formulaire, ouvrez un ticket sur <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> sans aucune information privée, et nous supprimerons le compte lorsque vous pourrez montrer qu’il vous appartient."
+  },
+  "notFound": {
+    "title": "Page introuvable – Submarine",
+    "heading": "Cette page n’existe pas",
+    "text": "L’adresse est peut-être erronée, ou la page a été déplacée.",
+    "home": "Aller à la page d’accueil"
+  }
+}
