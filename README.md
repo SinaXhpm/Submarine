@@ -312,6 +312,7 @@ Built for Android 7.0 (API 24) and newer, on phones, tablets and Android-on-Chro
 - The server also holds a copy of the vault key **sealed with your master password**. Someone who got hold of the server's data could try to guess a weak master password offline, at Argon2id cost — so use a **long master password** if you sync. A server breach does not hand over the plaintext, but the master password is the only thing standing in the way.
 - Cloud sync is **opt-in per account**: once you sign in, profiles you open are linked and synced (Auto-sync is on by default and can be turned off in Settings). Don't sign in on a computer if you don't want its profiles uploaded.
 - You can run **your own sync server** instead of the hosted one.
+- **You can delete your account from inside the app** (Cloud sync → *Delete account…*, confirmed with your password): everything the server holds for it goes at once. The full details, with retention times, are in the [privacy policy](PRIVACY.md).
 
 **Network traffic besides your servers**
 
