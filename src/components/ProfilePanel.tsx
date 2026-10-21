@@ -555,7 +555,8 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
           <>
             <p className="text-[12px] text-zinc-400 leading-relaxed">
               Share this profile to let other people use its servers and logins. You choose what each
-              person can do, and you can take access back at any time. The server never sees any of it.
+              person can do, and you can take access back at any time. The server can't read the servers
+              and logins in it; it sees the profile's name and who it is shared with.
             </p>
             <button
               onClick={startSharing}

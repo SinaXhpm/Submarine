@@ -1605,7 +1605,7 @@ fn open_pw_escrow(blob_hex: &str, password: &str) -> Result<[u8; 32], String> {
 fn profile_server(conn: &Connection) -> Option<String> {
     match conn.query_row("SELECT value FROM sync_meta WHERE key='cloud_server'", [], |r| r.get::<_, String>(0)) {
         Ok(server) if server.is_empty() => None,
-        Ok(server) => Some(server),
+        Ok(server) => Some(cloud::server_id(&server).to_string()),
         Err(_) => Some(cloud::CLOUD_API_BASE.to_string()),
     }
 }
@@ -1708,6 +1708,17 @@ mod profile_server_tests {
         assert!(check_profile_server(&conn, cloud::CLOUD_API_BASE).is_err());
         // Moving it is an explicit step.
         link_profile_server(&conn, cloud::CLOUD_API_BASE).unwrap();
+        assert_eq!(check_profile_server(&conn, cloud::CLOUD_API_BASE), Ok(false));
+        assert!(check_profile_server(&conn, OWN).is_err());
+    }
+
+    // A profile linked to the default server's API root (typed in by hand on a
+    // 0.4 build) is a profile of the default server.
+    #[test]
+    fn the_api_root_is_the_default_server() {
+        let conn = meta();
+        link_profile_server(&conn, cloud::CLOUD_API_ROOT).unwrap();
+        assert_eq!(profile_server(&conn).as_deref(), Some(cloud::CLOUD_API_BASE));
         assert_eq!(check_profile_server(&conn, cloud::CLOUD_API_BASE), Ok(false));
         assert!(check_profile_server(&conn, OWN).is_err());
     }

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
 
-use crate::cloud::{self, CloudState, CLOUD_API_BASE};
+use crate::cloud::{self, CloudState, CLOUD_API_BASE, CLOUD_API_ROOT};
 
 pub const CONFIG_FILENAME: &str = "cloud_config.json";
 /// Longest server or proxy address taken.
@@ -116,7 +116,7 @@ pub fn host_of(base: &str) -> String {
 /// that the traffic never leaves the machine to reach.
 pub fn normalize_server(input: &str) -> Result<Option<String>, String> {
     let trimmed = input.trim().trim_end_matches('/');
-    if trimmed.is_empty() || trimmed == CLOUD_API_BASE {
+    if trimmed.is_empty() || trimmed == CLOUD_API_BASE || trimmed == CLOUD_API_ROOT {
         return Ok(None);
     }
     if trimmed.len() > ADDRESS_MAX {
@@ -141,7 +141,7 @@ pub fn normalize_server(input: &str) -> Result<Option<String>, String> {
     // Rebuilt from the parsed form (lower-cased host, etc.) so equal servers
     // compare equal; `Url` always renders a path, so its trailing '/' goes.
     let normalized = parsed.as_str().trim_end_matches('/').to_string();
-    Ok(if normalized == CLOUD_API_BASE { None } else { Some(normalized) })
+    Ok(if normalized == CLOUD_API_BASE || normalized == CLOUD_API_ROOT { None } else { Some(normalized) })
 }
 
 /// A proxy setting as entered, checked. Only `manual` keeps an address.
@@ -325,7 +325,7 @@ pub async fn cloud_test_connection(server: String, proxy: ProxyConfig) -> Result
     let client = build_client(&base, &proxy, CHECK_TIMEOUT)?;
     let started = Instant::now();
     let resp = client
-        .get(format!("{}/health", base))
+        .get(format!("{}/health", cloud::request_root(&base)))
         .send()
         .await
         .map_err(|e| format!("[CLOUD] NETWORK: {}", cloud::describe_send_error(&e)))?;
@@ -348,6 +348,10 @@ mod tests {
         assert_eq!(normalize_server(CLOUD_API_BASE).unwrap(), None);
         assert_eq!(normalize_server(&format!("{}/", CLOUD_API_BASE)).unwrap(), None);
         assert_eq!(normalize_server(&CLOUD_API_BASE.to_uppercase().replace("HTTPS", "https")).unwrap(), None);
+        // Its API root, typed in, is the default server too.
+        assert_eq!(normalize_server(CLOUD_API_ROOT).unwrap(), None);
+        assert_eq!(normalize_server(&format!("{}/", CLOUD_API_ROOT)).unwrap(), None);
+        assert_eq!(normalize_server("https://Submarine.SinaXhpm.com/api").unwrap(), None);
     }
 
     #[test]

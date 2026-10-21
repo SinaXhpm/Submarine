@@ -35,8 +35,35 @@ use crate::cloud_config::{self, CloudConfig, CloudConfigView};
 
 /// The default cloud API server. A self-hosted one can be set per device
 /// (`cloud_config`). Trailing slash intentionally omitted; the client joins
-/// paths with a leading slash.
+/// paths with a leading slash. This is also the server's name in what is
+/// stored (cloud_token.json, a profile's sync_meta 'cloud_server'), so it
+/// never changes; requests go to `CLOUD_API_ROOT`.
 pub const CLOUD_API_BASE: &str = "https://submarine.sinaxhpm.com";
+
+/// Where the default server's API answers: under `/api` on the same host, so
+/// the website has the root. Older apps call the root paths, which the server
+/// keeps answering where they are (never by a redirect: those apps turn a
+/// redirected POST into a GET).
+pub const CLOUD_API_ROOT: &str = "https://submarine.sinaxhpm.com/api";
+
+/// The address requests to the server `base` go to.
+pub fn request_root(base: &str) -> &str {
+    if base == CLOUD_API_BASE {
+        CLOUD_API_ROOT
+    } else {
+        base
+    }
+}
+
+/// The name a stored server address stands for: the default server's API
+/// root, typed in by hand on a 0.4 build, is the default server.
+pub fn server_id(server: &str) -> &str {
+    if server == CLOUD_API_ROOT {
+        CLOUD_API_BASE
+    } else {
+        server
+    }
+}
 
 /// Filename for the persisted bearer token under `app_data_dir`.
 const TOKEN_FILENAME: &str = "cloud_token.json";
@@ -194,7 +221,7 @@ fn delete_stored_token(app: &tauri::AppHandle) {
 /// Whether a stored token belongs to `base`: one written before servers
 /// could be chosen belongs to the default server.
 fn token_is_for(tok: &StoredToken, base: &str) -> bool {
-    tok.server.as_deref().unwrap_or(CLOUD_API_BASE) == base
+    server_id(tok.server.as_deref().unwrap_or(CLOUD_API_BASE)) == base
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +249,7 @@ impl Endpoint {
     /// A full URL on this server. The path MUST start with `/`.
     fn url(&self, path: &str) -> String {
         debug_assert!(path.starts_with('/'), "cloud url path must start with '/'");
-        format!("{}{}", self.base, path)
+        format!("{}{}", request_root(&self.base), path)
     }
 
     /// Learn from an answer whether the server takes gzipped bodies.
@@ -1629,6 +1656,25 @@ mod tests {
         // A file from before servers could be chosen still reads.
         let parsed: StoredToken = serde_json::from_str(r#"{"token":"t","email":"e"}"#).unwrap();
         assert!(parsed.server.is_none());
+        // The default server's API root, saved by hand, is the default server.
+        let typed = StoredToken { server: Some(CLOUD_API_ROOT.into()), ..old.clone() };
+        assert!(token_is_for(&typed, CLOUD_API_BASE));
+        let stored = StoredToken { server: Some(CLOUD_API_BASE.into()), ..old };
+        assert!(token_is_for(&stored, CLOUD_API_BASE));
+    }
+
+    // The default server is asked under /api; a server of one's own at the
+    // address it was given, path and all.
+    #[test]
+    fn requests_to_the_default_server_go_under_api() {
+        let ours = Endpoint::new(CLOUD_API_BASE.into(), reqwest::Client::new());
+        assert_eq!(ours.url("/sync"), "https://submarine.sinaxhpm.com/api/sync");
+        assert_eq!(ours.url("/auth/login"), "https://submarine.sinaxhpm.com/api/auth/login");
+        let own = Endpoint::new("https://example.com:8443/submarine".into(), reqwest::Client::new());
+        assert_eq!(own.url("/sync"), "https://example.com:8443/submarine/sync");
+        assert_eq!(request_root("http://127.0.0.1:18100"), "http://127.0.0.1:18100");
+        assert_eq!(server_id(CLOUD_API_ROOT), CLOUD_API_BASE);
+        assert_eq!(server_id("https://sync.example.com"), "https://sync.example.com");
     }
 }
 

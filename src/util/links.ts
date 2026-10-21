@@ -1,2 +1,3 @@
-/** Where the privacy policy is published: the same address the App Store listing carries. */
-export const PRIVACY_URL = "https://github.com/SinaXhpm/Submarine/blob/main/PRIVACY.md";
+/** Where the privacy policy is published: the website's page. The same text is
+ *  PRIVACY.md in the repository, whose address keeps working. */
+export const PRIVACY_URL = "https://submarine.sinaxhpm.com/privacy/";
