@@ -29,7 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "homepage": "https://sinaxhpm.com/submarine",
+    "homepage": "https://submarine.sinaxhpm.com",
     "copyright": "Copyright (c) Sina Xhpm. MIT License.",
     "license": "MIT",
     "category": "DeveloperTool",

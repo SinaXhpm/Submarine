@@ -56,8 +56,9 @@ jobs:
           # macOS Apple Silicon. We produce both:
           #   - Submarine.app (zipped → unzip + double-click, no DMG drag)
           #   - Submarine_x.y.z_aarch64.dmg (classic DMG installer)
-          # Intel macOS users can run this same arm64 build under Rosetta 2 —
-          # we dropped the dedicated macos-13 (Intel) matrix entry because
+          # There is no Intel build (Rosetta 2 runs Intel apps on Apple Silicon,
+          # not this arm64 build on an Intel Mac): we dropped the dedicated
+          # macos-13 (Intel) matrix entry because
           # GitHub's Intel macOS runner pool is so scarce that jobs would
           # routinely hit the 45-minute queue timeout and fail the release.
           - platform: macos-latest

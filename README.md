@@ -10,6 +10,7 @@
     <img alt="platforms" src="https://img.shields.io/badge/platform-windows%20%7C%20macos%20%7C%20linux%20%7C%20android-blue" />
     <img alt="license" src="https://img.shields.io/badge/license-MIT-green" />
   </p>
+  <p><a href="https://submarine.sinaxhpm.com/">Website</a> · <a href="https://submarine.sinaxhpm.com/security/">How your data is protected</a> · <a href="https://submarine.sinaxhpm.com/privacy/">Privacy</a> · <a href="https://github.com/sinaxhpm/submarine/releases">Download</a></p>
 </div>
 
 ---
@@ -146,7 +147,7 @@ Most SSH clients feel like they were built a decade ago and never updated. Subma
 - **One window, everything you need.** Terminal, SFTP file browser, port tunnels, folder sync, saved commands and remote desktops are tabs around each server. No more juggling PuTTY, WinSCP, a tunnel app and an RDP client.
 - **Fits the setup you already have.** Your `~/.ssh/config`, your agent, your `known_hosts`, your Teleport or OpenSSH certificates and ProxyJump / ProxyCommand hosts all work.
 - **Secure by default.** Saved servers are encrypted on disk. Cloud sync is optional and encrypts record contents before upload. Unencrypted protocols are labelled as such. See [Security and privacy](#security-and-privacy) for exactly what is and isn't protected.
-- **Truly cross-platform.** Windows, macOS (Apple Silicon; Intel via Rosetta) and every major Linux distribution — `.deb`, `.rpm`, Arch package and AppImage — plus Android.
+- **Truly cross-platform.** Windows, macOS (Apple Silicon) and every major Linux distribution — `.deb`, `.rpm`, Arch package and AppImage — plus Android.
 
 ## Key Features
 
@@ -252,7 +253,7 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | OS | File |
 |---|---|
 | Windows 10 / 11 | `.exe` installer or `.msi`, or the [portable](#portable-mode-windows) `.zip` |
-| macOS (Apple Silicon, or Intel via Rosetta) | `.dmg` or `.app.zip` |
+| macOS (Apple Silicon: M1 and later) | `.dmg` or `.app.zip` |
 | Debian / Ubuntu / Mint | `.deb` — `sudo apt install ./submarine_*.deb` |
 | Fedora / RHEL / openSUSE | `.rpm` — `sudo dnf install ./submarine-*.rpm` |
 | Arch / Manjaro / EndeavourOS | `.pkg.tar.zst` — `sudo pacman -U submarine-*.pkg.tar.zst` |
@@ -313,12 +314,13 @@ Built for Android 7.0 (API 24) and newer, on phones, tablets and Android-on-Chro
 - Cloud sync is **opt-in per account**: once you sign in, profiles you open are linked and synced (Auto-sync is on by default and can be turned off in Settings). Don't sign in on a computer if you don't want its profiles uploaded.
 - You can run **your own sync server** instead of the hosted one.
 - **You can delete your account from inside the app** (Cloud sync → *Delete account…*, confirmed with your password): everything the server holds for it goes at once. The full details, with retention times, are in the [privacy policy](PRIVACY.md).
+- [How your data is protected](https://submarine.sinaxhpm.com/security/) explains all of this with links to the code that does it, and ways to check it yourself.
 
 **Network traffic besides your servers**
 
 - No analytics SDK, no crash reporter and no advertising calls.
 - When the profile page opens, Submarine makes **one anonymous request to the GitHub releases API** to see whether a newer version exists (the request carries the app name and version, nothing else). There is a button to run the same check by hand.
-- If you sign in to cloud sync, it talks to the sync server (`api.sinaxhpm.com`, or the one you chose).
+- If you sign in to cloud sync, it talks to the sync server (`submarine.sinaxhpm.com`, or the one you chose).
 
 **Other defences:** a strict Content Security Policy, a minimal Tauri permission ACL, and no shell or filesystem plugin exposed to the UI. The desktop builds are not code-signed (see [Install](#install)); the Android APK is signed.
 

@@ -7,7 +7,7 @@
   "applicationSubCategory": "SSH Client",
   "operatingSystem": "Windows, macOS, Linux, Android",
   "description": "Free, open-source SSH and SFTP client for Windows, macOS, Linux and Android. Tabbed terminal, dual-pane SFTP browser, local/remote/dynamic port forwarding (SOCKS4/5, HTTP CONNECT), two-way folder mirror, server info, Docker and monitoring panels, and VNC, RDP and Telnet sessions, with encrypted profiles and optional cloud sync.",
-  "url": "https://sinaxhpm.com/submarine",
+  "url": "https://submarine.sinaxhpm.com/",
   "downloadUrl": "https://github.com/sinaxhpm/submarine/releases",
   "license": "https://opensource.org/licenses/MIT",
   "isAccessibleForFree": true,
