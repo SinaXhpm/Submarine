@@ -268,10 +268,17 @@ const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
 
 // The name of a new terminal tab: the lowest number no open terminal has
 // (issue #231). Closing "2" of 1, 2, 3 and opening another gives a new "2",
-// never a second "3". A renamed terminal keeps its number (`baseTitle`);
-// a container's terminal, named after the container, takes none.
-function nextTerminalNumber(terminals: { title: string; baseTitle?: string }[]): string {
-  const used = new Set(terminals.map((t) => t.baseTitle ?? t.title).filter((t) => /^\d+$/.test(t)).map(Number));
+// never a second "3". A renamed terminal keeps its number (`baseTitle`), and
+// the number it shows now is taken too (renaming "2" to "3" leaves no second
+// "3" to make); a container's terminal, named after the container, takes none.
+function nextTerminalNumber(terminals: { title: string; baseTitle?: string; container?: unknown }[]): string {
+  const used = new Set(
+    terminals
+      .filter((t) => !t.container)
+      .flatMap((t) => [t.title, t.baseTitle ?? t.title])
+      .filter((t) => /^\d+$/.test(t))
+      .map(Number),
+  );
   let n = 1;
   while (used.has(n)) n++;
   return `${n}`;
