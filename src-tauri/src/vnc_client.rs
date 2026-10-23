@@ -467,6 +467,7 @@ struct Screen {
 }
 
 impl Screen {
+    #[cfg(test)]
     fn new() -> Self {
         Self::with_wire(Wire::rgba32())
     }
