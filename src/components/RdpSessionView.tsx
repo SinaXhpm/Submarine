@@ -21,6 +21,10 @@ import { scancodeFor } from "../util/scancodes";
 // questions.
 
 type Opened = { app: string; address: string; via: string | null; tracked: boolean };
+
+// How the built-in client says the server refused the user name or password
+// (rdp_client.rs, login_error).
+const PASSWORD_REFUSED = /didn't accept the user name or password/;
 type LogLine = { msg: string; type: string; time: string };
 
 export default function RdpSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, onPromptChange }: any) {
@@ -49,6 +53,10 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   // Text the user copied on the server that couldn't go on this computer's
   // clipboard by itself (a webview that wants a click for that): one click does.
   const [serverCopy, setServerCopy] = useState<string | null>(null);
+  // The built-in client's saved password was refused: the next connect asks for
+  // it (with a "Save password" tick) instead of trying it again.
+  const askPassword = useRef(false);
+  const passwordRetries = useRef(0);
   // Hidden while the desktop shows; open again on request.
   const [showLog, setShowLog] = useState(false);
 
@@ -101,6 +109,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         clipboard: options.clipboard,
         // A phone shares no files: its backend has no drive to give.
         share: IS_ANDROID ? null : rdpShare(options),
+        askPassword: askPassword.current,
         frames: canvas.newChannel(),
       }).catch(failed);
       setShareClipboard(options.clipboard);
@@ -145,12 +154,22 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       // connect() cleared the notes below: an app that ends at once may
       // already have reported, ahead of this.
       listen(`connection-success-${id}`, (e: any) => {
+        askPassword.current = false;
+        passwordRetries.current = 0;
         setOpened(e.payload as Opened);
         setStatus("connected");
       }),
       listen(`connection-failed-${id}`, (e: any) => {
-        setReason(String(e.payload?.reason ?? "The connection failed."));
+        const why = String(e.payload?.reason ?? "The connection failed.");
+        askPassword.current = false;
+        setReason(why);
         setStatus("failed");
+        // The server refused the password: ask for it at once, twice at most.
+        if (builtin && PASSWORD_REFUSED.test(why) && passwordRetries.current < 2) {
+          passwordRetries.current += 1;
+          askPassword.current = true;
+          setTimeout(() => connect(), 300);
+        }
       }),
       listen(`session-disconnected-${id}`, (e: any) => {
         setReason(String(e.payload?.reason ?? "The connection closed."));

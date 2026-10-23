@@ -706,8 +706,10 @@ fn operations(events: Vec<InputEvent>) -> Vec<Operation> {
 /// server), logs in, and runs the session until it ends or `Cmd::Close`.
 /// `verify_cert` gets the server's certificate (DER) before any password is
 /// sent and says whether to go on. `connected` runs once the desktop is
-/// there; `frame` sends one frame to the page and says whether the page is
-/// still listening; `remote_copy` gets the text the user copied on the server
+/// there, told whether the login was NLA (then the server took the password;
+/// without NLA it shows its own login screen whatever was sent); `frame`
+/// sends one frame to the page and says whether the page is still
+/// listening; `remote_copy` gets the text the user copied on the server
 /// (with the clipboard shared). Returns why the session ended.
 #[allow(clippy::too_many_arguments)]
 pub async fn run<S, V, VF>(
@@ -715,7 +717,7 @@ pub async fn run<S, V, VF>(
     client_addr: SocketAddr,
     mut login: Login,
     verify_cert: V,
-    connected: impl FnOnce(u16, u16),
+    connected: impl FnOnce(u16, u16, bool),
     notice: impl Fn(&str),
     frame: impl Fn(Vec<u8>) -> bool,
     remote_copy: impl Fn(String),
@@ -752,15 +754,17 @@ where
         .map_err(|e| format!("The RDP server didn't answer as one: {e}"))?;
     // How the server wants the login done is known now, before TLS and before
     // anything secret goes out: NLA, or the user's say-so, or no login at all.
-    match &connector.state {
+    let nla = match &connector.state {
         ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
             nla_gate(*selected_protocol, allow_no_nla)?;
-            if !selected_protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
+            let nla = selected_protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX);
+            if !nla {
                 notice("This server doesn't use NLA; the password goes inside TLS only (allowed for this server).");
             }
+            nla
         }
         _ => return Err("The RDP server picked a way of logging in that this client doesn't offer".into()),
-    }
+    };
     let (plain, leftover) = framed.into_inner();
 
     // TLS, then the certificate check, before anything secret is sent.
@@ -834,7 +838,7 @@ where
     if !frame(size_frame(size.width, size.height)) {
         return Ok("closed".into());
     }
-    connected(size.width, size.height);
+    connected(size.width, size.height, nla);
 
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let mut db = Database::new();

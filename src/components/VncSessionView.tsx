@@ -15,6 +15,9 @@ import { readVncOptions } from "../util/vncOptions";
 type LogLine = { msg: string; type: string; time: string };
 type Status = "connecting" | "connected" | "failed" | "disconnected";
 
+// How vnc_client.rs (explain) says the server refused the password.
+const PASSWORD_REFUSED = /refused the password|said: Authentication failed/i;
+
 const NOT_ENCRYPTED = "VNC isn't encrypted: the screen and what is typed cross the network as they are. Through an SSH server, it's private up to that server.";
 
 export default function VncSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, onPromptChange }: any) {
@@ -24,6 +27,10 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
   // Set once connected: the SSH server it goes through, or "" straight.
   const [via, setVia] = useState<string | null>(null);
   const screenRef = useRef<RemoteScreenHandle | null>(null);
+  // The saved VNC password was refused: the next connect asks for it (with a
+  // "Save password" tick) instead of trying it again.
+  const askPassword = useRef(false);
+  const passwordRetries = useRef(0);
   // Hidden while the screen shows; open again on request.
   const [showLog, setShowLog] = useState(false);
 
@@ -67,6 +74,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       width,
       height,
       options: readVncOptions(session.serverUuid),
+      askPassword: askPassword.current,
       frames: screen.newChannel(),
     }).catch(failed);
   }, [session.id, session.serverId, session.serverUuid, pushLog]);
@@ -102,12 +110,22 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
         setKbiValues([]);
       }),
       listen(`connection-success-${id}`, (e: any) => {
+        askPassword.current = false;
+        passwordRetries.current = 0;
         setVia(e.payload?.via ?? "");
         setStatus("connected");
       }),
       listen(`connection-failed-${id}`, (e: any) => {
-        setReason(String(e.payload?.reason ?? "The connection failed."));
+        const why = String(e.payload?.reason ?? "The connection failed.");
+        askPassword.current = false;
+        setReason(why);
         setStatus("failed");
+        // The server refused the password: ask for it at once, twice at most.
+        if (PASSWORD_REFUSED.test(why) && passwordRetries.current < 2) {
+          passwordRetries.current += 1;
+          askPassword.current = true;
+          setTimeout(() => connect(), 300);
+        }
       }),
       listen(`session-disconnected-${id}`, (e: any) => {
         setReason(String(e.payload?.reason ?? "The connection closed."));
