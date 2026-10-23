@@ -2738,19 +2738,19 @@ function DesktopApp() {
             // An RDP (issue #3), telnet (#179) or VNC server has a host,
             // port, login (its own or a saved one) and maybe an SSH server to
             // go through; nothing that runs over SSH (forwards, mirrors,
-            // autostart, a proxy, a key). An RDP server's saved password isn't
-            // touched: the RDP app asks. A telnet server's is kept, for the
-            // terminal's password button; a VNC server's, for its login.
+            // autostart, a proxy, a key). Its saved password is kept: an RDP
+            // server's for the built-in client and Remote Desktop Connection, a
+            // telnet server's for the terminal's password button, a VNC
+            // server's for its login.
             const isRdp = newNode.protocol === "rdp";
             const isTelnet = newNode.protocol === "telnet";
             const isVnc = newNode.protocol === "vnc";
-            const keepsPassword = isTelnet || isVnc;
             const payload = isRdp || isTelnet || isVnc ? {
               name: newNode.name,
               host: newNode.host,
               port: newNode.port,
               username: isInline && !isVnc ? (newNode.username?.trim() || null) : null,
-              password: keepsPassword && newNode.authType === "custom_pass" ? (newNode.password || null) : null,
+              password: newNode.authType === "custom_pass" ? (newNode.password || null) : null,
               credentialId: (newNode.authType === "vault" && newNode.credentialId) ? parseInt(newNode.credentialId) : null,
               folderId: newNode.folderId ? parseInt(newNode.folderId) : null,
               proxyType: "none",
@@ -2762,7 +2762,7 @@ function DesktopApp() {
               autostart: false,
               mirrors: [],
               color: newNode.color ?? null,
-              preservePassword: keepsPassword ? !!newNode.id && !newNode.password_dirty : true,
+              preservePassword: !!newNode.id && !newNode.password_dirty,
             } : {
               name: newNode.name,
               host: newNode.host,
