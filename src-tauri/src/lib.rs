@@ -5009,7 +5009,17 @@ async fn close_profile(
     // for the sharing passphrase again when sharing is used.
     cloud.forget_identity().await;
 
-    // 2. Collect every active session id, then run the standard
+    // 2. A login still in progress (an SSH, RDP or VNC connect waiting on the
+    // server or on a prompt) must not come up after the lock: each attempt
+    // checks its generation before it registers, so every generation goes up.
+    {
+        let mut generations = ssh.session_generation.lock().await;
+        for generation in generations.values_mut() {
+            *generation = generation.wrapping_add(1);
+        }
+    }
+
+    // 2b. Collect every active session id, then run the standard
     // disconnect path for each one. This frees tunnel listener sockets,
     // SFTP channels, and the SSH handle in the right order.
     let session_ids: Vec<String> = ssh.connections.lock().await.keys().cloned().collect();
