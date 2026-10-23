@@ -296,6 +296,9 @@ mod confined {
     use ironrdp_rdpdr_native::backend::NixRdpdrBackend;
     use std::path::PathBuf;
 
+    /// The most one read gives (as the Windows backend's limit).
+    const MAX_READ: u32 = 1024 * 1024;
+
     #[derive(Debug)]
     pub struct Confined {
         inner: NixRdpdrBackend,
@@ -312,13 +315,17 @@ mod confined {
         }
 
         /// The answer to a request that mustn't reach the backend: a path that
-        /// leads out of the folder, or a change to a read-only share.
+        /// leads out of the folder, something there that is neither a file
+        /// nor a folder (opening a FIFO waits for a writer, and would hold up
+        /// the whole session), or a change to a read-only share.
         fn refused(&self, req: &ServerDriveIoRequest) -> Option<Vec<SvcMessage>> {
             let answer = |pdu: RdpdrPdu| Some(vec![SvcMessage::from(pdu)]);
             match req {
                 ServerDriveIoRequest::ServerCreateDriveRequest(r) => {
                     let changes = r.create_disposition != CreateDisposition::FILE_OPEN || r.create_options.contains(CreateOptions::FILE_DELETE_ON_CLOSE);
-                    if inside(&self.base, &r.path, false).is_none() || (self.read_only && changes) {
+                    let place = inside(&self.base, &r.path, false);
+                    let odd = place.as_deref().and_then(|p| std::fs::symlink_metadata(p).ok()).is_some_and(|m| !m.is_file() && !m.is_dir());
+                    if place.is_none() || odd || (self.read_only && changes) {
                         return answer(RdpdrPdu::DeviceCreateResponse(DeviceCreateResponse {
                             device_io_reply: DeviceIoResponse::new(r.device_io_request.clone(), NtStatus::ACCESS_DENIED),
                             file_id: 0,
@@ -373,9 +380,14 @@ mod confined {
             self.inner.handle_scard_call(req, call)
         }
 
-        fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
+        fn handle_drive_io_request(&mut self, mut req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
             if let Some(answer) = self.refused(&req) {
                 return Ok(answer);
+            }
+            // A read gives a megabyte at most (the server reads on from there):
+            // IronRDP's backend makes room for all the server asks, up to 4 GB.
+            if let ServerDriveIoRequest::DeviceReadRequest(r) = &mut req {
+                r.length = r.length.min(MAX_READ);
             }
             self.inner.handle_drive_io_request(req)
         }
@@ -455,6 +467,56 @@ mod tests {
             assert_eq!(inside(&base, r"\out*", true), None);
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn odd_files_and_big_reads_in_the_folder_hold_nothing_up() {
+        use ironrdp::core::ReadCursor;
+        use ironrdp::rdpdr::pdu::efs::{DeviceIoRequest, ServerDriveIoRequest};
+        use ironrdp::rdpdr::RdpdrBackend;
+        let dir = std::env::temp_dir().join(format!("sub-share-odd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("small.txt"), b"hello").unwrap();
+        assert!(std::process::Command::new("mkfifo").arg(dir.join("pipe")).status().unwrap().success());
+        let base = std::fs::canonicalize(&dir).unwrap();
+        let mut backend = confined::Confined::new(base, false);
+        // A request as a server sends it (device 1), and the answer's bytes.
+        let mut send = |file_id: u32, major: u32, payload: Vec<u8>| -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for x in [1u32, file_id, 7, major, 0] {
+                bytes.extend(x.to_le_bytes());
+            }
+            bytes.extend(payload);
+            let mut src = ReadCursor::new(&bytes);
+            let io = DeviceIoRequest::decode(&mut src).unwrap();
+            let req = ServerDriveIoRequest::decode(io, &mut src).unwrap();
+            backend.handle_drive_io_request(req).unwrap()[0].encode_unframed_pdu().unwrap()
+        };
+        // Opened to read (FILE_OPEN).
+        let open = |path: &str| {
+            let units: Vec<u16> = path.encode_utf16().chain([0]).collect();
+            let mut bytes = Vec::new();
+            for x in [0x0012_0089u32, 0, 0, 0, 7, 1, 0, (units.len() * 2) as u32] {
+                bytes.extend(x.to_le_bytes());
+            }
+            bytes.extend(units.iter().flat_map(|u| u.to_le_bytes()));
+            bytes
+        };
+        let status = |r: &[u8]| u32::from_le_bytes(r[12..16].try_into().unwrap());
+        // A FIFO: refused at once, not opened (that would wait for a writer).
+        assert_eq!(status(&send(0, 0, open(r"\pipe"))), 0xC000_0022, "access denied");
+        // A read asking for 4 GB gets what there is, without room made for 4 GB.
+        let r = send(0, 0, open(r"\small.txt"));
+        assert_eq!(status(&r), 0);
+        let file_id = u32::from_le_bytes(r[16..20].try_into().unwrap());
+        let mut read = u32::MAX.to_le_bytes().to_vec();
+        read.extend(0u64.to_le_bytes());
+        read.extend([0u8; 20]);
+        let r = send(file_id, 3, read);
+        assert_eq!(status(&r), 0);
+        assert_eq!(&r[20..], b"hello");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(any(windows, target_os = "macos", target_os = "linux"))]

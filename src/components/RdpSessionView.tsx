@@ -221,30 +221,51 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   };
 
   // This computer's clipboard to the server's, then the paste key (the Paste
-  // button sends Ctrl+V) once the text is there. If the clipboard can't be
-  // read, the key still goes, and the server pastes what it has.
-  const pasteToServer = async (keys: PasteKeys) => {
+  // button sends Ctrl+V) once the text is there. When that can't be done, a
+  // held-back key press still goes on its own (its modifier is down on the
+  // server already) and the server pastes what it has; the button sends nothing.
+  const pasteToServer = async (keys: PasteKeys, fromKey: boolean) => {
+    const keyAlone = () => {
+      const code = keys === "shiftinsert" ? scancodeFor("Insert") : keys === "ctrlv" ? scancodeFor("KeyV") : null;
+      if (!fromKey || code === null) return;
+      const key = keys === "shiftinsert" ? "Insert" : "v";
+      invoke("rdp_builtin_input", { sessionId: session.id, events: [{ t: "key", code, key, down: true }, { t: "key", code, key, down: false }] }).catch(() => {});
+    };
+    let text: string;
     try {
-      const text = await readLocalClipboard();
-      await invoke("rdp_builtin_paste", { sessionId: session.id, text, keys });
+      text = await readLocalClipboard();
     } catch (e) {
       pushLog({ msg: `This computer's clipboard couldn't be read: ${e}`, type: "warning" });
-      const code = keys === "shiftinsert" ? scancodeFor("Insert") : keys === "ctrlv" ? scancodeFor("KeyV") : null;
-      if (code !== null) {
-        const key = keys === "shiftinsert" ? "Insert" : "v";
-        invoke("rdp_builtin_input", { sessionId: session.id, events: [{ t: "key", code, key, down: true }, { t: "key", code, key, down: false }] }).catch(() => {});
-      }
+      keyAlone();
+      return;
+    }
+    try {
+      await invoke("rdp_builtin_paste", { sessionId: session.id, text, keys });
+    } catch (e) {
+      pushLog({ msg: String(e), type: "warning" });
+      keyAlone();
     }
   };
   // A paste key in the tab: held back from the screen until the text is on the
-  // server (capture phase, ahead of the screen's own key handler).
+  // server (capture phase, ahead of the screen's own key handler). Its repeats
+  // while held go nowhere: the screen would type them.
   const onPasteKey = (e: React.KeyboardEvent) => {
-    if (!shareClipboard || status !== "connected" || e.repeat || e.nativeEvent.isComposing) return;
+    if (!shareClipboard || status !== "connected" || e.nativeEvent.isComposing) return;
     const keys = pasteKeysOf(e);
     if (!keys) return;
     e.preventDefault();
     e.stopPropagation();
-    void pasteToServer(keys);
+    if (e.repeat) return;
+    // Cmd+V on a Mac: the server has the Windows key down. A Ctrl tap now
+    // keeps it from opening the Start menu when the user lets go of Cmd
+    // before the paste is done.
+    if (keys === "cmdv") {
+      const code = scancodeFor("ControlLeft");
+      if (code !== null) {
+        invoke("rdp_builtin_input", { sessionId: session.id, events: [{ t: "key", code, key: "Control", down: true }, { t: "key", code, key: "Control", down: false }] }).catch(() => {});
+      }
+    }
+    void pasteToServer(keys, true);
   };
 
   const name = displayName || session.serverName;
@@ -371,7 +392,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           <div className="ml-auto shrink-0 flex items-center gap-1.5">
             {connected && shareClipboard && (
               <button
-                onClick={() => void pasteToServer("ctrlv")}
+                onClick={() => void pasteToServer("ctrlv", false)}
                 title="Paste this device's clipboard into the server"
                 aria-label="Paste this device's clipboard into the server"
                 className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-white/5 text-zinc-300 hover:text-zinc-100 text-[11px] font-semibold transition-colors"

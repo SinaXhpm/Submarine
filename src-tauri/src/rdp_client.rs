@@ -104,21 +104,42 @@ const PASTE_WAIT: Duration = Duration::from_millis(1500);
 const DRIVE_POLL: Duration = Duration::from_millis(100);
 /// The most characters a copy on the server brings to this computer.
 const MAX_CLIP_CHARS: usize = 1_000_000;
+/// The most bytes such a copy can take (4 a character at most, and an end):
+/// a longer answer isn't copied out of the channel at all.
+const MAX_CLIP_BYTES: usize = MAX_CLIP_CHARS * 4 + 4;
 
 /// The keys that do the paste on the server, as operations on the session's
-/// keyboard (`Database`): the modifier with them, so a modifier the user
-/// already let go of doesn't turn the paste into typing.
-fn paste_keys(keys: PasteKeys) -> Vec<Operation> {
+/// keyboard (`Database`; `held` says what is down there now). The modifier
+/// goes with them, so a modifier the user already let go of doesn't turn the
+/// paste into typing; one the user still holds stays down (pressed again, it
+/// would be let go first, and the next key would come without it).
+fn paste_keys(keys: PasteKeys, held: impl Fn(Scancode) -> bool) -> Vec<Operation> {
     let sc = |extended, code| Scancode::from_u8(extended, code);
     let (ctrl, shift, v, insert) = (sc(false, 0x1d), sc(false, 0x2a), sc(false, 0x2f), sc(true, 0x52));
-    let press = |modifier, key| vec![Operation::KeyPressed(modifier), Operation::KeyPressed(key), Operation::KeyReleased(key), Operation::KeyReleased(modifier)];
+    let press = |modifier, key| {
+        if held(modifier) {
+            vec![Operation::KeyPressed(key), Operation::KeyReleased(key)]
+        } else {
+            vec![Operation::KeyPressed(modifier), Operation::KeyPressed(key), Operation::KeyReleased(key), Operation::KeyReleased(modifier)]
+        }
+    };
     match keys {
         PasteKeys::None => Vec::new(),
         PasteKeys::Ctrlv => press(ctrl, v),
         PasteKeys::Shiftinsert => press(shift, insert),
         PasteKeys::Cmdv => {
-            let mut ops = vec![Operation::KeyReleased(sc(true, 0x5b)), Operation::KeyReleased(sc(true, 0x5c))];
-            ops.extend(press(ctrl, v));
+            // Ctrl goes down before the Windows keys are let go: a Windows key
+            // let go on its own opens the Start menu (GNOME's Activities).
+            let ctrl_down = !held(ctrl);
+            let mut ops = Vec::new();
+            if ctrl_down {
+                ops.push(Operation::KeyPressed(ctrl));
+            }
+            ops.extend([sc(true, 0x5b), sc(true, 0x5c)].into_iter().filter(|win| held(*win)).map(Operation::KeyReleased));
+            ops.extend([Operation::KeyPressed(v), Operation::KeyReleased(v)]);
+            if ctrl_down {
+                ops.push(Operation::KeyReleased(ctrl));
+            }
             ops
         }
     }
@@ -137,6 +158,8 @@ enum ClipEvent {
     Wanted(ClipboardFormatId),
     /// The text the server copied, as asked for (none: it was gone).
     RemoteText(Option<Vec<u8>>),
+    /// The server's answer was longer than MAX_CLIP_BYTES (this many bytes).
+    RemoteTooLong(usize),
 }
 
 /// The clipboard channel's backend: it passes what the server does on to the
@@ -177,8 +200,14 @@ impl CliprdrBackend for ClipBridge {
     }
 
     fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
-        let data = (!response.is_error()).then(|| response.data().to_vec());
-        let _ = self.0.send(ClipEvent::RemoteText(data));
+        let event = if response.is_error() {
+            ClipEvent::RemoteText(None)
+        } else if response.data().len() > MAX_CLIP_BYTES {
+            ClipEvent::RemoteTooLong(response.data().len())
+        } else {
+            ClipEvent::RemoteText(Some(response.data().to_vec()))
+        };
+        let _ = self.0.send(event);
     }
 
     fn on_file_contents_request(&mut self, _request: FileContentsRequest) {}
@@ -815,10 +844,11 @@ where
     let mut drive_tick = tokio::time::interval(DRIVE_POLL);
     drive_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // The shared clipboard: this side's text (offered to the server only once
-    // the user pastes it there), the format the server's copy was asked for in,
-    // and a paste key held back until the server has the text.
+    // the user pastes it there), the formats the server's copies were asked
+    // for in (one answer comes for each, in order), and a paste key held back
+    // until the server has the text.
     let mut local_text: Option<Zeroizing<String>> = None;
-    let mut asked_format = ClipboardFormatId::CF_UNICODETEXT;
+    let mut asked_formats: std::collections::VecDeque<ClipboardFormatId> = std::collections::VecDeque::new();
     let mut held_paste: Option<(PasteKeys, tokio::time::Instant)> = None;
 
     loop {
@@ -833,7 +863,8 @@ where
                 // Refused, it would paste what the server had before: it doesn't.
                 ClipEvent::Offered(taken) => match held_paste.take() {
                     Some((keys, _)) if taken => {
-                        let fast = db.apply(paste_keys(keys)).into_vec();
+                        let ops = paste_keys(keys, |k| db.is_key_pressed(k));
+                        let fast = db.apply(ops).into_vec();
                         stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
                     }
                     Some(_) => {
@@ -842,14 +873,26 @@ where
                     }
                     None => Vec::new(),
                 },
-                ClipEvent::RemoteCopy(Some(format)) => {
-                    asked_format = format;
-                    clip_step(&mut stage, |c| c.initiate_paste(format)).unwrap_or_else(|e| {
+                ClipEvent::RemoteCopy(Some(format)) => match clip_step(&mut stage, |c| c.initiate_paste(format)) {
+                    Ok(outputs) => {
+                        asked_formats.push_back(format);
+                        outputs
+                    }
+                    Err(e) => {
                         notice(&e);
                         Vec::new()
-                    })
+                    }
+                },
+                ClipEvent::RemoteCopy(None) => Vec::new(),
+                ClipEvent::RemoteText(None) => {
+                    asked_formats.pop_front();
+                    Vec::new()
                 }
-                ClipEvent::RemoteCopy(None) | ClipEvent::RemoteText(None) => Vec::new(),
+                ClipEvent::RemoteTooLong(bytes) => {
+                    asked_formats.pop_front();
+                    notice(&format!("The server's copy is too long to bring over ({bytes} bytes; the most is {MAX_CLIP_CHARS} characters)."));
+                    Vec::new()
+                }
                 ClipEvent::Wanted(format) => {
                     let response = match local_text.as_deref() {
                         Some(text) if format == ClipboardFormatId::CF_UNICODETEXT => FormatDataResponse::new_unicode_string(text),
@@ -863,7 +906,8 @@ where
                     })
                 }
                 ClipEvent::RemoteText(Some(data)) => {
-                    match decode_clip_text(asked_format, &data) {
+                    let format = asked_formats.pop_front().unwrap_or(ClipboardFormatId::CF_UNICODETEXT);
+                    match decode_clip_text(format, &data) {
                         Ok(text) if !text.is_empty() => remote_copy(text),
                         Ok(_) => {}
                         Err(e) => notice(&e),
@@ -880,7 +924,8 @@ where
             // The server didn't say it has the text in time: the key goes anyway.
             _ = sleep_until_due(paste_due), if paste_due.is_some() => {
                 let keys = held_paste.take().map_or(PasteKeys::None, |(keys, _)| keys);
-                let fast = db.apply(paste_keys(keys)).into_vec();
+                let ops = paste_keys(keys, |k| db.is_key_pressed(k));
+                let fast = db.apply(ops).into_vec();
                 stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
             }
             pdu = reader.read_pdu() => {
@@ -1074,8 +1119,8 @@ mod tests {
 
     #[test]
     fn a_paste_key_brings_its_modifier_and_cmd_v_becomes_ctrl_v() {
-        let codes = |keys| {
-            paste_keys(keys)
+        let codes_holding = |keys, held: &[(bool, u8)]| {
+            paste_keys(keys, |s: Scancode| held.contains(&s.as_u8()))
                 .into_iter()
                 .map(|op| match op {
                     Operation::KeyPressed(s) => (true, s.as_u8()),
@@ -1084,14 +1129,21 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
+        let codes = |keys| codes_holding(keys, &[]);
         assert!(codes(PasteKeys::None).is_empty());
         // Ctrl down, V down, V up, Ctrl up.
         assert_eq!(codes(PasteKeys::Ctrlv), [(true, (false, 0x1d)), (true, (false, 0x2f)), (false, (false, 0x2f)), (false, (false, 0x1d))]);
         assert_eq!(codes(PasteKeys::Shiftinsert), [(true, (false, 0x2a)), (true, (true, 0x52)), (false, (true, 0x52)), (false, (false, 0x2a))]);
-        // A Mac's Cmd is the server's Windows key: both are let go first.
-        let mac = codes(PasteKeys::Cmdv);
-        assert_eq!(&mac[..2], &[(false, (true, 0x5b)), (false, (true, 0x5c))]);
-        assert_eq!(&mac[2..], codes(PasteKeys::Ctrlv).as_slice());
+        // A modifier the user still holds stays down: only the key goes.
+        assert_eq!(codes_holding(PasteKeys::Ctrlv, &[(false, 0x1d)]), [(true, (false, 0x2f)), (false, (false, 0x2f))]);
+        assert_eq!(codes_holding(PasteKeys::Shiftinsert, &[(false, 0x2a)]), [(true, (true, 0x52)), (false, (true, 0x52))]);
+        // A Mac's Cmd is the server's Windows key: Ctrl goes down first, then
+        // the Windows key that is down is let go (never on its own), then V.
+        assert_eq!(
+            codes_holding(PasteKeys::Cmdv, &[(true, 0x5b)]),
+            [(true, (false, 0x1d)), (false, (true, 0x5b)), (true, (false, 0x2f)), (false, (false, 0x2f)), (false, (false, 0x1d))]
+        );
+        assert_eq!(codes(PasteKeys::Cmdv), codes(PasteKeys::Ctrlv), "no Windows key down: just Ctrl+V");
         // What the page sends.
         for (word, keys) in [("none", PasteKeys::None), ("ctrlv", PasteKeys::Ctrlv), ("shiftinsert", PasteKeys::Shiftinsert), ("cmdv", PasteKeys::Cmdv)] {
             assert_eq!(serde_json::from_str::<PasteKeys>(&format!("\"{word}\"")).unwrap(), keys);

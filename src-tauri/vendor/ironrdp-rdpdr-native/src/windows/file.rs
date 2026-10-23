@@ -453,6 +453,11 @@ fn set_information_inner(
                 .map_err(from_ntstatus)
         }
         FileInformationClass::Disposition(information) => {
+            // Submarine: the root itself (with this copy, a folder can be one)
+            // is neither deleted nor moved.
+            if file.path.components().len() == 0 {
+                return Err(NtStatus::ACCESS_DENIED);
+            }
             let delete_pending = match information.delete_pending {
                 0 => false,
                 1 => true,
@@ -461,6 +466,9 @@ fn set_information_inner(
             file.handle.set_delete_pending(delete_pending).map_err(from_ntstatus)
         }
         FileInformationClass::Rename(information) => {
+            if file.path.components().len() == 0 {
+                return Err(NtStatus::ACCESS_DENIED);
+            }
             let destination_path = RelativePath::parse(&information.file_name).map_err(from_path_policy)?;
             let file_name = destination_path
                 .components()
