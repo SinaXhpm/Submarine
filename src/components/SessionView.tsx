@@ -266,6 +266,17 @@ const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
   );
 };
 
+// The name of a new terminal tab: the lowest number no open terminal has
+// (issue #231). Closing "2" of 1, 2, 3 and opening another gives a new "2",
+// never a second "3". A renamed terminal keeps its number (`baseTitle`);
+// a container's terminal, named after the container, takes none.
+function nextTerminalNumber(terminals: { title: string; baseTitle?: string }[]): string {
+  const used = new Set(terminals.map((t) => t.baseTitle ?? t.title).filter((t) => /^\d+$/.test(t)).map(Number));
+  let n = 1;
+  while (used.has(n)) n++;
+  return `${n}`;
+}
+
 // `displayName`: the session tab's name, which the user may have changed
 // from the server's (DesktopApp's tabNames). `profile`: the unlocked
 // profile's name, for what is kept per server on this device.
@@ -1622,7 +1633,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           <button
             onClick={() => {
               const newId = `${session.id}-term-${Date.now()}`;
-              setTerminals(prev => [...prev, { id: newId, title: `${prev.length + 1}` }]);
+              setTerminals(prev => [...prev, { id: newId, title: nextTerminalNumber(prev) }]);
               setActiveTab(newId);
             }}
             onContextMenu={(e) => {
@@ -1735,7 +1746,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   onClick={() => {
                     setPlusMenu(null);
                     const newId = `${session.id}-term-${Date.now()}`;
-                    setTerminals(prev => [...prev, { id: newId, title: `${prev.length + 1}` }]);
+                    setTerminals(prev => [...prev, { id: newId, title: nextTerminalNumber(prev) }]);
                     if (splitTerminals.length >= 2) {
                       setSplitTerminals(prev => [...prev, newId]);
                       setSplitRatios(prev => [...prev, 1]);
