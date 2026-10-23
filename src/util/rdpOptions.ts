@@ -13,6 +13,8 @@ export interface RdpOptions {
   /** The window's size when not full screen. */
   width: number;
   height: number;
+  /** Share the clipboard. In the built-in client: text, this device's only
+   *  when pasted into the server (see rdpClipboard.ts). */
   clipboard: boolean;
   /** This computer's drives (with Remmina: the home folder). */
   drives: boolean;
@@ -28,7 +30,15 @@ export interface RdpOptions {
   network: RdpNetwork;
   /** Offer RemoteFX; it is used only if the server has it. */
   remoteFx: boolean;
+  /** Files the built-in client shares with the server: nothing, one folder,
+   *  or a whole drive (`sharePath`: the folder, or the drive's `D:\`), read
+   *  only or not. Kept equal to `rdp_share::Share`. */
+  share: RdpShareKind;
+  sharePath: string;
+  shareReadOnly: boolean;
 }
+
+export type RdpShareKind = "off" | "folder" | "drive";
 
 export type RdpColors = 32 | 24 | 16;
 export type RdpEffects = "standard" | "minimal" | "full";
@@ -40,7 +50,24 @@ export const RDP_OPTIONS_KEY = "submarine-rdp-options";
 export const DEFAULT_RDP_OPTIONS: RdpOptions = {
   app: "system", fullScreen: true, width: 1600, height: 900, clipboard: true, drives: false, allowNoNla: false,
   colors: 32, effects: "standard", network: "lan", remoteFx: false,
+  share: "off", sharePath: "", shareReadOnly: false,
 };
+
+/** The choices of what the built-in client shares, as the form lists them; a
+ *  drive is a drive letter on Windows (elsewhere a drive is the folder it is
+ *  mounted on). */
+export function rdpShareChoices(windows: boolean): { value: RdpShareKind; label: string }[] {
+  return [
+    { value: "off", label: "Nothing" },
+    { value: "folder", label: "A folder" },
+    ...(windows ? [{ value: "drive" as const, label: "A whole drive" }] : []),
+  ];
+}
+
+/** What the built-in client is told to share (`rdp_share::Share`), or nothing. */
+export function rdpShare(o: RdpOptions): { kind: "folder" | "drive"; path: string; readOnly: boolean } | null {
+  return o.share !== "off" && o.sharePath.trim() ? { kind: o.share, path: o.sharePath.trim(), readOnly: o.shareReadOnly } : null;
+}
 
 /** The choices of the built-in client's speed and quality, as the form lists them. */
 export const RDP_COLOR_CHOICES: { value: RdpColors; label: string }[] = [
@@ -107,6 +134,9 @@ export function readRdpOptions(uuid?: string | null): RdpOptions {
     if (RDP_EFFECT_CHOICES.some((c) => c.value === kept.effects)) o.effects = kept.effects as RdpEffects;
     if (RDP_NETWORK_CHOICES.some((c) => c.value === kept.network)) o.network = kept.network as RdpNetwork;
     if (typeof kept.remoteFx === "boolean") o.remoteFx = kept.remoteFx;
+    if (kept.share === "off" || kept.share === "folder" || kept.share === "drive") o.share = kept.share;
+    if (typeof kept.sharePath === "string") o.sharePath = kept.sharePath;
+    if (typeof kept.shareReadOnly === "boolean") o.shareReadOnly = kept.shareReadOnly;
   }
   return o;
 }

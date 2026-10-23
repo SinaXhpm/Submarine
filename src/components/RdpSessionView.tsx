@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { AlertTriangle, ExternalLink, FlaskConical, Loader2, MonitorSmartphone, RotateCw, X } from "lucide-react";
+import { AlertTriangle, ClipboardPaste, ExternalLink, FlaskConical, Loader2, MonitorSmartphone, RotateCw, X } from "lucide-react";
 import { AuthPrompts } from "./AuthPrompts";
 import RemoteScreen, { type RemoteScreenHandle } from "./RemoteScreen";
 import { readUseSshAgent } from "../util/sshAgent";
 import { IS_ANDROID } from "../util/platform";
-import { RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, describeRdpOptions, rdpGraphics, readRdpOptions, writeRdpOptions } from "../util/rdpOptions";
+import { RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, describeRdpOptions, rdpGraphics, rdpShare, readRdpOptions, writeRdpOptions } from "../util/rdpOptions";
+import { type PasteKeys, pasteKeysOf, readLocalClipboard } from "../util/rdpClipboard";
+import { scancodeFor } from "../util/scancodes";
 
 // An RDP server's tab (issue #3). By default Submarine opens the system's RDP
 // app (through a forward on a loopback port while the node has an SSH
@@ -41,6 +43,12 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const [usedOptions, setUsedOptions] = useState("");
 
   const canvasRef = useRef<RemoteScreenHandle | null>(null);
+  // The built-in client shares the clipboard with the server (this server's
+  // option, read when the tab connects).
+  const [shareClipboard, setShareClipboard] = useState(false);
+  // Text the user copied on the server that couldn't go on this computer's
+  // clipboard by itself (a webview that wants a click for that): one click does.
+  const [serverCopy, setServerCopy] = useState<string | null>(null);
   // Hidden while the desktop shows; open again on request.
   const [showLog, setShowLog] = useState(false);
 
@@ -90,8 +98,13 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         height,
         allowNoNla: options.allowNoNla,
         graphics: rdpGraphics(options),
+        clipboard: options.clipboard,
+        // A phone shares no files: its backend has no drive to give.
+        share: IS_ANDROID ? null : rdpShare(options),
         frames: canvas.newChannel(),
       }).catch(failed);
+      setShareClipboard(options.clipboard);
+      setServerCopy(null);
       return;
     }
     const options = readRdpOptions(session.serverUuid);
@@ -149,6 +162,14 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       listen(`rdp-app-failed-${id}`, (e: any) => {
         setAppFailed(Array.isArray(e.payload?.said) ? e.payload.said : []);
       }),
+      // Text the user copied on the server, for this computer's clipboard.
+      listen(`rdp-clipboard-${id}`, (e: any) => {
+        const text = String(e.payload?.text ?? "");
+        navigator.clipboard.writeText(text).then(
+          () => setServerCopy(null),
+          () => setServerCopy(text),
+        );
+      }),
     ]);
     // A phone connects once the built-in client is chosen in the tab.
     subs.then(() => { if (!cancelled && (builtin || !IS_ANDROID)) connect(); });
@@ -197,6 +218,33 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
     } finally {
       setBusy(false);
     }
+  };
+
+  // This computer's clipboard to the server's, then the paste key (the Paste
+  // button sends Ctrl+V) once the text is there. If the clipboard can't be
+  // read, the key still goes, and the server pastes what it has.
+  const pasteToServer = async (keys: PasteKeys) => {
+    try {
+      const text = await readLocalClipboard();
+      await invoke("rdp_builtin_paste", { sessionId: session.id, text, keys });
+    } catch (e) {
+      pushLog({ msg: `This computer's clipboard couldn't be read: ${e}`, type: "warning" });
+      const code = keys === "shiftinsert" ? scancodeFor("Insert") : keys === "ctrlv" ? scancodeFor("KeyV") : null;
+      if (code !== null) {
+        const key = keys === "shiftinsert" ? "Insert" : "v";
+        invoke("rdp_builtin_input", { sessionId: session.id, events: [{ t: "key", code, key, down: true }, { t: "key", code, key, down: false }] }).catch(() => {});
+      }
+    }
+  };
+  // A paste key in the tab: held back from the screen until the text is on the
+  // server (capture phase, ahead of the screen's own key handler).
+  const onPasteKey = (e: React.KeyboardEvent) => {
+    if (!shareClipboard || status !== "connected" || e.repeat || e.nativeEvent.isComposing) return;
+    const keys = pasteKeysOf(e);
+    if (!keys) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void pasteToServer(keys);
   };
 
   const name = displayName || session.serverName;
@@ -321,6 +369,16 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           </span>
           {experimentalBadge}
           <div className="ml-auto shrink-0 flex items-center gap-1.5">
+            {connected && shareClipboard && (
+              <button
+                onClick={() => void pasteToServer("ctrlv")}
+                title="Paste this device's clipboard into the server"
+                aria-label="Paste this device's clipboard into the server"
+                className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-white/5 text-zinc-300 hover:text-zinc-100 text-[11px] font-semibold transition-colors"
+              >
+                <ClipboardPaste size={12} aria-hidden="true" /><span className="hidden sm:inline">Paste</span>
+              </button>
+            )}
             {connected && (
               <button
                 onClick={() => setShowLog((v) => !v)}
@@ -361,7 +419,21 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           </div>
         </div>
 
-        <div className="relative flex-1 min-h-0 flex flex-col">
+        {connected && serverCopy !== null && (
+          <div role="status" className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-white/5 bg-primary/10 text-[11.5px] text-zinc-200">
+            <span className="min-w-0 truncate">Text was copied on the server ({serverCopy.length} characters).</span>
+            <button
+              onClick={() => navigator.clipboard.writeText(serverCopy).then(() => setServerCopy(null), () => {})}
+              className="shrink-0 h-6 px-2 rounded-md bg-primary/20 text-primary hover:bg-primary/30 font-semibold"
+            >
+              Copy it here
+            </button>
+            <button onClick={() => setServerCopy(null)} aria-label="Dismiss" className="ml-auto shrink-0 text-zinc-500 hover:text-zinc-300">
+              <X size={12} />
+            </button>
+          </div>
+        )}
+        <div className="relative flex-1 min-h-0 flex flex-col" onKeyDownCapture={onPasteKey}>
           <RemoteScreen
             ref={canvasRef}
             sessionId={session.id}

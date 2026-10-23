@@ -1,0 +1,38 @@
+# A copy of IronRDP's crates/ironrdp-rdpdr-native at the commit Submarine pins
+# (62246b364a0282bab85087f658a81fe4207b6b31), with one change: see VENDORED.md.
+# The workspace values it inherited are written out; its IronRDP dependencies
+# come from the same commit.
+
+[package]
+name = "ironrdp-rdpdr-native"
+version = "0.7.0"
+readme = "README.md"
+description = "Native RDPDR static channel backend implementations for IronRDP"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/Devolutions/IronRDP"
+repository = "https://github.com/Devolutions/IronRDP"
+authors = ["Devolutions Inc. <infos@devolutions.net>", "Teleport <goteleport.com>"]
+keywords = ["rdp", "remote-desktop", "network", "client", "protocol"]
+categories = ["network-programming"]
+publish = false
+
+[lib]
+doctest = false
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+ironrdp-core = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31" }
+ironrdp-pdu = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31" }
+ironrdp-svc = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31" }
+ironrdp-rdpdr = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31" }
+nix = { version = "0.31", features = ["fs", "dir", "feature"] }
+tracing = { version = "0.1", features = ["log"] }
+
+[target.'cfg(windows)'.dependencies]
+ironrdp-core = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31" }
+ironrdp-pdu = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31" }
+ironrdp-rdpdr = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31" }
+ironrdp-svc = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31" }
+tracing = { version = "0.1", features = ["log"] }
+windows = { version = "0.62", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_SystemServices", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }

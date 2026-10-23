@@ -15,6 +15,10 @@ export const IS_ANDROID: boolean =
 export const IS_LINUX: boolean =
   typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent) && !IS_ANDROID;
 
+// Windows, where drives have letters (an RDP server may be given a whole one).
+export const IS_WINDOWS: boolean =
+  typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
+
 // True when we're inside a Tauri WebView (desktop or Android). Kept for future
 // use — some UI may want to differentiate a browser preview from packaged app.
 export const IS_TAURI: boolean =

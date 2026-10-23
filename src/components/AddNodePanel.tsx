@@ -7,14 +7,14 @@ import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { folderTree } from "../util/folderTree";
 import {
-  DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_COLOR_CHOICES, RDP_EFFECT_CHOICES, RDP_NETWORK_CHOICES, RDP_WINDOW_SIZES,
-  type RdpColors, type RdpEffects, type RdpNetwork, type RdpOptions,
+  DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_COLOR_CHOICES, RDP_EFFECT_CHOICES, RDP_NETWORK_CHOICES, RDP_WINDOW_SIZES, rdpShareChoices,
+  type RdpColors, type RdpEffects, type RdpNetwork, type RdpOptions, type RdpShareKind,
 } from "../util/rdpOptions";
 import {
   DEFAULT_VNC_OPTIONS, VNC_COLOR_CHOICES, VNC_ENCODING_CHOICES, VNC_FPS_CHOICES, normalizeVncOptions,
   type VncColors, type VncEncoding, type VncMaxFps, type VncOptions,
 } from "../util/vncOptions";
-import { IS_ANDROID } from "../util/platform";
+import { IS_ANDROID, IS_WINDOWS } from "../util/platform";
 import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
 
 // One choice of a server's speed and quality: its label and select, and under
@@ -89,6 +89,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
   // and maybe an SSH server to go through; the SSH-only parts of the form
   // are hidden for it.
   const isRdp = newNode.protocol === "rdp";
+  // This computer's drives, for sharing a whole one with an RDP server.
+  const [localDrives, setLocalDrives] = useState<string[]>([]);
+  useEffect(() => {
+    if (isOpen && isRdp && IS_WINDOWS) invoke<string[]>("rdp_share_drives").then(setLocalDrives, () => setLocalDrives([]));
+  }, [isOpen, isRdp]);
   const isTelnet = newNode.protocol === "telnet";
   const isVnc = newNode.protocol === "vnc";
   const isSsh = !isRdp && !isTelnet && !isVnc;
@@ -827,7 +832,6 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       <FlaskConical size={13} className="shrink-0 mt-px text-amber-300" aria-hidden="true" />
                       <span>
                         {RDP_BUILTIN_EXPERIMENTAL} The desktop opens in the server's tab, sized to it; the saved password is used, or asked for there.
-                        Clipboard and file sharing work in the computer's RDP app for now.
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-3">
@@ -848,6 +852,90 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.allowNoNla ? "translate-x-5" : "translate-x-0"}`} />
                       </button>
                     </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-bold text-zinc-300">Share the clipboard</div>
+                        <div className="text-[10.5px] text-zinc-500 leading-snug">
+                          Text you copy on the server comes to this device. This device's text goes to the server only when you paste it there (a paste key in the tab, or its Paste button).
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => set({ clipboard: !o.clipboard })}
+                        role="switch"
+                        aria-label="Share the clipboard"
+                        aria-checked={o.clipboard}
+                        className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.clipboard ? "bg-primary" : "bg-white/10"}`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.clipboard ? "translate-x-5" : "translate-x-0"}`} />
+                      </button>
+                    </div>
+                    {/* Files: a folder or a whole drive of this computer (rdp_share.rs). */}
+                    {!IS_ANDROID && (
+                      <div className="space-y-2">
+                        <ChoiceRow
+                          label="Share files"
+                          hint={o.share === "off" ? "Nothing of this computer's is shared." : "The server sees it as \\\\tsclient\\<name>, and nothing else of this computer's."}
+                          value={o.share}
+                          onChange={(v) => {
+                            const share = v as RdpShareKind;
+                            // A whole drive starts read only; a folder, writable.
+                            if (share !== o.share) set({ share, sharePath: "", shareReadOnly: share === "drive" });
+                          }}
+                          choices={rdpShareChoices(IS_WINDOWS)}
+                        />
+                        {o.share === "folder" && (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              readOnly
+                              aria-label="Shared folder"
+                              value={o.sharePath}
+                              placeholder="No folder chosen"
+                              className="flex-1 min-w-0 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none shadow-inner"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => invoke<string | null>("pick_local_directory").then((p) => { if (p) set({ sharePath: p }); }, () => {})}
+                              className="shrink-0 h-9 px-3 rounded-lg bg-white/5 hover:bg-white/10 text-[12px] font-semibold text-zinc-200 border border-white/10 transition-colors"
+                            >
+                              Choose…
+                            </button>
+                          </div>
+                        )}
+                        {o.share === "drive" && (
+                          <select
+                            aria-label="Shared drive"
+                            className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
+                            value={o.sharePath}
+                            onChange={(e) => set({ sharePath: e.target.value })}
+                          >
+                            <option value="" className="bg-[#1a1a1e]">Pick a drive</option>
+                            {localDrives.map((d) => <option key={d} value={d} className="bg-[#1a1a1e]">{d}</option>)}
+                          </select>
+                        )}
+                        {o.share !== "off" && (
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-[11px] font-bold text-zinc-300">Read only</div>
+                              <div className="text-[10.5px] text-zinc-500 leading-snug">
+                                The server can open and copy the files, but not change, add or delete any.
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => set({ shareReadOnly: !o.shareReadOnly })}
+                              role="switch"
+                              aria-label="Read only"
+                              aria-checked={o.shareReadOnly}
+                              className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.shareReadOnly ? "bg-primary" : "bg-white/10"}`}
+                            >
+                              <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.shareReadOnly ? "translate-x-5" : "translate-x-0"}`} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div className="pt-1 space-y-2.5">
                       <div className="text-[11px] font-bold text-zinc-300">Speed and quality</div>
                       <ChoiceRow

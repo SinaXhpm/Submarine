@@ -2721,6 +2721,7 @@ name = "ironrdp"
 version = "0.17.0"
 source = "git+https://github.com/Devolutions/IronRDP?rev=62246b364a0282bab85087f658a81fe4207b6b31#62246b364a0282bab85087f658a81fe4207b6b31"
 dependencies = [
+ "ironrdp-cliprdr",
  "ironrdp-connector",
  "ironrdp-core",
  "ironrdp-displaycontrol",
@@ -2728,6 +2729,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
+ "ironrdp-rdpdr",
  "ironrdp-session",
  "ironrdp-svc",
 ]
@@ -2749,6 +2751,18 @@ dependencies = [
 name = "ironrdp-bulk"
 version = "0.1.1"
 source = "git+https://github.com/Devolutions/IronRDP?rev=62246b364a0282bab85087f658a81fe4207b6b31#62246b364a0282bab85087f658a81fe4207b6b31"
+
+[[package]]
+name = "ironrdp-cliprdr"
+version = "0.7.0"
+source = "git+https://github.com/Devolutions/IronRDP?rev=62246b364a0282bab85087f658a81fe4207b6b31#62246b364a0282bab85087f658a81fe4207b6b31"
+dependencies = [
+ "bitflags 2.13.2",
+ "ironrdp-core",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
 
 [[package]]
 name = "ironrdp-connector"
@@ -2866,6 +2880,33 @@ dependencies = [
  "sha1",
  "tap",
  "x509-cert",
+]
+
+[[package]]
+name = "ironrdp-rdpdr"
+version = "0.7.0"
+source = "git+https://github.com/Devolutions/IronRDP?rev=62246b364a0282bab85087f658a81fe4207b6b31#62246b364a0282bab85087f658a81fe4207b6b31"
+dependencies = [
+ "bitflags 2.13.2",
+ "getrandom 0.3.4",
+ "ironrdp-core",
+ "ironrdp-error",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpdr-native"
+version = "0.7.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-pdu",
+ "ironrdp-rdpdr",
+ "ironrdp-svc",
+ "nix",
+ "tracing",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -5858,6 +5899,7 @@ dependencies = [
  "hkdf",
  "hmac 0.13.0",
  "ironrdp",
+ "ironrdp-rdpdr-native",
  "ironrdp-tokio",
  "notify",
  "notify-debouncer-mini",

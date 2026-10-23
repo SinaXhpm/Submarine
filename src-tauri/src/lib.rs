@@ -41,6 +41,7 @@ mod known_hosts;
 mod rdp;
 mod quick_unlock;
 mod rdp_client;
+mod rdp_share;
 mod term_filter;
 mod vault_backup;
 #[cfg(target_os = "android")]
@@ -13896,6 +13897,13 @@ async fn initiate_rdp(
     Ok(())
 }
 
+/// The drives this computer has (`X:\`), for sharing one with an RDP server
+/// from the built-in client; none but on Windows.
+#[tauri::command]
+fn rdp_share_drives() -> Vec<String> {
+    rdp_share::drives()
+}
+
 /// The built-in RDP sessions (rdp_client.rs) by tab: what the page sends them.
 type RdpClients = std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, (u64, tokio::sync::mpsc::UnboundedSender<rdp_client::Cmd>)>>>;
 
@@ -13967,6 +13975,11 @@ async fn rdp_builtin_open(
     allow_no_nla: Option<bool>,
     // The tab's speed and quality choices for this server (the standard ones if none).
     graphics: Option<rdp_client::Graphics>,
+    // Share the clipboard with the server (the tab's per-server option).
+    clipboard: Option<bool>,
+    // Files shared with the server: a folder or a drive (the tab's per-server
+    // option, off unless the user turned it on for the server).
+    share: Option<rdp_share::Share>,
     frames: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
 ) -> Result<(), String> {
     use std::sync::Arc;
@@ -14245,8 +14258,31 @@ async fn rdp_builtin_open(
             }
         };
 
+        // Files shared with the server; one that isn't there is said and left out.
+        let drive = share.and_then(|share| match rdp_share::channel(&share) {
+            Ok(channel) => {
+                let how = if share.read_only { ", read only" } else { "" };
+                log(&format!("Sharing {} with the server{how}.", share.path.trim()), "info");
+                Some(channel)
+            }
+            Err(e) => {
+                log(&format!("Files aren't shared: {e}."), "error");
+                None
+            }
+        });
         let (login_user, domain) = rdp_client::split_domain(&user);
-        let login = rdp_client::Login { host: host.clone(), username: login_user, domain, password, width, height, allow_no_nla: allow_no_nla.unwrap_or(false), graphics };
+        let login = rdp_client::Login {
+            host: host.clone(),
+            username: login_user,
+            domain,
+            password,
+            width,
+            height,
+            allow_no_nla: allow_no_nla.unwrap_or(false),
+            graphics,
+            clipboard: clipboard.unwrap_or(false),
+            drive,
+        };
         let connected = {
             let (app, attempt, sid, target) = (app.clone(), attempt.clone(), session_id.clone(), target.clone());
             move |w: u16, h: u16| {
@@ -14276,7 +14312,16 @@ async fn rdp_builtin_open(
                 }
             }
         };
-        let run = tauri::async_runtime::spawn(rdp_client::run(stream, client_addr, login, verify, connected, notice, frame, flow, rx));
+        // What the user copied on the server, for the tab to put on this computer's clipboard.
+        let remote_copy = {
+            let (app, attempt, sid) = (app.clone(), attempt.clone(), session_id.clone());
+            move |text: String| {
+                if attempt.is_current_now() {
+                    let _ = app.emit(&format!("rdp-clipboard-{sid}"), serde_json::json!({"text": text}));
+                }
+            }
+        };
+        let run = tauri::async_runtime::spawn(rdp_client::run(stream, client_addr, login, verify, connected, notice, frame, remote_copy, flow, rx));
         let outcome = match run.await {
             Ok(r) => r,
             Err(_) => Err("The RDP session stopped on bad data from the server".into()),
@@ -14318,6 +14363,20 @@ async fn rdp_builtin_input(rdp_clients: tauri::State<'_, RdpClients>, session_id
     }
     if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
         let _ = tx.send(rdp_client::Cmd::Input(events));
+    }
+    Ok(())
+}
+
+/// Text from this computer's clipboard for the server's (the tab read it when
+/// the user pasted, or pressed its button), and the paste key it held back.
+#[tauri::command]
+async fn rdp_builtin_paste(rdp_clients: tauri::State<'_, RdpClients>, session_id: String, text: String, keys: rdp_client::PasteKeys) -> Result<(), String> {
+    let text = zeroize::Zeroizing::new(text);
+    if text.chars().count() > 1_000_000 {
+        return Err("The clipboard holds too much text to send (the most is 1,000,000 characters).".into());
+    }
+    if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
+        let _ = tx.send(rdp_client::Cmd::Paste(text, keys));
     }
     Ok(())
 }
@@ -21245,7 +21304,7 @@ pub fn run() {
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, disconnect_session, set_use_ssh_config,
-            initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_resize, rdp_builtin_close,
+            initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_resize, rdp_builtin_close, rdp_share_drives,
             telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,

@@ -19,9 +19,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD as B64, Engine as _};
+use ironrdp::cliprdr::backend::CliprdrBackend;
+use ironrdp::cliprdr::pdu::{
+    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest,
+    FormatDataResponse, LockDataId,
+};
+use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{self, BitmapConfig, ClientConnector, ClientConnectorState, Credentials, DesktopSize};
-use ironrdp::core::WriteBuf;
+use ironrdp::core::{IntoOwned as _, WriteBuf};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
@@ -70,7 +76,192 @@ fn desktop_fits(width: u16, height: u16) -> Result<(), String> {
 pub enum Cmd {
     Input(Vec<InputEvent>),
     Resize(u16, u16),
+    /// Text from this computer's clipboard for the server's, then (when the
+    /// user pressed a paste key in the tab) that key, once the server has it.
+    Paste(Zeroizing<String>, PasteKeys),
     Close,
+}
+
+/// The paste key the page held back while the text went to the server's
+/// clipboard; the server is sent it once the text is there (see `paste_keys`).
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PasteKeys {
+    /// Only put the text on the server's clipboard (the tab's button).
+    None,
+    /// Ctrl+V.
+    Ctrlv,
+    /// Shift+Insert.
+    Shiftinsert,
+    /// Cmd+V on a Mac, which is Win+V to the server: the Windows key is let
+    /// go and Ctrl+V sent instead.
+    Cmdv,
+}
+
+/// How long a held-back paste key waits for the server to take the text.
+const PASTE_WAIT: Duration = Duration::from_millis(1500);
+/// How often what the shared files' backend finished later is sent on.
+const DRIVE_POLL: Duration = Duration::from_millis(100);
+/// The most characters a copy on the server brings to this computer.
+const MAX_CLIP_CHARS: usize = 1_000_000;
+
+/// The keys that do the paste on the server, as operations on the session's
+/// keyboard (`Database`): the modifier with them, so a modifier the user
+/// already let go of doesn't turn the paste into typing.
+fn paste_keys(keys: PasteKeys) -> Vec<Operation> {
+    let sc = |extended, code| Scancode::from_u8(extended, code);
+    let (ctrl, shift, v, insert) = (sc(false, 0x1d), sc(false, 0x2a), sc(false, 0x2f), sc(true, 0x52));
+    let press = |modifier, key| vec![Operation::KeyPressed(modifier), Operation::KeyPressed(key), Operation::KeyReleased(key), Operation::KeyReleased(modifier)];
+    match keys {
+        PasteKeys::None => Vec::new(),
+        PasteKeys::Ctrlv => press(ctrl, v),
+        PasteKeys::Shiftinsert => press(shift, insert),
+        PasteKeys::Cmdv => {
+            let mut ops = vec![Operation::KeyReleased(sc(true, 0x5b)), Operation::KeyReleased(sc(true, 0x5c))];
+            ops.extend(press(ctrl, v));
+            ops
+        }
+    }
+}
+
+/// What the clipboard channel tells the session loop (`ClipBridge`).
+#[derive(Debug)]
+enum ClipEvent {
+    /// The channel is up: this side says what it has to offer (nothing, until the user pastes).
+    FormatListWanted,
+    /// The server answered what this side offered.
+    Offered(bool),
+    /// The user copied something on the server; whether it has text.
+    RemoteCopy(Option<ClipboardFormatId>),
+    /// The server wants this side's text, in this format.
+    Wanted(ClipboardFormatId),
+    /// The text the server copied, as asked for (none: it was gone).
+    RemoteText(Option<Vec<u8>>),
+}
+
+/// The clipboard channel's backend: it passes what the server does on to the
+/// session loop, which answers through the channel. Text only: no file list
+/// is ever offered, so the server never asks for file contents.
+#[derive(Debug)]
+struct ClipBridge(mpsc::UnboundedSender<ClipEvent>);
+
+ironrdp::core::impl_as_any!(ClipBridge);
+
+impl CliprdrBackend for ClipBridge {
+    fn temporary_directory(&self) -> &str {
+        ""
+    }
+
+    fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
+        ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES
+    }
+
+    fn on_ready(&mut self) {}
+
+    fn on_request_format_list(&mut self) {
+        let _ = self.0.send(ClipEvent::FormatListWanted);
+    }
+
+    fn on_format_list_response(&mut self, ok: bool) {
+        let _ = self.0.send(ClipEvent::Offered(ok));
+    }
+
+    fn on_process_negotiated_capabilities(&mut self, _capabilities: ClipboardGeneralCapabilityFlags) {}
+
+    fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]) {
+        let _ = self.0.send(ClipEvent::RemoteCopy(text_format(available_formats)));
+    }
+
+    fn on_format_data_request(&mut self, request: FormatDataRequest) {
+        let _ = self.0.send(ClipEvent::Wanted(request.format));
+    }
+
+    fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
+        let data = (!response.is_error()).then(|| response.data().to_vec());
+        let _ = self.0.send(ClipEvent::RemoteText(data));
+    }
+
+    fn on_file_contents_request(&mut self, _request: FileContentsRequest) {}
+
+    fn on_file_contents_response(&mut self, _response: FileContentsResponse<'_>) {}
+
+    fn on_lock(&mut self, _data_id: LockDataId) {}
+
+    fn on_unlock(&mut self, _data_id: LockDataId) {}
+}
+
+/// The text format to ask for from what the server offers: Unicode, else ANSI.
+fn text_format(formats: &[ClipboardFormat]) -> Option<ClipboardFormatId> {
+    [ClipboardFormatId::CF_UNICODETEXT, ClipboardFormatId::CF_TEXT]
+        .into_iter()
+        .find(|id| formats.iter().any(|f| f.id == *id))
+}
+
+/// The server's text in `format`, up to its first NUL; none when it is too
+/// long to bring over.
+fn decode_clip_text(format: ClipboardFormatId, data: &[u8]) -> Result<String, String> {
+    let text = if format == ClipboardFormatId::CF_UNICODETEXT {
+        let units: Vec<u16> = data.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|u| *u != 0).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        let end = data.iter().position(|b| *b == 0).unwrap_or(data.len());
+        String::from_utf8_lossy(&data[..end]).into_owned()
+    };
+    let n = text.chars().count();
+    if n > MAX_CLIP_CHARS {
+        return Err(format!("The server's copy is too long to bring over ({n} characters; the most is {MAX_CLIP_CHARS})."));
+    }
+    Ok(text)
+}
+
+/// A clipboard step's frames, ready to send; a failure ends nothing but the
+/// step (the session goes on without it).
+fn clip_step(
+    stage: &mut ActiveStage,
+    step: impl FnOnce(&mut CliprdrClient) -> ironrdp::pdu::PduResult<ironrdp::cliprdr::CliprdrSvcMessages<ironrdp::cliprdr::Client>>,
+) -> Result<Vec<ActiveStageOutput>, String> {
+    let Some(channel) = stage.get_svc_processor_mut::<CliprdrClient>() else {
+        return Ok(Vec::new());
+    };
+    let messages = step(channel).map_err(|e| format!("The shared clipboard: {e}"))?;
+    let frame = stage.process_svc_processor_messages(messages).map_err(|e| format!("The shared clipboard: {e}"))?;
+    Ok(if frame.is_empty() { Vec::new() } else { vec![ActiveStageOutput::ResponseFrame(frame)] })
+}
+
+/// What the shared files' backend finished since the last look, ready to send.
+fn drive_deferred(stage: &mut ActiveStage) -> Result<Vec<ActiveStageOutput>, String> {
+    let Some(channel) = stage.get_svc_processor_mut::<ironrdp::rdpdr::Rdpdr>() else {
+        return Ok(Vec::new());
+    };
+    let messages = channel.poll_deferred_messages().map_err(|e| format!("The shared files: {e}"))?;
+    if messages.is_empty() {
+        return Ok(Vec::new());
+    }
+    let frame = stage
+        .process_svc_messages_by_name(&ironrdp::rdpdr::Rdpdr::NAME, messages)
+        .map_err(|e| format!("The shared files: {e}"))?;
+    Ok(vec![ActiveStageOutput::ResponseFrame(frame)])
+}
+
+/// Tells the server what this side's clipboard has: text, or nothing.
+fn offer_text(stage: &mut ActiveStage, has_text: bool) -> Result<Vec<ActiveStageOutput>, String> {
+    let formats: &[ClipboardFormat] = if has_text { &[ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)] } else { &[] };
+    clip_step(stage, |c| c.initiate_copy(formats))
+}
+
+/// The clipboard channel's next event; never, without the channel.
+async fn next_clip_event(events: &mut Option<mpsc::UnboundedReceiver<ClipEvent>>) -> Option<ClipEvent> {
+    match events {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn sleep_until_due(due: Option<tokio::time::Instant>) {
+    match due {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Mouse and keyboard from the page (TerminalView's RDP sibling, RdpCanvas).
@@ -238,6 +429,10 @@ pub struct Login {
     /// This server may be logged in to without NLA (see `nla_gate`).
     pub allow_no_nla: bool,
     pub graphics: Graphics,
+    /// Share the clipboard with the server (text, both ways).
+    pub clipboard: bool,
+    /// Files shared with the server: their channel (rdp_share.rs).
+    pub drive: Option<ironrdp::rdpdr::Rdpdr>,
 }
 
 /// "DOMAIN\user" or "user@domain" as the login name and domain NLA wants.
@@ -483,16 +678,18 @@ fn operations(events: Vec<InputEvent>) -> Vec<Operation> {
 /// `verify_cert` gets the server's certificate (DER) before any password is
 /// sent and says whether to go on. `connected` runs once the desktop is
 /// there; `frame` sends one frame to the page and says whether the page is
-/// still listening. Returns why the session ended.
+/// still listening; `remote_copy` gets the text the user copied on the server
+/// (with the clipboard shared). Returns why the session ended.
 #[allow(clippy::too_many_arguments)]
 pub async fn run<S, V, VF>(
     stream: S,
     client_addr: SocketAddr,
-    login: Login,
+    mut login: Login,
     verify_cert: V,
     connected: impl FnOnce(u16, u16),
     notice: impl Fn(&str),
     frame: impl Fn(Vec<u8>) -> bool,
+    remote_copy: impl Fn(String),
     flow: Arc<crate::screen_flow::Flow>,
     mut cmds: mpsc::UnboundedReceiver<Cmd>,
 ) -> Result<String, String>
@@ -505,6 +702,18 @@ where
     let mut framed = TokioFramed::new(stream);
     let drdynvc = DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
     let mut connector = ClientConnector::new(connector_config(&login), client_addr).with_static_channel(drdynvc);
+    // The shared clipboard is a channel of its own, only there when it's wanted.
+    let mut clip_events = None;
+    if login.clipboard {
+        let (tx, rx) = mpsc::unbounded_channel();
+        connector = connector.with_static_channel(CliprdrClient::new(Box::new(ClipBridge(tx))));
+        clip_events = Some(rx);
+    }
+    // Files shared with the server: a channel of its own too.
+    let sharing = login.drive.is_some();
+    if let Some(rdpdr) = login.drive.take() {
+        connector = connector.with_static_channel(rdpdr);
+    }
     let allow_no_nla = login.allow_no_nla;
     drop(login);
 
@@ -603,9 +812,77 @@ where
     let mut dirty: Vec<InclusiveRectangle> = Vec::new();
     let mut tick = tokio::time::interval(FRAME_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut drive_tick = tokio::time::interval(DRIVE_POLL);
+    drive_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The shared clipboard: this side's text (offered to the server only once
+    // the user pastes it there), the format the server's copy was asked for in,
+    // and a paste key held back until the server has the text.
+    let mut local_text: Option<Zeroizing<String>> = None;
+    let mut asked_format = ClipboardFormatId::CF_UNICODETEXT;
+    let mut held_paste: Option<(PasteKeys, tokio::time::Instant)> = None;
 
     loop {
+        let paste_due = held_paste.map(|(_, at)| at);
         let outputs = tokio::select! {
+            Some(event) = next_clip_event(&mut clip_events) => match event {
+                ClipEvent::FormatListWanted => offer_text(&mut stage, local_text.is_some()).unwrap_or_else(|e| {
+                    notice(&e);
+                    Vec::new()
+                }),
+                // The server has the text: the held-back paste key goes now.
+                // Refused, it would paste what the server had before: it doesn't.
+                ClipEvent::Offered(taken) => match held_paste.take() {
+                    Some((keys, _)) if taken => {
+                        let fast = db.apply(paste_keys(keys)).into_vec();
+                        stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
+                    }
+                    Some(_) => {
+                        notice("The server didn't take this device's text, so nothing was pasted.");
+                        Vec::new()
+                    }
+                    None => Vec::new(),
+                },
+                ClipEvent::RemoteCopy(Some(format)) => {
+                    asked_format = format;
+                    clip_step(&mut stage, |c| c.initiate_paste(format)).unwrap_or_else(|e| {
+                        notice(&e);
+                        Vec::new()
+                    })
+                }
+                ClipEvent::RemoteCopy(None) | ClipEvent::RemoteText(None) => Vec::new(),
+                ClipEvent::Wanted(format) => {
+                    let response = match local_text.as_deref() {
+                        Some(text) if format == ClipboardFormatId::CF_UNICODETEXT => FormatDataResponse::new_unicode_string(text),
+                        Some(text) if format == ClipboardFormatId::CF_TEXT => FormatDataResponse::new_string(text),
+                        _ => FormatDataResponse::new_error(),
+                    }
+                    .into_owned();
+                    clip_step(&mut stage, |c| c.submit_format_data(response)).unwrap_or_else(|e| {
+                        notice(&e);
+                        Vec::new()
+                    })
+                }
+                ClipEvent::RemoteText(Some(data)) => {
+                    match decode_clip_text(asked_format, &data) {
+                        Ok(text) if !text.is_empty() => remote_copy(text),
+                        Ok(_) => {}
+                        Err(e) => notice(&e),
+                    }
+                    Vec::new()
+                }
+            },
+            // What the shared files' backend finished later: a lock granted,
+            // a change in a folder the server watches.
+            _ = drive_tick.tick(), if sharing => drive_deferred(&mut stage).unwrap_or_else(|e| {
+                notice(&e);
+                Vec::new()
+            }),
+            // The server didn't say it has the text in time: the key goes anyway.
+            _ = sleep_until_due(paste_due), if paste_due.is_some() => {
+                let keys = held_paste.take().map_or(PasteKeys::None, |(keys, _)| keys);
+                let fast = db.apply(paste_keys(keys)).into_vec();
+                stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
+            }
             pdu = reader.read_pdu() => {
                 let (action, payload) = pdu.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
                 stage.process(&mut image, action, &payload).map_err(|e| format!("RDP: {e}"))?
@@ -637,6 +914,16 @@ where
                     }
                     fast.extend(db.apply(operations(part)).into_vec());
                     stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
+                }
+                Some(Cmd::Paste(text, keys)) => {
+                    local_text = Some(text);
+                    if keys != PasteKeys::None {
+                        held_paste = Some((keys, tokio::time::Instant::now() + PASTE_WAIT));
+                    }
+                    offer_text(&mut stage, true).unwrap_or_else(|e| {
+                        notice(&e);
+                        Vec::new()
+                    })
                 }
                 Some(Cmd::Resize(w, h)) => {
                     let (w, h) = clamp_size(w, h);
@@ -780,7 +1067,90 @@ mod tests {
             height: 720,
             allow_no_nla: false,
             graphics,
+            clipboard: false,
+            drive: None,
         }
+    }
+
+    #[test]
+    fn a_paste_key_brings_its_modifier_and_cmd_v_becomes_ctrl_v() {
+        let codes = |keys| {
+            paste_keys(keys)
+                .into_iter()
+                .map(|op| match op {
+                    Operation::KeyPressed(s) => (true, s.as_u8()),
+                    Operation::KeyReleased(s) => (false, s.as_u8()),
+                    _ => panic!("only keys"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(codes(PasteKeys::None).is_empty());
+        // Ctrl down, V down, V up, Ctrl up.
+        assert_eq!(codes(PasteKeys::Ctrlv), [(true, (false, 0x1d)), (true, (false, 0x2f)), (false, (false, 0x2f)), (false, (false, 0x1d))]);
+        assert_eq!(codes(PasteKeys::Shiftinsert), [(true, (false, 0x2a)), (true, (true, 0x52)), (false, (true, 0x52)), (false, (false, 0x2a))]);
+        // A Mac's Cmd is the server's Windows key: both are let go first.
+        let mac = codes(PasteKeys::Cmdv);
+        assert_eq!(&mac[..2], &[(false, (true, 0x5b)), (false, (true, 0x5c))]);
+        assert_eq!(&mac[2..], codes(PasteKeys::Ctrlv).as_slice());
+        // What the page sends.
+        for (word, keys) in [("none", PasteKeys::None), ("ctrlv", PasteKeys::Ctrlv), ("shiftinsert", PasteKeys::Shiftinsert), ("cmdv", PasteKeys::Cmdv)] {
+            assert_eq!(serde_json::from_str::<PasteKeys>(&format!("\"{word}\"")).unwrap(), keys);
+        }
+        let ts = include_str!("../../src/util/rdpClipboard.ts");
+        for word in ["\"ctrlv\"", "\"shiftinsert\"", "\"cmdv\"", "\"none\""] {
+            assert!(ts.contains(word), "src/util/rdpClipboard.ts must name {word}, as rdp_client::PasteKeys does");
+        }
+    }
+
+    #[test]
+    fn the_text_of_a_copy_on_the_server() {
+        let unicode = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+        // UTF-16, up to the NUL the server ends it with.
+        let mut data = unicode("héllo ✓ 世界");
+        data.extend([0, 0, b'x', 0]);
+        assert_eq!(decode_clip_text(ClipboardFormatId::CF_UNICODETEXT, &data).unwrap(), "héllo ✓ 世界");
+        // An odd byte at the end is left out, not a panic.
+        let mut odd = unicode("ab");
+        odd.push(0x41);
+        assert_eq!(decode_clip_text(ClipboardFormatId::CF_UNICODETEXT, &odd).unwrap(), "ab");
+        assert_eq!(decode_clip_text(ClipboardFormatId::CF_TEXT, b"plain\0rest").unwrap(), "plain");
+        assert_eq!(decode_clip_text(ClipboardFormatId::CF_TEXT, b"").unwrap(), "");
+        // Too long to bring over: said so, not copied.
+        let long = unicode(&"x".repeat(MAX_CLIP_CHARS + 1));
+        assert!(decode_clip_text(ClipboardFormatId::CF_UNICODETEXT, &long).unwrap_err().contains("too long"));
+        assert!(decode_clip_text(ClipboardFormatId::CF_UNICODETEXT, &unicode(&"x".repeat(MAX_CLIP_CHARS))).is_ok());
+    }
+
+    #[test]
+    fn what_the_server_does_on_its_clipboard_reaches_the_session_loop() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut bridge = ClipBridge(tx);
+        // A copy with Unicode text is asked for as Unicode; ANSI only as ANSI; no text: nothing to ask for.
+        let f = |id| ClipboardFormat::new(id);
+        bridge.on_remote_copy(&[f(ClipboardFormatId::new(49_161)), f(ClipboardFormatId::CF_TEXT), f(ClipboardFormatId::CF_UNICODETEXT)]);
+        bridge.on_remote_copy(&[f(ClipboardFormatId::CF_TEXT)]);
+        bridge.on_remote_copy(&[f(ClipboardFormatId::new(8))]);
+        bridge.on_request_format_list();
+        bridge.on_format_list_response(true);
+        bridge.on_format_data_request(FormatDataRequest { format: ClipboardFormatId::CF_UNICODETEXT });
+        bridge.on_format_data_response(FormatDataResponse::new_unicode_string("hi"));
+        bridge.on_format_data_response(FormatDataResponse::new_error());
+        let mut got = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            got.push(format!("{e:?}"));
+        }
+        assert_eq!(got.len(), 8, "{got:?}");
+        assert!(got[0].contains("RemoteCopy(Some") && got[0].contains("13"), "{}", got[0]);
+        assert!(got[1].contains("RemoteCopy(Some") && got[1].contains("(1)"), "{}", got[1]);
+        assert_eq!(got[2], "RemoteCopy(None)");
+        assert_eq!(got[3], "FormatListWanted");
+        assert_eq!(got[4], "Offered(true)");
+        assert!(got[5].starts_with("Wanted("), "{}", got[5]);
+        assert!(got[6].starts_with("RemoteText(Some("), "{}", got[6]);
+        assert_eq!(got[7], "RemoteText(None)");
+        // Files are never offered, so this side never stores any.
+        assert_eq!(bridge.temporary_directory(), "");
+        assert!(!bridge.client_capabilities().contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED));
     }
 
     // A server nobody changed the speed and quality of must be asked exactly
