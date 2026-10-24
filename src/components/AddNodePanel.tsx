@@ -6,45 +6,15 @@ import PasswordField from "./PasswordField";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { folderTree } from "../util/folderTree";
-import {
-  DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_COLOR_CHOICES, RDP_EFFECT_CHOICES, RDP_NETWORK_CHOICES, RDP_WINDOW_SIZES, rdpShareChoices,
-  type RdpColors, type RdpEffects, type RdpNetwork, type RdpOptions, type RdpShareKind,
-} from "../util/rdpOptions";
+import { DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_WINDOW_SIZES, type RdpOptions } from "../util/rdpOptions";
+import { ChoiceRow } from "./FormRows";
+import { RdpShareFields, RdpSpeedFields } from "./RdpOptionFields";
 import {
   DEFAULT_VNC_OPTIONS, VNC_COLOR_CHOICES, VNC_ENCODING_CHOICES, VNC_FPS_CHOICES, normalizeVncOptions,
   type VncColors, type VncEncoding, type VncMaxFps, type VncOptions,
 } from "../util/vncOptions";
 import { IS_ANDROID, IS_WINDOWS } from "../util/platform";
 import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
-
-// One choice of a server's speed and quality: its label and select, and under
-// them what it does.
-function ChoiceRow({ label, hint, value, onChange, choices }: {
-  label: string;
-  hint?: string;
-  value: string | number;
-  onChange: (value: string) => void;
-  choices: { value: string | number; label: string; disabled?: boolean }[];
-}) {
-  return (
-    <div className="space-y-1">
-      <div className="flex justify-between items-center gap-3">
-        <label className="text-[11px] font-bold text-zinc-400 shrink-0">{label}</label>
-        <select
-          aria-label={label}
-          className="flex-1 min-w-0 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-        >
-          {choices.map((c) => (
-            <option key={c.value} value={c.value} disabled={c.disabled} className="bg-[#1a1a1e]">{c.label}</option>
-          ))}
-        </select>
-      </div>
-      {hint && <p className="text-[10.5px] text-zinc-500 leading-snug ml-1">{hint}</p>}
-    </div>
-  );
-}
 
 // Compact "2h ago" style relative time for the attribution line.
 function relTime(d: Date): string {
@@ -883,112 +853,10 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       </button>
                     </div>
                     {/* Files: a folder or a whole drive of this computer (rdp_share.rs). */}
-                    {!IS_ANDROID && (
-                      <div className="space-y-2">
-                        <ChoiceRow
-                          label="Share files"
-                          hint={o.share === "off" ? "Nothing of this computer's is shared." : "The server sees it as \\\\tsclient\\<name>, and nothing else of this computer's."}
-                          value={o.share}
-                          onChange={(v) => {
-                            const share = v as RdpShareKind;
-                            // A whole drive starts read only; a folder, writable.
-                            if (share !== o.share) set({ share, sharePath: "", shareReadOnly: share === "drive" });
-                          }}
-                          choices={rdpShareChoices(IS_WINDOWS)}
-                        />
-                        {o.share === "folder" && (
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="text"
-                              readOnly
-                              aria-label="Shared folder"
-                              value={o.sharePath}
-                              placeholder="No folder chosen"
-                              className="flex-1 min-w-0 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none shadow-inner"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => invoke<string | null>("pick_local_directory").then((p) => { if (p) set({ sharePath: p }); }, () => {})}
-                              className="shrink-0 h-9 px-3 rounded-lg bg-white/5 hover:bg-white/10 text-[12px] font-semibold text-zinc-200 border border-white/10 transition-colors"
-                            >
-                              Choose…
-                            </button>
-                          </div>
-                        )}
-                        {o.share === "drive" && (
-                          <select
-                            aria-label="Shared drive"
-                            className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
-                            value={o.sharePath}
-                            onChange={(e) => set({ sharePath: e.target.value })}
-                          >
-                            <option value="" className="bg-[#1a1a1e]">Pick a drive</option>
-                            {localDrives.map((d) => <option key={d} value={d} className="bg-[#1a1a1e]">{d}</option>)}
-                          </select>
-                        )}
-                        {o.share !== "off" && (
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-[11px] font-bold text-zinc-300">Read only</div>
-                              <div className="text-[10.5px] text-zinc-500 leading-snug">
-                                The server can open and copy the files, but not change, add or delete any.
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => set({ shareReadOnly: !o.shareReadOnly })}
-                              role="switch"
-                              aria-label="Read only"
-                              aria-checked={o.shareReadOnly}
-                              className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.shareReadOnly ? "bg-primary" : "bg-white/10"}`}
-                            >
-                              <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.shareReadOnly ? "translate-x-5" : "translate-x-0"}`} />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    {!IS_ANDROID && <RdpShareFields o={o} set={set} drives={localDrives} />}
                     <div className="pt-1 space-y-2.5">
                       <div className="text-[11px] font-bold text-zinc-300">Speed and quality</div>
-                      <ChoiceRow
-                        label="Colours"
-                        hint="Fewer bits is less to send; smooth gradients may show bands."
-                        value={o.colors}
-                        onChange={(v) => set({ colors: Number(v) as RdpColors })}
-                        choices={RDP_COLOR_CHOICES}
-                      />
-                      <ChoiceRow
-                        label="Desktop effects"
-                        hint="Windows servers only. Minimal leaves out the wallpaper, visual styles and animations, for a faster picture on a slow link; Full turns them all on."
-                        value={o.effects}
-                        onChange={(v) => set({ effects: v as RdpEffects })}
-                        choices={RDP_EFFECT_CHOICES}
-                      />
-                      <ChoiceRow
-                        label="Network"
-                        hint="Tells the server how fast the link is. On a slower setting it may send less detail."
-                        value={o.network}
-                        onChange={(v) => set({ network: v as RdpNetwork })}
-                        choices={RDP_NETWORK_CHOICES}
-                      />
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-[11px] font-bold text-zinc-300">Offer RemoteFX</div>
-                          <div className="text-[10.5px] text-zinc-500 leading-snug">
-                            A picture codec of Windows servers. Used only if the server has it; if the picture looks wrong, turn it off.
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => set({ remoteFx: !o.remoteFx })}
-                          role="switch"
-                          aria-label="Offer RemoteFX"
-                          aria-checked={!!o.remoteFx}
-                          className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.remoteFx ? "bg-primary" : "bg-white/10"}`}
-                        >
-                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-zinc-100 rounded-full shadow transition-transform ${o.remoteFx ? "translate-x-5" : "translate-x-0"}`} />
-                        </button>
-                      </div>
+                      <RdpSpeedFields o={o} set={set} />
                     </div>
                   </>) : (<>
                   <div className="flex justify-between items-center gap-3">

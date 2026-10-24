@@ -30,6 +30,13 @@ export interface RdpOptions {
   network: RdpNetwork;
   /** Offer RemoteFX; it is used only if the server has it. */
   remoteFx: boolean;
+  /** The desktop's size as a part of the tab's: fewer pixels to send, drawn
+   *  larger and softer. The tab asks the server for it (RemoteScreen), at
+   *  once while connected. */
+  resolution: RdpResolution;
+  /** Ask the server to stop sending the picture while the tab is hidden (a
+   *  few seconds on), and to send all of it when the tab is back. */
+  pauseHidden: boolean;
   /** Files the built-in client shares with the server: nothing, one folder,
    *  or a whole drive (`sharePath`: the folder, or the drive's `D:\`), read
    *  only or not. Kept equal to `rdp_share::Share`. */
@@ -43,13 +50,14 @@ export type RdpShareKind = "off" | "folder" | "drive";
 export type RdpColors = 32 | 24 | 16;
 export type RdpEffects = "standard" | "minimal" | "full";
 export type RdpNetwork = "lan" | "broadband" | "slow";
+export type RdpResolution = 1 | 0.75 | 0.5;
 
 export const RDP_OPTIONS_KEY = "submarine-rdp-options";
 
 // What Remote Desktop Connection does on its own, files kept private.
 export const DEFAULT_RDP_OPTIONS: RdpOptions = {
   app: "system", fullScreen: true, width: 1600, height: 900, clipboard: true, drives: false, allowNoNla: false,
-  colors: 32, effects: "standard", network: "lan", remoteFx: false,
+  colors: 32, effects: "standard", network: "lan", remoteFx: false, resolution: 1, pauseHidden: true,
   share: "off", sharePath: "", shareReadOnly: false,
 };
 
@@ -86,9 +94,40 @@ export const RDP_NETWORK_CHOICES: { value: RdpNetwork; label: string }[] = [
   { value: "slow", label: "Slow (mobile, or far away)" },
 ];
 
+export const RDP_RESOLUTION_CHOICES: { value: RdpResolution; label: string }[] = [
+  { value: 1, label: "Full (sharpest)" },
+  { value: 0.75, label: "Three quarters" },
+  { value: 0.5, label: "Half (least to send)" },
+];
+
 /** What the built-in client is told about the picture: only the speed and quality. */
 export function rdpGraphics(o: RdpOptions): Pick<RdpOptions, "colors" | "effects" | "network" | "remoteFx"> {
   return { colors: o.colors, effects: o.effects, network: o.network, remoteFx: o.remoteFx };
+}
+
+/** Whether a session opened with `used` needs to connect again for `now`:
+ *  what the server is told when the session starts (the resolution and the
+ *  pause go to a running session at once). */
+export function rdpNeedsReconnect(used: RdpOptions, now: RdpOptions): boolean {
+  const g = (o: RdpOptions) => JSON.stringify([rdpGraphics(o), o.clipboard, rdpShare(o)]);
+  return g(used) !== g(now);
+}
+
+/** Speed and quality in one go: the choices each one sets (RemoteFX and the
+ *  pause are left as they are: one depends on the server, the other costs
+ *  nothing). "Balanced" is the standard. */
+export type RdpPreset = "best" | "balanced" | "light";
+type PresetChoices = Pick<RdpOptions, "colors" | "effects" | "network" | "resolution">;
+export const RDP_PRESETS: { value: RdpPreset; label: string; set: PresetChoices }[] = [
+  { value: "best", label: "Best picture", set: { colors: 32, effects: "full", network: "lan", resolution: 1 } },
+  { value: "balanced", label: "Balanced", set: { colors: 32, effects: "standard", network: "lan", resolution: 1 } },
+  { value: "light", label: "Less data", set: { colors: 16, effects: "minimal", network: "slow", resolution: 0.75 } },
+];
+
+/** The preset the choices are, if they are one. */
+export function rdpPresetOf(o: RdpOptions): RdpPreset | null {
+  const keys = Object.keys(RDP_PRESETS[0].set) as (keyof PresetChoices)[];
+  return RDP_PRESETS.find((p) => keys.every((k) => p.set[k] === o[k]))?.value ?? null;
 }
 
 /** How the built-in client's refusal of a server without NLA starts: the tab
@@ -134,6 +173,8 @@ export function readRdpOptions(uuid?: string | null): RdpOptions {
     if (RDP_EFFECT_CHOICES.some((c) => c.value === kept.effects)) o.effects = kept.effects as RdpEffects;
     if (RDP_NETWORK_CHOICES.some((c) => c.value === kept.network)) o.network = kept.network as RdpNetwork;
     if (typeof kept.remoteFx === "boolean") o.remoteFx = kept.remoteFx;
+    if (RDP_RESOLUTION_CHOICES.some((c) => c.value === kept.resolution)) o.resolution = kept.resolution as RdpResolution;
+    if (typeof kept.pauseHidden === "boolean") o.pauseHidden = kept.pauseHidden;
     if (kept.share === "off" || kept.share === "folder" || kept.share === "drive") o.share = kept.share;
     if (typeof kept.sharePath === "string") o.sharePath = kept.sharePath;
     if (typeof kept.shareReadOnly === "boolean") o.shareReadOnly = kept.shareReadOnly;
