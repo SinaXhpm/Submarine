@@ -1,28 +1,46 @@
 # Screenshots for the project README
 
-Drop PNG files here with the filenames listed below — the README's
-`Screenshots` table picks them up automatically. No code changes needed.
+The README's gallery uses the files below. Replace a file in place and the
+README picks it up; no code changes needed.
 
-Recommended size: **~1600 px wide**, PNG, dark background, no taskbar.
-Smaller is fine; GitHub will scale. Cropped tight (no OS window chrome
-unless it shows the tab strip) usually looks best.
-
-## Required filenames
-
-| File | Shot |
+| File | What it shows |
 |---|---|
-| `hero.png` | Full-app hero. Open node grid in the background with one server connected showing the terminal + SFTP tabs visible. This is the very first image at the top of the README — pick the prettiest one. |
-| `nodes.png` | The node grid: several saved servers organised into colour-coded folders. |
-| `terminal.png` | A live terminal session — preferably with colour output (e.g. `htop`, `ls --color`, or `neofetch`) so xterm.js features are visible. |
-| `sftp.png` | Dual-pane SFTP browser with a few files multi-selected (highlighted). Local on top, remote on bottom. |
-| `tunnels.png` | Port-forwarding panel with at least one local, one remote, and one dynamic/SOCKS tunnel listed. |
-| `mirror.png` | Folder-mirror panel showing the local ↔ remote pair, the conflict-resolution dropdown, and the watcher running. |
-| `notes.png` | Notes tab on the edit-node panel filled with a couple of paragraphs, OR the quick-commands list. |
-| `sync.png` | Cloud-sync screen showing "Connected to api.sinaxhpm.com" and the synced-profile count, OR the profile-select page with multiple machines. |
-| `android.png` | Phone screenshot: terminal tab open, or the node grid on mobile layout. Crop to phone aspect ratio. |
+| `hero.png` | A server session with the terminal on the left and the dual-pane SFTP browser on the right. The first image in the README. |
+| `compare.png` | SFTP compare view: the local and remote folder, files marked only here / other size / newer / older. |
+| `vnc.png` | A VNC desktop in its tab, with the "not encrypted" label. |
+| `rdp.png` | An RDP desktop in its tab (the experimental built-in client), with the "Experimental" label. |
+| `wall.png` | The Wall: three terminals from different servers side by side (cropped to the tiles). |
+| `monitor.png` | Monitoring: CPU, memory, disk and load graphs for three nodes (cropped). |
+| `servers-home-lab.png` | A folder of servers with colour tags and RDP / VNC / Telnet badges (cropped). |
+| `servers.png` | The server list at its top level (cropped). |
+| `ports.png` | Port forwarding panel: a local forward, a SOCKS5 proxy, a remote forward (panel only). |
+| `mirror.png` | Folder Mirror panel with one saved mirror (panel only). |
+| `library-panel.png` | The per-server command library in a session (panel only). |
+| `library.png` | The Library page: saved commands. |
+| `logins.png` | Saved passwords and SSH keys. |
+| `add-server.png` | The server form: type, folder, tag colour, host, login (panel only). |
+| `profiles.png` | The profile picker (cropped to the card). |
+| `settings.png` | Settings: accent colour, background, ssh-agent and ssh config switches, terminal font. |
+| `terminal-colours.png` | Settings: terminal colour schemes with a live preview (cropped). |
+| `terminal.png` | A full-width terminal session with coloured output. |
+| `android-terminal.png` | Android: an SSH session with the key bar and the bottom navigation (the app's own screen, no status bar). |
+| `android-server-form.png` | Android: the server form; the tag colours wrap into rows on a narrow screen. |
 
-## Optional extras
+## How they are made
 
-If you want more screenshots in future README sections, add them here and
-reference with relative paths from the repo root, e.g.
-`docs/screenshots/permissions.png`.
+All of them show a throwaway demo profile ("Demo") with invented servers
+(`example.com` names and documentation addresses; the live ones are a
+local test server with a made-up user), never a real profile. The window is
+rendered at 1280×800 at 2× device scale (2560×1600 PNG), then cropped where
+a whole window would be mostly empty.
+
+## Before adding or replacing one
+
+- Nothing of a real machine or person may be visible: no user name, no
+  computer name, no home or data-folder path, no real host, address,
+  e-mail, key or token. Settings → Maintenance shows the data folder, and
+  Info shows the computer name — avoid or crop those.
+- Look at every image at full size before committing it; also check the
+  title bar and any terminal text.
+- Keep each file under about 400 KB and the pictures current with the
+  interface (the version label should match the release).

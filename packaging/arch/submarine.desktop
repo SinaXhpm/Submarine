@@ -1,7 +1,8 @@
 [Desktop Entry]
 Name=Submarine
 GenericName=SSH/SFTP Client
-Comment=A modern, secure SSH/SFTP desktop client
+Comment=SSH, SFTP, RDP, VNC and Telnet client with port forwarding and folder mirror
+Keywords=ssh;sftp;telnet;vnc;rdp;remote desktop;terminal;tunnel;port forwarding;putty;winscp;
 Exec=submarine %U
 Icon=submarine
 Terminal=false

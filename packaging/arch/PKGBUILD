@@ -14,7 +14,7 @@
 pkgname=submarine
 pkgver=0.0.0
 pkgrel=1
-pkgdesc='A modern, secure SSH/SFTP desktop client'
+pkgdesc='SSH, SFTP, RDP, VNC and Telnet client with port forwarding and folder mirror'
 arch=('x86_64')
 url='https://github.com/sinaxhpm/submarine'
 license=('MIT')
