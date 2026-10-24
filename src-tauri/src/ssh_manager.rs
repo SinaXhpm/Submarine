@@ -480,6 +480,11 @@ pub struct SshState {
     /// or a dedicated `::sftp` / `::fwd` secondary reuses what the user already
     /// supplied instead of prompting again. See `PromptedSecrets`.
     pub prompted_secrets: Arc<Mutex<HashMap<String, PromptedSecrets>>>,
+    /// The "Save password" tick of a password prompt that offered one, by the
+    /// prompt's nonce: the page records it (`kbi_save_choice`) just before it
+    /// answers, and the prompt takes it with the answer. The password is saved
+    /// only once the login with it worked.
+    pub kbi_save: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 /// How an elevated SFTP channel is started. The sudo password (if any) lives
@@ -539,6 +544,7 @@ impl SshState {
             sftp_elevation: Arc::new(Mutex::new(HashMap::new())),
             sftp_shell: Arc::new(Mutex::new(std::collections::HashSet::new())),
             prompted_secrets: Arc::new(Mutex::new(HashMap::new())),
+            kbi_save: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

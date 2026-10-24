@@ -1,4 +1,5 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Check, X, ShieldAlert, KeyRound } from "lucide-react";
 
 // The host-key and keyboard-interactive (2FA / password) prompts of a
@@ -27,6 +28,18 @@ export function AuthPrompts({
   serverName: string;
   displayName?: string;
 }) {
+  // A password prompt may offer "Save password" (the backend says so, and
+  // saves it once the login with it worked); ticked to start with unless the
+  // backend says otherwise (a login that also tried keys).
+  const offerSave = !!kbiPrompt?.save;
+  const ticked = kbiPrompt?.save?.checked !== false;
+  const [save, setSave] = useState(ticked);
+  const nonce = kbiPrompt?.nonce;
+  useEffect(() => { setSave(ticked); }, [nonce, ticked]);
+  const submit = async () => {
+    if (offerSave && nonce) await invoke("kbi_save_choice", { nonce, save }).catch(() => {});
+    handleKbiSubmit();
+  };
   return (
   <>
     {/* Fingerprint Prompt — two flavors:
@@ -139,15 +152,32 @@ export function AuthPrompts({
                       return next;
                     })}
                     onKeyDown={e => {
-                      if (e.key === "Enter" && i === (kbiPrompt.prompts?.length ?? 1) - 1) handleKbiSubmit();
+                      if (e.key === "Enter" && i === (kbiPrompt.prompts?.length ?? 1) - 1) void submit();
                     }}
                   />
                 </div>
               ))}
             </div>
+            {offerSave && (
+              <label className="mt-3 flex items-start gap-2 text-[12px] text-zinc-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={save}
+                  onChange={(e) => setSave(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-primary"
+                />
+                <span>
+                  {String(kbiPrompt.save?.label || "Save password")}
+                  <span className="block text-[11px] text-zinc-500">Kept in this profile's encrypted vault once the login with it works.</span>
+                  {kbiPrompt.save?.note && (
+                    <span className="block text-[11px] text-amber-400/80">{String(kbiPrompt.save.note)}</span>
+                  )}
+                </span>
+              </label>
+            )}
             <div className="flex flex-wrap gap-2 sm:gap-3 mt-4">
               <button
-                onClick={handleKbiSubmit}
+                onClick={() => void submit()}
                 className="flex-1 sm:flex-none px-4 sm:px-6 py-2 bg-primary text-black font-bold text-xs uppercase tracking-wider whitespace-nowrap rounded-lg hover:bg-primary/80 transition-colors flex items-center justify-center gap-2"
               >
                 <Check size={14} /> Submit
