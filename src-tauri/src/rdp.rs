@@ -7,8 +7,14 @@
 //! connection the RDP app makes there to the RDP server over a `direct-tcpip`
 //! channel: what `ssh -L` does, for this one tab.
 //!
-//! The RDP app asks for the password itself; nothing secret is handed to it.
-//! A built-in client (IronRDP) comes later and replaces the launcher.
+//! The forward listens on the node's own loopback address, the same every
+//! time (`listen_candidates`), so what the RDP app remembers for it (a login
+//! saved with "Remember me", a certificate it trusts) is found again. Remote
+//! Desktop Connection on Windows also gets the node's saved password, if it
+//! has one, in its `.rdp` file: encrypted for this Windows user, the way it
+//! keeps passwords itself, and the file goes once it has been read. The other
+//! apps ask for the password themselves. The built-in client (rdp_client.rs)
+//! is the other way to open one: in the tab itself.
 
 use crate::ssh_manager::ClientHandler;
 use std::collections::HashMap;
@@ -32,6 +38,11 @@ pub struct RdpSession {
     _route: Arc<Vec<russh::client::Handle<ClientHandler>>>,
     /// The forwarding listener's task.
     accept: Option<tokio::task::JoinHandle<()>>,
+    /// The node, whose saved password Remote Desktop Connection gets.
+    pub server_id: i32,
+    /// Whose that password is (the node's address and login when the tab
+    /// opened): "Open again" hands it on only while that is still the same.
+    pub login: Option<String>,
     /// What the RDP app connects to: `host:port` or the forward's address.
     pub address: String,
     pub username: String,
@@ -45,8 +56,8 @@ pub struct RdpSession {
 }
 
 impl RdpSession {
-    pub fn direct(address: String, username: String, options: RdpOptions) -> Self {
-        Self { _route: Arc::new(Vec::new()), accept: None, address, username, options, file: None, windows: Arc::default() }
+    pub fn direct(server_id: i32, address: String, username: String, options: RdpOptions) -> Self {
+        Self { _route: Arc::new(Vec::new()), accept: None, server_id, login: None, address, username, options, file: None, windows: Arc::default() }
     }
 }
 
@@ -137,12 +148,17 @@ impl RdpOptions {
 }
 
 /// The `.rdp` file for `address` (already checked): where to connect, who
-/// logs in, and the options. No password is written.
-pub fn rdp_file(address: &str, user: &str, options: &RdpOptions) -> String {
+/// logs in, and the options; for Remote Desktop Connection also the saved
+/// password, as `protect_password` encrypted it, when there is one.
+pub fn rdp_file(address: &str, user: &str, options: &RdpOptions, password: Option<&str>) -> String {
     let mut out = format!("full address:s:{address}\r\n");
     let user = user.trim();
     if !user.is_empty() {
         out.push_str(&format!("username:s:{user}\r\n"));
+    }
+    // Hex only, so nothing else can reach the file through it.
+    if let Some(blob) = password.filter(|b| !b.is_empty() && b.bytes().all(|c| c.is_ascii_hexdigit())) {
+        out.push_str(&format!("password 51:b:{blob}\r\n"));
     }
     if options.full_screen {
         out.push_str("screen mode id:i:2\r\n");
@@ -152,6 +168,34 @@ pub fn rdp_file(address: &str, user: &str, options: &RdpOptions) -> String {
     out.push_str(&format!("redirectclipboard:i:{}\r\n", u8::from(options.clipboard)));
     out.push_str(if options.drives { "drivestoredirect:s:*\r\n" } else { "drivestoredirect:s:\r\n" });
     out
+}
+
+/// The password as an `.rdp` file carries it (`password 51:b:`): encrypted
+/// with DPAPI for this Windows user, as Remote Desktop Connection encrypts
+/// the passwords it saves, in hex. Only this user, on this computer, can
+/// read it back.
+#[cfg(windows)]
+pub fn protect_password(password: &str) -> Result<String, String> {
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Cryptography::{CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB};
+    // UTF-16 without a terminator, as Remote Desktop Connection reads it.
+    let mut wide = zeroize::Zeroizing::new(password.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>());
+    let input = CRYPT_INTEGER_BLOB { cbData: u32::try_from(wide.len()).map_err(|_| "the password is too long")?, pbData: wide.as_mut_ptr() };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    unsafe { CryptProtectData(&input, windows::core::PCWSTR::null(), None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut output) }
+        .map_err(|e| format!("couldn't encrypt the password for the RDP app: {e}"))?;
+    let hex = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    unsafe { LocalFree(Some(HLOCAL(output.pbData.cast()))) };
+    Ok(hex)
+}
+
+/// Only Remote Desktop Connection, on Windows, takes a password in its file.
+#[cfg(not(windows))]
+pub fn protect_password(_password: &str) -> Result<String, String> {
+    Err("only Remote Desktop Connection on Windows takes a saved password".into())
 }
 
 /// The same as a Remmina profile, which (unlike its `.rdp` import) carries
@@ -194,6 +238,16 @@ pub fn freerdp_args(address: &str, user: &str, options: &RdpOptions) -> Vec<Stri
     args
 }
 
+/// FNV-1a: stable across builds and platforms (std's hasher isn't).
+fn fnv1a(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for b in bytes {
+        hash ^= u32::from(*b);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 /// The loopback address a node's forward listens on. RDP apps remember
 /// certificates and saved logins by host name, without the port: had every
 /// tunnelled server been `127.0.0.1`, a login saved for one would be offered
@@ -204,24 +258,66 @@ pub fn loopback_for(node_key: &str) -> IpAddr {
     if cfg!(target_os = "macos") {
         return IpAddr::V4(Ipv4Addr::LOCALHOST);
     }
-    // FNV-1a: stable across builds and platforms (std's hasher isn't).
-    let mut hash: u32 = 0x811c_9dc5;
-    for b in node_key.bytes() {
-        hash ^= u32::from(b);
-        hash = hash.wrapping_mul(0x0100_0193);
-    }
-    let [_, x, y, z] = hash.to_be_bytes();
+    let [_, x, y, z] = fnv1a(node_key.as_bytes()).to_be_bytes();
     // Not 127.0.0.0, 127.0.0.1 (shared with everything else) or .255.
     let z = z.clamp(2, 254);
     IpAddr::V4(Ipv4Addr::new(127, x, y, z))
 }
 
-/// Listens on `ip` (a free port) and forwards each connection to
-/// `host:port` through the last of `hops`. Returns the address it listens on
-/// and the accepting task. `closed` runs once when the SSH route is gone.
+/// A node's own ports, besides the RDP port, are in 20000-29999: below the
+/// ports every system hands out for its own connections (Linux from 32768,
+/// Windows and macOS from 49152).
+const OWN_PORT_BASE: u16 = 20000;
+const OWN_PORT_COUNT: u32 = 10000;
+
+/// The node's `n`th port of its own, the same every time.
+fn own_port(node_key: &str, n: u8) -> u16 {
+    let at = fnv1a(format!("port {n} {node_key}").as_bytes()) % OWN_PORT_COUNT;
+    OWN_PORT_BASE + u16::try_from(at).unwrap_or(0)
+}
+
+/// Where a node's forward may listen, best first, so that the RDP app is
+/// given the same address every time: the node's own loopback address on
+/// the RDP port, as `ssh -L 127.x.y.z:3389:…` would be (on macOS, 127.0.0.1
+/// and a port of the node's own). The next ones are for when that one is
+/// taken (the server open in another tab too, another program on the port);
+/// then any free port, and 127.0.0.1 when the system won't listen on another
+/// loopback address.
+pub fn listen_candidates(node_key: &str) -> Vec<SocketAddr> {
+    let ip = loopback_for(node_key);
+    let usual = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let mut out = Vec::new();
+    if ip != usual {
+        out.push(SocketAddr::new(ip, DEFAULT_PORT));
+    }
+    out.extend((0..3).map(|n| SocketAddr::new(ip, own_port(node_key, n))));
+    out.push(SocketAddr::new(ip, 0));
+    if ip != usual {
+        out.push(SocketAddr::new(usual, own_port(node_key, 0)));
+        out.push(SocketAddr::new(usual, 0));
+    }
+    out
+}
+
+/// A listener on the first of `candidates` this system lets it have.
+async fn listen_on_first(candidates: &[SocketAddr]) -> Result<tokio::net::TcpListener, String> {
+    let mut why = String::from("no address to listen on");
+    for addr in candidates {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => return Ok(listener),
+            Err(e) => why = e.to_string(),
+        }
+    }
+    Err(format!("couldn't listen on a local port: {why}"))
+}
+
+/// Listens on the first free one of `candidates` (`listen_candidates`) and
+/// forwards each connection to `host:port` through the last of `hops`.
+/// Returns the address it listens on and the accepting task. `closed` runs
+/// once when the SSH route is gone.
 pub async fn forward_through(
     hops: Vec<russh::client::Handle<ClientHandler>>,
-    ip: IpAddr,
+    candidates: &[SocketAddr],
     host: String,
     port: u16,
     closed: impl FnOnce() + Send + 'static,
@@ -229,15 +325,7 @@ pub async fn forward_through(
     if hops.is_empty() {
         return Err("no SSH server to go through".into());
     }
-    let listener = match tokio::net::TcpListener::bind((ip, 0)).await {
-        Ok(l) => l,
-        // A loopback address other than 127.0.0.1 that this system won't
-        // bind: fall back to the usual one.
-        Err(_) if ip != IpAddr::V4(Ipv4Addr::LOCALHOST) => tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await
-            .map_err(|e| format!("couldn't listen on a local port: {e}"))?,
-        Err(e) => return Err(format!("couldn't listen on a local port: {e}")),
-    };
+    let listener = listen_on_first(candidates).await?;
     let local = listener.local_addr().map_err(|e| e.to_string())?;
     let hops = Arc::new(hops);
     let route = Arc::clone(&hops);
@@ -287,8 +375,8 @@ pub struct RdpSessionParts {
 }
 
 impl RdpSession {
-    pub fn forwarded(parts: RdpSessionParts, address: String, username: String, options: RdpOptions) -> Self {
-        Self { _route: parts.hops, accept: Some(parts.accept), address, username, options, file: None, windows: Arc::default() }
+    pub fn forwarded(parts: RdpSessionParts, server_id: i32, address: String, username: String, options: RdpOptions) -> Self {
+        Self { _route: parts.hops, accept: Some(parts.accept), server_id, login: None, address, username, options, file: None, windows: Arc::default() }
     }
 }
 
@@ -326,17 +414,34 @@ pub fn write_file(session_id: &str, ext: &str, contents: &str) -> Result<PathBuf
 
 /// Removes `.rdp` files older than a day: what a copy of Submarine that
 /// ended without closing its tabs left behind. A live tab's file is newer,
-/// and its RDP app read it when it started anyway.
+/// and its RDP app read it when it started anyway. A file with a password in
+/// it goes after a minute already: a live one is removed as soon as Remote
+/// Desktop Connection has read it (30 s at most), so an older one was left by
+/// a copy that ended first.
 pub fn clear_old_files() {
     let Ok(entries) = std::fs::read_dir(files_dir()) else { return };
     let day = std::time::Duration::from_secs(24 * 60 * 60);
+    let minute = std::time::Duration::from_secs(60);
     for entry in entries.flatten() {
         let path = entry.path();
-        let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > day);
-        if old && path.extension().is_some_and(|e| e == "rdp" || e == "remmina") {
+        let Some(age) = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()) else { continue };
+        let rdp = path.extension().is_some_and(|e| e == "rdp");
+        let ours = rdp || path.extension().is_some_and(|e| e == "remmina");
+        if ours && (age > day || (rdp && age > minute && holds_password(&path))) {
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+/// Whether an `.rdp` file carries a password (`password 51:b:`), in either of
+/// the encodings `file_bytes` writes.
+fn holds_password(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else { return false };
+    let text = match bytes.strip_prefix(&[0xFF, 0xFE]) {
+        Some(utf16) => String::from_utf16_lossy(&utf16.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()),
+        None => String::from_utf8_lossy(&bytes).into_owned(),
+    };
+    text.lines().any(|line| line.starts_with("password 51:b:"))
 }
 
 /// The file's bytes. On Windows UTF-16LE with a byte-order mark, as Remote
@@ -402,28 +507,38 @@ pub struct Launcher {
     pub tracked: bool,
     /// The file written for it, removed with the tab.
     pub file: Option<PathBuf>,
+    /// The file holds the saved password: it goes as soon as the app has
+    /// read it.
+    pub secret: bool,
 }
 
 /// Writes what `app` needs for `address` (checked), as `user`, with
 /// `options` (a `.rdp` file, a Remmina profile, or nothing for FreeRDP),
-/// and says how to start it.
-pub fn prepare(app: App, session_id: &str, address: &str, user: &str, options: &RdpOptions) -> Result<Launcher, String> {
+/// and says how to start it. Remote Desktop Connection also gets `password`
+/// (the saved one, if any); the other apps ask for it.
+pub fn prepare(app: App, session_id: &str, address: &str, user: &str, options: &RdpOptions, password: Option<&str>) -> Result<Launcher, String> {
     let path_arg = |p: &PathBuf| p.to_string_lossy().into_owned();
     Ok(match app {
         App::Mstsc(program) => {
-            let file = write_file(session_id, "rdp", &rdp_file(address, user, options))?;
-            Launcher { name: "Remote Desktop Connection", program, args: vec![path_arg(&file)], tracked: true, file: Some(file) }
+            // Without it when it can't be protected: the app then asks.
+            let blob = password.filter(|p| !p.is_empty()).and_then(|p| protect_password(p).ok());
+            // A file with the password in it has a name of its own: it goes
+            // once read, and must not take a later launch's file with it.
+            let name = if blob.is_some() { format!("{session_id}-{:08x}", rand::random::<u32>()) } else { session_id.to_string() };
+            let file = write_file(&name, "rdp", &rdp_file(address, user, options, blob.as_deref()))?;
+            let secret = blob.is_some();
+            Launcher { name: "Remote Desktop Connection", program, args: vec![path_arg(&file)], tracked: true, file: Some(file), secret }
         }
         App::MacOpen => {
-            let file = write_file(session_id, "rdp", &rdp_file(address, user, options))?;
-            Launcher { name: "the app that opens .rdp files", program: PathBuf::from("/usr/bin/open"), args: vec![path_arg(&file)], tracked: false, file: Some(file) }
+            let file = write_file(session_id, "rdp", &rdp_file(address, user, options, None))?;
+            Launcher { name: "the app that opens .rdp files", program: PathBuf::from("/usr/bin/open"), args: vec![path_arg(&file)], tracked: false, file: Some(file), secret: false }
         }
         App::Remmina(program) => {
             let home = crate::ssh_config::home_dir().map(PathBuf::from);
             let file = write_file(session_id, "remmina", &remmina_file(address, user, options, home.as_deref()))?;
-            Launcher { name: "Remmina", program, args: vec!["-c".into(), path_arg(&file)], tracked: false, file: Some(file) }
+            Launcher { name: "Remmina", program, args: vec!["-c".into(), path_arg(&file)], tracked: false, file: Some(file), secret: false }
         }
-        App::FreeRdp(program) => Launcher { name: "FreeRDP", program, args: freerdp_args(address, user, options), tracked: true, file: None },
+        App::FreeRdp(program) => Launcher { name: "FreeRDP", program, args: freerdp_args(address, user, options), tracked: true, file: None, secret: false },
     })
 }
 
@@ -469,6 +584,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_file_left_with_a_password_in_it_is_found_in_either_encoding() {
+        let dir = std::env::temp_dir().join(format!("sub-rdp-pw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let with = "full address:s:h\r\npassword 51:b:01000000D08C9DDF\r\n";
+        let without = "full address:s:h\r\nusername:s:alice\r\n";
+        let utf16 = |s: &str| [0xFF, 0xFE].into_iter().chain(s.encode_utf16().flat_map(u16::to_le_bytes)).collect::<Vec<u8>>();
+        for (name, bytes, has) in [
+            ("a.rdp", utf16(with), true),
+            ("b.rdp", with.as_bytes().to_vec(), true),
+            ("c.rdp", utf16(without), false),
+            ("d.rdp", without.as_bytes().to_vec(), false),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            assert_eq!(holds_password(&path), has, "{name}");
+        }
+        assert!(!holds_password(&dir.join("not-there.rdp")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn hosts_an_rdp_app_can_be_given() {
         for ok in ["server", "rdp.example.com", "10.0.0.5", "my_host-2", "::1", "fe80::1", "2001:db8::7"] {
             assert!(check_host(ok).is_ok(), "{ok}");
@@ -492,7 +628,7 @@ mod tests {
     fn the_file_names_the_address_user_and_options_only() {
         let full = RdpOptions::default();
         assert_eq!(
-            rdp_file("127.0.0.5:51234", r"CORP\alice", &full),
+            rdp_file("127.0.0.5:51234", r"CORP\alice", &full, None),
             concat!(
                 "full address:s:127.0.0.5:51234\r\n",
                 "username:s:CORP\\alice\r\n",
@@ -503,7 +639,7 @@ mod tests {
         );
         let window = RdpOptions { full_screen: false, width: 1280, height: 720, clipboard: false, drives: true };
         assert_eq!(
-            rdp_file("[::1]:3389", "  ", &window),
+            rdp_file("[::1]:3389", "  ", &window, None),
             concat!(
                 "full address:s:[::1]:3389\r\n",
                 "screen mode id:i:1\r\n",
@@ -515,6 +651,35 @@ mod tests {
         );
         assert_eq!(address("fe80::1", 3390), "[fe80::1]:3390");
         assert_eq!(address("server", 3389), "server:3389");
+    }
+
+    #[test]
+    fn the_saved_password_goes_into_the_file_encrypted_only() {
+        let full = RdpOptions::default();
+        let with = rdp_file("127.0.0.5:3389", "alice", &full, Some("01000000D08C9DDF0115D1118C7A00C04FC297EB"));
+        assert!(with.starts_with("full address:s:127.0.0.5:3389\r\nusername:s:alice\r\npassword 51:b:01000000D08C9DDF0115D1118C7A00C04FC297EB\r\n"));
+        // Anything but hex is no blob of ours: nothing is written.
+        for bad in ["", "plain text", "01AB\r\nalternate shell:s:cmd"] {
+            assert!(!rdp_file("h:1", "alice", &full, Some(bad)).contains("password"), "{bad:?}");
+        }
+        assert!(!rdp_file("h:1", "alice", &full, None).contains("password"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_password_is_encrypted_for_this_windows_user() {
+        use windows::Win32::Foundation::{LocalFree, HLOCAL};
+        use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
+        let hex = protect_password("Pässwörd 1").unwrap();
+        assert!(hex.len() > 200 && hex.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()));
+        let mut bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+        let input = CRYPT_INTEGER_BLOB { cbData: bytes.len() as u32, pbData: bytes.as_mut_ptr() };
+        let mut output = CRYPT_INTEGER_BLOB::default();
+        unsafe { CryptUnprotectData(&input, None, None, None, None, 0, &mut output) }.unwrap();
+        let plain = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
+        unsafe { LocalFree(Some(HLOCAL(output.pbData.cast()))) };
+        let units: Vec<u16> = plain.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(String::from_utf16(&units).unwrap(), "Pässwörd 1", "UTF-16 without a terminator");
     }
 
     #[test]
@@ -573,12 +738,57 @@ mod tests {
             assert_eq!(a, IpAddr::V4(Ipv4Addr::LOCALHOST));
             return;
         }
+        // The address a node had before stays its own (logins saved for it).
+        assert_eq!(a, IpAddr::V4(Ipv4Addr::new(127, 192, 107, 193)));
         assert_ne!(a, b);
         for ip in [a, b, loopback_for(""), loopback_for("x")] {
             let IpAddr::V4(v4) = ip else { panic!("IPv4") };
             assert!(v4.is_loopback(), "{v4}");
             assert!(v4 != Ipv4Addr::LOCALHOST && v4.octets()[3] != 255 && v4.octets()[3] != 0, "{v4}");
         }
+    }
+
+    #[test]
+    fn each_node_listens_at_the_same_address_every_time() {
+        let at = |s: &str| s.parse::<SocketAddr>().unwrap();
+        let one = listen_candidates("8a3c-uuid-one");
+        assert_eq!(one, listen_candidates("8a3c-uuid-one"));
+        assert_ne!(one[0], listen_candidates("8a3c-uuid-two")[0]);
+        if cfg!(target_os = "macos") {
+            assert_eq!(one, ["127.0.0.1:23748", "127.0.0.1:28011", "127.0.0.1:24926", "127.0.0.1:0"].map(at));
+            return;
+        }
+        assert_eq!(
+            one,
+            [
+                // As `ssh -L 127.192.107.193:3389:…`.
+                "127.192.107.193:3389",
+                "127.192.107.193:23748",
+                "127.192.107.193:28011",
+                "127.192.107.193:24926",
+                "127.192.107.193:0",
+                "127.0.0.1:23748",
+                "127.0.0.1:0",
+            ]
+            .map(at)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_taken_address_gives_the_next_one() {
+        let candidates = listen_candidates("8a3c-uuid-taken");
+        let index = |l: &tokio::net::TcpListener| candidates.iter().position(|c| *c == l.local_addr().unwrap()).unwrap();
+        // The first this system lets us have (3389 may be another program's).
+        let first = listen_on_first(&candidates).await.unwrap();
+        let i = index(&first);
+        assert!(i <= 1, "{:?}", first.local_addr());
+        // The same server open in a second tab: the next address.
+        let second = listen_on_first(&candidates).await.unwrap();
+        assert_eq!(index(&second), i + 1);
+        drop((first, second));
+        // Free again: the same address as before.
+        let again = listen_on_first(&candidates).await.unwrap();
+        assert_eq!(index(&again), i);
     }
 
     #[test]
@@ -602,9 +812,12 @@ mod tests {
         let freerdps = |p: &str| matches!(p, "sdl-freerdp3" | "xfreerdp3").then(|| PathBuf::from(p));
         assert_eq!(pick_app(freerdps), Ok(App::FreeRdp("sdl-freerdp3".into())));
         // FreeRDP needs no file; Remmina gets a profile, tracked or not.
-        let f = prepare(App::FreeRdp("x".into()), "session-rdp-prep", "h:1", "u", &RdpOptions::default()).unwrap();
-        assert_eq!((f.name, f.tracked, f.file), ("FreeRDP", true, None));
-        let r = prepare(App::Remmina("remmina".into()), "session-rdp-prep", "h:1", "u", &RdpOptions::default()).unwrap();
+        // Neither gets the password: they ask for it themselves.
+        let f = prepare(App::FreeRdp("x".into()), "session-rdp-prep", "h:1", "u", &RdpOptions::default(), Some("pw")).unwrap();
+        assert_eq!((f.name, f.tracked, f.file, f.secret), ("FreeRDP", true, None, false));
+        assert!(!f.args.iter().any(|a| a.contains("pw")));
+        let r = prepare(App::Remmina("remmina".into()), "session-rdp-prep", "h:1", "u", &RdpOptions::default(), Some("pw")).unwrap();
+        assert!(!r.secret);
         let file = r.file.clone().unwrap();
         assert_eq!((r.name, r.tracked, r.args[0].as_str()), ("Remmina", false, "-c"));
         assert!(file.to_string_lossy().ends_with(".remmina") && std::fs::read_to_string(&file).unwrap().starts_with("[remmina]\n"));
@@ -644,7 +857,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
-        let mut s = RdpSession::direct("h:1".into(), String::new(), RdpOptions::default());
+        let mut s = RdpSession::direct(1, "h:1".into(), String::new(), RdpOptions::default());
         s.file = Some(path.clone());
         drop(s);
         assert!(!path.exists());

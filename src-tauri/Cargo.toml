@@ -201,8 +201,9 @@ gdk = "0.18"
 # keeps a key (in the TPM where there is one) that signs only after the
 # user's PIN, face or finger. Already in the build through Tauri (same
 # version, nothing new to download); these are its parts used here. Also
-# the list of this computer's drives, one of which may be shared with an RDP
-# server (rdp_share.rs).
+# DPAPI and WaitForInputIdle: Remote Desktop Connection gets the saved
+# password in its .rdp file, encrypted for this Windows user, and the file
+# goes once it has read it (rdp.rs, launch_rdp_app).
 # ---------------------------------------------------------------------------
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -211,16 +212,17 @@ windows = { version = "0.62", features = [
     "Security_Cryptography",
     "Storage_Streams",
     "Win32_Foundation",
+    "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
     "Win32_System_TpmBaseServices",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
 # Files shared with an RDP server by the built-in client (rdp_share.rs):
-# IronRDP's own drive backends, from the same pinned revision, in a copy
-# (vendor/, see its VENDORED.md) whose Windows backend can share one folder,
-# not only a whole drive. On Windows it checks every path itself; on macOS and
-# Linux rdp_share.rs checks them in front of it. A phone has none.
+# IronRDP's own drive backends, from the same pinned revision. On Windows it
+# checks every path itself; on macOS and Linux rdp_share.rs checks them in
+# front of it. A phone has none.
 [target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
 ironrdp-rdpdr-native = { path = "vendor/ironrdp-rdpdr-native" }
 

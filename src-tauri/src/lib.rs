@@ -14179,10 +14179,10 @@ async fn initiate_rdp(
     };
     let attempt = ssh_manager::ConnectAttempt::new(Arc::clone(&state.session_generation), session_id.clone(), generation);
 
-    let (name, host, port, user, node_key, protocol, jump_id, jump_name) = {
+    let ((name, host, port, user, node_key, protocol, jump_id, jump_name), password, login_key) = {
         let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
         let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-        conn.query_row(
+        let row = conn.query_row(
             "SELECT s.name, s.host, s.port,
                     CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault' THEN c.username ELSE s.username END,
                     COALESCE(s.uuid, CAST(s.id AS TEXT)), s.protocol, s.jump_host_id, j.name
@@ -14204,7 +14204,8 @@ async fn initiate_rdp(
                 ))
             },
         )
-        .map_err(|_| "Server not found".to_string())?
+        .map_err(|_| "Server not found".to_string())?;
+        (row, rdp_saved_password(conn, server_id), rdp_login_key(conn, server_id))
     };
     if protocol.as_deref() != Some("rdp") {
         return Err(format!("{name} isn't an RDP server"));
@@ -14232,7 +14233,7 @@ async fn initiate_rdp(
         log(&format!("Opening the RDP server {target}..."), "info");
 
         let (mut session, via) = match jump_id {
-            None => (rdp::RdpSession::direct(target.clone(), user.clone(), options.clone()), None),
+            None => (rdp::RdpSession::direct(server_id, target.clone(), user.clone(), options.clone()), None),
             Some(jid) => {
                 let via_name = jump_name.clone().unwrap_or_else(|| format!("server {jid}"));
                 log(&format!("Going through the SSH server {via_name}..."), "info");
@@ -14272,11 +14273,11 @@ async fn initiate_rdp(
                         }
                     }
                 };
-                match rdp::forward_through(chain, rdp::loopback_for(&node_key), host.clone(), port, closed).await {
+                match rdp::forward_through(chain, &rdp::listen_candidates(&node_key), host.clone(), port, closed).await {
                     Ok((local, parts)) => {
                         let address = local.to_string();
                         log(&format!("Forwarding {address} to {target} through {via_name}."), "success");
-                        (rdp::RdpSession::forwarded(parts, address, user.clone(), options.clone()), Some(via_name))
+                        (rdp::RdpSession::forwarded(parts, server_id, address, user.clone(), options.clone()), Some(via_name))
                     }
                     Err(e) => {
                         log(&e, "error");
@@ -14288,7 +14289,9 @@ async fn initiate_rdp(
         };
 
         let address = session.address.clone();
-        let launched = rdp::pick_app(rdp::find_on_path).and_then(|app| rdp::prepare(app, &session_id, &address, &user, &options));
+        session.login = login_key;
+        let saved = password.as_deref().map(String::as_str);
+        let launched = rdp::pick_app(rdp::find_on_path).and_then(|app| rdp::prepare(app, &session_id, &address, &user, &options, saved));
         let launcher = match launched {
             Ok(l) => {
                 session.file = l.file.clone();
@@ -14308,10 +14311,11 @@ async fn initiate_rdp(
         sessions.lock().await.insert(session_id.clone(), session);
         match launch_rdp_app(&app, &attempt, &session_id, &launcher, windows) {
             Ok(()) => {
-                log(&format!("Opened {} for {address}. It asks for the password itself.", launcher.name), "success");
+                let login = if launcher.secret { "It got the saved password." } else { "It asks for the password itself." };
+                log(&format!("Opened {} for {address}. {login}", launcher.name), "success");
                 let _ = app.emit(
                     &format!("connection-success-{session_id}"),
-                    serde_json::json!({"app": launcher.name, "address": address, "via": via, "tracked": launcher.tracked}),
+                    serde_json::json!({"app": launcher.name, "address": address, "via": via, "tracked": launcher.tracked, "password": launcher.secret}),
                 );
             }
             Err(e) => {
@@ -14329,6 +14333,100 @@ async fn initiate_rdp(
 #[tauri::command]
 fn rdp_share_drives() -> Vec<String> {
     rdp_share::drives()
+}
+
+/// Whose an RDP server's saved password is: its address and the login it uses
+/// (its own user, or which saved login and that login's user). An open tab
+/// still goes where it went, so "Open again" hands the password on only while
+/// this is unchanged.
+fn rdp_login_key(conn: &rusqlite::Connection, server_id: i32) -> Option<String> {
+    conn.query_row(
+        "SELECT COALESCE(s.host, '') || ':' || COALESCE(s.port, 0) || '|' ||
+                CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault'
+                     THEN 'login ' || COALESCE(c.id, 0) || ' ' || COALESCE(c.username, '')
+                     ELSE 'own ' || COALESCE(s.username, '') END
+         FROM servers s LEFT JOIN credentials c ON s.credential_id = c.id
+         WHERE s.id = ?1",
+        [server_id],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// An RDP server's saved password, if it has one: its own, or its saved
+/// login's (not a key login's). Remote Desktop Connection gets it.
+fn rdp_saved_password(conn: &rusqlite::Connection, server_id: i32) -> Option<zeroize::Zeroizing<String>> {
+    conn.query_row(
+        "SELECT CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault'
+                     THEN CASE WHEN c.auth_type = 'key' THEN NULL ELSE c.password END
+                     ELSE s.password END
+         FROM servers s LEFT JOIN credentials c ON s.credential_id = c.id
+         WHERE s.id = ?1",
+        [server_id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+    .filter(|p| !p.is_empty())
+    .map(zeroize::Zeroizing::new)
+}
+
+#[cfg(test)]
+mod rdp_saved_password_tests {
+    use super::rdp_saved_password;
+
+    #[test]
+    fn the_password_an_rdp_app_gets() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE credentials(id INTEGER PRIMARY KEY, auth_type TEXT, password TEXT);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY, auth_type TEXT, password TEXT, credential_id INTEGER);
+             INSERT INTO credentials VALUES (7, 'password', 'login-pw'), (8, 'key', 'not-this');
+             INSERT INTO servers VALUES (1, 'custom_pass', 'own-pw', NULL), (2, 'vault', NULL, 7), (3, 'vault', NULL, 8),
+                                        (4, 'custom_pass', '', NULL), (5, 'vault', NULL, NULL), (6, NULL, 'stale', 7);",
+        )
+        .unwrap();
+        let got = |id| rdp_saved_password(&conn, id).map(|p| p.to_string());
+        assert_eq!(got(1).as_deref(), Some("own-pw"));
+        assert_eq!(got(2).as_deref(), Some("login-pw"), "its saved login's");
+        assert_eq!(got(3), None, "a key login has no password to give");
+        assert_eq!(got(4), None, "an empty one is none");
+        assert_eq!(got(5), None);
+        assert_eq!(got(6).as_deref(), Some("login-pw"), "no auth type is a saved login's");
+        assert_eq!(got(99), None);
+    }
+
+    #[test]
+    fn open_again_sees_when_the_address_or_login_changed() {
+        use super::rdp_login_key;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE credentials(id INTEGER PRIMARY KEY, username TEXT);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY, host TEXT, port INTEGER, username TEXT, auth_type TEXT, credential_id INTEGER);
+             INSERT INTO credentials VALUES (7, 'alice'), (8, 'bob');
+             INSERT INTO servers VALUES (1, 'a.example', 3389, 'carol', 'custom_pass', NULL), (2, 'b.example', 3389, NULL, 'vault', 7);",
+        )
+        .unwrap();
+        let key = |id| rdp_login_key(&conn, id);
+        let (own, via_login) = (key(1), key(2));
+        assert!(own.is_some() && via_login.is_some() && own != via_login);
+        assert_eq!(key(99), None);
+        // Nothing changed: the same.
+        assert_eq!(key(1), own);
+        // Another address, port, user, saved login or that login's user: not the same.
+        for change in [
+            "UPDATE servers SET host = 'c.example' WHERE id = 1",
+            "UPDATE servers SET port = 3390 WHERE id = 1",
+            "UPDATE servers SET username = 'dave' WHERE id = 1",
+        ] {
+            conn.execute_batch(change).unwrap();
+            assert_ne!(key(1), own, "{change}");
+        }
+        for change in ["UPDATE credentials SET username = 'alicia' WHERE id = 7", "UPDATE servers SET credential_id = 8 WHERE id = 2"] {
+            conn.execute_batch(change).unwrap();
+            assert_ne!(key(2), via_login, "{change}");
+        }
+    }
 }
 
 /// The built-in RDP sessions (rdp_client.rs) by tab: what the page sends them.
@@ -14890,6 +14988,38 @@ async fn rdp_builtin_close(rdp_clients: tauri::State<'_, RdpClients>, session_id
 #[cfg(target_os = "linux")]
 static OWN_RENDER_ENV: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
 
+/// Removes `file`, the `.rdp` file with the saved password in it, once the
+/// RDP app started with it has read it: when it first waits for the user
+/// (its security warning, or its login), at the earliest 3 s and at the
+/// latest 30 s after it started, or when it ended. The tab's closing and
+/// the next start's clean-up (`rdp::clear_old_files`) see to the rest.
+#[cfg(windows)]
+fn forget_once_read(child: &tokio::process::Child, file: std::path::PathBuf) {
+    use windows::Win32::Foundation::{CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
+    use windows::Win32::System::Threading::{GetCurrentProcess, WaitForInputIdle};
+    // A handle of its own: the child's goes when it ends.
+    let process = child.raw_handle().and_then(|h| {
+        let mut own = HANDLE::default();
+        let me = unsafe { GetCurrentProcess() };
+        unsafe { DuplicateHandle(me, HANDLE(h), me, &mut own, 0, false, DUPLICATE_SAME_ACCESS) }.ok()?;
+        Some(own.0 as usize)
+    });
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        if let Some(h) = process {
+            let h = HANDLE(h as *mut core::ffi::c_void);
+            unsafe {
+                WaitForInputIdle(h, 30_000);
+                let _ = CloseHandle(h);
+            }
+        }
+        if let Some(rest) = std::time::Duration::from_secs(3).checked_sub(started.elapsed()) {
+            std::thread::sleep(rest);
+        }
+        let _ = std::fs::remove_file(file);
+    });
+}
+
 /// Starts an RDP app. When its process is the RDP window (`tracked`), the
 /// end of the tab's last open window reaches it as `rdp-app-exited-{id}`,
 /// with the last lines it wrote to stderr when it failed.
@@ -14913,6 +15043,10 @@ fn launch_rdp_app(
         cmd.env_remove(name);
     }
     let mut child = cmd.spawn().map_err(|e| format!("Couldn't start {}: {e}", launcher.name))?;
+    #[cfg(windows)]
+    if let (true, Some(file)) = (launcher.secret, &launcher.file) {
+        forget_once_read(&child, file.clone());
+    }
     let (app, attempt, sid, tracked) = (app.clone(), attempt.clone(), session_id.to_string(), launcher.tracked);
     if tracked {
         windows.fetch_add(1, Ordering::SeqCst);
@@ -14958,6 +15092,7 @@ fn launch_rdp_app(
 async fn rdp_open_again(
     app: tauri::AppHandle,
     state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
     rdp_sessions: tauri::State<'_, rdp::RdpSessions>,
     session_id: String,
     options: Option<rdp::RdpOptions>,
@@ -14968,8 +15103,21 @@ async fn rdp_open_again(
         if let Some(options) = options {
             session.options = options.checked();
         }
+        // The saved password as it is now: it may have changed since. Not when
+        // the server's address or login changed since the tab opened: the tab
+        // still goes to the old one, and that password isn't for it.
+        let password = {
+            let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+            let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+            if rdp_login_key(conn, session.server_id) == session.login {
+                rdp_saved_password(conn, session.server_id)
+            } else {
+                None
+            }
+        };
+        let saved = password.as_deref().map(String::as_str);
         // Written again: another copy of the app may have cleared old files.
-        let launcher = rdp::prepare(rdp::pick_app(rdp::find_on_path)?, &session_id, &session.address, &session.username, &session.options)?;
+        let launcher = rdp::prepare(rdp::pick_app(rdp::find_on_path)?, &session_id, &session.address, &session.username, &session.options, saved)?;
         // A different app may need a different file: the old one goes.
         if let Some(new) = &launcher.file {
             if session.file.as_ref() != Some(new) {
@@ -14983,7 +15131,7 @@ async fn rdp_open_again(
     let generation = state.session_generation.lock().await.get(&session_id).copied().unwrap_or(0);
     let attempt = ssh_manager::ConnectAttempt::new(std::sync::Arc::clone(&state.session_generation), session_id.clone(), generation);
     launch_rdp_app(&app, &attempt, &session_id, &launcher, windows)?;
-    Ok(serde_json::json!({"app": launcher.name, "tracked": launcher.tracked}))
+    Ok(serde_json::json!({"app": launcher.name, "tracked": launcher.tracked, "password": launcher.secret}))
 }
 
 /// Open a telnet server (#179): straight to it, or through the SSH server
