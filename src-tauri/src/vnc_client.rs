@@ -46,7 +46,52 @@ pub type VncClients = std::sync::Arc<tokio::sync::Mutex<HashMap<String, (u64, mp
 pub enum Cmd {
     Input(Vec<InputEvent>),
     Resize(u16, u16),
+    /// Text from this device's clipboard for the server's (the user pasted in
+    /// the tab); the paste key, if any, follows as input.
+    Paste(Zeroizing<String>),
     Close,
+}
+
+/// The most text that goes to the server's clipboard at once (the VNC
+/// library takes up to 1 MiB).
+pub const MAX_PASTE: usize = 1_000_000;
+
+/// The server's copies reach the tab at most this often, the latest one
+/// winning: a server that copies over and over (up to 1 MiB each time) can't
+/// keep the page busy.
+const COPY_EVERY: Duration = Duration::from_millis(250);
+
+/// The server's copy waiting for the tab, and when the last one went.
+#[derive(Default)]
+struct Copies {
+    due: Option<String>,
+    sent_at: Option<Instant>,
+}
+
+impl Copies {
+    /// The copy to hand on at `now`, if one is due and the last went long enough ago.
+    fn take(&mut self, now: Instant) -> Option<String> {
+        if self.sent_at.is_some_and(|at| now.saturating_duration_since(at) < COPY_EVERY) {
+            return None;
+        }
+        let text = self.due.take()?;
+        self.sent_at = Some(now);
+        Some(text)
+    }
+}
+
+/// Why `text` can't go to a VNC server's clipboard, if it can't. Classic VNC
+/// carries the clipboard as Latin-1 and the VNC library sends UTF-8 bytes as
+/// they are, so only plain ASCII arrives on the server as it was (a link, a
+/// command); anything else would arrive garbled, and isn't sent.
+pub fn paste_refusal(text: &str) -> Option<String> {
+    if text.len() > MAX_PASTE {
+        return Some(format!("The clipboard holds too much text to send ({} bytes; the most is {MAX_PASTE}).", text.len()));
+    }
+    if !text.is_ascii() {
+        return Some("This text has characters a VNC server's clipboard can't take (it carries plain ASCII text only), so it wasn't sent.".into());
+    }
+    None
 }
 
 /// Mouse and keyboard from the page (RemoteScreen.tsx).
@@ -599,10 +644,12 @@ pub fn explain(e: &VncError) -> String {
 /// Runs one VNC session until the page closes it or the server ends it: the
 /// handshake (with `password`, awaited only if the server asks for one), then
 /// the screen to `frame` and the page's input to the server. `connected` hears
-/// the desktop's first size. Ok("closed") when the page closed it, Ok(reason)
-/// when the server ended it, Err when it failed.
+/// the desktop's first size. With `clipboard`, text the user copies on the
+/// server goes to `remote_copy`, and `Cmd::Paste` puts text on the server's
+/// clipboard. Ok("closed") when the page closed it, Ok(reason) when the server
+/// ended it, Err when it failed.
 #[allow(clippy::too_many_arguments)]
-pub async fn run<S, P, C, F>(
+pub async fn run<S, P, C, F, R>(
     stream: S,
     password: P,
     connected: C,
@@ -611,12 +658,15 @@ pub async fn run<S, P, C, F>(
     mut rx: mpsc::UnboundedReceiver<Cmd>,
     wanted: (u16, u16),
     options: Options,
+    clipboard: bool,
+    mut remote_copy: R,
 ) -> Result<String, String>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
     P: Future<Output = Option<Zeroizing<String>>> + Send + Sync + 'static,
     C: FnOnce(u16, u16) + Send,
     F: FnMut(Vec<u8>) -> bool + Send,
+    R: FnMut(String) + Send,
 {
     let password = async move {
         match password.await {
@@ -651,6 +701,7 @@ where
     let mut tick = tokio::time::interval(Duration::from_millis(TICK_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pacer = Pacer::new(options.gap());
+    let mut copies = Copies::default();
     let outcome = loop {
         tokio::select! {
             cmd = rx.recv() => match cmd {
@@ -665,6 +716,13 @@ where
                     asked_size = Some((w, h));
                     if screen.w > 0 {
                         resize(&client, (w, h));
+                    }
+                }
+                // Before the paste key that may follow: the server takes the
+                // two in order.
+                Some(Cmd::Paste(text)) => {
+                    if clipboard && paste_refusal(&text).is_none() {
+                        let _ = client.input(X11Event::CopyText(text.to_string())).await;
                     }
                 }
                 Some(Cmd::Close) | None => {
@@ -707,12 +765,19 @@ where
                             }
                             VncEvent::RawImage(r, data) => screen.put(r, &data),
                             VncEvent::Copy(dst, src) => screen.copy(dst, src),
+                            // The user copied text on the server: it goes to the
+                            // tab below, the latest one, not oftener than COPY_EVERY.
+                            VncEvent::Text(text) => {
+                                if clipboard && !text.is_empty() {
+                                    copies.due = Some(text);
+                                }
+                            }
                             VncEvent::Error(e) => {
                                 ended = Some(Err(format!("VNC: {e}")));
                                 break;
                             }
                             // JPEG isn't asked for; the cursor is in the
-                            // picture; the clipboard and the bell aren't used.
+                            // picture; the bell isn't used.
                             _ => {}
                         },
                         Ok(None) => break,
@@ -727,6 +792,9 @@ where
                 }
                 if let Some(end) = ended {
                     break end;
+                }
+                if let Some(text) = copies.take(Instant::now()) {
+                    remote_copy(text);
                 }
                 // While the page is far behind on what it was sent, what
                 // changes stays in the picture here (see screen_flow.rs) and no
@@ -1175,6 +1243,8 @@ mod tests {
         pixel_format: Option<[u8; 16]>,
         encodings: Vec<i32>,
         asks: u32,
+        /// What the client put on the server's clipboard (ClientCutText), as it came.
+        cut_text: Vec<Vec<u8>>,
     }
 
     /// A pixel as the server was asked to send it.
@@ -1189,8 +1259,14 @@ mod tests {
 
     /// A server with no password and a 4×2 desktop. It writes down the pixel
     /// format and the encodings the client asks for, and answers the first ask
-    /// for an update with a row of `pixels` in the format that was asked for.
-    async fn scripted_server(mut s: tokio::io::DuplexStream, pixels: [(u8, u8, u8); 2], heard: Arc<Mutex<Heard>>) -> std::io::Result<()> {
+    /// for an update with a row of `pixels` in the format that was asked for,
+    /// then with each of `copied` on its clipboard (ServerCutText), one after the other.
+    async fn scripted_server(
+        mut s: tokio::io::DuplexStream,
+        pixels: [(u8, u8, u8); 2],
+        heard: Arc<Mutex<Heard>>,
+        copied: Vec<&'static [u8]>,
+    ) -> std::io::Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         s.write_all(b"RFB 003.008\n").await?;
         s.read_exact(&mut [0u8; 12]).await?;
@@ -1243,6 +1319,12 @@ mod tests {
                             u.extend_from_slice(&wire_pixel(&pf, p));
                         }
                         s.write_all(&u).await?;
+                        for text in &copied {
+                            let mut cut = vec![3u8, 0, 0, 0];
+                            cut.extend_from_slice(&u32::try_from(text.len()).unwrap().to_be_bytes());
+                            cut.extend_from_slice(text);
+                            s.write_all(&cut).await?;
+                        }
                     }
                 }
                 4 => {
@@ -1250,6 +1332,13 @@ mod tests {
                 }
                 5 => {
                     s.read_exact(&mut [0u8; 5]).await?;
+                }
+                6 => {
+                    let mut h = [0u8; 7];
+                    s.read_exact(&mut h).await?;
+                    let mut text = vec![0u8; u32::from_be_bytes([h[3], h[4], h[5], h[6]]) as usize];
+                    s.read_exact(&mut text).await?;
+                    heard.lock().unwrap().cut_text.push(text);
                 }
                 _ => return Ok(()),
             }
@@ -1259,12 +1348,27 @@ mod tests {
     /// Runs the real session against the scripted server until the first
     /// picture is drawn; what the server heard, and the frames the page got.
     async fn session_against_scripted_server(options: Options, pixels: [(u8, u8, u8); 2]) -> (Heard, Vec<Vec<u8>>) {
+        let (heard, frames, _) = scripted_session(options, pixels, false, &[], &[]).await;
+        (heard, frames)
+    }
+
+    /// The same, with the clipboard shared or not: the server copies `copied`
+    /// after the first picture, and the page pastes each of `pastes`. Also
+    /// what came to this device's clipboard.
+    async fn scripted_session(
+        options: Options,
+        pixels: [(u8, u8, u8); 2],
+        clipboard: bool,
+        copied: &[&'static [u8]],
+        pastes: &[&str],
+    ) -> (Heard, Vec<Vec<u8>>, Vec<String>) {
         let (client, server) = tokio::io::duplex(1 << 16);
         let heard = Arc::new(Mutex::new(Heard::default()));
-        let srv = tokio::spawn(scripted_server(server, pixels, Arc::clone(&heard)));
+        let srv = tokio::spawn(scripted_server(server, pixels, Arc::clone(&heard), copied.to_vec()));
         let frames = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let copies = Arc::new(Mutex::new(Vec::<String>::new()));
         let (tx, rx) = mpsc::unbounded_channel();
-        let sink = Arc::clone(&frames);
+        let (sink, copy_sink) = (Arc::clone(&frames), Arc::clone(&copies));
         let run = tokio::spawn(run(
             client,
             std::future::ready(None::<Zeroizing<String>>),
@@ -1277,6 +1381,8 @@ mod tests {
             rx,
             (4, 2),
             options,
+            clipboard,
+            move |text| copy_sink.lock().unwrap().push(text),
         ));
         for _ in 0..500 {
             if frames.lock().unwrap().len() >= 2 {
@@ -1284,13 +1390,77 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        for text in pastes {
+            let _ = tx.send(Cmd::Paste(Zeroizing::new((*text).to_string())));
+        }
+        // The server's copy and the pastes have a moment to go through.
+        for _ in 0..100 {
+            let last = copied.last().map(|t| String::from_utf8_lossy(t).into_owned());
+            let done = heard.lock().unwrap().cut_text.len() >= pastes.len() && copies.lock().unwrap().last().cloned() == last;
+            if done || !clipboard {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        if !clipboard {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
         let _ = tx.send(Cmd::Close);
         let out = tokio::time::timeout(std::time::Duration::from_secs(10), run).await.expect("closed in time").expect("no panic");
         assert_eq!(out, Ok("closed".to_string()));
         srv.abort();
         let heard = std::mem::take(&mut *heard.lock().unwrap());
         let frames = frames.lock().unwrap().clone();
-        (heard, frames)
+        let copies = copies.lock().unwrap().clone();
+        (heard, frames, copies)
+    }
+
+    // The clipboard, with the real client library: the server's copy comes to
+    // this device, and a paste here puts the text on the server's clipboard;
+    // with the clipboard not shared, neither.
+    #[tokio::test]
+    async fn the_clipboard_goes_both_ways_only_when_shared() {
+        let pixels = [(255, 0, 0), (0, 0, 255)];
+        let link: &'static [u8] = b"https://example.com/a?b=1&c=2";
+        let (heard, _, copies) = scripted_session(Options::default(), pixels, true, &[link], &["ls -la /tmp", "https://example.org/x"]).await;
+        assert_eq!(copies, ["https://example.com/a?b=1&c=2"], "the server's copy came to this device");
+        assert_eq!(heard.cut_text, [b"ls -la /tmp".to_vec(), b"https://example.org/x".to_vec()], "the pastes reached the server's clipboard, in order");
+        // Not shared: nothing either way.
+        let (heard, _, copies) = scripted_session(Options::default(), pixels, false, &[link], &["ls -la /tmp"]).await;
+        assert!(copies.is_empty(), "{copies:?}");
+        assert!(heard.cut_text.is_empty(), "{:?}", heard.cut_text);
+        // What the clipboard can't carry isn't sent (and the session goes on).
+        let (heard, _, _) = scripted_session(Options::default(), pixels, true, &[], &["سلام", "ok"]).await;
+        assert_eq!(heard.cut_text, [b"ok".to_vec()]);
+        // A server that copies over and over: the tab gets the latest, not each one.
+        let (_, _, copies) = scripted_session(Options::default(), pixels, true, &[b"one", b"two", b"three"], &[]).await;
+        assert_eq!(copies.last().map(String::as_str), Some("three"), "{copies:?}");
+        assert!(copies.len() <= 2, "{copies:?}");
+    }
+
+    #[test]
+    fn the_servers_copies_reach_the_tab_at_most_every_quarter_second_the_latest_one() {
+        let t0 = Instant::now();
+        let mut c = Copies::default();
+        assert_eq!(c.take(t0), None, "nothing copied");
+        c.due = Some("one".into());
+        assert_eq!(c.take(t0).as_deref(), Some("one"));
+        c.due = Some("two".into());
+        c.due = Some("three".into());
+        assert_eq!(c.take(t0 + Duration::from_millis(100)), None, "too soon: it waits");
+        assert_eq!(c.take(t0 + COPY_EVERY).as_deref(), Some("three"), "the latest one");
+        assert_eq!(c.take(t0 + COPY_EVERY * 3), None, "nothing new");
+    }
+
+    #[test]
+    fn only_plain_ascii_of_a_sane_size_goes_to_the_servers_clipboard() {
+        assert_eq!(paste_refusal("https://example.com/path?q=1#top"), None);
+        assert_eq!(paste_refusal("line one\nline two\ttab"), None);
+        assert_eq!(paste_refusal(""), None);
+        assert!(paste_refusal("café").unwrap().contains("plain ASCII"));
+        assert!(paste_refusal("سلام").unwrap().contains("plain ASCII"));
+        assert!(paste_refusal(&"x".repeat(MAX_PASTE)).is_none());
+        assert!(paste_refusal(&"x".repeat(MAX_PASTE + 1)).unwrap().contains("too much text"));
     }
 
     // The whole session, with the real client library: what is asked of the

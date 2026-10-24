@@ -3,6 +3,8 @@
 // with a paste key in the tab or its Paste button. The tab holds that key back,
 // reads the clipboard, hands both to the backend, and the backend presses the
 // key on the server once the text is on the server's clipboard.
+// The VNC tab (VncSessionView) takes the same paste keys and reads the
+// clipboard the same way; it sends the key itself, after the text.
 
 import { invoke } from "@tauri-apps/api/core";
 import { IS_ANDROID, IS_LINUX } from "./platform";
