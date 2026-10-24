@@ -14798,11 +14798,15 @@ async fn rdp_builtin_open(
             }
         };
 
-        // Files shared with the server; one that isn't there is said and left out.
+        // Files shared with the server; one that isn't there is said and left
+        // out. What is shared goes to the tab with the connection.
+        let mut shared = serde_json::Value::Null;
         let drive = share.and_then(|share| match rdp_share::channel(&share) {
             Ok(channel) => {
                 let how = if share.read_only { ", read only" } else { "" };
-                log(&format!("Sharing {} with the server{how}.", share.path.trim()), "info");
+                let name = rdp_share::share_name(&share);
+                log(&format!("Sharing {} with the server{how}, as \\\\tsclient\\{name}.", share.path.trim()), "info");
+                shared = serde_json::json!({ "name": name, "path": share.path.trim(), "readOnly": share.read_only });
                 Some(channel)
             }
             Err(e) => {
@@ -14828,7 +14832,10 @@ async fn rdp_builtin_open(
             move |w: u16, h: u16| {
                 if attempt.is_current_now() {
                     let _ = app.emit(&format!("session-log-{sid}"), serde_json::json!({"msg": format!("Connected to {target} ({w}×{h})."), "type": "success"}));
-                    let _ = app.emit(&format!("connection-success-{sid}"), serde_json::json!({"builtin": true, "address": target, "width": w, "height": h}));
+                    let _ = app.emit(
+                        &format!("connection-success-{sid}"),
+                        serde_json::json!({"builtin": true, "address": target, "width": w, "height": h, "shared": shared}),
+                    );
                 }
             }
         };
@@ -14878,7 +14885,16 @@ async fn rdp_builtin_open(
                 }
             }
         };
-        let run = tauri::async_runtime::spawn(rdp_client::run(stream, client_addr, login, verify, connected, notice, frame, remote_copy, flow, rx));
+        // How the link is doing, for the tab's connection mark.
+        let link = {
+            let (app, attempt, sid) = (app.clone(), attempt.clone(), session_id.clone());
+            move |stats: rdp_client::LinkStats| {
+                if attempt.is_current_now() {
+                    let _ = app.emit(&format!("rdp-link-{sid}"), stats);
+                }
+            }
+        };
+        let run = tauri::async_runtime::spawn(rdp_client::run(stream, client_addr, login, verify, connected, notice, frame, remote_copy, link, flow, rx));
         let outcome = match run.await {
             Ok(r) => r,
             Err(_) => Err("The RDP session stopped on bad data from the server".into()),
@@ -14942,6 +14958,15 @@ async fn rdp_builtin_paste(rdp_clients: tauri::State<'_, RdpClients>, session_id
 async fn rdp_builtin_resize(rdp_clients: tauri::State<'_, RdpClients>, session_id: String, width: u16, height: u16) -> Result<(), String> {
     if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
         let _ = tx.send(rdp_client::Cmd::Resize(width, height));
+    }
+    Ok(())
+}
+
+/// The tab was hidden (the server may stop sending the picture meanwhile) or shown again.
+#[tauri::command]
+async fn rdp_builtin_shown(rdp_clients: tauri::State<'_, RdpClients>, session_id: String, shown: bool) -> Result<(), String> {
+    if let Some((_, tx)) = rdp_clients.lock().await.get(&session_id) {
+        let _ = tx.send(rdp_client::Cmd::Shown(shown));
     }
     Ok(())
 }
@@ -21943,7 +21968,7 @@ pub fn run() {
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, kbi_save_choice, disconnect_session, set_use_ssh_config,
-            initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_resize, rdp_builtin_close, rdp_share_drives,
+            initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_resize, rdp_builtin_shown, rdp_builtin_close, rdp_share_drives,
             telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,

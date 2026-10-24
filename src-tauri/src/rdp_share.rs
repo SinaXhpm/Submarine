@@ -47,7 +47,6 @@ pub enum ShareKind {
 /// The name the server shows the share by (`\\tsclient\<name>`): the
 /// folder's own name, or the drive's letter. Letters, digits, `-` and `_`
 /// only, at most 32; "Shared" when nothing is left.
-#[cfg_attr(target_os = "android", allow(dead_code))]
 pub fn share_name(share: &Share) -> String {
     let path = share.path.trim();
     let bytes = path.as_bytes();

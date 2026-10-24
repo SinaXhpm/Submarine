@@ -14,8 +14,12 @@
 //! certificate's key, so a pinned certificate can't be replayed by someone
 //! who doesn't hold that key.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD as B64, Engine as _};
@@ -26,7 +30,7 @@ use ironrdp::cliprdr::pdu::{
 };
 use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::connector::connection_activation::ConnectionActivationState;
-use ironrdp::connector::{self, BitmapConfig, ClientConnector, ClientConnectorState, Credentials, DesktopSize};
+use ironrdp::connector::{self, BitmapConfig, ClientConnector, ClientConnectorState, Credentials, DesktopSize, Sequence as _};
 use ironrdp::core::{IntoOwned as _, WriteBuf};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
@@ -34,14 +38,19 @@ use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::input::{Database, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp::pdu::gcc::{ConnectionType, KeyboardType};
 use ironrdp::pdu::geometry::InclusiveRectangle;
+use ironrdp::pdu::mcs::decode_send_data_indication;
 use ironrdp::pdu::nego::SecurityProtocol;
+use ironrdp::pdu::Action;
 use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, BitmapCodecs, MajorPlatformType, RailSupportLevel};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp::pdu::rdp::headers::{decode_share_control, ShareControlCtx, ShareControlPdu, ShareDataPdu};
+use ironrdp::pdu::rdp::refresh_rectangle::RefreshRectanglePdu;
+use ironrdp::pdu::rdp::suppress_output::SuppressOutputPdu;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
-use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed, FramedWrite as _, TokioFramed};
+use ironrdp_tokio::{split_tokio_framed, FramedWrite as _, TokioFramed};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 use tokio_rustls::rustls;
 use zeroize::Zeroizing;
@@ -79,7 +88,220 @@ pub enum Cmd {
     /// Text from this computer's clipboard for the server's, then (when the
     /// user pressed a paste key in the tab) that key, once the server has it.
     Paste(Zeroizing<String>, PasteKeys),
+    /// Whether the tab is shown: while it isn't, the server is asked to stop
+    /// sending the picture (where it can), and to send all of it again after.
+    Shown(bool),
     Close,
+}
+
+/// How often the link is measured and the tab told about it.
+const LINK_EVERY: Duration = Duration::from_secs(2);
+/// The corner of the desktop the server is asked to draw again, to time how
+/// long its answer takes: a few pixels, so the question costs next to nothing.
+const PROBE_SIDE: u16 = 8;
+/// The delay the tab shows is the middle one of this many answers, so one
+/// slow answer behind a big picture doesn't make the link look bad.
+const PROBE_SAMPLES: usize = 5;
+/// No probe this long after a resize went out: the server is about to start
+/// the desktop over, and is better not asked to draw in the middle of it.
+const RESIZE_SETTLE: Duration = Duration::from_secs(3);
+
+/// What the desktop's restart takes of the session's own channel (IronRDP's
+/// connection finalization). Anything else that comes then on it, a picture
+/// or a pointer sent the slow way, the answer to a probe the server got as it
+/// started over, is passed over. A compressed one can't be looked into: it
+/// goes to the restart as before.
+fn restart_takes(pdu: &ShareDataPdu) -> bool {
+    matches!(
+        pdu,
+        ShareDataPdu::Synchronize(_)
+            | ShareDataPdu::Control(_)
+            | ShareDataPdu::ServerSetErrorInfo(_)
+            | ShareDataPdu::MonitorLayout(_)
+            | ShareDataPdu::FontMap(_)
+            | ShareDataPdu::Compressed { .. }
+    )
+}
+
+/// What the tab shows about the link to the server, every `LINK_EVERY`.
+#[derive(serde::Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkStats {
+    /// The time from asking the server to draw a corner of the desktop again
+    /// to its answer, in ms: the round trip through everything on the way,
+    /// SSH servers and VPNs included. The middle one of the last few; none
+    /// before the first answer.
+    pub rtt_ms: Option<u32>,
+    /// How long the server has said nothing at all since the question now out
+    /// was asked, in ms (0 when none is out): an answer that waits behind a
+    /// big picture on a slow link isn't silence.
+    pub waiting_ms: u32,
+    /// Bytes a second from and to the server, over the last `LINK_EVERY`.
+    pub in_rate: u64,
+    pub out_rate: u64,
+    /// All the bytes of the session so far, each way.
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    /// The server takes the question (it may refuse to draw again on request).
+    pub can_measure: bool,
+    /// The server can stop sending the picture while the tab isn't shown.
+    pub can_pause: bool,
+    /// It has stopped, at the tab's request.
+    pub paused: bool,
+}
+
+/// The round trips measured so far, and the question now out.
+#[derive(Default)]
+struct Probe {
+    out: Option<tokio::time::Instant>,
+    rtts: VecDeque<u32>,
+    /// The next answer doesn't count: it waits behind the whole picture the
+    /// server sends when the desktop starts, starts over or comes back from a
+    /// pause, and would make the link look slower than it is.
+    skip: bool,
+}
+
+impl Probe {
+    /// The server sends the whole picture now.
+    fn whole_picture(&mut self) {
+        self.out = None;
+        self.skip = true;
+    }
+
+    /// The question out was answered at `now`.
+    fn answered(&mut self, now: tokio::time::Instant) {
+        if let Some(asked) = self.out.take() {
+            if std::mem::take(&mut self.skip) {
+                return;
+            }
+            let ms = u32::try_from(now.saturating_duration_since(asked).as_millis()).unwrap_or(u32::MAX);
+            if self.rtts.len() == PROBE_SAMPLES {
+                self.rtts.pop_front();
+            }
+            self.rtts.push_back(ms);
+        }
+    }
+
+    /// The middle one of the last answers.
+    fn rtt(&self) -> Option<u32> {
+        let mut sorted: Vec<u32> = self.rtts.iter().copied().collect();
+        sorted.sort_unstable();
+        sorted.get(sorted.len() / 2).copied()
+    }
+}
+
+/// How long the server has said nothing since an answer was first awaited
+/// (`asked`: a probe out, or the desktop's restart), `heard` being the last
+/// time anything came from it; 0 when nothing is awaited.
+fn silence(now: tokio::time::Instant, asked: Option<tokio::time::Instant>, heard: tokio::time::Instant) -> u32 {
+    asked.map_or(0, |asked| u32::try_from(now.saturating_duration_since(asked.max(heard)).as_millis()).unwrap_or(u32::MAX))
+}
+
+/// The bytes counted on the connection, as the tab is told about them.
+struct Meter {
+    traffic: Arc<Traffic>,
+    /// The counts at the last look, and when it was.
+    last: (u64, u64, tokio::time::Instant),
+    /// The last look that found something new from the server.
+    heard: tokio::time::Instant,
+}
+
+impl Meter {
+    fn new(traffic: Arc<Traffic>) -> Self {
+        let now = tokio::time::Instant::now();
+        Self { traffic, last: (0, 0, now), heard: now }
+    }
+
+    /// The figures since the last look; what the server allows and whether
+    /// it is paused are the caller's to fill in.
+    fn look(&mut self, rtt_ms: Option<u32>, asked: Option<tokio::time::Instant>) -> LinkStats {
+        let now = tokio::time::Instant::now();
+        let (bytes_in, bytes_out) = (self.traffic.read.load(Ordering::Relaxed), self.traffic.written.load(Ordering::Relaxed));
+        let ms = now.saturating_duration_since(self.last.2).as_millis();
+        if bytes_in > self.last.0 {
+            self.heard = now;
+        }
+        let stats = LinkStats {
+            rtt_ms,
+            waiting_ms: silence(now, asked, self.heard),
+            in_rate: per_second(bytes_in.saturating_sub(self.last.0), ms),
+            out_rate: per_second(bytes_out.saturating_sub(self.last.1), ms),
+            bytes_in,
+            bytes_out,
+            ..LinkStats::default()
+        };
+        self.last = (bytes_in, bytes_out, now);
+        stats
+    }
+}
+
+/// The corner the server is asked to draw again (`PROBE_SIDE` square).
+fn probe_rect() -> InclusiveRectangle {
+    InclusiveRectangle { left: 0, top: 0, right: PROBE_SIDE - 1, bottom: PROBE_SIDE - 1 }
+}
+
+fn overlaps(a: &InclusiveRectangle, b: &InclusiveRectangle) -> bool {
+    a.left <= b.right && b.left <= a.right && a.top <= b.bottom && b.top <= a.bottom
+}
+
+/// Bytes a second, from a count `bytes` that took `ms`.
+fn per_second(bytes: u64, ms: u128) -> u64 {
+    if ms == 0 {
+        return 0;
+    }
+    u64::try_from(u128::from(bytes) * 1000 / ms).unwrap_or(u64::MAX)
+}
+
+/// The bytes that went each way on the connection, as they go on the wire
+/// (TLS and all).
+#[derive(Default)]
+struct Traffic {
+    read: AtomicU64,
+    written: AtomicU64,
+}
+
+/// The connection to the server, with the bytes on it counted for `LinkStats`.
+struct Counted<S> {
+    inner: S,
+    traffic: Arc<Traffic>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Counted<S> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = polled {
+            this.traffic.read.fetch_add((buf.filled().len() - before) as u64, Ordering::Relaxed);
+        }
+        polled
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Counted<S> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, data: &[u8]) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let polled = Pin::new(&mut this.inner).poll_write(cx, data);
+        if let Poll::Ready(Ok(n)) = polled {
+            this.traffic.written.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        polled
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+/// A request on the session's own channel (a probe, a pause), made into bytes for the server.
+fn share_data(stage: &ActiveStage, pdu: ShareDataPdu) -> Result<Vec<u8>, String> {
+    let mut buf = WriteBuf::new();
+    stage.encode_static(&mut buf, pdu).map_err(|e| format!("RDP: {e}"))?;
+    Ok(buf.filled().to_vec())
 }
 
 /// The paste key the page held back while the text went to the server's
@@ -406,6 +628,7 @@ impl Graphics {
         Some(format!("Speed and quality: {}.", parts.join(", ")))
     }
 
+
     fn connection_type(&self) -> ConnectionType {
         match self.network {
             Network::Lan => ConnectionType::Lan,
@@ -710,7 +933,8 @@ fn operations(events: Vec<InputEvent>) -> Vec<Operation> {
 /// without NLA it shows its own login screen whatever was sent); `frame`
 /// sends one frame to the page and says whether the page is still
 /// listening; `remote_copy` gets the text the user copied on the server
-/// (with the clipboard shared). Returns why the session ended.
+/// (with the clipboard shared); `link` gets how the link is doing, every
+/// `LINK_EVERY` once the desktop is there. Returns why the session ended.
 #[allow(clippy::too_many_arguments)]
 pub async fn run<S, V, VF>(
     stream: S,
@@ -721,6 +945,7 @@ pub async fn run<S, V, VF>(
     notice: impl Fn(&str),
     frame: impl Fn(Vec<u8>) -> bool,
     remote_copy: impl Fn(String),
+    link: impl Fn(LinkStats),
     flow: Arc<crate::screen_flow::Flow>,
     mut cmds: mpsc::UnboundedReceiver<Cmd>,
 ) -> Result<String, String>
@@ -730,7 +955,8 @@ where
     VF: std::future::Future<Output = bool>,
 {
     let host = login.host.clone();
-    let mut framed = TokioFramed::new(stream);
+    let traffic = Arc::new(Traffic::default());
+    let mut framed = TokioFramed::new(Counted { inner: stream, traffic: Arc::clone(&traffic) });
     let drdynvc = DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
     let mut connector = ClientConnector::new(connector_config(&login), client_addr).with_static_channel(drdynvc);
     // The shared clipboard is a channel of its own, only there when it's wanted.
@@ -823,6 +1049,10 @@ where
     let size = result.desktop_size;
     desktop_fits(size.width, size.height)?;
     let mut image = DecodedImage::new(PixelFormat::RgbA32, size.width, size.height);
+    // What the server lets the client ask of the picture: to draw a part of it
+    // again (the link's probe), and to stop and start sending it (a hidden tab).
+    let mut can_measure = result.refresh_rect_support;
+    let mut can_pause = result.suppress_output_support;
     let activation_factory = result.activation_factory;
     let mut stage: ActiveStage = ActiveStageBuilder {
         static_channels: result.static_channels,
@@ -852,154 +1082,228 @@ where
     // for in (one answer comes for each, in order), and a paste key held back
     // until the server has the text.
     let mut local_text: Option<Zeroizing<String>> = None;
-    let mut asked_formats: std::collections::VecDeque<ClipboardFormatId> = std::collections::VecDeque::new();
+    let mut asked_formats: VecDeque<ClipboardFormatId> = VecDeque::new();
     let mut held_paste: Option<(PasteKeys, tokio::time::Instant)> = None;
+    // The link: a probe now and then, the bytes since the last look, and
+    // whether the picture is paused (the tab isn't shown).
+    let mut link_tick = tokio::time::interval(LINK_EVERY);
+    link_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut probe = Probe::default();
+    probe.whole_picture();
+    let mut meter = Meter::new(traffic);
+    let mut paused = false;
+    let mut said_no_pause = false;
+    // A size asked for while the picture was paused (a server may refuse to
+    // resize then: xrdp does), sent when it is back; and when one last went out.
+    let mut resize_later: Option<(u16, u16)> = None;
+    let mut resized_at: Option<tokio::time::Instant> = None;
+    // Channel data (files, clipboard) that came while the desktop restarted:
+    // the session takes it first, in order.
+    let mut replay: VecDeque<Vec<u8>> = VecDeque::new();
 
     loop {
         let paste_due = held_paste.map(|(_, at)| at);
-        let outputs = tokio::select! {
-            Some(event) = next_clip_event(&mut clip_events) => match event {
-                ClipEvent::FormatListWanted => offer_text(&mut stage, local_text.is_some()).unwrap_or_else(|e| {
+        let outputs = if let Some(pdu) = replay.pop_front() {
+            stage.process(&mut image, Action::X224, &pdu).map_err(|e| format!("RDP: {e}"))?
+        } else {
+            tokio::select! {
+                Some(event) = next_clip_event(&mut clip_events) => match event {
+                    ClipEvent::FormatListWanted => offer_text(&mut stage, local_text.is_some()).unwrap_or_else(|e| {
+                        notice(&e);
+                        Vec::new()
+                    }),
+                    // The server has the text: the held-back paste key goes now.
+                    // Refused, it would paste what the server had before: it doesn't.
+                    ClipEvent::Offered(taken) => match held_paste.take() {
+                        Some((keys, _)) if taken => {
+                            let ops = paste_keys(keys, |k| db.is_key_pressed(k));
+                            let fast = db.apply(ops).into_vec();
+                            stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
+                        }
+                        Some(_) => {
+                            notice("The server didn't take this device's text, so nothing was pasted.");
+                            Vec::new()
+                        }
+                        None => Vec::new(),
+                    },
+                    ClipEvent::RemoteCopy(Some(format)) => match clip_step(&mut stage, |c| c.initiate_paste(format)) {
+                        Ok(outputs) => {
+                            asked_formats.push_back(format);
+                            outputs
+                        }
+                        Err(e) => {
+                            notice(&e);
+                            Vec::new()
+                        }
+                    },
+                    ClipEvent::RemoteCopy(None) => Vec::new(),
+                    ClipEvent::RemoteText(None) => {
+                        asked_formats.pop_front();
+                        Vec::new()
+                    }
+                    ClipEvent::RemoteTooLong(bytes) => {
+                        asked_formats.pop_front();
+                        notice(&format!("The server's copy is too long to bring over ({bytes} bytes; the most is {MAX_CLIP_CHARS} characters)."));
+                        Vec::new()
+                    }
+                    ClipEvent::Wanted(format) => {
+                        let response = match local_text.as_deref() {
+                            Some(text) if format == ClipboardFormatId::CF_UNICODETEXT => FormatDataResponse::new_unicode_string(text),
+                            Some(text) if format == ClipboardFormatId::CF_TEXT => FormatDataResponse::new_string(text),
+                            _ => FormatDataResponse::new_error(),
+                        }
+                        .into_owned();
+                        clip_step(&mut stage, |c| c.submit_format_data(response)).unwrap_or_else(|e| {
+                            notice(&e);
+                            Vec::new()
+                        })
+                    }
+                    ClipEvent::RemoteText(Some(data)) => {
+                        let format = asked_formats.pop_front().unwrap_or(ClipboardFormatId::CF_UNICODETEXT);
+                        match decode_clip_text(format, &data) {
+                            Ok(text) if !text.is_empty() => remote_copy(text),
+                            Ok(_) => {}
+                            Err(e) => notice(&e),
+                        }
+                        Vec::new()
+                    }
+                },
+                // What the shared files' backend finished later: a lock granted,
+                // a change in a folder the server watches.
+                _ = drive_tick.tick(), if sharing => drive_deferred(&mut stage).unwrap_or_else(|e| {
                     notice(&e);
                     Vec::new()
                 }),
-                // The server has the text: the held-back paste key goes now.
-                // Refused, it would paste what the server had before: it doesn't.
-                ClipEvent::Offered(taken) => match held_paste.take() {
-                    Some((keys, _)) if taken => {
-                        let ops = paste_keys(keys, |k| db.is_key_pressed(k));
-                        let fast = db.apply(ops).into_vec();
+                // How the link is doing, for the tab: the bytes since the last
+                // look, the round trip, and a new probe unless one is still out
+                // (a paused server draws nothing, so it isn't asked then).
+                _ = link_tick.tick() => {
+                    link(LinkStats { can_measure, can_pause, paused, ..meter.look(probe.rtt(), probe.out) });
+                    // An answer that comes in the middle of a restart of the
+                    // desktop is passed over there (see DeactivateAll); just
+                    // after a resize, the server isn't asked at all.
+                    let settling = resized_at.is_some_and(|at| at.elapsed() < RESIZE_SETTLE);
+                    if can_measure && !paused && !settling && probe.out.is_none() {
+                        let ask = share_data(&stage, ShareDataPdu::RefreshRectangle(RefreshRectanglePdu { areas_to_refresh: vec![probe_rect()] }))?;
+                        writer.write_all(&ask).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                        probe.out = Some(tokio::time::Instant::now());
+                    }
+                    Vec::new()
+                }
+                // The server didn't say it has the text in time: the key goes anyway.
+                _ = sleep_until_due(paste_due), if paste_due.is_some() => {
+                    let keys = held_paste.take().map_or(PasteKeys::None, |(keys, _)| keys);
+                    let ops = paste_keys(keys, |k| db.is_key_pressed(k));
+                    let fast = db.apply(ops).into_vec();
+                    stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
+                }
+                pdu = reader.read_pdu() => {
+                    let (action, payload) = pdu.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                    stage.process(&mut image, action, &payload).map_err(|e| format!("RDP: {e}"))?
+                }
+                cmd = cmds.recv() => match cmd {
+                    None | Some(Cmd::Close) => {
+                        if let Ok(outs) = stage.graceful_shutdown() {
+                            for o in outs {
+                                if let ActiveStageOutput::ResponseFrame(b) = o {
+                                    let _ = writer.write_all(&b).await;
+                                }
+                            }
+                        }
+                        return Ok("closed".into());
+                    }
+                    Some(Cmd::Input(events)) => {
+                        // In order: a release-all (the tab lost the keys) lets go
+                        // of what was down before it, not of a key pressed after
+                        // it in the same batch.
+                        let mut fast = Vec::new();
+                        let mut part = Vec::new();
+                        for e in events {
+                            if matches!(e, InputEvent::ReleaseAll) {
+                                fast.extend(db.apply(operations(std::mem::take(&mut part))).into_vec());
+                                fast.extend(db.release_all());
+                            } else {
+                                part.push(e);
+                            }
+                        }
+                        fast.extend(db.apply(operations(part)).into_vec());
                         stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
                     }
-                    Some(_) => {
-                        notice("The server didn't take this device's text, so nothing was pasted.");
+                    Some(Cmd::Paste(text, keys)) => {
+                        local_text = Some(text);
+                        if keys != PasteKeys::None {
+                            held_paste = Some((keys, tokio::time::Instant::now() + PASTE_WAIT));
+                        }
+                        offer_text(&mut stage, true).unwrap_or_else(|e| {
+                            notice(&e);
+                            Vec::new()
+                        })
+                    }
+                    Some(Cmd::Resize(w, h)) => {
+                        let (w, h) = clamp_size(w, h);
+                        if paused {
+                            resize_later = Some((w, h));
+                        } else if u32::from(w) != u32::from(image.width()) || u32::from(h) != u32::from(image.height()) {
+                            if let Some(Ok(bytes)) = stage.encode_resize(u32::from(w), u32::from(h), None, None) {
+                                writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                                resized_at = Some(tokio::time::Instant::now());
+                            }
+                        }
                         Vec::new()
                     }
-                    None => Vec::new(),
+                    // Paused: the server stops sending the picture. Shown again: it
+                    // sends all of it, as it is now.
+                    Some(Cmd::Shown(shown)) if shown == paused => {
+                        if can_pause {
+                            let desktop_rect = shown.then(|| InclusiveRectangle {
+                                left: 0,
+                                top: 0,
+                                right: image.width().saturating_sub(1),
+                                bottom: image.height().saturating_sub(1),
+                            });
+                            let bytes = share_data(&stage, ShareDataPdu::SuppressOutput(SuppressOutputPdu { desktop_rect }))?;
+                            writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                            paused = !shown;
+                            // Paused, a probe out isn't answered; shown, the whole picture comes first.
+                            if shown {
+                                probe.whole_picture();
+                            } else {
+                                probe.out = None;
+                            }
+                            // The size asked for meanwhile.
+                            if let Some((w, h)) = resize_later.take().filter(|_| shown) {
+                                if u32::from(w) != u32::from(image.width()) || u32::from(h) != u32::from(image.height()) {
+                                    if let Some(Ok(bytes)) = stage.encode_resize(u32::from(w), u32::from(h), None, None) {
+                                        writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                                        resized_at = Some(tokio::time::Instant::now());
+                                    }
+                                }
+                            }
+                        } else if !shown && !said_no_pause {
+                            said_no_pause = true;
+                            notice("This server can't pause the picture while the tab is hidden: it keeps sending it.");
+                        }
+                        Vec::new()
+                    }
+                    Some(Cmd::Shown(_)) => Vec::new(),
                 },
-                ClipEvent::RemoteCopy(Some(format)) => match clip_step(&mut stage, |c| c.initiate_paste(format)) {
-                    Ok(outputs) => {
-                        asked_formats.push_back(format);
-                        outputs
-                    }
-                    Err(e) => {
-                        notice(&e);
-                        Vec::new()
-                    }
-                },
-                ClipEvent::RemoteCopy(None) => Vec::new(),
-                ClipEvent::RemoteText(None) => {
-                    asked_formats.pop_front();
-                    Vec::new()
-                }
-                ClipEvent::RemoteTooLong(bytes) => {
-                    asked_formats.pop_front();
-                    notice(&format!("The server's copy is too long to bring over ({bytes} bytes; the most is {MAX_CLIP_CHARS} characters)."));
-                    Vec::new()
-                }
-                ClipEvent::Wanted(format) => {
-                    let response = match local_text.as_deref() {
-                        Some(text) if format == ClipboardFormatId::CF_UNICODETEXT => FormatDataResponse::new_unicode_string(text),
-                        Some(text) if format == ClipboardFormatId::CF_TEXT => FormatDataResponse::new_string(text),
-                        _ => FormatDataResponse::new_error(),
-                    }
-                    .into_owned();
-                    clip_step(&mut stage, |c| c.submit_format_data(response)).unwrap_or_else(|e| {
-                        notice(&e);
-                        Vec::new()
-                    })
-                }
-                ClipEvent::RemoteText(Some(data)) => {
-                    let format = asked_formats.pop_front().unwrap_or(ClipboardFormatId::CF_UNICODETEXT);
-                    match decode_clip_text(format, &data) {
-                        Ok(text) if !text.is_empty() => remote_copy(text),
-                        Ok(_) => {}
-                        Err(e) => notice(&e),
-                    }
-                    Vec::new()
-                }
-            },
-            // What the shared files' backend finished later: a lock granted,
-            // a change in a folder the server watches.
-            _ = drive_tick.tick(), if sharing => drive_deferred(&mut stage).unwrap_or_else(|e| {
-                notice(&e);
-                Vec::new()
-            }),
-            // The server didn't say it has the text in time: the key goes anyway.
-            _ = sleep_until_due(paste_due), if paste_due.is_some() => {
-                let keys = held_paste.take().map_or(PasteKeys::None, |(keys, _)| keys);
-                let ops = paste_keys(keys, |k| db.is_key_pressed(k));
-                let fast = db.apply(ops).into_vec();
-                stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
-            }
-            pdu = reader.read_pdu() => {
-                let (action, payload) = pdu.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
-                stage.process(&mut image, action, &payload).map_err(|e| format!("RDP: {e}"))?
-            }
-            cmd = cmds.recv() => match cmd {
-                None | Some(Cmd::Close) => {
-                    if let Ok(outs) = stage.graceful_shutdown() {
-                        for o in outs {
-                            if let ActiveStageOutput::ResponseFrame(b) = o {
-                                let _ = writer.write_all(&b).await;
+                // While the page is far behind on what it was sent, what changes
+                // waits here as one rectangle at most (see screen_flow.rs).
+                _ = tick.tick(), if !dirty.is_empty() && flow.has_room() => {
+                    let rects = tidy(std::mem::take(&mut dirty), u64::from(image.width()) * u64::from(image.height()));
+                    for r in &rects {
+                        if let Some(f) = rect_frame(&image, r) {
+                            if !frame(f) {
+                                return Ok("closed".into());
                             }
                         }
                     }
-                    return Ok("closed".into());
-                }
-                Some(Cmd::Input(events)) => {
-                    // In order: a release-all (the tab lost the keys) lets go
-                    // of what was down before it, not of a key pressed after
-                    // it in the same batch.
-                    let mut fast = Vec::new();
-                    let mut part = Vec::new();
-                    for e in events {
-                        if matches!(e, InputEvent::ReleaseAll) {
-                            fast.extend(db.apply(operations(std::mem::take(&mut part))).into_vec());
-                            fast.extend(db.release_all());
-                        } else {
-                            part.push(e);
-                        }
-                    }
-                    fast.extend(db.apply(operations(part)).into_vec());
-                    stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
-                }
-                Some(Cmd::Paste(text, keys)) => {
-                    local_text = Some(text);
-                    if keys != PasteKeys::None {
-                        held_paste = Some((keys, tokio::time::Instant::now() + PASTE_WAIT));
-                    }
-                    offer_text(&mut stage, true).unwrap_or_else(|e| {
-                        notice(&e);
-                        Vec::new()
-                    })
-                }
-                Some(Cmd::Resize(w, h)) => {
-                    let (w, h) = clamp_size(w, h);
-                    if u32::from(w) != u32::from(image.width()) || u32::from(h) != u32::from(image.height()) {
-                        if let Some(Ok(bytes)) = stage.encode_resize(u32::from(w), u32::from(h), None, None) {
-                            writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
-                        }
-                    }
                     Vec::new()
                 }
-            },
-            // While the page is far behind on what it was sent, what changes
-            // waits here as one rectangle at most (see screen_flow.rs).
-            _ = tick.tick(), if !dirty.is_empty() && flow.has_room() => {
-                let rects = tidy(std::mem::take(&mut dirty), u64::from(image.width()) * u64::from(image.height()));
-                for r in &rects {
-                    if let Some(f) = rect_frame(&image, r) {
-                        if !frame(f) {
-                            return Ok("closed".into());
-                        }
-                    }
-                }
-                Vec::new()
+                // The page has caught up: what it is owed goes now, not with the
+                // next thing the server says.
+                _ = flow.room(), if !dirty.is_empty() && !flow.has_room() => Vec::new(),
             }
-            // The page has caught up: what it is owed goes now, not with the
-            // next thing the server says.
-            _ = flow.room(), if !dirty.is_empty() && !flow.has_room() => Vec::new(),
         };
 
         for out in outputs {
@@ -1008,6 +1312,10 @@ where
                     writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
                 }
                 ActiveStageOutput::GraphicsUpdate(rect) => {
+                    // The probe's corner drawn again: the server answered.
+                    if probe.out.is_some() && overlaps(&rect, &probe_rect()) {
+                        probe.answered(tokio::time::Instant::now());
+                    }
                     if dirty.len() >= MAX_RECTS {
                         let all = dirty.iter().fold(rect.clone(), |acc, r| union(&acc, r));
                         dirty.clear();
@@ -1020,15 +1328,52 @@ where
                 ActiveStageOutput::DeactivateAll => {
                     // The server starts the desktop over (a new size, mostly):
                     // the deactivation-reactivation sequence, then a new image.
+                    // A probe out now would time the restart, not the link.
+                    probe.whole_picture();
                     let mut activation = activation_factory.create();
                     let mut buf = WriteBuf::new();
+                    // A server that starts the desktop over and then says nothing
+                    // would hold this loop for good, deaf to Close.
+                    let restarted_at = tokio::time::Instant::now();
+                    let deadline = restarted_at + STEP_TIMEOUT;
                     loop {
-                        // A server that starts the desktop over and then says nothing
-                        // would hold this loop for good, deaf to Close.
-                        let written = tokio::time::timeout(STEP_TIMEOUT, single_sequence_step_read(&mut reader, &mut activation, &mut buf))
-                            .await
-                            .map_err(|_| "RDP: the server stopped answering while it restarted the desktop".to_string())?
-                            .map_err(|e| format!("RDP: {e}"))?;
+                        buf.clear();
+                        let step = if activation.next_pdu_hint().is_some() {
+                            let (action, pdu) = loop {
+                                tokio::select! {
+                                    read = reader.read_pdu() => break read.map_err(|e| format!("The connection to the RDP server ended: {e}"))?,
+                                    // The tab still hears how the link is doing (a link that
+                                    // stops in the middle of a restart isn't "fine" for 30 s).
+                                    _ = link_tick.tick() => link(LinkStats { can_measure, can_pause, paused, ..meter.look(probe.rtt(), Some(restarted_at)) }),
+                                    () = tokio::time::sleep_until(deadline) => {
+                                        return Err("RDP: the server stopped answering while it restarted the desktop".into());
+                                    }
+                                }
+                            };
+                            // What the server still sends for the old desktop (a
+                            // picture, the probe's answer) isn't part of the restart:
+                            // the new desktop is drawn whole after it.
+                            if action == Action::FastPath {
+                                continue;
+                            }
+                            if let Ok(data) = decode_send_data_indication(&pdu) {
+                                // Nor is a channel's (files, clipboard): it waits for the session.
+                                if data.channel_id != activation.io_channel_id() {
+                                    replay.push_back(pdu.to_vec());
+                                    continue;
+                                }
+                                // Nor what the restart doesn't take of the session's own channel.
+                                if let Ok(ShareControlCtx { pdu: ShareControlPdu::Data(header), .. }) = decode_share_control(data) {
+                                    if !restart_takes(&header.share_data_pdu) {
+                                        continue;
+                                    }
+                                }
+                            }
+                            activation.step(&pdu, reader.last_read_at(), &mut buf)
+                        } else {
+                            activation.step_no_input(&mut buf)
+                        };
+                        let written = step.map_err(|e| format!("RDP: {e}"))?;
                         if written.size().is_some() {
                             writer.write_all(buf.filled()).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
                         }
@@ -1038,6 +1383,8 @@ where
                             enable_server_pointer,
                             pointer_software_rendering,
                             static_channel_chunk_size,
+                            refresh_rect_support,
+                            suppress_output_support,
                             ..
                         } = activation.connection_activation_state()
                         {
@@ -1056,6 +1403,19 @@ where
                             }
                             if !frame(size_frame(desktop_size.width, desktop_size.height)) {
                                 return Ok("closed".into());
+                            }
+                            can_measure = refresh_rect_support;
+                            can_pause = suppress_output_support;
+                            // Paused before the restart: paused again (the restart
+                            // started the picture over); a server that can't any
+                            // more just sends it.
+                            if paused {
+                                paused = false;
+                                if can_pause {
+                                    let bytes = share_data(&stage, ShareDataPdu::SuppressOutput(SuppressOutputPdu { desktop_rect: None }))?;
+                                    writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                                    paused = true;
+                                }
                             }
                             break;
                         }
@@ -1247,6 +1607,135 @@ mod tests {
         // With the other choices it stays one codec (RemoteFX), nothing else is offered.
         let b = connector_config(&login_with(Graphics { colors: 16, network: Network::Slow, remote_fx: true, ..Graphics::default() })).bitmap.unwrap();
         assert_eq!((b.color_depth, b.lossy_compression, b.codecs.0.len()), (16, true, 1));
+    }
+
+    #[test]
+    fn the_delay_is_the_middle_of_the_last_answers() {
+        let start = tokio::time::Instant::now();
+        let mut probe = Probe::default();
+        assert_eq!((probe.rtt(), silence(start, probe.out, start)), (None, 0), "nothing asked yet");
+        // An answer with no question out counts for nothing.
+        probe.answered(start + Duration::from_millis(5));
+        assert_eq!(probe.rtt(), None);
+        let mut at = start;
+        for ms in [40u64, 1000, 50, 45, 30] {
+            probe.out = Some(at);
+            assert_eq!(silence(at + Duration::from_millis(7), probe.out, start), 7);
+            at += Duration::from_millis(ms);
+            probe.answered(at);
+            assert_eq!(silence(at, probe.out, start), 0, "answered");
+        }
+        // One slow answer (behind a big picture) doesn't make the link look slow.
+        assert_eq!(probe.rtt(), Some(45));
+        // Only the last few count: five quick ones push the slow one out.
+        for _ in 0..PROBE_SAMPLES {
+            probe.out = Some(at);
+            at += Duration::from_millis(20);
+            probe.answered(at);
+        }
+        assert_eq!(probe.rtts.len(), PROBE_SAMPLES);
+        assert_eq!(probe.rtt(), Some(20));
+        // A question out for 7 s, but the server sent something 2 s ago: that
+        // is a slow answer, not silence; nothing since it was asked is.
+        let now = at + Duration::from_secs(7);
+        assert_eq!(silence(now, Some(at), now - Duration::from_secs(2)), 2000);
+        assert_eq!(silence(now, Some(at), at - Duration::from_secs(1)), 7000);
+    }
+
+    #[tokio::test]
+    async fn the_meter_says_what_came_and_how_long_nothing_has() {
+        let traffic = Arc::new(Traffic::default());
+        let mut meter = Meter::new(Arc::clone(&traffic));
+        let asked = tokio::time::Instant::now();
+        traffic.read.fetch_add(4000, Ordering::Relaxed);
+        traffic.written.fetch_add(100, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let first = meter.look(Some(12), Some(asked));
+        assert_eq!((first.bytes_in, first.bytes_out, first.rtt_ms), (4000, 100, Some(12)));
+        assert!(first.in_rate > 0 && first.out_rate > 0);
+        assert!(first.waiting_ms < 50, "something came: no silence ({})", first.waiting_ms);
+        // Nothing since: the rates fall to nothing and the silence grows.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let second = meter.look(Some(12), Some(asked));
+        assert_eq!((second.in_rate, second.out_rate), (0, 0));
+        assert!(second.waiting_ms >= 50, "{}", second.waiting_ms);
+        assert_eq!(meter.look(None, None).waiting_ms, 0, "nothing awaited");
+    }
+
+    #[test]
+    fn the_answer_behind_a_whole_picture_doesnt_count() {
+        let start = tokio::time::Instant::now();
+        let mut probe = Probe::default();
+        probe.out = Some(start);
+        probe.answered(start + Duration::from_millis(40));
+        // The desktop starts over: the question out is dropped, and the next
+        // answer (behind the whole picture) passed over.
+        probe.out = Some(start);
+        probe.whole_picture();
+        assert_eq!(probe.out, None);
+        probe.out = Some(start);
+        probe.answered(start + Duration::from_secs(4));
+        assert_eq!(probe.rtt(), Some(40), "the slow one isn't counted");
+        probe.out = Some(start);
+        probe.answered(start + Duration::from_millis(50));
+        assert_eq!(probe.rtts.iter().copied().collect::<Vec<_>>(), [40, 50]);
+    }
+
+    #[test]
+    fn the_restart_passes_over_updates_and_keeps_its_own_messages() {
+        use ironrdp::pdu::rdp::finalization_messages::{MonitorLayoutPdu, SynchronizePdu};
+        // What a server still sends while the desktop starts over: passed over.
+        for pdu in [ShareDataPdu::Update(Vec::new()), ShareDataPdu::Pointer(Vec::new()), ShareDataPdu::PlaySound(Vec::new()), ShareDataPdu::ShutdownDenied] {
+            assert!(!restart_takes(&pdu), "{pdu:?}");
+        }
+        // The restart's own: taken (and what can't be looked into isn't hidden from it).
+        assert!(restart_takes(&ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 1007 })));
+        assert!(restart_takes(&ShareDataPdu::MonitorLayout(MonitorLayoutPdu { monitors: Vec::new() })));
+    }
+
+    #[test]
+    fn only_a_picture_over_the_probes_corner_answers_it() {
+        let rect = |left, top, right, bottom| InclusiveRectangle { left, top, right, bottom };
+        let p = probe_rect();
+        assert!(overlaps(&rect(0, 0, 63, 63), &p), "the tile it is in");
+        assert!(overlaps(&rect(7, 7, 7, 7), &p), "its last pixel");
+        assert!(overlaps(&rect(0, 0, 1919, 1079), &p), "the whole desktop");
+        assert!(!overlaps(&rect(8, 0, 100, 100), &p), "right of it");
+        assert!(!overlaps(&rect(0, 8, 100, 100), &p), "under it");
+        assert!(!overlaps(&rect(500, 400, 520, 410), &p), "a clock elsewhere");
+    }
+
+    #[test]
+    fn rates_are_bytes_a_second() {
+        assert_eq!(per_second(4000, 2000), 2000);
+        assert_eq!(per_second(0, 2000), 0);
+        assert_eq!(per_second(123, 0), 0, "no time: no rate, not a division by zero");
+        assert_eq!(per_second(u64::MAX, 1), u64::MAX);
+    }
+
+    #[test]
+    fn the_tab_reads_the_link_figures_by_their_names() {
+        let json = serde_json::to_value(LinkStats { rtt_ms: Some(12), ..LinkStats::default() }).unwrap();
+        let ts = include_str!("../../src/util/rdpLink.ts");
+        for key in json.as_object().unwrap().keys() {
+            assert!(ts.contains(key.as_str()), "src/util/rdpLink.ts must read {key}, as rdp_client::LinkStats names it");
+        }
+        assert_eq!(json["rttMs"], 12);
+        assert!(serde_json::to_value(LinkStats::default()).unwrap()["rttMs"].is_null());
+    }
+
+    #[tokio::test]
+    async fn the_counted_connection_counts_both_ways() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let (ours, mut theirs) = tokio::io::duplex(64);
+        let traffic = Arc::new(Traffic::default());
+        let mut counted = Counted { inner: ours, traffic: Arc::clone(&traffic) };
+        counted.write_all(b"hello").await.unwrap();
+        theirs.write_all(b"from the server").await.unwrap();
+        let mut got = [0u8; 15];
+        counted.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"from the server");
+        assert_eq!((traffic.read.load(Ordering::Relaxed), traffic.written.load(Ordering::Relaxed)), (15, 5));
     }
 
     #[test]

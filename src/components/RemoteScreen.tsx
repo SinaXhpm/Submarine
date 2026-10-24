@@ -15,21 +15,23 @@ import { scancodeFor } from "../util/scancodes";
 export type RemoteScreenHandle = {
   /** A new frame channel, drawn on this canvas (one per connect). */
   newChannel: () => Channel<ArrayBuffer>;
-  /** The size the desktop should have for the tab (larger on a phone). */
-  wantedSize: () => { width: number; height: number };
+  /** The size the desktop should have for the tab (larger on a phone), at
+   *  `scale` (the resolution: the `scale` prop's unless given). */
+  wantedSize: (scale?: number) => { width: number; height: number };
 };
 
 // A phone gets a desktop larger than its screen: at least 720 on its short
 // side (as far as its pixel density goes, so it stays sharp), drawn to fit
 // and zoomed with two fingers. A phone-sized desktop is too small for most
-// programs. Elsewhere the desktop is the tab's size.
+// programs. Elsewhere the desktop is the tab's size. Either way `scale` (an
+// RDP server's resolution choice) makes it smaller, drawn larger to fit.
 const PHONE_SHORT_SIDE = 720;
 const MAX_ZOOM = 5;
-function desktopFor(w: number, h: number): { width: number; height: number } {
-  let k = 1;
+function desktopFor(w: number, h: number, scale: number): { width: number; height: number } {
+  let k = scale;
   if (IS_ANDROID) {
     const short = Math.max(1, Math.min(w, h));
-    k = Math.min(Math.max(1, PHONE_SHORT_SIDE / short), Math.max(1, window.devicePixelRatio || 1));
+    k *= Math.min(Math.max(1, PHONE_SHORT_SIDE / short), Math.max(1, window.devicePixelRatio || 1));
   }
   return { width: Math.floor(w * k), height: Math.floor(h * k) };
 }
@@ -54,10 +56,12 @@ type Props = {
   inputCommand: string;
   /** The command that takes the size the tab wants. */
   resizeCommand: string;
+  /** The desktop's size as a part of the tab's (1 unless chosen lower). */
+  scale?: number;
 };
 
 const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
-  ({ sessionId, active, connected, inputCommand, resizeCommand }, ref) => {
+  ({ sessionId, active, connected, inputCommand, resizeCommand, scale = 1 }, ref) => {
     const boxRef = useRef<HTMLDivElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const imeRef = useRef<HTMLTextAreaElement | null>(null);
@@ -94,8 +98,9 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
     useEffect(() => () => window.clearTimeout(ackTimer.current), []);
     // A phone's keyboard is up (it takes part of the tab while it is).
     const typing = useRef(false);
-    // The tab size the desktop was last sized for.
+    // The tab size the desktop was last sized for, and the resolution.
     const sizedFor = useRef<{ w: number; h: number } | null>(null);
+    const scaleRef = useRef(scale);
     // Two-finger zoom (1 = the whole desktop fits) and the pan, in CSS pixels
     // from the centre.
     const [view, setView] = useState({ z: 1, x: 0, y: 0 });
@@ -188,11 +193,12 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
         };
         return ch;
       },
-      wantedSize: () => {
+      wantedSize: (scale?: number) => {
         const r = boxRef.current?.getBoundingClientRect();
         const w = Math.max(200, r?.width ?? 1024), h = Math.max(200, r?.height ?? 768);
         sizedFor.current = { w, h };
-        return desktopFor(w, h);
+        if (scale !== undefined) scaleRef.current = scale;
+        return desktopFor(w, h, scaleRef.current);
       },
     }));
 
@@ -220,7 +226,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
           const last = sizedFor.current;
           if (typing.current && last && Math.abs(r.width - last.w) <= 4) return;
           sizedFor.current = { w: r.width, h: r.height };
-          const d = desktopFor(r.width, r.height);
+          const d = desktopFor(r.width, r.height, scaleRef.current);
           invoke(resizeCommand, { sessionId, width: d.width, height: d.height }).catch(() => {});
         }, 400);
       });
@@ -230,6 +236,17 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
         window.clearTimeout(timer);
       };
     }, [sessionId, connected, resizeCommand]);
+
+    // A new resolution: the desktop is sized for it at once.
+    useEffect(() => {
+      if (scaleRef.current === scale) return;
+      scaleRef.current = scale;
+      const r = boxRef.current?.getBoundingClientRect();
+      if (!connected || !r || r.width < 50 || r.height < 50) return;
+      sizedFor.current = { w: r.width, h: r.height };
+      const d = desktopFor(r.width, r.height, scale);
+      invoke(resizeCommand, { sessionId, width: d.width, height: d.height }).catch(() => {});
+    }, [scale, connected, sessionId, resizeCommand]);
 
     // Keys focus here when the tab is shown.
     useEffect(() => {
