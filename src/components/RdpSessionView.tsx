@@ -429,7 +429,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       className="shrink-0 inline-flex items-center gap-1 h-5 px-1.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300 text-[10px] font-bold uppercase tracking-wider"
     >
       <FlaskConical size={10} aria-hidden="true" />
-      <span className="hidden sm:inline">Experimental</span>
+      <span className="hidden [@container(min-width:560px)]:inline">Experimental</span>
     </span>
   );
 
@@ -486,7 +486,9 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       : null;
     return (
       <div data-rdp-status={status} className="relative flex-1 flex flex-col bg-[#0a0a0c] text-white overflow-hidden">
-        <div className="shrink-0 h-9 px-2 sm:px-3 flex items-center gap-2 border-b border-white/5 bg-[#0e0e10]">
+        {/* The labels show by the bar's own width, not the window's: in a split
+            view the tab is a part of the window. */}
+        <div className="shrink-0 h-9 px-2 sm:px-3 flex items-center gap-2 border-b border-white/5 bg-[#0e0e10] [container-type:inline-size]">
           <span className={`shrink-0 ${broken ? "text-red-400" : "text-primary"}`} aria-hidden="true">
             {working ? <Loader2 size={14} className="animate-spin" /> : broken ? <AlertTriangle size={14} /> : <MonitorSmartphone size={14} />}
           </span>
@@ -503,7 +505,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
                 aria-label="Paste this device's clipboard into the server"
                 className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-white/5 text-zinc-300 hover:text-zinc-100 text-[11px] font-semibold transition-colors"
               >
-                <ClipboardPaste size={12} aria-hidden="true" /><span className="hidden sm:inline">Paste</span>
+                <ClipboardPaste size={12} aria-hidden="true" /><span className="hidden [@container(min-width:560px)]:inline">Paste</span>
               </button>
             )}
             {connected && <LinkMark link={link} open={panel === "link"} onClick={() => togglePanel("link")} />}
@@ -516,7 +518,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
                 aria-label="Shared files"
                 className={`h-7 px-2 flex items-center gap-1.5 rounded-md text-[11px] font-semibold transition-colors ${panel === "files" ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-400 hover:text-zinc-200"}`}
               >
-                <FolderSymlink size={12} aria-hidden="true" /><span className="hidden md:inline">Files</span>
+                <FolderSymlink size={12} aria-hidden="true" /><span className="hidden [@container(min-width:700px)]:inline">Files</span>
               </button>
             )}
             <button
@@ -526,7 +528,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
               aria-label="Speed and quality"
               className={`h-7 px-2 flex items-center gap-1.5 rounded-md text-[11px] font-semibold transition-colors ${panel === "settings" ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-400 hover:text-zinc-200"}`}
             >
-              <SlidersHorizontal size={12} aria-hidden="true" /><span className="hidden md:inline">Settings</span>
+              <SlidersHorizontal size={12} aria-hidden="true" /><span className="hidden [@container(min-width:700px)]:inline">Settings</span>
             </button>
             {connected && (
               <button
@@ -554,7 +556,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
                 aria-label="Reconnect"
                 className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary/20 text-[11px] font-semibold transition-colors"
               >
-                <RotateCw size={12} /><span className="hidden sm:inline">Reconnect</span>
+                <RotateCw size={12} /><span className="hidden [@container(min-width:560px)]:inline">Reconnect</span>
               </button>
             )}
             <button
@@ -563,7 +565,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
               aria-label="Close session"
               className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-white/5 text-zinc-300 hover:bg-red-500/15 hover:text-red-300 text-[11px] font-semibold transition-colors"
             >
-              <X size={12} /><span className="hidden sm:inline">Close</span>
+              <X size={12} /><span className="hidden [@container(min-width:560px)]:inline">Close</span>
             </button>
           </div>
         </div>
