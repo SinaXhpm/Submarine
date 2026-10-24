@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Search, X, History } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Command History Search — Ctrl+R (Cmd+R on macOS) overlay
+// Command History Search — Ctrl+Shift+R (Cmd+Shift+R on macOS) overlay
 //
 // Portaled modal that queries the encrypted profile vault's `cmd_history`
 // table via the tauri commands defined in lib.rs. Fuzzy-ish (LIKE-based)

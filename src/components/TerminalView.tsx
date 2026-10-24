@@ -151,7 +151,7 @@ const TerminalView = ({
   /// value CHANGES after that.
   connectionEpoch?: number;
   /// Server id + name are used to stamp command-history rows so the
-  /// Ctrl+R overlay can show which server the command was run against.
+  /// Ctrl+Shift+R overlay can show which server the command was run against.
   /// Quick-connect sessions have serverId=0 and just record the display
   /// name — that's fine for search, since the row is orphaned from any
   /// saved node anyway.
@@ -270,14 +270,14 @@ const TerminalView = ({
   const modifiersRef = useRef<ModifiersState>(modifiers);
   useEffect(() => { modifiersRef.current = modifiers; }, [modifiers]);
 
-  // In-terminal search (Ctrl+F / Cmd+F). Query state is component-scoped so
+  // In-terminal search (Ctrl+Shift+F / Cmd+Shift+F). Query state is component-scoped so
   // reopening the chip pre-fills the last search — matches VS Code / Chrome
   // muscle memory. showSearch drives the floating chip's mount so xterm
   // isn't burdened with a hidden overlay when the user isn't searching.
   const [showSearch, setShowSearch] = useState(false);
   const [query, setQuery] = useState('');
 
-  // Command-history overlay (Ctrl+R / Cmd+R). Same document-level keydown
+  // Command-history overlay (Ctrl+Shift+R / Cmd+Shift+R). Same document-level keydown
   // gate as search: only pop it when the user is focused inside this
   // terminal's DOM subtree, so multi-tab windows don't fire N overlays.
   const [showHistory, setShowHistory] = useState(false);
@@ -548,33 +548,38 @@ const TerminalView = ({
     return () => cancelAnimationFrame(id);
   }, [focusSignal]);
 
-  // Ctrl+F / Cmd+F opens the search chip — but only when the user is
-  // focused inside this terminal's DOM subtree. Document-level listener is
-  // needed because xterm's textarea steals keyboard focus, so the wrapper
-  // never sees the keydown via bubbling within React's synthetic tree.
-  // Gate on `document.activeElement` so multiple terminals in tabs / split
-  // panes don't all pop their search chip on a single Ctrl+F.
+  // Ctrl+Shift+F / Cmd+Shift+F opens the search chip — but only when the
+  // user is focused inside this terminal's DOM subtree. Document-level
+  // listener is needed because xterm's textarea steals keyboard focus, so
+  // the wrapper never sees the keydown via bubbling within React's synthetic
+  // tree. Gate on `document.activeElement` so multiple terminals in tabs /
+  // split panes don't all pop their search chip on a single press.
   //
-  // The same gate is reused for Ctrl+R / Cmd+R which opens the command
-  // history overlay. Browsers normally reload the page on Ctrl+R; inside
-  // the Tauri webview a document-level preventDefault stops that dead.
+  // The same gate opens the command history overlay on Ctrl+Shift+R /
+  // Cmd+Shift+R. The plain combos stay the shell's: Ctrl+R is its
+  // reverse-i-search and Ctrl+F pages forward in less and vim. xterm turns
+  // those into ^R and ^F for the shell and stops them from bubbling, so they
+  // never reach here. A Ctrl+Shift combo gets no key from xterm and bubbles
+  // untouched. Matched by keyCode, the layout's F and R keys (the ones xterm
+  // goes by too), so Dvorak gets the same keys. The webview's own reload on
+  // Ctrl+Shift+R is cancelled app-wide (main.tsx).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
       const wrapper = terminalRef.current;
       if (!wrapper) return;
       const active = document.activeElement;
       if (!(active instanceof Node) || !wrapper.contains(active)) return;
-      if (e.key === 'f' || e.key === 'F') {
+      if (e.keyCode === 70) {
         e.preventDefault();
         setShowSearch(true);
-        // If already open, refocus the input so a second Ctrl+F selects the
+        // If already open, refocus the input so a second press selects the
         // existing query for a quick overwrite.
         requestAnimationFrame(() => {
           searchInputRef.current?.focus();
           searchInputRef.current?.select();
         });
-      } else if (e.key === 'r' || e.key === 'R') {
+      } else if (e.keyCode === 82) {
         e.preventDefault();
         setShowHistory(true);
       }
@@ -1351,9 +1356,9 @@ const TerminalView = ({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              // Stop keys from leaking to the document listener (Ctrl+F
-              // reopen loop) and to xterm's textarea (which would type
-              // into the shell).
+              // Stop keys from leaking to the document listener
+              // (Ctrl+Shift+F reopen loop) and to xterm's textarea (which
+              // would type into the shell).
               if (e.key === 'Escape') {
                 e.preventDefault();
                 setQuery('');
@@ -1361,7 +1366,7 @@ const TerminalView = ({
               } else if (e.key === 'Enter') {
                 e.preventDefault();
                 runFind(e.shiftKey ? 'prev' : 'next');
-              } else if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+              } else if ((e.ctrlKey || e.metaKey) && e.keyCode === 70) {
                 // Swallow so the outer document handler doesn't re-fire
                 // (which would just refocus us — harmless but noisy).
                 e.preventDefault();

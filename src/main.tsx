@@ -16,6 +16,18 @@ window.addEventListener("error", (e) => {
   console.error("[app] uncaught error:", e.error ?? e.message);
 });
 
+// The webview's reload keys (F5, Ctrl/Cmd+R, Ctrl/Cmd+Shift+R) would drop
+// every open session, so they do nothing here. Capture phase, so a handler
+// that stops the event (xterm, an overlay's input) can't let one through.
+// Only the default is cancelled: xterm still sends Ctrl+R to the shell, and
+// Ctrl+Shift+R still reaches the terminal's history overlay. By keyCode, not
+// `code`: the webview's accelerator goes by the layout's R key (the physical
+// O on Dvorak), as does the Ctrl+R that xterm sends.
+window.addEventListener("keydown", (e) => {
+  const reloadCombo = (e.ctrlKey || e.metaKey) && !e.altKey && e.keyCode === 82;
+  if (e.key === "F5" || reloadCombo) e.preventDefault();
+}, true);
+
 // ── Android soft-keyboard sizing (visualViewport → --vv-h) ──────────────────
 // The Android on-screen keyboard covers our fixed-bottom UI (MobileKeyBar,
 // Sidebar dock) unless the layout root shrinks with the keyboard. The
