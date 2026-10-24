@@ -22021,6 +22021,14 @@ pub fn run() {
         .build(context)
         .expect("error while building tauri application")
         .run(|_app, event| {
+            // A phone's app went to the background or came back (Android's
+            // onPause and onResume): its WebView still says it is visible, so
+            // the page is told here (an RDP tab pauses its picture meanwhile).
+            #[cfg(mobile)]
+            if let tauri::RunEvent::WindowEvent { event: window_event @ (tauri::WindowEvent::Suspended | tauri::WindowEvent::Resumed), .. } = &event {
+                use tauri::Emitter;
+                let _ = _app.emit("app-shown", matches!(window_event, tauri::WindowEvent::Resumed));
+            }
             if let tauri::RunEvent::Exit = event {
                 // The decrypted copies this run staged go with it.
                 sweep_app_temp(true);

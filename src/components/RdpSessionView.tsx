@@ -341,7 +341,13 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   useEffect(() => {
     const onChange = () => setPageShown(document.visibilityState !== "hidden");
     document.addEventListener("visibilitychange", onChange);
-    return () => document.removeEventListener("visibilitychange", onChange);
+    // A phone's app in the background: its WebView still says it is visible,
+    // so the backend tells (lib.rs, from Android's onPause and onResume).
+    const off = listen<boolean>("app-shown", (e) => setPageShown(!!e.payload));
+    return () => {
+      document.removeEventListener("visibilitychange", onChange);
+      off.then((f) => f());
+    };
   }, []);
   const pauseWanted = builtin && status === "connected" && !(shown && pageShown) && opts.pauseHidden;
   const pauseSent = useRef(false);
