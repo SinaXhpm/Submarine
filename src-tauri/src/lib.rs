@@ -8928,7 +8928,7 @@ async fn prompt_for_secret_offering_save(
         "prompts": [{ "prompt": label, "echo": echo }],
     });
     if let Some(to) = offer_save {
-        payload["save"] = to.offer();
+        payload["save"] = to.offer(ctx.app);
     }
     let _ = ctx.app.emit(&format!("kbi-prompt-{}", ctx.session_id), payload);
     let answer = match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
@@ -10149,7 +10149,7 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                     "prompts": prompt_payload,
                 });
                 if let (true, Some(to)) = (password_question, save_to) {
-                    payload["save"] = to.offer();
+                    payload["save"] = to.offer(app);
                 }
                 let _ = app.emit(&format!("kbi-prompt-{}", session_id), payload);
 
@@ -13367,13 +13367,109 @@ impl SaveTarget {
         Some(Self { server_id, generation: db_state.generation_now(), ticked: true })
     }
 
-    /// The "Save password" tick's JSON for a prompt.
-    fn offer(&self) -> serde_json::Value {
+    /// The "Save password" tick's JSON for a prompt, with a line under it when
+    /// it starts off, or when the password would reach other servers too.
+    fn offer(&self, app: &tauri::AppHandle) -> serde_json::Value {
+        use tauri::Manager;
         let mut offer = serde_json::json!({ "label": "Save password", "checked": self.ticked });
+        let mut notes = Vec::new();
         if !self.ticked {
-            offer["note"] = serde_json::json!("Off because this login also tried keys (an ssh-agent's or ~/.ssh/config's): a saved password would be used instead of them.");
+            notes.push("Off because this login also tried keys (an ssh-agent's or ~/.ssh/config's): a saved password would be used instead of them.".to_string());
+        }
+        let db_state = app.state::<DbState>();
+        if let Ok(guard) = db_state.conn.lock() {
+            if let (Some(conn), true) = (guard.as_ref(), db_state.generation_now() == self.generation) {
+                notes.extend(shared_login_note(conn, self.server_id));
+            }
+        }
+        if !notes.is_empty() {
+            offer["note"] = serde_json::json!(notes.join(" "));
         }
         offer
+    }
+}
+
+/// When a server logs in with a saved login that other servers use too, the
+/// line under "Save password" that says so: a password saved there reaches
+/// them as well. None when the login is the server's alone (or a key login,
+/// whose password isn't saved).
+fn shared_login_note(conn: &rusqlite::Connection, server_id: i32) -> Option<String> {
+    let (login_id, login_name): (i32, String) = conn
+        .query_row(
+            "SELECT c.id, COALESCE(c.name, '') FROM servers s
+             JOIN credentials c ON c.id = s.credential_id AND c.deleted = 0
+             WHERE s.id = ?1 AND COALESCE(s.auth_type, 'vault') = 'vault' AND COALESCE(c.auth_type, '') != 'key'",
+            [server_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(name, host, '') FROM servers
+             WHERE credential_id = ?1 AND id != ?2 AND deleted = 0 AND COALESCE(auth_type, 'vault') = 'vault'
+             ORDER BY position, id",
+        )
+        .ok()?;
+    let others: Vec<String> = stmt
+        .query_map(rusqlite::params![login_id, server_id], |r| r.get::<_, String>(0))
+        .ok()?
+        .flatten()
+        .collect();
+    let names = match others.as_slice() {
+        [] => return None,
+        [one] => one.clone(),
+        [first @ .., last] if others.len() <= 3 => format!("{} and {last}", first.join(", ")),
+        _ => format!("{} and {} more", others[..3].join(", "), others.len() - 3),
+    };
+    Some(format!("It goes into the saved login \u{201c}{login_name}\u{201d}, also used by {names}: they get the new password too."))
+}
+
+#[cfg(test)]
+mod shared_login_note_tests {
+    use super::shared_login_note;
+
+    #[test]
+    fn the_line_names_the_other_servers_of_a_shared_login() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE credentials(id INTEGER PRIMARY KEY, name TEXT, auth_type TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, host TEXT, credential_id INTEGER, auth_type TEXT,
+                                  position INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO credentials VALUES (1, 'work', 'password', 0), (2, 'solo', 'password', 0), (3, 'keys', 'key', 0),
+                                            (4, 'many', 'password', 0), (5, 'gone', 'password', 1);
+             INSERT INTO servers VALUES (1, 'A', 'a', 1, 'vault', 0, 0), (2, 'B', 'b', 1, 'vault', 1, 0),
+                                        (3, NULL, 'c.example', 1, NULL, 2, 0), (4, 'deleted', 'd', 1, 'vault', 3, 1),
+                                        (5, 'own password', 'e', 1, 'custom_pass', 4, 0),
+                                        (6, 'alone', 'f', 2, 'vault', 0, 0),
+                                        (7, 'k1', 'g', 3, 'vault', 0, 0), (8, 'k2', 'h', 3, 'vault', 1, 0),
+                                        (9, 'm1', 'm', 4, 'vault', 0, 0), (10, 'm2', 'm', 4, 'vault', 1, 0), (11, 'm3', 'm', 4, 'vault', 2, 0),
+                                        (12, 'm4', 'm', 4, 'vault', 3, 0), (13, 'm5', 'm', 4, 'vault', 4, 0),
+                                        (14, 'x1', 'x', 5, 'vault', 0, 0), (15, 'x2', 'x', 5, 'vault', 1, 0);",
+        )
+        .unwrap();
+        // B, and a server without a name by its address; not a deleted server, nor one with its own password.
+        assert_eq!(
+            shared_login_note(&conn, 1).as_deref(),
+            Some("It goes into the saved login \u{201c}work\u{201d}, also used by B and c.example: they get the new password too.")
+        );
+        assert_eq!(
+            shared_login_note(&conn, 2).as_deref(),
+            Some("It goes into the saved login \u{201c}work\u{201d}, also used by A and c.example: they get the new password too.")
+        );
+        // The login is the server's alone; a key login (no password to save); the server's own password; a deleted login.
+        for id in [6, 7, 5, 14] {
+            assert_eq!(shared_login_note(&conn, id), None, "server {id}");
+        }
+        // Many: three names and how many more.
+        assert_eq!(
+            shared_login_note(&conn, 9).as_deref(),
+            Some("It goes into the saved login \u{201c}many\u{201d}, also used by m2, m3, m4 and 1 more: they get the new password too.")
+        );
+        conn.execute_batch("UPDATE servers SET deleted = 1 WHERE id IN (12, 13)").unwrap();
+        assert_eq!(
+            shared_login_note(&conn, 9).as_deref(),
+            Some("It goes into the saved login \u{201c}many\u{201d}, also used by m2 and m3: they get the new password too.")
+        );
     }
 }
 
@@ -14412,7 +14508,7 @@ async fn rdp_builtin_open(
             let instructions = if password.is_empty() { "" } else { "The password was rejected. Please try again." };
             let mut payload = serde_json::json!({ "nonce": nonce, "name": "", "instructions": instructions, "prompts": [{ "prompt": format!("Password for {shown}"), "echo": false }] });
             if let Some(to) = save_target {
-                payload["save"] = to.offer();
+                payload["save"] = to.offer(&app);
             }
             let _ = app.emit(&format!("kbi-prompt-{session_id}"), payload);
             let answer = tokio::time::timeout(std::time::Duration::from_secs(120), prx).await;
@@ -15274,7 +15370,7 @@ async fn vnc_open(
                     kbi_txs.lock().await.insert(nonce.clone(), ptx);
                     let mut payload = serde_json::json!({ "nonce": nonce, "name": "", "instructions": instructions, "prompts": [{ "prompt": format!("VNC password for {target}"), "echo": false }] });
                     if let Some(to) = save_target {
-                        payload["save"] = to.offer();
+                        payload["save"] = to.offer(&app);
                     }
                     let _ = app.emit(&format!("kbi-prompt-{sid}"), payload);
                     let answer = tokio::time::timeout(std::time::Duration::from_secs(120), prx).await;
