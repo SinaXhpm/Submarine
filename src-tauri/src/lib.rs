@@ -18,6 +18,7 @@ mod tunnel;
 mod telnet;
 mod vnc_client;
 mod screen_flow;
+mod screen_link;
 mod monitor;
 mod cloud;
 mod cloud_config;
@@ -14888,7 +14889,7 @@ async fn rdp_builtin_open(
         // How the link is doing, for the tab's connection mark.
         let link = {
             let (app, attempt, sid) = (app.clone(), attempt.clone(), session_id.clone());
-            move |stats: rdp_client::LinkStats| {
+            move |stats: screen_link::LinkStats| {
                 if attempt.is_current_now() {
                     let _ = app.emit(&format!("rdp-link-{sid}"), stats);
                 }
@@ -15604,8 +15605,17 @@ async fn vnc_open(
                 }
             }
         };
+        // How the link is doing, for the tab's connection mark.
+        let link = {
+            let (app, attempt, sid) = (app.clone(), attempt.clone(), session_id.clone());
+            move |stats: screen_link::LinkStats| {
+                if attempt.is_current_now() {
+                    let _ = app.emit(&format!("vnc-link-{sid}"), stats);
+                }
+            }
+        };
         // A decoder that panics on a bad screen update ends this tab only.
-        let run = tauri::async_runtime::spawn(vnc_client::run(stream, password, connected, frame, flow, rx, wanted, options, clipboard, remote_copy));
+        let run = tauri::async_runtime::spawn(vnc_client::run(stream, password, connected, frame, flow, rx, wanted, options, clipboard, remote_copy, link));
         let outcome = match run.await {
             Ok(r) => r,
             Err(_) => Err("The VNC session stopped on bad data from the server".into()),
@@ -15668,6 +15678,15 @@ async fn vnc_paste(vnc_clients: tauri::State<'_, vnc_client::VncClients>, sessio
     }
     if let Some((_, tx)) = vnc_clients.lock().await.get(&session_id) {
         let _ = tx.send(vnc_client::Cmd::Paste(text));
+    }
+    Ok(())
+}
+
+/// The VNC tab was hidden (no updates are asked for meanwhile) or shown again.
+#[tauri::command]
+async fn vnc_shown(vnc_clients: tauri::State<'_, vnc_client::VncClients>, session_id: String, shown: bool) -> Result<(), String> {
+    if let Some((_, tx)) = vnc_clients.lock().await.get(&session_id) {
+        let _ = tx.send(vnc_client::Cmd::Shown(shown));
     }
     Ok(())
 }
@@ -21996,7 +22015,7 @@ pub fn run() {
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, kbi_save_choice, disconnect_session, set_use_ssh_config,
             initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_resize, rdp_builtin_shown, rdp_builtin_close, rdp_share_drives,
-            telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize, vnc_paste, screen_ack,
+            telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize, vnc_paste, vnc_shown, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
             open_terminal, local_shell, write_terminal_data, type_saved_password, resize_terminal, close_terminal,

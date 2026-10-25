@@ -1,14 +1,19 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Signal, SignalHigh, SignalLow, SignalMedium, SignalZero, X } from "lucide-react";
 import { SwitchRow } from "./FormRows";
 import { RdpShareFields, RdpSpeedFields } from "./RdpOptionFields";
-import { formatBytes, formatRate, GOOD_BELOW_MS, LINK_WORDS, linkQuality, WEAK_FROM_MS, type LinkQuality, type LinkStats } from "../util/rdpLink";
+import { VncSpeedFields } from "./VncOptionFields";
+import { formatBytes, formatRate, GOOD_BELOW_MS, LINK_WORDS, linkQuality, WEAK_FROM_MS, type LinkQuality, type LinkStats } from "../util/screenLink";
 import type { RdpOptions } from "../util/rdpOptions";
+import type { VncOptions } from "../util/vncOptions";
 
-// The built-in RDP client's tools in its tab's bar: how the link is doing,
-// what of this computer's files the server gets, and the speed and quality.
-// Each opens a panel over the desktop; what is changed there is kept for the
-// server on this device, as the server form keeps it.
+// The tools in the bar of a remote screen tab (the built-in RDP client, VNC):
+// how the link is doing, the speed and quality, and for RDP what of this
+// computer's files the server gets. Each opens a panel over the screen; what
+// is changed there is kept for the server on this device, as the server form
+// keeps it.
 
 /** What the session now open shares (rdp_builtin_open says, with the connection). */
 export type SharedNow = { name: string; path: string; readOnly: boolean };
@@ -170,7 +175,7 @@ export function FilesPanel({ shared, o, set, drives, reconnect }: {
   );
 }
 
-export function SettingsPanel({ o, set, reconnect }: { o: RdpOptions; set: (patch: Partial<RdpOptions>) => void; reconnect: (() => void) | null }) {
+export function RdpSettingsPanel({ o, set, reconnect }: { o: RdpOptions; set: (patch: Partial<RdpOptions>) => void; reconnect: (() => void) | null }) {
   return (
     <>
       <RdpSpeedFields o={o} set={set} />
@@ -184,4 +189,62 @@ export function SettingsPanel({ o, set, reconnect }: { o: RdpOptions; set: (patc
       {KEPT}
     </>
   );
+}
+
+export function VncSettingsPanel({ o, set, reconnect }: { o: VncOptions; set: (patch: Partial<VncOptions>) => void; reconnect: (() => void) | null }) {
+  return (
+    <>
+      <VncSpeedFields o={o} set={set} />
+      <SwitchRow
+        label="Share the clipboard"
+        hint="Text you copy on the server comes to this device; this device's goes to the server when you paste it there. Plain ASCII text only, such as links and commands."
+        checked={o.clipboard}
+        onChange={(clipboard) => set({ clipboard })}
+      />
+      {reconnect && <ReconnectBar onReconnect={reconnect} />}
+      {KEPT}
+    </>
+  );
+}
+
+// How long the tab is hidden before the picture pauses: a quick look at
+// another tab changes nothing.
+const PAUSE_AFTER_MS = 3000;
+
+/** Whether the page is on screen: not minimised or behind another window's
+ *  tab, and on a phone, the app not in the background. */
+export function usePageShown(): boolean {
+  const [pageShown, setPageShown] = useState(() => document.visibilityState !== "hidden");
+  useEffect(() => {
+    const onChange = () => setPageShown(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", onChange);
+    // A phone's app in the background: its WebView still says it is visible,
+    // so the backend tells (lib.rs, from Android's onPause and onResume).
+    const off = listen<boolean>("app-shown", (e) => setPageShown(!!e.payload));
+    return () => {
+      document.removeEventListener("visibilitychange", onChange);
+      off.then((f) => f());
+    };
+  }, []);
+  return pageShown;
+}
+
+/** While `pause` holds for PAUSE_AFTER_MS, the session is told the tab is
+ *  hidden (`command`, shown: false); as soon as it doesn't, that it is shown. */
+export function usePauseWhileHidden(pause: boolean, command: string, sessionId: string) {
+  const pauseSent = useRef(false);
+  useEffect(() => {
+    if (!pause) {
+      if (pauseSent.current) {
+        pauseSent.current = false;
+        invoke(command, { sessionId, shown: true }).catch(() => {});
+      }
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      pauseSent.current = true;
+      invoke(command, { sessionId, shown: false }).catch(() => {});
+    }, PAUSE_AFTER_MS);
+    return () => window.clearTimeout(timer);
+  }, [pause, command, sessionId]);
 }

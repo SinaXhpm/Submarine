@@ -13,6 +13,11 @@
 //! picture as RGBA and sends the parts that changed, ~60 times a second at
 //! most, as frames the page draws: `[1, w, h]` when the size changes,
 //! `[2, x, y, w, h, RGBA rows]` for a part (little-endian u16s after the tag).
+//!
+//! The tab's connection mark (screen_link.rs): every 2 seconds the server is
+//! asked for the screen's 8×8 corner afresh (a request only the vendored copy
+//! of vnc-rs makes), and the time to its bytes is the round trip. A server
+//! only sends when asked, so a hidden tab pauses by not asking (`Cmd::Shown`).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -21,6 +26,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use ::vnc::{ClientKeyEvent, ClientMouseEvent, PixelFormat, Rect, VncConnector, VncEncoding, VncError, VncEvent, X11Event};
 use zeroize::Zeroizing;
+
+use crate::screen_link::{Counted, LinkStats, Meter, Probe, Traffic, LINK_EVERY, PROBE_SIDE};
 
 /// The port a VNC server listens on unless told otherwise (display :0).
 pub const DEFAULT_PORT: u16 = 5900;
@@ -49,7 +56,93 @@ pub enum Cmd {
     /// Text from this device's clipboard for the server's (the user pasted in
     /// the tab); the paste key, if any, follows as input.
     Paste(Zeroizing<String>),
+    /// Whether the tab is shown: while it isn't, no update is asked for (the
+    /// server sends none unasked); shown again, what changed comes at once.
+    Shown(bool),
     Close,
+}
+
+/// Whether a part the server sent covers the corner a probe asks for.
+fn over_corner(r: Rect) -> bool {
+    r.x < PROBE_SIDE && r.y < PROBE_SIDE && r.width > 0 && r.height > 0
+}
+
+/// The most of a tick spent taking what the server sent from the VNC library.
+/// Its queue holds two updates, so they are taken as they come, with a short
+/// wait for the next one (`DRAIN_WAIT`): taking only what was there at the
+/// tick, two a tick, a busy screen fell seconds behind.
+const DRAIN_BUDGET: Duration = Duration::from_millis(10);
+const DRAIN_WAIT: Duration = Duration::from_millis(2);
+
+/// The desktop's size the tab wants, asked of the server one request at a
+/// time (the VNC library refuses a second while one is out), the latest
+/// wanted size winning. A request goes once the server has said its layout
+/// (before that the library can't resize), and is asked again when the server
+/// next says it if the last one went unanswered.
+#[derive(Default)]
+struct Resizer {
+    /// Wanted and not yet the desktop's size.
+    wanted: Option<(u16, u16)>,
+    /// A request is out.
+    out: bool,
+    /// Asked again when the server next says its layout.
+    on_layout: bool,
+}
+
+impl Resizer {
+    /// The tab wants `size`; what to ask now, if anything. `known`: the server
+    /// has said its layout.
+    fn want(&mut self, size: (u16, u16), known: bool) -> Option<(u16, u16)> {
+        self.wanted = Some(clamp_size(size.0, size.1));
+        self.next(known)
+    }
+
+    fn next(&mut self, known: bool) -> Option<(u16, u16)> {
+        if self.out || self.wanted.is_none() {
+            return None;
+        }
+        if !known {
+            self.on_layout = true;
+            return None;
+        }
+        self.out = true;
+        self.wanted
+    }
+
+    /// The server said its layout.
+    fn layout(&mut self) -> Option<(u16, u16)> {
+        if !std::mem::take(&mut self.on_layout) {
+            return None;
+        }
+        self.next(true)
+    }
+
+    /// The answer to the request out (`asked`); what to ask now, if anything.
+    fn done(&mut self, asked: (u16, u16), result: Result<(u16, u16), ::vnc::ResizeError>) -> Option<(u16, u16)> {
+        use ::vnc::ResizeError as E;
+        self.out = false;
+        match result {
+            // Done, unless another size was wanted meanwhile.
+            Ok(size) => {
+                if self.wanted == Some(size) || self.wanted == Some(asked) {
+                    self.wanted = None;
+                }
+                self.next(true)
+            }
+            // The server won't, or can't take that size: not asked again.
+            Err(E::Denied(_) | E::InvalidDimensions | E::UnsupportedLayout) => {
+                if self.wanted == Some(asked) {
+                    self.wanted = None;
+                }
+                self.next(true)
+            }
+            // Not known yet, or unanswered: when the server next says its layout.
+            Err(_) => {
+                self.on_layout = true;
+                None
+            }
+        }
+    }
 }
 
 /// The most text that goes to the server's clipboard at once (the VNC
@@ -646,10 +739,11 @@ pub fn explain(e: &VncError) -> String {
 /// the screen to `frame` and the page's input to the server. `connected` hears
 /// the desktop's first size. With `clipboard`, text the user copies on the
 /// server goes to `remote_copy`, and `Cmd::Paste` puts text on the server's
-/// clipboard. Ok("closed") when the page closed it, Ok(reason) when the server
-/// ended it, Err when it failed.
+/// clipboard. `link` gets how the link is doing, every `LINK_EVERY`.
+/// Ok("closed") when the page closed it, Ok(reason) when the server ended it,
+/// Err when it failed.
 #[allow(clippy::too_many_arguments)]
-pub async fn run<S, P, C, F, R>(
+pub async fn run<S, P, C, F, R, L>(
     stream: S,
     password: P,
     connected: C,
@@ -660,6 +754,7 @@ pub async fn run<S, P, C, F, R>(
     options: Options,
     clipboard: bool,
     mut remote_copy: R,
+    mut link: L,
 ) -> Result<String, String>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
@@ -667,7 +762,10 @@ where
     C: FnOnce(u16, u16) + Send,
     F: FnMut(Vec<u8>) -> bool + Send,
     R: FnMut(String) + Send,
+    L: FnMut(LinkStats) + Send,
 {
+    let traffic = std::sync::Arc::new(Traffic::default());
+    let stream = Counted::new(stream, std::sync::Arc::clone(&traffic));
     let password = async move {
         match password.await {
             Some(p) => Ok(p.to_string()),
@@ -691,17 +789,28 @@ where
     let mut pointer = Pointer::default();
     let mut connected = Some(connected);
     let mut asked_size: Option<(u16, u16)> = None;
-    let resize = |client: &::vnc::VncClient, (w, h): (u16, u16)| {
-        let client = client.clone();
-        let (w, h) = clamp_size(w, h);
+    let mut resizer = Resizer::default();
+    let (resized_tx, mut resized_rx) = mpsc::unbounded_channel();
+    let resize = |client: &::vnc::VncClient, size: Option<(u16, u16)>| {
+        let Some((w, h)) = size else { return };
+        let (client, done) = (client.clone(), resized_tx.clone());
         tokio::spawn(async move {
-            let _ = client.resize_desktop(w, h).await;
+            let result = client.resize_desktop(w, h).await.map(|l| (l.width, l.height));
+            let _ = done.send(((w, h), result));
         });
     };
     let mut tick = tokio::time::interval(Duration::from_millis(TICK_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pacer = Pacer::new(options.gap());
     let mut copies = Copies::default();
+    // The link: a probe now and then, the bytes since the last look, and
+    // whether the tab is hidden (nothing is asked for then).
+    let mut link_tick = tokio::time::interval(LINK_EVERY);
+    link_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut probe = Probe::default();
+    probe.whole_picture();
+    let mut meter = Meter::new(std::sync::Arc::clone(&traffic));
+    let mut paused = false;
     let outcome = loop {
         tokio::select! {
             cmd = rx.recv() => match cmd {
@@ -715,7 +824,7 @@ where
                 Some(Cmd::Resize(w, h)) => {
                     asked_size = Some((w, h));
                     if screen.w > 0 {
-                        resize(&client, (w, h));
+                        resize(&client, resizer.want((w, h), client.desktop_layout().is_some()));
                     }
                 }
                 // Before the paste key that may follow: the server takes the
@@ -725,6 +834,19 @@ where
                         let _ = client.input(X11Event::CopyText(text.to_string())).await;
                     }
                 }
+                // Hidden: the probe out goes unanswered. Shown again: the first
+                // update brings all that changed meanwhile, and a probe's
+                // answer behind it would make the link look slow.
+                Some(Cmd::Shown(shown)) => {
+                    if shown == paused {
+                        paused = !shown;
+                        if shown {
+                            probe.whole_picture();
+                        } else {
+                            probe.out = None;
+                        }
+                    }
+                }
                 Some(Cmd::Close) | None => {
                     for ev in pointer.release_all() {
                         let _ = client.input(ev).await;
@@ -732,39 +854,86 @@ where
                     break Ok("closed".to_string());
                 }
             },
+            Some((asked, result)) = resized_rx.recv() => {
+                resize(&client, resizer.done(asked, result));
+            }
+            // How the link is doing, for the tab, and a new probe unless one
+            // is still out or the tab is hidden.
+            _ = link_tick.tick() => {
+                link(LinkStats { can_measure: true, can_pause: true, paused, ..meter.look(probe.rtt(), probe.out) });
+                if !paused && screen.w > 0 && probe.out.is_none() {
+                    // Timed from before it goes: on a fast link the answer's
+                    // bytes may come before the send returns.
+                    let asked = tokio::time::Instant::now();
+                    let corner = Rect { x: 0, y: 0, width: PROBE_SIDE, height: PROBE_SIDE };
+                    if client.input(X11Event::RefreshRect(corner)).await.is_err() {
+                        break Ok("The VNC server closed the connection.".to_string());
+                    }
+                    probe.out = Some(asked);
+                }
+            }
             _ = tick.tick() => {
                 let mut ended = None;
+                // An answer to the probe came this tick: a part over its
+                // corner, or the layout a server like TigerVNC answers a
+                // fresh request with first (the pixels come with the next
+                // incremental one).
+                let mut answer = false;
+                let drain_until = tokio::time::Instant::now() + DRAIN_BUDGET;
+                let mut got = false;
                 loop {
-                    match client.poll_event().await {
-                        Ok(Some(ev)) => match ev {
+                    let left = drain_until.saturating_duration_since(tokio::time::Instant::now());
+                    if got && left.is_zero() {
+                        break;
+                    }
+                    let next = match client.poll_event().await {
+                        Ok(None) if got => match tokio::time::timeout(left.min(DRAIN_WAIT), client.recv_event()).await {
+                            Ok(next) => next.map(Some),
+                            Err(_) => Ok(None),
+                        },
+                        next => next,
+                    };
+                    match next {
+                        Ok(Some(ev)) => { got = true; match ev {
                             VncEvent::SetResolution(s) => {
                                 screen.resize(s.width, s.height);
+                                probe.whole_picture();
                                 if !frame(size_frame(s.width, s.height)) {
                                     ended = Some(Ok("closed".to_string()));
                                     break;
                                 }
                                 if let Some(c) = connected.take() {
                                     c(s.width, s.height);
-                                    // The tab's size, once the server has said its own.
+                                    // The tab's size, asked once the server
+                                    // has said its layout.
                                     let want = asked_size.unwrap_or(wanted);
                                     if want != (s.width, s.height) {
-                                        resize(&client, want);
+                                        resize(&client, resizer.want(want, client.desktop_layout().is_some()));
                                     }
                                 }
                             }
                             VncEvent::DesktopUpdate(u) => {
+                                answer = true;
                                 if let Some(l) = u.layout {
                                     if (l.width, l.height) != (screen.w, screen.h) {
                                         screen.resize(l.width, l.height);
+                                        probe.whole_picture();
                                         if !frame(size_frame(l.width, l.height)) {
                                             ended = Some(Ok("closed".to_string()));
                                             break;
                                         }
                                     }
+                                    resize(&client, resizer.layout());
                                 }
                             }
-                            VncEvent::RawImage(r, data) => screen.put(r, &data),
-                            VncEvent::Copy(dst, src) => screen.copy(dst, src),
+                            VncEvent::RawImage(r, data) => {
+                                answer |= over_corner(r);
+                                screen.put(r, &data);
+                            }
+                            VncEvent::Copy(dst, src) => {
+                                answer |= over_corner(dst);
+                                screen.copy(dst, src);
+                            }
                             // The user copied text on the server: it goes to the
                             // tab below, the latest one, not oftener than COPY_EVERY.
                             VncEvent::Text(text) => {
@@ -779,7 +948,7 @@ where
                             // JPEG isn't asked for; the cursor is in the
                             // picture; the bell isn't used.
                             _ => {}
-                        },
+                        }},
                         Ok(None) => break,
                         Err(e) => {
                             ended = Some(match e {
@@ -792,6 +961,14 @@ where
                 }
                 if let Some(end) = ended {
                     break end;
+                }
+                // The probe's answer: timed to when its bytes came, not to this
+                // tick. A part read from bytes that came before the question was
+                // asked isn't the answer.
+                if let (true, Some(asked), Some(heard)) = (answer, probe.out, traffic.heard()) {
+                    if heard >= asked {
+                        probe.answered(heard);
+                    }
                 }
                 if let Some(text) = copies.take(Instant::now()) {
                     remote_copy(text);
@@ -809,8 +986,9 @@ where
                     }
                 }
                 // The next incremental update: right after one came, else a
-                // few times a second, and not oftener than the page chose.
-                if pacer.tick(Instant::now(), changed, held) {
+                // few times a second, and not oftener than the page chose;
+                // none while the tab is hidden.
+                if pacer.tick(Instant::now(), changed, held || paused) {
                     if client.input(X11Event::Refresh).await.is_err() {
                         break Ok("The VNC server closed the connection.".to_string());
                     }
@@ -1243,6 +1421,8 @@ mod tests {
         pixel_format: Option<[u8; 16]>,
         encodings: Vec<i32>,
         asks: u32,
+        /// Each ask for an update: incremental or not, and the area (x, y, w, h).
+        requests: Vec<(u8, [u16; 4])>,
         /// What the client put on the server's clipboard (ClientCutText), as it came.
         cut_text: Vec<Vec<u8>>,
     }
@@ -1260,7 +1440,9 @@ mod tests {
     /// A server with no password and a 4×2 desktop. It writes down the pixel
     /// format and the encodings the client asks for, and answers the first ask
     /// for an update with a row of `pixels` in the format that was asked for,
-    /// then with each of `copied` on its clipboard (ServerCutText), one after the other.
+    /// then with each of `copied` on its clipboard (ServerCutText), one after the
+    /// other. Later it answers only an ask for a part afresh (a probe), with
+    /// that part; the rest wait, as for a desktop where nothing changes.
     async fn scripted_server(
         mut s: tokio::io::DuplexStream,
         pixels: [(u8, u8, u8); 2],
@@ -1302,12 +1484,24 @@ mod tests {
                     }
                 }
                 3 => {
-                    s.read_exact(&mut [0u8; 9]).await?;
+                    let mut m = [0u8; 9];
+                    s.read_exact(&mut m).await?;
+                    let area = [1, 3, 5, 7].map(|at| u16::from_be_bytes([m[at], m[at + 1]]));
                     let (first, pf) = {
                         let mut h = heard.lock().unwrap();
                         h.asks += 1;
+                        h.requests.push((m[0], area));
                         (h.asks == 1, h.pixel_format)
                     };
+                    if let (false, 0, Some(pf)) = (first, m[0], pf) {
+                        let mut u = vec![0u8, 0, 0, 1];
+                        for v in area {
+                            u.extend_from_slice(&v.to_be_bytes());
+                        }
+                        u.extend_from_slice(&0i32.to_be_bytes());
+                        u.resize(u.len() + usize::from(area[2]) * usize::from(area[3]) * usize::from(pf[0] / 8), 0);
+                        s.write_all(&u).await?;
+                    }
                     if let (true, Some(pf)) = (first, pf) {
                         // One raw rectangle: the first row, two pixels.
                         let mut u = vec![0u8, 0, 0, 1];
@@ -1383,6 +1577,7 @@ mod tests {
             options,
             clipboard,
             move |text| copy_sink.lock().unwrap().push(text),
+            |_| {},
         ));
         for _ in 0..500 {
             if frames.lock().unwrap().len() >= 2 {
@@ -1487,5 +1682,98 @@ mod tests {
             assert_eq!(&picture[..9], &[2, 0, 0, 0, 0, 2, 0, 1, 0], "{options:?}");
             assert_eq!(&picture[9..], &expected, "{options:?}: the two pixels as drawn");
         }
+    }
+
+    #[test]
+    fn resizes_go_one_at_a_time_once_the_layout_is_known_and_the_latest_wins() {
+        use ::vnc::ResizeError as E;
+        let mut r = Resizer::default();
+        // Before the server has said its layout: nothing goes, until it does.
+        assert_eq!(r.want((1024, 644), false), None);
+        assert_eq!(r.layout(), Some((1024, 644)));
+        assert_eq!(r.layout(), None, "asked once");
+        // While one is out, a new size waits; the answer brings it.
+        assert_eq!(r.want((768, 483), true), None);
+        assert_eq!(r.want((800, 500), true), None);
+        assert_eq!(r.done((1024, 644), Ok((1024, 644))), Some((800, 500)), "the latest one");
+        assert_eq!(r.done((800, 500), Ok((800, 500))), None);
+        assert_eq!(r.wanted, None, "done");
+        // Unanswered (a slow link): asked again when the server next says its layout.
+        assert_eq!(r.want((640, 400), true), Some((640, 400)));
+        assert_eq!(r.done((640, 400), Err(E::Timeout)), None);
+        assert_eq!(r.layout(), Some((640, 400)));
+        assert_eq!(r.done((640, 400), Err(E::Uncertain)), None);
+        assert_eq!(r.layout(), Some((640, 400)));
+        assert_eq!(r.done((640, 400), Ok((640, 400))), None);
+        // Refused by the server: not asked again.
+        assert_eq!(r.want((300, 300), true), Some((300, 300)));
+        assert_eq!(r.done((300, 300), Err(E::Denied(::vnc::DesktopStatus::Prohibited))), None);
+        assert_eq!(r.layout(), None);
+        // Sizes are kept in range.
+        assert_eq!(r.want((10, 20_000), true), Some((MIN_SIDE, MAX_SIDE)));
+    }
+
+    #[test]
+    fn a_part_over_the_corner_answers_the_probe() {
+        let rect = |x, y, width, height| Rect { x, y, width, height };
+        assert!(over_corner(rect(0, 0, 64, 64)), "the tile it is in");
+        assert!(over_corner(rect(7, 7, 1, 1)), "its last pixel");
+        assert!(over_corner(rect(0, 0, 4, 2)), "a desktop smaller than the corner");
+        assert!(!over_corner(rect(8, 0, 100, 100)), "right of it");
+        assert!(!over_corner(rect(0, 8, 100, 100)), "under it");
+        assert!(!over_corner(rect(0, 0, 0, 5)), "nothing at all");
+    }
+
+    // The connection mark and the pause, with the real client library (on
+    // tokio's paused clock): the corner is asked for afresh, clipped to the
+    // desktop, and its answer timed; while the tab is hidden nothing at all is
+    // asked for, and the figures say so; shown again, the asks start at once.
+    #[tokio::test(start_paused = true)]
+    async fn the_link_is_measured_and_a_hidden_tab_asks_for_nothing() {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let heard = Arc::new(Mutex::new(Heard::default()));
+        let srv = tokio::spawn(scripted_server(server, [(255, 0, 0), (0, 0, 255)], Arc::clone(&heard), Vec::new()));
+        let stats = Arc::new(Mutex::new(Vec::<LinkStats>::new()));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let sink = Arc::clone(&stats);
+        let run = tokio::spawn(run(
+            client,
+            std::future::ready(None::<Zeroizing<String>>),
+            |_, _| {},
+            |_| true,
+            Arc::new(crate::screen_flow::Flow::default()),
+            rx,
+            (4, 2),
+            Options::default(),
+            false,
+            |_| {},
+            move |s| sink.lock().unwrap().push(s),
+        ));
+        let latest = || *stats.lock().unwrap().last().expect("figures came");
+        // The first answer after the desktop's first picture doesn't count; the next does.
+        tokio::time::sleep(LINK_EVERY * 4).await;
+        let first = latest();
+        assert!(first.rtt_ms.is_some(), "a round trip was measured: {first:?}");
+        assert!(first.can_measure && first.can_pause && !first.paused, "{first:?}");
+        assert!(first.bytes_in > 0 && first.bytes_out > 0, "{first:?}");
+        let probes = heard.lock().unwrap().requests.iter().filter(|r| r.0 == 0).copied().collect::<Vec<_>>();
+        assert!(probes.len() >= 2, "{probes:?}");
+        assert!(probes.iter().all(|p| p.1 == [0, 0, 4, 2]), "the corner, clipped to the 4×2 desktop: {probes:?}");
+        // Hidden: no update and no probe is asked for, however long.
+        let _ = tx.send(Cmd::Shown(false));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let asked = heard.lock().unwrap().requests.len();
+        tokio::time::sleep(LINK_EVERY * 5).await;
+        assert_eq!(heard.lock().unwrap().requests.len(), asked, "nothing asked while hidden");
+        assert!(latest().paused, "{:?}", latest());
+        // Shown again: asking starts at once.
+        let _ = tx.send(Cmd::Shown(true));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(heard.lock().unwrap().requests.len() > asked, "asking again");
+        tokio::time::sleep(LINK_EVERY).await;
+        assert!(!latest().paused);
+        let _ = tx.send(Cmd::Close);
+        assert_eq!(run.await.expect("no panic"), Ok("closed".to_string()));
+        srv.abort();
     }
 }

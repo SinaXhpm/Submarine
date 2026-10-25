@@ -2164,6 +2164,7 @@ function DesktopApp() {
                                 onClose={getCloseHandler(sess.id)}
                                 onStatusChange={handleSessionStatus}
                                 isActiveView={isFocused}
+                                shown={isVisible && viewIsSession}
                                 onPromptChange={handlePromptChange}
                               />
                             ) : sess.protocol === "telnet" ? (

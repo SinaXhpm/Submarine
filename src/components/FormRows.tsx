@@ -1,7 +1,39 @@
 import type { ReactNode } from "react";
 
 // A row of a server's options: its label and control, and under them what it
-// does. The server form and the RDP tab's panels use the same ones.
+// does. The server form and the RDP and VNC tabs' panels use the same ones.
+
+// Speed and quality in one go: the sets of choices side by side, the one the
+// choices are now marked (none: the user's own mix), and what it does under them.
+export function QuickChoiceRow<T extends string>({ choices, current, onPick, hint }: {
+  choices: { value: T; label: string }[];
+  current: T | null;
+  onPick: (value: T) => void;
+  hint: string;
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between items-center gap-3">
+        <span className="text-[11px] font-bold text-zinc-400 shrink-0">Quick choice</span>
+        <div role="radiogroup" aria-label="Quick choice" className="flex-1 min-w-0 grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-[#1a1a1e] border border-white/10">
+          {choices.map((p) => (
+            <button
+              key={p.value}
+              type="button"
+              role="radio"
+              aria-checked={current === p.value}
+              onClick={() => onPick(p.value)}
+              className={`h-8 px-1 rounded-md text-[11px] font-semibold truncate transition-colors ${current === p.value ? "bg-primary/20 text-primary" : "text-zinc-400 hover:text-zinc-200"}`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="text-[10.5px] text-zinc-500 leading-snug ml-1">{hint}</p>
+    </div>
+  );
+}
 
 // A choice from a list.
 export function ChoiceRow({ label, hint, value, onChange, choices }: {

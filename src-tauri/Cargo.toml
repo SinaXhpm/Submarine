@@ -146,7 +146,10 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 # String/Vec passed as args to argon2/aes-gcm are zeroized internally by
 # those crates.
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
-vnc-rs = "0.6"
+# The VNC tab's client library (vnc_client.rs): vnc-rs 0.6.0, vendored with one
+# request more, an update of a small part of the screen, which the tab times for
+# its connection mark (vendor/vnc-rs/VENDORED.md).
+vnc-rs = { path = "vendor/vnc-rs" }
 # The built-in RDP client (#3, rdp_client.rs): Devolutions' IronRDP
 # (MIT/Apache-2.0). It runs here, in the backend, so the password (NLA
 # through its sspi) and the check of the server's certificate never reach
@@ -227,6 +230,9 @@ windows = { version = "0.62", features = [
 ironrdp-rdpdr-native = { path = "vendor/ironrdp-rdpdr-native" }
 
 [dev-dependencies]
+# Tests only: tokio's paused clock, for the VNC session's timed parts
+# (vnc_client tests). The same tokio, one feature more.
+tokio = { version = "1", features = ["full", "test-util"] }
 # Tests only: a one-connection listener for russh's in-memory ssh-agent server
 # (agent_auth tests). Already in the dependency tree through russh.
 futures = "0.3"

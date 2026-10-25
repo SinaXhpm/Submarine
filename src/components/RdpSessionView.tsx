@@ -4,10 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import { AlertTriangle, ClipboardPaste, ExternalLink, FlaskConical, FolderSymlink, Loader2, MonitorSmartphone, RotateCw, SlidersHorizontal, X } from "lucide-react";
 import { AuthPrompts } from "./AuthPrompts";
 import RemoteScreen, { type RemoteScreenHandle } from "./RemoteScreen";
-import { FilesPanel, LinkMark, LinkPanel, SettingsPanel, ToolPanel, type SharedNow } from "./RdpTabTools";
+import { FilesPanel, LinkMark, LinkPanel, RdpSettingsPanel, ToolPanel, usePageShown, usePauseWhileHidden, type SharedNow } from "./ScreenTabTools";
 import { readUseSshAgent } from "../util/sshAgent";
 import { IS_ANDROID, IS_WINDOWS } from "../util/platform";
-import type { LinkStats } from "../util/rdpLink";
+import type { LinkStats } from "../util/screenLink";
 import {
   RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, RDP_PRESETS, describeRdpOptions, rdpGraphics, rdpNeedsReconnect, rdpShare, readRdpOptions, writeRdpOptions,
   type RdpOptions,
@@ -33,9 +33,6 @@ type Opened = { app: string; address: string; via: string | null; tracked: boole
 // (rdp_client.rs, login_error).
 const PASSWORD_REFUSED = /didn't accept the user name or password/;
 type LogLine = { msg: string; type: string; time: string };
-// How long the tab is hidden before the server is asked to pause the picture:
-// a quick look at another tab changes nothing.
-const PAUSE_AFTER_MS = 3000;
 
 // `shown`: the tab is on screen (alone, or in a split), not behind another view.
 export default function RdpSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
@@ -337,34 +334,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   // The picture pauses while the tab is hidden (behind another tab or view,
   // or the window minimised), if the server can and the user lets it: a few
   // seconds on, and it comes back as soon as the tab does.
-  const [pageShown, setPageShown] = useState(() => document.visibilityState !== "hidden");
-  useEffect(() => {
-    const onChange = () => setPageShown(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", onChange);
-    // A phone's app in the background: its WebView still says it is visible,
-    // so the backend tells (lib.rs, from Android's onPause and onResume).
-    const off = listen<boolean>("app-shown", (e) => setPageShown(!!e.payload));
-    return () => {
-      document.removeEventListener("visibilitychange", onChange);
-      off.then((f) => f());
-    };
-  }, []);
-  const pauseWanted = builtin && status === "connected" && !(shown && pageShown) && opts.pauseHidden;
-  const pauseSent = useRef(false);
-  useEffect(() => {
-    if (!pauseWanted) {
-      if (pauseSent.current) {
-        pauseSent.current = false;
-        invoke("rdp_builtin_shown", { sessionId: session.id, shown: true }).catch(() => {});
-      }
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      pauseSent.current = true;
-      invoke("rdp_builtin_shown", { sessionId: session.id, shown: false }).catch(() => {});
-    }, PAUSE_AFTER_MS);
-    return () => window.clearTimeout(timer);
-  }, [pauseWanted, session.id]);
+  const pageShown = usePageShown();
+  usePauseWhileHidden(builtin && status === "connected" && !(shown && pageShown) && opts.pauseHidden, "rdp_builtin_shown", session.id);
   // No link to show without a connection.
   useEffect(() => {
     if (status !== "connected") setPanel((p) => (p === "link" ? null : p));
@@ -617,7 +588,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         )}
         {panel === "settings" && (
           <ToolPanel title="Speed and quality" onClose={() => setPanel(null)}>
-            <SettingsPanel o={opts} set={setOpt} reconnect={reconnectForOpts} />
+            <RdpSettingsPanel o={opts} set={setOpt} reconnect={reconnectForOpts} />
           </ToolPanel>
         )}
 
