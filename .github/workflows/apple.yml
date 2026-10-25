@@ -1,0 +1,514 @@
+name: Apple
+
+# iOS and macOS, built and signed for Apple:
+#   - iOS (iPhone + iPad): signed for the App Store and uploaded to App Store
+#     Connect, where it shows up in TestFlight.
+#   - macOS, two builds of the same universal app (Apple Silicon + Intel):
+#     the download on GitHub, signed with Developer ID and notarized; and the
+#     Mac App Store build (sandboxed), uploaded to App Store Connect too.
+#
+# release.yml calls this for a release (`upload: true`). The jobs that build
+# get no secret at all: they run the whole toolchain (npm, vite, every crate's
+# build script), any of which could read one. Signing and uploading happen in
+# separate jobs that only run Apple's own tools on the built files, the same
+# split as the Android build and android-sign in release.yml.
+#
+# Secrets (repository secrets; the files themselves never enter the repo):
+#   APPLE_DIST_P12, APPLE_DIST_P12_PASSWORD  "Apple Distribution" (base64 .p12):
+#                                             iOS and the Mac App Store app
+#   MAC_INSTALLER_P12, MAC_INSTALLER_P12_PASSWORD  "Mac Installer Distribution":
+#                                             the Mac App Store package
+#   DEVELOPER_ID_P12, DEVELOPER_ID_P12_PASSWORD  "Developer ID Application": the
+#                                             GitHub download (unsigned without it)
+#   IOS_PROFILE, MAC_PROFILE                  App Store provisioning profiles (base64)
+#   ASC_KEY_P8, ASC_KEY_ID, ASC_ISSUER_ID     App Store Connect API key: uploads
+#                                             and notarization
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version, e.g. 0.4.0 or 0.4.0-beta.1"
+        required: true
+        type: string
+      upload:
+        description: "Upload to App Store Connect"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: "always"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # The version strings and one build number, shared by every job below.
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      strict: ${{ steps.v.outputs.strict }}
+      build: ${{ steps.v.outputs.build }}
+    steps:
+      - id: v
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          RAW="${INPUT_VERSION#v}"
+          if ! printf '%s' "$RAW" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.+-]+)?$'; then
+            echo "Refusing an unexpected version string: $RAW" >&2
+            exit 1
+          fi
+          # Apple takes only numbers in CFBundleShortVersionString: 0.4.0-beta.1
+          # ships as 0.4.0. The build number (CFBundleVersion) has to grow with
+          # every upload, whatever workflow made it: the UTC time does.
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+          echo "strict=${RAW%%-*}" >> "$GITHUB_OUTPUT"
+          echo "build=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # iOS
+  # ---------------------------------------------------------------------------
+  ios-build:
+    needs: meta
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # App Store Connect takes only uploads built with Xcode 26 or later
+      # (since 2026-04-28).
+      - name: Use Xcode 26
+        shell: bash
+        run: |
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$XC" ]; then
+            echo "::error::No Xcode 26 on this runner"; ls -d /Applications/Xcode*.app; exit 1
+          fi
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: Stamp version
+        shell: bash
+        env:
+          STAMP_VERSION: ${{ needs.meta.outputs.strict }}
+        run: |
+          node -e "
+            const fs=require('fs'); const v=process.env.STAMP_VERSION;
+            const cargo=fs.readFileSync('src-tauri/Cargo.toml','utf8');
+            fs.writeFileSync('src-tauri/Cargo.toml', cargo.replace(/^version *= *\".*\"/m, 'version = \"'+v+'\"'));
+            const conf=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));
+            conf.version=v; fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2)+'\n');
+          "
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch, as of 2026-10-20
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+          key: ios
+
+      - name: Install npm deps
+        run: npm ci
+
+      # The Xcode project (src-tauri/gen/apple) is in the repo; this only
+      # makes it when it isn't.
+      - name: Xcode project
+        id: xcode
+        shell: bash
+        run: |
+          if [ ! -d src-tauri/gen/apple ]; then
+            npx tauri ios init --ci
+            echo "made=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A project made here is kept, to be added to the repo.
+      - name: Upload the new Xcode project
+        if: steps.xcode.outputs.made == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-xcode-project
+          path: src-tauri/gen/apple
+          include-hidden-files: true
+
+      # Unsigned here (Tauri signs it with a throwaway certificate, keeping the
+      # entitlements); ios-sign signs it for the App Store.
+      - name: Build
+        shell: bash
+        env:
+          BUILD_NUMBER: ${{ needs.meta.outputs.build }}
+        run: |
+          npx tauri ios build --ci --no-sign --export-method app-store-connect \
+            --config "{\"bundle\":{\"iOS\":{\"bundleVersion\":\"$BUILD_NUMBER\"}}}"
+          find src-tauri/gen/apple/build -name '*.ipa' -maxdepth 3 -print
+
+      # What the binary calls from Apple's "required reason" APIs, so
+      # PrivacyInfo.xcprivacy can be checked against it.
+      - name: Required-reason APIs used
+        shell: bash
+        run: |
+          IPA="$(find src-tauri/gen/apple/build -name '*.ipa' -maxdepth 3 | head -1)"
+          rm -rf ipa-check && mkdir ipa-check && unzip -q "$IPA" -d ipa-check
+          BIN="$(ls -d ipa-check/Payload/*.app)/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' ipa-check/Payload/*.app/Info.plist)"
+          nm -u "$BIN" | grep -E '_(stat|fstat|lstat|fstatat|getattrlist|getattrlistbulk|fgetattrlist|statfs|fstatfs|statvfs|fstatvfs|mach_absolute_time|systemUptime|clock_gettime)(\$|$)' | sort -u || true
+          strings "$BIN" | grep -E '^(NSUserDefaults|NSFileSystemFreeSize|volumeAvailableCapacity|activeInputModes)' | sort -u || true
+          rm -rf ipa-check
+
+      - name: Upload the unsigned app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-unsigned
+          path: src-tauri/gen/apple/build/**/*.ipa
+          if-no-files-found: error
+
+  # Signs the iOS app for the App Store and uploads it. Runs Apple's tools only.
+  ios-sign:
+    needs: [meta, ios-build]
+    runs-on: macos-latest
+    steps:
+      - name: Download the unsigned app
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ios-unsigned
+          path: unsigned
+
+      - name: Use Xcode 26
+        shell: bash
+        run: |
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$XC" ] || { echo "::error::No Xcode 26 on this runner"; exit 1; }
+          sudo xcode-select -s "$XC"
+
+      - name: Sign
+        shell: bash
+        env:
+          P12: ${{ secrets.APPLE_DIST_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DIST_P12_PASSWORD }}
+          PROFILE: ${{ secrets.IOS_PROFILE }}
+        run: |
+          set -euo pipefail
+          for v in P12 P12_PASSWORD PROFILE; do
+            [ -n "${!v}" ] || { echo "::error::Missing secret for $v"; exit 1; }
+          done
+          umask 077
+          KC="$RUNNER_TEMP/sign.keychain-db"
+          KC_PASS="$(openssl rand -hex 24)"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          printf '%s' "$P12" | base64 -D > "$RUNNER_TEMP/dist.p12"
+          # -x: the private key can be used, never exported.
+          security import "$RUNNER_TEMP/dist.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign -x
+          rm -f "$RUNNER_TEMP/dist.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          ID="$(security find-identity -v -p codesigning "$KC" | grep -m1 'Apple Distribution' | awk '{print $2}')"
+          [ -n "$ID" ] || { echo "::error::No Apple Distribution identity in the certificate"; exit 1; }
+
+          printf '%s' "$PROFILE" | base64 -D > "$RUNNER_TEMP/app.mobileprovision"
+          security cms -D -i "$RUNNER_TEMP/app.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$RUNNER_TEMP/profile.plist" > "$RUNNER_TEMP/entitlements.plist"
+
+          IPA="$(find unsigned -name '*.ipa' | head -1)"
+          rm -rf work && mkdir work && unzip -q "$IPA" -d work
+          APP="$(ls -d work/Payload/*.app)"
+          cp "$RUNNER_TEMP/app.mobileprovision" "$APP/embedded.mobileprovision"
+          rm -rf "$APP/_CodeSignature"
+          # Inside out: anything nested first, then the app.
+          find "$APP" -depth \( -name '*.framework' -o -name '*.dylib' -o -name '*.appex' \) -print0 |
+            while IFS= read -r -d '' f; do codesign --force --sign "$ID" --keychain "$KC" "$f"; done
+          codesign --force --sign "$ID" --keychain "$KC" --entitlements "$RUNNER_TEMP/entitlements.plist" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          codesign -d --entitlements - "$APP" 2>/dev/null | head -40
+          mkdir -p signed
+          (cd work && zip -qry ../signed/Submarine.ipa Payload)
+          security delete-keychain "$KC"
+          rm -f "$RUNNER_TEMP"/app.mobileprovision "$RUNNER_TEMP"/profile.plist
+
+      - name: Check and upload
+        shell: bash
+        env:
+          KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+          UPLOAD: ${{ inputs.upload }}
+        run: |
+          set -euo pipefail
+          for v in KEY_P8 KEY_ID ISSUER; do
+            [ -n "${!v}" ] || { echo "::error::Missing secret for $v"; exit 1; }
+          done
+          umask 077
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          printf '%s\n' "$KEY_P8" > "$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+          trap 'rm -rf "$HOME/.appstoreconnect"' EXIT
+          xcrun altool --validate-app --type ios --file signed/Submarine.ipa --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+          if [ "$UPLOAD" = "true" ]; then
+            xcrun altool --upload-app --type ios --file signed/Submarine.ipa --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+          else
+            echo "Checked only; not uploaded."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # macOS
+  # ---------------------------------------------------------------------------
+  mac-build:
+    needs: meta
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # direct: the download on GitHub (same app id as ever, so a Mac that
+        # ran an earlier version keeps its profiles). appstore: the Mac App
+        # Store build, which shares the iOS app's id and its store page.
+        variant: [direct, appstore]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Use Xcode 26
+        shell: bash
+        run: |
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$XC" ] || { echo "::error::No Xcode 26 on this runner"; exit 1; }
+          sudo xcode-select -s "$XC"
+
+      - name: Stamp version
+        shell: bash
+        env:
+          # The download keeps the full version (0.4.0-beta.1); the store
+          # takes numbers only.
+          STAMP_VERSION: ${{ matrix.variant == 'appstore' && needs.meta.outputs.strict || needs.meta.outputs.version }}
+        run: |
+          node -e "
+            const fs=require('fs'); const v=process.env.STAMP_VERSION;
+            const cargo=fs.readFileSync('src-tauri/Cargo.toml','utf8');
+            fs.writeFileSync('src-tauri/Cargo.toml', cargo.replace(/^version *= *\".*\"/m, 'version = \"'+v+'\"'));
+            const conf=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));
+            conf.version=v; fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2)+'\n');
+          "
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch, as of 2026-10-20
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+          key: mac-${{ matrix.variant }}
+
+      - name: Install npm deps
+        run: npm ci
+
+      # Unsigned; mac-sign / mac-appstore-sign sign it.
+      - name: Build
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+          BUILD_NUMBER: ${{ needs.meta.outputs.build }}
+        run: |
+          set -euo pipefail
+          ARGS=(--target universal-apple-darwin --bundles app --config "{\"bundle\":{\"macOS\":{\"bundleVersion\":\"$BUILD_NUMBER\"}}}")
+          if [ "$VARIANT" = "appstore" ]; then
+            ARGS+=(--config src-tauri/tauri.appstore.conf.json --features app-store)
+          fi
+          npx tauri build "${ARGS[@]}"
+          cd src-tauri/target/universal-apple-darwin/release/bundle/macos
+          lipo -archs Submarine.app/Contents/MacOS/*
+          ditto -c -k --sequesterRsrc --keepParent Submarine.app "$GITHUB_WORKSPACE/mac-unsigned-$VARIANT.zip"
+
+      - name: Upload the unsigned app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mac-unsigned-${{ matrix.variant }}
+          path: mac-unsigned-${{ matrix.variant }}.zip
+          if-no-files-found: error
+
+  # The GitHub download: Developer ID signature, a DMG, notarization. Without
+  # the Developer ID certificate it ships unsigned, as before.
+  mac-sign:
+    needs: [meta, mac-build]
+    runs-on: macos-latest
+    steps:
+      - name: Download the unsigned app
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mac-unsigned-direct
+          path: unsigned
+
+      - name: Sign, package and notarize
+        shell: bash
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          umask 077
+          ditto -x -k unsigned/mac-unsigned-direct.zip work
+          APP=work/Submarine.app
+          SIGNED=false
+          if [ -n "$P12" ] && [ -n "$P12_PASSWORD" ]; then
+            KC="$RUNNER_TEMP/sign.keychain-db"
+            KC_PASS="$(openssl rand -hex 24)"
+            security create-keychain -p "$KC_PASS" "$KC"
+            security set-keychain-settings -lut 3600 "$KC"
+            security unlock-keychain -p "$KC_PASS" "$KC"
+            printf '%s' "$P12" | base64 -D > "$RUNNER_TEMP/devid.p12"
+            security import "$RUNNER_TEMP/devid.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign -x
+            rm -f "$RUNNER_TEMP/devid.p12"
+            security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
+            security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+            ID="$(security find-identity -v -p codesigning "$KC" | grep -m1 'Developer ID Application' | awk '{print $2}')"
+            [ -n "$ID" ] || { echo "::error::No Developer ID Application identity in the certificate"; exit 1; }
+            find "$APP/Contents" -depth \( -name '*.framework' -o -name '*.dylib' \) -print0 |
+              while IFS= read -r -d '' f; do codesign --force --options runtime --timestamp --sign "$ID" --keychain "$KC" "$f"; done
+            codesign --force --options runtime --timestamp --sign "$ID" --keychain "$KC" "$APP"
+            codesign --verify --strict --verbose=2 "$APP"
+            SIGNED=true
+          else
+            echo "::warning::No Developer ID certificate (DEVELOPER_ID_P12): the macOS download stays unsigned."
+          fi
+
+          # The DMG: the app and a link to Applications to drag it onto.
+          mkdir -p dmg-root artifacts
+          cp -R "$APP" dmg-root/
+          ln -s /Applications dmg-root/Applications
+          DMG="artifacts/Submarine_${VERSION}_universal.dmg"
+          hdiutil create -volname Submarine -srcfolder dmg-root -ov -format UDZO "$DMG"
+
+          if [ "$SIGNED" = true ]; then
+            codesign --force --timestamp --sign "$ID" --keychain "$KC" "$DMG"
+            for v in KEY_P8 KEY_ID ISSUER; do
+              [ -n "${!v}" ] || { echo "::error::Missing secret for $v (notarization)"; exit 1; }
+            done
+            printf '%s\n' "$KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+            trap 'rm -f "$RUNNER_TEMP/AuthKey.p8"' EXIT
+            xcrun notarytool submit "$DMG" --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$KEY_ID" --issuer "$ISSUER" --wait --timeout 60m
+            xcrun stapler staple "$DMG"
+            xcrun stapler staple "$APP"
+            spctl --assess --type open --context context:primary-signature -v "$DMG"
+            spctl --assess --type execute -v "$APP"
+            security delete-keychain "$KC"
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "artifacts/Submarine-v${VERSION}-macos-universal.app.zip"
+          ls -la artifacts
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: submarine-macos
+          path: artifacts/*
+          if-no-files-found: error
+
+  # The Mac App Store build: sandboxed, signed for the store, packaged and
+  # uploaded to App Store Connect.
+  mac-appstore-sign:
+    needs: [meta, mac-build]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: src-tauri/entitlements
+
+      - name: Download the unsigned app
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mac-unsigned-appstore
+          path: unsigned
+
+      - name: Use Xcode 26
+        shell: bash
+        run: |
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$XC" ] || { echo "::error::No Xcode 26 on this runner"; exit 1; }
+          sudo xcode-select -s "$XC"
+
+      - name: Sign and package
+        shell: bash
+        env:
+          P12: ${{ secrets.APPLE_DIST_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DIST_P12_PASSWORD }}
+          INSTALLER_P12: ${{ secrets.MAC_INSTALLER_P12 }}
+          INSTALLER_P12_PASSWORD: ${{ secrets.MAC_INSTALLER_P12_PASSWORD }}
+          PROFILE: ${{ secrets.MAC_PROFILE }}
+        run: |
+          set -euo pipefail
+          for v in P12 P12_PASSWORD INSTALLER_P12 INSTALLER_P12_PASSWORD PROFILE; do
+            [ -n "${!v}" ] || { echo "::error::Missing secret for $v"; exit 1; }
+          done
+          umask 077
+          KC="$RUNNER_TEMP/sign.keychain-db"
+          KC_PASS="$(openssl rand -hex 24)"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          printf '%s' "$P12" | base64 -D > "$RUNNER_TEMP/dist.p12"
+          printf '%s' "$INSTALLER_P12" | base64 -D > "$RUNNER_TEMP/installer.p12"
+          security import "$RUNNER_TEMP/dist.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign -x
+          security import "$RUNNER_TEMP/installer.p12" -k "$KC" -P "$INSTALLER_P12_PASSWORD" -T /usr/bin/productbuild -x
+          rm -f "$RUNNER_TEMP/dist.p12" "$RUNNER_TEMP/installer.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          ID="$(security find-identity -v -p codesigning "$KC" | grep -m1 'Apple Distribution' | awk '{print $2}')"
+          [ -n "$ID" ] || { echo "::error::No Apple Distribution identity"; exit 1; }
+          INSTALLER="$(security find-identity -v "$KC" | grep -m1 -E '(3rd Party Mac Developer Installer|Mac Installer Distribution)' | sed -E 's/^.*"(.*)"$/\1/')"
+          [ -n "$INSTALLER" ] || { echo "::error::No Mac Installer Distribution identity"; exit 1; }
+
+          ditto -x -k unsigned/mac-unsigned-appstore.zip work
+          APP=work/Submarine.app
+          printf '%s' "$PROFILE" | base64 -D > "$APP/Contents/embedded.provisionprofile"
+          find "$APP/Contents" -depth \( -name '*.framework' -o -name '*.dylib' \) -print0 |
+            while IFS= read -r -d '' f; do codesign --force --sign "$ID" --keychain "$KC" "$f"; done
+          codesign --force --sign "$ID" --keychain "$KC" --entitlements src-tauri/entitlements/appstore.entitlements "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          codesign -d --entitlements - "$APP" 2>/dev/null | head -40
+          mkdir -p signed
+          productbuild --component "$APP" /Applications --sign "$INSTALLER" --keychain "$KC" signed/Submarine.pkg
+          security delete-keychain "$KC"
+
+      - name: Check and upload
+        shell: bash
+        env:
+          KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+          UPLOAD: ${{ inputs.upload }}
+        run: |
+          set -euo pipefail
+          for v in KEY_P8 KEY_ID ISSUER; do
+            [ -n "${!v}" ] || { echo "::error::Missing secret for $v"; exit 1; }
+          done
+          umask 077
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          printf '%s\n' "$KEY_P8" > "$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+          trap 'rm -rf "$HOME/.appstoreconnect"' EXIT
+          xcrun altool --validate-app --type macos --file signed/Submarine.pkg --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+          if [ "$UPLOAD" = "true" ]; then
+            xcrun altool --upload-app --type macos --file signed/Submarine.pkg --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+          else
+            echo "Checked only; not uploaded."
+          fi

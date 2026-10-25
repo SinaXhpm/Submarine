@@ -16,7 +16,7 @@ import { withoutPasteControls } from '../util/pasteText';
 import { READABLE_CONTRAST, readBoldBright, readMinContrast, readScheme } from '../util/terminalTheme';
 import { readUseLocalShell } from '../util/terminalShell';
 import { readUseSshAgent } from '../util/sshAgent';
-import { IS_ANDROID, IS_LINUX } from '../util/platform';
+import { IS_MOBILE, IS_LINUX } from '../util/platform';
 import { useConfirm } from '../ui/confirm';
 import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
 
@@ -522,7 +522,7 @@ const TerminalView = ({
   const focusTerminal = () => {
     const coarsePointer =
       typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
-    if (IS_ANDROID || coarsePointer) return;
+    if (IS_MOBILE || coarsePointer) return;
     if (!isActiveViewRef.current) return;
     if (disabledRef.current) return;
     const term = xtermRef.current;

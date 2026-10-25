@@ -169,15 +169,15 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 
 # ---------------------------------------------------------------------------
-# Desktop-only deps. These crates either don't compile on Android at all
-# (rfd — native file dialog) or have no meaningful mobile equivalent
+# Desktop-only deps. These crates either don't compile on Android and iOS at
+# all (rfd — native file dialog) or have no meaningful mobile equivalent
 # (tauri-plugin-window-state — mobile windows aren't resizable/movable;
 # open — opening a file in the user's "default desktop app" doesn't map to
-# Android's intent system). Their call sites in `lib.rs` and `about.rs` are
-# wrapped in `#[cfg(not(target_os = "android"))]`, so the Android build
-# doesn't need any of these to compile.
+# a phone's way of sharing files). Their call sites are wrapped in
+# `#[cfg(desktop)]`, so the Android and iOS builds don't need any of these to
+# compile.
 # ---------------------------------------------------------------------------
-[target.'cfg(not(target_os = "android"))'.dependencies]
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
 rfd = "0.17"
 open = "5.1"
@@ -228,6 +228,13 @@ windows = { version = "0.62", features = [
 # front of it. A phone has none.
 [target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
 ironrdp-rdpdr-native = { path = "vendor/ironrdp-rdpdr-native" }
+
+[features]
+# The Mac App Store build (release.yml's mac-appstore job). The store updates
+# the app, so the GitHub update check is off, as it is on iOS; and the app runs
+# in Apple's sandbox, so the local pane starts in Downloads, which the
+# sandbox lets it use.
+app-store = []
 
 [dev-dependencies]
 # Tests only: tokio's paused clock, for the VNC session's timed parts

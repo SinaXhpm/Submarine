@@ -163,15 +163,16 @@ pub fn open_in_editor(path: &std::path::Path) -> Result<(), String> {
             .map(|_| ())
             .map_err(|e| format!("couldn't start Notepad: {e}"))
     }
-    #[cfg(all(not(windows), not(target_os = "android")))]
+    #[cfg(all(not(windows), desktop))]
     {
         crate::child_env::open(path).map_err(|e| e.to_string())
     }
-    // The `open` crate isn't part of the Android build, and live edit isn't there.
-    #[cfg(target_os = "android")]
+    // The `open` crate isn't part of the Android and iOS builds, and live edit
+    // isn't there.
+    #[cfg(mobile)]
     {
         let _ = path;
-        Err("Opening a file in an editor isn't available on Android.".to_string())
+        Err("Opening a file in an editor isn't available on a phone or tablet.".to_string())
     }
 }
 
