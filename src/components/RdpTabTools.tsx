@@ -45,8 +45,8 @@ export function LinkMark({ link, open, onClick }: { link: LinkStats | null; open
       className={`h-7 px-2 flex items-center gap-1.5 rounded-md text-[11px] font-semibold transition-colors ${open ? "bg-primary/15" : "bg-white/5 hover:bg-white/10"}`}
     >
       <Icon size={13} className={colour} aria-hidden="true" />
-      <span className={`hidden sm:inline ${colour}`}>{LINK_WORDS[q]}</span>
-      {delay && <span className="hidden md:inline text-zinc-500 font-medium tabular-nums">{delay}</span>}
+      <span className={`hidden [@container(min-width:560px)]:inline ${colour}`}>{LINK_WORDS[q]}</span>
+      {delay && <span className="hidden [@container(min-width:700px)]:inline text-zinc-500 font-medium tabular-nums">{delay}</span>}
     </button>
   );
 }
