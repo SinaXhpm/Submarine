@@ -222,10 +222,15 @@ jobs:
           security cms -D -i "$RUNNER_TEMP/app.mobileprovision" > "$RUNNER_TEMP/profile.plist"
           /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$RUNNER_TEMP/profile.plist" > "$RUNNER_TEMP/entitlements.plist"
 
+          # The app's own files with the usual permissions (umask 077 is for the
+          # keys above): a file of the app only its owner can read fails the
+          # store's checks.
+          umask 022
           IPA="$(find unsigned -name '*.ipa' | head -1)"
           rm -rf work && mkdir work && unzip -q "$IPA" -d work
           APP="$(ls -d work/Payload/*.app)"
           cp "$RUNNER_TEMP/app.mobileprovision" "$APP/embedded.mobileprovision"
+          chmod -R u+rwX,go+rX-w "$APP"
           rm -rf "$APP/_CodeSignature"
           # Inside out: anything nested first, then the app.
           find "$APP" -depth \( -name '*.framework' -o -name '*.dylib' -o -name '*.appex' \) -print0 |
@@ -366,9 +371,12 @@ jobs:
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
-          umask 077
+          # The app's own files, and the DMG, with the usual permissions; the two
+          # keys below are written owner-only.
+          umask 022
           ditto -x -k unsigned/mac-unsigned-direct.zip work
           APP=work/Submarine.app
+          chmod -R u+rwX,go+rX-w "$APP"
           SIGNED=false
           if [ -n "$P12" ] && [ -n "$P12_PASSWORD" ]; then
             KC="$RUNNER_TEMP/sign.keychain-db"
@@ -376,7 +384,7 @@ jobs:
             security create-keychain -p "$KC_PASS" "$KC"
             security set-keychain-settings -lut 3600 "$KC"
             security unlock-keychain -p "$KC_PASS" "$KC"
-            printf '%s' "$P12" | base64 -D > "$RUNNER_TEMP/devid.p12"
+            (umask 077; printf '%s' "$P12" | base64 -D > "$RUNNER_TEMP/devid.p12")
             security import "$RUNNER_TEMP/devid.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign -x
             rm -f "$RUNNER_TEMP/devid.p12"
             security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
@@ -404,7 +412,7 @@ jobs:
             for v in KEY_P8 KEY_ID ISSUER; do
               [ -n "${!v}" ] || { echo "::error::Missing secret for $v (notarization)"; exit 1; }
             done
-            printf '%s\n' "$KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+            (umask 077; printf '%s\n' "$KEY_P8" > "$RUNNER_TEMP/AuthKey.p8")
             trap 'rm -f "$RUNNER_TEMP/AuthKey.p8"' EXIT
             xcrun notarytool submit "$DMG" --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$KEY_ID" --issuer "$ISSUER" --wait --timeout 60m
             xcrun stapler staple "$DMG"
@@ -478,9 +486,14 @@ jobs:
           INSTALLER="$(security find-identity -v "$KC" | grep -m1 -E '(3rd Party Mac Developer Installer|Mac Installer Distribution)' | sed -E 's/^.*"(.*)"$/\1/')"
           [ -n "$INSTALLER" ] || { echo "::error::No Mac Installer Distribution identity"; exit 1; }
 
+          # The app's own files with the usual permissions (umask 077 is for the
+          # keys above): installed by the store, a file only its owner can read
+          # is one only root can read, and App Store Connect refuses the package.
+          umask 022
           ditto -x -k unsigned/mac-unsigned-appstore.zip work
           APP=work/Submarine.app
           printf '%s' "$PROFILE" | base64 -D > "$APP/Contents/embedded.provisionprofile"
+          chmod -R u+rwX,go+rX-w "$APP"
           find "$APP/Contents" -depth \( -name '*.framework' -o -name '*.dylib' \) -print0 |
             while IFS= read -r -d '' f; do codesign --force --sign "$ID" --keychain "$KC" "$f"; done
           codesign --force --sign "$ID" --keychain "$KC" --entitlements src-tauri/entitlements/appstore.entitlements "$APP"
