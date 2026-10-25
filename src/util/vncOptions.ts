@@ -15,16 +15,24 @@ export interface VncOptions {
    *  this device's goes to the server when pasted there (plain ASCII only:
    *  `vnc_client::paste_refusal`). Not part of the speed and quality. */
   clipboard: boolean;
+  /** The desktop's size as a part of the tab's, where the server can change
+   *  it (TigerVNC can; a server showing a physical screen can't): fewer
+   *  pixels to send, drawn larger and softer. At once while connected. */
+  resolution: VncResolution;
+  /** Ask for no updates while the tab is hidden (a few seconds on); what
+   *  changed meanwhile comes in the first one after. At once while connected. */
+  pauseHidden: boolean;
 }
 
 export type VncEncoding = "auto" | "tight" | "zrle" | "raw";
 export type VncColors = 32 | 16 | 8;
 export type VncMaxFps = 60 | 30 | 15 | 5;
+export type VncResolution = 1 | 0.75 | 0.5;
 
 export const VNC_OPTIONS_KEY = "submarine-vnc-options";
 
-// What the VNC tab always asked for.
-export const DEFAULT_VNC_OPTIONS: VncOptions = { encoding: "auto", colors: 32, maxFps: 60, clipboard: true };
+// What the VNC tab always asked for; it pauses while hidden, as the RDP tab does.
+export const DEFAULT_VNC_OPTIONS: VncOptions = { encoding: "auto", colors: 32, maxFps: 60, clipboard: true, resolution: 1, pauseHidden: true };
 
 /** The choices as the form lists them. */
 export const VNC_ENCODING_CHOICES: { value: VncEncoding; label: string }[] = [
@@ -44,6 +52,35 @@ export const VNC_FPS_CHOICES: { value: VncMaxFps; label: string }[] = [
   { value: 15, label: "15 a second" },
   { value: 5, label: "5 a second" },
 ];
+export const VNC_RESOLUTION_CHOICES: { value: VncResolution; label: string }[] = [
+  { value: 1, label: "Full (sharpest)" },
+  { value: 0.75, label: "Three quarters" },
+  { value: 0.5, label: "Half (least to send)" },
+];
+
+/** Speed and quality in one go (the clipboard and the pause are left as they
+ *  are). "Standard" is what the tab asks for unless told otherwise. */
+export type VncPreset = "standard" | "light" | "least";
+type PresetChoices = Pick<VncOptions, "encoding" | "colors" | "maxFps" | "resolution">;
+export const VNC_PRESETS: { value: VncPreset; label: string; set: PresetChoices }[] = [
+  { value: "standard", label: "Standard", set: { encoding: "auto", colors: 32, maxFps: 60, resolution: 1 } },
+  { value: "light", label: "Less data", set: { encoding: "auto", colors: 16, maxFps: 15, resolution: 0.75 } },
+  { value: "least", label: "Least data", set: { encoding: "auto", colors: 8, maxFps: 5, resolution: 0.5 } },
+];
+
+/** The preset the choices are, if they are one. */
+export function vncPresetOf(o: VncOptions): VncPreset | null {
+  const keys = Object.keys(VNC_PRESETS[0].set) as (keyof PresetChoices)[];
+  return VNC_PRESETS.find((p) => keys.every((k) => p.set[k] === o[k]))?.value ?? null;
+}
+
+/** Whether a session opened with `used` needs to connect again for `now`:
+ *  what the server is told when the session starts (the resolution and the
+ *  pause go to a running session at once). */
+export function vncNeedsReconnect(used: VncOptions, now: VncOptions): boolean {
+  const g = (o: VncOptions) => JSON.stringify([o.encoding, o.colors, o.maxFps, o.clipboard]);
+  return g(used) !== g(now);
+}
 
 const readAll = (): Record<string, unknown> => {
   try {
@@ -70,6 +107,8 @@ export function readVncOptions(uuid?: string | null): VncOptions {
     if (VNC_COLOR_CHOICES.some((c) => c.value === kept.colors)) o.colors = kept.colors as VncColors;
     if (VNC_FPS_CHOICES.some((c) => c.value === kept.maxFps)) o.maxFps = kept.maxFps as VncMaxFps;
     if (typeof kept.clipboard === "boolean") o.clipboard = kept.clipboard;
+    if (VNC_RESOLUTION_CHOICES.some((c) => c.value === kept.resolution)) o.resolution = kept.resolution as VncResolution;
+    if (typeof kept.pauseHidden === "boolean") o.pauseHidden = kept.pauseHidden;
   }
   return normalizeVncOptions(o);
 }

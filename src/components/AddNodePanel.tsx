@@ -7,12 +7,10 @@ import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { folderTree } from "../util/folderTree";
 import { DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_WINDOW_SIZES, type RdpOptions } from "../util/rdpOptions";
-import { ChoiceRow, SwitchRow } from "./FormRows";
+import { SwitchRow } from "./FormRows";
 import { RdpShareFields, RdpSpeedFields } from "./RdpOptionFields";
-import {
-  DEFAULT_VNC_OPTIONS, VNC_COLOR_CHOICES, VNC_ENCODING_CHOICES, VNC_FPS_CHOICES, normalizeVncOptions,
-  type VncColors, type VncEncoding, type VncMaxFps, type VncOptions,
-} from "../util/vncOptions";
+import { VncSpeedFields } from "./VncOptionFields";
+import { DEFAULT_VNC_OPTIONS, normalizeVncOptions, type VncOptions } from "../util/vncOptions";
 import { IS_ANDROID, IS_WINDOWS } from "../util/platform";
 import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
 
@@ -930,27 +928,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     onChange={(clipboard) => set({ clipboard })}
                   />
                   <div className="text-[11px] font-bold text-zinc-300">Speed and quality</div>
-                  <ChoiceRow
-                    label="Encoding"
-                    hint="How the server packs the screen. Automatic suits most links. Tight packs the most but needs full colour; ZRLE packs well at any depth; Raw is the least work for both ends and the most to send."
-                    value={o.encoding}
-                    onChange={(v) => set({ encoding: v as VncEncoding })}
-                    choices={VNC_ENCODING_CHOICES.map((c) => ({ ...c, disabled: c.value === "tight" && o.colors !== 32 }))}
-                  />
-                  <ChoiceRow
-                    label="Colours"
-                    hint="Fewer colours is less to send on a slow link."
-                    value={o.colors}
-                    onChange={(v) => set({ colors: Number(v) as VncColors })}
-                    choices={VNC_COLOR_CHOICES}
-                  />
-                  <ChoiceRow
-                    label="Updates"
-                    hint="Fewer updates a second use less bandwidth and battery; the screen moves less smoothly."
-                    value={o.maxFps}
-                    onChange={(v) => set({ maxFps: Number(v) as VncMaxFps })}
-                    choices={VNC_FPS_CHOICES}
-                  />
+                  <VncSpeedFields o={o} set={set} />
                   <p className="text-[10px] text-zinc-500 ml-1">These are kept on this device only, not synced.</p>
                 </div>
               );

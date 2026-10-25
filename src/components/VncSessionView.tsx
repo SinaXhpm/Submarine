@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { AlertTriangle, ClipboardPaste, Loader2, MonitorSmartphone, RotateCw, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, ClipboardPaste, Loader2, MonitorSmartphone, RotateCw, ShieldAlert, SlidersHorizontal, X } from "lucide-react";
 import { AuthPrompts } from "./AuthPrompts";
 import RemoteScreen, { type RemoteScreenHandle } from "./RemoteScreen";
+import { LinkMark, LinkPanel, ToolPanel, VncSettingsPanel, usePageShown, usePauseWhileHidden } from "./ScreenTabTools";
 import { readUseSshAgent } from "../util/sshAgent";
-import { readVncOptions } from "../util/vncOptions";
+import type { LinkStats } from "../util/screenLink";
+import { VNC_PRESETS, readVncOptions, vncNeedsReconnect, writeVncOptions, type VncOptions } from "../util/vncOptions";
 import { type PasteKeys, pasteKeysOf, readLocalClipboard } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
 
@@ -22,7 +24,8 @@ const PASSWORD_REFUSED = /refused the password|said: Authentication failed/i;
 
 const NOT_ENCRYPTED = "VNC isn't encrypted: the screen and what is typed cross the network as they are. Through an SSH server, it's private up to that server.";
 
-export default function VncSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, onPromptChange }: any) {
+// `shown`: the tab is on screen (alone, or in a split), not behind another view.
+export default function VncSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
   const [status, setStatus] = useState<Status>("connecting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [reason, setReason] = useState("");
@@ -42,6 +45,13 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
   const [shareClipboard, setShareClipboard] = useState(false);
   const [serverCopy, setServerCopy] = useState<string | null>(null);
   const [pasteNote, setPasteNote] = useState<string | null>(null);
+  // The tab's tools: this server's options on this device as the settings
+  // panel changes them, the ones the session now open was opened with, and
+  // how its link is doing.
+  const [opts, setOpts] = useState<VncOptions>(() => readVncOptions(session.serverUuid));
+  const [usedOpts, setUsedOpts] = useState<VncOptions | null>(null);
+  const [link, setLink] = useState<LinkStats | null>(null);
+  const [panel, setPanel] = useState<"link" | "settings" | null>(null);
 
   const [fingerprintPrompt, setFingerprintPrompt] = useState<any>(null);
   const [kbiPrompt, setKbiPrompt] = useState<any>(null);
@@ -75,8 +85,12 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
     };
     const screen = screenRef.current;
     if (!screen) return failed("The tab isn't ready yet. Try again.");
-    const { width, height } = screen.wantedSize();
     const options = readVncOptions(session.serverUuid);
+    // The panels show what this session has, and the resolution is sized for at once.
+    setOpts(options);
+    setUsedOpts(options);
+    setLink(null);
+    const { width, height } = screen.wantedSize(options.resolution);
     invoke("vnc_open", {
       sessionId: session.id,
       serverId: session.serverId,
@@ -145,6 +159,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
         setReason(String(e.payload?.reason ?? "The connection closed."));
         setStatus("disconnected");
       }),
+      listen(`vnc-link-${id}`, (e: any) => setLink(e.payload as LinkStats)),
       // Text the user copied on the server, for this device's clipboard.
       listen(`vnc-clipboard-${id}`, (e: any) => {
         const text = String(e.payload?.text ?? "");
@@ -231,10 +246,42 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
     void pasteToServer(keys, true);
   };
 
+  // A choice made in the settings panel: kept for the server on this device
+  // at once, over what the server form may have changed meanwhile.
+  const setOpt = (patch: Partial<VncOptions>) => {
+    const next = { ...(session.serverUuid ? readVncOptions(session.serverUuid) : opts), ...patch };
+    setOpts(next);
+    if (session.serverUuid) writeVncOptions(session.serverUuid, next);
+  };
+  const togglePanel = (which: "link" | "settings") => {
+    if (panel === which) return setPanel(null);
+    if (session.serverUuid) setOpts(readVncOptions(session.serverUuid));
+    setPanel(which);
+  };
+  const lessData = () => {
+    const light = VNC_PRESETS.find((p) => p.value === "light");
+    if (light) setOpt(light.set);
+    setPanel("settings");
+  };
+
+  // No updates are asked for while the tab is hidden (behind another tab or
+  // view, or the window minimised), if the user lets it: a few seconds on, and
+  // they start again as soon as the tab is back.
+  const pageShown = usePageShown();
+  usePauseWhileHidden(status === "connected" && !(shown && pageShown) && opts.pauseHidden, "vnc_shown", session.id);
+  // No link to show without a connection.
+  useEffect(() => {
+    if (status !== "connected") setPanel((p) => (p === "link" ? null : p));
+  }, [status]);
+
   const name = displayName || session.serverName;
   const working = status === "connecting";
   const broken = status === "failed" || status === "disconnected";
   const connected = status === "connected";
+  // A change the session now open hasn't got: the settings panel offers to connect again.
+  const reconnectForOpts = connected && usedOpts && vncNeedsReconnect(usedOpts, opts)
+    ? () => { setPanel(null); connect(); }
+    : null;
 
   return (
     <div data-vnc-status={status} className="relative flex-1 flex flex-col bg-[#0a0a0c] text-white overflow-hidden">
@@ -268,6 +315,16 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
               <ClipboardPaste size={12} aria-hidden="true" /><span className="hidden [@container(min-width:560px)]:inline">Paste</span>
             </button>
           )}
+          {connected && <LinkMark link={link} open={panel === "link"} onClick={() => togglePanel("link")} />}
+          <button
+            onClick={() => togglePanel("settings")}
+            aria-expanded={panel === "settings"}
+            title="Speed and quality"
+            aria-label="Speed and quality"
+            className={`h-7 px-2 flex items-center gap-1.5 rounded-md text-[11px] font-semibold transition-colors ${panel === "settings" ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-400 hover:text-zinc-200"}`}
+          >
+            <SlidersHorizontal size={12} aria-hidden="true" /><span className="hidden [@container(min-width:700px)]:inline">Settings</span>
+          </button>
           {connected && (
             <button
               onClick={() => setShowLog((v) => !v)}
@@ -325,10 +382,11 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
         <RemoteScreen
           ref={screenRef}
           sessionId={session.id}
-          active={isActiveView && !promptWaiting}
+          active={isActiveView && !promptWaiting && !panel}
           connected={connected}
           inputCommand="vnc_input"
           resizeCommand="vnc_resize"
+          scale={opts.resolution}
         />
         {(!connected || showLog) && (
           <div className="absolute inset-0 z-10 flex flex-col p-4 sm:p-8 bg-[#0a0a0c]/90">
@@ -352,6 +410,18 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
           </div>
         )}
       </div>
+
+      {/* Outside the screen: a paste key in a panel isn't the server's. */}
+      {panel === "link" && (
+        <ToolPanel title="Connection" onClose={() => setPanel(null)}>
+          <LinkPanel link={link} onLessData={lessData} />
+        </ToolPanel>
+      )}
+      {panel === "settings" && (
+        <ToolPanel title="Speed and quality" onClose={() => setPanel(null)}>
+          <VncSettingsPanel o={opts} set={setOpt} reconnect={reconnectForOpts} />
+        </ToolPanel>
+      )}
 
       {promptWaiting && (
         <div

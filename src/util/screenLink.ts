@@ -1,8 +1,8 @@
-// How the link to an RDP server is doing, as the built-in client measures it
-// (rdp_client.rs, `LinkStats`, sent to the tab every 2 seconds while it is
-// connected). The delay is a round trip through everything on the way, SSH
-// servers and VPNs included: the server is asked to draw a corner of the
-// desktop again, and its answer is timed.
+// How the link to the server of an RDP (built-in client) or VNC tab is doing,
+// as the backend measures it (screen_link.rs, `LinkStats`, sent to the tab
+// every 2 seconds while it is connected). The delay is a round trip through
+// everything on the way, SSH servers and VPNs included: the server is asked to
+// draw a corner of the screen again, and its answer is timed.
 
 export interface LinkStats {
   /** The middle one of the last few round trips, in ms; null before the first answer. */

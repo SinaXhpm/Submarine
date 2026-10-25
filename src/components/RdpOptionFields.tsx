@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ChoiceRow, SwitchRow } from "./FormRows";
+import { ChoiceRow, QuickChoiceRow, SwitchRow } from "./FormRows";
 import {
   RDP_COLOR_CHOICES, RDP_EFFECT_CHOICES, RDP_NETWORK_CHOICES, RDP_PRESETS, RDP_RESOLUTION_CHOICES,
   rdpPresetOf, rdpShareChoices,
@@ -81,26 +81,12 @@ export function RdpSpeedFields({ o, set }: Fields) {
   const preset = rdpPresetOf(o);
   return (
     <div className="space-y-2.5">
-      <div className="space-y-1">
-        <div className="flex justify-between items-center gap-3">
-          <span className="text-[11px] font-bold text-zinc-400 shrink-0">Quick choice</span>
-          <div role="radiogroup" aria-label="Quick choice" className="flex-1 min-w-0 grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-[#1a1a1e] border border-white/10">
-            {RDP_PRESETS.map((p) => (
-              <button
-                key={p.value}
-                type="button"
-                role="radio"
-                aria-checked={preset === p.value}
-                onClick={() => set(p.set)}
-                className={`h-8 px-1 rounded-md text-[11px] font-semibold truncate transition-colors ${preset === p.value ? "bg-primary/20 text-primary" : "text-zinc-400 hover:text-zinc-200"}`}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <p className="text-[10.5px] text-zinc-500 leading-snug ml-1">{preset ? PRESET_HINTS[preset] : "Your own mix of the choices below."}</p>
-      </div>
+      <QuickChoiceRow
+        choices={RDP_PRESETS}
+        current={preset}
+        onPick={(v) => { const p = RDP_PRESETS.find((p) => p.value === v); if (p) set(p.set); }}
+        hint={preset ? PRESET_HINTS[preset] : "Your own mix of the choices below."}
+      />
       <ChoiceRow
         label="Colours"
         hint="Fewer bits is less to send; smooth gradients may show bands."
