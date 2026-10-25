@@ -44,12 +44,12 @@
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <a href="docs/screenshots/vnc.png"><img src="docs/screenshots/vnc.png" alt="A VNC desktop shown in a Submarine tab, with a label saying the connection is not encrypted" /></a>
-      <br/><sub><b>VNC</b> — the remote screen in the tab, directly or through an SSH server; unencrypted VNC says so</sub>
+      <a href="docs/screenshots/vnc.png"><img src="docs/screenshots/vnc.png" alt="A VNC desktop shown in a Submarine tab: a not-encrypted label, and in the tab's bar Paste, a Good connection mark with a 1 ms round trip, Settings, Log and Close" /></a>
+      <br/><sub><b>VNC</b> — the remote screen in the tab, directly or through an SSH server, with a shared clipboard, the connection's quality and its speed settings; unencrypted VNC says so</sub>
     </td>
     <td width="50%" valign="top" align="center">
-      <a href="docs/screenshots/rdp.png"><img src="docs/screenshots/rdp.png" alt="An RDP desktop shown in a Submarine tab, with an Experimental label" /></a>
-      <br/><sub><b>RDP</b> — opens in your computer's RDP app by default; the built-in client (shown) is experimental and opt-in</sub>
+      <a href="docs/screenshots/rdp.png"><img src="docs/screenshots/rdp.png" alt="An RDP desktop shown in a Submarine tab: an Experimental label, and in the tab's bar Paste, a Good connection mark with a 6 ms round trip, Files, Settings, Log and Close" /></a>
+      <br/><sub><b>RDP</b> — opens in your computer's RDP app by default; the built-in client (shown) is experimental and opt-in, and shares the clipboard and a folder or drive</sub>
     </td>
   </tr>
   <tr>
@@ -169,12 +169,15 @@ Most SSH clients feel like they were built a decade ago and never updated. Subma
 - **ssh-agent**: keys from Pageant, the Windows OpenSSH agent (and agents that use its pipe, such as 1Password), `SSH_AUTH_SOCK` or the `IdentityAgent` named in your config; smartcards and hardware keys work through it. A per-device switch turns it off.
 - **OpenSSH and Teleport certificates** from `~/.ssh/config`, with the CA keys in your `known_hosts` trusted
 - A **blank username** is asked for when you connect; a missing password or passphrase is asked for too
+- **Save password** on a password prompt (when the saved one is wrong, or none is saved): the typed password is kept once the login with it works, for the server, its saved login or the jump host it was asked for
 - **Host keys**: trust on first use with a fingerprint prompt, pinned afterwards; a changed key (or a key of a different kind than the one on file) is flagged before anything secret is sent
 - Legacy-friendly: NIST-curve and SHA-1 group-exchange key exchanges are offered, so older appliances still connect
 
 ### Terminal
 
-- Tabbed sessions per server and several shells per session; **rename** tabs
+- Tabbed sessions per server and several shells per session (a new one takes the lowest free number); **rename** tabs
+- **A terminal with its own login**: a shell on a connection of its own instead of a channel of the tab's, once or always for a server (for software that ties rights to the login, such as CA Access Control's `sesu`)
+- **Search** the scroll-back with Ctrl+Shift+F and the **command history** with Ctrl+Shift+R (Cmd+Shift on macOS); plain Ctrl+F and Ctrl+R stay the shell's
 - Full xterm.js — true colour, ANSI 256, mouse support, **10,000 lines of scrollback** by default (you can change it)
 - **Colour schemes**: Submarine, Campbell, One Half Dark / Light, Dracula, Solarized Dark, Nord and Gruvbox Dark, or import your own from Windows Terminal; built-in fonts, or any font installed on the device (Nerd Fonts work for starship / powerline prompts)
 - **Select to copy**, right-click to paste (bracketed paste), Ctrl+Shift+C / Ctrl+Shift+A; wrapped lines copy as one line
@@ -214,8 +217,9 @@ Pick a local folder, pick a remote folder, and Submarine keeps them in sync.
 
 ### Remote desktops: VNC, RDP and Telnet
 
-- **VNC** opens as the remote screen in the tab, directly or through an SSH server, on the PC and on the phone (touch, zoom, a keyboard button). Tight, ZRLE, TRLE, CopyRect and Raw encodings; the desktop takes the tab's size where the server allows it. Plain VNC is **not encrypted**, and the form, the list and the tab say so.
-- **RDP** opens in **this computer's RDP app** by default (Windows Remote Desktop Connection, Remmina or FreeRDP on Linux, the system handler on macOS), with per-server full-screen, window size, clipboard and drive-sharing options kept on this device. The **built-in RDP client** (in the tab, on the PC and the phone) is **experimental** and opt-in; its certificate is pinned like an SSH host key and checked before anything secret is sent. It also needs **NLA** (the server proves it knows the password before the client sends it): a server that answers "TLS only" is refused with nothing sent, unless you allow that one server ("Allow without NLA").
+- **VNC** opens as the remote screen in the tab, directly or through an SSH server, on the PC and on the phone (touch, zoom, a keyboard button). Tight, ZRLE, TRLE, CopyRect and Raw encodings; the desktop takes the tab's size where the server allows it. **Speed and quality** per server on this device: the encoding, the colours (full, 16 or 8 bits), the most updates a second and the resolution, with quick choices (Standard, Less data, Least data). The **clipboard** is shared both ways, as plain ASCII text (links, commands): classic VNC carries no more. Plain VNC is **not encrypted**, and the form, the list and the tab say so.
+- **RDP** opens in **this computer's RDP app** by default (Windows Remote Desktop Connection, Remmina or FreeRDP on Linux, the system handler on macOS), with per-server full-screen, window size, clipboard and drive-sharing options kept on this device. Through an SSH server it gets the same loopback address every time, and Remote Desktop Connection on Windows gets the saved password (encrypted with DPAPI in its `.rdp` file, which is deleted once read). The **built-in RDP client** (in the tab, on the PC and the phone) is **experimental** and opt-in; its certificate is pinned like an SSH host key and checked before anything secret is sent. It also needs **NLA** (the server proves it knows the password before the client sends it): a server that answers "TLS only" is refused with nothing sent, unless you allow that one server ("Allow without NLA"). It shares the **clipboard** (text, both ways) and, on the PC, **files**: a folder or a whole drive, read only or not, which the server sees as `\\tsclient\<name>`. **Speed and quality** per server: colours (32, 24 or 16 bits), desktop effects, the network's speed, RemoteFX and the resolution, with quick choices (Best picture, Balanced, Less data).
+- **Both remote screens** have a **connection mark** in the tab's bar (Good, Fair, Weak or Not answering, with the round trip, the data rates and the session's bytes; on a weak link it offers to use less data), change their speed and quality from the tab, and **pause while the tab is hidden** (on by default), so a tab nobody looks at sends no picture.
 - **Telnet** opens in a terminal tab, directly or through an SSH server, with proper option negotiation. It is **not encrypted** and says so.
 - All three can go **through an SSH server** you already have.
 
@@ -289,7 +293,7 @@ Submarine on Android is a native build of the same Rust core — same SSH stack,
 - **Touch-friendly terminal.** An inline **key bar** between the terminal and the keyboard has Esc, Tab, arrows, `|`, `~`, `/`, `-` and Termux-style sticky modifiers (tap to arm, double-tap to lock), so Ctrl+letter, Alt+letter and Shift+Tab work.
 - **Auto-scroll on focus** so the prompt never sits behind the keyboard.
 - **SFTP file browser** with multi-select, upload from the phone's storage and download into Downloads; exports go through the system file picker.
-- **VNC and the built-in RDP client** show the remote screen with touch, zoom and a keyboard button.
+- **VNC and the built-in RDP client** show the remote screen with touch, zoom and a keyboard button, the connection mark and their speed and quality; a phone shares no files with an RDP server.
 - **Fingerprint unlock** for a profile, if you turn it on; the app stays out of Recents.
 - **Port forwarding** (SOCKS / local / remote) runs as long as the app is open.
 - **Folder mirror is desktop-only for now.**
@@ -350,7 +354,7 @@ Yes, read-only, and you can switch it off per device. It follows Include, Host a
 
 ### Can I use RDP, VNC and Telnet?
 
-Yes. VNC shows the screen in the tab. RDP opens in your computer's RDP app by default, or in the tab with the experimental built-in client. Telnet opens in a terminal tab. All three can go through an SSH server, and Telnet and plain VNC are labelled as not encrypted.
+Yes. VNC shows the screen in the tab and shares the clipboard (plain text). RDP opens in your computer's RDP app by default, or in the tab with the experimental built-in client, which shares the clipboard and, on the PC, a folder or a drive. Both remote screens show how the connection is doing and let you trade picture quality for less data. Telnet opens in a terminal tab. All three can go through an SSH server, and Telnet and plain VNC are labelled as not encrypted.
 
 ### Can I sync profiles between Windows and macOS?
 

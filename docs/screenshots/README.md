@@ -7,8 +7,8 @@ README picks it up; no code changes needed.
 |---|---|
 | `hero.png` | A server session with the terminal on the left and the dual-pane SFTP browser on the right. The first image in the README. |
 | `compare.png` | SFTP compare view: the local and remote folder, files marked only here / other size / newer / older. |
-| `vnc.png` | A VNC desktop in its tab, with the "not encrypted" label. |
-| `rdp.png` | An RDP desktop in its tab (the experimental built-in client), with the "Experimental" label. |
+| `vnc.png` | A VNC desktop in its tab, with the "not encrypted" label and the tab's bar: Paste, the connection mark (Good, 1 ms), Settings. |
+| `rdp.png` | An RDP desktop in its tab (the experimental built-in client), with the "Experimental" label and the tab's bar: Paste, the connection mark (Good, 6 ms), Files, Settings. |
 | `wall.png` | The Wall: three terminals from different servers side by side (cropped to the tiles). |
 | `monitor.png` | Monitoring: CPU, memory, disk and load graphs for three nodes (cropped). |
 | `servers-home-lab.png` | A folder of servers with colour tags and RDP / VNC / Telnet badges (cropped). |
