@@ -15343,6 +15343,8 @@ async fn vnc_open(
     height: u16,
     // The tab's speed and quality choices for this server (the standard ones if none).
     options: Option<vnc_client::Options>,
+    // Share the clipboard with the server (the tab's per-server option).
+    clipboard: Option<bool>,
     // Ask for the password even when one is saved: the tab's last try with the
     // saved one was refused.
     ask_password: Option<bool>,
@@ -15352,6 +15354,7 @@ async fn vnc_open(
     use tauri::Emitter;
 
     let options = options.unwrap_or_default().checked()?;
+    let clipboard = clipboard.unwrap_or(false);
     // A new attempt replaces the tab's last one.
     if let Some((_, old)) = vnc_clients.lock().await.remove(&session_id) {
         let _ = old.send(vnc_client::Cmd::Close);
@@ -15592,8 +15595,17 @@ async fn vnc_open(
         };
         let flow = screens.start(&session_id, generation);
         let frame = screen_frame_sender(frames, Arc::clone(&flow));
+        // What the user copied on the server, for the tab to put on this device's clipboard.
+        let remote_copy = {
+            let (app, attempt, sid) = (app.clone(), attempt.clone(), session_id.clone());
+            move |text: String| {
+                if attempt.is_current_now() {
+                    let _ = app.emit(&format!("vnc-clipboard-{sid}"), serde_json::json!({"text": text}));
+                }
+            }
+        };
         // A decoder that panics on a bad screen update ends this tab only.
-        let run = tauri::async_runtime::spawn(vnc_client::run(stream, password, connected, frame, flow, rx, wanted, options));
+        let run = tauri::async_runtime::spawn(vnc_client::run(stream, password, connected, frame, flow, rx, wanted, options, clipboard, remote_copy));
         let outcome = match run.await {
             Ok(r) => r,
             Err(_) => Err("The VNC session stopped on bad data from the server".into()),
@@ -15641,6 +15653,21 @@ async fn vnc_input(vnc_clients: tauri::State<'_, vnc_client::VncClients>, sessio
 async fn vnc_resize(vnc_clients: tauri::State<'_, vnc_client::VncClients>, session_id: String, width: u16, height: u16) -> Result<(), String> {
     if let Some((_, tx)) = vnc_clients.lock().await.get(&session_id) {
         let _ = tx.send(vnc_client::Cmd::Resize(width, height));
+    }
+    Ok(())
+}
+
+/// Text from this device's clipboard for the VNC server's (the tab read it
+/// when the user pasted, or pressed its button); the paste key comes after it
+/// as input. Text the server's clipboard can't carry is refused, and why.
+#[tauri::command]
+async fn vnc_paste(vnc_clients: tauri::State<'_, vnc_client::VncClients>, session_id: String, text: String) -> Result<(), String> {
+    let text = zeroize::Zeroizing::new(text);
+    if let Some(why) = vnc_client::paste_refusal(&text) {
+        return Err(why);
+    }
+    if let Some((_, tx)) = vnc_clients.lock().await.get(&session_id) {
+        let _ = tx.send(vnc_client::Cmd::Paste(text));
     }
     Ok(())
 }
@@ -21969,7 +21996,7 @@ pub fn run() {
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, kbi_save_choice, disconnect_session, set_use_ssh_config,
             initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_resize, rdp_builtin_shown, rdp_builtin_close, rdp_share_drives,
-            telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize, screen_ack,
+            telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize, vnc_paste, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
             open_terminal, local_shell, write_terminal_data, type_saved_password, resize_terminal, close_terminal,

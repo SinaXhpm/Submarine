@@ -11,6 +11,10 @@ export interface VncOptions {
   colors: VncColors;
   /** The most updates asked for in a second (60: no limit). */
   maxFps: VncMaxFps;
+  /** Share the clipboard: text copied on the server comes to this device, and
+   *  this device's goes to the server when pasted there (plain ASCII only:
+   *  `vnc_client::paste_refusal`). Not part of the speed and quality. */
+  clipboard: boolean;
 }
 
 export type VncEncoding = "auto" | "tight" | "zrle" | "raw";
@@ -20,7 +24,7 @@ export type VncMaxFps = 60 | 30 | 15 | 5;
 export const VNC_OPTIONS_KEY = "submarine-vnc-options";
 
 // What the VNC tab always asked for.
-export const DEFAULT_VNC_OPTIONS: VncOptions = { encoding: "auto", colors: 32, maxFps: 60 };
+export const DEFAULT_VNC_OPTIONS: VncOptions = { encoding: "auto", colors: 32, maxFps: 60, clipboard: true };
 
 /** The choices as the form lists them. */
 export const VNC_ENCODING_CHOICES: { value: VncEncoding; label: string }[] = [
@@ -65,6 +69,7 @@ export function readVncOptions(uuid?: string | null): VncOptions {
     if (VNC_ENCODING_CHOICES.some((c) => c.value === kept.encoding)) o.encoding = kept.encoding as VncEncoding;
     if (VNC_COLOR_CHOICES.some((c) => c.value === kept.colors)) o.colors = kept.colors as VncColors;
     if (VNC_FPS_CHOICES.some((c) => c.value === kept.maxFps)) o.maxFps = kept.maxFps as VncMaxFps;
+    if (typeof kept.clipboard === "boolean") o.clipboard = kept.clipboard;
   }
   return normalizeVncOptions(o);
 }
