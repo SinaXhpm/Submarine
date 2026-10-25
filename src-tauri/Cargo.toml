@@ -229,6 +229,13 @@ windows = { version = "0.62", features = [
 [target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
 ironrdp-rdpdr-native = { path = "vendor/ironrdp-rdpdr-native" }
 
+# iOS: winscard (through IronRDP's sspi) turns on flate2's C zlib, and Xcode
+# links the app's Rust code as a static library without being told to link
+# the system's zlib (undefined _deflate, _inflate). So on iOS zlib is built
+# in: libz-sys's own copy of its source, compiled for the phone.
+[target.'cfg(target_os = "ios")'.dependencies]
+libz-sys = { version = "1.1", features = ["static"] }
+
 [features]
 # The Mac App Store build (release.yml's mac-appstore job). The store updates
 # the app, so the GitHub update check is off, as it is on iOS; and the app runs
