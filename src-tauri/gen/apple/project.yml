@@ -42,6 +42,10 @@ targets:
         buildPhase: resources
         type: folder
       - path: LaunchScreen.storyboard
+      # Apple's privacy manifest, at the app's root (src-tauri/PrivacyInfo.xcprivacy,
+      # also in the Mac App Store build).
+      - path: ../../PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: submarine_iOS/Info.plist
       properties:

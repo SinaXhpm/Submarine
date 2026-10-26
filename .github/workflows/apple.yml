@@ -125,17 +125,24 @@ jobs:
         run: npm ci
 
       # The Xcode project (src-tauri/gen/apple) is in the repo; this only
-      # makes it when it isn't.
+      # makes it when it isn't. Either way it is made again from its spec
+      # (project.yml), so what the spec lists (the privacy manifest) is in it.
       - name: Xcode project
         id: xcode
         shell: bash
         run: |
+          set -euo pipefail
           if [ ! -d src-tauri/gen/apple ]; then
             npx tauri ios init --ci
+          fi
+          command -v xcodegen >/dev/null || brew install xcodegen
+          (cd src-tauri/gen/apple && xcodegen generate --spec project.yml)
+          if ! git diff --quiet -- src-tauri/gen/apple || [ -n "$(git ls-files --others --exclude-standard src-tauri/gen/apple)" ]; then
+            echo "::warning::The Xcode project in the repo differs from what its spec makes: commit the ios-xcode-project artifact."
             echo "made=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # A project made here is kept, to be added to the repo.
+      # A project made or changed here is kept, to be added to the repo.
       - name: Upload the new Xcode project
         if: steps.xcode.outputs.made == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -162,6 +169,8 @@ jobs:
         run: |
           IPA="$(find src-tauri/gen/apple/build -name '*.ipa' -maxdepth 3 | head -1)"
           rm -rf ipa-check && mkdir ipa-check && unzip -q "$IPA" -d ipa-check
+          # The store refuses an upload without the privacy manifest at the app's root.
+          ls ipa-check/Payload/*.app/PrivacyInfo.xcprivacy >/dev/null || { echo "::error::PrivacyInfo.xcprivacy is not in the app"; exit 1; }
           BIN="$(ls -d ipa-check/Payload/*.app)/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' ipa-check/Payload/*.app/Info.plist)"
           nm -u "$BIN" | grep -E '_(stat|fstat|lstat|fstatat|getattrlist|getattrlistbulk|fgetattrlist|statfs|fstatfs|statvfs|fstatvfs|mach_absolute_time|systemUptime|clock_gettime)(\$|$)' | sort -u || true
           strings "$BIN" | grep -E '^(NSUserDefaults|NSFileSystemFreeSize|volumeAvailableCapacity|activeInputModes)' | sort -u || true

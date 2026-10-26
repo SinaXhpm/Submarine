@@ -3,8 +3,11 @@
 <!-- Apple's privacy manifest for the iOS app and the Mac App Store build. It
      matches PRIVACY.md and the App Store privacy answers: the sync account's
      data, used only to run the app, never to track. The API reasons cover
-     what the Rust standard library and the app's crates call: file times (the
-     file panes and the folder mirror) and the clock since boot (timeouts). -->
+     what the Rust standard library, the app's crates and SQLite call: file
+     times (the file panes and the folder mirror), the file system's details
+     (SQLite, which holds each profile's vault, reads them with statfs and
+     fstatfs before it writes the database there) and the clock since boot
+     (timeouts). apple.yml lists what an iOS build calls. -->
 <plist version="1.0">
 <dict>
 	<key>NSPrivacyTracking</key>
@@ -87,6 +90,15 @@
 				<string>3B52.1</string>
 				<!-- Shown in the file panes. -->
 				<string>DDA9.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<!-- SQLite looks at the file system before writing the vault's database. -->
+				<string>E174.1</string>
 			</array>
 		</dict>
 		<dict>
