@@ -1,6 +1,36 @@
 {
   "name": "submarine",
   "version": "0.4.0",
+  "description": "Free, open-source SSH and SFTP client with RDP, VNC and Telnet: terminal, dual-pane SFTP, port forwarding, folder mirror and encrypted profile sync for Windows, macOS, Linux and Android. Built with Rust and Tauri.",
+  "keywords": [
+    "ssh",
+    "ssh-client",
+    "sftp",
+    "sftp-client",
+    "telnet",
+    "vnc",
+    "rdp",
+    "remote-desktop",
+    "terminal",
+    "port-forwarding",
+    "ssh-tunnel",
+    "socks5",
+    "folder-sync",
+    "ssh-agent",
+    "tauri",
+    "rust",
+    "xterm",
+    "android"
+  ],
+  "homepage": "https://submarine.sinaxhpm.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sinaxhpm/submarine.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sinaxhpm/submarine/issues"
+  },
+  "author": "Sina (https://sinaxhpm.com)",
   "license": "MIT",
   "type": "module",
   "scripts": {

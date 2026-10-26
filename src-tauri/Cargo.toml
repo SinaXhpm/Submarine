@@ -1,9 +1,14 @@
 [package]
 name = "submarine"
 version = "0.4.0"
-description = "Submarine SSH Client"
+description = "Free, open-source SSH and SFTP client with RDP, VNC and Telnet: terminal, dual-pane SFTP, port forwarding, folder mirror and encrypted profile sync"
 authors = ["Sina Xhpm (sinaxhpm.com)"]
 license = "MIT"
+homepage = "https://submarine.sinaxhpm.com"
+repository = "https://github.com/sinaxhpm/submarine"
+readme = "../README.md"
+keywords = ["ssh", "sftp", "rdp", "vnc", "terminal"]
+categories = ["network-programming", "command-line-utilities"]
 edition = "2021"
 rust-version = "1.90"
 
