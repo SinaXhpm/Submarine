@@ -8,7 +8,7 @@ This file follows the llmstxt.org convention to help large language model crawle
 
 - **Name**: Submarine
 - **Category**: SSH client, SFTP client, Telnet client, VNC viewer, RDP client launcher, terminal emulator, port-forwarder, folder sync tool
-- **Platforms**: Windows 10/11, macOS (Apple Silicon: M1 and later), Linux (.deb, .rpm, Arch, AppImage), Android 7.0+
+- **Platforms**: Windows 10/11, macOS (Apple Silicon and Intel, one universal app), Linux (.deb, .rpm, Arch, AppImage), Android 7.0+; iPhone and iPad (iOS/iPadOS 15+) builds for the App Store
 - **License**: MIT (free for personal and commercial use)
 - **Author**: Sina — <https://sinaxhpm.com>
 - **Source**: <https://github.com/sinaxhpm/submarine>
@@ -114,7 +114,7 @@ Distributed as a sideloadable APK from the GitHub releases page. Not on the Play
 - Network: no analytics SDK, no crash reporter. When the profile page opens, one anonymous request goes to the GitHub releases API to check for a new version. Cloud sync talks to submarine.sinaxhpm.com (or your own server) only if you sign in.
 - An account can be deleted from inside the app (Cloud sync, Delete account, confirmed with the password); everything the server holds for it goes at once. Privacy policy: PRIVACY.md in the repository.
 - Telnet and plain VNC are unencrypted and labelled so. The built-in RDP client is experimental, and it refuses a server without NLA unless that server is allowed.
-- The Windows and macOS builds are not code-signed; the Android APK is signed with the author's key.
+- The Windows build is not code-signed; the macOS download is signed and notarized when built with the author's Developer ID; the Android APK is signed with the author's key; the iPhone, iPad and Mac App Store builds are signed for the App Store.
 
 ## Install
 
@@ -123,14 +123,14 @@ Pick a binary from <https://github.com/sinaxhpm/submarine/releases>.
 | OS | File |
 |---|---|
 | Windows 10/11 | `.exe` installer, `.msi`, or the portable `.zip` |
-| macOS (Apple Silicon: M1 and later) | `.dmg` or `.app.zip` |
+| macOS (Apple Silicon and Intel) | `.dmg` or `.app.zip` |
 | Debian/Ubuntu/Mint | `.deb` |
 | Fedora/RHEL/openSUSE | `.rpm` |
 | Arch/Manjaro/EndeavourOS | `.pkg.tar.zst` |
 | Any Linux | `.AppImage` |
 | Android 7.0+ | `.apk` (sideload) |
 
-The Windows and macOS builds are not code-signed: Windows SmartScreen prompts on first run; on macOS use `xattr -d com.apple.quarantine`. The Android APK is signed with the author's key; allow "Install unknown apps" for the installer source. Releases from 0.4.0 on carry a SHA256SUMS file.
+The Windows build is not code-signed: Windows SmartScreen prompts on first run. A macOS download that isn't notarized needs `xattr -d com.apple.quarantine`. The Android APK is signed with the author's key; allow "Install unknown apps" for the installer source. Releases from 0.4.0 on carry a SHA256SUMS file.
 
 ## Build from source
 

@@ -27,7 +27,7 @@
 - **One window, many tools per server** — terminal, SFTP, tunnels, folder mirror, Docker, live server info and a command library, all around the same session
 - **Watch many servers at once** — split view for two sessions, a **Wall** pinboard for any terminals across hosts, and **broadcast input** to several sessions at once
 - **Works with your existing SSH setup** — reads `~/.ssh/config` (Include, Match, ProxyJump, ProxyCommand, IdentityFile, certificates), logs in with keys from **ssh-agent / Pageant / the Windows OpenSSH agent**, trusts your `known_hosts`
-- **Native and cross-platform** — Windows, macOS, Linux (`.deb` / `.rpm` / Arch / AppImage) and Android, with the same encrypted vault on all of them
+- **Native and cross-platform** — Windows, macOS (one app for Apple Silicon and Intel), Linux (`.deb` / `.rpm` / Arch / AppImage) and Android, with iPhone and iPad builds for the App Store, and the same encrypted vault on all of them
 - **Encrypted profiles** — Argon2id + AES-256-GCM on your device; open a profile with **Windows Hello** or an **Android fingerprint** if you turn that on
 - **Optional cloud sync** — records are encrypted before upload; use the hosted server, or [point Submarine at your own](#cloud-sync-optional)
 - **Import from anywhere** — PuTTY `.reg`, MobaXterm `.mxtsessions`, OpenSSH config and Submarine JSON exports
@@ -147,7 +147,7 @@ Most SSH clients feel like they were built a decade ago and never updated. Subma
 - **One window, everything you need.** Terminal, SFTP file browser, port tunnels, folder sync, saved commands and remote desktops are tabs around each server. No more juggling PuTTY, WinSCP, a tunnel app and an RDP client.
 - **Fits the setup you already have.** Your `~/.ssh/config`, your agent, your `known_hosts`, your Teleport or OpenSSH certificates and ProxyJump / ProxyCommand hosts all work.
 - **Secure by default.** Saved servers are encrypted on disk. Cloud sync is optional and encrypts record contents before upload. Unencrypted protocols are labelled as such. See [Security and privacy](#security-and-privacy) for exactly what is and isn't protected.
-- **Truly cross-platform.** Windows, macOS (Apple Silicon) and every major Linux distribution — `.deb`, `.rpm`, Arch package and AppImage — plus Android.
+- **Truly cross-platform.** Windows, macOS (Apple Silicon and Intel) and every major Linux distribution — `.deb`, `.rpm`, Arch package and AppImage — plus Android, and iPhone and iPad through the App Store.
 
 ## Key Features
 
@@ -239,7 +239,7 @@ A read-only inspection pane for the active session — no terminal commands need
 ### Profiles and security conveniences
 
 - Each profile is its own vault with its own master password; several can live on one device
-- **Quick unlock** (off by default): open a profile with **Windows Hello** (needs a TPM) or an **Android fingerprint**. The password itself is never kept: the vault key is sealed to a key in the TPM or the Android Keystore. Not offered on Linux or macOS, never synced or exported.
+- **Quick unlock** (off by default): open a profile with **Windows Hello** (needs a TPM) or an **Android fingerprint**. The password itself is never kept: the vault key is sealed to a key in the TPM or the Android Keystore. Not offered on Linux, macOS, iPhone or iPad, never synced or exported.
 - **Portable mode** on Windows: all data in a `submarine-data` folder next to the exe
 
 ### Cloud sync (optional)
@@ -257,14 +257,16 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | OS | File |
 |---|---|
 | Windows 10 / 11 | `.exe` installer or `.msi`, or the [portable](#portable-mode-windows) `.zip` |
-| macOS (Apple Silicon: M1 and later) | `.dmg` or `.app.zip` |
+| macOS (Apple Silicon and Intel) | `.dmg` or `.app.zip` |
 | Debian / Ubuntu / Mint | `.deb` — `sudo apt install ./submarine_*.deb` |
 | Fedora / RHEL / openSUSE | `.rpm` — `sudo dnf install ./submarine-*.rpm` |
 | Arch / Manjaro / EndeavourOS | `.pkg.tar.zst` — `sudo pacman -U submarine-*.pkg.tar.zst` |
 | Any Linux | `.AppImage` — `chmod +x` and double-click |
 | Android 7.0+ | `.apk` — sideload, no Play Store required |
 
-> The Windows and macOS builds are **not code-signed**. Windows SmartScreen will prompt — click "More info → Run anyway". On macOS you may need `xattr -d com.apple.quarantine /Applications/Submarine.app`. The Android APK **is signed** with the author's key: `apksigner verify --print-certs` should show the certificate SHA-256 `e9e350dc9f8628bee461be3424c0c2b2180f00685cc380de80c86808ae669f1c`. Android sideloading needs "Install unknown apps" enabled for the installer source. Releases from 0.4.0 on carry a `SHA256SUMS` file to check a download against.
+> iPhone and iPad (iOS and iPadOS 15 or later) get Submarine from the App Store once it is published there; the builds are made from this repository.
+>
+> The Windows build is **not code-signed**. Windows SmartScreen will prompt — click "More info → Run anyway". The macOS download is signed with the author's Developer ID and notarized when the release was built with that certificate; if it isn't, macOS may need `xattr -d com.apple.quarantine /Applications/Submarine.app`. The Android APK **is signed** with the author's key: `apksigner verify --print-certs` should show the certificate SHA-256 `e9e350dc9f8628bee461be3424c0c2b2180f00685cc380de80c86808ae669f1c`. Android sideloading needs "Install unknown apps" enabled for the installer source. Releases from 0.4.0 on carry a `SHA256SUMS` file to check a download against.
 
 ### Portable mode (Windows)
 
@@ -326,7 +328,7 @@ Built for Android 7.0 (API 24) and newer, on phones, tablets and Android-on-Chro
 - When the profile page opens, Submarine makes **one anonymous request to the GitHub releases API** to see whether a newer version exists (the request carries the app name and version, nothing else). There is a button to run the same check by hand.
 - If you sign in to cloud sync, it talks to the sync server (`submarine.sinaxhpm.com`, or the one you chose).
 
-**Other defences:** a strict Content Security Policy, a minimal Tauri permission ACL, and no shell or filesystem plugin exposed to the UI. The desktop builds are not code-signed (see [Install](#install)); the Android APK is signed.
+**Other defences:** a strict Content Security Policy, a minimal Tauri permission ACL, and no shell or filesystem plugin exposed to the UI. The Windows build is not code-signed (see [Install](#install)); the Android APK is signed, and the App Store builds are signed by Apple's process.
 
 Found a vulnerability? Please don't post exploit details in public: open an issue that says only that you found one, and the maintainer will reply with a private way to send the details.
 
@@ -370,11 +372,15 @@ In an encrypted file under your OS app-data directory — or in the `submarine-d
 
 ### Does Submarine collect telemetry or analytics?
 
-No analytics SDK and no crash reporter. Besides your own servers, it makes one anonymous request to the GitHub releases API when the profile page opens (to check for a new version), and talks to the sync server only if you sign in to cloud sync.
+No analytics SDK and no crash reporter. Besides your own servers, it makes one anonymous request to the GitHub releases API when the profile page opens (to check for a new version; not in the iPhone and iPad app or the Mac App Store build, which the store updates), and talks to the sync server only if you sign in to cloud sync.
 
 ### Can I use Submarine on my Android phone with the same servers as my desktop?
 
 Yes. Install the APK, turn on cloud sync, and unlock with the same master password — every server, key and saved tunnel appears on the phone. Folder mirror is desktop-only for now; terminal, SFTP, port forwarding, VNC and RDP work on Android.
+
+### Is there an iPhone or iPad app?
+
+The same source builds for iPhone and iPad (iOS and iPadOS 15 or later), for the App Store. It works like the Android app: terminal, SFTP, port forwarding, VNC and the built-in RDP client, the same vault and sync. Exports land in the app's folder in the Files app; there are no folder mirrors, and no files are shared with an RDP server.
 
 ### Is Submarine on the Play Store?
 
