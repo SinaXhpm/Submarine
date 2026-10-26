@@ -136,6 +136,9 @@ jobs:
             npx tauri ios init --ci
           fi
           command -v xcodegen >/dev/null || brew install xcodegen
+          # Two folders the spec names that only the build fills (the Rust
+          # library, the web assets): xcodegen wants them there.
+          mkdir -p src-tauri/gen/apple/Externals src-tauri/gen/apple/assets
           (cd src-tauri/gen/apple && xcodegen generate --spec project.yml)
           if ! git diff --quiet -- src-tauri/gen/apple || [ -n "$(git ls-files --others --exclude-standard src-tauri/gen/apple)" ]; then
             echo "::warning::The Xcode project in the repo differs from what its spec makes: commit the ios-xcode-project artifact."
