@@ -17,6 +17,7 @@
 		96C0B450E728C17AB7103E17 /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 9EF302C356B7AEE1261ECCA8 /* main.mm */; };
 		97E07E8860CC0C5B84E3F371 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = E21E2BE7955CA0D69C69F92E /* LaunchScreen.storyboard */; };
 		BC587AA2D14997243EEF581A /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D341641C5107B9D1E899EA2B /* WebKit.framework */; };
+		CF2F53841FF757916F0CC6F6 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AC719F4850DD4D2FA4354F3B /* PrivacyInfo.xcprivacy */; };
 		F26AD54F76B5E39A412B971B /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 1180BC69E338F3D1E4BC4571 /* libapp.a */; };
 		F60BD19969B40B17F7E8A8B3 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F28CACAA1503526101E78BCB /* CoreGraphics.framework */; };
 /* End PBXBuildFile section */
@@ -54,6 +55,7 @@
 		99E610A3CBB8BAEE573B07B3 /* docker.rs */ = {isa = PBXFileReference; path = docker.rs; sourceTree = "<group>"; };
 		9E3D5347C26F3D531230344D /* ssh_config.rs */ = {isa = PBXFileReference; path = ssh_config.rs; sourceTree = "<group>"; };
 		9EF302C356B7AEE1261ECCA8 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		AC719F4850DD4D2FA4354F3B /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		ADA85735B16A3A1F41D91E16 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		B0DA212EA82473403B59CFB5 /* screen_flow.rs */ = {isa = PBXFileReference; path = screen_flow.rs; sourceTree = "<group>"; };
 		BA089FFD2617368A308144FE /* hlc.rs */ = {isa = PBXFileReference; path = hlc.rs; sourceTree = "<group>"; };
@@ -117,6 +119,15 @@
 				E19452AD3267908B54F723C7 /* submarine_iOS.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		5F42CB9E7D164CFDA904423D /* src-tauri */ = {
+			isa = PBXGroup;
+			children = (
+				AC719F4850DD4D2FA4354F3B /* PrivacyInfo.xcprivacy */,
+			);
+			name = "src-tauri";
+			path = ../..;
 			sourceTree = "<group>";
 		};
 		6F3DF6FD1DD472F3B62AB386 /* bindings */ = {
@@ -189,6 +200,7 @@
 				452C590E7126467F83A021EC /* Externals */,
 				F1ADC8AE59BBEA7C54B6BAF1 /* Sources */,
 				74BC78E7C37BC6BB28752736 /* src */,
+				5F42CB9E7D164CFDA904423D /* src-tauri */,
 				107898C672CE3EBCBD02DE95 /* submarine_iOS */,
 				BC9560D62E83A99DD02BFED0 /* Frameworks */,
 				4CCE2A7D6A9E1ECBE7700AE9 /* Products */,
@@ -281,6 +293,7 @@
 			files = (
 				7FC27C1F8AD697F59734C046 /* Assets.xcassets in Resources */,
 				97E07E8860CC0C5B84E3F371 /* LaunchScreen.storyboard in Resources */,
+				CF2F53841FF757916F0CC6F6 /* PrivacyInfo.xcprivacy in Resources */,
 				16E8EBF81E883CCE3FFC280B /* assets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
