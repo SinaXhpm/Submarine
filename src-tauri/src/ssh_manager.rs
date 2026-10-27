@@ -3,7 +3,7 @@ use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicK
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 
 /// Host-key fingerprint in the format every `known_hosts` row was written
 /// with: un-padded base64 of SHA-256 over the key blob, WITHOUT the
@@ -429,7 +429,11 @@ pub struct SshState {
     /// never overlap in time (host-key check runs during the handshake,
     /// keyboard-interactive runs during auth) but carry different value types.
     pub kbi_txs: Arc<Mutex<HashMap<String, oneshot::Sender<Option<Vec<String>>>>>>,
-    pub connections: Arc<Mutex<HashMap<String, Arc<Mutex<client::Handle<ClientHandler>>>>>>,
+    /// The logged-in connections, by session id. A handle is only ever
+    /// read-locked: after login every russh call takes `&self` and each channel
+    /// open waits on its own reply, so channels open side by side, and a slow
+    /// one (a tunnel's target that never answers) holds no one else up.
+    pub connections: Arc<Mutex<HashMap<String, Arc<RwLock<client::Handle<ClientHandler>>>>>>,
     /// ProxyJump bastion handles, keyed by the TARGET session_id. Each target
     /// session that routes through a jump host stows the jump's live `Handle`
     /// here purely to keep it (and thus the direct-tcpip channel carrying the

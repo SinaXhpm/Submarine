@@ -34,7 +34,7 @@ pub(crate) type ChannelFuture = Pin<Box<dyn Future<Output = Result<Channel<Msg>,
 pub(crate) type OpenChannel = Arc<dyn Fn() -> ChannelFuture + Send + Sync>;
 
 /// An `OpenChannel` for a connection handle.
-pub(crate) fn opener<H>(session: Arc<tokio::sync::Mutex<russh::client::Handle<H>>>) -> OpenChannel
+pub(crate) fn opener<H>(session: Arc<tokio::sync::RwLock<russh::client::Handle<H>>>) -> OpenChannel
 where
     H: russh::client::Handler + 'static,
 {
@@ -42,7 +42,7 @@ where
         let session = Arc::clone(&session);
         Box::pin(async move {
             let open = async {
-                let s = session.lock().await;
+                let s = session.read().await;
                 s.channel_open_session().await.map_err(|e| e.to_string())
             };
             tokio::time::timeout(Duration::from_secs(20), open)
@@ -1747,7 +1747,7 @@ mod over_ssh {
         });
         let running = Arc::clone(&server.running);
         let session = connect(server, |_| {}, crate::build_ssh_client_config()).await.expect("ssh");
-        let open = opener(Arc::new(tokio::sync::Mutex::new(session)));
+        let open = opener(Arc::new(tokio::sync::RwLock::new(session)));
         let sftp = start_with(open, Sudo::No, !matches!(mode, Mode::Gnu)).await.expect("sftp over shell");
         Some(Lab { sftp, dir, running, bin })
     }
@@ -2186,7 +2186,7 @@ mod over_ssh {
         let server = TestServer::with_shell(ShellOpts { path: Some(path), cwd: Some(bin.clone()), ..Default::default() });
         let session = connect(server, |_| {}, crate::build_ssh_client_config()).await.expect("ssh");
         let remote = Remote::new(
-            opener(Arc::new(tokio::sync::Mutex::new(session))),
+            opener(Arc::new(tokio::sync::RwLock::new(session))),
             Sudo::Password(Zeroizing::new("pw".to_string())),
         );
         for _ in 0..4 {

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, oneshot, Mutex, Notify, Semaphore};
+use tokio::sync::{broadcast, oneshot, Mutex, Notify, RwLock, Semaphore};
 
 use crate::ssh_manager::ClientHandler;
 
@@ -392,7 +392,7 @@ async fn bind_with_retry(addr: &str) -> std::io::Result<TcpListener> {
 pub async fn start_tunnel(
     app: AppHandle,
     session_id: String,
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     tunnels_map: TunnelMap,
     forwarded_targets: ForwardedTargets,
     spec: TunnelSpec,
@@ -935,7 +935,7 @@ where
 async fn run_local_forward(
     app: AppHandle,
     session_id: String,
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     listener: TcpListener,
     target: String, // "host:port"
     status: Arc<Mutex<TunnelStatus>>,
@@ -1034,7 +1034,7 @@ async fn run_local_forward(
 }
 
 async fn bridge_local_to_channel(
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     mut sock: tokio::net::TcpStream,
     peer: SocketAddr,
     target_host: String,
@@ -1056,7 +1056,7 @@ async fn bridge_local_to_channel(
 async fn run_dynamic_forward(
     app: AppHandle,
     session_id: String,
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     listener: TcpListener,
     status: Arc<Mutex<TunnelStatus>>,
     mut stop_rx: oneshot::Receiver<()>,
@@ -1154,7 +1154,7 @@ const FORWARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn run_remote_forward(
     app: AppHandle,
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     bind_addr: String,
     server_port: u32,
     local_target: String,
@@ -1177,10 +1177,9 @@ async fn run_remote_forward(
     forwarded_targets.lock().await.insert(server_port, entry);
 
     // Ask the server to start listening, bounded so a server that never
-    // answers the global request can't hang the setup forever (nor hold the
-    // per-session lock indefinitely and freeze the health watcher with it).
+    // answers the global request can't hang the setup forever.
     let request = {
-        let h = handle.lock().await;
+        let h = handle.read().await;
         match tokio::time::timeout(
             FORWARD_REQUEST_TIMEOUT,
             h.tcpip_forward(&bind_addr, server_port),
@@ -1218,9 +1217,9 @@ async fn run_remote_forward(
     let _ = stop_rx.await;
 
     // Best-effort: tell the server to release the port and drop our map entry.
-    // Same timeout as the setup request so teardown can't hang on the lock.
+    // Same timeout as the setup request so teardown can't hang.
     {
-        let h = handle.lock().await;
+        let h = handle.read().await;
         let _ = tokio::time::timeout(
             FORWARD_REQUEST_TIMEOUT,
             h.cancel_tcpip_forward(&bind_addr, server_port),
@@ -1291,19 +1290,15 @@ pub async fn bridge_forwarded_channel(
 }
 
 /// Hard ceiling on a single `channel_open_direct_tcpip`. russh awaits the
-/// server's CHANNEL_OPEN_CONFIRMATION with no timeout of its own, and we hold
-/// the shared handle mutex across that await — so when the SSH transport is
-/// silently wedged (a network blip the kernel/russh hasn't yet surfaced as a
-/// close) ONE new connection's open parks forever WHILE HOLDING THE HANDLE
-/// LOCK. That freezes the health watcher (its `is_closed()` poll and its active
-/// probe both take the same lock), so the session is never declared dead, never
-/// auto-reconnects, and the bridge task's permit never frees — the exact
-/// "tunnel dead, UI still green, only a manual restart brings it back" report.
-/// Bounding the open releases the lock (and the permit) within this window: the
-/// watcher runs again and, if the link is truly gone, its own probe strikes out
-/// and triggers a reconnect; if the link recovered, the next connection just
-/// succeeds. A real open completes in one round-trip (milliseconds), so 10s
-/// never trips a healthy link.
+/// server's CHANNEL_OPEN_CONFIRMATION with no timeout of its own, so when the
+/// SSH transport is silently wedged (a network blip the kernel/russh hasn't yet
+/// surfaced as a close) ONE new connection's open would park forever, and the
+/// bridge task's permit with it: a tunnel that looks alive and passes nothing.
+/// The handle is shared (read-locked, see SshState::connections), so other
+/// opens and the health watcher go on meanwhile; bounding the open frees the
+/// permit within this window, and if the link is truly gone the watcher's own
+/// probe strikes out and triggers a reconnect. A real open completes in one
+/// round-trip (milliseconds), so 10s never trips a healthy link.
 const CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Open a `direct-tcpip` channel through the SSH session, with ONE quick
@@ -1316,14 +1311,14 @@ const CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// second failure. Every open is bounded by CHANNEL_OPEN_TIMEOUT — see there
 /// for why an unbounded open is the root of the silent-tunnel-death bug.
 async fn open_channel_with_retry(
-    handle: &Mutex<russh::client::Handle<ClientHandler>>,
+    handle: &RwLock<russh::client::Handle<ClientHandler>>,
     target_host: &str,
     target_port: u32,
     peer_ip: &str,
     peer_port: u32,
 ) -> Result<russh::Channel<russh::client::Msg>, String> {
     let first = {
-        let h = handle.lock().await;
+        let h = handle.read().await;
         tokio::time::timeout(
             CHANNEL_OPEN_TIMEOUT,
             h.channel_open_direct_tcpip(target_host.to_string(), target_port,
@@ -1338,7 +1333,7 @@ async fn open_channel_with_retry(
     // Don't retry if the session is gone — wasted round-trip and the
     // user is about to see the disconnect banner anyway.
     let still_alive = {
-        let h = handle.lock().await;
+        let h = handle.read().await;
         !h.is_closed()
     };
     if !still_alive {
@@ -1346,7 +1341,7 @@ async fn open_channel_with_retry(
     }
     tokio::time::sleep(Duration::from_millis(120)).await;
     let second = {
-        let h = handle.lock().await;
+        let h = handle.read().await;
         tokio::time::timeout(
             CHANNEL_OPEN_TIMEOUT,
             h.channel_open_direct_tcpip(target_host.to_string(), target_port,
@@ -1431,7 +1426,7 @@ async fn read_exact_by(
 /// line and the connection closes; we don't try to autodetect TLS or other
 /// raw bytes because there's no useful action we could take with them.
 async fn handle_dynamic_client(
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     mut sock: tokio::net::TcpStream,
     peer: SocketAddr,
     app: AppHandle,
@@ -1473,7 +1468,7 @@ async fn handle_dynamic_client(
 /// byte of the method was already consumed by the dispatcher and is passed
 /// in so we can stitch it back when reading the request line.
 async fn handle_http_proxy(
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     mut sock: tokio::net::TcpStream,
     peer: SocketAddr,
     first_byte: u8,
@@ -1775,7 +1770,7 @@ fn parse_absolute_uri(uri: &str) -> Option<(String, u16, String)> {
 /// DSTIP(4) USERID(null-terminated). If DSTIP is 0.0.0.X (SOCKS4a marker),
 /// the hostname follows USERID, also null-terminated.
 async fn handle_socks4(
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     mut sock: tokio::net::TcpStream,
     peer: SocketAddr,
     app: AppHandle,
@@ -1869,7 +1864,7 @@ async fn read_until_nul(sock: &mut tokio::net::TcpStream, max: usize, deadline: 
 /// error reply and the connection closes. The leading version byte was
 /// already consumed by `handle_socks`.
 async fn handle_socks5(
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     mut sock: tokio::net::TcpStream,
     peer: SocketAddr,
     app: AppHandle,
