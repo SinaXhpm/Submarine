@@ -11,6 +11,7 @@ import { createRemoteProvider } from "../fs/remoteProvider";
 import { useTextPrompt } from "../ui/confirm";
 import { useIsNarrow } from "../hooks/useViewport";
 import { bookmarksKey } from "../util/sftpBookmarks";
+import { FOLLOW_SETUP, type ShellFolderState } from "../util/shellFolder";
 
 // Root (sudo) mode for the remote pane — see `sftp_set_elevated` in lib.rs.
 type ElevationStatus = { elevated: boolean; passwordless: boolean };
@@ -50,6 +51,11 @@ interface SftpWorkspaceProps {
   // The unlocked profile: with the server id it keys the panes' bookmarks
   // (util/sftpBookmarks). A server that isn't saved (Quick Connect) has none.
   profile?: string | null;
+  // Follow (#245), the button in the SFTP panel's title bar: the folder the
+  // active terminal's shell reported, where the remote pane goes. Null while
+  // the shell hasn't said (the pane shows how to make it); undefined while
+  // Follow is off.
+  follow?: ShellFolderState | null;
 }
 // "split" is Local above Remote; the name predates "side" and stays because
 // it is what earlier versions saved.
@@ -104,7 +110,43 @@ const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
 });
 DragGhost.displayName = "DragGhost";
 
-const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files", profile }: SftpWorkspaceProps) => {
+// Follow is on but the terminal's shell hasn't said which folder it is in:
+// the one line that makes it, for the shell picked.
+function FollowSetup({ onCopy }: { onCopy: (line: string) => void }) {
+  const [picked, setPicked] = useState(0);
+  const setup = FOLLOW_SETUP[picked];
+  return (
+    <div className="px-1 flex flex-col gap-1 text-[10px] leading-snug text-zinc-400">
+      <span>
+        The terminal hasn't said which folder it is in. Add this line to {setup.file}, then open a new terminal.
+        {setup.note ? ` ${setup.note}` : ""}
+      </span>
+      <div className="flex items-center gap-1">
+        {FOLLOW_SETUP.map((s, i) => (
+          <button
+            key={s.shell}
+            type="button"
+            aria-pressed={i === picked}
+            onClick={() => setPicked(i)}
+            className={`h-5 px-1.5 rounded border ${i === picked ? "text-primary bg-primary/10 border-primary/30" : "text-zinc-400 border-white/10 hover:text-white"}`}
+          >
+            {s.shell}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => onCopy(setup.line)}
+          className="ml-auto h-5 px-1.5 rounded border border-white/10 text-zinc-300 hover:text-white hover:bg-white/5"
+        >
+          Copy
+        </button>
+      </div>
+      <code className="block px-1.5 py-1 rounded bg-black/30 font-mono text-zinc-300 break-all select-text">{setup.line}</code>
+    </div>
+  );
+}
+
+const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files", profile, follow }: SftpWorkspaceProps) => {
   // Mirror needs a saved server; without one the files always show.
   const shownView: SftpView = view === "mirror" && serverId ? "mirror" : "files";
   // Files layout: "tabs" (one side full height) is the default because the
@@ -305,6 +347,41 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
     setNotification({ msg, type });
     setTimeout(() => setNotification(null), 4000);
   };
+
+  // Follow (#245): the remote pane goes where the active terminal's shell says
+  // it is, whenever that changes (and when Follow is turned on). A folder it
+  // can't list (no rights, gone) leaves it where it is, and so does a terminal
+  // that is on another host now (an ssh onward); the note under the pane's
+  // header says which.
+  const [followMiss, setFollowMiss] = useState<string | null>(null);
+  const followPath = follow && !follow.away ? follow.path : null;
+  useEffect(() => {
+    setFollowMiss(null);
+    const pane = remoteRef.current;
+    if (!followPath || disabled || !pane || pane.currentDir() === followPath) return;
+    let current = true;
+    pane.goTo(followPath).then((ok) => { if (current && !ok) setFollowMiss(followPath); });
+    return () => { current = false; };
+  }, [followPath, disabled]);
+  const copyLine = async (line: string) => {
+    try {
+      await navigator.clipboard.writeText(line);
+      notify("Copied", "success");
+    } catch {
+      notify("Couldn't copy it: select the line and copy it from there.", "error");
+    }
+  };
+  const followNote = follow === undefined ? null
+    : follow === null ? <FollowSetup onCopy={copyLine} />
+    : follow.away ? (
+      <div className="px-1 text-[10px] leading-snug text-amber-300 break-words">
+        The terminal is on {follow.away} now; the files stay on this server.
+      </div>
+    ) : followMiss ? (
+      <div role="alert" className="px-1 text-[10px] leading-snug text-amber-300 break-words">
+        Can't open {followMiss}, the terminal's folder.
+      </div>
+    ) : null;
 
   const handleDragMove = (drag: ActiveDrag | null) => {
     dragRef.current = drag;
@@ -544,7 +621,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               compareWith={compareOn ? localEntries : null}
               hideSame={hideSame}
               headerExtra={elevationControl}
-              headerNote={elevationNote}
+              headerNote={<>{elevationNote}{followNote}</>}
               rootMode={elevation.elevated || rootByLogin}
               archiveOff={elevation.elevated ? "Archive and extract aren't available in root mode: they run as the login user, not through sudo" : undefined}
             />

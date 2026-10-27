@@ -2,10 +2,11 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from 
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, Play, Library, Info, Container, Plus, ChevronDown, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, CircleSlash, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud, LogIn } from "lucide-react";
+import { TerminalSquare, Folder, FolderUp, FolderSync, Network, AlertTriangle, Check, X, Play, Library, Info, Container, Plus, ChevronDown, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, CircleSlash, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud, LogIn } from "lucide-react";
 import TerminalView from "./TerminalView";
 import { AuthPrompts } from "./AuthPrompts";
 import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
+import { nextShellFolder, type ShellFolderState } from "../util/shellFolder";
 import TunnelsPanel from "./TunnelsPanel";
 import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
@@ -160,28 +161,30 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
 };
 
 // The title bar of a tool panel with a Dedicated toggle (SFTP, Port
-// Forwarding): the title, the toggle, then the panel's buttons (SFTP's Mirror),
-// full screen and close. In a narrow panel not all of it fits. What gives way,
-// in this order: the title shortens ("SFTP", "Ports"), the title goes, and
-// only then does Mirror lose its word. So the word is there whenever there is
-// room for it. The bar measures itself instead of using fixed widths, because
-// the toggle is wider while its status dot shows and the text's width depends
-// on the font.
+// Forwarding): the title, the toggle, then the panel's buttons (SFTP's Follow
+// and Mirror), full screen and close. In a narrow panel not all of it fits.
+// What gives way, in this order: the title shortens ("SFTP", "Ports"), the
+// title goes, and only then do Follow and Mirror lose their words. So the
+// words are there whenever there is room for them. The bar measures itself
+// instead of using fixed widths, because the toggle is wider while its status
+// dot shows and the text's width depends on the font.
 const TITLE_BAR_GAP = 12; // gap-3 between the title, the toggle and the buttons
-const MIRROR_WORD_GAP = 6; // gap-1.5 between Mirror's icon and its word
+const WORD_GAP = 6; // gap-1.5 between a button's icon and its word
 const TITLE_BAR_TEXT = "text-[10px] font-bold uppercase tracking-wider";
-interface TitleBarFit { title: "full" | "short" | "none"; mirrorWord: boolean }
+interface TitleBarFit { title: "full" | "short" | "none"; words: boolean }
 const TITLE_BAR_FITS: TitleBarFit[] = [
-  { title: "full", mirrorWord: true },
-  { title: "short", mirrorWord: true },
-  { title: "none", mirrorWord: true },
-  { title: "short", mirrorWord: false },
-  { title: "none", mirrorWord: false },
+  { title: "full", words: true },
+  { title: "short", words: true },
+  { title: "none", words: true },
+  { title: "short", words: false },
+  { title: "none", words: false },
 ];
-const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
+const ToolTitleBar = ({ title, shortTitle, toggle, follow, mirror, extra, onClose }: {
   title: string;
   shortTitle: string;
   toggle: React.ReactNode;
+  /** SFTP's Follow button (the remote pane follows the terminal's folder); the other panels have none. */
+  follow?: { on: boolean; onToggle: () => void };
   /** SFTP's Mirror button; the other panels have none. */
   mirror?: { on: boolean; disabled: boolean; onToggle: () => void };
   /** Buttons between Mirror and Close (full screen). */
@@ -191,9 +194,10 @@ const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
   const barRef = useRef<HTMLDivElement | null>(null);
   const toggleRef = useRef<HTMLSpanElement | null>(null);
   const buttonsRef = useRef<HTMLDivElement | null>(null);
-  // Never shown: they only give the three texts' widths.
+  // Never shown: they only give the texts' widths.
   const fullTitleRef = useRef<HTMLSpanElement | null>(null);
   const shortTitleRef = useRef<HTMLSpanElement | null>(null);
+  const followWordRef = useRef<HTMLSpanElement | null>(null);
   const mirrorWordRef = useRef<HTMLSpanElement | null>(null);
   const [fitIndex, setFitIndex] = useState(0);
   const fit = TITLE_BAR_FITS[fitIndex];
@@ -207,12 +211,13 @@ const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
       const style = getComputedStyle(bar);
       const room = bar.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       if (!(room > 0)) return; // not laid out
-      const word = mirrorWordRef.current ? width(mirrorWordRef.current) + MIRROR_WORD_GAP : 0;
-      const iconButtons = width(buttons) - (fitRef.current.mirrorWord ? word : 0);
+      const wordOf = (el: HTMLElement | null) => (el ? width(el) + WORD_GAP : 0);
+      const word = wordOf(followWordRef.current) + wordOf(mirrorWordRef.current);
+      const iconButtons = width(buttons) - (fitRef.current.words ? word : 0);
       const titles = { full: width(fullTitleRef.current), short: width(shortTitleRef.current), none: 0 };
       const needed = (f: TitleBarFit) =>
         (f.title === "none" ? 0 : titles[f.title] + TITLE_BAR_GAP)
-        + width(toggleBox) + TITLE_BAR_GAP + iconButtons + (f.mirrorWord ? word : 0);
+        + width(toggleBox) + TITLE_BAR_GAP + iconButtons + (f.words ? word : 0);
       // A pixel to spare, so rounding never leaves the last one a hair too wide.
       const first = TITLE_BAR_FITS.findIndex((f) => needed(f) + 1 <= room);
       setFitIndex(first === -1 ? TITLE_BAR_FITS.length - 1 : first);
@@ -233,6 +238,24 @@ const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
       )}
       <span ref={toggleRef} className="shrink-0 whitespace-nowrap">{toggle}</span>
       <div ref={buttonsRef} className="ml-auto flex items-center gap-2 shrink-0">
+        {follow && (
+          <button
+            onClick={follow.onToggle}
+            aria-pressed={follow.on}
+            aria-label="Follow terminal folder"
+            title={follow.on
+              ? "Following the terminal: the remote files go to the folder the terminal is in. Click to stop."
+              : "Follow the terminal: the remote files go to the folder the terminal is in"}
+            className={`h-6 px-2 rounded border flex items-center gap-1.5 ${TITLE_BAR_TEXT} transition-all ${
+              follow.on
+                ? 'text-primary bg-primary/10 border-primary/30'
+                : 'text-zinc-400 border-white/10 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <FolderSync size={12} className="shrink-0" />
+            {fit.words && <span>Follow</span>}
+          </button>
+        )}
         {mirror && (
           <button
             onClick={mirror.onToggle}
@@ -249,7 +272,7 @@ const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
             }`}
           >
             <FolderUp size={12} className="shrink-0" />
-            {fit.mirrorWord && <span>Mirror</span>}
+            {fit.words && <span>Mirror</span>}
           </button>
         )}
         {extra}
@@ -260,6 +283,7 @@ const ToolTitleBar = ({ title, shortTitle, toggle, mirror, extra, onClose }: {
       <div aria-hidden className="absolute left-0 top-0 invisible pointer-events-none whitespace-nowrap flex gap-4">
         <span ref={fullTitleRef} className={TITLE_BAR_TEXT}>{title}</span>
         <span ref={shortTitleRef} className={TITLE_BAR_TEXT}>{shortTitle}</span>
+        {follow && <span ref={followWordRef} className={TITLE_BAR_TEXT}>Follow</span>}
         {mirror && <span ref={mirrorWordRef} className={TITLE_BAR_TEXT}>Mirror</span>}
       </div>
     </div>
@@ -304,6 +328,27 @@ function writeOwnLogin(uuid: string, on: boolean) {
   } catch {
     // Best-effort, like the other per-device choices.
   }
+}
+
+// SFTP's Follow (#245): the remote pane goes to the folder the active
+// terminal's shell reports. Off until turned on; this device's choice, for
+// every server tab, which hear of a change through FOLLOW_EVENT.
+const FOLLOW_KEY = "submarine-sftp-follow-terminal";
+const FOLLOW_EVENT = "submarine-sftp-follow-changed";
+function readFollow(): boolean {
+  try {
+    return localStorage.getItem(FOLLOW_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+function writeFollow(on: boolean) {
+  try {
+    localStorage.setItem(FOLLOW_KEY, on ? "on" : "off");
+  } catch {
+    // Best-effort: the open tabs still hear of it.
+  }
+  window.dispatchEvent(new CustomEvent<boolean>(FOLLOW_EVENT, { detail: on }));
 }
 
 // `displayName`: the session tab's name, which the user may have changed
@@ -627,6 +672,27 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   const [activeTab, setActiveTab] = useState<string>(`${session.id}-term-0`);
   // New terminals of this server log in on their own (its choice on this device).
   const [ownLoginDefault, setOwnLoginDefault] = useState(() => readOwnLogin(session.serverUuid));
+  // SFTP's Follow, and the folder each terminal's shell last reported (a
+  // container's terminal reports none: its folders aren't the server's).
+  const [follow, setFollow] = useState(readFollow);
+  const followRef = useRef(follow);
+  followRef.current = follow;
+  useEffect(() => {
+    const sync = (e: Event) => setFollow(!!(e as CustomEvent<boolean>).detail);
+    window.addEventListener(FOLLOW_EVENT, sync);
+    return () => window.removeEventListener(FOLLOW_EVENT, sync);
+  }, []);
+  const termFoldersRef = useRef(new Map<string, ShellFolderState>());
+  const [, setFolderTick] = useState(0);
+  const onTerminalFolder = useCallback((terminalId: string, path: string, host: string) => {
+    const next = nextShellFolder(termFoldersRef.current.get(terminalId), path, host);
+    if (!next) return;
+    termFoldersRef.current.set(terminalId, next);
+    if (followRef.current) setFolderTick((n) => n + 1);
+  }, []);
+  // What the SFTP panel follows: the active terminal's folder, null while its
+  // shell hasn't said, undefined while Follow is off.
+  const followFolder = follow ? (termFoldersRef.current.get(activeTab) ?? null) : undefined;
   // Bubble our terminals + active-tab up to the parent (App) whenever
   // they change so the Wall pinboard and any other App-level consumers
   // don't have to duplicate the per-session terminal book-keeping.
@@ -2114,6 +2180,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                       serverName={session.serverName}
                       ownLogin={t.ownLogin}
                       quickAuth={session.quickAuth}
+                      onFolder={t.container ? undefined : onTerminalFolder}
                     />
                     {/* Per-pane detach affordance — pulls the pane out of
                         the split without killing the underlying terminal.
@@ -2221,6 +2288,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                     serverName={session.serverName}
                     ownLogin={t.ownLogin}
                     quickAuth={session.quickAuth}
+                    onFolder={t.container ? undefined : onTerminalFolder}
                   />
                 ))}
               </div>
@@ -2243,6 +2311,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   serverName={session.serverName}
                   ownLogin={t.ownLogin}
                   quickAuth={session.quickAuth}
+                  onFolder={t.container ? undefined : onTerminalFolder}
                 />
               </div>
             ))
@@ -2289,6 +2358,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                     onReconnect={reconnectSftpConn}
                   />
                 }
+                follow={sftpView === 'files' ? { on: follow, onToggle: () => writeFollow(!follow) } : undefined}
                 mirror={{
                   on: sftpView === 'mirror',
                   disabled: !session.serverId,
@@ -2305,6 +2375,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   profile={profile}
                   mirrorsConfig={parseObjectList(session.mirrors)}
                   view={sftpView}
+                  follow={followFolder}
                 />
               </div>
             </div>

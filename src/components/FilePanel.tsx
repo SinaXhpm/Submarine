@@ -273,6 +273,8 @@ export interface FilePanelHandle {
   currentDir: () => string;
   /** Send `items` of this pane into `dir` of the other one: a download from the remote pane, an upload from the local one. */
   sendTo: (items: FileEntry[], dir: string) => Promise<void>;
+  /** Go to `path` without a message when it can't be listed: false then (the pane stays where it was). */
+  goTo: (path: string) => Promise<boolean>;
 }
 
 const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
@@ -508,12 +510,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // `reveal`: a row to select in the new folder if it is there (going up
   // selects the folder just left).
   // `fallback`: another path to list if this one can't be (see the path box).
-  const fetch = async (path: string, reveal?: string, fallback?: string) => {
+  // `quiet`: no message when it can't be listed (the caller says it its way).
+  // True when this listing is the one shown.
+  const fetch = async (path: string, reveal?: string, fallback?: string, quiet = false): Promise<boolean> => {
     const seq = ++listSeqRef.current;
     setLoading(true);
     try {
       const result = await provider.list(path);
-      if (seq !== listSeqRef.current) return;
+      if (seq !== listSeqRef.current) return false;
       const present = new Set(result.entries.map((e) => e.path));
       setEntries(result.entries);
       setViaShell(!!result.viaShell);
@@ -540,15 +544,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       }
       onPathChange?.(result.currentPath);
       pushRecent(result.currentPath);
+      return true;
     } catch (err: any) {
-      if (seq !== listSeqRef.current) return;
+      if (seq !== listSeqRef.current) return false;
       if (fallback !== undefined && fallback !== path) {
         // Its `finally` sees a newer listing under way and leaves the
         // spinner to that one.
-        fetch(fallback, reveal);
-        return;
+        return fetch(fallback, reveal);
       }
-      notify(`List failed: ${err}`, "error");
+      if (!quiet) notify(`List failed: ${err}`, "error");
+      return false;
     } finally {
       if (seq === listSeqRef.current) setLoading(false);
     }
@@ -592,12 +597,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   }, [provider]);
 
   // `sendTo` goes through a ref that every render points at its own
-  // upload/download, so the handle (made once) never runs a stale one.
+  // upload/download, so the handle (made once) never runs a stale one;
+  // `goTo` the same for the listing.
   const sendToRef = useRef<(items: FileEntry[], dir: string) => Promise<void>>(async () => {});
+  const fetchRef = useRef(fetch);
+  fetchRef.current = fetch;
   useImperativeHandle(ref, () => ({
-    refresh: () => fetch(currentPathRef.current),
+    refresh: async () => { await fetch(currentPathRef.current); },
     currentDir: () => currentPathRef.current,
     sendTo: (items, dir) => sendToRef.current(items, dir),
+    goTo: (path) => fetchRef.current(path, undefined, undefined, true),
   }), []);
 
   const goUp = () => fetch(provider.parentPath(currentPath), currentPath);
