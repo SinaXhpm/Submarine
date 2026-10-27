@@ -15,7 +15,9 @@
 //! 23 nothing is asked first (a mail or web server would take the requests
 //! for garbage), as the classic telnet client does: it only answers.
 
-use crate::ssh_manager::{emit_terminal_batch, ClientHandler, PtySize, TerminalCommand};
+use crate::ssh_manager::{
+    emit_terminal_batch, page_end, page_start, ClientHandler, Outflow, PtySize, TerminalCommand, PAGE_STALL,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -414,6 +416,9 @@ pub async fn run_pump(
 
     let first = if telnet_port { telnet.lock().map(|mut t| t.start()).unwrap_or_default() } else { Vec::new() };
     let writer_telnet = Arc::clone(&telnet);
+    // What the page has drawn: what it hasn't stays bounded (ssh_manager::Outflow).
+    let page = page_start(&terminal_id);
+    let writer_page = Arc::clone(&page);
     let writer = tokio::spawn(async move {
         let mut ok = first.is_empty() || write_half.write_all(&first).await.is_ok();
         let mut closed_here = false;
@@ -421,6 +426,7 @@ pub async fn run_pump(
             tokio::select! {
                 cmd = rx.recv() => match cmd {
                     Some(TerminalCommand::Data(keys)) => {
+                        writer_page.keys(&keys);
                         let (mut net, mut echo) = (Vec::new(), Vec::new());
                         if let Ok(t) = writer_telnet.lock() {
                             t.send(&keys, &mut net, &mut echo);
@@ -466,6 +472,9 @@ pub async fn run_pump(
     // Numbers in control sequences are cut down, as in an SSH terminal (term_filter.rs).
     let mut limiter = crate::term_filter::CsiLimiter::default();
     let mut buf = vec![0u8; 16 * 1024];
+    let mut flow = Outflow::default();
+    let mut flush = |b: &mut Vec<u8>| emit_terminal_batch(&app, &terminal_id, b);
+    let page_wait = || tokio::time::Instant::now() + PAGE_STALL;
     // Whether the server (or the route) ended it, rather than the tab.
     let server_ended = loop {
         let was_empty = out.is_empty();
@@ -488,20 +497,34 @@ pub async fn run_pump(
             },
             Some(echo) = echo_rx.recv() => out.extend_from_slice(&echo),
             _ = &mut flush_timer => {
-                emit_terminal_batch(&app, &terminal_id, &mut out);
-                flush_timer.as_mut().reset(park());
+                let next = if flow.send(&mut out, &page, &mut flush) { park() } else { page_wait() };
+                flush_timer.as_mut().reset(next);
+                continue;
+            }
+            // The page drew some, or keys were typed.
+            _ = page.news.notified() => {
+                if page.take_typed() {
+                    flow.typed(&page);
+                }
+                if page.take_interrupt() {
+                    flow.interrupted(&mut out);
+                }
+                if flow.holds() && flow.send(&mut out, &page, &mut flush) {
+                    flush_timer.as_mut().reset(park());
+                }
                 continue;
             }
             failed = &mut stop_rx => break failed.unwrap_or(false),
         }
         if out.len() >= FLUSH_CAP {
-            emit_terminal_batch(&app, &terminal_id, &mut out);
-            flush_timer.as_mut().reset(park());
+            let next = if flow.send(&mut out, &page, &mut flush) { park() } else { page_wait() };
+            flush_timer.as_mut().reset(next);
         } else if was_empty && !out.is_empty() {
             flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
         }
     };
-    emit_terminal_batch(&app, &terminal_id, &mut out);
+    flow.finish(&mut out, &page, &mut flush);
+    page_end(&terminal_id, &page);
     writer.abort();
     let _ = app.emit(&format!("terminal-closed-{terminal_id}"), serde_json::json!({}));
     if server_ended {
