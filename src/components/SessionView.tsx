@@ -113,7 +113,7 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
         {on && (
           <span
             className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-              status === 'ready' ? 'bg-emerald-400' : status === 'failed' ? 'bg-red-400' : 'bg-amber-400 animate-pulse'
+              status === 'ready' ? 'bg-emerald-400' : status === 'failed' ? 'bg-red-400' : 'bg-amber-400 animate-pulse-brief'
             }`}
           />
         )}
@@ -158,6 +158,21 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
       )}
     </span>
   );
+};
+
+// The seconds left until `until` (a Date.now() time), ticking on its own: a
+// reconnect countdown re-renders this number, not the whole session view
+// twice a second, for as long as a server stays down.
+const SecondsLeft = ({ until }: { until: number }) => {
+  const left = () => Math.max(0, Math.ceil((until - Date.now()) / 1000));
+  const [secs, setSecs] = useState(left);
+  useEffect(() => {
+    setSecs(left());
+    const t = setInterval(() => setSecs(left()), 250);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [until]);
+  return <>{secs}</>;
 };
 
 // The title bar of a tool panel with a Dedicated toggle (SFTP, Port
@@ -1292,15 +1307,6 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     };
   }, [session.id, session.serverId]);
 
-  // Force a re-render once per second so the countdown text in the banner
-  // stays current without re-allocating timer state on every render.
-  const [, forceTick] = useState(0);
-  useEffect(() => {
-    if (!nextReconnectAt) return;
-    const t = setInterval(() => forceTick((n) => n + 1), 500);
-    return () => clearInterval(t);
-  }, [nextReconnectAt]);
-
   const scheduleReconnect = (attempt: number) => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -1528,7 +1534,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // slim banner.
   if ((reconnectAttempt === 0 || !everConnected) && (status === 'connecting' || status === 'failed')) {
     const retryWaiting = reconnectAttempt > 0 && nextReconnectAt !== null;
-    const retryIn = nextReconnectAt ? Math.max(0, Math.ceil((nextReconnectAt - Date.now()) / 1000)) : 0;
+    const retryIn = <SecondsLeft until={nextReconnectAt ?? 0} />;
     return (
       <div className="relative flex-1 flex flex-col p-4 sm:p-8 bg-[#0a0a0c] text-white overflow-hidden">
         <div className="max-w-2xl w-full mx-auto flex-1 flex flex-col min-h-0">
@@ -1545,7 +1551,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               }`}
               aria-hidden="true"
             >
-              {status === 'connecting' ? <Loader2 size={16} className="animate-spin" /> : <AlertTriangle size={16} />}
+              {status === 'connecting' ? <Loader2 size={16} className="animate-spin-brief" /> : <AlertTriangle size={16} />}
             </div>
             <div className="min-w-0 flex-1">
               <h2 className="text-sm font-semibold text-zinc-100 truncate" title={session.serverName}>
@@ -2065,23 +2071,24 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
         (() => {
           const isAttempting = reconnectAttempt > 0 && status === 'connecting';
           const isWaiting = reconnectAttempt > 0 && nextReconnectAt !== null;
-          const countdown = nextReconnectAt
-            ? Math.max(0, Math.ceil((nextReconnectAt - Date.now()) / 1000))
-            : 0;
+          const secs = <SecondsLeft until={nextReconnectAt ?? 0} />;
           const tone =
             isAttempting ? "bg-indigo-500/10 border-indigo-500/30 text-indigo-300" :
             isWaiting    ? "bg-amber-500/10 border-amber-500/30 text-amber-300" :
                            "bg-red-500/10 border-red-500/30 text-red-400";
+          // The tooltip's heading has no seconds: a tooltip doesn't follow
+          // the countdown.
           const heading =
             isAttempting ? `Reconnecting · attempt ${reconnectAttempt}` :
-            isWaiting    ? `Auto-reconnect in ${countdown}s · attempt ${reconnectAttempt}` :
+            isWaiting    ? `Auto-reconnect · attempt ${reconnectAttempt}` :
                            "Session disconnected";
+          const shownHeading = isWaiting ? <>Auto-reconnect in {secs}s · attempt {reconnectAttempt}</> : heading;
           // A phone's banner stays one line: the short form of the heading
           // (cut with … if even that doesn't fit, never wrapped), no reason,
           // and icon buttons. The wide one is unchanged.
           const shortHeading =
             isAttempting ? `Reconnecting · #${reconnectAttempt}` :
-            isWaiting    ? `Retry in ${countdown}s · #${reconnectAttempt}` :
+            isWaiting    ? <>Retry in {secs}s · #{reconnectAttempt}</> :
                            "Disconnected";
           const btn = "h-8 min-w-8 sm:h-auto sm:min-h-6 px-2 sm:px-3 sm:py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5";
           return (
@@ -2092,7 +2099,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 title={disconnectReason ? `${heading} — ${disconnectReason}` : heading}
               >
                 <span className="sm:hidden">{shortHeading}</span>
-                <span className="hidden sm:inline">{heading}</span>
+                <span className="hidden sm:inline">{shownHeading}</span>
                 {disconnectReason && (
                   <span className="hidden sm:inline opacity-70 normal-case font-normal tracking-normal"> — {disconnectReason}</span>
                 )}
@@ -2431,7 +2438,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             <InfoPanel
               sessionId={session.id}
               disabled={status !== 'connected'}
-              visible={activeTool === 'info'}
+              visible={activeTool === 'info' && isActiveView}
               onOpenContainerTerminal={openContainerTerminal}
             />
           </div>

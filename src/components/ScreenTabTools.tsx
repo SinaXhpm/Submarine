@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Signal, SignalHigh, SignalLow, SignalMedium, SignalZero, X } from "lucide-react";
 import { SwitchRow } from "./FormRows";
 import { RdpShareFields, RdpSpeedFields } from "./RdpOptionFields";
@@ -210,24 +209,6 @@ export function VncSettingsPanel({ o, set, reconnect }: { o: VncOptions; set: (p
 // How long the tab is hidden before the picture pauses: a quick look at
 // another tab changes nothing.
 const PAUSE_AFTER_MS = 3000;
-
-/** Whether the page is on screen: not minimised or behind another window's
- *  tab, and on a phone, the app not in the background. */
-export function usePageShown(): boolean {
-  const [pageShown, setPageShown] = useState(() => document.visibilityState !== "hidden");
-  useEffect(() => {
-    const onChange = () => setPageShown(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", onChange);
-    // A phone's app in the background: its WebView still says it is visible,
-    // so the backend tells (lib.rs, from Android's onPause and onResume).
-    const off = listen<boolean>("app-shown", (e) => setPageShown(!!e.payload));
-    return () => {
-      document.removeEventListener("visibilitychange", onChange);
-      off.then((f) => f());
-    };
-  }, []);
-  return pageShown;
-}
 
 /** While `pause` holds for PAUSE_AFTER_MS, the session is told the tab is
  *  hidden (`command`, shown: false); as soon as it doesn't, that it is shown. */

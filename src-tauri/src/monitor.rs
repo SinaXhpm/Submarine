@@ -753,6 +753,8 @@ async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Bo
             .await
             .map_err(|_| format!("SOCKS5 proxy {} timed out", proxy_addr))?
             .map_err(|e| format!("SOCKS5: {}", e))?;
+            // Socks5Stream derefs to the proxy socket (see monitor_client_config).
+            crate::apply_tcp_keepalive(&stream);
             Ok(Box::new(stream))
         }
         "http" => {
@@ -768,6 +770,7 @@ async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Bo
             .map_err(|_| format!("HTTP proxy {} timed out", proxy_addr))?
             .map_err(|e| format!("HTTP proxy TCP: {}", e))?;
             let _ = tcp.set_nodelay(true);
+            crate::apply_tcp_keepalive(&tcp);
             if !crate::http_connect_host_ok(&auth.host) {
                 return Err(format!("'{}' can't be asked of an HTTP proxy: a host has no spaces or control characters.", auth.host.escape_debug()));
             }
@@ -789,6 +792,7 @@ async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Bo
             .map_err(|_| format!("TCP connect to {}:{} timed out", auth.host, auth.port))?
             .map_err(|e| format!("TCP: {}", e))?;
             let _ = stream.set_nodelay(true);
+            crate::apply_tcp_keepalive(&stream);
             Ok(Box::new(stream))
         }
     }
@@ -829,7 +833,12 @@ fn classify_auth(auth: &NodeAuth) -> Result<(Option<(String, Option<String>)>, O
 /// and drops the legacy algorithms older servers need.
 fn monitor_client_config() -> client::Config {
     let mut config = client::Config::default();
-    config.keepalive_interval = Some(Duration::from_secs(30));
+    // No russh protocol keepalive, as for the interactive session
+    // (`crate::build_ssh_client_config`): before login completes it sends
+    // nothing and spun a CPU core while a slow server took its time over the
+    // login. Idle traffic is covered without it: the polls themselves, and OS
+    // TCP keepalive on the socket (open_transport) for long poll intervals.
+    config.keepalive_interval = None;
     // No keepalive-count disconnect (russh's default of 3 drops a quiet
     // connection after ~2 min of server silence): each poll has its own
     // timeout, and a failed poll drops the handle and reconnects.

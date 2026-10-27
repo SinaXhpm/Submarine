@@ -455,7 +455,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
         />
         {connected && !painted && (
           <div className="absolute inset-0 flex items-center justify-center gap-2 text-[12px] text-zinc-500 pointer-events-none" role="status">
-            <Loader2 size={14} className="animate-spin" />
+            <Loader2 size={14} className="animate-spin-brief" />
             Waiting for the desktop…
           </div>
         )}

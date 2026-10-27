@@ -90,6 +90,9 @@ const WALL_TILE_CLOSED = 'submarine-wall-tile-closed';
 // of place.
 const PTY_SIZE_SETTLE_MS = 150;
 
+// How long the cursor goes on blinking after the last key, click or focus.
+const CURSOR_BLINK_IDLE_MS = 10_000;
+
 const TerminalView = ({
   sessionId,
   terminalId,
@@ -747,7 +750,34 @@ const TerminalView = ({
     term.parser.registerOscHandler(7, (data) => { folder(parseOsc7(data)); return true; });
     term.parser.registerOscHandler(1337, (data) => folder(parseOsc1337(data)));
     term.open(terminalRef.current);
-    
+
+    // The cursor blinks while the terminal is in use and holds still
+    // CURSOR_BLINK_IDLE_MS after the last key, click or focus, the way Windows
+    // and GNOME stop a caret blinking. xterm's DOM renderer blinks with a CSS
+    // animation the browser redraws at every frame: a focused terminal left
+    // alone cost about 5% of a CPU core for it.
+    let lastUse = Date.now();
+    let blinkTimer: number | null = null;
+    const blinkCheck = () => {
+      const left = lastUse + CURSOR_BLINK_IDLE_MS - Date.now();
+      if (left > 0) {
+        blinkTimer = window.setTimeout(blinkCheck, left);
+        return;
+      }
+      blinkTimer = null;
+      term.options.cursorBlink = false;
+    };
+    const markUsed = () => {
+      lastUse = Date.now();
+      if (!term.options.cursorBlink) term.options.cursorBlink = true;
+      if (blinkTimer === null) blinkTimer = window.setTimeout(blinkCheck, CURSOR_BLINK_IDLE_MS);
+    };
+    markUsed();
+    const blinkTextarea = term.textarea;
+    const blinkHost = terminalRef.current;
+    blinkTextarea?.addEventListener('focus', markUsed);
+    blinkHost.addEventListener('mousedown', markUsed);
+
     setTimeout(() => {
       fitAddon.fit();
       // A Wall tile sets the size while it's open, also when fit() kept
@@ -824,6 +854,7 @@ const TerminalView = ({
     // forwarded verbatim because we can't sensibly "Ctrl" a phrase.
     const handleData = (data: string) => {
       if (disabledRef.current) return;
+      markUsed();
       showPasswordButton(false);
       // A paste: our right-click path, or xterm's own keyboard paste, which
       // starts with the bracketed-paste marker when the remote program asked
@@ -1314,6 +1345,9 @@ const TerminalView = ({
 
     return () => {
       fontDisposed = true;
+      if (blinkTimer !== null) window.clearTimeout(blinkTimer);
+      blinkTextarea?.removeEventListener('focus', markUsed);
+      blinkHost.removeEventListener('mousedown', markUsed);
       window.removeEventListener('submarine-settings-changed', handleSettingsChange);
       resizeObserver.disconnect();
       onDataDisposable.dispose();

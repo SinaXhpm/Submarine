@@ -10,16 +10,19 @@ import DockerTab from "./DockerTab";
 import { ScrollableTabs } from "./ScrollableTabs";
 import { useConfirm } from "../ui/confirm";
 import CopyValue from "./CopyValue";
+import { usePageShown } from "../hooks/usePageShown";
 
 interface InfoPanelProps {
   sessionId: string;
   disabled?: boolean;
-  // True only while the Info panel is the visible tool. SessionView keeps the
-  // panel MOUNTED (hidden via CSS) across tool switches to preserve cached
-  // probe results, so without this flag a tab's fetch — and especially the
-  // Processes tab's auto-refresh timer — would keep hitting the server over
-  // SSH even while the user is looking at the terminal. We gate all fetching
-  // on it: nothing probes unless the panel is actually on screen.
+  // True only while the Info panel is the visible tool of the session in
+  // front. SessionView keeps the panel MOUNTED (hidden via CSS) across tool
+  // switches to preserve cached probe results, and other sessions stay mounted
+  // behind the one shown, so without this flag a tab's fetch — and especially
+  // the Processes tab's auto-refresh timer — would keep hitting the server
+  // over SSH even while the user is looking at the terminal or another
+  // server. We gate all fetching on it: nothing probes unless the panel is
+  // actually on screen.
   visible?: boolean;
   // Called when the user wants to open a `docker exec -it` terminal into a
   // specific container. SessionView spawns a new terminal tab with the
@@ -1620,16 +1623,12 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
   const [killing, setKilling] = useState<Record<string, boolean>>({});
   const confirm = useConfirm();
 
-  // Also pause when the OS window is minimized/hidden. `visible` only tracks the
-  // in-app Info tool being on screen; it stays true when the whole Submarine
-  // window is minimized, so without this the 2s poll would keep hitting the
-  // server over SSH while nobody's watching. Re-shows trigger a fresh fetch.
-  const [winShown, setWinShown] = useState(() => typeof document === "undefined" || !document.hidden);
-  useEffect(() => {
-    const onVis = () => setWinShown(!document.hidden);
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, []);
+  // Also pause when the OS window is minimized/hidden, or the phone's app is in
+  // the background (its WebView still says it is visible; usePageShown hears
+  // it from the backend). `visible` only tracks the in-app Info tool being on
+  // screen in a session in front; without this the 2s poll would keep hitting
+  // the server over SSH while nobody's watching. Re-shows trigger a fresh fetch.
+  const winShown = usePageShown();
 
   const fetchNow = useCallback(async () => {
     if (disabled || !visible) return;
@@ -1776,7 +1775,7 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
         )}
         <div className="mt-2 text-[10px] text-zinc-600 flex items-center gap-2">
           {intervalMs
-            ? <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> auto · every {intervalMs / 1000}s</span>
+            ? <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-brief" /> auto · every {intervalMs / 1000}s</span>
             : <span>manual refresh</span>}
           {lastMs != null && <span>· probed in {lastMs} ms</span>}
         </div>
