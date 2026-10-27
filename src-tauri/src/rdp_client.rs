@@ -1011,7 +1011,7 @@ where
                     let settling = resized_at.is_some_and(|at| at.elapsed() < RESIZE_SETTLE);
                     if can_measure && !paused && !settling && probe.out.is_none() {
                         let ask = share_data(&stage, ShareDataPdu::RefreshRectangle(RefreshRectanglePdu { areas_to_refresh: vec![probe_rect()] }))?;
-                        writer.write_all(&ask).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                        writer.write_all(&ask).await.map_err(link_ended)?;
                         probe.out = Some(tokio::time::Instant::now());
                     }
                     Vec::new()
@@ -1024,7 +1024,7 @@ where
                     stage.process_fastpath_input(&mut image, &fast).map_err(|e| format!("RDP: {e}"))?
                 }
                 pdu = reader.read_pdu() => {
-                    let (action, payload) = pdu.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                    let (action, payload) = pdu.map_err(link_ended)?;
                     stage.process(&mut image, action, &payload).map_err(|e| format!("RDP: {e}"))?
                 }
                 cmd = cmds.recv() => match cmd {
@@ -1071,7 +1071,7 @@ where
                             resize_later = Some((w, h));
                         } else if u32::from(w) != u32::from(image.width()) || u32::from(h) != u32::from(image.height()) {
                             if let Some(Ok(bytes)) = stage.encode_resize(u32::from(w), u32::from(h), None, None) {
-                                writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                                writer.write_all(&bytes).await.map_err(link_ended)?;
                                 resized_at = Some(tokio::time::Instant::now());
                             }
                         }
@@ -1088,7 +1088,7 @@ where
                                 bottom: image.height().saturating_sub(1),
                             });
                             let bytes = share_data(&stage, ShareDataPdu::SuppressOutput(SuppressOutputPdu { desktop_rect }))?;
-                            writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                            writer.write_all(&bytes).await.map_err(link_ended)?;
                             paused = !shown;
                             // Paused, a probe out isn't answered; shown, the whole picture comes first.
                             if shown {
@@ -1100,7 +1100,7 @@ where
                             if let Some((w, h)) = resize_later.take().filter(|_| shown) {
                                 if u32::from(w) != u32::from(image.width()) || u32::from(h) != u32::from(image.height()) {
                                     if let Some(Ok(bytes)) = stage.encode_resize(u32::from(w), u32::from(h), None, None) {
-                                        writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                                        writer.write_all(&bytes).await.map_err(link_ended)?;
                                         resized_at = Some(tokio::time::Instant::now());
                                     }
                                 }
@@ -1135,7 +1135,7 @@ where
         for out in outputs {
             match out {
                 ActiveStageOutput::ResponseFrame(bytes) => {
-                    writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                    writer.write_all(&bytes).await.map_err(link_ended)?;
                 }
                 ActiveStageOutput::GraphicsUpdate(rect) => {
                     // The probe's corner drawn again: the server answered.
@@ -1167,7 +1167,7 @@ where
                         let step = if activation.next_pdu_hint().is_some() {
                             let (action, pdu) = loop {
                                 tokio::select! {
-                                    read = reader.read_pdu() => break read.map_err(|e| format!("The connection to the RDP server ended: {e}"))?,
+                                    read = reader.read_pdu() => break read.map_err(link_ended)?,
                                     // The tab still hears how the link is doing (a link that
                                     // stops in the middle of a restart isn't "fine" for 30 s).
                                     _ = link_tick.tick() => link(LinkStats { can_measure, can_pause, paused, ..meter.look(probe.rtt(), Some(restarted_at)) }),
@@ -1201,7 +1201,7 @@ where
                         };
                         let written = step.map_err(|e| format!("RDP: {e}"))?;
                         if written.size().is_some() {
-                            writer.write_all(buf.filled()).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                            writer.write_all(buf.filled()).await.map_err(link_ended)?;
                         }
                         if let ConnectionActivationState::Finalized {
                             desktop_size,
@@ -1239,7 +1239,7 @@ where
                                 paused = false;
                                 if can_pause {
                                     let bytes = share_data(&stage, ShareDataPdu::SuppressOutput(SuppressOutputPdu { desktop_rect: None }))?;
-                                    writer.write_all(&bytes).await.map_err(|e| format!("The connection to the RDP server ended: {e}"))?;
+                                    writer.write_all(&bytes).await.map_err(link_ended)?;
                                     paused = true;
                                 }
                             }
@@ -1290,6 +1290,18 @@ const LOGON_STATUSES: &[(&str, &str)] = &[
     // away (its Early User Authorization Result).
     ("[CredSSP] access denied", "The RDP server took the password but doesn't let this account in over Remote Desktop (the Remote Desktop Users group)"),
 ];
+
+/// How the tab says a running session's connection ended. A server that just
+/// goes away shows up as an unexpected end of the TLS stream, which rustls
+/// words with a link to its own manual; that and a cut link get plain words.
+fn link_ended(e: std::io::Error) -> String {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        UnexpectedEof => "The RDP server closed the connection.".into(),
+        ConnectionReset | ConnectionAborted | BrokenPipe | TimedOut => format!("The connection to the RDP server was lost ({e})."),
+        _ => format!("The connection to the RDP server ended: {e}"),
+    }
+}
 
 /// A login failure in words a person can act on, with what the client saw.
 fn login_error(e: &str) -> String {
@@ -1347,6 +1359,18 @@ mod tests {
         for status in [NStatusCode::LOGON_FAILURE, NStatusCode::WRONG_PASSWORD, NStatusCode::NO_SUCH_USER] {
             assert!(login_error(&with_causes(&refused(status))).contains("didn't accept the user name or password"), "{status}");
         }
+    }
+
+    #[test]
+    fn a_dropped_link_is_said_in_plain_words() {
+        use std::io::{Error, ErrorKind};
+        let gone = Error::new(
+            ErrorKind::UnexpectedEof,
+            "peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof",
+        );
+        assert_eq!(link_ended(gone), "The RDP server closed the connection.");
+        assert!(link_ended(Error::from(ErrorKind::ConnectionReset)).starts_with("The connection to the RDP server was lost ("));
+        assert_eq!(link_ended(Error::other("boom")), "The connection to the RDP server ended: boom");
     }
 
     #[test]

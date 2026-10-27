@@ -408,28 +408,66 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
       if (s.moved) send({ t: "button", b: 0, down: false });
     };
 
-    // A phone's keyboard types into a hidden box; what it inserts is sent
-    // as text, and its delete / enter as those keys.
-    const onImeInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
-      const native = e.nativeEvent as InputEvent;
-      const tap = (key: "Backspace" | "Enter") => {
-        const code = scancodeFor(key) ?? 0;
-        send({ t: "key", code, key, down: true });
-        send({ t: "key", code, key, down: false });
-      };
-      if (native.inputType === "deleteContentBackward") tap("Backspace");
-      else if (native.inputType === "insertLineBreak") tap("Enter");
-      else if (native.data) {
-        for (const ch of native.data) {
-          if (ch === "\n") tap("Enter");
-          else {
-            send({ t: "text", ch, down: true });
-            send({ t: "text", ch, down: false });
-          }
+    // A phone's keyboard types into a hidden box. What the box holds is kept
+    // in step with what was sent: each change goes as the keys that make it
+    // (the letters added, a Backspace for each one taken away). A keyboard
+    // that builds a word up and corrects it as it goes (Chinese, Japanese and
+    // Korean ones, swipe typing, some others) then types it once, as it shows
+    // it; sending each step's text, as before, typed "hhehelhellhello".
+    // The box starts with one character, so a delete always has something to
+    // remove, and starts over after a line or when it gets long.
+    const imeSent = useRef(" ");
+    // A new connection's box is a new one, holding its one character.
+    useEffect(() => { imeSent.current = " "; }, [connected]);
+    const tap = (key: "Backspace" | "Enter") => {
+      const code = scancodeFor(key) ?? 0;
+      send({ t: "key", code, key, down: true });
+      send({ t: "key", code, key, down: false });
+    };
+    const resetIme = (box: HTMLTextAreaElement) => {
+      box.value = " ";
+      box.setSelectionRange(1, 1);
+      imeSent.current = " ";
+    };
+    const syncIme = (box: HTMLTextAreaElement) => {
+      const now = box.value;
+      const was = imeSent.current;
+      let same = 0;
+      while (same < now.length && same < was.length && now[same] === was[same]) same++;
+      for (let i = was.length; i > same; i--) tap("Backspace");
+      for (const ch of now.slice(same)) {
+        if (ch === "\n") tap("Enter");
+        else {
+          send({ t: "text", ch, down: true });
+          send({ t: "text", ch, down: false });
         }
       }
-      // Kept with one character in it, so the next delete has something to remove.
-      e.currentTarget.value = " ";
+      imeSent.current = now;
+    };
+    const onImeInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+      const box = e.currentTarget;
+      const native = e.nativeEvent as InputEvent;
+      syncIme(box);
+      // An Enter that left no line break in the box (some keyboards) is still an Enter.
+      if (native.inputType === "insertLineBreak" && !box.value.includes("\n")) tap("Enter");
+      if (native.isComposing) return;
+      if (native.inputType === "insertLineBreak" || box.value === "" || box.value.includes("\n") || box.value.length > 200) resetIme(box);
+    };
+    // Keys that type nothing (Tab, Esc, the arrows, F1-F12, Delete…), and any
+    // key held with Ctrl, Alt or Meta, go as keys, as the canvas sends them;
+    // the box keeps the focus (Tab would move it away, and the keys after it
+    // were lost). What types text comes through the box (above).
+    const onImeKey = (down: boolean) => (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      const n = e.nativeEvent;
+      if (n.isComposing || n.keyCode === 229 || e.key === "Unidentified" || e.key === "Process" || e.key === "Dead") return;
+      if (e.key === "Backspace" || e.key === "Enter" || e.key === "Shift" || e.key === "CapsLock") return;
+      const named = e.key.length > 1;
+      const held = (e.ctrlKey || e.altKey || e.metaKey) && !e.getModifierState("AltGraph");
+      if (!named && !held) return;
+      const code = scancodeFor(e.code);
+      if (code === null) return;
+      send({ t: "key", code, key: e.key, down });
+      e.preventDefault();
     };
 
     return (
@@ -469,8 +507,15 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
               autoCorrect="off"
               spellCheck={false}
               onInput={onImeInput}
-              onFocus={() => { typing.current = true; }}
-              onBlur={() => { typing.current = false; }}
+              onKeyDown={onImeKey(true)}
+              onKeyUp={onImeKey(false)}
+              onFocus={(e) => {
+                typing.current = true;
+                // Typing goes on at the end of what the box holds.
+                const end = e.currentTarget.value.length;
+                e.currentTarget.setSelectionRange(end, end);
+              }}
+              onBlur={() => { typing.current = false; send({ t: "releaseall" }); }}
               className="absolute opacity-0 w-px h-px -left-10 top-0"
             />
             <button
