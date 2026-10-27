@@ -1,0 +1,628 @@
+{
+  "meta": {
+    "name": "Português (Brasil)",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "Pular para o conteúdo",
+    "doctor": "Doctor",
+    "tools": "Ferramentas",
+    "devices": "Dispositivos",
+    "privacy": "Privacidade",
+    "download": "Download",
+    "github": "Código-fonte no GitHub",
+    "language": "Idioma",
+    "home": "Página inicial do Echoes",
+    "menu": "Menu"
+  },
+  "common": {
+    "tagline": "Ferramentas de rede gratuitas para todos os dispositivos",
+    "updated": "Última atualização: {date}",
+    "translationNote": "Esta página é uma tradução. Se ela divergir da versão em inglês, prevalece a versão em inglês.",
+    "englishVersion": "Versão em inglês",
+    "openFull": "Abrir a imagem em tamanho original",
+    "close": "Fechar",
+    "onThisPage": "Nesta página"
+  },
+  "footer": {
+    "product": "Echoes",
+    "trust": "Confiança",
+    "project": "Projeto",
+    "faq": "Perguntas",
+    "appStore": "App Store",
+    "releases": "Versões no GitHub",
+    "privacyPolicy": "Política de privacidade",
+    "issues": "Relatar um problema",
+    "author": "sinaxhpm.com",
+    "sister": "Do mesmo autor: SSH, SFTP, RDP, VNC e Telnet em um só app criptografado",
+    "license": "Gratuito e de código aberto, sob a licença MIT.",
+    "madeWith": "Feito com C#, .NET e Avalonia.",
+    "noTracking": "Este site não usa cookies, análise de uso nem scripts de terceiros."
+  },
+  "home": {
+    "title": "Echoes – ferramentas de rede gratuitas para iPhone, iPad, Mac, Windows, Linux e Android",
+    "description": "O Echoes reúne 20 ferramentas de rede em um só app gratuito e de código aberto: o Doctor, que diz por que um site não abre, ping, traceroute, teste de velocidade, scanner de portas, DNS e WHOIS, cURL, um verificador de TLS, SSH, um monitor de disponibilidade e compartilhamento de arquivos com qualquer navegador. Sem conta, sem anúncios, sem rastreamento.",
+    "hero": {
+      "pillTag": "Novo",
+      "pill": "Agora na App Store para iPhone, iPad e Mac",
+      "title": "20 ferramentas de rede. <em>Um só app gratuito.</em>",
+      "lede": "Descubra por que um site não abre, teste a sua velocidade, faça ping, escaneie portas, consulte o DNS e envie arquivos para qualquer dispositivo. O Echoes reúne em um só app simples as ferramentas que você normalmente usaria uma por uma.",
+      "appStore": "App Store",
+      "download": "Todos os downloads",
+      "trust": [
+        "Sem conta",
+        "Sem anúncios",
+        "Sem rastreamento",
+        "Código aberto"
+      ],
+      "chips": [
+        "Encontra a causa para você",
+        "Teste de velocidade",
+        "Envie arquivos para qualquer navegador"
+      ],
+      "imageAlt": "O Echoes em um Mac: o Doctor diz que example.com funciona a partir daqui, com cada verificação que fez",
+      "phoneAlt": "O Echoes em um iPhone: o Doctor"
+    },
+    "instead": {
+      "title": "Um só app no lugar de",
+      "items": [
+        "ping",
+        "traceroute",
+        "nmap",
+        "curl",
+        "dig e whois",
+        "PuTTY",
+        "um site de teste de velocidade",
+        "o painel da Cloudflare"
+      ]
+    },
+    "doctor": {
+      "kicker": "Doctor",
+      "title": "O site não abre? <em>Descubra por quê.</em>",
+      "lede": "O Doctor verifica tudo o que há entre você e um site e depois diz, em uma frase, o que está errado e o que fazer.",
+      "points": [
+        {
+          "id": "network",
+          "title": "A sua própria rede",
+          "text": "O adaptador, o gateway, uma VPN ou um proxy, e uma página de login de Wi-Fi que esteja no caminho."
+        },
+        {
+          "id": "dns",
+          "title": "DNS que mente",
+          "text": "As respostas do DNS do seu sistema são comparadas com as de um DNS criptografado, para que respostas falsificadas e endereços de filtro conhecidos fiquem evidentes."
+        },
+        {
+          "id": "sni",
+          "title": "Filtragem ou endereço bloqueado",
+          "text": "O TLS é testado com e sem o nome do site, para distinguir a filtragem por nome (SNI) de um endereço IP bloqueado."
+        },
+        {
+          "id": "outside",
+          "title": "Fora do ar para todos ou só para você?",
+          "text": "O site também é verificado a partir de vários países, para você saber se o problema é o site ou a sua conexão."
+        },
+        {
+          "id": "dpi",
+          "title": "Uma solução alternativa ajudaria?",
+          "text": "Novas tentativas com o primeiro pacote dividido em pedaços mostram se a configuração “fragment” de apps como v2rayNG, Hiddify ou Xray conseguiria passar."
+        },
+        {
+          "id": "report",
+          "title": "Um relatório para compartilhar",
+          "text": "Cada etapa com o tempo que levou, e um relatório que você pode copiar para quem cuida da rede."
+        }
+      ],
+      "alt": "O Doctor encontra filtragem por SNI: o endereço do site funciona, mas não com o nome dele"
+    },
+    "tools": {
+      "kicker": "20 ferramentas",
+      "title": "Tudo de que você precisa para uma rede, <em>em uma só janela</em>",
+      "lede": "Quatro grupos, como no app: encontrar problemas, testar sites e APIs, conectar e servir, e as ferramentas de desenvolvedor que você usa todo dia.",
+      "groups": [
+        {
+          "id": "diagnose",
+          "title": "Diagnóstico",
+          "items": [
+            {
+              "id": "ping",
+              "title": "Ping",
+              "text": "Estatísticas em tempo real e um gráfico, ping TCP, traceroute e MTR."
+            },
+            {
+              "id": "doctor",
+              "title": "Doctor",
+              "text": "Por que um site não abre para você, em uma frase."
+            },
+            {
+              "id": "dns",
+              "title": "DNS & WHOIS",
+              "text": "DNS over HTTPS e TLS, comparação de resolvedores, verificação de e-mail."
+            },
+            {
+              "id": "scanner",
+              "title": "Port Scanner",
+              "text": "Varreduras TCP e UDP com detecção de serviços."
+            },
+            {
+              "id": "checkhost",
+              "title": "Check Host",
+              "text": "Verificações de ping, HTTP, TCP e DNS a partir de vários lugares do mundo."
+            },
+            {
+              "id": "monitor",
+              "title": "Monitor",
+              "text": "Verificações de disponibilidade, avisos de expiração e alertas no Telegram."
+            },
+            {
+              "id": "network",
+              "title": "Network",
+              "text": "Adaptadores, Wi-Fi, dispositivos vizinhos, portas abertas e rotas."
+            },
+            {
+              "id": "speed",
+              "title": "Speed Test",
+              "text": "Download, upload, ping, jitter e latência sob carga."
+            }
+          ]
+        },
+        {
+          "id": "web",
+          "title": "Web e API",
+          "items": [
+            {
+              "id": "curl",
+              "title": "cURL",
+              "text": "Um cliente HTTP que entende qualquer comando curl."
+            },
+            {
+              "id": "tls",
+              "title": "TLS Inspector",
+              "text": "Certificados, expiração, versões de TLS e cifras."
+            },
+            {
+              "id": "ipinfo",
+              "title": "IP Info",
+              "text": "O seu IP público, e onde fica qualquer endereço IP."
+            },
+            {
+              "id": "cloudflare",
+              "title": "Cloudflare",
+              "text": "DNS, SSL, regras e DNS dinâmico, sem o painel."
+            },
+            {
+              "id": "telegram",
+              "title": "Telegram Bot",
+              "text": "Chame qualquer método da Bot API e veja a resposta bruta."
+            }
+          ]
+        },
+        {
+          "id": "serve",
+          "title": "Servir e conectar",
+          "items": [
+            {
+              "id": "ssh",
+              "title": "SSH",
+              "text": "Terminal, arquivos, encaminhamento de portas e saúde do servidor."
+            },
+            {
+              "id": "socket",
+              "title": "Socket",
+              "text": "Cliente e servidor TCP e UDP, e WebSocket."
+            },
+            {
+              "id": "webserver",
+              "title": "Web Server",
+              "text": "Compartilhe arquivos e converse por chat com qualquer dispositivo que tenha um navegador, ou capture webhooks."
+            },
+            {
+              "id": "proxy",
+              "title": "Proxy",
+              "text": "Um proxy SOCKS5 e HTTP, e um verificador de listas de proxies."
+            }
+          ]
+        },
+        {
+          "id": "workspace",
+          "title": "Espaço de trabalho",
+          "items": [
+            {
+              "id": "strings",
+              "title": "String Lab",
+              "text": "Codifique, calcule hashes, converta, compare e gere."
+            },
+            {
+              "id": "notes",
+              "title": "Notes",
+              "text": "Notas trancadas com uma senha mestra."
+            },
+            {
+              "id": "backup",
+              "title": "History & Backup",
+              "text": "Entradas recentes e um único arquivo de backup criptografado."
+            }
+          ]
+        }
+      ]
+    },
+    "features": {
+      "kicker": "Em detalhes",
+      "title": "Simples de usar, <em>completo quando você precisa</em>",
+      "items": [
+        {
+          "id": "ping",
+          "title": "Ping, traceroute e MTR",
+          "text": "Respostas em tempo real, um gráfico de latência e os números que importam, para qualquer host.",
+          "points": [
+            "Ping TCP para uma porta, para hosts que não respondem ao ping normal.",
+            "Tamanho do pacote, TTL e “don't fragment”, para descobrir o maior pacote que um caminho deixa passar.",
+            "Não precisa de permissões de administrador: onde o sistema não permite o ping normal, o Echoes passa a usar UDP sozinho.",
+            "Um alerta quando um host volta ou cai."
+          ],
+          "alt": "Ping em um Mac: ping TCP para 1.1.1.1 na porta 443, com respostas em tempo real e um gráfico de latência"
+        },
+        {
+          "id": "speed",
+          "title": "Qual é a velocidade real da sua internet?",
+          "text": "Download, upload, ping e jitter, e quanto a latência aumenta enquanto a conexão está ocupada.",
+          "points": [
+            "O data center mais próximo da Cloudflare, servidores públicos de teste em mais de 20 cidades ou um servidor seu.",
+            "Uma nota para a latência sob carga (bufferbloat).",
+            "Até 16 conexões ao mesmo tempo, e os seus últimos 20 resultados."
+          ],
+          "alt": "O teste de velocidade medindo a velocidade de download com um servidor em Washington"
+        },
+        {
+          "id": "monitor",
+          "title": "Saiba quando um site cai",
+          "text": "Monitora os seus servidores e sites e avisa quando um deles cai ou volta.",
+          "points": [
+            "Verificações de ping, TCP e HTTP, cada uma com o seu próprio intervalo.",
+            "Alertas no Telegram, por um bot seu.",
+            "Avisos antes que um certificado ou um domínio expire.",
+            "Verifica se uma página contém ou não um determinado texto."
+          ],
+          "alt": "O monitor de disponibilidade: quatro sites no ar e um fora do ar, com o histórico deles"
+        },
+        {
+          "id": "share",
+          "title": "Envie arquivos para qualquer dispositivo",
+          "text": "Compartilhe arquivos e converse por chat entre o seu computador e um celular, um notebook ou qualquer outro dispositivo. Escaneie um QR code: o outro lado só precisa de um navegador.",
+          "points": [
+            "HTTPS com o certificado do próprio dispositivo, protegido por um PIN de 8 dígitos. Os navegadores mostram um aviso uma vez, porque o certificado é do próprio dispositivo.",
+            "Arquivos nos dois sentidos, com arrastar e soltar, e downloads que continuam de onde pararam.",
+            "Cada arquivo compartilhado tem o seu próprio link e QR code.",
+            "Ou capture requisições de webhook e veja cada uma por completo."
+          ],
+          "alt": "O servidor web compartilhando arquivos e chat, com o link, o PIN e o QR code",
+          "altPhone": "A página de compartilhamento no navegador de um celular"
+        },
+        {
+          "id": "dns",
+          "title": "DNS do jeito que você precisa",
+          "text": "DNS comum, DNS over HTTPS e DNS over TLS, lado a lado.",
+          "points": [
+            "Compare vários resolvedores ao mesmo tempo, com as respostas adulteradas e filtradas marcadas.",
+            "Uma verificação de e-mail: MX, SPF, DMARC, DKIM, MTA-STS, TLS-RPT e listas de bloqueio.",
+            "WHOIS via RDAP, com a data de expiração do domínio."
+          ],
+          "alt": "Consultas de DNS para example.com por DNS comum e por DNS over HTTPS"
+        },
+        {
+          "id": "tls",
+          "title": "Verifique o certificado de qualquer site",
+          "text": "Primeiro um veredito claro, depois todos os detalhes.",
+          "points": [
+            "Cada versão de TLS testada separadamente, com a cifra e o ALPN.",
+            "A cadeia completa, impressões digitais, OCSP stapling e HSTS.",
+            "STARTTLS para servidores de e-mail e FTP, e uma verificação de expiração em lote para muitos sites."
+          ],
+          "alt": "O TLS Inspector: example.com é confiável, com as versões de TLS que ele aceita"
+        },
+        {
+          "id": "curl",
+          "title": "Teste sites e APIs",
+          "text": "Cole qualquer comando curl, do bash, do cmd, do PowerShell ou do “Copiar como cURL” de um navegador, e envie.",
+          "points": [
+            "O tempo de cada etapa: DNS, conexão, TLS e o primeiro byte.",
+            "Cabeçalhos, cookies, redirecionamentos, TLS e uma prévia da página.",
+            "Código para curl, PowerShell, Python, JavaScript, HTTPie e wget.",
+            "As requisições salvas são criptografadas."
+          ],
+          "alt": "A ferramenta cURL: uma requisição GET com o tempo de cada etapa"
+        },
+        {
+          "id": "strings",
+          "title": "Ferramentas do dia a dia para desenvolvedores",
+          "text": "As pequenas coisas que você normalmente procuraria na web, no seu próprio dispositivo.",
+          "points": [
+            "Base64, URL e hex, hashes e HMAC, e decodificação, verificação e assinatura de JWT.",
+            "JSON, YAML e CSV, regex, diff, cron e sub-redes.",
+            "UUIDs, ULIDs e senhas, com o tempo que uma senha levaria para ser quebrada."
+          ],
+          "alt": "O String Lab gerando senhas, com o tempo que cada uma levaria para ser quebrada"
+        }
+      ]
+    },
+    "more": {
+      "title": "E mais",
+      "items": [
+        {
+          "id": "scanner",
+          "caption": "Port Scanner: portas abertas, com os serviços e as versões",
+          "alt": "Os resultados do scanner de portas: portas abertas e fechadas, com as versões dos serviços"
+        },
+        {
+          "id": "ssh",
+          "caption": "SSH: a saúde do servidor, sem instalar nada no servidor",
+          "alt": "A ferramenta SSH mostrando a CPU, a memória, os discos e os principais processos de um servidor"
+        },
+        {
+          "id": "cloudflare",
+          "caption": "Cloudflare: os seus registros DNS, sem o painel",
+          "alt": "A ferramenta Cloudflare listando os registros DNS de uma zona"
+        }
+      ]
+    },
+    "devices": {
+      "kicker": "Todos os dispositivos",
+      "title": "Um só app, <em>em todos os seus dispositivos</em>",
+      "lede": "As mesmas ferramentas no iPhone, iPad, Mac, Windows, Linux e Android, a partir de um único código-fonte, com layouts feitos para cada tela.",
+      "altIphone": "O Echoes em um iPhone: o menu com as ferramentas",
+      "altIpad": "O Echoes em um iPad: o Doctor",
+      "altAndroid": "O Echoes em um celular Android: o teste de velocidade",
+      "note": "Algumas ferramentas dependem do sistema. No iPhone e no iPad, os servidores, o monitor e as varreduras só funcionam enquanto o Echoes está na tela, e o analisador de Wi-Fi existe só no Windows e no Linux."
+    },
+    "privacy": {
+      "kicker": "Privado",
+      "title": "O Echoes não coleta <em>nada</em>",
+      "lede": "Sem conta, sem anúncios, sem análise de uso e sem rastreamento. Nada é enviado ao desenvolvedor, que não consegue ver o que você testa, aonde você se conecta nem o que você salva.",
+      "items": [
+        {
+          "title": "Fica no seu dispositivo",
+          "text": "Configurações, histórico, notas, requisições salvas e tokens ficam na própria pasta do app. Os segredos são criptografados, e as notas são trancadas com a sua senha mestra."
+        },
+        {
+          "title": "Nada roda sozinho",
+          "text": "O servidor web, o proxy, o capturador de requisições e os listeners de socket só iniciam quando você aperta Start. Por conta própria, o Echoes só verifica se há uma versão nova, e só nas versões baixadas do GitHub."
+        },
+        {
+          "title": "Dados não coletados",
+          "text": "É o que diz o rótulo de privacidade da App Store. O código-fonte é público, então você pode conferir."
+        }
+      ],
+      "link": "Leia a política de privacidade"
+    },
+    "free": {
+      "kicker": "Gratuito",
+      "big": "Gratuito e de código aberto",
+      "text": "Sem anúncios, sem versão paga, sem compras no app e sem conta, em todas as plataformas.",
+      "items": [
+        "Gratuito na App Store, sem compras no app.",
+        "Gratuito no GitHub para Windows, macOS, Linux e Android.",
+        "O código-fonte é público, sob a licença MIT.",
+        "As versões para desktop são apps nativos: nada mais para instalar, abrem rápido e usam pouca memória."
+      ]
+    },
+    "download": {
+      "kicker": "Download",
+      "title": "Baixe o Echoes",
+      "lede": "No iPhone, iPad e Mac, pela App Store. Para Windows, Linux, Android e um download direto para macOS, pelo GitHub.",
+      "platforms": [
+        {
+          "id": "apple",
+          "name": "iPhone, iPad e Mac",
+          "detail": "App Store · iOS e iPadOS 15 ou posterior, macOS 12 ou posterior",
+          "links": [
+            {
+              "id": "ios",
+              "label": "App Store"
+            },
+            {
+              "id": "mac",
+              "label": "Mac App Store"
+            }
+          ]
+        },
+        {
+          "id": "windows",
+          "name": "Windows",
+          "detail": "Windows 10 e 11 (x64) · .zip",
+          "links": [
+            {
+              "id": "zip",
+              "label": "Baixar .zip"
+            }
+          ]
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "detail": "macOS 12 ou posterior · .dmg assinado e notarizado",
+          "links": [
+            {
+              "id": "arm64",
+              "label": "Apple Silicon"
+            },
+            {
+              "id": "x64",
+              "label": "Intel"
+            }
+          ]
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "detail": "x64 · glibc 2.35 ou posterior (Ubuntu 22.04, Debian 12, Fedora 36 e mais recentes)",
+          "links": [
+            {
+              "id": "appimage",
+              "label": "AppImage"
+            },
+            {
+              "id": "deb",
+              "label": ".deb"
+            },
+            {
+              "id": "rpm",
+              "label": ".rpm"
+            }
+          ]
+        },
+        {
+          "id": "android",
+          "name": "Android",
+          "detail": "Android 6.0 ou posterior · .apk",
+          "links": [
+            {
+              "id": "apk",
+              "label": "Baixar .apk"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "O app em si está em inglês.",
+        "A versão para Windows ainda não tem assinatura de código, então o Windows pode mostrar um aviso na primeira vez: escolha <em>Mais informações</em> e depois <em>Executar assim mesmo</em>.",
+        "As versões da App Store são atualizadas pela App Store. As versões baixadas avisam quando sai uma versão nova."
+      ]
+    },
+    "faq": {
+      "kicker": "Ajuda",
+      "title": "Perguntas e respostas",
+      "items": [
+        {
+          "q": "O Echoes é mesmo gratuito?",
+          "a": "Sim. O Echoes é gratuito e de código aberto, sob a licença MIT, sem anúncios, sem versão paga, sem compras no app e sem conta, em todas as plataformas."
+        },
+        {
+          "q": "O Echoes coleta algum dado?",
+          "a": "Não. Não há conta, análise de uso nem rastreamento, e nada é enviado ao desenvolvedor. Algumas ferramentas funcionam com base em serviços públicos, como um servidor de teste de velocidade ou um resolvedor de DNS, e esses serviços veem a sua requisição como qualquer site que você visita. A <a href=\"{privacyUrl}\">política de privacidade</a> lista todos eles."
+        },
+        {
+          "q": "Em quais dispositivos ele funciona?",
+          "a": "iPhone e iPad (iOS e iPadOS 15 ou posterior) e Mac (macOS 12 ou posterior), pela App Store; Windows 10 e 11, Linux, Android 6.0 ou posterior e macOS, pelo GitHub."
+        },
+        {
+          "q": "Preciso de permissões de administrador?",
+          "a": "Não. Onde o sistema não permite o ping normal (ICMP), o Echoes passa a usar UDP sozinho."
+        },
+        {
+          "q": "O Echoes é uma VPN?",
+          "a": "Não. O Echoes não muda a forma como o seu dispositivo se conecta. O Doctor só diz o que está bloqueando um site e se uma configuração em outro app conseguiria contornar o bloqueio."
+        },
+        {
+          "q": "O app está no meu idioma?",
+          "a": "Ainda não: o app está em inglês. Este site foi traduzido para que mais pessoas possam ler sobre ele."
+        },
+        {
+          "q": "Posso escanear qualquer rede?",
+          "a": "Escaneie só a sua própria rede e os servidores que você administra. Escanear redes de outras pessoas pode ser ilegal onde você está."
+        },
+        {
+          "q": "O que muda no iPhone e no iPad?",
+          "a": "O iOS só deixa os apps funcionarem em segundo plano por pouco tempo, então os servidores, o monitor e as varreduras funcionam enquanto o Echoes está na tela, e ele mantém a tela ligada para isso. Algumas ferramentas que precisam dos detalhes de rede do sistema, como o analisador de Wi-Fi, não estão disponíveis."
+        }
+      ]
+    }
+  },
+  "privacy": {
+    "title": "Política de privacidade – Echoes",
+    "description": "O Echoes não coleta dados: o que fica no seu dispositivo, quais serviços algumas ferramentas usam e as permissões que o app pede.",
+    "heading": "Política de privacidade",
+    "intro": "O Echoes é um kit de ferramentas de rede gratuito e de código aberto (ping, traceroute, scanner de portas, DNS, SSH, teste de velocidade, servidor web para compartilhar arquivos e mais). Esta página diz o que ele faz com os seus dados. A versão curta: <strong>ele não coleta nada.</strong>",
+    "sourceNote": "Esta é a mesma política do arquivo <a href=\"{policyUrl}\">PRIVACY.md</a> no código-fonte.",
+    "sections": [
+      {
+        "id": "collects",
+        "title": "O que o desenvolvedor coleta",
+        "paragraphs": [
+          "Nada. O Echoes não tem conta, publicidade, análise de uso, serviço de relatórios de falhas nem SDK de rastreamento. Nada é enviado ao desenvolvedor, que não consegue ver o que você testa, aonde você se conecta nem o que você salva."
+        ]
+      },
+      {
+        "id": "device",
+        "title": "O que fica no seu dispositivo",
+        "paragraphs": [
+          "As suas configurações, os hosts e URLs que você digitou (histórico), as notas, as requisições salvas, os perfis SSH e os tokens que você adiciona (Telegram, Cloudflare) são armazenados só no seu dispositivo, na própria pasta de dados do app."
+        ],
+        "list": [
+          "Os segredos (senhas, tokens) são criptografados no disco. As notas e o cofre do Cloudflare são criptografados com uma chave gerada a partir da sua senha mestra.",
+          "Você pode exportar tudo para um único arquivo de backup protegido por senha e restaurá-lo em outro dispositivo. O arquivo vai só para onde você o salvar.",
+          "Em um iPhone ou iPad, os arquivos que os navegadores enviam para a página de compartilhamento de arquivos ficam na pasta do Echoes no app Arquivos (No Meu iPhone), para que você possa abri-los, movê-los ou excluí-los ali.",
+          "Excluir o app, ou a pasta de dados dele, exclui os dados."
+        ]
+      },
+      {
+        "id": "leaves",
+        "title": "O que sai do seu dispositivo, e por quê",
+        "paragraphs": [
+          "O Echoes é uma ferramenta de rede, então ele faz requisições de rede: as que você inicia, para os hosts que você consulta, além de alguns serviços públicos em que algumas ferramentas se baseiam. Esses serviços recebem a própria requisição e, por isso, como acontece com qualquer site que você visita, o seu endereço IP público. O Echoes não os controla; cada um tem a sua própria política de privacidade."
+        ],
+        "list": [
+          "<strong>Os hosts, portas e URLs que você testa</strong> (ping, traceroute, varredura de portas, cURL, DNS, TLS, SSH, sockets, Doctor).",
+          "<strong>check-host.net</strong>, para testar um host a partir de servidores no mundo todo.",
+          "<strong>Servidores de teste de velocidade:</strong> speed.cloudflare.com, ou o host de arquivos que você escolher (Cloudflare, Tele2, Leaseweb, Linode, Selectel, DataPacket e similares).",
+          "<strong>Resolvedores públicos de DNS over HTTPS</strong> (Cloudflare, Google, Quad9, OpenDNS, AdGuard), quando você usa a ferramenta de DNS.",
+          "<strong>Provedores de informações de IP</strong> (ipinfo.io, ipwho.is, ipapi.co, ip-api.com, geojs.io, freeipapi.com, iplocation.net), para consultar o endereço IP que você digitar, ou o seu próprio.",
+          "<strong>RDAP</strong> (rdap.org, rdap.verisign.com), para o registro e a expiração de um domínio.",
+          "<strong>Listas de bloqueio de DNS</strong> (Spamhaus, SpamCop, Barracuda) e os próprios registros de e-mail do domínio, quando você faz a verificação de e-mail de um domínio.",
+          "<strong>Serviços de conectividade e de IP público:</strong> sites conhecidos, como Google, Microsoft e Cloudflare, e connectivitycheck.gstatic.com (o Doctor verifica se a internet funciona), e Cloudflare, ipify, ident.me e icanhazip (o DNS dinâmico lê o seu IP público).",
+          "<strong>Telegram</strong> (api.telegram.org), só se você adicionar o token do seu próprio bot para alertas de disponibilidade, e <strong>Cloudflare</strong> (api.cloudflare.com), só se você adicionar o seu próprio token de API. Um token fica no seu dispositivo e só é enviado ao serviço a que pertence.",
+          "<strong>GitHub</strong> (api.github.com), só nas versões que você baixa do GitHub, para ver se existe uma versão mais nova. As versões de uma loja de apps não fazem essa verificação: a loja atualiza o app."
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Servidores que o Echoes pode executar",
+        "paragraphs": [
+          "O servidor web (compartilhamento de arquivos e chat), o capturador de requisições, o proxy e os listeners de socket só iniciam quando você aperta Start e param quando você aperta Stop ou fecha o Echoes. Enquanto um deles está em execução, um dispositivo que consiga alcançar a porta dele pode se conectar a ele; a página de compartilhamento de arquivos pede um PIN, e os dados passam só entre o seu dispositivo e os dispositivos que se conectam. O Echoes não os envia para nenhum outro lugar."
+        ]
+      },
+      {
+        "id": "permissions",
+        "title": "Permissões",
+        "list": [
+          "<strong>Rede</strong> (todas as plataformas): o Echoes é uma ferramenta de rede.",
+          "<strong>Rede local</strong> (macOS e iOS): pedida na primeira vez que você escaneia, faz ping ou compartilha com um dispositivo da sua rede local. Se você recusar, os dispositivos locais parecem inacessíveis.",
+          "<strong>Notificações, serviço em primeiro plano e execução na inicialização</strong> (Android): para os alertas de disponibilidade e para manter uma varredura, um monitor ou um compartilhamento de arquivos funcionando enquanto o app está em segundo plano. A execução na inicialização fica desativada, a menos que você a ative.",
+          "<strong>Localização</strong> (Windows): o Windows só deixa um app ver os nomes das redes Wi-Fi próximas quando o acesso à localização está ativado. O Echoes os lê localmente para o analisador de Wi-Fi e não os envia para lugar nenhum."
+        ]
+      },
+      {
+        "id": "children",
+        "title": "Crianças",
+        "paragraphs": [
+          "O Echoes é uma ferramenta de uso geral e não é direcionado a crianças. Ele não coleta informações pessoais de ninguém."
+        ]
+      },
+      {
+        "id": "opensource",
+        "title": "Código aberto",
+        "paragraphs": [
+          "O Echoes é distribuído sob a licença MIT. Qualquer pessoa pode ler o código-fonte, verificar as afirmações desta página e compilar o app: <a href=\"{repoUrl}\">github.com/SinaXhpm/Echoes</a>."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Alterações",
+        "paragraphs": [
+          "Se esta política mudar, a nova versão substitui esta página, com uma nova data no topo."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Contato",
+        "paragraphs": [
+          "Dúvidas ou preocupações: abra uma issue em <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
+        ]
+      }
+    ]
+  },
+  "notFound": {
+    "title": "Página não encontrada – Echoes",
+    "heading": "Esta página não existe",
+    "text": "O endereço pode estar errado ou a página mudou de lugar.",
+    "home": "Ir para a página inicial"
+  }
+}

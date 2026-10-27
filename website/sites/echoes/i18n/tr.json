@@ -1,0 +1,628 @@
+{
+  "meta": {
+    "name": "Türkçe",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "İçeriğe geç",
+    "doctor": "Doctor",
+    "tools": "Araçlar",
+    "devices": "Cihazlar",
+    "privacy": "Gizlilik",
+    "download": "İndir",
+    "github": "GitHub'daki kaynak kodu",
+    "language": "Dil",
+    "home": "Echoes ana sayfası",
+    "menu": "Menü"
+  },
+  "common": {
+    "tagline": "Her cihaz için ücretsiz ağ araçları",
+    "updated": "Son güncelleme: {date}",
+    "translationNote": "Bu sayfa bir çeviridir. İngilizce sürümden farklı olduğu durumlarda geçerli olan İngilizce sürümdür.",
+    "englishVersion": "İngilizce sürüm",
+    "openFull": "Görseli tam boyutta açın",
+    "close": "Kapat",
+    "onThisPage": "Bu sayfada"
+  },
+  "footer": {
+    "product": "Echoes",
+    "trust": "Güven",
+    "project": "Proje",
+    "faq": "Sorular",
+    "appStore": "App Store",
+    "releases": "GitHub'daki sürümler",
+    "privacyPolicy": "Gizlilik politikası",
+    "issues": "Sorun bildirin",
+    "author": "sinaxhpm.com",
+    "sister": "Aynı geliştiriciden: SSH, SFTP, RDP, VNC ve Telnet tek bir şifreli uygulamada",
+    "license": "MIT lisansıyla ücretsiz ve açık kaynaklı.",
+    "madeWith": "C#, .NET ve Avalonia ile yapıldı.",
+    "noTracking": "Bu web sitesi çerez, analitik ya da üçüncü taraf betik kullanmaz."
+  },
+  "home": {
+    "title": "Echoes – iPhone, iPad, Mac, Windows, Linux ve Android için ücretsiz ağ araçları",
+    "description": "Echoes, 20 ağ aracını ücretsiz ve açık kaynaklı tek bir uygulamada toplar: bir sitenin neden açılmadığını söyleyen Doctor, ping, traceroute, hız testi, port tarayıcı, DNS ve WHOIS, cURL, TLS denetleyicisi, SSH, uptime izleme ve herhangi bir tarayıcıyla dosya paylaşımı. Hesap yok, reklam yok, takip yok.",
+    "hero": {
+      "pillTag": "Yeni",
+      "pill": "Artık iPhone, iPad ve Mac için App Store'da",
+      "title": "20 ağ aracı. <em>Tek bir ücretsiz uygulama.</em>",
+      "lede": "Bir sitenin neden açılmadığını öğrenin, hızınızı ölçün, ping atın, portları tarayın, DNS sorgulayın ve herhangi bir cihaza dosya gönderin. Echoes, normalde tek tek çalıştıracağınız araçları tek ve basit bir uygulamada bir araya getirir.",
+      "appStore": "App Store",
+      "download": "Tüm indirmeler",
+      "trust": [
+        "Hesap yok",
+        "Reklam yok",
+        "Takip yok",
+        "Açık kaynak"
+      ],
+      "chips": [
+        "Nedeni sizin için bulur",
+        "Hız testi",
+        "Herhangi bir tarayıcıya dosya gönderin"
+      ],
+      "imageAlt": "Mac'te Echoes: Doctor, example.com'un buradan çalıştığını söylüyor ve yaptığı her denetimi gösteriyor",
+      "phoneAlt": "iPhone'da Echoes: Doctor"
+    },
+    "instead": {
+      "title": "Şunların yerine tek bir uygulama",
+      "items": [
+        "ping",
+        "traceroute",
+        "nmap",
+        "curl",
+        "dig ve whois",
+        "PuTTY",
+        "hız testi sitesi",
+        "Cloudflare paneli"
+      ]
+    },
+    "doctor": {
+      "kicker": "Doctor",
+      "title": "Site açılmıyor mu? <em>Nedenini öğrenin.</em>",
+      "lede": "Doctor, sizinle site arasındaki her şeyi denetler, sonra sorunun ne olduğunu ve ne yapmanız gerektiğini tek cümleyle söyler.",
+      "points": [
+        {
+          "id": "network",
+          "title": "Kendi ağınız",
+          "text": "Ağ bağdaştırıcısı, ağ geçidi, bir VPN ya da proxy ve araya giren bir Wi-Fi giriş sayfası."
+        },
+        {
+          "id": "dns",
+          "title": "Yalan söyleyen DNS",
+          "text": "Sisteminizin DNS yanıtları şifreli DNS ile karşılaştırılır; böylece sahte yanıtlar ve bilinen filtre adresleri göze çarpar."
+        },
+        {
+          "id": "sni",
+          "title": "Filtreleme ya da engellenmiş bir adres",
+          "text": "Ad filtrelemesini (SNI) engellenmiş bir IP adresinden ayırt etmek için TLS, sitenin adıyla ve adı olmadan denenir."
+        },
+        {
+          "id": "outside",
+          "title": "Herkes için mi çöktü, yoksa yalnızca sizin için mi?",
+          "text": "Site birkaç ülkeden de denetlenir; böylece sorunun sitede mi yoksa bağlantınızda mı olduğunu bilirsiniz."
+        },
+        {
+          "id": "dpi",
+          "title": "Bir geçici çözüm işe yarar mı?",
+          "text": "İlk paketi parçalara bölerek yapılan yeniden denemeler, v2rayNG, Hiddify ya da Xray gibi uygulamalardaki “fragment” ayarıyla engelin aşılıp aşılamayacağını gösterir."
+        },
+        {
+          "id": "report",
+          "title": "Paylaşılabilir bir rapor",
+          "text": "Süreleriyle birlikte her adım ve ağı yöneten kişi için kopyalayabileceğiniz bir rapor."
+        }
+      ],
+      "alt": "Doctor SNI filtrelemesini buluyor: Sitenin adresi çalışıyor, ama adıyla çalışmıyor"
+    },
+    "tools": {
+      "kicker": "20 araç",
+      "title": "Bir ağ için gereken her şey <em>tek pencerede</em>",
+      "lede": "Uygulamadaki gibi dört grup: sorunları bulun, web sitelerini ve API'leri test edin, bağlanın ve sunucu çalıştırın, bir de her gün kullandığınız geliştirici araçları.",
+      "groups": [
+        {
+          "id": "diagnose",
+          "title": "Teşhis",
+          "items": [
+            {
+              "id": "ping",
+              "title": "Ping",
+              "text": "Canlı istatistikler ve grafik, TCP ping, traceroute ve MTR."
+            },
+            {
+              "id": "doctor",
+              "title": "Doctor",
+              "text": "Bir sitenin sizin için neden açılmadığı, tek cümlede."
+            },
+            {
+              "id": "dns",
+              "title": "DNS & WHOIS",
+              "text": "DNS over HTTPS ve TLS, çözümleyici karşılaştırması, e-posta denetimi."
+            },
+            {
+              "id": "scanner",
+              "title": "Port Scanner",
+              "text": "Servis algılamalı TCP ve UDP taramaları."
+            },
+            {
+              "id": "checkhost",
+              "title": "Check Host",
+              "text": "Dünyanın dört bir yanından ping, HTTP, TCP ve DNS denetimleri."
+            },
+            {
+              "id": "monitor",
+              "title": "Monitor",
+              "text": "Uptime denetimleri, süre dolumu uyarıları ve Telegram bildirimleri."
+            },
+            {
+              "id": "network",
+              "title": "Network",
+              "text": "Bağdaştırıcılar, Wi-Fi, komşu cihazlar, açık portlar ve rotalar."
+            },
+            {
+              "id": "speed",
+              "title": "Speed Test",
+              "text": "İndirme, yükleme, ping, jitter ve yük altındaki gecikme."
+            }
+          ]
+        },
+        {
+          "id": "web",
+          "title": "Web ve API",
+          "items": [
+            {
+              "id": "curl",
+              "title": "cURL",
+              "text": "Her curl komutunu anlayan bir HTTP istemcisi."
+            },
+            {
+              "id": "tls",
+              "title": "TLS Inspector",
+              "text": "Sertifikalar, geçerlilik süreleri, TLS sürümleri ve şifre takımları."
+            },
+            {
+              "id": "ipinfo",
+              "title": "IP Info",
+              "text": "Genel IP adresiniz ve herhangi bir IP adresinin nerede olduğu."
+            },
+            {
+              "id": "cloudflare",
+              "title": "Cloudflare",
+              "text": "Panele girmeden DNS, SSL, kurallar ve Dynamic DNS."
+            },
+            {
+              "id": "telegram",
+              "title": "Telegram Bot",
+              "text": "Herhangi bir Bot API yöntemini çağırın ve ham yanıtı görün."
+            }
+          ]
+        },
+        {
+          "id": "serve",
+          "title": "Sunucu ve bağlantı",
+          "items": [
+            {
+              "id": "ssh",
+              "title": "SSH",
+              "text": "Terminal, dosyalar, port yönlendirme ve sunucu sağlığı."
+            },
+            {
+              "id": "socket",
+              "title": "Socket",
+              "text": "TCP ve UDP istemcisi ile sunucusu, bir de WebSocket."
+            },
+            {
+              "id": "webserver",
+              "title": "Web Server",
+              "text": "Tarayıcısı olan herhangi bir cihazla dosya paylaşın ve sohbet edin ya da webhook'ları yakalayın."
+            },
+            {
+              "id": "proxy",
+              "title": "Proxy",
+              "text": "Bir SOCKS5 ve HTTP proxy'si ile bir proxy listesi denetleyicisi."
+            }
+          ]
+        },
+        {
+          "id": "workspace",
+          "title": "Çalışma alanı",
+          "items": [
+            {
+              "id": "strings",
+              "title": "String Lab",
+              "text": "Kodlayın, hash'leyin, dönüştürün, karşılaştırın ve üretin."
+            },
+            {
+              "id": "notes",
+              "title": "Notes",
+              "text": "Ana parolayla kilitlenen notlar."
+            },
+            {
+              "id": "backup",
+              "title": "History & Backup",
+              "text": "Son girdiler ve tek bir şifreli yedek dosyası."
+            }
+          ]
+        }
+      ]
+    },
+    "features": {
+      "kicker": "Daha yakından",
+      "title": "Kullanımı basit, <em>gerektiğinde derinlemesine</em>",
+      "items": [
+        {
+          "id": "ping",
+          "title": "Ping, traceroute ve MTR",
+          "text": "Herhangi bir host için canlı yanıtlar, gecikme grafiği ve önemli olan sayılar.",
+          "points": [
+            "Normal ping'e yanıt vermeyen host'lar için bir porta TCP ping.",
+            "Bir yolun geçirebildiği en büyük paketi bulmak için paket boyutu, TTL ve “don't fragment”.",
+            "Yönetici hakkı gerekmez: Sistemin normal ping'e izin vermediği yerlerde Echoes kendiliğinden UDP'ye geçer.",
+            "Bir host düştüğünde ya da yeniden ayağa kalktığında uyarı."
+          ],
+          "alt": "Mac'te Ping: 1.1.1.1 adresinin 443 numaralı portuna canlı yanıtlar ve gecikme grafiğiyle TCP ping"
+        },
+        {
+          "id": "speed",
+          "title": "İnternetiniz gerçekte ne kadar hızlı?",
+          "text": "İndirme, yükleme, ping ve jitter; bir de hat meşgulken gecikmenin ne kadar arttığı.",
+          "points": [
+            "Cloudflare'in en yakın veri merkezi, 20'den fazla şehirdeki herkese açık test sunucuları ya da kendi sunucunuz.",
+            "Yük altındaki gecikme için bir not (bufferbloat).",
+            "Aynı anda en fazla 16 bağlantı ve son 20 sonucunuz."
+          ],
+          "alt": "Washington'daki bir sunucuya karşı indirme hızını ölçen hız testi"
+        },
+        {
+          "id": "monitor",
+          "title": "Bir site çöktüğünde haberiniz olsun",
+          "text": "Sunucularınızı ve web sitelerinizi izler; biri çöktüğünde ya da yeniden çalışmaya başladığında size haber verir.",
+          "points": [
+            "Her biri kendi aralığıyla çalışan ping, TCP ve HTTP denetimleri.",
+            "Kendi botunuzdan Telegram'da uyarılar.",
+            "Bir sertifikanın ya da alan adının süresi dolmadan önce uyarılar.",
+            "Bir sayfanın belirli bir metni içerip içermediğinin denetimi."
+          ],
+          "alt": "Uptime izleyicisi: dördü çalışan, biri çökmüş beş site ve geçmişleri"
+        },
+        {
+          "id": "share",
+          "title": "Herhangi bir cihaza dosya gönderin",
+          "text": "Bilgisayarınızla bir telefon, dizüstü bilgisayar ya da başka herhangi bir cihaz arasında dosya paylaşın ve sohbet edin. Bir QR kodu okutun: Karşı tarafın yalnızca bir tarayıcıya ihtiyacı var.",
+          "points": [
+            "Cihazın kendi sertifikasıyla HTTPS, 8 haneli bir PIN arkasında. Sertifika cihazın kendisine ait olduğu için tarayıcılar bir kez uyarı verir.",
+            "Sürükle-bırak ile iki yönlü dosya aktarımı ve kaldığı yerden devam eden indirmeler.",
+            "Paylaşılan her dosyanın kendi bağlantısı ve QR kodu vardır.",
+            "Ya da webhook isteklerini yakalayın ve her birini eksiksiz görün."
+          ],
+          "alt": "Dosya ve sohbet paylaşan web sunucusu; bağlantısı, PIN'i ve QR koduyla",
+          "altPhone": "Bir telefonun tarayıcısında paylaşım sayfası"
+        },
+        {
+          "id": "dns",
+          "title": "İhtiyacınız olduğu gibi DNS",
+          "text": "Düz DNS, DNS over HTTPS ve DNS over TLS yan yana.",
+          "points": [
+            "Birçok çözümleyiciyi aynı anda karşılaştırın; değiştirilmiş ve filtrelenmiş yanıtlar işaretlenir.",
+            "E-posta denetimi: MX, SPF, DMARC, DKIM, MTA-STS, TLS-RPT ve kara listeler.",
+            "Alan adının bitiş tarihiyle birlikte RDAP üzerinden WHOIS."
+          ],
+          "alt": "example.com için düz DNS ve DNS over HTTPS üzerinden DNS sorguları"
+        },
+        {
+          "id": "tls",
+          "title": "Herhangi bir web sitesinin sertifikasını denetleyin",
+          "text": "Önce net bir sonuç, sonra tüm ayrıntılar.",
+          "points": [
+            "Her TLS sürümü, şifre takımı ve ALPN ile birlikte ayrı ayrı test edilir.",
+            "Tam sertifika zinciri, parmak izleri, OCSP stapling ve HSTS.",
+            "E-posta ve FTP sunucuları için STARTTLS, birçok site için toplu süre dolumu denetimi."
+          ],
+          "alt": "TLS Inspector: example.com güvenilir; kabul ettiği TLS sürümleriyle birlikte"
+        },
+        {
+          "id": "curl",
+          "title": "Web sitelerini ve API'leri test edin",
+          "text": "bash, cmd, PowerShell ya da bir tarayıcının “cURL olarak kopyala” komutundan gelen herhangi bir curl komutunu yapıştırın ve gönderin.",
+          "points": [
+            "Her adımın süresi: DNS, bağlantı, TLS ve ilk bayt.",
+            "Başlıklar, çerezler, yönlendirmeler, TLS ve sayfanın önizlemesi.",
+            "curl, PowerShell, Python, JavaScript, HTTPie ve wget için kod.",
+            "Kaydedilen istekler şifrelenir."
+          ],
+          "alt": "cURL aracı: her adımın süresiyle bir GET isteği"
+        },
+        {
+          "id": "strings",
+          "title": "Her gün kullanılan geliştirici araçları",
+          "text": "Normalde web'de arayacağınız küçük şeyler, kendi cihazınızda.",
+          "points": [
+            "Base64, URL ve hex; hash'ler ve HMAC; JWT çözme, doğrulama ve imzalama.",
+            "JSON, YAML ve CSV; regex, diff, cron ve alt ağlar.",
+            "UUID'ler, ULID'ler ve parolalar; bir parolanın kırılmasının ne kadar süreceğiyle birlikte."
+          ],
+          "alt": "String Lab parola üretiyor; her birinin kırılması için gereken süreyle birlikte"
+        }
+      ]
+    },
+    "more": {
+      "title": "Ve dahası",
+      "items": [
+        {
+          "id": "scanner",
+          "caption": "Port Scanner: servisleri ve sürümleriyle açık portlar",
+          "alt": "Port tarayıcının sonuçları: servis sürümleriyle açık ve kapalı portlar"
+        },
+        {
+          "id": "ssh",
+          "caption": "SSH: sunucuya hiçbir şey kurmadan sunucu sağlığı",
+          "alt": "Bir sunucunun CPU'sunu, belleğini, disklerini ve en yoğun süreçlerini gösteren SSH aracı"
+        },
+        {
+          "id": "cloudflare",
+          "caption": "Cloudflare: panele girmeden DNS kayıtlarınız",
+          "alt": "Bir bölgenin (zone) DNS kayıtlarını listeleyen Cloudflare aracı"
+        }
+      ]
+    },
+    "devices": {
+      "kicker": "Her cihaz",
+      "title": "Tek uygulama, <em>tüm cihazlarınızda</em>",
+      "lede": "iPhone, iPad, Mac, Windows, Linux ve Android'de aynı araçlar; tek bir kod tabanından, her ekran için hazırlanmış düzenlerle.",
+      "altIphone": "iPhone'da Echoes: araçların bulunduğu menü",
+      "altIpad": "iPad'de Echoes: Doctor",
+      "altAndroid": "Android telefonda Echoes: hız testi",
+      "note": "Birkaç araç sisteme bağlıdır. iPhone ve iPad'de sunucular, izleme ve taramalar yalnızca Echoes ekrandayken çalışır; Wi-Fi analiz aracı ise yalnızca Windows ve Linux'ta vardır."
+    },
+    "privacy": {
+      "kicker": "Gizlilik",
+      "title": "Echoes <em>hiçbir şey</em> toplamaz",
+      "lede": "Hesap yok, reklam yok, analitik yok, takip yok. Geliştiriciye hiçbir şey gönderilmez; geliştirici neyi test ettiğinizi, nereye bağlandığınızı ya da neyi kaydettiğinizi göremez.",
+      "items": [
+        {
+          "title": "Cihazınızda kalır",
+          "text": "Ayarlar, geçmiş, notlar, kaydedilen istekler ve token'lar uygulamanın kendi klasöründe kalır. Gizli bilgiler şifrelenir; notlar ana parolanızla kilitlenir."
+        },
+        {
+          "title": "Hiçbir şey kendiliğinden çalışmaz",
+          "text": "Web sunucusu, proxy, istek yakalayıcı ve soket dinleyicileri yalnızca Start düğmesine bastığınızda başlar. Echoes kendiliğinden yalnızca yeni bir sürüm olup olmadığını denetler; bunu da yalnızca GitHub'dan indirilen derlemelerde yapar."
+        },
+        {
+          "title": "Data Not Collected",
+          "text": "App Store'daki gizlilik etiketi bunu söyler. Kaynak kodu herkese açıktır; bu yüzden bunu kendiniz doğrulayabilirsiniz."
+        }
+      ],
+      "link": "Gizlilik politikasını okuyun"
+    },
+    "free": {
+      "kicker": "Ücretsiz",
+      "big": "Ücretsiz ve açık kaynak",
+      "text": "Her platformda reklam yok, ücretli sürüm yok, uygulama içi satın alma yok, hesap yok.",
+      "items": [
+        "App Store'da ücretsiz, uygulama içi satın alma yok.",
+        "Windows, macOS, Linux ve Android için GitHub'da ücretsiz.",
+        "Kaynak kodu MIT lisansıyla herkese açıktır.",
+        "Masaüstü derlemeleri yerel (native) uygulamalardır: Başka bir şey kurmanız gerekmez, hızlı açılırlar ve az bellek kullanırlar."
+      ]
+    },
+    "download": {
+      "kicker": "İndir",
+      "title": "Echoes'u edinin",
+      "lede": "iPhone, iPad ve Mac için App Store'dan. Windows, Linux, Android için ve macOS'u doğrudan indirmek için GitHub'dan.",
+      "platforms": [
+        {
+          "id": "apple",
+          "name": "iPhone, iPad ve Mac",
+          "detail": "App Store · iOS ve iPadOS 15 veya üzeri, macOS 12 veya üzeri",
+          "links": [
+            {
+              "id": "ios",
+              "label": "App Store"
+            },
+            {
+              "id": "mac",
+              "label": "Mac App Store"
+            }
+          ]
+        },
+        {
+          "id": "windows",
+          "name": "Windows",
+          "detail": "Windows 10 ve 11 (x64) · .zip",
+          "links": [
+            {
+              "id": "zip",
+              "label": ".zip indir"
+            }
+          ]
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "detail": "macOS 12 veya üzeri · imzalı ve notarize edilmiş .dmg",
+          "links": [
+            {
+              "id": "arm64",
+              "label": "Apple Silicon"
+            },
+            {
+              "id": "x64",
+              "label": "Intel"
+            }
+          ]
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "detail": "x64 · glibc 2.35 veya üzeri (Ubuntu 22.04, Debian 12, Fedora 36 ve daha yenileri)",
+          "links": [
+            {
+              "id": "appimage",
+              "label": "AppImage"
+            },
+            {
+              "id": "deb",
+              "label": ".deb"
+            },
+            {
+              "id": "rpm",
+              "label": ".rpm"
+            }
+          ]
+        },
+        {
+          "id": "android",
+          "name": "Android",
+          "detail": "Android 6.0 veya üzeri · .apk",
+          "links": [
+            {
+              "id": "apk",
+              "label": ".apk indir"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "Uygulamanın kendisi İngilizcedir.",
+        "Windows derlemesi henüz kod imzalı değil; bu yüzden Windows ilk açılışta sizi uyarabilir: Önce <em>Ek bilgi</em> bağlantısını, ardından <em>Yine de çalıştır</em> düğmesini seçin.",
+        "App Store sürümleri App Store üzerinden güncellenir. İndirilen sürümler ise yeni bir sürüm çıktığında size haber verir."
+      ]
+    },
+    "faq": {
+      "kicker": "Yardım",
+      "title": "Sorular ve yanıtlar",
+      "items": [
+        {
+          "q": "Echoes gerçekten ücretsiz mi?",
+          "a": "Evet. Echoes, MIT lisansıyla ücretsiz ve açık kaynaklıdır; hiçbir platformda reklam, ücretli sürüm, uygulama içi satın alma ya da hesap yoktur."
+        },
+        {
+          "q": "Echoes veri topluyor mu?",
+          "a": "Hayır. Hesap, analitik ya da takip yoktur ve geliştiriciye hiçbir şey gönderilmez. Bazı araçlar, hız testi sunucusu ya da DNS çözümleyici gibi herkese açık hizmetlere dayanır; bu hizmetler, ziyaret ettiğiniz her web sitesi gibi isteğinizi görür. <a href=\"{privacyUrl}\">Gizlilik politikası</a> bunların hepsini listeler."
+        },
+        {
+          "q": "Hangi cihazlarda çalışıyor?",
+          "a": "App Store'dan iPhone ve iPad (iOS ve iPadOS 15 veya üzeri) ile Mac (macOS 12 veya üzeri); GitHub'dan Windows 10 ve 11, Linux, Android 6.0 veya üzeri ve macOS."
+        },
+        {
+          "q": "Yönetici hakları gerekiyor mu?",
+          "a": "Hayır. Sistemin normal (ICMP) ping'e izin vermediği yerlerde Echoes kendiliğinden UDP'ye geçer."
+        },
+        {
+          "q": "Echoes bir VPN mi?",
+          "a": "Hayır. Echoes, cihazınızın nasıl bağlandığını değiştirmez. Doctor yalnızca bir siteyi neyin engellediğini ve başka bir uygulamadaki bir ayarın bu engeli aşıp aşamayacağını söyler."
+        },
+        {
+          "q": "Uygulama benim dilimde mi?",
+          "a": "Henüz değil: Uygulama İngilizcedir. Bu web sitesi, daha fazla kişi uygulama hakkında okuyabilsin diye çevrildi."
+        },
+        {
+          "q": "Herhangi bir ağı tarayabilir miyim?",
+          "a": "Yalnızca kendi ağınızı ve yönettiğiniz sunucuları tarayın. Başkalarının ağlarını taramak, bulunduğunuz yerde yasalara aykırı olabilir."
+        },
+        {
+          "q": "iPhone ve iPad'de ne farklı?",
+          "a": "iOS, uygulamaların arka planda yalnızca kısa bir süre çalışmasına izin verir; bu yüzden sunucular, izleme ve taramalar Echoes ekrandayken çalışır ve Echoes bunlar için ekranı açık tutar. Wi-Fi analiz aracı gibi sistemin ağ ayrıntılarına ihtiyaç duyan birkaç araç burada yoktur."
+        }
+      ]
+    }
+  },
+  "privacy": {
+    "title": "Gizlilik politikası – Echoes",
+    "description": "Echoes hiçbir veri toplamaz: cihazınızda kalanlar, bazı araçların kullandığı hizmetler ve uygulamanın istediği izinler.",
+    "heading": "Gizlilik politikası",
+    "intro": "Echoes, ücretsiz ve açık kaynaklı bir ağ araç setidir (ping, traceroute, port tarayıcı, DNS, SSH, hız testi, dosya paylaşımı için web sunucusu ve daha fazlası). Bu sayfa, Echoes'un verilerinizle ne yaptığını açıklar. Kısacası: <strong>hiçbir veri toplamaz.</strong>",
+    "sourceNote": "Bu politika, kaynak koddaki <a href=\"{policyUrl}\">PRIVACY.md</a> dosyasıyla aynıdır.",
+    "sections": [
+      {
+        "id": "collects",
+        "title": "Geliştiricinin topladıkları",
+        "paragraphs": [
+          "Hiçbir şey. Echoes'da hesap, reklam, analitik, çökme raporlama hizmeti ya da takip SDK'sı yoktur. Geliştiriciye hiçbir şey gönderilmez; geliştirici neyi test ettiğinizi, nereye bağlandığınızı ya da neyi kaydettiğinizi göremez."
+        ]
+      },
+      {
+        "id": "device",
+        "title": "Cihazınızda kalanlar",
+        "paragraphs": [
+          "Ayarlarınız, yazdığınız host'lar ve URL'ler (geçmiş), notlar, kaydedilen istekler, SSH profilleri ve eklediğiniz token'lar (Telegram, Cloudflare) yalnızca cihazınızda, uygulamanın kendi veri klasöründe saklanır."
+        ],
+        "list": [
+          "Gizli bilgiler (parolalar, token'lar) diskte şifreli olarak tutulur. Notlar ve Cloudflare kasası, ana parolanızdan türetilen bir anahtarla şifrelenir.",
+          "Her şeyi parolayla korunan tek bir yedek dosyasına aktarabilir ve başka bir cihazda geri yükleyebilirsiniz. Dosya yalnızca sizin kaydettiğiniz yere gider.",
+          "iPhone ya da iPad'de, tarayıcıların dosya paylaşım sayfasına gönderdiği dosyalar Dosyalar uygulamasındaki Echoes klasöründe (iPhone'umda) tutulur; böylece onları orada açabilir, taşıyabilir ya da silebilirsiniz.",
+          "Uygulamayı ya da veri klasörünü silmek verileri de siler."
+        ]
+      },
+      {
+        "id": "leaves",
+        "title": "Cihazınızdan çıkanlar ve nedenleri",
+        "paragraphs": [
+          "Echoes bir ağ aracıdır, bu yüzden ağ istekleri yapar: sizin başlattığınız, sorduğunuz host'lara giden istekler ve bunlara ek olarak bazı araçların dayandığı birkaç herkese açık hizmete giden istekler. Bu hizmetler isteğin kendisini, dolayısıyla da ziyaret ettiğiniz her web sitesinde olduğu gibi genel IP adresinizi alır. Echoes bu hizmetleri denetlemez; her birinin kendi gizlilik politikası vardır."
+        ],
+        "list": [
+          "<strong>Test ettiğiniz host'lar, portlar ve URL'ler</strong> (ping, traceroute, port tarama, cURL, DNS, TLS, SSH, soketler, Doctor).",
+          "<strong>check-host.net</strong>, bir host'u dünyanın dört bir yanındaki sunuculardan test etmek için.",
+          "<strong>Hız testi sunucuları:</strong> speed.cloudflare.com ya da seçtiğiniz dosya sunucusu (Cloudflare, Tele2, Leaseweb, Linode, Selectel, DataPacket ve benzerleri).",
+          "<strong>Herkese açık DNS-over-HTTPS çözümleyicileri</strong> (Cloudflare, Google, Quad9, OpenDNS, AdGuard), DNS aracını kullandığınızda.",
+          "<strong>IP bilgisi sağlayıcıları</strong> (ipinfo.io, ipwho.is, ipapi.co, ip-api.com, geojs.io, freeipapi.com, iplocation.net), girdiğiniz IP adresini ya da kendi IP adresinizi sorgulamak için.",
+          "<strong>RDAP</strong> (rdap.org, rdap.verisign.com), bir alan adının kayıt ve bitiş bilgileri için.",
+          "<strong>DNS kara listeleri</strong> (Spamhaus, SpamCop, Barracuda) ve alan adının kendi e-posta kayıtları, bir alan adında e-posta denetimini çalıştırdığınızda.",
+          "<strong>Bağlantı ve genel IP hizmetleri:</strong> Google, Microsoft ve Cloudflare gibi bilinen siteler ve connectivitycheck.gstatic.com (Doctor internetin çalıştığını denetler) ile Cloudflare, ipify, ident.me ve icanhazip (Dynamic DNS genel IP adresinizi okur).",
+          "<strong>Telegram</strong> (api.telegram.org), yalnızca uptime uyarıları için kendi bot token'ınızı eklerseniz; <strong>Cloudflare</strong> (api.cloudflare.com), yalnızca kendi API token'ınızı eklerseniz. Bir token cihazınızda kalır ve yalnızca ait olduğu hizmete gönderilir.",
+          "<strong>GitHub</strong> (api.github.com), yalnızca GitHub'dan indirdiğiniz derlemelerde, daha yeni bir sürüm olup olmadığını görmek için. Bir uygulama mağazasından gelen derlemeler bunu denetlemez: Uygulamayı mağaza günceller."
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Echoes'un çalıştırabileceği sunucular",
+        "paragraphs": [
+          "Web sunucusu (dosya paylaşımı ve sohbet), istek yakalayıcı, proxy ve soket dinleyicileri yalnızca Start düğmesine bastığınızda başlar; Stop düğmesine bastığınızda ya da Echoes'u kapattığınızda durur. Bunlardan biri çalışırken, portuna ulaşabilen bir cihaz ona bağlanabilir; dosya paylaşım sayfası bir PIN ister ve veriler yalnızca sizin cihazınızla bağlanan cihazlar arasında aktarılır. Echoes bu verileri başka hiçbir yere göndermez."
+        ]
+      },
+      {
+        "id": "permissions",
+        "title": "İzinler",
+        "list": [
+          "<strong>Ağ</strong> (tüm platformlar): Echoes bir ağ aracıdır.",
+          "<strong>Yerel ağ</strong> (macOS ve iOS): Yerel ağınızdaki bir cihazla ilk kez tarama, ping ya da paylaşım yaptığınızda istenir. Reddederseniz yerel cihazlar erişilemez görünür.",
+          "<strong>Bildirimler, ön plan hizmeti ve açılışta başlatma</strong> (Android): Uptime uyarıları için ve uygulama arka plandayken bir taramanın, izlemenin ya da dosya paylaşımının çalışmaya devam etmesi için. Açılışta başlatma, siz açmadıkça kapalıdır.",
+          "<strong>Konum</strong> (Windows): Windows, bir uygulamanın yakındaki Wi-Fi ağlarının adlarını görmesine yalnızca konum erişimi açıkken izin verir. Echoes bu adları Wi-Fi analiz aracı için cihazın kendisinde okur ve hiçbir yere göndermez."
+        ]
+      },
+      {
+        "id": "children",
+        "title": "Çocuklar",
+        "paragraphs": [
+          "Echoes genel amaçlı bir araçtır ve çocuklara yönelik değildir. Hiç kimseden kişisel bilgi toplamaz."
+        ]
+      },
+      {
+        "id": "opensource",
+        "title": "Açık kaynak",
+        "paragraphs": [
+          "Echoes, MIT lisansıyla yayımlanır. Herkes kaynak kodu okuyabilir, bu sayfadaki iddiaları doğrulayabilir ve uygulamayı derleyebilir: <a href=\"{repoUrl}\">github.com/SinaXhpm/Echoes</a>."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Değişiklikler",
+        "paragraphs": [
+          "Bu politika değişirse yeni sürüm, en üstte yeni bir tarihle bu sayfanın yerini alır."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "İletişim",
+        "paragraphs": [
+          "Sorularınız ya da endişeleriniz için <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> adresinde bir issue açın."
+        ]
+      }
+    ]
+  },
+  "notFound": {
+    "title": "Sayfa bulunamadı – Echoes",
+    "heading": "Böyle bir sayfa yok",
+    "text": "Adres yanlış olabilir ya da sayfa taşınmış olabilir.",
+    "home": "Ana sayfaya gidin"
+  }
+}

@@ -1,0 +1,628 @@
+{
+  "meta": {
+    "name": "简体中文",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "跳到主要内容",
+    "doctor": "Doctor",
+    "tools": "工具",
+    "devices": "设备",
+    "privacy": "隐私",
+    "download": "下载",
+    "github": "GitHub 上的源代码",
+    "language": "语言",
+    "home": "Echoes 首页",
+    "menu": "菜单"
+  },
+  "common": {
+    "tagline": "适用于各种设备的免费网络工具",
+    "updated": "最后更新：{date}",
+    "translationNote": "本页为译文。如与英文版有出入，以英文版为准。",
+    "englishVersion": "英文版",
+    "openFull": "查看原尺寸图片",
+    "close": "关闭",
+    "onThisPage": "本页内容"
+  },
+  "footer": {
+    "product": "Echoes",
+    "trust": "信任",
+    "project": "项目",
+    "faq": "常见问题",
+    "appStore": "App Store",
+    "releases": "GitHub 上的发布版本",
+    "privacyPolicy": "隐私政策",
+    "issues": "报告问题",
+    "author": "sinaxhpm.com",
+    "sister": "同一作者的另一作品：SSH、SFTP、RDP、VNC 和 Telnet，都在一个加密应用里",
+    "license": "免费开源，采用 MIT 许可证。",
+    "madeWith": "使用 C#、.NET 和 Avalonia 构建。",
+    "noTracking": "本网站不使用 Cookie、统计分析或第三方脚本。"
+  },
+  "home": {
+    "title": "Echoes – 适用于 iPhone、iPad、Mac、Windows、Linux 和 Android 的免费网络工具",
+    "description": "Echoes 把 20 个网络工具放进一个免费、开源的应用：能告诉你网站为什么打不开的 Doctor、ping、traceroute、测速、端口扫描器、DNS 和 WHOIS、cURL、TLS 检查工具、SSH、在线状态监控，以及与任何浏览器之间的文件共享。无需账户，没有广告，不跟踪。",
+    "hero": {
+      "pillTag": "新",
+      "pill": "现已登陆 App Store，支持 iPhone、iPad 和 Mac",
+      "title": "20 个网络工具。<em>一个免费应用。</em>",
+      "lede": "找出网站打不开的原因、测网速、ping、扫描端口、查询 DNS，还能把文件发送到任何设备。你平时要一个个单独运行的工具，Echoes 都集中到了一个简单的应用里。",
+      "appStore": "App Store",
+      "download": "全部下载选项",
+      "trust": [
+        "无需账户",
+        "无广告",
+        "无跟踪",
+        "开源"
+      ],
+      "chips": [
+        "替你找出原因",
+        "测速",
+        "向任何浏览器发送文件"
+      ],
+      "imageAlt": "Mac 上的 Echoes：Doctor 显示从这里可以访问 example.com，并列出了它运行的每一项检查",
+      "phoneAlt": "iPhone 上的 Echoes：Doctor"
+    },
+    "instead": {
+      "title": "一个应用，取代",
+      "items": [
+        "ping",
+        "traceroute",
+        "nmap",
+        "curl",
+        "dig 和 whois",
+        "PuTTY",
+        "测速网站",
+        "Cloudflare 仪表板"
+      ]
+    },
+    "doctor": {
+      "kicker": "Doctor",
+      "title": "网站打不开？<em>找出原因。</em>",
+      "lede": "Doctor 会检查你和网站之间的每一个环节，然后用一句话告诉你哪里出了问题，以及该怎么办。",
+      "points": [
+        {
+          "id": "network",
+          "title": "你自己的网络",
+          "text": "网卡、网关、VPN 或代理，以及挡在中间的 Wi-Fi 登录页面。"
+        },
+        {
+          "id": "dns",
+          "title": "会说谎的 DNS",
+          "text": "把系统 DNS 的应答与加密 DNS 的应答进行比较，伪造的应答和已知的过滤地址就会显露出来。"
+        },
+        {
+          "id": "sni",
+          "title": "过滤，或地址被封锁",
+          "text": "分别带上和不带网站名称尝试 TLS，以区分名称过滤（SNI）和 IP 地址被封锁。"
+        },
+        {
+          "id": "outside",
+          "title": "所有人都打不开，还是只有你？",
+          "text": "还会从多个国家检查该网站，让你知道问题出在网站上，还是出在你的连接上。"
+        },
+        {
+          "id": "dpi",
+          "title": "绕过的方法有用吗？",
+          "text": "把第一个数据包拆成几段后重试，可以判断 v2rayNG、Hiddify 或 Xray 等应用中的“fragment”设置能否通过。"
+        },
+        {
+          "id": "report",
+          "title": "可以分享的报告",
+          "text": "每一步及其耗时，还有一份可以复制给网络负责人的报告。"
+        }
+      ],
+      "alt": "Doctor 发现了 SNI 过滤：网站的地址可以访问，但带上网站名称就不行"
+    },
+    "tools": {
+      "kicker": "20 个工具",
+      "title": "网络所需的一切，<em>都在一个窗口里</em>",
+      "lede": "分为四组，与应用中一致：查找问题、测试网站和 API、连接与提供服务，以及你每天都会用到的开发者工具。",
+      "groups": [
+        {
+          "id": "diagnose",
+          "title": "诊断",
+          "items": [
+            {
+              "id": "ping",
+              "title": "Ping",
+              "text": "实时统计和图表、TCP ping、traceroute 和 MTR。"
+            },
+            {
+              "id": "doctor",
+              "title": "Doctor",
+              "text": "用一句话告诉你，网站为什么打不开。"
+            },
+            {
+              "id": "dns",
+              "title": "DNS & WHOIS",
+              "text": "DNS over HTTPS 和 DNS over TLS、解析器比较、邮件检查。"
+            },
+            {
+              "id": "scanner",
+              "title": "Port Scanner",
+              "text": "TCP 和 UDP 扫描，带服务识别。"
+            },
+            {
+              "id": "checkhost",
+              "title": "Check Host",
+              "text": "从世界各地进行 Ping、HTTP、TCP 和 DNS 检查。"
+            },
+            {
+              "id": "monitor",
+              "title": "Monitor",
+              "text": "在线状态检查、到期提醒和 Telegram 通知。"
+            },
+            {
+              "id": "network",
+              "title": "Network",
+              "text": "网卡、Wi-Fi、邻近设备、开放端口和路由。"
+            },
+            {
+              "id": "speed",
+              "title": "Speed Test",
+              "text": "下载、上传、ping、抖动，以及负载下的延迟。"
+            }
+          ]
+        },
+        {
+          "id": "web",
+          "title": "网页与 API",
+          "items": [
+            {
+              "id": "curl",
+              "title": "cURL",
+              "text": "能理解任何 curl 命令的 HTTP 客户端。"
+            },
+            {
+              "id": "tls",
+              "title": "TLS Inspector",
+              "text": "证书、到期时间、TLS 版本和加密套件。"
+            },
+            {
+              "id": "ipinfo",
+              "title": "IP Info",
+              "text": "你的公网 IP，以及任意 IP 地址的位置。"
+            },
+            {
+              "id": "cloudflare",
+              "title": "Cloudflare",
+              "text": "DNS、SSL、规则和动态 DNS，无需打开仪表板。"
+            },
+            {
+              "id": "telegram",
+              "title": "Telegram Bot",
+              "text": "调用任意 Bot API 方法，查看原始响应。"
+            }
+          ]
+        },
+        {
+          "id": "serve",
+          "title": "服务与连接",
+          "items": [
+            {
+              "id": "ssh",
+              "title": "SSH",
+              "text": "终端、文件、端口转发和服务器健康状况。"
+            },
+            {
+              "id": "socket",
+              "title": "Socket",
+              "text": "TCP 和 UDP 客户端与服务器，以及 WebSocket。"
+            },
+            {
+              "id": "webserver",
+              "title": "Web Server",
+              "text": "与任何带浏览器的设备共享文件和聊天，或者捕获 webhook。"
+            },
+            {
+              "id": "proxy",
+              "title": "Proxy",
+              "text": "SOCKS5 和 HTTP 代理，以及代理列表检查工具。"
+            }
+          ]
+        },
+        {
+          "id": "workspace",
+          "title": "工作区",
+          "items": [
+            {
+              "id": "strings",
+              "title": "String Lab",
+              "text": "编码、哈希、转换、比较差异和生成。"
+            },
+            {
+              "id": "notes",
+              "title": "Notes",
+              "text": "用主密码锁定的笔记。"
+            },
+            {
+              "id": "backup",
+              "title": "History & Backup",
+              "text": "最近的输入，以及一个加密的备份文件。"
+            }
+          ]
+        }
+      ]
+    },
+    "features": {
+      "kicker": "深入了解",
+      "title": "简单易用，<em>需要时也足够深入</em>",
+      "items": [
+        {
+          "id": "ping",
+          "title": "Ping、traceroute 和 MTR",
+          "text": "实时应答、延迟图表和真正重要的数字，适用于任何主机。",
+          "points": [
+            "对端口进行 TCP ping，用于不响应普通 ping 的主机。",
+            "数据包大小、TTL 和“不分片”（don't fragment），用来找出一条路径能通过的最大数据包。",
+            "无需管理员权限：在系统不允许普通 ping 的地方，Echoes 会自动改用 UDP。",
+            "主机上线或下线时发出提醒。"
+          ],
+          "alt": "Mac 上的 Ping：对 1.1.1.1 的 443 端口进行 TCP ping，显示实时应答和延迟图表"
+        },
+        {
+          "id": "speed",
+          "title": "你的网速到底有多快？",
+          "text": "下载、上传、ping 和抖动，以及线路繁忙时延迟会增加多少。",
+          "points": [
+            "Cloudflare 最近的数据中心、20 多个城市的公共测试服务器，或者你自己的服务器。",
+            "为负载下的延迟评分（bufferbloat）。",
+            "最多同时使用 16 个连接，并保留你最近 20 次的结果。"
+          ],
+          "alt": "测速：正在对华盛顿的一台服务器测量下载速度"
+        },
+        {
+          "id": "monitor",
+          "title": "网站宕机，及时知道",
+          "text": "监控你的服务器和网站，在某一个宕机或恢复时通知你。",
+          "points": [
+            "Ping、TCP 和 HTTP 检查，每项检查都有自己的间隔。",
+            "通过你自己的机器人在 Telegram 中发送提醒。",
+            "在证书或域名到期之前发出警告。",
+            "检查页面是否包含（或不包含）某段文字。"
+          ],
+          "alt": "在线状态监控：四个网站正常，一个宕机，并显示它们的历史记录"
+        },
+        {
+          "id": "share",
+          "title": "向任何设备发送文件",
+          "text": "在你的电脑与手机、笔记本电脑或其他任何设备之间共享文件和聊天。扫描二维码即可：另一端只需要一个浏览器。",
+          "points": [
+            "使用设备自己的证书提供 HTTPS，并由 8 位 PIN 保护。浏览器会警告一次，因为证书是设备自己的。",
+            "双向传输文件，支持拖放，下载可断点续传。",
+            "每个共享文件都有自己的链接和二维码。",
+            "也可以捕获 webhook 请求，并完整查看每一个请求。"
+          ],
+          "alt": "Web Server 正在共享文件和聊天，显示它的链接、PIN 和二维码",
+          "altPhone": "手机浏览器中的共享页面"
+        },
+        {
+          "id": "dns",
+          "title": "DNS，按你需要的方式",
+          "text": "普通 DNS、DNS over HTTPS 和 DNS over TLS，并排对比。",
+          "points": [
+            "同时比较多个解析器，被篡改和被过滤的应答会被标记出来。",
+            "邮件检查：MX、SPF、DMARC、DKIM、MTA-STS、TLS-RPT 和黑名单。",
+            "通过 RDAP 查询 WHOIS，并显示域名的到期日期。"
+          ],
+          "alt": "通过普通 DNS 和 DNS over HTTPS 查询 example.com"
+        },
+        {
+          "id": "tls",
+          "title": "检查任何网站的证书",
+          "text": "先给出明确的结论，再列出所有细节。",
+          "points": [
+            "单独测试每个 TLS 版本，并显示加密套件和 ALPN。",
+            "完整的证书链、指纹、OCSP stapling 和 HSTS。",
+            "支持邮件和 FTP 服务器的 STARTTLS，还能批量检查多个网站的证书到期时间。"
+          ],
+          "alt": "TLS Inspector：example.com 受信任，并显示它接受的 TLS 版本"
+        },
+        {
+          "id": "curl",
+          "title": "测试网站和 API",
+          "text": "粘贴任何 curl 命令（来自 bash、cmd、PowerShell 或浏览器的“Copy as cURL”），然后发送。",
+          "points": [
+            "每一步的耗时：DNS、连接、TLS 和首字节。",
+            "标头、Cookie、重定向、TLS 以及页面预览。",
+            "生成 curl、PowerShell、Python、JavaScript、HTTPie 和 wget 的代码。",
+            "保存的请求会被加密。"
+          ],
+          "alt": "cURL 工具：一个 GET 请求及其每一步的耗时"
+        },
+        {
+          "id": "strings",
+          "title": "日常开发者工具",
+          "text": "那些你原本要上网搜索的小工具，在你自己的设备上就能用。",
+          "points": [
+            "Base64、URL 和十六进制编码，哈希和 HMAC，JWT 解码、验证和签名。",
+            "JSON、YAML 和 CSV，正则表达式、差异比较、cron 和子网。",
+            "UUID、ULID 和密码，并显示破解一个密码需要多长时间。"
+          ],
+          "alt": "String Lab 正在生成密码，并显示破解每个密码所需的时间"
+        }
+      ]
+    },
+    "more": {
+      "title": "还有更多",
+      "items": [
+        {
+          "id": "scanner",
+          "caption": "Port Scanner：开放的端口及其服务和版本",
+          "alt": "Port Scanner 的结果：开放和关闭的端口，以及服务版本"
+        },
+        {
+          "id": "ssh",
+          "caption": "SSH：查看服务器健康状况，无需在服务器上安装任何东西",
+          "alt": "SSH 工具显示服务器的 CPU、内存、磁盘和占用最高的进程"
+        },
+        {
+          "id": "cloudflare",
+          "caption": "Cloudflare：你的 DNS 记录，无需打开仪表板",
+          "alt": "Cloudflare 工具列出一个区域的 DNS 记录"
+        }
+      ]
+    },
+    "devices": {
+      "kicker": "所有设备",
+      "title": "一个应用，<em>用在你的所有设备上</em>",
+      "lede": "iPhone、iPad、Mac、Windows、Linux 和 Android 上都是同样的工具，来自同一套代码，并为每种屏幕设计了各自的布局。",
+      "altIphone": "iPhone 上的 Echoes：工具菜单",
+      "altIpad": "iPad 上的 Echoes：Doctor",
+      "altAndroid": "Android 手机上的 Echoes：测速",
+      "note": "少数工具受系统限制。在 iPhone 和 iPad 上，服务器、监控和扫描只在 Echoes 显示在屏幕上时运行；Wi-Fi 分析器仅在 Windows 和 Linux 上提供。"
+    },
+    "privacy": {
+      "kicker": "隐私",
+      "title": "Echoes <em>什么都不收集</em>",
+      "lede": "无需账户，没有广告、统计分析和跟踪。任何内容都不会发送给开发者，开发者看不到你测试了什么、连接到哪里，或保存了什么。",
+      "items": [
+        {
+          "title": "留在你的设备上",
+          "text": "设置、历史记录、笔记、保存的请求和令牌都保存在应用自己的文件夹中。机密信息经过加密，笔记用你的主密码锁定。"
+        },
+        {
+          "title": "不会自行运行任何东西",
+          "text": "Web 服务器、代理、请求捕获器和套接字监听器，只有在你按下 Start 时才会启动。Echoes 自行做的唯一一件事是检查有没有新版本，而且只在从 GitHub 获取的版本中这样做。"
+        },
+        {
+          "title": "未收集数据",
+          "text": "这是 App Store 隐私标签上写的内容。源代码是公开的，你可以自己核实。"
+        }
+      ],
+      "link": "阅读隐私政策"
+    },
+    "free": {
+      "kicker": "免费",
+      "big": "免费且开源",
+      "text": "在所有平台上都没有广告、没有付费版、没有应用内购买，也无需账户。",
+      "items": [
+        "在 App Store 上免费，没有应用内购买。",
+        "在 GitHub 上免费提供 Windows、macOS、Linux 和 Android 版。",
+        "源代码以 MIT 许可证公开。",
+        "桌面版是原生应用：无需安装其他任何东西，启动快，占用内存少。"
+      ]
+    },
+    "download": {
+      "kicker": "下载",
+      "title": "获取 Echoes",
+      "lede": "iPhone、iPad 和 Mac 版来自 App Store。Windows、Linux、Android 版以及可直接下载的 macOS 版来自 GitHub。",
+      "platforms": [
+        {
+          "id": "apple",
+          "name": "iPhone、iPad 和 Mac",
+          "detail": "App Store · iOS 和 iPadOS 15 或更高版本，macOS 12 或更高版本",
+          "links": [
+            {
+              "id": "ios",
+              "label": "App Store"
+            },
+            {
+              "id": "mac",
+              "label": "Mac App Store"
+            }
+          ]
+        },
+        {
+          "id": "windows",
+          "name": "Windows",
+          "detail": "Windows 10 和 11（x64）· .zip",
+          "links": [
+            {
+              "id": "zip",
+              "label": "下载 .zip"
+            }
+          ]
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "detail": "macOS 12 或更高版本 · 已签名并经过公证的 .dmg",
+          "links": [
+            {
+              "id": "arm64",
+              "label": "Apple Silicon"
+            },
+            {
+              "id": "x64",
+              "label": "Intel"
+            }
+          ]
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "detail": "x64 · glibc 2.35 或更高版本（Ubuntu 22.04、Debian 12、Fedora 36 及更新版本）",
+          "links": [
+            {
+              "id": "appimage",
+              "label": "AppImage"
+            },
+            {
+              "id": "deb",
+              "label": ".deb"
+            },
+            {
+              "id": "rpm",
+              "label": ".rpm"
+            }
+          ]
+        },
+        {
+          "id": "android",
+          "name": "Android",
+          "detail": "Android 6.0 或更高版本 · .apk",
+          "links": [
+            {
+              "id": "apk",
+              "label": "下载 .apk"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "应用本身是英文的。",
+        "Windows 版目前还没有代码签名，因此第一次运行时 Windows 可能会发出警告：请选择 <em>更多信息</em>（More info），然后选择 <em>仍要运行</em>（Run anyway）。",
+        "App Store 版本通过 App Store 更新。下载的版本会在有新版本时告诉你。"
+      ]
+    },
+    "faq": {
+      "kicker": "帮助",
+      "title": "问题与解答",
+      "items": [
+        {
+          "q": "Echoes 真的免费吗？",
+          "a": "是的。Echoes 免费且开源，采用 MIT 许可证，在所有平台上都没有广告、没有付费版、没有应用内购买，也无需账户。"
+        },
+        {
+          "q": "Echoes 会收集数据吗？",
+          "a": "不会。没有账户、没有统计分析、没有跟踪，也不会向开发者发送任何内容。有些工具基于公共服务，例如测速服务器或 DNS 解析器，这些服务会像你访问的任何网站一样看到你的请求。<a href=\"{privacyUrl}\">隐私政策</a>列出了所有这些服务。"
+        },
+        {
+          "q": "它能在哪些设备上运行？",
+          "a": "从 App Store 获取：iPhone 和 iPad（iOS 和 iPadOS 15 或更高版本）以及 Mac（macOS 12 或更高版本）；从 GitHub 获取：Windows 10 和 11、Linux、Android 6.0 或更高版本，以及 macOS。"
+        },
+        {
+          "q": "需要管理员权限吗？",
+          "a": "不需要。在系统不允许普通（ICMP）ping 的地方，Echoes 会自动改用 UDP。"
+        },
+        {
+          "q": "Echoes 是 VPN 吗？",
+          "a": "不是。Echoes 不会改变你的设备的联网方式。Doctor 只会告诉你是什么挡住了某个网站，以及另一个应用中的某项设置能否绕过它。"
+        },
+        {
+          "q": "应用有我的语言版本吗？",
+          "a": "暂时还没有：应用是英文的。翻译本网站，是为了让更多人能读到关于它的介绍。"
+        },
+        {
+          "q": "我可以扫描任何网络吗？",
+          "a": "请只扫描你自己的网络和你管理的服务器。在你所在的地方，扫描他人的网络可能违法。"
+        },
+        {
+          "q": "在 iPhone 和 iPad 上有什么不同？",
+          "a": "iOS 只允许应用在后台短暂运行，所以服务器、监控和扫描在 Echoes 显示在屏幕上时运行，Echoes 也会为此保持屏幕常亮。少数需要系统网络详情的工具（例如 Wi-Fi 分析器）在 iPhone 和 iPad 上没有。"
+        }
+      ]
+    }
+  },
+  "privacy": {
+    "title": "隐私政策 – Echoes",
+    "description": "Echoes 不收集任何数据：哪些内容留在你的设备上、某些工具会使用哪些服务，以及应用会请求哪些权限。",
+    "heading": "隐私政策",
+    "intro": "Echoes 是一款免费、开源的网络工具集（ping、traceroute、端口扫描器、DNS、SSH、测速、文件共享 Web 服务器等）。本页说明它如何处理你的数据。简而言之：<strong>它什么都不收集。</strong>",
+    "sourceNote": "本政策与源代码中的 <a href=\"{policyUrl}\">PRIVACY.md</a> 相同。",
+    "sections": [
+      {
+        "id": "collects",
+        "title": "开发者收集什么",
+        "paragraphs": [
+          "什么都不收集。Echoes 没有账户、没有广告、没有统计分析、没有崩溃报告服务，也没有跟踪 SDK。任何内容都不会发送给开发者，开发者看不到你测试了什么、连接到哪里，或保存了什么。"
+        ]
+      },
+      {
+        "id": "device",
+        "title": "留在你设备上的内容",
+        "paragraphs": [
+          "你的设置、你输入过的主机和 URL（历史记录）、笔记、保存的请求、SSH 配置文件以及你添加的令牌（Telegram、Cloudflare），只保存在你的设备上，位于应用自己的数据文件夹中。"
+        ],
+        "list": [
+          "机密信息（密码、令牌）在磁盘上是加密的。笔记和 Cloudflare 保险库使用由你的主密码生成的密钥加密。",
+          "你可以把所有内容导出为一个受密码保护的备份文件，并在另一台设备上恢复。这个文件只会存放在你保存它的地方。",
+          "在 iPhone 或 iPad 上，浏览器发送到文件共享页面的文件，保存在“文件”App 的 Echoes 文件夹中（“我的 iPhone”），你可以在那里打开、移动或删除它们。",
+          "删除应用或其数据文件夹，即会删除这些数据。"
+        ]
+      },
+      {
+        "id": "leaves",
+        "title": "哪些内容会离开你的设备，以及原因",
+        "paragraphs": [
+          "Echoes 是网络工具，所以它会发出网络请求：由你发起、发往你所查询主机的请求，以及发往某些工具所依赖的少数公共服务的请求。这些服务会收到请求本身，因此和你访问的任何网站一样，也会收到你的公网 IP 地址。Echoes 无法控制这些服务；它们各有自己的隐私政策。"
+        ],
+        "list": [
+          "<strong>你测试的主机、端口和 URL</strong>（ping、traceroute、端口扫描、cURL、DNS、TLS、SSH、套接字、Doctor）。",
+          "<strong>check-host.net</strong>，用于从世界各地的服务器测试主机。",
+          "<strong>测速服务器：</strong>speed.cloudflare.com，或你选择的文件主机（Cloudflare、Tele2、Leaseweb、Linode、Selectel、DataPacket 等）。",
+          "<strong>公共 DNS-over-HTTPS 解析器</strong>（Cloudflare、Google、Quad9、OpenDNS、AdGuard），在你使用 DNS 工具时。",
+          "<strong>IP 信息提供商</strong>（ipinfo.io、ipwho.is、ipapi.co、ip-api.com、geojs.io、freeipapi.com、iplocation.net），用于查询你输入的 IP 地址，或你自己的 IP 地址。",
+          "<strong>RDAP</strong>（rdap.org、rdap.verisign.com），用于查询域名的注册信息和到期时间。",
+          "<strong>DNS 黑名单</strong>（Spamhaus、SpamCop、Barracuda）以及该域名自己的邮件记录，在你对某个域名运行邮件检查时。",
+          "<strong>连通性和公网 IP 服务：</strong>Google、Microsoft 和 Cloudflare 等知名网站，以及 connectivitycheck.gstatic.com（Doctor 用它们检查互联网是否可用）；还有 Cloudflare、ipify、ident.me 和 icanhazip（动态 DNS 用它们读取你的公网 IP）。",
+          "<strong>Telegram</strong>（api.telegram.org），仅当你为在线状态提醒添加了自己的机器人令牌时；<strong>Cloudflare</strong>（api.cloudflare.com），仅当你添加了自己的 API 令牌时。令牌保存在你的设备上，只会发送给它对应的服务。",
+          "<strong>GitHub</strong>（api.github.com），仅在你从 GitHub 下载的版本中使用，用于查看是否有新版本。来自应用商店的版本不会检查：由商店负责更新应用。"
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Echoes 可以运行的服务器",
+        "paragraphs": [
+          "Web 服务器（文件共享和聊天）、请求捕获器、代理和套接字监听器，只有在你按下 Start 时才会启动，并在你按下 Stop 或退出 Echoes 时停止。其中任何一个运行期间，能访问到其端口的设备都可以连接它；文件共享页面会要求输入 PIN，数据只在你的设备和连接进来的设备之间传输。Echoes 不会把这些数据发送到其他任何地方。"
+        ]
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "list": [
+          "<strong>网络</strong>（所有平台）：Echoes 是网络工具。",
+          "<strong>本地网络</strong>（macOS 和 iOS）：在你第一次扫描、ping 本地网络上的设备，或与其共享时请求。如果你拒绝，本地设备会显示为无法访问。",
+          "<strong>通知、前台服务和开机启动</strong>（Android）：用于在线状态提醒，以及在应用处于后台时让扫描、监控或文件共享继续运行。除非你开启，否则开机启动是关闭的。",
+          "<strong>位置</strong>（Windows）：只有在位置访问权限开启时，Windows 才允许应用看到附近 Wi-Fi 网络的名称。Echoes 只在本地读取这些名称，用于 Wi-Fi 分析器，不会把它们发送到任何地方。"
+        ]
+      },
+      {
+        "id": "children",
+        "title": "儿童",
+        "paragraphs": [
+          "Echoes 是一款通用工具，并非面向儿童。它不会收集任何人的个人信息。"
+        ]
+      },
+      {
+        "id": "opensource",
+        "title": "开源",
+        "paragraphs": [
+          "Echoes 以 MIT 许可证发布。任何人都可以阅读源代码、核实本页的说法并构建应用：<a href=\"{repoUrl}\">github.com/SinaXhpm/Echoes</a>。"
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "变更",
+        "paragraphs": [
+          "如果本政策发生变更，新版本将替换本页，并在页面顶部标注新的日期。"
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "联系方式",
+        "paragraphs": [
+          "如有疑问或顾虑，请在 <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> 提交 issue。"
+        ]
+      }
+    ]
+  },
+  "notFound": {
+    "title": "页面未找到 – Echoes",
+    "heading": "此页面不存在",
+    "text": "地址可能有误，或者页面已经移到别处。",
+    "home": "前往首页"
+  }
+}
