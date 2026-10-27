@@ -18,6 +18,7 @@ import { readUseLocalShell } from '../util/terminalShell';
 import { readUseSshAgent } from '../util/sshAgent';
 import { IS_ANDROID, IS_LINUX } from '../util/platform';
 import { useConfirm } from '../ui/confirm';
+import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
 
 // Does the recent remote OUTPUT look like a no-echo password / passphrase
 // prompt? Used to skip command-history capture so typed secrets (sudo, su,
@@ -104,6 +105,7 @@ const TerminalView = ({
   telnet = false,
   ownLogin = false,
   quickAuth = null,
+  onFolder,
 }: {
   sessionId: string;
   terminalId: string;
@@ -165,6 +167,10 @@ const TerminalView = ({
   ownLogin?: boolean;
   /// A quick connect's login (it has no saved server), for `ownLogin`.
   quickAuth?: unknown;
+  /// The folder the shell says it is in (OSC 7 or OSC 1337 CurrentDir, see
+  /// util/shellFolder), for the SFTP panel's Follow (#245). Reported at
+  /// every prompt; the parent keeps what changed.
+  onFolder?: (terminalId: string, path: string, host: string) => void;
 }) => {
   // The connection this terminal's shell runs on: its tab's, or its own
   // (`ownLogin`), `<tab>::term-<terminal>`, which the backend takes as the
@@ -323,6 +329,8 @@ const TerminalView = ({
   const confirm = useConfirm();
   const confirmRef = useRef(confirm);
   confirmRef.current = confirm;
+  const onFolderRef = useRef(onFolder);
+  onFolderRef.current = onFolder;
   // The terminal's input handler (what xterm's onData runs), for keys that
   // don't come from xterm itself — the mobile key bar's arrows and symbols.
   const inputRef = useRef<((data: string) => void) | null>(null);
@@ -730,6 +738,14 @@ const TerminalView = ({
     const searchAddon = new SearchAddon();
     searchAddonRef.current = searchAddon;
     term.loadAddon(searchAddon);
+    // The folder the shell says it is in (#245); xterm has no use of its own
+    // for these. OSC 1337 carries other iTerm2 commands too, which stay ignored.
+    const folder = (f: ShellFolder | null) => {
+      if (f) onFolderRef.current?.(terminalId, f.path, f.host);
+      return !!f;
+    };
+    term.parser.registerOscHandler(7, (data) => { folder(parseOsc7(data)); return true; });
+    term.parser.registerOscHandler(1337, (data) => folder(parseOsc1337(data)));
     term.open(terminalRef.current);
     
     setTimeout(() => {
