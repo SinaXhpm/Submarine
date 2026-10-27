@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from 
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, Play, Library, Info, Container, Plus, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, CircleSlash, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud, LogIn } from "lucide-react";
+import { TerminalSquare, Folder, FolderUp, Network, AlertTriangle, Check, X, Play, Library, Info, Container, Plus, ChevronDown, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, CircleSlash, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud, LogIn } from "lucide-react";
 import TerminalView from "./TerminalView";
 import { AuthPrompts } from "./AuthPrompts";
 import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
@@ -772,12 +772,41 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // panes redistributes those two panes' share and leaves the rest
   // alone. Reset (double-click a divider) flattens back to all-equal.
   const [splitRatios, setSplitRatios] = useState<number[]>([]);
-  // "+" button's secondary menu — surfaced via right-click / long-press
-  // so the primary click stays a fast "new tab" without stealing the
-  // advanced flows (split view, compare across servers). Coordinates are
-  // window-space, matching the pattern used by the session tab menu at
-  // App level.
-  const [plusMenu, setPlusMenu] = useState<{ x: number; y: number } | null>(null);
+  // "+" button's secondary menu — the arrow beside "+", or a right-click /
+  // long-press on "+", so the primary click stays a fast "new tab" without
+  // stealing the advanced flows (split view, compare across servers).
+  // Coordinates are window-space, matching the pattern used by the session
+  // tab menu at App level. Opened from the keyboard, its first item takes
+  // the focus.
+  const [plusMenu, setPlusMenu] = useState<{ x: number; y: number; fromKeyboard: boolean } | null>(null);
+  const plusGroupRef = useRef<HTMLDivElement>(null);
+  const plusArrowRef = useRef<HTMLButtonElement>(null);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
+  const openPlusMenu = (fromKeyboard: boolean) => {
+    const r = plusGroupRef.current?.getBoundingClientRect();
+    if (r) setPlusMenu({ x: r.left, y: r.bottom + 4, fromKeyboard });
+  };
+  // A menu opened from the keyboard gives the focus back to the arrow; one
+  // opened with the mouse leaves the focus where it was.
+  const closePlusMenu = () => {
+    const back = !!plusMenu?.fromKeyboard && !!plusMenuRef.current?.contains(document.activeElement);
+    setPlusMenu(null);
+    if (back) plusArrowRef.current?.focus({ preventScroll: true });
+  };
+  // Escape closes it wherever the focus is: after a right-click the focus
+  // is still in the terminal, which would send the Escape to the shell.
+  useEffect(() => {
+    if (!plusMenu) return;
+    if (plusMenu.fromKeyboard) plusMenuRef.current?.querySelector<HTMLElement>('[role^="menuitem"]')?.focus({ preventScroll: true });
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      closePlusMenu();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [plusMenu]);
   // A terminal tab's own menu (right-click, or a double-click straight into
   // its name editor). A new title goes into `terminals`, so the Wall and
   // split headers show it too.
@@ -1654,40 +1683,51 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           );
         })}
 
-          {/* Single "+" affordance for all terminal-creation flavours.
-              Click adds a plain tab (the 90% case). The right-click menu
-              — also reachable via long-press on touch — surfaces the
-              advanced modes: split-with-new-pane, un-split, and a terminal
-              with its own login (once, or always for this server). That
-              keeps the tab strip visually calm (one small button, no
-              badges, no orientation glyphs stealing attention) while
-              still exposing the power features via a discoverable
-              secondary gesture. */}
-          <button
-            onClick={() => {
-              const newId = `${session.id}-term-${Date.now()}`;
-              setTerminals(prev => [...prev, { id: newId, title: nextTerminalNumber(prev), ownLogin: ownLoginDefault }]);
-              setActiveTab(newId);
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              const rect = e.currentTarget.getBoundingClientRect();
-              setPlusMenu({ x: rect.left, y: rect.bottom + 4 });
-            }}
-            className="h-10 w-10 sm:h-8 sm:w-8 ml-1 shrink-0 rounded-lg flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all border border-dashed border-white/10 relative"
-            title="New terminal · right-click for more options"
-          >
-            <Plus size={14} />
-            {splitTerminals.length >= 2 && (
-              <span
-                className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-[9px] font-bold text-black flex items-center justify-center leading-none"
-                aria-hidden="true"
-                title={`Split active (${splitTerminals.length} panes)`}
-              >
-                {splitTerminals.length}
-              </span>
-            )}
-          </button>
+          {/* "+" for all terminal-creation flavours. A click adds a plain
+              tab (the 90% case). The arrow beside it — or a right-click /
+              long-press on "+" — opens the menu with the advanced modes:
+              split-with-new-pane, un-split, and a terminal with its own
+              login (once, or always for this server). A right-click alone
+              went unnoticed (#243); the arrow also lets the keyboard in. */}
+          <div ref={plusGroupRef} className="ml-1 shrink-0 flex items-stretch rounded-lg border border-dashed border-white/10">
+            <button
+              onClick={() => {
+                const newId = `${session.id}-term-${Date.now()}`;
+                setTerminals(prev => [...prev, { id: newId, title: nextTerminalNumber(prev), ownLogin: ownLoginDefault }]);
+                setActiveTab(newId);
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                openPlusMenu(false);
+              }}
+              className="h-10 w-10 sm:h-8 sm:w-8 rounded-l-lg flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all relative"
+              title="New terminal"
+              aria-label="New terminal"
+            >
+              <Plus size={14} />
+              {splitTerminals.length >= 2 && (
+                <span
+                  className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-[9px] font-bold text-black flex items-center justify-center leading-none"
+                  aria-hidden="true"
+                  title={`Split active (${splitTerminals.length} panes)`}
+                >
+                  {splitTerminals.length}
+                </span>
+              )}
+            </button>
+            <button
+              ref={plusArrowRef}
+              // A click from the keyboard (Enter, Space) has no mouse detail.
+              onClick={(e) => openPlusMenu(e.detail === 0)}
+              aria-haspopup="menu"
+              aria-expanded={!!plusMenu}
+              aria-label="More terminal options"
+              title="More terminal options"
+              className="h-10 w-7 sm:h-8 sm:w-5 rounded-r-lg border-l border-dashed border-white/10 flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all"
+            >
+              <ChevronDown size={12} />
+            </button>
+          </div>
         </div>
 
         {/* Tool rail: icon + text label. The label collapses to icon-only on
@@ -1756,9 +1796,9 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       </div>
       )}
 
-      {/* "+" secondary menu — right-click / long-press on the plus
-          button. Kept intentionally short: same-server "split with new
-          pane", the h/v orientation flip, and un-split. Cross-server
+      {/* "+" secondary menu — the arrow beside "+", or a right-click /
+          long-press on it. Kept intentionally short: same-server "split
+          with new pane", the h/v orientation flip, and un-split. Cross-server
           split lives on the session tab strip (right-click any tab
           → the picker); one entry point per concept keeps the menu
           scannable. Everything else is one primary click on "+". */}
@@ -1766,18 +1806,33 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
         <>
           <div
             className="fixed inset-0 z-[9998]"
-            onClick={() => setPlusMenu(null)}
-            onContextMenu={(e) => { e.preventDefault(); setPlusMenu(null); }}
+            onClick={() => closePlusMenu()}
+            onContextMenu={(e) => { e.preventDefault(); closePlusMenu(); }}
           />
           <div
+            ref={plusMenuRef}
+            role="menu"
+            aria-label="Terminal options"
+            onKeyDown={(e) => {
+              const items = Array.from(plusMenuRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? []);
+              const i = items.indexOf(document.activeElement as HTMLElement);
+              const go = (n: number) => { e.preventDefault(); items[(n + items.length) % items.length]?.focus(); };
+              if (e.key === 'ArrowDown') go(i + 1);
+              else if (e.key === 'ArrowUp') go(i < 0 ? -1 : i - 1);
+              else if (e.key === 'Home') go(0);
+              else if (e.key === 'End') go(-1);
+              else if (e.key === 'Tab') { e.preventDefault(); closePlusMenu(); }
+            }}
             style={{ left: Math.min(plusMenu.x, window.innerWidth - 260), top: Math.min(plusMenu.y, window.innerHeight - 220) }}
             className="fixed z-[9999] w-[240px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
           >
             {!isCompact && (
               <>
                 <button
+                  role="menuitem"
+                  tabIndex={-1}
                   onClick={() => {
-                    setPlusMenu(null);
+                    closePlusMenu();
                     const newId = `${session.id}-term-${Date.now()}`;
                     setTerminals(prev => [...prev, { id: newId, title: nextTerminalNumber(prev), ownLogin: ownLoginDefault }]);
                     if (splitTerminals.length >= 2) {
@@ -1789,29 +1844,33 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                     }
                     setActiveTab(newId);
                   }}
-                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-200 hover:text-white text-left"
                 >
                   {splitOrientation === "h" ? <Columns size={13} className="text-primary/70" /> : <Rows size={13} className="text-primary/70" />}
                   <span className="flex-1">{splitTerminals.length >= 2 ? `Add pane (${splitTerminals.length + 1}-way split)` : "Split with new pane"}</span>
                 </button>
                 <button
+                  role="menuitem"
+                  tabIndex={-1}
                   onClick={() => {
                     setSplitOrientation(o => o === "h" ? "v" : "h");
-                    setPlusMenu(null);
+                    closePlusMenu();
                   }}
-                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-300 hover:text-white text-left"
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-300 hover:text-white text-left"
                 >
                   {splitOrientation === "h" ? <Rows size={13} className="text-zinc-500" /> : <Columns size={13} className="text-zinc-500" />}
                   <span className="flex-1">Flip orientation ({splitOrientation === "h" ? "→ vertical" : "→ horizontal"})</span>
                 </button>
                 {splitTerminals.length >= 2 && (
                   <button
+                    role="menuitem"
+                    tabIndex={-1}
                     onClick={() => {
                       setSplitTerminals([]);
                       setSplitRatios([]);
-                      setPlusMenu(null);
+                      closePlusMenu();
                     }}
-                    className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-300 hover:text-white text-left"
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-300 hover:text-white text-left"
                   >
                     <X size={13} className="text-zinc-500" />
                     <span className="flex-1">Exit split (keep terminals)</span>
@@ -1824,13 +1883,15 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 server on this device. */}
             <>
                 <button
+                  role="menuitem"
+                  tabIndex={-1}
                   onClick={() => {
-                    setPlusMenu(null);
+                    closePlusMenu();
                     const newId = `${session.id}-term-${Date.now()}`;
                     setTerminals(prev => [...prev, { id: newId, title: nextTerminalNumber(prev), ownLogin: true }]);
                     setActiveTab(newId);
                   }}
-                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-200 hover:text-white text-left"
                 >
                   <LogIn size={13} className="text-primary/70" />
                   <span className="flex-1">New terminal with its own login</span>
@@ -1839,14 +1900,15 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   <button
                     role="menuitemcheckbox"
                     aria-checked={ownLoginDefault}
+                    tabIndex={-1}
                     onClick={() => {
                       const on = !ownLoginDefault;
                       writeOwnLogin(session.serverUuid, on);
                       setOwnLoginDefault(on);
-                      setPlusMenu(null);
+                      closePlusMenu();
                     }}
                     title="Each new terminal logs in to the server again, as a new connection would, instead of sharing this tab's connection. For servers that tie rights to the login (CA Access Control, for one). Kept on this device."
-                    className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-300 hover:text-white text-left"
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-300 hover:text-white text-left"
                   >
                     {ownLoginDefault ? <Check size={13} className="text-primary" /> : <span className="w-[13px] shrink-0" />}
                     <span className="flex-1">Always for this server</span>
