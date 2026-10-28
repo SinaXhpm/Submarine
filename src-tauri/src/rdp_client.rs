@@ -803,7 +803,7 @@ where
     let should_upgrade = tokio::time::timeout(STEP_TIMEOUT, ironrdp_tokio::connect_begin(&mut framed, &mut connector))
         .await
         .map_err(|_| "The RDP server didn't answer within 30 seconds".to_string())?
-        .map_err(|e| format!("The RDP server didn't answer as one: {e}"))?;
+        .map_err(|e| format!("The RDP server didn't answer as one: {}", with_causes(&e)))?;
     // How the server wants the login done is known now, before TLS and before
     // anything secret goes out: NLA, or the user's say-so, or no login at all.
     let nla = match &connector.state {
@@ -870,7 +870,7 @@ where
     )
     .await
     .map_err(|_| "Logging in to the RDP server didn't finish within 30 seconds".to_string())?
-    .map_err(|e| login_error(&e.to_string()))?;
+    .map_err(|e| login_error(&with_causes(&e)))?;
 
     let size = result.desktop_size;
     desktop_fits(size.width, size.height)?;
@@ -1253,10 +1253,51 @@ where
     }
 }
 
-/// A login failure in words a person can act on.
+/// An error and what caused it, as far down as it goes. IronRDP's own text for
+/// a refused NLA login is just "[CredSSP] CredSSP": the reason, the status the
+/// server answered with (STATUS_LOGON_FAILURE, say), is in what caused it.
+fn with_causes(e: &dyn std::error::Error) -> String {
+    let mut text = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        text.push_str(": ");
+        text.push_str(&c.to_string());
+        cause = c.source();
+    }
+    text
+}
+
+/// The Windows statuses a refused NLA login comes with, in words a person can
+/// act on. The tab asks for the password again on "didn't accept the user name
+/// or password" (RdpSessionView.tsx, PASSWORD_REFUSED); a wrong password or user
+/// name says so, as Windows itself does without telling which.
+const LOGON_STATUSES: &[(&str, &str)] = &[
+    ("STATUS_LOGON_FAILURE", "The RDP server didn't accept the user name or password"),
+    ("STATUS_WRONG_PASSWORD", "The RDP server didn't accept the user name or password"),
+    ("STATUS_NO_SUCH_USER", "The RDP server didn't accept the user name or password"),
+    ("STATUS_PASSWORD_EXPIRED", "The account's password has expired: change it on the server first"),
+    ("STATUS_PASSWORD_MUST_CHANGE", "The account must change its password before it logs in: change it on the server first"),
+    ("STATUS_ACCOUNT_LOCKED_OUT", "The account is locked out on the RDP server (too many wrong passwords)"),
+    ("STATUS_ACCOUNT_DISABLED", "The account is disabled on the RDP server"),
+    ("STATUS_ACCOUNT_RESTRICTION", "The account can't log in this way (an empty password, or a rule of the server's)"),
+    ("STATUS_INVALID_LOGON_HOURS", "The account isn't allowed to log in at this time"),
+    ("STATUS_INVALID_WORKSTATION", "The account isn't allowed to log in from this computer"),
+    ("STATUS_LOGON_TYPE_NOT_GRANTED", "The account isn't allowed to log in over Remote Desktop (it isn't in the Remote Desktop Users group)"),
+    ("STATUS_LOGON_NOT_GRANTED", "The account isn't allowed to log in over Remote Desktop"),
+    ("STATUS_SMARTCARD_LOGON_REQUIRED", "The account has to log in with a smart card"),
+    ("STATUS_CTX_LOGON_DISABLED", "Remote Desktop logins are turned off for this account"),
+    // After NLA, a server that took the password can still turn the account
+    // away (its Early User Authorization Result).
+    ("[CredSSP] access denied", "The RDP server took the password but doesn't let this account in over Remote Desktop (the Remote Desktop Users group)"),
+];
+
+/// A login failure in words a person can act on, with what the client saw.
 fn login_error(e: &str) -> String {
+    if let Some((_, words)) = LOGON_STATUSES.iter().find(|(status, _)| e.contains(status)) {
+        return format!("{words} ({e})");
+    }
     let lower = e.to_lowercase();
-    if lower.contains("logon") || lower.contains("credential") || lower.contains("password") || lower.contains("0xc000006d") || lower.contains("authentication") {
+    if lower.contains("logon") || lower.contains("credential") || lower.contains("password") || lower.contains("authentication") {
         format!("The RDP server didn't accept the user name or password ({e})")
     } else {
         format!("Couldn't log in to the RDP server: {e}")
@@ -1267,6 +1308,46 @@ fn login_error(e: &str) -> String {
 mod tests {
     use super::*;
     use ironrdp::pdu::rdp::capability_sets::CodecProperty;
+
+    /// A refused NLA login, as IronRDP gives it: CredSSP, caused by the
+    /// server's status. The reason used to be lost ("[CredSSP] CredSSP").
+    fn refused(status: connector::sspi::credssp::NStatusCode) -> connector::ConnectorError {
+        connector::ConnectorError::new(
+            "CredSSP",
+            connector::ConnectorErrorKind::Credssp(connector::sspi::Error::new_with_nstatus(
+                connector::sspi::ErrorKind::InvalidToken,
+                "CredSSP server returned an error status",
+                status,
+            )),
+        )
+    }
+
+    #[test]
+    fn a_refused_login_says_why() {
+        use connector::sspi::credssp::NStatusCode;
+        assert_eq!(refused(NStatusCode::LOGON_FAILURE).to_string(), "[CredSSP] CredSSP", "what was shown before");
+        let e = login_error(&with_causes(&refused(NStatusCode::LOGON_FAILURE)));
+        assert!(e.starts_with("The RDP server didn't accept the user name or password ("), "{e}");
+        assert!(e.contains("STATUS_LOGON_FAILURE [0xc000006d]"), "the server's own status stays in: {e}");
+        let e = login_error(&with_causes(&refused(NStatusCode::PASSWORD_EXPIRED)));
+        assert!(e.starts_with("The account's password has expired"), "{e}");
+        let e = login_error(&with_causes(&refused(NStatusCode::ACCOUNT_LOCKED_OUT)));
+        assert!(e.starts_with("The account is locked out"), "{e}");
+        let e = login_error(&with_causes(&refused(NStatusCode::LOGON_TYPE_NOT_GRANTED)));
+        assert!(e.contains("Remote Desktop Users group"), "{e}");
+        let e = login_error(&with_causes(&connector::ConnectorError::new("CredSSP", connector::ConnectorErrorKind::AccessDenied)));
+        assert!(e.starts_with("The RDP server took the password but doesn't let this account in"), "{e}");
+        // A status without words of its own still shows, with what the client saw.
+        let e = login_error(&with_causes(&refused(NStatusCode(0xc000_0001))));
+        assert!(e.starts_with("Couldn't log in to the RDP server: [CredSSP] CredSSP: InvalidToken"), "{e}");
+        assert!(e.contains("0xc0000001"), "{e}");
+        // The tab asks for the password again on a wrong password or user name.
+        let tab = include_str!("../../src/components/RdpSessionView.tsx");
+        assert!(tab.contains("/didn't accept the user name or password/"), "RdpSessionView.tsx: PASSWORD_REFUSED");
+        for status in [NStatusCode::LOGON_FAILURE, NStatusCode::WRONG_PASSWORD, NStatusCode::NO_SUCH_USER] {
+            assert!(login_error(&with_causes(&refused(status))).contains("didn't accept the user name or password"), "{status}");
+        }
+    }
 
     #[test]
     fn domain_forms() {
