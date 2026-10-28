@@ -18053,8 +18053,17 @@ async fn sftp_download_file(
 /// without SFTP) the requests wait their turn anyway: one at a time there.
 const DIR_FILES_AT_ONCE: usize = 4;
 
-/// How one file of a folder transfer ended, when not well: stopped (a cancel,
-/// or another file's failure), with what the user may need to hear, or failed.
+/// A file bigger than this moves alone. Each file keeps up to 16 requests in
+/// flight on the one SFTP channel, and each request's time limit runs from
+/// when it was sent: big files at once would put every request behind the
+/// others' data, and on a slow link past its limit. Files up to these sizes
+/// at once have no more in flight than one file had when they moved one by one
+/// (16 reads of 255 KiB; 16 writes of 32 KiB).
+const DIR_FILE_ALONE_DOWN: u64 = 1 << 20;
+const DIR_FILE_ALONE_UP: u64 = 128 << 10;
+
+/// How one file of a folder transfer ended, when not well: stopped by a
+/// cancel, with what the user may need to hear, or failed.
 enum DirFileEnd {
     Stopped(Option<String>),
     Failed(String),
@@ -18065,18 +18074,31 @@ enum DirFilesEnd {
     Done,
     /// A cancel cut it short; the stopped files' notes.
     Stopped(Vec<String>),
-    /// The first failure; the files in flight were stopped.
-    Failed(String),
+    /// The first failure, and the notes of files a cancel stopped after it.
+    Failed(String, Vec<String>),
 }
 
-/// Run a folder transfer's files `at_once` at a time, telling `report` every
-/// 100 ms. The first failure stops the rest: nothing new starts, and the files
-/// in flight end as a cancel would (they watch `stop`).
+/// One file of a folder transfer for run_dir_files.
+struct DirJob<Fut> {
+    /// Whether it moves alone (DIR_FILE_ALONE_*).
+    alone: bool,
+    /// Its path in lower case: names that differ only in case are one file on
+    /// a server (or a disk) that ignores case, so they never move at once.
+    key: String,
+    /// Its name in messages.
+    shown: String,
+    run: Fut,
+}
+
+/// Run a folder transfer's files, up to `at_once` at a time (a file that moves
+/// alone, alone), telling `report` every 100 ms. The first failure starts
+/// nothing new; the files in flight finish (stopping one part way could leave
+/// a file it overwrites cut short), then the failure is told. A cancel stops
+/// the files in flight.
 async fn run_dir_files<Fut>(
-    mut jobs: impl Iterator<Item = Fut>,
+    mut jobs: impl Iterator<Item = DirJob<Fut>>,
     at_once: usize,
     cancel: &std::sync::atomic::AtomicBool,
-    stop: &std::sync::atomic::AtomicBool,
     mut report: impl FnMut(),
 ) -> DirFilesEnd
 where
@@ -18084,55 +18106,199 @@ where
 {
     use std::sync::atomic::Ordering;
     let mut running = tokio::task::JoinSet::new();
+    // The files moving now, by task: key, name, alone.
+    let mut moving: std::collections::HashMap<tokio::task::Id, (String, String, bool)> = std::collections::HashMap::new();
+    let mut next: Option<DirJob<Fut>> = None;
     let mut failure: Option<String> = None;
     let mut notes = Vec::new();
     let mut stopped = false;
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        while running.len() < at_once.max(1) && failure.is_none() && !cancel.load(Ordering::Relaxed) {
-            match jobs.next() {
-                Some(job) => {
-                    running.spawn(job);
-                }
-                None => break,
+        while failure.is_none() && !cancel.load(Ordering::Relaxed) {
+            let Some(job) = next.take().or_else(|| jobs.next()) else { break };
+            let fits = moving.is_empty()
+                || (!job.alone
+                    && moving.len() < at_once.max(1)
+                    && !moving.values().any(|(key, _, alone)| *alone || *key == job.key));
+            if !fits {
+                next = Some(job);
+                break;
             }
+            let DirJob { alone, key, shown, run } = job;
+            let task = running.spawn(run);
+            moving.insert(task.id(), (key, shown, alone));
         }
         if running.is_empty() {
             break;
         }
         tokio::select! {
-            ended = running.join_next() => match ended {
-                Some(Ok(Err(DirFileEnd::Failed(msg)))) => {
-                    failure.get_or_insert(msg);
-                    stop.store(true, Ordering::Relaxed);
+            ended = running.join_next_with_id() => {
+                let (id, outcome) = match ended {
+                    Some(Ok((id, outcome))) => (id, Ok(outcome)),
+                    Some(Err(e)) => (e.id(), Err(e)),
+                    None => continue,
+                };
+                let shown = moving.remove(&id).map(|(_, shown, _)| shown).unwrap_or_default();
+                match outcome {
+                    Ok(Ok(())) => {}
+                    Ok(Err(DirFileEnd::Failed(msg))) => {
+                        failure.get_or_insert(msg);
+                    }
+                    Ok(Err(DirFileEnd::Stopped(note))) => {
+                        stopped = true;
+                        notes.extend(note);
+                    }
+                    Err(e) => {
+                        failure.get_or_insert(format!("{shown}: the transfer ended: {e}"));
+                    }
                 }
-                Some(Ok(Err(DirFileEnd::Stopped(note)))) => {
-                    stopped = true;
-                    notes.extend(note);
-                }
-                Some(Err(e)) => {
-                    failure.get_or_insert(format!("a file's transfer ended: {e}"));
-                    stop.store(true, Ordering::Relaxed);
-                }
-                _ => {}
-            },
+            }
             _ = tick.tick() => report(),
         }
     }
     if let Some(msg) = failure {
-        return DirFilesEnd::Failed(msg);
+        return DirFilesEnd::Failed(msg, notes);
     }
-    if stopped || jobs.next().is_some() {
+    if stopped || next.is_some() || jobs.next().is_some() {
         return DirFilesEnd::Stopped(notes);
     }
     DirFilesEnd::Done
 }
 
+#[cfg(test)]
+mod dir_files_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
+
+    /// What the fake files saw: each start with the files moving then, each end.
+    #[derive(Default)]
+    struct Seen {
+        live: StdMutex<Vec<&'static str>>,
+        starts: StdMutex<Vec<(&'static str, Vec<&'static str>)>>,
+        ends: StdMutex<Vec<&'static str>>,
+    }
+
+    /// A file that takes `ms`, then ends as `end` says ("ok", "fail", "panic"),
+    /// or stops when `cancel` is set (with a note).
+    fn file(name: &'static str, ms: u64, end: &'static str, seen: &Arc<Seen>, cancel: &Arc<AtomicBool>) -> impl std::future::Future<Output = Result<(), DirFileEnd>> + Send + 'static {
+        let (seen, cancel) = (Arc::clone(seen), Arc::clone(cancel));
+        async move {
+            {
+                let mut live = seen.live.lock().unwrap();
+                live.push(name);
+                seen.starts.lock().unwrap().push((name, live.clone()));
+            }
+            for _ in 0..ms / 10 {
+                if cancel.load(Ordering::Relaxed) {
+                    seen.live.lock().unwrap().retain(|n| *n != name);
+                    return Err(DirFileEnd::Stopped(Some(format!("{name} was cut"))));
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            seen.live.lock().unwrap().retain(|n| *n != name);
+            seen.ends.lock().unwrap().push(name);
+            match end {
+                "fail" => Err(DirFileEnd::Failed(format!("{name} broke"))),
+                "panic" => panic!("{name} panicked"),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    fn job<F>(name: &'static str, key: &str, alone: bool, run: F) -> DirJob<F> {
+        DirJob { alone, key: key.to_lowercase(), shown: name.to_string(), run }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_big_file_moves_alone_and_small_ones_four_at_once() {
+        let (seen, cancel) = (Arc::new(Seen::default()), Arc::new(AtomicBool::new(false)));
+        let names = ["s1", "s2", "s3", "s4", "s5", "big", "s6"];
+        let jobs: Vec<_> = names.iter().map(|&n| job(n, n, n == "big", file(n, 100, "ok", &seen, &cancel))).collect();
+        assert!(matches!(run_dir_files(jobs.into_iter(), 4, &cancel, || {}).await, DirFilesEnd::Done));
+        let starts = seen.starts.lock().unwrap();
+        assert_eq!(starts.len(), names.len(), "every file ran");
+        assert!(starts.iter().all(|(_, live)| live.len() <= 4), "at most four at once: {starts:?}");
+        assert!(starts.iter().any(|(_, live)| live.len() == 4), "four at once: {starts:?}");
+        let big = starts.iter().find(|(n, _)| *n == "big").unwrap();
+        assert_eq!(big.1, vec!["big"], "the big file started alone");
+        assert!(starts.iter().all(|(n, live)| *n == "big" || !live.contains(&"big")), "nothing started beside it: {starts:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn names_that_differ_only_in_case_never_move_at_once() {
+        let (seen, cancel) = (Arc::new(Seen::default()), Arc::new(AtomicBool::new(false)));
+        let jobs = vec![
+            job("a", "dir/Notes.txt", false, file("a", 100, "ok", &seen, &cancel)),
+            job("b", "dir/notes.TXT", false, file("b", 100, "ok", &seen, &cancel)),
+            job("c", "dir/other", false, file("c", 100, "ok", &seen, &cancel)),
+        ];
+        assert!(matches!(run_dir_files(jobs.into_iter(), 4, &cancel, || {}).await, DirFilesEnd::Done));
+        let starts = seen.starts.lock().unwrap();
+        assert!(starts.iter().all(|(_, live)| !(live.contains(&"a") && live.contains(&"b"))), "{starts:?}");
+        assert_eq!(starts.len(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failure_lets_the_files_in_flight_finish_and_starts_none() {
+        let (seen, cancel) = (Arc::new(Seen::default()), Arc::new(AtomicBool::new(false)));
+        let jobs = vec![
+            job("f1", "f1", false, file("f1", 50, "fail", &seen, &cancel)),
+            job("f2", "f2", false, file("f2", 200, "ok", &seen, &cancel)),
+            job("f3", "f3", false, file("f3", 200, "ok", &seen, &cancel)),
+            job("f4", "f4", false, file("f4", 200, "ok", &seen, &cancel)),
+            job("f5", "f5", false, file("f5", 200, "ok", &seen, &cancel)),
+        ];
+        match run_dir_files(jobs.into_iter(), 4, &cancel, || {}).await {
+            DirFilesEnd::Failed(msg, notes) => {
+                assert_eq!(msg, "f1 broke");
+                assert!(notes.is_empty());
+            }
+            _ => panic!("the failure is told"),
+        }
+        let ends = seen.ends.lock().unwrap();
+        for n in ["f2", "f3", "f4"] {
+            assert!(ends.contains(&n), "{n} in flight finished whole: {ends:?}");
+        }
+        assert!(!seen.starts.lock().unwrap().iter().any(|(n, _)| *n == "f5"), "nothing new after the failure");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancel_stops_the_files_in_flight() {
+        let (seen, cancel) = (Arc::new(Seen::default()), Arc::new(AtomicBool::new(false)));
+        let jobs: Vec<_> = ["c1", "c2", "c3"].iter().map(|&n| job(n, n, false, file(n, 1000, "ok", &seen, &cancel))).collect();
+        let stopper = Arc::clone(&cancel);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            stopper.store(true, Ordering::Relaxed);
+        });
+        match run_dir_files(jobs.into_iter(), 4, &cancel, || {}).await {
+            DirFilesEnd::Stopped(mut notes) => {
+                notes.sort();
+                assert_eq!(notes, ["c1 was cut", "c2 was cut", "c3 was cut"]);
+            }
+            _ => panic!("a cancel stops it"),
+        }
+        assert!(seen.ends.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_file_that_panics_is_named() {
+        let (seen, cancel) = (Arc::new(Seen::default()), Arc::new(AtomicBool::new(false)));
+        let jobs = vec![job("broken.txt", "broken.txt", false, file("x", 10, "panic", &seen, &cancel))];
+        match run_dir_files(jobs.into_iter(), 4, &cancel, || {}).await {
+            DirFilesEnd::Failed(msg, _) => assert!(msg.starts_with("broken.txt: the transfer ended"), "{msg}"),
+            _ => panic!("a panic is a failure"),
+        }
+    }
+}
+
 /// One file of a folder download (sftp_download_dir), into `local_root`: to a
 /// sibling temp renamed over its final name at the end (see
-/// sftp_download_file), so a failure or a stop part way through a tree doesn't
-/// truncate a file already there.
+/// sftp_download_file), so a failure or a cancel part way through a tree
+/// doesn't truncate a file already there.
 async fn download_dir_file(
     sftp: Arc<russh_sftp::client::SftpSession>,
     remote_file_path: String,
@@ -18140,7 +18306,6 @@ async fn download_dir_file(
     local_root: std::path::PathBuf,
     transferred: Arc<std::sync::atomic::AtomicU64>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
-    stop: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), DirFileEnd> {
     use std::sync::atomic::Ordering;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -18173,7 +18338,7 @@ async fn download_dir_file(
     let mut buf = vec![0u8; 256 * 1024];
     let copied: Result<(), DirFileEnd> = async {
         loop {
-            if cancel.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) {
+            if cancel.load(Ordering::Relaxed) {
                 return Err(DirFileEnd::Stopped(None));
             }
             let n = remote_file.read(&mut buf).await
@@ -18201,9 +18366,9 @@ async fn download_dir_file(
     Ok(())
 }
 
-/// One file of a folder upload (sftp_upload_dir), to `remote_full`. A stop (a
-/// cancel, or another file's failure) ends it as a cancel does
-/// (finish_cancelled_upload): only a file this upload made is deleted.
+/// One file of a folder upload (sftp_upload_dir), to `remote_full`. A cancel
+/// ends it as a single file's cancel does (finish_cancelled_upload): only a
+/// file this upload made is deleted.
 async fn upload_dir_file(
     sftp: Arc<russh_sftp::client::SftpSession>,
     local_file_path: std::path::PathBuf,
@@ -18211,11 +18376,10 @@ async fn upload_dir_file(
     shown: String,
     transferred: Arc<std::sync::atomic::AtomicU64>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
-    stop: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), DirFileEnd> {
     use std::sync::atomic::Ordering;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let halted = || cancel.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed);
+    let halted = || cancel.load(Ordering::Relaxed);
     let mut local_file = tokio::fs::File::open(&local_file_path).await
         .map_err(|e| DirFileEnd::Failed(format!("open {:?}: {}", local_file_path, e)))?;
     // See sftp_upload_file: no truncating open after a cancel.
@@ -18503,20 +18667,22 @@ async fn sftp_download_dir(
     }
 
     let transferred = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let stop = Arc::new(AtomicBool::new(false));
     let at_once = if state.sftp_shell.lock().await.contains(&session_id) { 1 } else { DIR_FILES_AT_ONCE };
-    let jobs = files.iter().map(|(remote_file_path, rel, _size)| {
-        download_dir_file(
+    let jobs = files.iter().map(|(remote_file_path, rel, size)| DirJob {
+        alone: *size > DIR_FILE_ALONE_DOWN,
+        // The local name: this disk may ignore case.
+        key: rel.to_lowercase(),
+        shown: rel.clone(),
+        run: download_dir_file(
             Arc::clone(&sftp),
             remote_file_path.clone(),
             rel.clone(),
             local_root.clone(),
             Arc::clone(&transferred),
             Arc::clone(&cancel),
-            Arc::clone(&stop),
-        )
+        ),
     });
-    let ended = run_dir_files(jobs, at_once, &cancel, &stop, || {
+    let ended = run_dir_files(jobs, at_once, &cancel, || {
         emit_progress(transferred.load(Ordering::Relaxed), total_bytes, "progress", None)
     }).await;
     let got = transferred.load(Ordering::Relaxed);
@@ -18529,7 +18695,7 @@ async fn sftp_download_dir(
             emit_progress(got, total_bytes, "cancelled", None);
             Err("cancelled".into())
         }
-        DirFilesEnd::Failed(msg) => {
+        DirFilesEnd::Failed(msg, _) => {
             emit_progress(got, total_bytes, "error", Some(msg.clone()));
             Err(msg)
         }
@@ -18824,7 +18990,7 @@ async fn sftp_upload_dir(
         let mut failure: Option<String> = None;
         let mut level = level.iter();
         loop {
-            while made.len() < at_once && failure.is_none() {
+            while made.len() < at_once && failure.is_none() && !cancel.load(Ordering::Relaxed) {
                 let Some(rel) = level.next() else { break };
                 let full = format!("{}/{}", remote_root.trim_end_matches('/'), rel);
                 let sftp = Arc::clone(&sftp);
@@ -18834,7 +19000,16 @@ async fn sftp_upload_dir(
                     if sftp.metadata(&full).await.is_ok() {
                         return Ok(());
                     }
-                    sftp.create_dir(&full).await.map_err(|e| format!("mkdir {}: {}", full, e))
+                    match sftp.create_dir(&full).await {
+                        Ok(()) => Ok(()),
+                        // There now after all: made meanwhile, or the same
+                        // folder by another case (Foo, foo) on a server that
+                        // ignores case.
+                        Err(e) => match sftp.metadata(&full).await {
+                            Ok(m) if m.is_dir() => Ok(()),
+                            _ => Err(format!("mkdir {}: {}", full, e)),
+                        },
+                    }
                 });
             }
             match made.join_next().await {
@@ -18853,6 +19028,10 @@ async fn sftp_upload_dir(
             return Err(msg);
         }
     }
+    if cancel.load(Ordering::Relaxed) {
+        emit_progress(0, total_bytes, "cancelled", None);
+        return Err("cancelled".into());
+    }
 
     if files.is_empty() {
         emit_progress(0, 0, "done", None);
@@ -18863,19 +19042,24 @@ async fn sftp_upload_dir(
     // counter. A cancel deletes only the files it was writing that this upload
     // created; files already sent and the folders made for them stay.
     let transferred = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let stop = Arc::new(AtomicBool::new(false));
-    let jobs = files.iter().map(|(local_file_path, rel, _size)| {
-        upload_dir_file(
-            Arc::clone(&sftp),
-            local_file_path.clone(),
-            format!("{}/{}", remote_root.trim_end_matches('/'), rel),
-            format!("{}/{}", folder_name, rel),
-            Arc::clone(&transferred),
-            Arc::clone(&cancel),
-            Arc::clone(&stop),
-        )
+    let jobs = files.iter().map(|(local_file_path, rel, size)| {
+        let remote_full = format!("{}/{}", remote_root.trim_end_matches('/'), rel);
+        DirJob {
+            alone: *size > DIR_FILE_ALONE_UP,
+            // The server may ignore case.
+            key: remote_full.to_lowercase(),
+            shown: rel.clone(),
+            run: upload_dir_file(
+                Arc::clone(&sftp),
+                local_file_path.clone(),
+                remote_full,
+                format!("{}/{}", folder_name, rel),
+                Arc::clone(&transferred),
+                Arc::clone(&cancel),
+            ),
+        }
     });
-    let ended = run_dir_files(jobs, at_once, &cancel, &stop, || {
+    let ended = run_dir_files(jobs, at_once, &cancel, || {
         emit_progress(transferred.load(Ordering::Relaxed), total_bytes, "progress", None)
     }).await;
     let sent = transferred.load(Ordering::Relaxed);
@@ -18888,7 +19072,9 @@ async fn sftp_upload_dir(
             emit_progress(sent, total_bytes, "cancelled", (!notes.is_empty()).then(|| notes.join(" ")));
             Err("cancelled".into())
         }
-        DirFilesEnd::Failed(msg) => {
+        DirFilesEnd::Failed(msg, notes) => {
+            // A cancel after the failure may have cut files short: said too.
+            let msg = if notes.is_empty() { msg } else { format!("{msg} {}", notes.join(" ")) };
             emit_progress(sent, total_bytes, "error", Some(msg.clone()));
             Err(msg)
         }
