@@ -93,6 +93,19 @@ const PTY_SIZE_SETTLE_MS = 150;
 // output comes in. The backend hands it no more than it draws (Outflow in
 // ssh_manager.rs), so a flood waits there, bounded, not in this page.
 const DRAWN_REPORT_MS = 50;
+// The end of the output that the password-prompt check looks at.
+const PROMPT_TAIL = 2048;
+
+// Output as bytes: straight from base64 where the web view can, which makes
+// none of the big strings a flood left behind for the garbage collector.
+const fromBase64 = (Uint8Array as unknown as { fromBase64?: (s: string) => Uint8Array }).fromBase64?.bind(Uint8Array);
+const decodeOutput = (b64: string): Uint8Array => {
+  if (fromBase64) return fromBase64(b64);
+  const bin = atob(b64);
+  const data = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+  return data;
+};
 
 // How long the cursor goes on blinking after the last key, click or focus.
 const CURSOR_BLINK_IDLE_MS = 10_000;
@@ -1234,9 +1247,7 @@ const TerminalView = ({
       // JSON byte array — ~4x larger and one event per SSH packet, which flooded
       // this main-thread handler and froze the tab on big output). Decode back
       // to bytes; xterm buffers any multibyte sequence split across batches.
-      const bin = atob(event.payload as string);
-      const data = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+      const data = decodeOutput(event.payload as string);
       if (attachOnly) {
         term.write(data);
       } else {
@@ -1247,7 +1258,7 @@ const TerminalView = ({
       // Keep a short tail of decoded output so command-history capture can
       // recognize a no-echo password prompt and skip the typed secret.
       try {
-        const txt = new TextDecoder().decode(data);
+        const txt = new TextDecoder().decode(data.length > PROMPT_TAIL ? data.subarray(data.length - PROMPT_TAIL) : data);
         const combined = recentOutputRef.current + txt;
         recentOutputRef.current = combined.length > 512 ? combined.slice(-512) : combined;
         showPasswordButton(looksLikePasswordPrompt(recentOutputRef.current));

@@ -16,7 +16,7 @@
 //! for garbage), as the classic telnet client does: it only answers.
 
 use crate::ssh_manager::{
-    emit_terminal_batch, page_end, page_start, ClientHandler, Outflow, PtySize, TerminalCommand, PAGE_STALL,
+    emit_terminal_batch, page_end, page_start, ClientHandler, Outflow, PtySize, TerminalCommand,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -474,7 +474,6 @@ pub async fn run_pump(
     let mut buf = vec![0u8; 16 * 1024];
     let mut flow = Outflow::default();
     let mut flush = |b: &mut Vec<u8>| emit_terminal_batch(&app, &terminal_id, b);
-    let page_wait = || tokio::time::Instant::now() + PAGE_STALL;
     // Whether the server (or the route) ended it, rather than the tab.
     let server_ended = loop {
         let was_empty = out.is_empty();
@@ -497,7 +496,7 @@ pub async fn run_pump(
             },
             Some(echo) = echo_rx.recv() => out.extend_from_slice(&echo),
             _ = &mut flush_timer => {
-                let next = if flow.send(&mut out, &page, &mut flush) { park() } else { page_wait() };
+                let next = if flow.send(&mut out, &page, &mut flush) { park() } else { flow.wait_until() };
                 flush_timer.as_mut().reset(next);
                 continue;
             }
@@ -507,17 +506,18 @@ pub async fn run_pump(
                     flow.typed(&page);
                 }
                 if page.take_interrupt() {
-                    flow.interrupted(&mut out);
+                    flow.interrupted(&mut out, &page);
                 }
-                if flow.holds() && flow.send(&mut out, &page, &mut flush) {
-                    flush_timer.as_mut().reset(park());
+                if flow.holds() {
+                    let next = if flow.send(&mut out, &page, &mut flush) { park() } else { flow.wait_until() };
+                    flush_timer.as_mut().reset(next);
                 }
                 continue;
             }
             failed = &mut stop_rx => break failed.unwrap_or(false),
         }
         if out.len() >= FLUSH_CAP {
-            let next = if flow.send(&mut out, &page, &mut flush) { park() } else { page_wait() };
+            let next = if flow.send(&mut out, &page, &mut flush) { park() } else { flow.wait_until() };
             flush_timer.as_mut().reset(next);
         } else if was_empty && !out.is_empty() {
             flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);

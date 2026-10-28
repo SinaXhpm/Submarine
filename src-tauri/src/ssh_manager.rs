@@ -419,6 +419,12 @@ pub(crate) struct Outflow {
     /// waits; and where the measure started.
     pace: Option<f64>,
     pace_mark: Option<(tokio::time::Instant, u64)>,
+    /// After an interrupt key, until the page has drawn what was on its way:
+    /// it gets nothing more, and what comes is cut to its newest
+    /// AFTER_INTERRUPT_KEEP. What the stopped command had sent before the key
+    /// (the SSH window, socket buffers) still comes after it, and would wait
+    /// for the page again in full.
+    quiet_until: Option<tokio::time::Instant>,
 }
 
 impl Outflow {
@@ -474,13 +480,31 @@ impl Outflow {
     }
 
     /// An interrupt key was typed: what waits for the page is cut to its
-    /// newest AFTER_INTERRUPT_KEEP. When nothing waits (the page keeps up),
-    /// nothing is cut.
-    pub(crate) fn interrupted(&mut self, out: &mut Vec<u8>) {
-        if self.holds() {
-            self.hold(out);
-            self.trim(AFTER_INTERRUPT_KEEP);
+    /// newest AFTER_INTERRUPT_KEEP, and so is what comes while the page draws
+    /// what was on its way (quiet_until; a quarter of a second to a second at
+    /// its pace). When nothing waits (the page keeps up), nothing is cut.
+    pub(crate) fn interrupted(&mut self, out: &mut Vec<u8>, page: &PageDrawn) {
+        if !self.holds() {
+            return;
         }
+        self.hold(out);
+        self.trim(AFTER_INTERRUPT_KEEP);
+        let on_its_way = self.handed.saturating_sub(page.drawn().saturating_add(self.written_off));
+        let secs = (on_its_way as f64 / self.pace()).clamp(0.25, 1.0);
+        self.quiet_until = Some(tokio::time::Instant::now() + std::time::Duration::from_secs_f64(secs));
+    }
+
+    /// When the pump should look again while output waits: when the quiet
+    /// after an interrupt key ends, or PAGE_STALL from now.
+    pub(crate) fn wait_until(&self) -> tokio::time::Instant {
+        match self.quiet_until {
+            Some(t) if self.quiet() => t,
+            _ => tokio::time::Instant::now() + PAGE_STALL,
+        }
+    }
+
+    fn quiet(&self) -> bool {
+        self.quiet_until.is_some_and(|t| tokio::time::Instant::now() < t)
     }
 
     /// Keys were typed into the terminal, so its page runs. If it has drawn
@@ -512,6 +536,9 @@ impl Outflow {
             self.measure(drawn);
         } else {
             self.pace_mark = None;
+        }
+        if self.quiet() {
+            return false;
         }
         if self.unheard || self.handed.saturating_sub(drawn.saturating_add(self.written_off)) < self.in_flight_max() {
             return true;
@@ -591,6 +618,10 @@ impl Outflow {
         }
         self.held.extend_from_slice(out);
         out.clear();
+        if self.quiet() {
+            self.trim(AFTER_INTERRUPT_KEEP);
+            return;
+        }
         let max = self.held_max();
         if self.held.len() - self.from > max {
             self.trim(max / 2);
@@ -635,6 +666,7 @@ impl Outflow {
         self.pace = None;
         self.pace_mark = None;
         self.behind_since = None;
+        self.quiet_until = None;
     }
 }
 
@@ -755,10 +787,10 @@ async fn pty_pump<F>(
     tokio::pin!(flush_timer);
     // What the page hasn't drawn stays bounded (Outflow): past IN_FLIGHT_MAX,
     // output waits in `flow` until the page reports drawing more
-    // (`page.news`); the timer then guards a page that draws none
-    // (PAGE_STALL). The channel is drained all along.
+    // (`page.news`); the timer then wakes the pump when the quiet after an
+    // interrupt key ends, or guards a page that draws none (PAGE_STALL). The
+    // channel is drained all along.
     let mut flow = Outflow::default();
-    let page_wait = || tokio::time::Instant::now() + PAGE_STALL;
     loop {
         tokio::select! {
             msg_opt = read_half.wait() => match msg_opt {
@@ -767,7 +799,7 @@ async fn pty_pump<F>(
                     let was_empty = out_buf.is_empty();
                     limiter.filter(data, &mut out_buf);
                     if out_buf.len() >= FLUSH_CAP {
-                        let next = if flow.send(&mut out_buf, &page, &mut flush) { park() } else { page_wait() };
+                        let next = if flow.send(&mut out_buf, &page, &mut flush) { park() } else { flow.wait_until() };
                         flush_timer.as_mut().reset(next);
                     } else if was_empty {
                         flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
@@ -785,7 +817,7 @@ async fn pty_pump<F>(
             _ = &mut flush_timer => {
                 // Park until the next buffered byte re-arms the timer, or
                 // guard the wait for the page.
-                let next = if flow.send(&mut out_buf, &page, &mut flush) { park() } else { page_wait() };
+                let next = if flow.send(&mut out_buf, &page, &mut flush) { park() } else { flow.wait_until() };
                 flush_timer.as_mut().reset(next);
             }
             // The page drew some, or keys were typed.
@@ -794,10 +826,11 @@ async fn pty_pump<F>(
                     flow.typed(&page);
                 }
                 if page.take_interrupt() {
-                    flow.interrupted(&mut out_buf);
+                    flow.interrupted(&mut out_buf, &page);
                 }
-                if flow.holds() && flow.send(&mut out_buf, &page, &mut flush) {
-                    flush_timer.as_mut().reset(park());
+                if flow.holds() {
+                    let next = if flow.send(&mut out_buf, &page, &mut flush) { park() } else { flow.wait_until() };
+                    flush_timer.as_mut().reset(next);
                 }
             }
             // Writer finished (UI closed the tab, or the transport is dead):
@@ -1671,8 +1704,9 @@ mod tests {
         behind(&page, &mut flow, &got);
         let lines: Vec<u8> = (0..20_000).flat_map(|i| format!("line {i:05}\n").into_bytes()).collect();
         assert!(!flow.send(&mut lines.clone(), &page, &mut sink(&got)));
-        flow.interrupted(&mut Vec::new());
+        flow.interrupted(&mut Vec::new(), &page);
         page.add(IN_FLIGHT_MAX);
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
         assert!(flow.send(&mut Vec::new(), &page, &mut sink(&got)));
         let got = String::from_utf8(got.take()).unwrap();
         let (note, kept) = got.split_once("]\x1b[0m\r\n").unwrap();
@@ -1688,10 +1722,46 @@ mod tests {
         let mut flow = Outflow::default();
         let got = std::cell::RefCell::new(Vec::new());
         let mut out = vec![b'y'; 200 << 10];
-        flow.interrupted(&mut out);
+        flow.interrupted(&mut out, &page);
         assert_eq!(out.len(), 200 << 10, "the page keeps up: nothing to cut");
         assert!(flow.send(&mut out, &page, &mut sink(&got)));
         assert_eq!(got.borrow().len(), 200 << 10);
+        // Nor what comes next.
+        assert!(flow.send(&mut vec![b'z'; 200 << 10], &page, &mut sink(&got)));
+        assert_eq!(got.borrow().len(), 400 << 10);
+    }
+
+    /// What the stopped command had sent before the key still comes after it:
+    /// while the page draws what was on its way, that is cut too, to its newest
+    /// lines, and nothing more goes to the page; then the newest go at once.
+    #[tokio::test(start_paused = true)]
+    async fn what_comes_right_after_an_interrupt_is_cut_too() {
+        let page = PageDrawn::default();
+        let mut flow = Outflow::default();
+        let got = std::cell::RefCell::new(Vec::new());
+        behind(&page, &mut flow, &got);
+        assert!(!flow.send(&mut vec![b'x'; 1 << 20], &page, &mut sink(&got)));
+        flow.interrupted(&mut Vec::new(), &page);
+        // The page draws what was on its way; 3 MB of the stopped command come.
+        page.add(IN_FLIGHT_MAX / 2);
+        let lines: Vec<u8> = (0..300_000).flat_map(|i| format!("old {i:06}\n").into_bytes()).collect();
+        for part in lines.chunks(256 << 10) {
+            assert!(!flow.send(&mut part.to_vec(), &page, &mut sink(&got)), "quiet: nothing goes");
+            assert!(flow.held.len() - flow.from <= AFTER_INTERRUPT_KEEP + (256 << 10), "what comes is cut");
+        }
+        assert!(got.borrow().is_empty(), "nothing went to the page meanwhile");
+        let woke = flow.wait_until();
+        assert!(woke <= tokio::time::Instant::now() + std::time::Duration::from_secs(1), "the pump looks again when the quiet ends");
+        // The prompt, then the quiet ends and the page has drawn its share.
+        assert!(!flow.send(&mut b"\x03\r\nprompt$ ".to_vec(), &page, &mut sink(&got)));
+        tokio::time::sleep_until(woke).await;
+        page.add(IN_FLIGHT_MAX / 2);
+        assert!(flow.send(&mut Vec::new(), &page, &mut sink(&got)), "then the newest go at once");
+        let shown = String::from_utf8(got.take()).unwrap();
+        let (note, kept) = shown.split_once("]\x1b[0m\r\n").unwrap();
+        assert!(note.contains("of output skipped"), "{note:?}");
+        assert!(kept.len() <= AFTER_INTERRUPT_KEEP, "{}", kept.len());
+        assert!(kept.starts_with("old ") && kept.ends_with("old 299999\n\x03\r\nprompt$ "), "the newest lines, then the prompt");
     }
 
     /// A key typed into a page that runs but has drawn nothing for a while:
