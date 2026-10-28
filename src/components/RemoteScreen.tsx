@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { Keyboard, Loader2 } from "lucide-react";
 import { IS_ANDROID } from "../util/platform";
-import { scancodeFor } from "../util/scancodes";
+import { codeForKey, scancodeFor } from "../util/scancodes";
 
 // The screen of a remote desktop in its tab (VNC, vnc_client.rs) and its
 // mouse and keyboard. The backend sends frames over a channel: [1, w, h] when
@@ -456,7 +456,8 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
     // Keys that type nothing (Tab, Esc, the arrows, F1-F12, Delete…), and any
     // key held with Ctrl, Alt or Meta, go as keys, as the canvas sends them;
     // the box keeps the focus (Tab would move it away, and the keys after it
-    // were lost). What types text comes through the box (above).
+    // were lost; on Android, Esc too). What types text comes through the box
+    // (above). A phone's keys have no code (no scan code): found from the key.
     const onImeKey = (down: boolean) => (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       const n = e.nativeEvent;
       if (n.isComposing || n.keyCode === 229 || e.key === "Unidentified" || e.key === "Process" || e.key === "Dead") return;
@@ -464,7 +465,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
       const named = e.key.length > 1;
       const held = (e.ctrlKey || e.altKey || e.metaKey) && !e.getModifierState("AltGraph");
       if (!named && !held) return;
-      const code = scancodeFor(e.code);
+      const code = scancodeFor(e.code || codeForKey(e.key));
       if (code === null) return;
       send({ t: "key", code, key: e.key, down });
       e.preventDefault();
