@@ -12917,8 +12917,8 @@ async fn initiate_connection(
                                 if dead {
                                     // Re-check generation + verify OUR handle is
                                     // still the registered one before tearing
-                                    // anything down. A slow probe holds the handle
-                                    // lock up to 10s; during that window a manual
+                                    // anything down. A slow probe takes up to
+                                    // 10s; during that window a manual
                                     // reconnect / auto-retry can bump the
                                     // generation and register a fresh, healthy
                                     // connection. Without this guard we'd remove
@@ -19442,10 +19442,9 @@ async fn sftp_open_remote_file(
                     };
 
                     // Open the SFTP subsystem, then IMMEDIATELY drop the
-                    // session mutex. Holding it across the whole write serialises
-                    // every open_terminal / cold-cache SFTP-bootstrap request on
-                    // the same session behind this one save — visible as a UI
-                    // freeze whenever the user Ctrl-S's a large remote file.
+                    // session handle's guard: nothing waits on it (it's shared
+                    // for reading), but the save shouldn't keep it longer than
+                    // the open it needs it for.
                     // An elevated tab (file ops as root via sudo) must save
                     // back the same way, or root-owned files can't be written.
                     let elevation = elevation_clone.lock().await.get(&session_id_clone).cloned();

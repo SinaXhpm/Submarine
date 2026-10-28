@@ -1146,10 +1146,9 @@ async fn run_dynamic_forward(
 
 /// How long the server-side listener requests (`tcpip-forward` and its cancel)
 /// may take before we give up. Without a bound, a server that stalls on the
-/// global request hangs the setup/teardown forever — and, since the request is
-/// made while holding the per-session handle lock, it also blocks the health
-/// watcher's next probe (and any other channel on the session) for that whole
-/// time. The timeout caps both: the lock is now held for at most this long.
+/// global request hangs the tunnel's setup/teardown forever. (The handle is
+/// shared for reading, so it doesn't hold up the health watcher or the
+/// session's other channels meanwhile.)
 const FORWARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn run_remote_forward(
