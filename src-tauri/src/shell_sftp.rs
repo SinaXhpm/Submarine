@@ -694,6 +694,14 @@ struct ReadStream {
     task: tokio::task::JoinHandle<()>,
 }
 
+impl ReadStream {
+    /// Where the file ends, once the stream has given out all of it.
+    fn end(&self) -> Option<u64> {
+        let f = self.feed.lock().unwrap();
+        (f.eof && f.buf.is_empty() && f.error.is_none()).then_some(self.pos)
+    }
+}
+
 impl Drop for ReadStream {
     fn drop(&mut self) {
         // Its command, if one runs, is ended by `Closing`.
@@ -1079,7 +1087,8 @@ async fn finish(reader: &mut ChannelReadHalf, o: &mut Output) {
 
 enum Open {
     Dir { path: String, entries: Vec<File>, next: usize },
-    Read { path: String, stream: Option<ReadStream> },
+    /// `end`: where the file was found to end.
+    Read { path: String, stream: Option<ReadStream>, end: Option<u64> },
     Write { path: String, stream: Option<WriteStream> },
 }
 
@@ -1264,7 +1273,7 @@ impl russh_sftp::server::Handler for ShellSftp {
             Open::Write { path: filename, stream: Some(stream) }
         } else {
             let stream = ReadStream::open(&self.remote, self.caps, &filename, 0).await?;
-            Open::Read { path: filename, stream: Some(stream) }
+            Open::Read { path: filename, stream: Some(stream), end: None }
         };
         Ok(Handle { id, handle: self.add_handle(open)? })
     }
@@ -1285,9 +1294,21 @@ impl russh_sftp::server::Handler for ShellSftp {
     async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<Data, StatusReply> {
         let len = (len as usize).clamp(1, 255 * 1024);
         let remote = &self.remote;
-        let Some(Open::Read { path, stream }) = self.handles.get_mut(&handle) else {
+        let Some(Open::Read { path, stream, end }) = self.handles.get_mut(&handle) else {
             return Err(failure("Invalid handle"));
         };
+        // At or past where the file was found to end: the end, at once. A
+        // client asks ahead, so a few reads per file come past the end, and
+        // each would start the reading command again on the server only to
+        // find nothing; with requests answered one at a time, whatever came
+        // after them (an upload alongside) waited for all those commands,
+        // past the client's time limit on a busy server.
+        if let Some(e) = stream.as_ref().and_then(ReadStream::end) {
+            *end = Some(end.map_or(e, |x| x.min(e)));
+        }
+        if end.is_some_and(|e| offset >= e) {
+            return Err(StatusCode::Eof.into());
+        }
         // Another offset than where the stream is: start over from there.
         if stream.as_ref().is_none_or(|s| s.pos != offset) {
             drop(stream.take());
@@ -1668,6 +1689,7 @@ mod over_ssh {
         sftp: SftpSession,
         dir: PathBuf,
         running: Arc<AtomicUsize>,
+        started: Arc<AtomicUsize>,
         bin: Option<PathBuf>,
     }
 
@@ -1746,10 +1768,11 @@ mod over_ssh {
             keep_running_on_close: keep_running,
         });
         let running = Arc::clone(&server.running);
+        let started = Arc::clone(&server.started);
         let session = connect(server, |_| {}, crate::build_ssh_client_config()).await.expect("ssh");
         let open = opener(Arc::new(tokio::sync::RwLock::new(session)));
         let sftp = start_with(open, Sudo::No, !matches!(mode, Mode::Gnu)).await.expect("sftp over shell");
-        Some(Lab { sftp, dir, running, bin })
+        Some(Lab { sftp, dir, running, started, bin })
     }
 
     async fn each_mode<F, Fut>(f: F)
@@ -2228,6 +2251,34 @@ mod over_ssh {
             let (up, down) = tokio::join!(put(&l.sftp, &p3, &three), get(&l.sftp, &p1));
             up.unwrap();
             assert!(down.unwrap() == one && std::fs::read(&p3).unwrap() == three, "{mode:?}");
+        })
+        .await;
+    }
+
+    /// Reads at or past a file's end are answered without a command on the
+    /// server: a client reads ahead past the end of every file, and each read
+    /// at a new offset used to start the reading command again.
+    #[tokio::test]
+    async fn reads_past_the_end_start_nothing() {
+        each_mode(|l, mode| async move {
+            let data = bytes(300_000, 4);
+            std::fs::write(l.dir.join("f"), &data).unwrap();
+            let mut f = l.sftp.open(l.path("f")).await.unwrap();
+            let mut got = Vec::new();
+            f.read_to_end(&mut got).await.unwrap();
+            assert!(got == data, "{mode:?}");
+            let before = l.started.load(Ordering::SeqCst);
+            for offset in [300_000u64, 400_000, 1_000_000, 300_000, 5_000_000] {
+                f.seek(std::io::SeekFrom::Start(offset)).await.unwrap();
+                let mut buf = [0u8; 1024];
+                assert_eq!(f.read(&mut buf).await.unwrap(), 0, "{mode:?}: at {offset}");
+            }
+            assert_eq!(l.started.load(Ordering::SeqCst), before, "{mode:?}: commands started for reads past the end");
+            // A read before the end still reads.
+            f.seek(std::io::SeekFrom::Start(299_000)).await.unwrap();
+            let mut tail = Vec::new();
+            f.read_to_end(&mut tail).await.unwrap();
+            assert!(tail == data[299_000..], "{mode:?}");
         })
         .await;
     }
