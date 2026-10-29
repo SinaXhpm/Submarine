@@ -11,6 +11,7 @@ type HeldServer = {
   id: number;
   name: string;
   run_on_connect?: string;
+  run_on_connect_every?: boolean;
   edited_by?: string | null;
   held?: string[];
 };
@@ -23,7 +24,10 @@ const byRank = (a: string, b: string) => rank(a) - rank(b) || a.localeCompare(b)
 /** One held item, in words, with the text it would run when there is one. */
 function describe(item: string, server: HeldServer): { what: string; detail?: string } {
   if (item === "run_on_connect") {
-    return { what: "Types these commands into your terminal when you connect", detail: server.run_on_connect || "" };
+    const where = server.run_on_connect_every
+      ? "into your terminal when you connect, and into each new terminal you open"
+      : "into your terminal when you connect";
+    return { what: `Types these commands ${where}`, detail: server.run_on_connect || "" };
   }
   if (item === "autostart") {
     return { what: "Connects by itself when you unlock this profile" };

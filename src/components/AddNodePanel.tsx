@@ -1180,8 +1180,9 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             </div>
 
             {/* On-connect commands — auto-typed into the FIRST terminal the
-                first time you connect to this server (not on reconnects, not
-                on extra shells you open later). One command per line. */}
+                first time you connect to this server (not on reconnects).
+                With the box ticked, also once into each terminal opened
+                later (#256). One command per line. */}
             {isSsh && (
             <div className="space-y-1.5 pt-1">
               <label className="text-[11px] font-bold text-zinc-400 ml-1 flex items-center gap-2">
@@ -1198,6 +1199,15 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 spellCheck={false}
                 className="w-full bg-[#1a1a1e] rounded-lg p-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner font-mono leading-relaxed resize-y"
               />
+              <label className="flex items-center gap-1.5 ml-1 text-[10.5px] text-zinc-400 select-none cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!newNode.runOnConnectEvery}
+                  onChange={(e) => setNewNode({ ...newNode, runOnConnectEvery: e.target.checked })}
+                  className="accent-primary"
+                />
+                <span>Also run them in each new terminal you open</span>
+              </label>
             </div>
             )}
           </div>
