@@ -430,7 +430,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sub-share-root-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ok = root(&share(ShareKind::Folder, &dir.to_string_lossy())).unwrap();
-        assert_eq!(ok, std::fs::canonicalize(&dir).unwrap());
+        // The folder as resolved; on Windows in its plain `C:\…` form, without
+        // the `\\?\` resolving puts in front (the backend doesn't take it).
+        let resolved = std::fs::canonicalize(&dir).unwrap();
+        #[cfg(windows)]
+        let resolved = PathBuf::from(resolved.to_string_lossy().strip_prefix(r"\\?\").expect("resolved with \\\\?\\").to_string());
+        assert_eq!(ok, resolved);
         assert!(root(&share(ShareKind::Folder, "")).is_err());
         assert!(root(&share(ShareKind::Folder, "relative/folder")).is_err());
         assert!(root(&share(ShareKind::Folder, &dir.join("not-there").to_string_lossy())).is_err());
