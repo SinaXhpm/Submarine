@@ -581,10 +581,18 @@ pub async fn ssh_docker_logs_start(
         // `stream.read` is cancel-safe, so racing it against the flush timer in
         // select! never drops data.
         const FLUSH_CAP: usize = 256 * 1024;
+        const FLUSH_WINDOW: std::time::Duration = std::time::Duration::from_millis(30);
         let mut buf = [0u8; 8192];
         let mut out: Vec<u8> = Vec::new();
-        let mut flush = tokio::time::interval(std::time::Duration::from_millis(30));
-        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The flush timer is armed when bytes come and parked far ahead after a
+        // flush (as the terminal pump's, ssh_manager.rs), so a quiet container
+        // wakes this task zero times instead of ~33 times a second. A flush may
+        // keep the start of a character in `out` (below); the next bytes arm
+        // the timer again, so it can't wait there.
+        let park = || tokio::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
+        let flush_timer = tokio::time::sleep_until(park());
+        tokio::pin!(flush_timer);
+        let mut armed = false;
         // Emit only the complete-UTF-8 PREFIX per streaming flush and KEEP any
         // trailing incomplete multibyte sequence in `out` so the next read can
         // finish it — decoding the whole buffer lossily each flush would turn a
@@ -628,12 +636,21 @@ pub async fn ssh_docker_logs_start(
                         Ok(0) => { flush_logs(&mut out, true); break; }
                         Ok(n) => {
                             out.extend_from_slice(&buf[..n]);
-                            if out.len() >= FLUSH_CAP { flush_logs(&mut out, false); }
+                            if out.len() >= FLUSH_CAP {
+                                flush_logs(&mut out, false);
+                            } else if !armed {
+                                flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
+                                armed = true;
+                            }
                         }
                         Err(_) => { flush_logs(&mut out, true); break; }
                     }
                 }
-                _ = flush.tick() => { flush_logs(&mut out, false); }
+                _ = &mut flush_timer => {
+                    flush_logs(&mut out, false);
+                    flush_timer.as_mut().reset(park());
+                    armed = false;
+                }
             }
         }
         let _ = app_clone.emit(&close_event, serde_json::json!({}));

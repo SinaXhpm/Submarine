@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import Sparkline from "./Sparkline";
 import { useConfirm } from "../ui/confirm";
+import { usePageShown } from "../hooks/usePageShown";
 
 // ---------- shared types ------------------------------------------------------
 
@@ -200,9 +201,12 @@ interface Props {
   /// every outage / recovered event is recorded there too so the user has
   /// a persistent history beyond the transient toast.
   addLog?: (msg: string, type: "info" | "success" | "warn" | "error") => void;
+  /// The Monitor view is the one shown. It stays mounted behind the others
+  /// (DesktopApp), and its once-a-second display tick is only for eyes on it.
+  active?: boolean;
 }
 
-const MonitoringPanel = ({ servers, addLog }: Props) => {
+const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
   const confirm = useConfirm();
   const [rows, setRows] = useState<MonitorRow[]>([]);
   const [addOpen, setAddOpen] = useState(false);
@@ -252,23 +256,20 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
   };
 
   // Tick once per second so "offline for Xs" badges advance even without
-  // a new event firing. Pause while the OS window is hidden/minimized — nobody
-  // is watching the badges then, and the backend keeps monitoring regardless
-  // (this tick is display-only). Re-showing does an immediate tick so the
-  // badges are current the instant the window comes back.
+  // a new event firing. Only while the Monitor view is the one shown and the
+  // window is (not minimized, and on a phone the app not in the background) —
+  // nobody is watching the badges otherwise, and the backend keeps monitoring
+  // regardless (this tick is display-only). Coming back does an immediate tick
+  // so the badges are current the instant the view shows again.
   const [, forceTick] = useState(0);
-  const [winShown, setWinShown] = useState(() => typeof document === "undefined" || !document.hidden);
+  const pageShown = usePageShown();
+  const ticking = active && pageShown;
   useEffect(() => {
-    const onVis = () => setWinShown(!document.hidden);
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, []);
-  useEffect(() => {
-    if (!winShown) return;
+    if (!ticking) return;
     forceTick((n) => n + 1);
     const id = window.setInterval(() => forceTick((n) => n + 1), 1000);
     return () => window.clearInterval(id);
-  }, [winShown]);
+  }, [ticking]);
 
   // ---- data load + live listeners --------------------------------------------
 

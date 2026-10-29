@@ -1073,7 +1073,7 @@ const ContainerDetailsModal = ({
               >
                 {live ? <><Square size={11} /> Stop live</> : <><Play size={11} /> Go live</>}
               </button>
-              {live && <span className="text-[10px] text-emerald-400 font-mono animate-pulse">● streaming</span>}
+              {live && <span className="text-[10px] text-emerald-400 font-mono animate-pulse-brief">● streaming</span>}
               <button
                 onClick={() => { navigator.clipboard.writeText(logs).catch(() => {}); }}
                 className="ml-auto h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white hover:bg-white/5 flex items-center gap-1.5"

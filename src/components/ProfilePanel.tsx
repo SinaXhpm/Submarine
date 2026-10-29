@@ -414,7 +414,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
               {autoSync ? (
                 <>
                   <span className="flex items-center gap-1.5 text-emerald-300/90">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-brief" />
                     Auto-sync is on — your changes are saved to the cloud automatically.
                   </span>
                   <button onClick={onToggleAutoSync} className="text-zinc-400 hover:text-zinc-200 underline underline-offset-2 shrink-0">Turn off</button>

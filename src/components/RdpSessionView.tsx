@@ -4,7 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { AlertTriangle, ClipboardPaste, ExternalLink, FlaskConical, FolderSymlink, Loader2, MonitorSmartphone, RotateCw, SlidersHorizontal, X } from "lucide-react";
 import { AuthPrompts } from "./AuthPrompts";
 import RemoteScreen, { type RemoteScreenHandle } from "./RemoteScreen";
-import { FilesPanel, LinkMark, LinkPanel, RdpSettingsPanel, ToolPanel, usePageShown, usePauseWhileHidden, type SharedNow } from "./ScreenTabTools";
+import { FilesPanel, LinkMark, LinkPanel, RdpSettingsPanel, ToolPanel, usePauseWhileHidden, type SharedNow } from "./ScreenTabTools";
+import { usePageShown } from "../hooks/usePageShown";
 import { readUseSshAgent } from "../util/sshAgent";
 import { IS_ANDROID, IS_WINDOWS } from "../util/platform";
 import type { LinkStats } from "../util/screenLink";
@@ -461,7 +462,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
             view the tab is a part of the window. */}
         <div className="shrink-0 h-9 px-2 sm:px-3 flex items-center gap-2 border-b border-white/5 bg-[#0e0e10] [container-type:inline-size]">
           <span className={`shrink-0 ${broken ? "text-red-400" : "text-primary"}`} aria-hidden="true">
-            {working ? <Loader2 size={14} className="animate-spin" /> : broken ? <AlertTriangle size={14} /> : <MonitorSmartphone size={14} />}
+            {working ? <Loader2 size={14} className="animate-spin-brief" /> : broken ? <AlertTriangle size={14} /> : <MonitorSmartphone size={14} />}
           </span>
           <span className="min-w-0 truncate text-[12px] font-semibold text-zinc-200" title={session.serverName}>{name}</span>
           <span className={`min-w-0 truncate text-[11px] ${broken ? "text-red-400/90" : "text-zinc-500"}`}>
@@ -605,7 +606,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
             className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center ${broken ? "bg-red-500/10 text-red-400" : "bg-primary/10 text-primary"}`}
             aria-hidden="true"
           >
-            {working ? <Loader2 size={16} className="animate-spin" /> : broken ? <AlertTriangle size={16} /> : <MonitorSmartphone size={16} />}
+            {working ? <Loader2 size={16} className="animate-spin-brief" /> : broken ? <AlertTriangle size={16} /> : <MonitorSmartphone size={16} />}
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-zinc-100 truncate" title={session.serverName}>{name}</h2>

@@ -25,7 +25,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
       <UserCircle size={20} className={activeTab === 'profile' ? "drop-shadow-[0_0_8px_rgba(var(--primary),0.5)]" : ""} />
       {/* Sync moved into the panel, so the rail carries the only cue that it's
           running — otherwise a background sync would be completely invisible. */}
-      {syncing && <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />}
+      {syncing && <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-primary animate-pulse-brief" />}
     </button>
   );
 

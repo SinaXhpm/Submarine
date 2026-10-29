@@ -4,7 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { AlertTriangle, ClipboardPaste, Loader2, MonitorSmartphone, RotateCw, ShieldAlert, SlidersHorizontal, X } from "lucide-react";
 import { AuthPrompts } from "./AuthPrompts";
 import RemoteScreen, { type RemoteScreenHandle } from "./RemoteScreen";
-import { LinkMark, LinkPanel, ToolPanel, VncSettingsPanel, usePageShown, usePauseWhileHidden } from "./ScreenTabTools";
+import { LinkMark, LinkPanel, ToolPanel, VncSettingsPanel, usePauseWhileHidden } from "./ScreenTabTools";
+import { usePageShown } from "../hooks/usePageShown";
 import { readUseSshAgent } from "../util/sshAgent";
 import type { LinkStats } from "../util/screenLink";
 import { VNC_PRESETS, readVncOptions, vncNeedsReconnect, writeVncOptions, type VncOptions } from "../util/vncOptions";
@@ -289,7 +290,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
           view the tab is a part of the window. */}
       <div className="shrink-0 h-9 px-2 sm:px-3 flex items-center gap-2 border-b border-white/5 bg-[#0e0e10] [container-type:inline-size]">
         <span className={`shrink-0 ${broken ? "text-red-400" : "text-primary"}`} aria-hidden="true">
-          {working ? <Loader2 size={14} className="animate-spin" /> : broken ? <AlertTriangle size={14} /> : <MonitorSmartphone size={14} />}
+          {working ? <Loader2 size={14} className="animate-spin-brief" /> : broken ? <AlertTriangle size={14} /> : <MonitorSmartphone size={14} />}
         </span>
         <span className="min-w-0 truncate text-[12px] font-semibold text-zinc-200" title={session.serverName}>{name}</span>
         {connected && via === "" && (
