@@ -15992,6 +15992,12 @@ async fn type_saved_password(
         .map_err(|_| "That terminal isn't open".to_string())
 }
 
+/// What a terminal's page drew of its output (ssh_manager::Outflow).
+#[tauri::command]
+async fn terminal_drawn(terminal_id: String, bytes: u64) {
+    ssh_manager::page_drew(&terminal_id, bytes);
+}
+
 #[tauri::command]
 async fn resize_terminal(state: tauri::State<'_, SshState>, terminal_id: String, cols: u32, rows: u32) -> Result<(), String> {
     if let Some(tx) = state.resize_txs.lock().await.get(&terminal_id) {
@@ -22333,7 +22339,7 @@ pub fn run() {
             telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize, vnc_paste, vnc_shown, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
-            open_terminal, local_shell, write_terminal_data, type_saved_password, resize_terminal, close_terminal,
+            open_terminal, local_shell, write_terminal_data, type_saved_password, terminal_drawn, resize_terminal, close_terminal,
             ssh_info_probe_section, ssh_systemctl_action, ssh_kill_process,
             ssh_iptables_chain, ssh_nft_chain,
             docker::ssh_docker_container_action,
