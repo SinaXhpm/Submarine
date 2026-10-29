@@ -41,6 +41,20 @@ export function scancodeFor(code: string): number | null {
   return null;
 }
 
+const MODIFIERS: Record<string, string> = { Control: "ControlLeft", Alt: "AltLeft", Meta: "MetaLeft", Shift: "ShiftLeft" };
+
+/** The key code for a key event that has none: a phone's keyboard sends no
+ *  scan code, so its KeyboardEvent.code is empty. Found from what the key
+ *  means: a named key has its code's name (Tab, Escape, ArrowUp, F5…), a
+ *  letter or digit is where it is on a US keyboard. "" when there is none. */
+export function codeForKey(key: string): string {
+  if (key in BASE || key in EXTENDED) return key;
+  if (key in MODIFIERS) return MODIFIERS[key];
+  if (/^[a-z]$/i.test(key)) return `Key${key.toUpperCase()}`;
+  if (/^[0-9]$/.test(key)) return `Digit${key}`;
+  return "";
+}
+
 export const SCANCODE = {
   backspace: 0x0e,
   enter: 0x1c,

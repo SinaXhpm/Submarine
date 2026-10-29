@@ -14656,7 +14656,11 @@ async fn rdp_builtin_open(
                     }
                 };
                 let local = tcp.local_addr().unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
-                let _ = tcp.set_nodelay(true);
+                // No delay, and TCP keepalive as the VNC tab has: a link that
+                // goes silent (Wi-Fi gone, a NAT that forgot it) ends the
+                // session within about a minute instead of leaving a frozen
+                // picture that says "connected".
+                crate::tunnel::apply_tunnel_sockopts(&tcp);
                 // One stream type for both ways (the session wants Send + Sync).
                 let (ours, theirs) = tokio::io::duplex(256 * 1024);
                 let carrier = tokio::spawn(async move {
