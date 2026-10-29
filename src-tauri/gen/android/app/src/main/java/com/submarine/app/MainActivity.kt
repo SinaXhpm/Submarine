@@ -44,14 +44,6 @@ class MainActivity : TauriActivity() {
     }
     SubmarinePlugin.applySecureScreen(this, SubmarinePlugin.isSecureScreen(this))
 
-    // Keep the OS from killing our process while the user is in another
-    // app. All SSH state lives in the Rust backend in this same process,
-    // so a foreground service with a persistent notification is the only
-    // sanctioned way to keep sockets open across a background trip.
-    // ContextCompat handles the pre-O / O+ startForegroundService split.
-    val svc = Intent(this, ConnectionKeeperService::class.java)
-    ContextCompat.startForegroundService(this, svc)
-
     window.statusBarColor = Color.parseColor("#0d0d10")
     window.navigationBarColor = Color.parseColor("#0d0d10")
     val content = findViewById<View>(android.R.id.content)
@@ -69,6 +61,20 @@ class MainActivity : TauriActivity() {
       )
       WindowInsetsCompat.CONSUMED
     }
+  }
+
+  // Keep the OS from killing our process while the user is in another
+  // app. All SSH state lives in the Rust backend in this same process,
+  // so a foreground service with a persistent notification is the only
+  // sanctioned way to keep sockets open across a background trip.
+  // Started each time the app comes to the front, not only on create: after
+  // Android's background time limit has stopped it (ConnectionKeeperService
+  // .onTimeout), coming back starts it again. A start while it runs only
+  // repeats its notification. ContextCompat handles the pre-O / O+
+  // startForegroundService split.
+  override fun onStart() {
+    super.onStart()
+    ContextCompat.startForegroundService(this, Intent(this, ConnectionKeeperService::class.java))
   }
 
   // Explicitly stop the keeper when the Activity finishes. Android will
