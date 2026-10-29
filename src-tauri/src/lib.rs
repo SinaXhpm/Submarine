@@ -12529,7 +12529,7 @@ async fn initiate_connection(
 
                 match auth_res {
                     Ok(true) => {
-                        let session_arc = Arc::new(Mutex::new(session));
+                        let session_arc = Arc::new(tokio::sync::RwLock::new(session));
                         // "Still wanted?" registration guard. The handshake can
                         // take up to ~15s (longer via proxy/jump). If, meanwhile,
                         // a reconnect for this key bumped the generation or a
@@ -12804,24 +12804,22 @@ async fn initiate_connection(
                                 };
 
                                 let is_closed = {
-                                    let h = handle_arc.lock().await;
+                                    let h = handle_arc.read().await;
                                     h.is_closed()
                                 };
 
                                 let mut dead = is_closed;
 
                                 if !dead && tick.is_multiple_of(probe_every) {
-                                    // Active probe: hold the handle lock long
-                                    // enough to start AND finish the round
-                                    // trip — concurrent commands wait, but
-                                    // that's fine, they would block on the
-                                    // same lock to open their own channel
-                                    // anyway. 10s timeout: generous enough
+                                    // Active probe: a round trip on the
+                                    // shared handle (read-locked), so commands
+                                    // and tunnels open their own channels
+                                    // meanwhile. 10s timeout: generous enough
                                     // that a congested-but-alive link doesn't
                                     // strike out spuriously.
                                     let asked_at = ssh_manager::LastHeard::now();
                                     let alive = {
-                                        let h = handle_arc.lock().await;
+                                        let h = handle_arc.read().await;
                                         let answered = if ping_unanswered {
                                             probe_with_channel(&h).await
                                         } else {
@@ -12919,8 +12917,8 @@ async fn initiate_connection(
                                 if dead {
                                     // Re-check generation + verify OUR handle is
                                     // still the registered one before tearing
-                                    // anything down. A slow probe holds the handle
-                                    // lock up to 10s; during that window a manual
+                                    // anything down. A slow probe takes up to
+                                    // 10s; during that window a manual
                                     // reconnect / auto-retry can bump the
                                     // generation and register a fresh, healthy
                                     // connection. Without this guard we'd remove
@@ -13485,7 +13483,7 @@ mod shared_login_note_tests {
 async fn resolve_tunnel_transport(
     state: &SshState,
     session_id: &str,
-) -> Result<(Arc<tokio::sync::Mutex<russh::client::Handle<ssh_manager::ClientHandler>>>, tunnel::ForwardedTargets), String> {
+) -> Result<(Arc<tokio::sync::RwLock<russh::client::Handle<ssh_manager::ClientHandler>>>, tunnel::ForwardedTargets), String> {
     let fwd_key = format!("{}::fwd", session_id);
     let (primary, dedicated) = {
         let conns = state.connections.lock().await;
@@ -13518,7 +13516,7 @@ async fn resolve_tunnel_transport(
 async fn start_tunnel_specs_on(
     app: &tauri::AppHandle,
     sid: &str,
-    handle: &Arc<tokio::sync::Mutex<russh::client::Handle<ssh_manager::ClientHandler>>>,
+    handle: &Arc<tokio::sync::RwLock<russh::client::Handle<ssh_manager::ClientHandler>>>,
     targets: &tunnel::ForwardedTargets,
     tunnels: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, tunnel::ActiveTunnel>>>,
     specs_map: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, Vec<tunnel::TunnelSpec>>>>,
@@ -15899,13 +15897,13 @@ async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>,
     // started on the server as a login shell in place of the account's own
     // (LOGIN_SHELL_SCRIPT), where the server can (server_runs_login_shell);
     // otherwise, and with the setting off, the account's own shell. Asked
-    // before the session is locked for the terminal's channel.
+    // before the terminal's channel is opened.
     let login_shell = match use_local_shell.then(local_default_shell).flatten() {
         Some(shell) if server_runs_login_shell(&session_arc, &shell).await => Some(shell),
         _ => None,
     };
 
-    let session = session_arc.lock().await;
+    let session = session_arc.read().await;
     let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
 
     // Request PTY
@@ -16318,7 +16316,7 @@ async fn run_info_script(
 
     let start = std::time::Instant::now();
     let channel = {
-        let session = session_arc.lock().await;
+        let session = session_arc.read().await;
         session.channel_open_session().await.map_err(|e| e.to_string())?
     };
     channel.exec(true, script.as_bytes()).await.map_err(|e| e.to_string())?;
@@ -16574,7 +16572,7 @@ async fn run_exec_capture(
             .ok_or_else(|| "Session not connected".to_string())?
     };
     let channel = {
-        let session = session_arc.lock().await;
+        let session = session_arc.read().await;
         session.channel_open_session().await.map_err(|e| e.to_string())?
     };
     channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
@@ -16755,7 +16753,8 @@ struct SftpListResult {
 // sudo will allow exactly that command, so failures come back as precise
 // errors instead of a broken SFTP stream.
 
-type SessionHandleArc = Arc<tokio::sync::Mutex<russh::client::Handle<ssh_manager::ClientHandler>>>;
+/// A logged-in connection, only ever read-locked (see SshState::connections).
+type SessionHandleArc = Arc<tokio::sync::RwLock<russh::client::Handle<ssh_manager::ClientHandler>>>;
 
 const SUDO_NEED_PASSWORD: &str = "[SUDO] NEED_PASSWORD";
 const SUDO_WRONG_PASSWORD: &str = "[SUDO] WRONG_PASSWORD";
@@ -16832,7 +16831,7 @@ async fn exec_with_stdin_capture(
 ) -> Result<String, String> {
     use russh::ChannelMsg;
     let mut channel = {
-        let session = session_arc.lock().await;
+        let session = session_arc.read().await;
         session.channel_open_session().await.map_err(|e| e.to_string())?
     };
     channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
@@ -17014,7 +17013,7 @@ pub(crate) async fn open_sftp(
     session_arc: &SessionHandleArc,
 ) -> Result<(russh_sftp::client::SftpSession, bool), String> {
     let channel = {
-        let session = session_arc.lock().await;
+        let session = session_arc.read().await;
         session.channel_open_session().await.map_err(|e| e.to_string())?
     };
     match start_sftp(channel).await {
@@ -17118,7 +17117,7 @@ async fn open_elevated_sftp(
     let sudo = if password.is_some() { "sudo -S -k -p ''" } else { "sudo -n" };
     let cmd = format!("echo {}; exec {} {}", ELEVATED_SFTP_READY, sudo, server_path);
     let channel = {
-        let session = session_arc.lock().await;
+        let session = session_arc.read().await;
         session.channel_open_session().await.map_err(|e| e.to_string())?
     };
     channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
@@ -19443,10 +19442,9 @@ async fn sftp_open_remote_file(
                     };
 
                     // Open the SFTP subsystem, then IMMEDIATELY drop the
-                    // session mutex. Holding it across the whole write serialises
-                    // every open_terminal / cold-cache SFTP-bootstrap request on
-                    // the same session behind this one save — visible as a UI
-                    // freeze whenever the user Ctrl-S's a large remote file.
+                    // session handle's guard: nothing waits on it (it's shared
+                    // for reading), but the save shouldn't keep it longer than
+                    // the open it needs it for.
                     // An elevated tab (file ops as root via sudo) must save
                     // back the same way, or root-owned files can't be written.
                     let elevation = elevation_clone.lock().await.get(&session_id_clone).cloned();

@@ -1097,7 +1097,7 @@ async fn run_remote_job(
 ) -> Result<RemoteRun, String> {
     use russh::ChannelMsg;
     let mut channel = {
-        let session = session.lock().await;
+        let session = session.read().await;
         session.channel_open_session().await.map_err(|e| e.to_string())?
     };
     channel.exec(true, "sh -s").await.map_err(|e| e.to_string())?;
