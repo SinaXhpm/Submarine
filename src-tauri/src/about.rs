@@ -168,12 +168,22 @@ fn semver_greater(a: &str, b: &str) -> bool {
 /// Android yet" — now fixed).
 #[tauri::command]
 pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     let lowered = url.to_ascii_lowercase();
     if !(lowered.starts_with("https://") || lowered.starts_with("http://")) {
         return Err("[OPEN] only http(s) urls are allowed".into());
     }
-    app.opener()
-        .open_url(&url, None::<&str>)
-        .map_err(|e| format!("[OPEN] {}", e))
+    // On Linux the browser starts without this app's own WebKit workarounds
+    // (child_env.rs), which the plugin would hand down to it.
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
+        crate::child_env::open_detached(&url).map_err(|e| format!("[OPEN] {}", e))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_url(&url, None::<&str>)
+            .map_err(|e| format!("[OPEN] {}", e))
+    }
 }

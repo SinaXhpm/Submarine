@@ -165,7 +165,7 @@ pub fn open_in_editor(path: &std::path::Path) -> Result<(), String> {
     }
     #[cfg(all(not(windows), not(target_os = "android")))]
     {
-        open::that(path).map_err(|e| e.to_string())
+        crate::child_env::open(path).map_err(|e| e.to_string())
     }
     // The `open` crate isn't part of the Android build, and live edit isn't there.
     #[cfg(target_os = "android")]

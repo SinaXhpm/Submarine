@@ -37,6 +37,7 @@ mod approvals;
 mod agent_auth;
 mod ssh_config;
 mod proxy_command;
+mod child_env;
 mod open_policy;
 mod known_hosts;
 mod rdp;
@@ -15077,13 +15078,6 @@ async fn rdp_builtin_close(rdp_clients: tauri::State<'_, RdpClients>, session_id
     Ok(())
 }
 
-/// The rendering workarounds this process set for its own WebKit at startup
-/// (software GL, X11 instead of Wayland), unless the user had set them. A
-/// program it starts would inherit them: they're taken out again for an RDP
-/// app, which should run as if the user had started it.
-#[cfg(target_os = "linux")]
-static OWN_RENDER_ENV: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-
 /// Removes `file`, the `.rdp` file with the saved password in it, once the
 /// RDP app started with it has read it: when it first waits for the user
 /// (its security warning, or its login), at the earliest 3 s and at the
@@ -15134,10 +15128,8 @@ fn launch_rdp_app(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    #[cfg(target_os = "linux")]
-    for name in OWN_RENDER_ENV.get().into_iter().flatten() {
-        cmd.env_remove(name);
-    }
+    // As if the user had started it: without this app's own WebKit workarounds.
+    child_env::clean(cmd.as_std_mut());
     let mut child = cmd.spawn().map_err(|e| format!("Couldn't start {}: {e}", launcher.name))?;
     #[cfg(windows)]
     if let (true, Some(file)) = (launcher.secret, &launcher.file) {
@@ -19758,7 +19750,7 @@ async fn sftp_open_remote_file(
     {
         let open_res = match opening {
             open_policy::Opening::Editor => open_policy::open_in_editor(&temp_file_path),
-            _ => open::that(&temp_file_path).map_err(|e| e.to_string()),
+            _ => child_env::open(&temp_file_path).map_err(|e| e.to_string()),
         };
         if let Err(e) = open_res {
             return Err(format!("Failed to open file: {}", e));
@@ -19956,7 +19948,7 @@ async fn local_open_file(local_path: String) -> Result<(), String> {
     #[cfg(not(target_os = "android"))]
     {
         let safe = guard_local_path(&local_path, false)?;
-        open::that(&safe).map_err(|e| format!("Failed to open local file: {}", e))?;
+        child_env::open(&safe).map_err(|e| format!("Failed to open local file: {}", e))?;
         Ok(())
     }
 }
@@ -19972,9 +19964,9 @@ async fn local_open_in_explorer(local_path: String) -> Result<(), String> {
     {
         let safe = guard_local_path(&local_path, false)?;
         if safe.is_dir() {
-            open::that(&safe).map_err(|e| format!("Failed to open folder: {}", e))?;
+            child_env::open(&safe).map_err(|e| format!("Failed to open folder: {}", e))?;
         } else if let Some(parent) = safe.parent() {
-            open::that(parent).map_err(|e| format!("Failed to open folder: {}", e))?;
+            child_env::open(parent).map_err(|e| format!("Failed to open folder: {}", e))?;
         }
         Ok(())
     }
@@ -22305,9 +22297,8 @@ pub fn run() {
             std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
             own_render_env.push("LIBGL_ALWAYS_SOFTWARE");
         }
-        // Kept out of the programs this process starts (an RDP app): see
-        // OWN_RENDER_ENV.
-        let _ = OWN_RENDER_ENV.set(own_render_env);
+        // Kept out of the programs this process starts: see child_env.rs.
+        child_env::remember(own_render_env);
         // Sandbox the web process (bubblewrap) when this machine supports it.
         // The rendering flags above still reach it: WebKit's bwrap launcher
         // only sets/unsets a few specific variables, it never clears the

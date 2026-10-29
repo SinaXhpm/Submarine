@@ -277,6 +277,8 @@ fn build_command(command: &str) -> Result<std::process::Command, String> {
         let path = std::env::var("PATH").unwrap_or_default();
         cmd.env("PATH", with_homebrew(&path));
     }
+    // Without this app's own WebKit workarounds (an askpass window it opens).
+    crate::child_env::clean(&mut cmd);
     Ok(cmd)
 }
 
