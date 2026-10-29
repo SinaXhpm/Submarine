@@ -323,6 +323,16 @@ function nextTerminalNumber(terminals: { title: string; baseTitle?: string; cont
   return `${n}`;
 }
 
+// A server's on-connect commands as they are typed: a line each, blank
+// lines left out, each sent with Enter.
+function onConnectText(commands: string): string {
+  return commands
+    .split(/\r?\n/)
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim().length > 0)
+    .join('\n') + '\n';
+}
+
 // Servers whose new terminals log in on their own (issue #230): this device's
 // choice, by the server's sync id, never synced.
 const OWN_LOGIN_KEY = "submarine-terminal-own-login";
@@ -965,6 +975,15 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // Guards the per-node "run on connect" commands to fire exactly once for
   // this session view — first successful connect only, never on reconnect.
   const ranOnConnectRef = useRef(false);
+  // Whether this tab may type them: null until that first connect decides
+  // (asking first when they are held), then true, or false after "Not now".
+  const onConnectAllowedRef = useRef<boolean | null>(null);
+  // The terminals they went into: each gets them once. With the server's
+  // "each new terminal" (#256) that is every terminal of the tab, the ones
+  // with their own login too, but not a container's.
+  const typedOnConnectRef = useRef<Set<string>>(new Set());
+  const terminalsRef = useRef(terminals);
+  terminalsRef.current = terminals;
   // Asks before typing on-connect commands someone else set in a shared
   // profile. Read through a ref: the connect listener is registered once.
   const confirm = useConfirm();
@@ -975,10 +994,27 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // dropped — opening a terminal can take longer than the delay they had.
   const openedTerminalsRef = useRef<Set<string>>(new Set());
   const stopWaitingForTerminalRef = useRef<(() => void) | null>(null);
+  // Types the on-connect commands into a terminal whose shell is open, a
+  // moment after so it has printed its prompt — they then land after it
+  // instead of racing the shell's startup and getting swallowed.
+  const typeOnConnectInto = (terminalId: string) => {
+    if (typedOnConnectRef.current.has(terminalId)) return;
+    typedOnConnectRef.current.add(terminalId);
+    const bytes = Array.from(new TextEncoder().encode(onConnectText(session.runOnConnect || '')));
+    setTimeout(() => {
+      invoke('write_terminal_data', { terminalId, data: bytes }).catch(() => {});
+    }, 700);
+  };
+  // A terminal of this tab that gets them as soon as its shell is open.
+  const getsOnConnect = (terminalId: string) =>
+    !!session.runOnConnectEvery && onConnectAllowedRef.current === true
+    && terminalsRef.current.some(t => t.id === terminalId && !t.container);
   useEffect(() => {
     const onOpened = (e: Event) => {
       const id = (e as CustomEvent).detail;
-      if (typeof id === 'string') openedTerminalsRef.current.add(id);
+      if (typeof id !== 'string') return;
+      openedTerminalsRef.current.add(id);
+      if (getsOnConnect(id)) typeOnConnectInto(id);
     };
     window.addEventListener('submarine-terminal-opened', onOpened);
     return () => {
@@ -1149,29 +1185,27 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
         // Per-node on-connect commands: auto-typed ONCE into the first
         // terminal on the INITIAL connect only (the `else` gates out
         // reconnects; ranOnConnectRef gates out any duplicate success
-        // event). Typed once the terminal's shell is open, and a moment
-        // after so it has printed its prompt — the commands then land after
-        // it instead of racing the shell's startup and getting swallowed.
+        // event), once the terminal's shell is open (typeOnConnectInto).
+        // With "each new terminal", every terminal of the tab gets them
+        // once its shell is open (getsOnConnect), also the ones open already.
         ranOnConnectRef.current = true;
-        const cmds = session.runOnConnect
-          .split(/\r?\n/)
-          .map((l: string) => l.trimEnd())
-          .filter((l: string) => l.trim().length > 0)
-          .join('\n') + '\n';
+        const cmds = onConnectText(session.runOnConnect);
         const typeThem = () => {
+          onConnectAllowedRef.current = true;
+          if (session.runOnConnectEvery) {
+            for (const t of terminalsRef.current) {
+              if (!t.container && openedTerminalsRef.current.has(t.id)) typeOnConnectInto(t.id);
+            }
+          }
           const terminalId = `${session.id}-term-0`;
-          const bytes = Array.from(new TextEncoder().encode(cmds));
-          const type = () => setTimeout(() => {
-            invoke('write_terminal_data', { terminalId, data: bytes }).catch(() => {});
-          }, 700);
           if (openedTerminalsRef.current.has(terminalId)) {
-            type();
+            typeOnConnectInto(terminalId);
             return;
           }
           const onOpened = (e: Event) => {
             if ((e as CustomEvent).detail !== terminalId) return;
             stopWaitingForTerminalRef.current?.();
-            type();
+            typeOnConnectInto(terminalId);
           };
           window.addEventListener('submarine-terminal-opened', onOpened);
           stopWaitingForTerminalRef.current = () => {
@@ -1185,12 +1219,13 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           // them unasked. Cancel has the focus, so a stray Enter is a no.
           confirmRef.current({
             title: "Run the on-connect commands?",
-            message: `Someone you share this profile with set these commands to run when you connect to ${session.serverName}:\n\n${cmds.trimEnd()}\n\nThey would be typed into your terminal on that server.`,
+            message: `Someone you share this profile with set these commands to run when you connect to ${session.serverName}:\n\n${cmds.trimEnd()}\n\nThey would be typed into your terminal on that server${session.runOnConnectEvery ? ", and into each new terminal you open there" : ""}.`,
             okLabel: "Allow and run",
             cancelLabel: "Not now",
             safeDefault: true,
           }).then(async (ok) => {
             if (!ok) {
+              onConnectAllowedRef.current = false;
               addLog(`On-connect commands for ${session.serverName} not run: they are waiting for your OK.`, "info");
               return;
             }
@@ -1198,6 +1233,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               await invoke("allow_held", { serverId: session.serverId, items: ["run_on_connect"] });
               window.dispatchEvent(new Event("submarine-held-changed"));
             } catch (e) {
+              onConnectAllowedRef.current = false;
               addLog(`ALLOW_FAILED: ${e}`, "error");
               return;
             }

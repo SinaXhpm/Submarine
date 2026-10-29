@@ -947,7 +947,7 @@ const ENTITIES: &[EntitySpec] = &[
     EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password", "edited_by"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys", required: false }] },
     EntitySpec {
         table: "servers",
-        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "protocol", "position", "edited_by"],
+        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "run_on_connect_every", "protocol", "position", "edited_by"],
         fks: &[
             Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials", required: false },
             Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders", required: false },
@@ -1005,7 +1005,7 @@ fn col_kind(table: &str, col: &str) -> ColKind {
         | ("notes", "title" | "body") => ColKind::RequiredText,
         ("servers", "port") => ColKind::Int32,
         ("servers", "proxy_port") => ColKind::OptionalInt32,
-        ("servers", "autostart" | "position") => ColKind::OptionalInt,
+        ("servers", "autostart" | "position" | "run_on_connect_every") => ColKind::OptionalInt,
         ("servers", "tunnels" | "mirrors") => ColKind::ObjectList,
         _ => ColKind::Text,
     }
@@ -1325,6 +1325,9 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     // the node back into an SSH server here, so the local value is kept. A
     // newer peer always sends the key, NULL for an SSH server.
     let preserve_local_protocol = spec.table == "servers" && !obj.contains_key("protocol");
+    // And for a server's `run_on_connect_every` (#256): a peer from before it
+    // would otherwise turn it off whenever it edits the server.
+    let preserve_local_every = spec.table == "servers" && !obj.contains_key("run_on_connect_every");
     // The same for a command's `scope` (#22): a peer from before it would
     // otherwise turn a command for some servers into one for all of them.
     let preserve_local_scope = spec.table == "commands" && !obj.contains_key("scope");
@@ -1410,6 +1413,8 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                 format!("position={}.position", spec.table)
             } else if c.as_str() == "protocol" && preserve_local_protocol {
                 format!("protocol={}.protocol", spec.table)
+            } else if c.as_str() == "run_on_connect_every" && preserve_local_every {
+                format!("run_on_connect_every={}.run_on_connect_every", spec.table)
             } else if c.as_str() == "scope" && preserve_local_scope {
                 format!("scope={}.scope", spec.table)
             } else {
@@ -3674,7 +3679,7 @@ mod sync_engine_tests {
             "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
-             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
              CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});",
@@ -4202,6 +4207,61 @@ mod sync_engine_tests {
         apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
         let s: Option<String> = b.query_row("SELECT scope FROM commands WHERE title='uptime'", [], |r| r.get(0)).unwrap();
         assert_eq!(s, None);
+    }
+
+    // #256: on-connect commands for every new terminal sync, and a peer from
+    // before it (no key) editing the server doesn't turn it off.
+    #[test]
+    fn run_on_connect_every_syncs_and_an_older_peers_edit_keeps_it() {
+        let (a, _ha) = device("A");
+        a.execute(
+            "INSERT INTO servers(name, host, port, run_on_connect, run_on_connect_every) VALUES('web', 'h', 22, 'cd /srv', 1)",
+            [],
+        )
+        .unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        let got = |c: &Connection| -> Option<i64> {
+            c.query_row("SELECT run_on_connect_every FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(got(&b), Some(1), "it syncs");
+
+        a.execute("UPDATE servers SET host='h2' WHERE name='web'", []).unwrap();
+        let ahead = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            assert!(obj.as_object_mut().unwrap().remove("run_on_connect_every").is_some(), "a current peer always sends the key");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+            r.updated_at = format!("{ahead:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let host: String = b.query_row("SELECT host FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        assert_eq!(host, "h2", "the edit applies");
+        assert_eq!(got(&b), Some(1), "and the server keeps it");
+
+        // A current peer turns it off.
+        a.execute("UPDATE servers SET run_on_connect_every=0 WHERE name='web'", []).unwrap();
+        let later = ahead + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            r.updated_at = format!("{later:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        assert_eq!(got(&b), Some(0), "off from a current peer is off");
+
+        // And a server new to this device, from an older peer, lands with it off.
+        let (c, _hc) = device("C");
+        c.execute("INSERT INTO servers(name, host, port) VALUES('db', 'h3', 22)", []).unwrap();
+        let mut recs = collect_local_records(&c, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            obj.as_object_mut().unwrap().remove("run_on_connect_every");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let every: Option<i64> = b.query_row("SELECT run_on_connect_every FROM servers WHERE name='db'", [], |r| r.get(0)).unwrap();
+        assert_eq!(every, None);
     }
 
     #[test]
@@ -5637,6 +5697,10 @@ async fn setup_master_db_inner(
             // Commands auto-typed into the FIRST terminal on the INITIAL
             // connect (never on reconnect / extra shells). Empty = nothing.
             "ALTER TABLE servers ADD COLUMN run_on_connect TEXT NOT NULL DEFAULT ''",
+            // 1: the on-connect commands also go into every new terminal of
+            // the server (#256). NULL or 0 = the first terminal only. Synced;
+            // nullable so a record from an older peer still lands.
+            "ALTER TABLE servers ADD COLUMN run_on_connect_every INTEGER",
             // ProxyJump: optional id of another server to bounce through. NULL
             // = connect directly. Nullable + additive so old binaries ignore
             // it (no SCHEMA_VERSION bump, matching run_on_connect above).
@@ -5738,7 +5802,7 @@ async fn setup_master_db_inner(
             "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
@@ -6827,16 +6891,18 @@ async fn set_server_notes(state: tauri::State<'_, DbState>, id: i32, notes: Stri
 
 /// Per-server commands auto-typed into the first terminal on initial connect.
 /// Stored as a single blob (newline-separated lines); the frontend sends them
-/// only for `-term-0` and only on the first open, never on reconnect. Written
-/// through its own command (like set_server_notes) so it doesn't have to be
-/// threaded through add_server / edit_server's positional parameter lists.
+/// for `-term-0` on the first connect, never on reconnect, and with `every`
+/// also once into each new terminal of the server (#256). Written through its
+/// own command (like set_server_notes) so it doesn't have to be threaded
+/// through add_server / edit_server's positional parameter lists. `every`
+/// left out keeps what the server has.
 #[tauri::command]
-async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, value: String) -> Result<(), String> {
+async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, value: String, every: Option<bool>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     conn.execute(
-        "UPDATE servers SET run_on_connect=?1 WHERE id=?2",
-        rusqlite::params![value, id],
+        "UPDATE servers SET run_on_connect=?1, run_on_connect_every=COALESCE(?2, run_on_connect_every) WHERE id=?3",
+        rusqlite::params![value, every.map(i64::from), id],
     ).map_err(|e| format!("[DATABASE] SERVER_RUN_ON_CONNECT_FAILED: {}", e))?;
     drop(conn_guard);
     save_vault_internal(&state)?;
@@ -6907,8 +6973,8 @@ async fn clone_server(state: tauri::State<'_, DbState>, id: i32) -> Result<i64, 
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     let affected = conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, protocol)
-         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color, notes, run_on_connect, jump_host_id, protocol
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, run_on_connect_every, jump_host_id, protocol)
+         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color, notes, run_on_connect, run_on_connect_every, jump_host_id, protocol
          FROM servers WHERE id = ?1",
         rusqlite::params![id],
     ).map_err(|e| format!("[DATABASE] SERVER_CLONE_FAILED: {}", e))?;
@@ -6973,7 +7039,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     // ORDER BY (position, id): `position` is the manual drag-to-reorder rank
     // (default 0 for never-reordered rows), and id breaks ties so the order is
     // stable and, before any reorder, identical to the old rowid order.
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid, protocol FROM servers ORDER BY position, id")
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid, protocol, run_on_connect_every FROM servers ORDER BY position, id")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -6998,6 +7064,8 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             "color": row.get::<_, Option<String>>(16)?,
             "notes": row.get::<_, Option<String>>(17)?.unwrap_or_default(),
             "run_on_connect": row.get::<_, Option<String>>(18)?.unwrap_or_default(),
+            // The commands go into every new terminal too, not only the first (#256).
+            "run_on_connect_every": row.get::<_, Option<i64>>(25)?.unwrap_or(0) != 0,
             "jump_host_id": row.get::<_, Option<i32>>(19)?,
             // Attribution: HLC stamp (encodes last-edit time) + who last edited.
             "updated_at": row.get::<_, Option<String>>(20)?,
