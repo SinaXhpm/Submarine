@@ -45,8 +45,9 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
   useEffect(() => {
     if (kbiPrompt && isActiveView) kbiFirstInputRef.current?.focus();
   }, [kbiPrompt, isActiveView]);
-  // The terminal takes the keys when the tab comes to the front.
-  useEffect(() => { if (isActiveView) setFocusTick((t) => t + 1); }, [isActiveView]);
+  // The terminal takes the keys when the tab comes to the front, and when it
+  // is connected (it refuses them while it isn't).
+  useEffect(() => { if (isActiveView) setFocusTick((t) => t + 1); }, [isActiveView, status]);
 
   const pushLog = useCallback((p: any) => {
     const time = new Date().toLocaleTimeString();
