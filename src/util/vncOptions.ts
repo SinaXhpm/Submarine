@@ -113,6 +113,16 @@ export function readVncOptions(uuid?: string | null): VncOptions {
   return normalizeVncOptions(o);
 }
 
+export function forgetVncOptions(uuid: string): void {
+  const all = readAll();
+  delete all[uuid];
+  try {
+    localStorage.setItem(VNC_OPTIONS_KEY, JSON.stringify(all));
+  } catch {
+    // Best-effort, same as the other per-device prefs.
+  }
+}
+
 export function writeVncOptions(uuid: string, options: VncOptions): void {
   const all = readAll();
   all[uuid] = normalizeVncOptions(options);

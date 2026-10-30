@@ -192,6 +192,16 @@ export function writeRdpOptions(uuid: string, options: RdpOptions): void {
   }
 }
 
+export function forgetRdpOptions(uuid: string): void {
+  const all = readAll();
+  delete all[uuid];
+  try {
+    localStorage.setItem(RDP_OPTIONS_KEY, JSON.stringify(all));
+  } catch {
+    // Best-effort, same as the other per-device prefs.
+  }
+}
+
 /** One line for the RDP tab: "Full screen · clipboard shared · files not shared". */
 export function describeRdpOptions(o: RdpOptions): string {
   return [

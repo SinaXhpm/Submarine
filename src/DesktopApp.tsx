@@ -30,8 +30,8 @@ import {
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
 import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
-import { DEFAULT_RDP_OPTIONS, readRdpOptions, writeRdpOptions } from "./util/rdpOptions";
-import { DEFAULT_VNC_OPTIONS, readVncOptions, writeVncOptions } from "./util/vncOptions";
+import { DEFAULT_RDP_OPTIONS, forgetRdpOptions, readRdpOptions, writeRdpOptions } from "./util/rdpOptions";
+import { DEFAULT_VNC_OPTIONS, forgetVncOptions, readVncOptions, writeVncOptions } from "./util/vncOptions";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
 import { folderTree } from "./util/folderTree";
@@ -718,10 +718,20 @@ function DesktopApp() {
     };
   }, [isUnlocked, appSettings.autoSync, appSettings.syncIntervalMin, quietSync]);
 
+  // What this device keeps for a server and the sync doesn't: it goes with the server.
+  const forgetServer = (s: { id: number; uuid?: string | null }) => {
+    if (activeProfile) forgetServerBookmarks(activeProfile, s.id);
+    if (s.uuid) {
+      forgetRdpOptions(s.uuid);
+      forgetVncOptions(s.uuid);
+    }
+  };
+
   const removeServer = async (id: number) => {
+    const server = (servers || []).find((s: any) => s.id === id);
     try {
       await invoke("delete_server", { id });
-      if (activeProfile) forgetServerBookmarks(activeProfile, id);
+      forgetServer(server || { id });
       refreshServers();
       bumpSync();
       addLog("Server removed.", "info");
@@ -733,10 +743,10 @@ function DesktopApp() {
     // which servers go, for the same per-server cleanup removeServer does.
     const tree = folderTree(folders);
     const inside = tree.subtreeOf(id);
-    const gone: number[] = (servers || []).filter((s: any) => inside.has(tree.serverFolder(s) as number)).map((s: any) => s.id);
+    const gone: any[] = (servers || []).filter((s: any) => inside.has(tree.serverFolder(s) as number));
     try {
       await invoke("delete_folder", { id });
-      if (activeProfile) gone.forEach((sid) => forgetServerBookmarks(activeProfile, sid));
+      gone.forEach(forgetServer);
       await Promise.all([refreshFolders(), refreshServers()]);
       bumpSync();
       addLog("Folder removed.", "info");
@@ -1391,7 +1401,7 @@ function DesktopApp() {
                   if (sessionStatuses[s.id] === "connected") {
                     const ok = await confirm({
                       title: "Close this session?",
-                      message: "The SSH connection will be dropped.",
+                      message: "The connection will be dropped.",
                       okLabel: "Close",
                       destructive: true,
                     });
