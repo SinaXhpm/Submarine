@@ -17,7 +17,7 @@ import {
   CUSTOM_THEME_ID, DEFAULT_THEME_ID, SCHEMES, TerminalScheme, XTERM_ANSI,
   parseWindowsTerminalScheme, schemeToWindowsTerminalJson,
 } from "../util/terminalTheme";
-import { IS_ANDROID } from "../util/platform";
+import { IS_ANDROID, IS_MOBILE } from "../util/platform";
 
 // Where this install keeps its data (see src-tauri/src/portable.rs). `portable`
 // means a `submarine-data` folder next to the executable is in use; `warning`
@@ -791,8 +791,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, servers = [] }: any)
           <ShellConfigSyncSettings servers={servers} />
         </section>
 
-        {/* Not on Android, which has no ssh-agent or ~/.ssh/config to use. */}
-        {!IS_ANDROID && (
+        {/* Not on a phone or tablet, which has no ssh-agent or ~/.ssh/config to use. */}
+        {!IS_MOBILE && (
           <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
             <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
               <KeyRound size={14} /> Authentication

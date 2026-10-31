@@ -49,7 +49,7 @@ pub(crate) fn set_enabled(on: bool) {
 
 /// Whether `~/.ssh/config` is read at all on this device.
 pub(crate) fn enabled() -> bool {
-    !cfg!(target_os = "android") && ENABLED.load(Ordering::Relaxed)
+    cfg!(desktop) && ENABLED.load(Ordering::Relaxed)
 }
 
 /// `ProxyCommand` or `ProxyJump`, whichever came first.

@@ -67,7 +67,7 @@ pub fn share_name(share: &Share) -> String {
 /// The folder to share, checked once before the session: an absolute path
 /// to a folder that's there, its links resolved (what the server may reach
 /// is decided here). On Windows a drive is `X:\` of a drive that's there.
-#[cfg_attr(target_os = "android", allow(dead_code))]
+#[cfg_attr(mobile, allow(dead_code))]
 pub fn root(share: &Share) -> Result<PathBuf, String> {
     let given = share.path.trim();
     if given.is_empty() {

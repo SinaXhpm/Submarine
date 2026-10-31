@@ -627,7 +627,9 @@ fn connector_config(login: &Login) -> connector::Config {
         platform: MajorPlatformType::MACINTOSH,
         #[cfg(target_os = "android")]
         platform: MajorPlatformType::ANDROID,
-        #[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
+        #[cfg(target_os = "ios")]
+        platform: MajorPlatformType::IOS,
+        #[cfg(not(any(windows, target_os = "macos", target_os = "android", target_os = "ios")))]
         platform: MajorPlatformType::UNIX,
         // The page draws the local pointer; the server's isn't sent.
         enable_server_pointer: false,

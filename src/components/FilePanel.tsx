@@ -16,7 +16,7 @@ import {
 import { localDir, localJoin, pathCrumbs } from "../fs/localPath";
 import { COMPARE_LABEL, CompareMark, compareListings } from "../fs/compare";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
-import { IS_ANDROID } from "../util/platform";
+import { IS_ANDROID, IS_IOS, IS_MOBILE } from "../util/platform";
 import { nameFilterMatcher } from "../util/nameFilter";
 import { BOOKMARKS_MAX, readBookmarks, writeBookmarks } from "../util/sftpBookmarks";
 
@@ -1265,9 +1265,12 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       // blocks it, app-scoped external files). Users can navigate from
       // there if they want a different subfolder.
       try {
+        // iOS: the app's Documents folder (Files › On My iPhone › Submarine).
         dest = IS_ANDROID
           ? ((await invoke<string>("android_default_local_dir")) || undefined)
-          : ((await invoke<string | null>("select_local_folder")) || undefined);
+          : IS_IOS
+            ? ((await invoke<string>("local_home_dir")) || undefined)
+            : ((await invoke<string | null>("select_local_folder")) || undefined);
       } catch (err: any) { notify(`Pick folder failed: ${err}`, "error"); return; }
       if (!dest) return;
     }
@@ -1403,7 +1406,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     // save); local → open in the OS default app. Both are desktop-only — on
     // Android opening a file is a no-op (there's no OS default editor to hand
     // off to).
-    if (IS_ANDROID) return;
+    if (IS_MOBILE) return;
     if (provider.id === "remote") liveEditEntry(entry);
     else openLocalEntry(entry);
   };
@@ -1805,7 +1808,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 Shell
               </span>
             )}
-            {provider.id === "local" && (
+            {/* iOS has no folder picker: the pane stays in the app's own folders. */}
+            {provider.id === "local" && !IS_IOS && (
               <button
                 onClick={async () => {
                   if (IS_ANDROID) {
@@ -2289,7 +2293,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                   title="Options"
                   aria-label="Options"
                   className={`flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-white/10 hover:!opacity-100 ${
-                    IS_ANDROID || isSel || isCursor ? "opacity-60" : "opacity-0 group-hover:opacity-60"
+                    IS_MOBILE || isSel || isCursor ? "opacity-60" : "opacity-0 group-hover:opacity-60"
                   }`}
                 >
                   <MoreVertical size={11} />
@@ -2332,7 +2336,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               <Folder size={11} className="text-indigo-400" /><span>Open</span>
             </button>
           )}
-          {!multi && !contextMenu.entry.isDir && !isRemote && !IS_ANDROID && (
+          {!multi && !contextMenu.entry.isDir && !isRemote && !IS_MOBILE && (
             <button onClick={() => { setContextMenu(null); openLocalEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <ExternalLink size={11} className="text-indigo-400" /><span>Open</span>
@@ -2357,14 +2361,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               filesystem watcher. Android has none of those in a form we
               can bridge, so the backend command returns an error there
               — hide the menu item entirely rather than surface it. */}
-          {isRemote && !multi && !contextMenu.entry.isDir && !IS_ANDROID && (
+          {isRemote && !multi && !contextMenu.entry.isDir && !IS_MOBILE && (
             <button onClick={() => { setContextMenu(null); liveEditEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <ExternalLink size={11} className="text-indigo-400" /><span>Edit (auto-upload)</span>
             </button>
           )}
 
-          {!isRemote && !multi && !IS_ANDROID && (
+          {!isRemote && !multi && !IS_MOBILE && (
             <button onClick={() => { setContextMenu(null); revealLocalEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <FolderSearch size={11} className="text-emerald-300" /><span>Reveal in Explorer</span>

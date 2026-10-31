@@ -7,7 +7,7 @@ import RemoteScreen, { type RemoteScreenHandle } from "./RemoteScreen";
 import { FilesPanel, LinkMark, LinkPanel, RdpSettingsPanel, ToolPanel, usePauseWhileHidden, type SharedNow } from "./ScreenTabTools";
 import { usePageShown } from "../hooks/usePageShown";
 import { readUseSshAgent } from "../util/sshAgent";
-import { IS_ANDROID, IS_WINDOWS } from "../util/platform";
+import { IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import type { LinkStats } from "../util/screenLink";
 import {
   RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, RDP_PRESETS, describeRdpOptions, rdpGraphics, rdpNeedsReconnect, rdpShare, readRdpOptions, writeRdpOptions,
@@ -42,7 +42,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const [builtin, setBuiltin] = useState(() => readRdpOptions(session.serverUuid).app === "builtin");
   // "idle" on a phone until the built-in client is chosen: there's no RDP app.
   const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "failed" | "disconnected">(
-    IS_ANDROID && !builtin ? "idle" : "connecting",
+    IS_MOBILE && !builtin ? "idle" : "connecting",
   );
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [opened, setOpened] = useState<Opened | null>(null);
@@ -130,8 +130,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         allowNoNla: options.allowNoNla,
         graphics: rdpGraphics(options),
         clipboard: options.clipboard,
-        // A phone shares no files: its backend has no drive to give.
-        share: IS_ANDROID ? null : rdpShare(options),
+        // A phone or tablet shares no files: its backend has no drive to give.
+        share: IS_MOBILE ? null : rdpShare(options),
         askPassword: askPassword.current,
         frames: canvas.newChannel(),
       }).catch(failed);
@@ -217,7 +217,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       }),
     ]);
     // A phone connects once the built-in client is chosen in the tab.
-    subs.then(() => { if (!cancelled && (builtin || !IS_ANDROID)) connect(); });
+    subs.then(() => { if (!cancelled && (builtin || !IS_MOBILE)) connect(); });
     // The tab menu's Reconnect.
     const onReconnect = () => connect();
     window.addEventListener(`session-reconnect-${id}`, onReconnect);
@@ -407,7 +407,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
 
   // A phone: no RDP app to hand it to, so the built-in client is offered here,
   // and saved as this device's choice for the server once taken.
-  if (IS_ANDROID && !builtin) {
+  if (IS_MOBILE && !builtin) {
     const useBuiltin = () => {
       if (session.serverUuid) writeRdpOptions(session.serverUuid, { ...readRdpOptions(session.serverUuid), app: "builtin" });
       setStatus("connecting");
@@ -481,8 +481,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
               </button>
             )}
             {connected && <LinkMark link={link} open={panel === "link"} onClick={() => togglePanel("link")} />}
-            {/* A phone shares no files: its backend has no drive to give. */}
-            {!IS_ANDROID && (
+            {/* A phone or tablet shares no files: its backend has no drive to give. */}
+            {!IS_MOBILE && (
               <button
                 onClick={() => togglePanel("files")}
                 aria-expanded={panel === "files"}

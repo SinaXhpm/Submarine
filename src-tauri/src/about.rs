@@ -15,6 +15,10 @@ pub const GITHUB_REPO: &str = "SinaXhpm/Submarine";
 #[derive(Debug, Clone, Serialize)]
 pub struct AppInfo {
     pub version: String,
+    /// Whether this build looks for new releases on GitHub. Not on iOS and not
+    /// in the Mac App Store build: the App Store updates those (and
+    /// PRIVACY.md says the iOS app doesn't ask GitHub).
+    pub updates: bool,
     pub github_repo_url: String,
     pub github_releases_url: String,
 }
@@ -25,10 +29,14 @@ pub struct AppInfo {
 pub fn app_info() -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
+        updates: UPDATES,
         github_repo_url: format!("https://github.com/{}", GITHUB_REPO),
         github_releases_url: format!("https://github.com/{}/releases", GITHUB_REPO),
     }
 }
+
+/// See `AppInfo::updates`.
+const UPDATES: bool = !cfg!(any(target_os = "ios", feature = "app-store"));
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateInfo {
@@ -74,6 +82,10 @@ struct GhRelease {
 #[tauri::command]
 pub async fn check_for_updates() -> Result<UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
+    // The App Store's builds: nothing is asked, nothing is offered.
+    if !UPDATES {
+        return Ok(UpdateInfo { current, latest: None, has_update: false, release_url: None });
+    }
     let url = format!("https://api.github.com/repos/{}/releases?per_page=100", GITHUB_REPO);
 
     // Build a fresh client per call rather than holding state — this is

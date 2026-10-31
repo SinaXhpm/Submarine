@@ -1,0 +1,9 @@
+{
+  "identifier": "com.sinaxhpm.submarine",
+  "bundle": {
+    "iOS": {
+      "developmentTeam": "3KBG9ZP99C",
+      "minimumSystemVersion": "15.0"
+    }
+  }
+}

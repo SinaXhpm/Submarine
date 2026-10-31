@@ -53,6 +53,16 @@ original_index.css
 .env.*
 !.env.example
 
+# Apple signing files (certificates, keys, profiles, App Store Connect API
+# keys). They live outside the repo and reach CI only as GitHub secrets
+# (.github/workflows/apple.yml); never commit one.
+*.p12
+*.p8
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.certSigningRequest
+
 # Editor and OS scratch files we haven't already covered above.
 Thumbs.db
 desktop.ini

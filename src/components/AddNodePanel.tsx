@@ -11,7 +11,7 @@ import { SwitchRow } from "./FormRows";
 import { RdpShareFields, RdpSpeedFields } from "./RdpOptionFields";
 import { VncSpeedFields } from "./VncOptionFields";
 import { DEFAULT_VNC_OPTIONS, normalizeVncOptions, type VncOptions } from "../util/vncOptions";
-import { IS_ANDROID, IS_WINDOWS } from "../util/platform";
+import { IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
 
 // Compact "2h ago" style relative time for the attribution line.
@@ -789,11 +789,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               const set = (patch: Partial<RdpOptions>) => setNewNode({ ...newNode, rdpOptions: { ...o, ...patch } });
               const size = `${o.width}x${o.height}`;
               const known = RDP_WINDOW_SIZES.some(([w, h]) => w === o.width && h === o.height);
-              const builtin = IS_ANDROID || o.app === "builtin";
+              const builtin = IS_MOBILE || o.app === "builtin";
               return (
                 <div className="space-y-3 pt-1">
                   {/* A phone has only the built-in client (offered in the tab). */}
-                  {!IS_ANDROID && (
+                  {!IS_MOBILE && (
                     <div className="flex justify-between items-center gap-3">
                       <label className="text-[11px] font-bold text-zinc-400 shrink-0">Open in</label>
                       <select
@@ -851,7 +851,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       </button>
                     </div>
                     {/* Files: a folder or a whole drive of this computer (rdp_share.rs). */}
-                    {!IS_ANDROID && <RdpShareFields o={o} set={set} drives={localDrives} />}
+                    {!IS_MOBILE && <RdpShareFields o={o} set={set} drives={localDrives} />}
                     <div className="pt-1 space-y-2.5">
                       <div className="text-[11px] font-bold text-zinc-300">Speed and quality</div>
                       <RdpSpeedFields o={o} set={set} />

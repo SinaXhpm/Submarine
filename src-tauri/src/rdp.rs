@@ -481,8 +481,8 @@ pub fn pick_app(find: impl Fn(&str) -> Option<PathBuf>) -> Result<App, String> {
     if cfg!(target_os = "macos") {
         return Ok(App::MacOpen);
     }
-    if cfg!(target_os = "android") {
-        return Err("RDP isn't available on Android yet: it comes with the built-in RDP client".into());
+    if cfg!(mobile) {
+        return Err("On a phone or tablet, RDP servers open in the built-in RDP client".into());
     }
     if let Some(program) = find("remmina") {
         return Ok(App::Remmina(program));

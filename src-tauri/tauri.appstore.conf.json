@@ -1,0 +1,11 @@
+{
+  "identifier": "com.sinaxhpm.submarine",
+  "bundle": {
+    "category": "DeveloperTool",
+    "macOS": {
+      "files": {
+        "Resources/PrivacyInfo.xcprivacy": "./PrivacyInfo.xcprivacy"
+      }
+    }
+  }
+}

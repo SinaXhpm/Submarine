@@ -5,7 +5,7 @@ import {
   Plus, X, RefreshCw, AlertTriangle, FolderUp, ArrowRight, Square,
   FolderOpen, FileText, Trash2, Pause, Play, Check
 } from "lucide-react";
-import { IS_ANDROID } from "../util/platform";
+import { IS_ANDROID, IS_MOBILE } from "../util/platform";
 
 // One-way local → remote folder mirror panel. Lives next to SFTP / Tunnels /
 // CMDS inside a session. The configured mirror pairs are stored on the node
@@ -332,7 +332,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                 the text input; the placeholder guides users to a sensible
                 writable location on external storage. Platform detection
                 lives in util/platform to keep one source of truth. */}
-            {!IS_ANDROID && (
+            {!IS_MOBILE && (
               <button
                 onClick={pickLocal}
                 className="h-7 px-2 rounded bg-white/[0.04] border border-white/10 hover:bg-white/10 text-zinc-300 text-[11px] flex items-center gap-1.5 shrink-0"
@@ -346,7 +346,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               onChange={(e) => setDraft({ ...draft, local: e.target.value })}
               placeholder={IS_ANDROID
                 ? "/storage/emulated/0/… (type path)"
-                : "/local/path (or browse)"}
+                : IS_MOBILE ? "/local/path (type path)" : "/local/path (or browse)"}
               className="flex-1 min-w-0 h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono text-zinc-200"
             />
           </div>
