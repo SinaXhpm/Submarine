@@ -1,0 +1,828 @@
+{
+  "meta": {
+    "name": "Deutsch",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "Zum Inhalt springen",
+    "features": "Funktionen",
+    "remote": "Remote-Desktops",
+    "security": "Sicherheit",
+    "privacy": "Datenschutz",
+    "download": "Herunterladen",
+    "github": "Quellcode auf GitHub",
+    "language": "Sprache",
+    "home": "Startseite von Submarine",
+    "menu": "Menü"
+  },
+  "common": {
+    "tagline": "SSH-, SFTP-, RDP-, VNC- und Telnet-Client",
+    "newIn": "Neu in 0.4",
+    "updated": "Zuletzt aktualisiert: {date}",
+    "translationNote": "Diese Seite ist eine Übersetzung. Weicht sie von der englischen Fassung ab, ist die englische Fassung maßgeblich.",
+    "englishVersion": "Englische Fassung",
+    "openFull": "Bild in voller Größe öffnen",
+    "close": "Schließen",
+    "onThisPage": "Auf dieser Seite",
+    "example": "Beispiel"
+  },
+  "footer": {
+    "product": "Produkt",
+    "trust": "Vertrauen",
+    "project": "Projekt",
+    "faq": "Fragen",
+    "releases": "Releases",
+    "deleteAccount": "Konto löschen",
+    "verify": "Ihren Download prüfen",
+    "issues": "Problem melden",
+    "author": "sinaxhpm.com",
+    "sister": "Ebenfalls vom Autor: Netzwerk-Tools für jedes Gerät",
+    "license": "Kostenlos und Open Source unter der MIT-Lizenz.",
+    "madeWith": "Entwickelt mit Rust und Tauri.",
+    "noTracking": "Diese Website setzt keine Cookies, keine Nutzungsanalyse und keine Skripte von Drittanbietern ein."
+  },
+  "home": {
+    "title": "Submarine – kostenloser SSH-, SFTP-, RDP-, VNC- und Telnet-Client für Windows, macOS, Linux und Android",
+    "description": "Submarine ist eine kostenlose Open-Source-App für den Fernzugriff: SSH-Terminal, zweispaltiges SFTP, Port-Weiterleitung, Remote-Desktops (RDP, VNC) und Telnet in einem Fenster. Ihre Server, Passwörter und Schlüssel bleiben verschlüsselt auf Ihren Geräten.",
+    "hero": {
+      "pillTag": "0.4",
+      "pill": "Remote-Desktops mit gemeinsamer Zwischenablage und wählbarer Geschwindigkeit",
+      "title": "Alle Ihre Server in <em>einer verschlüsselten App</em>",
+      "lede": "Submarine ist ein SSH-, SFTP-, RDP-, VNC- und Telnet-Client für Windows, macOS, Linux und Android. Ihre Server, Passwörter und Schlüssel werden auf Ihrem Gerät verschlüsselt und nur dann zwischen Ihren Geräten synchronisiert, wenn Sie das möchten.",
+      "download": "Herunterladen",
+      "security": "So werden Ihre Daten geschützt",
+      "trust": [
+        "Keine Werbung",
+        "Kein Tracking",
+        "Keine Bezahlversion",
+        "Kein Konto nötig"
+      ],
+      "chips": [
+        "Auf Ihrem Gerät verschlüsselt",
+        "SSH · SFTP · RDP · VNC · Telnet",
+        "Synchronisierung nur auf Wunsch"
+      ],
+      "imageAlt": "Submarine auf einem Computer: links ein SSH-Terminal, rechts der zweispaltige Dateibrowser"
+    },
+    "instead": {
+      "title": "Eine App statt",
+      "items": [
+        "Terminal",
+        "SFTP-Client",
+        "Tunnel-Manager",
+        "RDP-App",
+        "VNC-Viewer",
+        "Telnet-Client"
+      ]
+    },
+    "overview": {
+      "kicker": "Funktionen",
+      "title": "Alles für Ihre Server in einem Fenster",
+      "lede": "Verbinden, übertragen, weiterleiten, überwachen und teilen – auf jedem Computer, den Sie nutzen, und auf Ihrem Smartphone.",
+      "tiles": [
+        {
+          "id": "terminal",
+          "title": "Terminal",
+          "text": "Tabs, geteilte Ansicht, True Color, {scrollback} Zeilen zum Zurückscrollen, Farbschemata und Nerd Fonts. Durchsuchen Sie mit Ctrl+Shift+F, was das Terminal anzeigt, und mit Ctrl+Shift+R die Befehle, die Sie eingegeben haben.",
+          "wide": true
+        },
+        {
+          "id": "wall",
+          "title": "Die „Wall“",
+          "text": "Viele Server nebeneinander – und in alle gleichzeitig tippen."
+        },
+        {
+          "id": "files",
+          "title": "Zweispaltiges SFTP",
+          "text": "Drag-and-drop, Ordner vergleichen, Dateien auf dem Server bearbeiten, Archive, sudo und Server ohne SFTP."
+        },
+        {
+          "id": "remote",
+          "title": "RDP und VNC",
+          "text": "Remote-Desktops in einem Tab, mit gemeinsamer Zwischenablage, wählbarer Geschwindigkeit und Qualität und einer Anzeige, wie es um die Verbindung steht.",
+          "wide": true,
+          "new": true
+        },
+        {
+          "id": "telnet",
+          "title": "Telnet",
+          "text": "Für alte Switches und Router, deutlich als unverschlüsselt gekennzeichnet.",
+          "new": true
+        },
+        {
+          "id": "tunnels",
+          "title": "Tunnel",
+          "text": "Lokale, Remote- und SOCKS-Weiterleitungen, mit einem Live-Protokoll jeder Verbindung."
+        },
+        {
+          "id": "agent",
+          "title": "Schlüssel und Agenten",
+          "text": "Ihre ~/.ssh/config, SSH-Agenten, Hardware-Schlüssel, OpenSSH-Zertifikate, Jump-Hosts und Proxys.",
+          "new": true
+        },
+        {
+          "id": "vault",
+          "title": "Verschlüsseltes Profil",
+          "text": "AES-256-GCM mit einem Argon2id-Schlüssel. Auf Wunsch entsperren Sie es mit Windows Hello oder Ihrem Fingerabdruck."
+        },
+        {
+          "id": "sync",
+          "title": "Synchronisierung, wenn Sie möchten",
+          "text": "Zwischen Ihren Geräten. Jeder Eintrag wird auf dem Gerät verschlüsselt, bevor er gesendet wird."
+        },
+        {
+          "id": "sharing",
+          "title": "Geteilte Profile",
+          "text": "Teilen Sie Server mit Ihrem Team. Jedes Mitglied erhält den Schlüssel des Profils, für sich versiegelt."
+        },
+        {
+          "id": "monitor",
+          "title": "Überwachung",
+          "text": "CPU, Arbeitsspeicher, Datenträger und Netzwerk, eine Benachrichtigung, wenn ein Server ausfällt, Dienste und Docker."
+        },
+        {
+          "id": "commands",
+          "title": "Befehle und Notizen",
+          "text": "Speichern Sie Befehle, die Sie oft ausführen, und fügen Sie sie in ein Terminal ein oder führen Sie sie dort aus."
+        },
+        {
+          "id": "phone",
+          "title": "Android",
+          "text": "Dasselbe Profil auf Ihrem Smartphone, mit einer Tastenleiste für das Terminal."
+        },
+        {
+          "id": "imports",
+          "title": "Import",
+          "text": "Übernehmen Sie Ihre Server aus PuTTY, MobaXterm und OpenSSH."
+        }
+      ]
+    },
+    "features": {
+      "kicker": "Im Detail",
+      "title": "Gemacht für Ihre tägliche Arbeit",
+      "lede": "",
+      "items": [
+        {
+          "id": "terminal",
+          "title": "Ein Terminal, das mithält",
+          "text": "Tabs, geteilte Ansicht und die „Wall“, die viele Server nebeneinander zeigt und mit der Sie in alle gleichzeitig tippen können.",
+          "points": [
+            "Durchsuchen Sie mit Ctrl+Shift+F, was das Terminal anzeigt, und mit Ctrl+Shift+R die Befehle, die Sie eingegeben haben (auf dem Mac Cmd+Shift). Ctrl+F und Ctrl+R ohne Shift gehen weiterhin an die Shell.",
+            "Ein Rechtsklick auf die Schaltfläche + öffnet ein Terminal mit eigener Anmeldung über eine eigene Verbindung: einmalig oder immer für diesen Server.",
+            "True Color, {scrollback} Zeilen zum Zurückscrollen, Farbschemata und Nerd Fonts."
+          ],
+          "alt": "Die „Wall“: drei Server nebeneinander in einem Fenster"
+        },
+        {
+          "id": "files",
+          "title": "Dateien nebeneinander",
+          "text": "Zweispaltiges SFTP mit Drag-and-drop zwischen Ihrem Computer und dem Server.",
+          "points": [
+            "Vergleichen Sie zwei Ordner: Dateien, die sich unterscheiden, neuer sind oder nur auf einer Seite vorhanden sind, werden markiert.",
+            "Bearbeiten Sie Dateien direkt auf dem Server, und packen und entpacken Sie dort Archive.",
+            "Arbeiten Sie per sudo als root, auch auf Servern ohne SFTP.",
+            "Spiegeln Sie einen lokalen Ordner auf einen Server, während Sie ihn ändern (auf einem Computer)."
+          ],
+          "alt": "Ein lokaler Ordner im Vergleich mit einem Ordner auf dem Server: Unterschiedliche Dateien sind markiert"
+        },
+        {
+          "id": "tunnels",
+          "title": "Tunnel ohne Kommandozeile",
+          "text": "Lokale, Remote- und SOCKS-Weiterleitungen mit Namen. Auf Wunsch starten sie zusammen mit der App.",
+          "points": [
+            "Ein Live-Protokoll jeder Verbindung, die durch einen Tunnel läuft.",
+            "Über Jump-Hosts und Proxys, wie jede andere Verbindung."
+          ],
+          "alt": "Der Bereich für Port-Weiterleitungen mit drei Tunneln und ihrem Status"
+        },
+        {
+          "id": "fits",
+          "title": "Funktioniert mit dem, was Sie schon haben",
+          "text": "Liest Ihre ~/.ssh/config und importiert aus PuTTY, MobaXterm und OpenSSH.",
+          "points": [
+            "Nutzt Ihren SSH-Agenten: Pageant, den OpenSSH-Agenten von Windows, 1Password, Hardware-Schlüssel.",
+            "OpenSSH-Zertifikate, Jump-Hosts sowie HTTP- und SOCKS-Proxys.",
+            "Ist ein gespeichertes Passwort falsch oder keines gespeichert, bietet die Passwortabfrage <strong>Save password</strong> an. Das Passwort wird gespeichert, sobald die Anmeldung funktioniert."
+          ],
+          "alt": "Das Formular für einen neuen Server, mit Import aus ~/.ssh/config"
+        },
+        {
+          "id": "monitor",
+          "title": "Bescheid wissen, wenn etwas kaputtgeht",
+          "text": "Überwacht CPU, Arbeitsspeicher, Datenträger und Netzwerk über SSH und meldet, wenn ein Server ausfällt.",
+          "points": [
+            "Auf dem Server muss nichts installiert werden.",
+            "Serverinformationen, Dienste und Docker-Container an einem Ort."
+          ],
+          "alt": "Überwachung: drei Server mit Live-Diagrammen"
+        },
+        {
+          "id": "vault",
+          "title": "Ihre Zugangsdaten unter Verschluss",
+          "text": "Passwörter und Schlüssel liegen in einem verschlüsselten Profil, das sich nur mit Ihrem Passwort öffnen lässt.",
+          "points": [
+            "AES-256-GCM, mit einem Schlüssel, den Argon2id aus Ihrem Passwort ableitet. Das Passwort wird nie gespeichert.",
+            "Entsperren mit Windows Hello oder unter Android mit Ihrem Fingerabdruck. Ausgeschaltet, bis Sie es einschalten.",
+            "Wenn Sie das Profil sperren, werden alle Verbindungen geschlossen, auch eine, bei der die Anmeldung noch läuft."
+          ],
+          "alt": "Gespeicherte Zugangsdaten und SSH-Schlüssel im verschlüsselten Profil"
+        },
+        {
+          "id": "phone",
+          "title": "Auch auf dem Smartphone",
+          "text": "Dasselbe Profil unter Android, mit derselben Verschlüsselung.",
+          "points": [
+            "Ein Terminal mit einer Tastenleiste für Ctrl, Alt, Esc, Tab und die Pfeiltasten.",
+            "Dateiübertragung und Tunnel.",
+            "Remote-Desktops mit Touch-Bedienung, Zoom, gemeinsamer Zwischenablage, Verbindungsanzeige und wählbarer Geschwindigkeit. Ein Smartphone gibt keine Dateien für einen RDP-Server frei."
+          ],
+          "alt": "Submarine auf einem Android-Smartphone: ein SSH-Terminal mit Tastenleiste"
+        }
+      ]
+    },
+    "remote": {
+      "kicker": "Neu in 0.4",
+      "title": "Remote-Desktops, <em>direkt neben Ihren Terminals</em>",
+      "lede": "VNC und der eingebaute RDP-Client öffnen sich in einem Tab, direkt oder über einen Ihrer SSH-Server. RDP kann sich auch in der eigenen RDP-App Ihres Computers öffnen.",
+      "points": [
+        {
+          "id": "mark",
+          "title": "Sehen, wie es um die Verbindung steht",
+          "text": "Eine Anzeige im Tab meldet „Good“, „Fair“, „Weak“ oder „Not answering“ (gut, mittel, schwach, keine Antwort), dazu die Verzögerung. Der Bereich dazu zeigt, wie viele Daten in jede Richtung fließen, und bietet bei einer schwachen Verbindung an, weniger Daten zu nutzen."
+        },
+        {
+          "id": "quality",
+          "title": "Ein scharfes Bild oder weniger Daten",
+          "text": "Wählen Sie die Farbtiefe, die Auflösung und bei VNC, wie oft das Bild aktualisiert wird, oder nehmen Sie eine Schnellauswahl wie „Less data“ (weniger Daten). Ein verborgener Tab hält sein Bild an, sodass nichts gesendet wird, solange niemand hinsieht."
+        },
+        {
+          "id": "clipboard",
+          "title": "Eine gemeinsame Zwischenablage",
+          "text": "Text, den Sie auf dem Remote-Desktop kopieren, landet in Ihrer Zwischenablage, und der Inhalt Ihrer Zwischenablage gelangt nur dann dorthin, wenn Sie ihn einfügen. VNC überträgt nur reinen Text."
+        },
+        {
+          "id": "files",
+          "title": "Dateien über RDP freigeben",
+          "text": "Der eingebaute RDP-Client kann einen Ordner oder ein ganzes Laufwerk freigeben, auf Wunsch schreibgeschützt. Auf einem Computer, nicht auf einem Smartphone. Diese Einstellung bleibt auf diesem Gerät und wird nie synchronisiert."
+        },
+        {
+          "id": "password",
+          "title": "Ihre RDP-App, ohne das Passwort einzutippen",
+          "text": "Über einen SSH-Server verbindet sich Ihre RDP-App jedes Mal mit derselben lokalen Adresse. So findet sie wieder, was sie sich gemerkt hat (ein vertrauenswürdiges Zertifikat, eine gespeicherte Anmeldung). Unter Windows bekommt die Remotedesktopverbindung außerdem das gespeicherte Passwort, verschlüsselt, in einer Datei, die gelöscht wird, sobald sie gelesen wurde."
+        },
+        {
+          "id": "ssh",
+          "title": "Über Ihre SSH-Server",
+          "text": "RDP, VNC und Telnet lassen sich alle über einen Ihrer SSH-Server leiten. Unverschlüsselte Verbindungen sind deutlich gekennzeichnet."
+        }
+      ],
+      "alt": "Ein Remote-Desktop über RDP in einem Submarine-Tab, mit Paste, der Verbindungsanzeige (Good, 6 ms), Files und Settings in seiner Leiste",
+      "altVnc": "Ein VNC-Desktop in einem Submarine-Tab, als unverschlüsselt gekennzeichnet",
+      "altSettings": "Der Bereich „Speed and quality“ eines Remote-Desktop-Tabs",
+      "note": "Der eingebaute RDP-Client ist experimentell und ausgeschaltet, bis Sie ihn für einen Server wählen (<em>Open in: Submarine's tab</em>). Bis dahin öffnet sich RDP in der RDP-App Ihres Computers. Unter Android wird der eingebaute Client verwendet."
+    },
+    "privacy": {
+      "kicker": "Von Grund auf privat",
+      "title": "Ihre Daten gehören Ihnen. <em>Wir können sie nicht lesen.</em>",
+      "lede": "Ihre Daten werden verschlüsselt, bevor sie gespeichert werden und bevor sie Ihr Gerät verlassen. Wir legen genau offen, was unser Server sehen kann und was nicht.",
+      "items": [
+        {
+          "title": "Auf Ihrem Gerät verschlüsselt",
+          "text": "Profile werden mit AES-256-GCM verschlüsselt. Der Schlüssel wird mit Argon2id aus Ihrem Passwort abgeleitet. Das Passwort selbst wird nie gespeichert oder gesendet."
+        },
+        {
+          "title": "Synchronisierung ist optional",
+          "text": "Wenn Sie sie einschalten, wird jeder Eintrag zuerst auf Ihrem Gerät verschlüsselt. Der Server speichert nur die verschlüsselte Fassung. Einige Angaben rund um die Daten sieht er aber, etwa Ihre E-Mail-Adresse und wann Sie synchronisieren – wir führen sie alle auf."
+        },
+        {
+          "title": "Kein Tracking",
+          "text": "Keine Werbung, keine Nutzungsanalyse, keine Absturzberichte. Die App kommuniziert nur mit Ihren Servern, mit dem Sync-Server, wenn Sie sich anmelden, und mit GitHub, um nach einer neuen Version zu suchen."
+        }
+      ],
+      "link": "Wie es funktioniert und wie Sie es selbst prüfen können"
+    },
+    "free": {
+      "kicker": "Kostenlos",
+      "big": "Kostenlos. Wirklich.",
+      "text": "Keine Bezahlversion, keine Testversion, keine Werbung und kein Konto nötig.",
+      "items": [
+        "Submarine ist kostenlos und Open Source unter der MIT-Lizenz.",
+        "Sie brauchen kein Konto. Ein Konto ist nur für die optionale Synchronisierung zwischen Ihren Geräten gedacht.",
+        "Auch der Sync-Dienst ist kostenlos, in fairen Grenzen: {limitMb} MB verschlüsselte Daten, {limitItems} Einträge und {limitProfiles} Profile pro Konto.",
+        "Der Quellcode ist öffentlich. Sie können ihn lesen, die App selbst bauen oder einen eigenen Sync-Server verwenden."
+      ]
+    },
+    "download": {
+      "kicker": "Download",
+      "title": "Submarine herunterladen",
+      "lede": "Alle Downloads stammen aus den Releases des Projekts auf GitHub.",
+      "button": "Herunterladen",
+      "platforms": [
+        {
+          "id": "windows",
+          "name": "Windows",
+          "detail": "Windows 10 und 11 · Installationsprogramm (.exe oder .msi)"
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "detail": "Apple Silicon (ab M1) · .dmg"
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "detail": ".deb, .rpm, Arch-Paket und AppImage"
+        },
+        {
+          "id": "android",
+          "name": "Android",
+          "detail": "Android 7.0 und neuer · .apk"
+        }
+      ],
+      "betaNote": "Diese Seite beschreibt Version 0.4, die gerade die letzten Tests durchläuft und noch nicht veröffentlicht ist. Bis dahin erhalten Sie über die Schaltflächen „Herunterladen“ Version 0.3.8. Version 0.3.8 enthält das Terminal, die Dateiübertragung, Tunnel, die Überwachung und die Synchronisierung, aber nicht die Remote-Desktops, Telnet, das Entsperren mit Windows Hello und Fingerabdruck, SSH-Agenten, den Ordnervergleich und alles andere, was mit 0.4 dazukommt. Ab 0.4 gibt es für Windows außerdem eine portable .zip-Datei.",
+      "verifyTitle": "Ihren Download prüfen",
+      "verify": [
+        "Ab Version 0.4 enthält jedes Release eine Datei SHA256SUMS mit der Prüfsumme jedes Downloads.",
+        "Ab Version 0.4 ist die Android-App mit dem Schlüssel des Autors signiert. Der SHA-256-Fingerabdruck ihres Zertifikats lautet <code class=\"hash\">{certSha256}</code>.",
+        "Die Versionen für Windows und macOS haben noch keine Code-Signatur. Ihr System warnt Sie daher möglicherweise, wenn Sie sie zum ersten Mal öffnen."
+      ]
+    },
+    "faq": {
+      "kicker": "Hilfe",
+      "title": "Fragen und Antworten",
+      "lede": "",
+      "items": [
+        {
+          "q": "Ist Submarine wirklich kostenlos?",
+          "a": "Ja. Die App ist kostenlos und Open Source unter der MIT-Lizenz, ohne Bezahlversion und ohne Werbung. Auch der Sync-Dienst ist kostenlos, in den oben genannten Grenzen."
+        },
+        {
+          "q": "Brauche ich ein Konto?",
+          "a": "Nein. Alles funktioniert auch ohne. Ein Konto brauchen Sie nur, wenn Sie Profile zwischen Ihren Geräten synchronisieren möchten."
+        },
+        {
+          "q": "Kann der Sync-Server meine Passwörter lesen?",
+          "a": "Nein. Jeder Eintrag wird auf Ihrem Gerät verschlüsselt, bevor er hochgeladen wird, und der Server bekommt den Schlüssel nie. Einige Angaben rund um Ihre Daten sieht er aber, etwa Ihre E-Mail-Adresse, wann Sie synchronisieren und wie viele Einträge Sie haben. Die <a href=\"{securityUrl}\">Sicherheitsseite</a> führt sie alle auf."
+        },
+        {
+          "q": "Was ist, wenn ich mein Profilpasswort vergesse?",
+          "a": "Dann kann niemand dieses Profil öffnen, auch wir nicht. Eine Wiederherstellung gibt es nicht, weil das Passwort nirgends gespeichert wird. Bewahren Sie es an einem sicheren Ort auf."
+        },
+        {
+          "q": "Kann ich RDP, VNC und Telnet nutzen?",
+          "a": "Ja, ab Version 0.4. VNC zeigt den Bildschirm in einem Tab und teilt die Zwischenablage (reiner Text). RDP öffnet sich in der RDP-App Ihres Computers oder in einem Tab mit dem experimentellen eingebauten Client. Dieser teilt die Zwischenablage und gibt auf einem Computer einen Ordner oder ein Laufwerk frei. In einem Submarine-Tab zeigen beide, wie es um die Verbindung steht, und lassen Sie Bildqualität gegen weniger Daten eintauschen. Telnet öffnet sich in einem Terminal-Tab. Alle drei lassen sich über einen SSH-Server leiten, und Telnet und einfaches VNC sind als unverschlüsselt gekennzeichnet."
+        },
+        {
+          "q": "Was bekommt ein Remote-Desktop von meinem Computer?",
+          "a": "Text aus der Zwischenablage, wenn Sie in seinen Tab einfügen, und vorher nichts. Text, der auf dem Server kopiert wird, landet in Ihrer Zwischenablage, solange <em>Share the clipboard</em> eingeschaltet ist. Dateien nur, wenn Sie auf einem Computer einen Ordner oder ein Laufwerk für den eingebauten RDP-Client auswählen. Diese Einstellungen bleiben auf Ihrem Gerät und werden nie synchronisiert. Daher kann niemand, mit dem Sie ein Profil teilen, sie einschalten."
+        },
+        {
+          "q": "Auf welchen Systemen läuft Submarine?",
+          "a": "Windows 10 und 11, macOS auf Apple Silicon (ab M1), Linux (.deb, .rpm, Arch, AppImage) und Android 7.0 oder neuer."
+        },
+        {
+          "q": "Kann ich einen eigenen Sync-Server verwenden?",
+          "a": "Ja. Öffnen Sie in der App „Cloud sync“ und ändern Sie den Sync-Server. Der Code unseres Servers ist nicht veröffentlicht. Ein eigener Server muss daher dieselbe API anbieten; sie ist im Quellcode der App beschrieben."
+        },
+        {
+          "q": "Wie lösche ich mein Konto?",
+          "a": "In der App (ab Version 0.4) wählen Sie unter „Cloud sync“ den Punkt „Delete account…“. Sie können das auch auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> erledigen."
+        }
+      ]
+    }
+  },
+  "security": {
+    "title": "Wie Submarine Ihre Daten schützt – und wie Sie das prüfen können",
+    "description": "Was Submarine verschlüsselt und wie, was der Sync-Server sehen kann und was nicht, was ein Remote-Desktop von Ihrem Gerät bekommt, was ein böswilliger Server trotzdem tun könnte – und wie Sie jede Aussage Schritt für Schritt im Open-Source-Code prüfen können.",
+    "heading": "So werden Ihre Daten geschützt",
+    "lede": "Wir bitten Sie nicht, uns zu vertrauen. Diese Seite erklärt genau, was verschlüsselt wird, was unser Server sehen kann und was nicht, und wie Sie jede Aussage selbst prüfen können.",
+    "summaryTitle": "Das Wichtigste in einer Minute",
+    "summary": [
+      "Ihre Server, Zugangsdaten, Schlüssel und Notizen liegen in einer Datei auf Ihrem Gerät, verschlüsselt mit AES-256-GCM. Einige Einstellungen, die nur für dieses Gerät gelten, etwa das Aussehen der App und ein für einen RDP-Server freigegebener Ordner, liegen unverschlüsselt in den Einstellungen der App und werden nie synchronisiert.",
+      "Der Schlüssel wird mit Argon2id aus Ihrem Profilpasswort abgeleitet. Dieses Verfahren ist absichtlich langsam, damit Rateversuche teuer sind. Das Passwort wird nie gespeichert und nirgendwohin gesendet.",
+      "Wenn Sie die Synchronisierung einschalten, wird jeder Eintrag auf Ihrem Gerät verschlüsselt, bevor er hochgeladen wird. Der Server speichert Daten, die er nicht entschlüsseln kann.",
+      "Der Server sieht aber, was von außen an Ihren Daten erkennbar ist: Ihre E-Mail-Adresse, wann und von welcher IP-Adresse aus Sie synchronisieren, wie viele Einträge jeder Art Sie haben und wie groß sie sind, Ihre Profilnamen und bei geteilten Profilen die Namen der Freigaben und die E-Mail-Adressen der Mitglieder.",
+      "In der App gibt es keine Werbung, keine Nutzungsanalyse und keine Absturzberichte."
+    ],
+    "canCannot": {
+      "cannotTitle": "Das kann der Server nicht lesen",
+      "cannot": [
+        "Was in Ihren Einträgen steht: Namen, Adressen, Ports, Benutzernamen, Passwörter, private Schlüssel und ihre Passphrasen, Tunnel, Notizen, Befehle, Ordnernamen",
+        "Welche Zugangsdaten und Schlüssel zu welchem Server gehören",
+        "Wer einen Eintrag geändert hat",
+        "Ihr Profilpasswort, Ihre Freigabe-Passphrase und die Schlüssel, die Ihre Profile öffnen"
+      ],
+      "canTitle": "Das kann der Server sehen",
+      "can": [
+        "Ihre E-Mail-Adresse und, wenn Sie sich anmelden, Ihr Kontopasswort (er speichert davon nur einen bcrypt-Hash)",
+        "IP-Adresse und Zeitpunkt von Anmeldungen und Synchronisierungen",
+        "Wie viele Einträge jeder Art ein Profil hat, wie groß sie sind und wann jeder davon von welchem Gerät geändert wurde (eine zufällige ID)",
+        "Ihre Profilnamen",
+        "Bei geteilten Profilen: die Namen der Freigaben, die E-Mail-Adressen der Mitglieder und ihre Rollen"
+      ]
+    },
+    "diagram": {
+      "title": "Was beim Synchronisieren passiert",
+      "password": "Profilpasswort",
+      "kdf": "Argon2id",
+      "key": "Profilschlüssel",
+      "encrypt": "AES-256-GCM",
+      "items": "Verschlüsselte Einträge",
+      "https": "HTTPS",
+      "server": "Sync-Server",
+      "stores": "Speichert verschlüsselte Einträge und die oben aufgeführten Angaben",
+      "never": "Verlässt nie Ihr Gerät",
+      "caption": "Das Passwort und die Schlüssel bleiben auf Ihrem Gerät. Gesendet werden nur verschlüsselte Einträge und die zugehörigen Angaben."
+    },
+    "sections": [
+      {
+        "id": "device",
+        "title": "1. Auf Ihrem Gerät",
+        "paragraphs": [
+          "Jedes Profil ist eine Datei. Darin liegt eine kleine Datenbank mit Ihren Servern, Zugangsdaten, SSH-Schlüsseln, Notizen und Einstellungen. Die ganze Datenbank wird komprimiert und dann mit AES-256-GCM verschlüsselt. Bei jedem Speichern wird eine neue zufällige Nonce verwendet, und die Datei wird zuerst in eine temporäre Kopie geschrieben, damit ein Absturz keine halbe Datei hinterlassen kann.",
+          "Der Schlüssel wird mit Argon2id aus Ihrem Profilpasswort abgeleitet, und zwar mit {argonMem} Speicher, {argonPasses} Durchläufen und {argonLanes} Lanes sowie einem zufälligen Salt für jedes Profil. Diese Einstellungen sind in der App fest vorgegeben, sodass eine veränderte Datei sie nicht abschwächen kann.",
+          "Das Passwort wird nie auf den Datenträger geschrieben und nirgendwohin gesendet. Sobald der Schlüssel abgeleitet ist, wird die Kopie des Passworts im Kern der App gelöscht, und der Schlüssel wird gelöscht, wenn Sie das Profil sperren. Das Sperren schließt außerdem alle Verbindungen und bricht eine Anmeldung ab, die noch läuft. Wenn Sie das Passwort vergessen, lässt sich das Profil nicht öffnen. Ein Zurücksetzen gibt es nicht, weil nirgends etwas aufbewahrt wird, womit es sich öffnen ließe.",
+          "Die Schnellentsperrung ist optional und standardmäßig ausgeschaltet. Unter Windows nutzt sie Windows Hello und das TPM, unter Android den Fingerabdrucksensor und den Android Keystore. Das System verwahrt den Schlüssel des Profils, nie Ihr Passwort, und dieser Schlüssel wird nie synchronisiert. Unter Android ist die Cloud-Sicherung des Systems für die Daten der App ausgeschaltet.",
+          "Wenn unter Windows die Remotedesktopverbindung einen Server mit gespeichertem Passwort öffnet, übergibt die App das Passwort in einer kurzlebigen .rdp-Datei. Das Passwort darin ist mit Windows DPAPI für Ihr Windows-Benutzerkonto verschlüsselt, und die Datei wird gelöscht, sobald die Remotedesktopverbindung sie gelesen hat (spätestens nach 30 Sekunden; eine Datei, die nach einem Absturz liegen geblieben ist, wird beim nächsten Start entfernt)."
+        ],
+        "code": [
+          "deriveKey",
+          "encrypt",
+          "saveVault",
+          "rdpPassword"
+        ]
+      },
+      {
+        "id": "sync",
+        "title": "2. Synchronisierung (Cloud sync)",
+        "paragraphs": [
+          "Die Synchronisierung ist ausgeschaltet, bis Sie sich anmelden. Jedes Profil hat einen eigenen zufälligen 256-Bit-Datenschlüssel, der im verschlüsselten Profil liegt. Vor dem Hochladen wird jeder Eintrag (ein Server, Zugangsdaten, ein Schlüssel, eine Notiz …) einzeln mit diesem Schlüssel verschlüsselt, mit AES-256-GCM und einer neuen zufälligen Nonce.",
+          "Zu jedem verschlüsselten Eintrag erhält der Server eine zufällige ID, die Art des Eintrags, einen Zeitstempel und eine Markierung, die angibt, ob der Eintrag gelöscht wurde. Der Zeitstempel enthält eine zufällige ID des Geräts, das die Änderung vorgenommen hat. An der Größe des verschlüsselten Eintrags lässt sich ungefähr ablesen, wie groß der Eintrag ist. Der Server speichert außerdem den Namen jedes Profils. Bekannte Host-Schlüssel, der Befehlsverlauf, die Überwachungseinstellungen und die Einstellungen, die nur für dieses Gerät gelten, werden nie synchronisiert."
+        ],
+        "example": "Das speichert der Server für einen Eintrag:",
+        "code": [
+          "encryptEntity",
+          "collectRecords"
+        ]
+      },
+      {
+        "id": "newdevice",
+        "title": "3. Ein Profil auf einem neuen Gerät öffnen",
+        "paragraphs": [
+          "Um ein synchronisiertes Profil auf einem anderen Gerät zu öffnen, braucht dieses Gerät den Datenschlüssel des Profils. Deshalb speichert der Server einen weiteren Datensatz: den Datenschlüssel, verschlüsselt mit einem Schlüssel, der mit denselben Argon2id-Einstellungen aus Ihrem Profilpasswort abgeleitet wird. Der Server kann ihn nicht öffnen.",
+          "Das ist zugleich der wichtigste Ansatzpunkt für einen Angreifer, falls er jemals die Daten des Servers stehlen sollte: Er könnte versuchen, Ihr Profilpasswort offline zu erraten. Jeder Rateversuch kostet eine vollständige Argon2id-Berechnung. Ein langes Passwort, das Sie nirgendwo sonst verwenden, hält Ihre Daten daher sicher."
+        ],
+        "code": [
+          "escrowBuild",
+          "escrowOpen"
+        ]
+      },
+      {
+        "id": "account",
+        "title": "4. Ihr Kontopasswort",
+        "paragraphs": [
+          "Ihr Sync-Konto hat ein eigenes Passwort, getrennt von Ihrem Profilpasswort. Es wird bei der Anmeldung über HTTPS an den Server gesendet, und der Server speichert davon nur einen bcrypt-Hash. Nach {lockoutTries} falschen Passworteingaben pausiert die Anmeldung per Passwort für {lockoutMinutes} Minuten.",
+          "Der Dienst läuft hinter Cloudflare; Cloudflare wickelt die HTTPS-Verbindung für ihn ab. Wie der Server könnte daher auch Cloudflare Ihr Kontopasswort bei der Anmeldung sehen, Ihre Einträge aber nur in verschlüsselter Form.",
+          "Verwenden Sie Ihr Profilpasswort nie als Kontopasswort. Dann kann nichts, was der Server oder Cloudflare jemals sieht, Ihre Profile öffnen."
+        ],
+        "code": [
+          "loginRequest"
+        ]
+      },
+      {
+        "id": "sharing",
+        "title": "5. Ein Profil teilen",
+        "paragraphs": [
+          "Zum Teilen von Profilen hat jedes Konto ein X25519-Schlüsselpaar. Der private Schlüssel ist mit einem Schlüssel verschlüsselt, der aus Ihrer Freigabe-Passphrase abgeleitet wird (wieder mit Argon2id), und die Passphrase verlässt nie Ihr Gerät. Jedes Mitglied eines geteilten Profils erhält den Datenschlüssel des Profils, versiegelt mit seinem eigenen öffentlichen Schlüssel.",
+          "Wenn Sie jemanden einladen, verwendet die App den öffentlichen Schlüssel, den der Server für diese E-Mail-Adresse liefert. Ändert sich der Schlüssel eines Mitglieds später, weist die App Sie darauf hin und zeigt einen Fingerabdruck, den Sie mit der Person abgleichen können. Der Server kennt die Namen geteilter Profile und weiß, wer Mitglied ist, aber nicht, was darin steht."
+        ],
+        "code": [
+          "sealTo",
+          "invite"
+        ]
+      },
+      {
+        "id": "hostile",
+        "title": "6. Wenn der Server böswillig wäre",
+        "paragraphs": [
+          "Bei guter Sicherheit geht es nicht nur darum, was ein Server tun soll. Hier steht, was jemand mit voller Kontrolle über den Server tun könnte und was nicht."
+        ],
+        "cannotTitle": "Was diese Person nicht könnte",
+        "cannot": [
+          "Ihre Einträge lesen oder ihren Inhalt unbemerkt ändern",
+          "Die gespeicherte Kopie Ihres Profilschlüssels ohne Ihr Profilpasswort öffnen",
+          "Ihr Profilpasswort oder Ihre Freigabe-Passphrase erfahren – die App sendet beides nie",
+          "Die App auf Ihrem Gerät verändern: Es gibt keine automatischen Aktualisierungen; die App zeigt nur an, dass eine neue Version vorliegt"
+        ],
+        "canTitle": "Was diese Person könnte",
+        "can": [
+          "Versuchen, ein schwaches Profilpasswort offline zu erraten, mit einer langsamen Argon2id-Berechnung pro Versuch",
+          "Ihr Kontopasswort abfangen, wenn Sie sich das nächste Mal anmelden",
+          "Einträge löschen, ältere Versionen zurückspielen oder Änderungen zurückhalten. Bevor eine Synchronisierung etwas löscht, speichert die App eine Kopie Ihres Profils auf Ihrem Gerät",
+          "Einen falschen öffentlichen Schlüssel liefern, wenn Sie jemanden zu einem geteilten Profil einladen",
+          "Die Angaben sehen, die in der Tabelle oben aufgeführt sind"
+        ]
+      },
+      {
+        "id": "network",
+        "title": "7. Alles, womit sich die App verbindet",
+        "paragraphs": [
+          "Ihre eigenen Server sowie die Proxys und Jump-Hosts, die Sie dafür einrichten. Der Sync-Server, nur wenn Sie angemeldet sind. Und GitHub, um nach einer neueren Version zu suchen: Wenn sich die Profilliste öffnet und wenn Sie „Check for updates“ wählen, fragt die App die öffentliche Liste der Releases auf GitHub ab. Diese Anfrage enthält nur den Namen und die Version der App.",
+          "Die App enthält keinen Code für Nutzungsanalyse, Absturzberichte oder Werbung. Für die Synchronisierung vertraut die App nur ihrer eigenen eingebauten Liste von Zertifizierungsstellen, und sie folgt nie einer Umleitung. So kann sie nicht unbemerkt auf einen anderen Server umgelenkt werden."
+        ],
+        "code": [
+          "updateCheck"
+        ]
+      },
+      {
+        "id": "remote",
+        "title": "8. Was ein Remote-Desktop von Ihrem Gerät bekommt",
+        "paragraphs": [
+          "<strong>Die Zwischenablage.</strong> Text, den Sie in einen RDP- oder VNC-Tab einfügen, geht an diesen Server, und bevor Sie einfügen, wird ihm nichts angeboten. Wenn <em>Share the clipboard</em> eingeschaltet ist (die Standardeinstellung, für jeden Server einzeln schaltbar), wird Text, der auf dem Remote-Desktop kopiert wird, in die Zwischenablage dieses Geräts gelegt. Dabei geht es nur um Text, nie um Dateien, und VNC überträgt nur reinen ASCII-Text.",
+          "<strong>Dateien</strong> nur mit dem eingebauten RDP-Client auf einem Computer und nur, wenn Sie für diesen Server einen Ordner oder ein Laufwerk auswählen, auf Wunsch schreibgeschützt. Der Server sieht die Freigabe als Laufwerk unter <code>\\\\tsclient</code> und sonst nichts von Ihrem Computer. Jeder Pfad, den er anfragt, wird geprüft: kein <code>..</code>, und auf dem Weg wird keinem Link gefolgt. So ist nichts außerhalb dessen erreichbar, was Sie ausgewählt haben.",
+          "Diese Einstellungen bleiben auf diesem Gerät und werden nie synchronisiert. Daher kann niemand, mit dem Sie ein Profil teilen, sie einschalten."
+        ],
+        "code": [
+          "shareInside",
+          "vncPaste"
+        ]
+      }
+    ],
+    "verify": {
+      "title": "Prüfen Sie es selbst",
+      "lede": "Sie müssen sich bei nichts davon auf unser Wort verlassen. Hier sind Wege, das zu prüfen, von einfach bis fortgeschritten.",
+      "items": [
+        {
+          "title": "Den Code lesen",
+          "text": "Die App ist Open Source. Die Links auf dieser Seite führen genau zu den Codezeilen, in denen das jeweils passiert, und zwar in der Version, die diese Seite beschreibt ({commit})."
+        },
+        {
+          "title": "Die Verbindungen beobachten",
+          "text": "Verwenden Sie eine Firewall oder einen Netzwerkmonitor. Sie sehen Ihre eigenen Server, den Sync-Server nur, solange Sie angemeldet sind, und api.github.com, wenn sich die Profilliste öffnet. Sonst nichts."
+        },
+        {
+          "title": "Ansehen, was der Server speichert",
+          "text": "Für Fortgeschrittene: Nehmen Sie Ihr Anmeldetoken aus dem Datenordner der App (cloud_token.json) und fragen Sie Ihre Daten bei der API ab, mit dem Header X-Auth-Token: GET /api/sync/profiles oder POST /api/sync mit einer leeren Liste von Datensätzen. Zurück kommen nur IDs, Arten, Zeitangaben, Markierungen und verschlüsselter Text. Melden Sie sich danach in der App ab, um diese Sitzung zu beenden."
+        },
+        {
+          "title": "Den Datenverkehr mitlesen",
+          "text": "Für Fortgeschrittene: Starten Sie auf Ihrem Computer einen kleinen Proxy, der Anfragen an den echten Server weiterreicht, und stellen Sie in der App als Sync-Server http://127.0.0.1 mit dem Port des Proxys ein. Unverschlüsseltes HTTP erlaubt die App nur für Ihren eigenen Computer. Sie sehen, was die App sendet und dass Ihre Einträge verschlüsselt sind. (Ein Proxy-Zertifikat, das Sie Ihrem System hinzufügen, funktioniert nicht, weil die App ihre eigene Liste von Zertifizierungsstellen verwendet.)"
+        },
+        {
+          "title": "Ihre eigenen Daten entschlüsseln",
+          "text": "Für Fortgeschrittene: Mit Ihrem Passwort können Sie Ihre eigenen Daten mit jedem Argon2id- und AES-GCM-Werkzeug öffnen, anhand der Einstellungen in der Tabelle unten. Ohne das Passwort kann das niemand."
+        },
+        {
+          "title": "Ihren Download prüfen",
+          "text": "Vergleichen Sie die Prüfsumme mit SHA256SUMS im Release (ab Version 0.4), prüfen Sie das Zertifikat der Android-App mit apksigner oder bauen Sie die App aus dem Quellcode."
+        }
+      ],
+      "paramsTitle": "Die Einstellungen für Ihre eigenen Werkzeuge",
+      "params": [
+        [
+          "Schlüsselableitung",
+          "Argon2id, Version 0x13, {argonMem} Speicher, {argonPasses} Durchläufe, {argonLanes} Lanes, 32-Byte-Schlüssel, zufälliges 16-Byte-Salt"
+        ],
+        [
+          "Profildatei",
+          "„OMNV“ · Version 1 · Salt (16 Byte) · Nonce (12 Byte) · AES-256-GCM-Verschlüsselung der mit zstd komprimierten SQLite-Datenbank, mit 16-Byte-Tag"
+        ],
+        [
+          "Synchronisierter Eintrag",
+          "hex(Nonce (12 Byte) · AES-256-GCM-Chiffrat und Tag), mit dem 256-Bit-Datenschlüssel des Profils"
+        ],
+        [
+          "Gespeicherte Kopie des Profilschlüssels",
+          "hex(0x02 · Salt (16 Byte) · Nonce (12 Byte) · AES-256-GCM-Verschlüsselung des 32-Byte-Datenschlüssels), mit dem aus Ihrem Profilpasswort abgeleiteten Schlüssel"
+        ],
+        [
+          "Teilen",
+          "X25519, HKDF-SHA256, AES-256-GCM"
+        ]
+      ]
+    },
+    "limits": {
+      "title": "Was diese Seite nicht verspricht",
+      "items": [
+        "Submarine hat noch kein unabhängiges Sicherheitsaudit durchlaufen. Die bisherigen Prüfungen hat der Autor durchgeführt.",
+        "Ein schwaches oder mehrfach verwendetes Passwort ist der schwächste Punkt. Verwenden Sie ein langes Profilpasswort, das Sie nirgendwo sonst nutzen, und für Ihr Konto ein anderes Passwort.",
+        "Telnet und einfaches VNC sind von Haus aus unverschlüsselt. Die App kennzeichnet sie und kann sie über einen SSH-Server leiten. Über einfaches VNC geht auch Text aus der Zwischenablage, den Sie einfügen oder den der Server kopiert, unverschlüsselt durch das Netzwerk.",
+        "Der eingebaute RDP-Client ist experimentell (er wird aus einem Commit von IronRDP gebaut, nicht aus einem Release) und ist ausgeschaltet, bis Sie ihn für einen Server wählen.",
+        "Diese Seite beschreibt die App auf dem Stand {commit}. Wenn sich der Code ändert, ändert sich diese Seite mit."
+      ]
+    },
+    "codeLabels": {
+      "deriveKey": "Schlüsselableitung (Argon2id-Einstellungen)",
+      "encrypt": "AES-256-GCM mit neuer Nonce",
+      "saveVault": "Speichern der Profildatei",
+      "rdpPassword": "Das Passwort für die Remotedesktopverbindung (DPAPI)",
+      "encryptEntity": "Verschlüsseln jedes synchronisierten Eintrags",
+      "collectRecords": "Was für jeden Eintrag gesendet wird",
+      "escrowBuild": "Die gespeicherte Kopie des Profilschlüssels",
+      "escrowOpen": "Öffnen auf einem neuen Gerät",
+      "loginRequest": "Die Anmeldeanfrage",
+      "sealTo": "Einen Schlüssel für ein Mitglied versiegeln",
+      "invite": "Ein Mitglied einladen",
+      "updateCheck": "Die Suche nach neuen Versionen",
+      "shareInside": "Die Pfade innerhalb des freigegebenen Ordners halten",
+      "vncPaste": "Was die Zwischenablage über VNC übertragen darf"
+    }
+  },
+  "privacy": {
+    "title": "Datenschutzerklärung – Submarine",
+    "description": "Was die Submarine-App und ihr optionaler Sync-Dienst speichern, was sie lesen können und was nicht, wie lange das aufbewahrt wird und wie Sie es löschen.",
+    "heading": "Datenschutzerklärung",
+    "intro": "Diese Datenschutzerklärung gilt für die Submarine-App (Windows, macOS, Linux und Android), den optionalen Submarine-Sync-Dienst, den die App nutzen kann, und diese Website.",
+    "shortTitle": "Kurz gesagt",
+    "short": [
+      "Ihre Server, Passwörter, SSH-Schlüssel und Notizen bleiben auf Ihrem Gerät, verschlüsselt mit einem Schlüssel, der aus Ihrem Profilpasswort abgeleitet wird. In der App gibt es keine Nutzungsanalyse, keine Werbung, kein Tracking und keine Absturzberichte.",
+      "Die Synchronisierung („Cloud sync“) ist optional. Wenn Sie sie einschalten, speichert der Sync-Server die E-Mail-Adresse Ihres Kontos und Ihre verschlüsselten Profile. Was darin steht, kann er nicht lesen.",
+      "Sie können Ihr Konto und alles, was der Server dazu speichert, in der App oder auf dieser Website löschen."
+    ],
+    "sections": [
+      {
+        "id": "who",
+        "title": "Wer verantwortlich ist",
+        "paragraphs": [
+          "Submarine wird von Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) entwickelt. Sina Xhpm betreibt auch den Sync-Dienst unter <code>submarine.sinaxhpm.com</code> (ältere Versionen der App nutzen <code>api.sinaxhpm.com</code>). Der Quellcode der App ist unter <a href=\"{repoUrl}\">github.com/SinaXhpm/Submarine</a> öffentlich (MIT-Lizenz). Was diese Datenschutzerklärung über die App sagt, lässt sich daher im Code prüfen."
+        ]
+      },
+      {
+        "id": "device",
+        "title": "Was auf Ihrem Gerät bleibt",
+        "list": [
+          "<strong>Ihre Profile</strong> (Server, Zugangsdaten, SSH-Schlüssel, Tunnel, Notizen, Befehle, bekannte Host-Schlüssel und Passwörter, die Sie bei einer Anmeldeabfrage speichern lassen) werden im Datenordner der App gespeichert. Sie sind mit AES-256-GCM verschlüsselt; der Schlüssel dafür wird mit Argon2id aus Ihrem Profilpasswort abgeleitet. Das Profilpasswort wird nie gespeichert und nirgendwohin gesendet. Es gibt keine Möglichkeit, es wiederherzustellen: Wenn Sie es vergessen, kann das Profil nicht geöffnet werden.",
+          "<strong>Schnellentsperrung</strong> (optional, standardmäßig ausgeschaltet): Wenn Sie Windows Hello oder unter Android die Entsperrung per Fingerabdruck einschalten, wird der Schlüssel des Profils mit einem Schlüssel versiegelt, den das System verwahrt (das TPM oder der Android Keystore). Das System prüft Ihren Fingerabdruck oder Ihre PIN; die App bekommt beides nie zu sehen.",
+          "<strong>Einstellungen</strong> wie die Fensterposition, der Name des zuletzt verwendeten Profils und das Farbdesign sowie alles, was Sie nur für dieses Gerät festlegen (Geschwindigkeit und Qualität eines Remote-Desktops, ob er die Zwischenablage teilt, der Ordner oder das Laufwerk, das für einen RDP-Server freigegeben ist, und welche Server immer ein Terminal mit eigener Anmeldung bekommen), werden unverschlüsselt in den eigenen Einstellungen der App gespeichert und nie synchronisiert.",
+          "<strong>Die Zwischenablage</strong> wird nur gelesen, wenn Sie etwas einfügen. Was Sie einfügen, geht an den Server, in dessen Terminal oder Remote-Desktop-Tab Sie es einfügen. Wenn <em>Share the clipboard</em> eingeschaltet ist (die Standardeinstellung für RDP- und VNC-Server), wird Text, der auf dem Remote-Desktop kopiert wird, in die Zwischenablage dieses Geräts gelegt. Nichts aus der Zwischenablage wird je an uns gesendet.",
+          "<strong>Die Remotedesktopverbindung (Windows)</strong> bekommt das gespeicherte Passwort eines Servers in einer kurzlebigen .rdp-Datei. Das Passwort darin ist mit Windows DPAPI für Ihr Windows-Benutzerkonto verschlüsselt, und die Datei wird gelöscht, sobald sie gelesen wurde. Wenn Sie die RDP-App sich selbst eine Anmeldung merken lassen, bewahrt Windows sie auf, nicht Submarine.",
+          "<strong>Das Aktivitätsprotokoll</strong> der App liegt im Arbeitsspeicher und verschwindet, wenn die App geschlossen wird."
+        ]
+      },
+      {
+        "id": "connects",
+        "title": "Womit sich die App verbindet",
+        "list": [
+          "<strong>Ihre eigenen Server.</strong> Die App verbindet sich nur mit den Hosts, die Sie hinzufügen oder öffnen, per SSH, SFTP, Telnet, VNC oder RDP und über die Proxys oder Jump-Hosts, die Sie gegebenenfalls einrichten. Was Sie eingeben und übertragen, geht an diesen Server, nicht an uns. Bei einem Remote-Desktop gehört dazu der Text aus der Zwischenablage, den Sie dort einfügen, sowie ein Ordner oder Laufwerk dieses Computers, falls Sie eine solche Freigabe für den eingebauten RDP-Client einrichten. Einfaches Telnet und einfaches VNC sind nicht verschlüsselt, und die App weist darauf hin.",
+          "<strong>Der Sync-Dienst</strong>, nur wenn Sie sich dort anmelden (siehe unten). Sie können die App stattdessen auf einen eigenen Server einstellen; dann verarbeitet der Betreiber dieses Servers die Daten.",
+          "<strong>GitHub</strong>, um nach einer neueren Version zu suchen. Wenn sich die Profilliste öffnet und wenn Sie „Check for updates“ wählen, fragt die App bei der öffentlichen Liste der Releases auf GitHub (<code>api.github.com</code>) nach, ob es eine neuere Version gibt. Die Anfrage enthält den Namen und die Version der App (<code>submarine-app/x.y.z</code>) und sonst nichts; GitHub sieht dabei Ihre IP-Adresse, wie bei jeder Anfrage im Web.",
+          "<strong>Links</strong>, die Sie anklicken, öffnen sich im Standardbrowser Ihres Systems."
+        ],
+        "after": "Darüber hinaus verlässt nichts Ihr Gerät. Die App enthält keinen Code von Drittanbietern für Nutzungsanalyse, Werbung oder Tracking."
+      }
+    ],
+    "table": {
+      "id": "sync",
+      "title": "Optionale Synchronisierung (Cloud sync): was der Sync-Server speichert",
+      "intro": "Wenn Sie ein Konto anlegen, speichert der Server:",
+      "head": [
+        "Was",
+        "Wozu",
+        "Kann der Server es lesen?"
+      ],
+      "rows": [
+        [
+          "Ihre E-Mail-Adresse",
+          "Um Sie anzumelden und Ihnen Anmeldecodes und Codes zum Zurücksetzen zu senden",
+          "Ja"
+        ],
+        [
+          "Ihr Kontopasswort",
+          "Um Sie anzumelden",
+          "Er erhält das Passwort bei der Anmeldung über HTTPS und speichert davon nur einen gesalzenen bcrypt-Hash"
+        ],
+        [
+          "Anmeldesitzungen: ein gehashtes Token, die IP-Adresse, an die es ausgegeben wurde, wann es zuletzt verwendet wurde, und ein Ablaufdatum (nach {sessionDays} Tagen)",
+          "Damit Sie angemeldet bleiben",
+          "Das Token ist gehasht; der Rest ist lesbar"
+        ],
+        [
+          "Die Datensätze Ihrer Profile",
+          "Um sie zwischen Ihren Geräten zu synchronisieren",
+          "<strong>Nein.</strong> Jeder Datensatz wird auf Ihrem Gerät mit dem Schlüssel des Profils verschlüsselt, bevor er hochgeladen wird. Der Server sieht für jeden Datensatz eine ID, seinen Typ (Server, Zugangsdaten, Schlüssel, Notiz …), Zeitstempel (die eine zufällige ID des Geräts enthalten, das die Änderung vorgenommen hat), eine Löschmarkierung und die Größe, außerdem den Namen des Profils und wie viele Datensätze es hat"
+        ],
+        [
+          "Eine Kopie des Schlüssels jedes Profils, versiegelt mit Ihrem Profilpasswort",
+          "Um ein Profil auf ein neues Gerät zu bringen",
+          "Nicht ohne Ihr Profilpasswort. Wer an die Daten des Servers gelangt, könnte versuchen, ein schwaches Passwort offline zu erraten; verwenden Sie daher ein langes"
+        ],
+        [
+          "Teilen: Ihr öffentlicher Schlüssel, Ihr mit Ihrer Freigabe-Passphrase verschlüsselter privater Schlüssel, die Namen geteilter Profile, die E-Mail-Adressen und Rollen der Personen, mit denen Sie teilen, und die für sie versiegelten Schlüssel",
+          "Um ein Profil mit anderen Konten zu teilen",
+          "Die Namen und E-Mail-Adressen ja, die Schlüssel nein"
+        ],
+        [
+          "Ein Protokoll der Kontoereignisse: was passiert ist (Registrierung, Anmeldung, fehlgeschlagene Anmeldung, Abmeldung, Sperrung, Zurücksetzen des Passworts, eine Synchronisierung, eine Einladung zu einer Freigabe oder eine Änderung daran und Ähnliches), die E-Mail-Adresse, wenn sie bekannt ist, die IP-Adresse, der Zeitpunkt und die Anfrage-ID von Cloudflare. Nie, was synchronisiert wurde",
+          "Um Konten zu schützen und Missbrauch zu unterbinden",
+          "Ja. Wird {auditDays} Tage lang aufbewahrt und dann gelöscht"
+        ],
+        [
+          "Zähler für die Ratenbegrenzung, je IP-Adresse und E-Mail-Adresse",
+          "Um Rateversuche und Anfragefluten zu bremsen",
+          "Ja. Wird {rateDays} Tage lang aufbewahrt"
+        ]
+      ],
+      "after": [
+        "Registrierungen, die nie bestätigt werden, werden nach {unverifiedDays} Tagen gelöscht.",
+        "Der Dienst läuft hinter Cloudflare. Cloudflare wickelt die HTTPS-Verbindung für ihn ab und leitet die Anfragen an den Server weiter. Cloudflare verarbeitet daher im Auftrag des Dienstes IP-Adressen, Header und Inhalte von Anfragen, einschließlich Ihrer Anmeldedaten und Ihrer bereits verschlüsselten Datensätze. E-Mails zur Bestätigung und zum Zurücksetzen verschickt der Server über das Mailsystem seines Hosting-Anbieters.",
+        "Wir verkaufen Ihre Daten nicht, geben sie nicht an Werbetreibende weiter, nutzen sie nicht für Werbung, Nutzungsanalyse oder Profiling und verknüpfen sie mit nichts anderem."
+      ]
+    },
+    "after": [
+      {
+        "id": "website",
+        "title": "Diese Website",
+        "paragraphs": [
+          "Diese Website setzt keine Cookies, keine Nutzungsanalyse, keine Werbung und keine Skripte oder Schriftarten von Drittanbietern ein. Wie bei jeder Website verarbeiten Cloudflare und der Hosting-Anbieter Ihre IP-Adresse, die aufgerufene Seite und Angaben zu Ihrem Browser, um die Seite auszuliefern, und der Hosting-Anbieter speichert übliche Serverprotokolle für eine begrenzte Zeit.",
+          "Wenn Sie Ihr Konto auf dieser Website löschen, wird das, was Sie eingeben, über HTTPS nur an den Sync-Dienst gesendet und von der Seite nicht gespeichert."
+        ]
+      },
+      {
+        "id": "deleting",
+        "title": "Ihre Daten löschen",
+        "list": [
+          "<strong>Löschen Sie Ihr Konto</strong> in der App (ab Version 0.4) über <em>Cloud sync → (angemeldet) → Delete account…</em> oder auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> auf dieser Website. Sie bestätigen mit Ihrem Kontopasswort. Dadurch wird sofort Folgendes entfernt: die Cloud-Kopien aller Ihrer Profile, Ihr Freigabeschlüssel, jedes Profil, das Sie geteilt haben (die Personen, mit denen Sie es geteilt haben, verlieren den Zugriff), Ihre Mitgliedschaft in Freigaben anderer Personen, Ihre Sitzungen und die Protokolleinträge Ihres Kontos. Datensätze, die Sie in ein geteiltes Profil einer anderen Person geschrieben haben, bleiben in diesem Profil, ohne dass genannt wird, wer sie geschrieben hat. Profile auf Ihren Geräten bleiben unberührt.",
+          "<strong>Protokollzeilen, die danach geschrieben werden</strong> (zur Löschung selbst, ohne E-Mail-Adresse, und zu jedem späteren Anmeldeversuch mit dieser E-Mail-Adresse), bleiben bis zu {auditDays} Tage erhalten. Sicherungskopien, die bei Aktualisierungen der Serversoftware angelegt werden, werden nur kurz aufbewahrt.",
+          "<strong>Entfernen Sie die Cloud-Kopie eines einzelnen Profils</strong> in der App: im Menü des Profils in der Profilliste, <em>Delete from cloud…</em>.",
+          "<strong>Löschen Sie die Daten auf einem Gerät</strong>, indem Sie die App entfernen (bei der portablen Windows-Version den Ordner neben dem Programm).",
+          "Wenn Sie eine ältere Version nutzen oder die App nicht mehr öffnen können, wenden Sie sich an uns (siehe unten). Wir löschen das Konto, wenn Sie nachweisen können, dass es Ihnen gehört."
+        ]
+      },
+      {
+        "id": "security",
+        "title": "Sicherheit",
+        "paragraphs": [
+          "Der gesamte Datenverkehr zum Sync-Dienst läuft über HTTPS. Ihr Profilpasswort und Ihre Freigabe-Passphrase verlassen nie Ihr Gerät, und die Schlüssel, die Ihre Profile öffnen, werden auf dem Server nie in einer Form gespeichert, die er öffnen kann. Der Server begrenzt Anmeldeversuche, pausiert die Anmeldung per Passwort nach wiederholten falschen Passworteingaben für eine Weile und verlangt Ihr Passwort erneut für die sensibelsten Aktionen (Ersetzen Ihres Freigabeschlüssels, Löschen Ihres Kontos). Die <a href=\"{securityUrl}\">Sicherheitsseite</a> erklärt das alles im Detail."
+        ]
+      },
+      {
+        "id": "children",
+        "title": "Kinder",
+        "paragraphs": [
+          "Submarine ist ein Werkzeug für Systemadministratoren und Entwickler. Es richtet sich nicht an Kinder, und wir erheben nicht wissentlich Daten von ihnen."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Änderungen an dieser Datenschutzerklärung",
+        "paragraphs": [
+          "Wenn sich diese Datenschutzerklärung ändert, ändert sich auch das Datum oben. Die vollständige Änderungshistorie finden Sie im <a href=\"{repoUrl}/commits/main/PRIVACY.md\">Repository</a>."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Kontakt",
+        "paragraphs": [
+          "Fragen oder Anliegen zu Ihren Daten: Erstellen Sie ein Issue unter <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (bitte veröffentlichen Sie dort keine privaten Informationen) oder schreiben Sie über <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+        ]
+      }
+    ]
+  },
+  "delete": {
+    "title": "Ihr Submarine-Konto löschen",
+    "description": "So löschen Sie Ihr Submarine-Sync-Konto und alles, was der Server dazu speichert – in der App oder auf dieser Seite.",
+    "heading": "Ihr Konto löschen",
+    "lede": "Wenn Sie Ihr Sync-Konto löschen, wird sofort alles entfernt, was der Server dazu speichert. Das lässt sich nicht rückgängig machen.",
+    "whatTitle": "Was gelöscht wird",
+    "what": [
+      "Die Cloud-Kopien aller Ihrer Profile",
+      "Ihr Freigabeschlüssel und jedes Profil, das Sie geteilt haben (die Personen, mit denen Sie es geteilt haben, verlieren den Zugriff)",
+      "Ihre Mitgliedschaft in geteilten Profilen anderer Personen",
+      "Ihre Sitzungen, sodass Sie überall abgemeldet sind",
+      "Die Protokolleinträge Ihres Kontos"
+    ],
+    "staysTitle": "Was bleibt",
+    "stays": [
+      "Profile auf Ihren Geräten bleiben unberührt. Um sie zu entfernen, löschen Sie das Profil in der App oder entfernen Sie die App.",
+      "Datensätze, die Sie in ein geteiltes Profil einer anderen Person geschrieben haben, bleiben in diesem Profil, ohne dass genannt wird, wer sie geschrieben hat.",
+      "Protokollzeilen, die nach der Löschung geschrieben werden (zur Löschung selbst, ohne Ihre E-Mail-Adresse, und zu späteren Anmeldeversuchen), werden bis zu {auditDays} Tage aufbewahrt."
+    ],
+    "inAppTitle": "In der App",
+    "inApp": "Ab Version 0.4: Öffnen Sie <em>Cloud sync</em>, während Sie angemeldet sind, wählen Sie <em>Delete account…</em> und bestätigen Sie mit Ihrem Kontopasswort.",
+    "formTitle": "Auf dieser Seite",
+    "formLede": "Melden Sie sich mit der E-Mail-Adresse und dem Passwort Ihres Sync-Kontos an. Ihr Konto wird sofort gelöscht.",
+    "email": "E-Mail-Adresse",
+    "password": "Kontopasswort",
+    "passwordHint": "Das Passwort Ihres Sync-Kontos, nicht Ihr Profilpasswort.",
+    "confirm": "Ich verstehe, dass dadurch mein Konto und seine Cloud-Daten endgültig gelöscht werden.",
+    "submit": "Mein Konto löschen",
+    "working": "Wird gelöscht …",
+    "done": "Ihr Konto wurde gelöscht. Profile auf Ihren Geräten bleiben unberührt.",
+    "errors": {
+      "wrong": "Falsche E-Mail-Adresse oder falsches Passwort. Nach mehreren Fehlversuchen pausiert die Anmeldung per Passwort für eine Weile.",
+      "noScript": "Dieses Formular benötigt JavaScript. Sie können Ihr Konto auch in der App löschen.",
+      "rate": "Zu viele Versuche. Bitte warten Sie eine Weile und versuchen Sie es dann erneut.",
+      "network": "Der Server war nicht erreichbar. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+      "other": "Etwas ist schiefgelaufen ({code}). Es wurde nichts gelöscht. Bitte versuchen Sie es später erneut oder nutzen Sie die App.",
+      "confirm": "Bitte setzen Sie zur Bestätigung das Häkchen."
+    },
+    "helpTitle": "Kein Passwort oder kein Zugriff?",
+    "help": "Wenn Sie sich immer mit einem Code per E-Mail anmelden, legen Sie zuerst in der App ein Passwort fest (Cloud sync → Forgot password?). Wenn Sie weder die App noch dieses Formular nutzen können, erstellen Sie ohne private Angaben ein Issue unter <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a>. Wir löschen das Konto, wenn Sie nachweisen können, dass es Ihnen gehört."
+  },
+  "notFound": {
+    "title": "Seite nicht gefunden – Submarine",
+    "heading": "Diese Seite gibt es nicht",
+    "text": "Vielleicht ist die Adresse falsch, oder die Seite wurde verschoben.",
+    "home": "Zur Startseite"
+  }
+}

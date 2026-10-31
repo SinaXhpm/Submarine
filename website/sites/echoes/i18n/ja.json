@@ -1,0 +1,628 @@
+{
+  "meta": {
+    "name": "日本語",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "本文へスキップ",
+    "doctor": "Doctor",
+    "tools": "ツール",
+    "devices": "デバイス",
+    "privacy": "プライバシー",
+    "download": "ダウンロード",
+    "github": "GitHubのソースコード",
+    "language": "言語",
+    "home": "Echoesのトップページ",
+    "menu": "メニュー"
+  },
+  "common": {
+    "tagline": "あらゆるデバイスで使える無料のネットワークツール",
+    "updated": "最終更新日：{date}",
+    "translationNote": "このページは翻訳です。英語版と内容が異なる場合は、英語版が優先されます。",
+    "englishVersion": "英語版",
+    "openFull": "原寸大の画像を開く",
+    "close": "閉じる",
+    "onThisPage": "このページの内容"
+  },
+  "footer": {
+    "product": "Echoes",
+    "trust": "信頼性",
+    "project": "プロジェクト",
+    "faq": "よくある質問",
+    "appStore": "App Store",
+    "releases": "GitHubのリリース",
+    "privacyPolicy": "プライバシーポリシー",
+    "issues": "問題を報告",
+    "author": "sinaxhpm.com",
+    "sister": "同じ作者のアプリ：SSH、SFTP、RDP、VNC、Telnetを、暗号化された1つのアプリで",
+    "license": "MITライセンスで公開されている、無料のオープンソースソフトウェアです。",
+    "madeWith": "C#、.NET、Avaloniaで作られています。",
+    "noTracking": "このウェブサイトは、Cookie、アクセス解析、第三者のスクリプトを使用していません。"
+  },
+  "home": {
+    "title": "Echoes – 無料のネットワークツール（iPhone、iPad、Mac、Windows、Linux、Android対応）",
+    "description": "Echoesは、20のネットワークツールを1つにまとめた、無料でオープンソースのアプリです。サイトが開かない理由を教えてくれるDoctor、ping、traceroute、速度テスト、ポートスキャナー、DNSとWHOIS、cURL、TLSチェッカー、SSH、稼働監視、そしてどのブラウザーとも使えるファイル共有。アカウント不要、広告なし、トラッキングなし。",
+    "hero": {
+      "pillTag": "新登場",
+      "pill": "iPhone、iPad、Mac向けに、App Storeで配信開始",
+      "title": "20のネットワークツール。<em>無料のアプリ1つで。</em>",
+      "lede": "サイトが開かない理由を調べる、回線の速度を測る、pingを送る、ポートをスキャンする、DNSを調べる、どんなデバイスにもファイルを送る。普段なら1つずつ別々に使うツールを、Echoesはシンプルな1つのアプリにまとめました。",
+      "appStore": "App Store",
+      "download": "すべてのダウンロード",
+      "trust": [
+        "アカウント不要",
+        "広告なし",
+        "トラッキングなし",
+        "オープンソース"
+      ],
+      "chips": [
+        "原因を見つけてくれる",
+        "速度テスト",
+        "どのブラウザーにもファイルを送れる"
+      ],
+      "imageAlt": "Mac上のEchoes：Doctorが、example.comはここからは問題なく開けると判定し、実行したすべてのチェックを表示しています",
+      "phoneAlt": "iPhone上のEchoes：Doctor"
+    },
+    "instead": {
+      "title": "これらを別々に使う代わりに、アプリ1つで",
+      "items": [
+        "ping",
+        "traceroute",
+        "nmap",
+        "curl",
+        "digとwhois",
+        "PuTTY",
+        "速度テストのサイト",
+        "Cloudflareのダッシュボード"
+      ]
+    },
+    "doctor": {
+      "kicker": "Doctor",
+      "title": "サイトが開かない？<em>その理由がわかります。</em>",
+      "lede": "Doctorは、あなたとサイトの間にあるものをすべてチェックし、何が問題で、どうすればよいかを一文で伝えます。",
+      "points": [
+        {
+          "id": "network",
+          "title": "あなた自身のネットワーク",
+          "text": "ネットワークアダプター、ゲートウェイ、VPNやプロキシ、そして通信を妨げているWi-Fiのログインページ。"
+        },
+        {
+          "id": "dns",
+          "title": "うそをつくDNS",
+          "text": "システムのDNSの応答を、暗号化されたDNSの応答と比べます。そのため、偽の応答や、既知のフィルタリング用のアドレスがすぐにわかります。"
+        },
+        {
+          "id": "sni",
+          "title": "フィルタリングか、アドレスのブロックか",
+          "text": "サイト名を付けた場合と付けない場合の両方でTLS接続を試し、名前によるフィルタリング（SNI）なのか、IPアドレスのブロックなのかを見分けます。"
+        },
+        {
+          "id": "outside",
+          "title": "誰も開けないのか、自分だけなのか",
+          "text": "複数の国からもサイトをチェックするため、問題がサイト側にあるのか、あなたの接続にあるのかがわかります。"
+        },
+        {
+          "id": "dpi",
+          "title": "回避策は効くのか",
+          "text": "最初のパケットを分割して再試行することで、v2rayNG、Hiddify、Xrayなどのアプリの「fragment」設定で通れるかどうかがわかります。"
+        },
+        {
+          "id": "report",
+          "title": "共有できるレポート",
+          "text": "各ステップとその所要時間。そして、ネットワークの管理者に渡せる、コピー可能なレポート。"
+        }
+      ],
+      "alt": "DoctorがSNIフィルタリングを検出：サイトのアドレスには接続できるが、サイト名を付けると接続できない"
+    },
+    "tools": {
+      "kicker": "20のツール",
+      "title": "ネットワークに必要なものすべてを、<em>1つのウィンドウに</em>",
+      "lede": "アプリと同じ4つのグループに分かれています：問題を見つける、ウェブサイトとAPIをテストする、接続する・サーバーを動かす、そして毎日使う開発者向けツール。",
+      "groups": [
+        {
+          "id": "diagnose",
+          "title": "診断",
+          "items": [
+            {
+              "id": "ping",
+              "title": "Ping",
+              "text": "リアルタイムの統計とグラフ、TCP ping、traceroute、MTR。"
+            },
+            {
+              "id": "doctor",
+              "title": "Doctor",
+              "text": "サイトが開かない理由を一文で。"
+            },
+            {
+              "id": "dns",
+              "title": "DNS & WHOIS",
+              "text": "DNS over HTTPSとDNS over TLS、リゾルバーの比較、メール設定のチェック。"
+            },
+            {
+              "id": "scanner",
+              "title": "Port Scanner",
+              "text": "サービス検出付きのTCPスキャンとUDPスキャン。"
+            },
+            {
+              "id": "checkhost",
+              "title": "Check Host",
+              "text": "世界各地からのping、HTTP、TCP、DNSのチェック。"
+            },
+            {
+              "id": "monitor",
+              "title": "Monitor",
+              "text": "稼働チェック、有効期限の警告、Telegramでの通知。"
+            },
+            {
+              "id": "network",
+              "title": "Network",
+              "text": "アダプター、Wi-Fi、近くのデバイス、開いているポート、ルート。"
+            },
+            {
+              "id": "speed",
+              "title": "Speed Test",
+              "text": "ダウンロード、アップロード、ping、ジッター、負荷時の遅延。"
+            }
+          ]
+        },
+        {
+          "id": "web",
+          "title": "Web・API",
+          "items": [
+            {
+              "id": "curl",
+              "title": "cURL",
+              "text": "どんなcurlコマンドも理解するHTTPクライアント。"
+            },
+            {
+              "id": "tls",
+              "title": "TLS Inspector",
+              "text": "証明書、有効期限、TLSのバージョン、暗号スイート。"
+            },
+            {
+              "id": "ipinfo",
+              "title": "IP Info",
+              "text": "自分のグローバルIPと、任意のIPアドレスの所在地。"
+            },
+            {
+              "id": "cloudflare",
+              "title": "Cloudflare",
+              "text": "DNS、SSL、ルール、ダイナミックDNSを、ダッシュボードを開かずに。"
+            },
+            {
+              "id": "telegram",
+              "title": "Telegram Bot",
+              "text": "Bot APIの任意のメソッドを呼び出し、生の応答を確認。"
+            }
+          ]
+        },
+        {
+          "id": "serve",
+          "title": "サーバーと接続",
+          "items": [
+            {
+              "id": "ssh",
+              "title": "SSH",
+              "text": "ターミナル、ファイル、ポートフォワーディング、サーバーの状態。"
+            },
+            {
+              "id": "socket",
+              "title": "Socket",
+              "text": "TCPとUDPのクライアントとサーバー、そしてWebSocket。"
+            },
+            {
+              "id": "webserver",
+              "title": "Web Server",
+              "text": "ブラウザーのあるどんなデバイスとも、ファイルの共有やチャットができます。Webhookを受け取ることもできます。"
+            },
+            {
+              "id": "proxy",
+              "title": "Proxy",
+              "text": "SOCKS5とHTTPのプロキシ、そしてプロキシリストのチェッカー。"
+            }
+          ]
+        },
+        {
+          "id": "workspace",
+          "title": "ワークスペース",
+          "items": [
+            {
+              "id": "strings",
+              "title": "String Lab",
+              "text": "エンコード、ハッシュ、変換、差分、生成。"
+            },
+            {
+              "id": "notes",
+              "title": "Notes",
+              "text": "マスターパスワードでロックされたメモ。"
+            },
+            {
+              "id": "backup",
+              "title": "History & Backup",
+              "text": "最近の入力と、暗号化された1つのバックアップファイル。"
+            }
+          ]
+        }
+      ]
+    },
+    "features": {
+      "kicker": "詳しく見る",
+      "title": "使い方はシンプル、<em>必要なときは深くまで</em>",
+      "items": [
+        {
+          "id": "ping",
+          "title": "Ping、traceroute、MTR",
+          "text": "どんなホストでも、リアルタイムの応答、遅延のグラフ、そして大事な数値がわかります。",
+          "points": [
+            "通常のpingに応答しないホスト向けに、ポートへのTCP ping。",
+            "パケットサイズ、TTL、「don't fragment」を指定して、経路を通れる最大のパケットを調べられます。",
+            "管理者権限は不要：システムが通常のpingを許可しない場合は、Echoesが自動的にUDPに切り替えます。",
+            "ホストがダウンしたときや復旧したときに通知。"
+          ],
+          "alt": "Mac上のPing：1.1.1.1のポート443へのTCP ping。リアルタイムの応答と遅延のグラフ付き"
+        },
+        {
+          "id": "speed",
+          "title": "インターネットの速度、実際はどれくらい？",
+          "text": "ダウンロード、アップロード、ping、ジッター、そして回線が混んでいるときに遅延がどれだけ増えるか。",
+          "points": [
+            "Cloudflareの最寄りのデータセンター、20以上の都市にある公開テストサーバー、または自分のサーバー。",
+            "負荷時の遅延（バッファーブロート）の評価。",
+            "最大16の同時接続と、直近20回の結果。"
+          ],
+          "alt": "ワシントンのサーバーを相手にダウンロード速度を測定している速度テスト"
+        },
+        {
+          "id": "monitor",
+          "title": "サイトのダウンにすぐ気づける",
+          "text": "サーバーやウェブサイトを監視し、ダウンしたときや復旧したときに知らせます。",
+          "points": [
+            "ping、TCP、HTTPのチェック。間隔はそれぞれ個別に設定できます。",
+            "自分のボットから、Telegramで通知。",
+            "証明書やドメインの期限が切れる前に警告。",
+            "ページに特定のテキストが含まれているか、含まれていないかをチェック。"
+          ],
+          "alt": "稼働監視：4つのサイトが稼働中、1つがダウン。それぞれの履歴付き"
+        },
+        {
+          "id": "share",
+          "title": "どんなデバイスにもファイルを送る",
+          "text": "コンピューターと、スマートフォンやノートパソコンなどのデバイスとの間で、ファイルの共有やチャットができます。QRコードを読み取れば、相手側はブラウザーだけで使えます。",
+          "points": [
+            "デバイス独自の証明書によるHTTPSで、8桁のPINで保護されます。証明書がデバイス独自のものなので、ブラウザーは一度だけ警告を表示します。",
+            "ファイルは双方向にやり取りでき、ドラッグ＆ドロップにも、ダウンロードの再開にも対応しています。",
+            "共有した各ファイルに、専用のリンクとQRコード。",
+            "Webhookのリクエストを受信して、1つずつ全体を確認することもできます。"
+          ],
+          "alt": "ファイルとチャットを共有しているWebサーバー。リンク、PIN、QRコード付き",
+          "altPhone": "スマートフォンのブラウザーで開いた共有ページ"
+        },
+        {
+          "id": "dns",
+          "title": "必要な形でDNSを",
+          "text": "通常のDNS、DNS over HTTPS、DNS over TLSを並べて表示。",
+          "points": [
+            "多数のリゾルバーを一度に比較。改ざんされた応答やフィルタリングされた応答には印が付きます。",
+            "メール設定のチェック：MX、SPF、DMARC、DKIM、MTA-STS、TLS-RPT、ブロックリスト。",
+            "RDAPによるWHOIS。ドメインの有効期限もわかります。"
+          ],
+          "alt": "example.comを通常のDNSとDNS over HTTPSで調べた結果"
+        },
+        {
+          "id": "tls",
+          "title": "どんなウェブサイトの証明書もチェック",
+          "text": "まずはっきりとした判定を、続いてすべての詳細を。",
+          "points": [
+            "TLSのバージョンごとに個別にテスト。暗号スイートとALPNも表示。",
+            "証明書チェーン全体、フィンガープリント、OCSPステープリング、HSTS。",
+            "メールサーバーとFTPサーバー向けのSTARTTLS、そして多数のサイトの有効期限の一括チェック。"
+          ],
+          "alt": "TLS Inspector：example.comは信頼済み。受け付けるTLSのバージョン付き"
+        },
+        {
+          "id": "curl",
+          "title": "ウェブサイトとAPIをテスト",
+          "text": "bash、cmd、PowerShellのcurlコマンドや、ブラウザーの「cURLとしてコピー」でコピーしたコマンドを貼り付けて、そのまま送信できます。",
+          "points": [
+            "各ステップの所要時間：DNS、接続、TLS、最初のバイト。",
+            "ヘッダー、Cookie、リダイレクト、TLS、ページのプレビュー。",
+            "curl、PowerShell、Python、JavaScript、HTTPie、wget向けのコード。",
+            "保存したリクエストは暗号化されます。"
+          ],
+          "alt": "cURLツール：GETリクエストと各ステップの所要時間"
+        },
+        {
+          "id": "strings",
+          "title": "毎日使う開発者向けツール",
+          "text": "普段ならウェブで検索して済ませるような細かな作業を、自分のデバイス上で。",
+          "points": [
+            "Base64・URL・16進数の変換、ハッシュとHMAC、JWTのデコード・検証・署名。",
+            "JSON、YAML、CSV、正規表現、差分、cron、サブネット。",
+            "UUID、ULID、パスワードの生成。パスワードは、解読にかかる時間も表示されます。"
+          ],
+          "alt": "パスワードを生成しているString Lab。それぞれの解読にかかる時間付き"
+        }
+      ]
+    },
+    "more": {
+      "title": "ほかにも",
+      "items": [
+        {
+          "id": "scanner",
+          "caption": "Port Scanner：開いているポートと、そのサービスとバージョン",
+          "alt": "Port Scannerの結果：開いているポートと閉じているポート、サービスのバージョン付き"
+        },
+        {
+          "id": "ssh",
+          "caption": "SSH：サーバーに何もインストールせずに、サーバーの状態を確認",
+          "alt": "SSHツール：サーバーのCPU、メモリ、ディスク、上位のプロセスを表示"
+        },
+        {
+          "id": "cloudflare",
+          "caption": "Cloudflare：ダッシュボードを開かずに、DNSレコードを扱えます",
+          "alt": "Cloudflareツール：ゾーンのDNSレコードの一覧"
+        }
+      ]
+    },
+    "devices": {
+      "kicker": "すべてのデバイスで",
+      "title": "1つのアプリを、<em>すべてのデバイスで</em>",
+      "lede": "iPhone、iPad、Mac、Windows、Linux、Androidで、同じツールが使えます。1つのコードベースから作られ、それぞれの画面に合わせたレイアウトになっています。",
+      "altIphone": "iPhone上のEchoes：ツールの並んだメニュー",
+      "altIpad": "iPad上のEchoes：Doctor",
+      "altAndroid": "AndroidスマートフォンのEchoes：速度テスト",
+      "note": "一部のツールは、システムによって使える範囲が異なります。iPhoneとiPadでは、サーバー、監視、スキャンはEchoesが画面に表示されている間しか動かず、Wi-FiアナライザーはWindowsとLinuxだけで使えます。"
+    },
+    "privacy": {
+      "kicker": "プライバシー",
+      "title": "Echoesは<em>何も</em>収集しません",
+      "lede": "アカウントも、広告も、アナリティクスも、トラッキングもありません。開発者には何も送信されず、あなたが何をテストし、どこに接続し、何を保存したかを開発者が見ることはできません。",
+      "items": [
+        {
+          "title": "データはデバイスの中に",
+          "text": "設定、履歴、メモ、保存したリクエスト、トークンは、アプリ専用のフォルダーに保存されます。秘密情報は暗号化され、メモはマスターパスワードでロックされます。"
+        },
+        {
+          "title": "勝手に動くものはありません",
+          "text": "Webサーバー、プロキシ、リクエストキャッチャー、ソケットのリスナーは、Startを押したときにだけ起動します。Echoesが自分から行うのは新しいバージョンの確認だけで、それもGitHubから入手したビルドに限られます。"
+        },
+        {
+          "title": "データの収集なし",
+          "text": "App Storeのプライバシーラベルにも、そう表示されています。ソースコードは公開されているので、自分で確かめられます。"
+        }
+      ],
+      "link": "プライバシーポリシーを読む"
+    },
+    "free": {
+      "kicker": "無料",
+      "big": "無料のオープンソース",
+      "text": "どのプラットフォームでも、広告なし、有料版なし、アプリ内課金なし、アカウント不要です。",
+      "items": [
+        "App Storeで無料。アプリ内課金もありません。",
+        "Windows、macOS、Linux、Android向けに、GitHubで無料で入手できます。",
+        "ソースコードは、MITライセンスで公開されています。",
+        "デスクトップ版はネイティブアプリです。ほかに何もインストールする必要がなく、起動が速く、メモリの使用量も少なく済みます。"
+      ]
+    },
+    "download": {
+      "kicker": "ダウンロード",
+      "title": "Echoesを入手",
+      "lede": "iPhone、iPad、MacではApp Storeから。Windows、Linux、Android、そしてmacOS版の直接ダウンロードはGitHubから。",
+      "platforms": [
+        {
+          "id": "apple",
+          "name": "iPhone、iPad、Mac",
+          "detail": "App Store · iOSとiPadOS 15以降、macOS 12以降",
+          "links": [
+            {
+              "id": "ios",
+              "label": "App Store"
+            },
+            {
+              "id": "mac",
+              "label": "Mac App Store"
+            }
+          ]
+        },
+        {
+          "id": "windows",
+          "name": "Windows",
+          "detail": "Windows 10と11（x64） · .zip",
+          "links": [
+            {
+              "id": "zip",
+              "label": ".zipをダウンロード"
+            }
+          ]
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "detail": "macOS 12以降 · 署名・公証済みの.dmg",
+          "links": [
+            {
+              "id": "arm64",
+              "label": "Apple Silicon"
+            },
+            {
+              "id": "x64",
+              "label": "Intel"
+            }
+          ]
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "detail": "x64 · glibc 2.35以降（Ubuntu 22.04、Debian 12、Fedora 36、およびそれ以降）",
+          "links": [
+            {
+              "id": "appimage",
+              "label": "AppImage"
+            },
+            {
+              "id": "deb",
+              "label": ".deb"
+            },
+            {
+              "id": "rpm",
+              "label": ".rpm"
+            }
+          ]
+        },
+        {
+          "id": "android",
+          "name": "Android",
+          "detail": "Android 6.0以降 · .apk",
+          "links": [
+            {
+              "id": "apk",
+              "label": ".apkをダウンロード"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "アプリ自体は英語です。",
+        "Windows版はまだコード署名されていないため、初回はWindowsが警告を表示することがあります。その場合は<em>詳細情報</em>を選び、続けて<em>実行</em>を選んでください。",
+        "App Store版は、App Storeを通じて更新されます。ダウンロード版は、新しいバージョンが出るとそれを知らせます。"
+      ]
+    },
+    "faq": {
+      "kicker": "ヘルプ",
+      "title": "質問と回答",
+      "items": [
+        {
+          "q": "Echoesは本当に無料ですか？",
+          "a": "はい。EchoesはMITライセンスの無料のオープンソースソフトウェアです。どのプラットフォームでも、広告、有料版、アプリ内課金はなく、アカウントも必要ありません。"
+        },
+        {
+          "q": "Echoesはデータを収集しますか？",
+          "a": "いいえ。アカウントも、アナリティクスも、トラッキングもなく、開発者には何も送信されません。速度テストのサーバーやDNSリゾルバーなど、一部のツールは公開サービスを利用しています。そうしたサービスには、ほかのウェブサイトを訪れたときと同じように、あなたのリクエストが見えます。それらはすべて<a href=\"{privacyUrl}\">プライバシーポリシー</a>に記載しています。"
+        },
+        {
+          "q": "どのデバイスで使えますか？",
+          "a": "App StoreからはiPhoneとiPad（iOSとiPadOS 15以降）、Mac（macOS 12以降）。GitHubからはWindows 10と11、Linux、Android 6.0以降、macOSです。"
+        },
+        {
+          "q": "管理者権限は必要ですか？",
+          "a": "いいえ。システムが通常の（ICMPの）pingを許可しない場合は、Echoesが自動的にUDPに切り替えます。"
+        },
+        {
+          "q": "EchoesはVPNですか？",
+          "a": "いいえ。Echoesは、デバイスの接続のしかたを変えません。Doctorが伝えるのは、何がサイトをブロックしているのか、そしてほかのアプリの設定でそれを回避できるかどうかだけです。"
+        },
+        {
+          "q": "アプリは日本語で使えますか？",
+          "a": "まだ使えません。アプリは英語です。このウェブサイトは、より多くの人に読んでもらえるよう翻訳しています。"
+        },
+        {
+          "q": "どんなネットワークでもスキャンできますか？",
+          "a": "スキャンするのは、自分のネットワークと自分が管理しているサーバーだけにしてください。他人のネットワークをスキャンすると、あなたがいる国や地域の法律に違反する場合があります。"
+        },
+        {
+          "q": "iPhoneとiPadでは何が違いますか？",
+          "a": "iOSでは、アプリがバックグラウンドで動けるのはわずかな時間だけです。そのため、サーバー、監視、スキャンはEchoesが画面に表示されている間に動き、その間Echoesは画面をオンのままにします。Wi-Fiアナライザーなど、システムのネットワーク情報が必要な一部のツールはありません。"
+        }
+      ]
+    }
+  },
+  "privacy": {
+    "title": "プライバシーポリシー – Echoes",
+    "description": "Echoesはデータを収集しません。デバイス上にとどまるもの、一部のツールが利用するサービス、アプリが求める権限について説明します。",
+    "heading": "プライバシーポリシー",
+    "intro": "Echoesは、無料でオープンソースのネットワークツールキットです（ping、traceroute、ポートスキャナー、DNS、SSH、速度テスト、ファイル共有用のWebサーバーなど）。このページでは、Echoesがあなたのデータをどう扱うかを説明します。要点を言えば、<strong>データは一切収集しません。</strong>",
+    "sourceNote": "このポリシーは、ソースコード内の<a href=\"{policyUrl}\">PRIVACY.md</a>と同じものです。",
+    "sections": [
+      {
+        "id": "collects",
+        "title": "開発者が収集するもの",
+        "paragraphs": [
+          "何もありません。Echoesには、アカウント、広告、アナリティクス、クラッシュレポートのサービス、トラッキング用のSDKのいずれもありません。開発者には何も送信されず、あなたが何をテストし、どこに接続し、何を保存したかを開発者が見ることはできません。"
+        ]
+      },
+      {
+        "id": "device",
+        "title": "デバイス上にとどまるもの",
+        "paragraphs": [
+          "設定、入力したホストとURL（履歴）、メモ、保存したリクエスト、SSHプロファイル、追加したトークン（Telegram、Cloudflare）は、お使いのデバイス上の、アプリ専用のデータフォルダーにだけ保存されます。"
+        ],
+        "list": [
+          "秘密情報（パスワード、トークン）は、ディスク上で暗号化されています。メモとCloudflareの保管庫は、マスターパスワードから作った鍵で暗号化されます。",
+          "すべてのデータを、パスワードで保護された1つのバックアップファイルに書き出し、別のデバイスで復元できます。このファイルは、あなたが保存した場所にしか置かれません。",
+          "iPhoneやiPadでは、ブラウザーからファイル共有ページに送られたファイルは、「ファイル」アプリのEchoesフォルダー（「このiPhone内」）に保存されます。そのため、そこで開いたり、移動したり、削除したりできます。",
+          "アプリまたはそのデータフォルダーを削除すると、データも削除されます。"
+        ]
+      },
+      {
+        "id": "leaves",
+        "title": "デバイスの外に出るものと、その理由",
+        "paragraphs": [
+          "Echoesはネットワークツールなので、ネットワークリクエストを送信します。あなたが開始する、あなたが調べるホストへのリクエストと、一部のツールが利用しているいくつかの公開サービスへのリクエストです。これらのサービスはリクエストそのものを受け取るため、ほかのウェブサイトを訪れたときと同じように、あなたのグローバルIPアドレスも受け取ります。Echoesはこれらのサービスを管理しておらず、それぞれに独自のプライバシーポリシーがあります。"
+        ],
+        "list": [
+          "<strong>あなたがテストするホスト、ポート、URL</strong>（ping、traceroute、ポートスキャン、cURL、DNS、TLS、SSH、ソケット、Doctor）。",
+          "<strong>check-host.net</strong>：世界各地のサーバーからホストをテストするため。",
+          "<strong>速度テストのサーバー：</strong>speed.cloudflare.com、またはあなたが選んだファイルホスト（Cloudflare、Tele2、Leaseweb、Linode、Selectel、DataPacketなど）。",
+          "<strong>公開されているDNS-over-HTTPSリゾルバー</strong>（Cloudflare、Google、Quad9、OpenDNS、AdGuard）：DNSツールを使うとき。",
+          "<strong>IP情報の提供元</strong>（ipinfo.io、ipwho.is、ipapi.co、ip-api.com、geojs.io、freeipapi.com、iplocation.net）：入力したIPアドレス、または自分のIPアドレスを調べるため。",
+          "<strong>RDAP</strong>（rdap.org、rdap.verisign.com）：ドメインの登録情報と有効期限を調べるため。",
+          "<strong>DNSブロックリスト</strong>（Spamhaus、SpamCop、Barracuda）と、そのドメイン自体のメール関連のレコード：ドメインに対してメール設定のチェックを実行したとき。",
+          "<strong>接続確認とグローバルIPのサービス：</strong>Google、Microsoft、Cloudflareなどのよく知られたサイトとconnectivitycheck.gstatic.com（Doctorがインターネットにつながっているかを確認します）、そしてCloudflare、ipify、ident.me、icanhazip（ダイナミックDNSがグローバルIPを読み取ります）。",
+          "<strong>Telegram</strong>（api.telegram.org）：稼働監視の通知用に自分のボットのトークンを追加した場合だけ。<strong>Cloudflare</strong>（api.cloudflare.com）：自分のAPIトークンを追加した場合だけ。トークンはデバイス上にとどまり、それぞれのサービスにだけ送信されます。",
+          "<strong>GitHub</strong>（api.github.com）：GitHubからダウンロードしたビルドでだけ、新しいバージョンがあるかを確認するため。アプリストアから入手したビルドは確認を行いません。アプリはストアが更新します。"
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Echoesが動かせるサーバー",
+        "paragraphs": [
+          "Webサーバー（ファイル共有とチャット）、リクエストキャッチャー、プロキシ、ソケットのリスナーは、Startを押したときにだけ起動し、Stopを押すかEchoesを終了すると停止します。動いている間は、そのポートに到達できるデバイスから接続できます。ファイル共有ページではPINの入力が求められ、データはあなたのデバイスと接続してきたデバイスの間でだけやり取りされます。Echoesがそのデータをほかの場所に送ることはありません。"
+        ]
+      },
+      {
+        "id": "permissions",
+        "title": "権限",
+        "list": [
+          "<strong>ネットワーク</strong>（すべてのプラットフォーム）：Echoesはネットワークツールだからです。",
+          "<strong>ローカルネットワーク</strong>（macOSとiOS）：ローカルネットワーク上のデバイスに対して、初めてスキャン、ping、共有を行うときに求められます。許可しない場合、ローカルのデバイスには到達できないように見えます。",
+          "<strong>通知、フォアグラウンドサービス、起動時の自動開始</strong>（Android）：稼働監視の通知のためと、アプリがバックグラウンドにある間もスキャン、監視、ファイル共有を続けるためです。起動時の自動開始は、自分でオンにしない限りオフです。",
+          "<strong>位置情報</strong>（Windows）：Windowsでは、位置情報へのアクセスがオンのときにだけ、アプリが近くのWi-Fiネットワークの名前を見ることができます。Echoesは、Wi-Fiアナライザーのためにそれらをデバイス上で読み取るだけで、どこにも送信しません。"
+        ]
+      },
+      {
+        "id": "children",
+        "title": "子どもについて",
+        "paragraphs": [
+          "Echoesは汎用のツールであり、子どもを対象としたものではありません。Echoesは、誰からも個人情報を収集しません。"
+        ]
+      },
+      {
+        "id": "opensource",
+        "title": "オープンソース",
+        "paragraphs": [
+          "EchoesはMITライセンスで公開されています。誰でもソースコードを読み、このページに書かれた内容を確かめ、アプリをビルドできます：<a href=\"{repoUrl}\">github.com/SinaXhpm/Echoes</a>。"
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "変更",
+        "paragraphs": [
+          "このポリシーが変更された場合、このページは新しい版に置き換えられ、上部の日付も新しくなります。"
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "お問い合わせ",
+        "paragraphs": [
+          "ご質問やご懸念は、<a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>でIssueを作成してください。"
+        ]
+      }
+    ]
+  },
+  "notFound": {
+    "title": "ページが見つかりません – Echoes",
+    "heading": "このページは存在しません",
+    "text": "アドレスが間違っているか、ページが移動した可能性があります。",
+    "home": "トップページへ"
+  }
+}
