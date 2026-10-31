@@ -354,11 +354,32 @@ const TerminalView = ({
   // The terminal's input handler (what xterm's onData runs), for keys that
   // don't come from xterm itself — the mobile key bar's arrows and symbols.
   const inputRef = useRef<((data: string) => void) | null>(null);
+  // The word an on-screen keyboard is still composing, see flushComposition,
+  // and whether a word has just ended and xterm hasn't sent it yet.
+  const composingRef = useRef("");
+  const compositionEndingRef = useRef(false);
   // Small tail of recent remote OUTPUT, kept only to detect no-echo password
   // prompts (see looksLikePasswordPrompt) — never persisted or displayed.
   const recentOutputRef = useRef<string>("");
 
+  // Keyboards like Samsung's hold a word in a composition, which xterm sends
+  // only when the word ends. A key bar key goes out at once, so it would land
+  // before that word, and Ctrl plus a letter would wait for a space. So the
+  // word is taken here: losing the focus ends the composition, and xterm
+  // empties its field on blur, so it doesn't send the word a second time.
+  const flushComposition = () => {
+    const word = composingRef.current;
+    const field = xtermRef.current?.textarea;
+    if (!word || !field) return;
+    composingRef.current = "";
+    field.blur();
+    field.focus();
+    inputRef.current?.(word);
+  };
+
   const toggleModifier = (m: ModKey) => {
+    if (compositionEndingRef.current) { setTimeout(() => toggleModifier(m)); return; }
+    flushComposition();
     setModifiers(prev => ({ ...prev, [m]: cycleMod(prev[m]) }));
   };
   // Called after a transformed char is sent so armed modifiers reset back
@@ -387,6 +408,9 @@ const TerminalView = ({
   // handler applies the armed modifiers to them itself.
   const sendSpecialKey = (key: SpecialKey) => {
     if (disabledRef.current) return;
+    // A word that has just ended is on its way: this key goes after it.
+    if (compositionEndingRef.current) { setTimeout(() => sendSpecialKey(key)); return; }
+    flushComposition();
     if (key === "|" || key === "~" || key === "/" || key === "-") {
       inputRef.current?.(key);
       return;
@@ -878,9 +902,10 @@ const TerminalView = ({
       // for one. Never run through the armed modifiers or into history.
       const isPaste = pastingRef.current || data.startsWith("\x1b[200~");
       const mods = modifiersRef.current;
-      const hasMod = mods.ctrl !== "off" || mods.alt !== "off";
+      const hasMod = mods.ctrl !== "off" || mods.alt !== "off" || mods.shift !== "off";
       let bytes: number[];
       if (hasMod && data.length === 1 && !isPaste) {
+        if (mods.shift !== "off" && data >= "a" && data <= "z") data = data.toUpperCase();
         const code = data.charCodeAt(0);
         let ch = code;
         if (mods.ctrl !== "off") {
@@ -897,7 +922,7 @@ const TerminalView = ({
         }
         bytes = [];
         if (mods.alt !== "off") bytes.push(0x1b); // ESC prefix → Meta
-        bytes.push(ch);
+        bytes.push(...new TextEncoder().encode(String.fromCharCode(ch)));
         consumeArmedModifiers();
       } else {
         bytes = Array.from(new TextEncoder().encode(data));
@@ -1010,6 +1035,23 @@ const TerminalView = ({
     // they're broadcast and recorded exactly like typed input.
     inputRef.current = handleData;
     const onDataDisposable = term.onData(handleData);
+
+    // With a modifier on, the first letter of a composition is the key it
+    // combines with, so it doesn't wait for the word to end.
+    const onCompositionUpdate = (e: CompositionEvent) => {
+      composingRef.current = e.data;
+      const m = modifiersRef.current;
+      if (m.ctrl !== "off" || m.alt !== "off" || m.shift !== "off") setTimeout(flushComposition);
+    };
+    // xterm sends the word from a timer, set before this one. A tap can come
+    // first, so until then the key bar waits (see sendSpecialKey).
+    const onCompositionEnd = () => {
+      composingRef.current = "";
+      compositionEndingRef.current = true;
+      setTimeout(() => { compositionEndingRef.current = false; });
+    };
+    term.textarea?.addEventListener("compositionupdate", onCompositionUpdate);
+    term.textarea?.addEventListener("compositionend", onCompositionEnd);
 
     // ---- Copy on select / paste on right-click --------------------------------
     // Selection-change fires per mouse move during a drag — that's noisy AND
@@ -1387,6 +1429,8 @@ const TerminalView = ({
       window.removeEventListener('submarine-settings-changed', handleSettingsChange);
       resizeObserver.disconnect();
       onDataDisposable.dispose();
+      term.textarea?.removeEventListener("compositionupdate", onCompositionUpdate);
+      term.textarea?.removeEventListener("compositionend", onCompositionEnd);
       if (inputRef.current === handleData) inputRef.current = null;
       onResizeDisposable.dispose();
       window.clearTimeout(sizeTimer);
