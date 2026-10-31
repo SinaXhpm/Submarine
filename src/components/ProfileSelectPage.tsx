@@ -8,7 +8,7 @@ import {
 import CloudPanel from "./CloudPanel";
 import { CloudConfigView, hostOf } from "./SyncServerSetting";
 import logoUrl from "../assets/logo.png";
-import { IS_ANDROID } from "../util/platform";
+import { IS_ANDROID, IS_IOS, IS_MOBILE } from "../util/platform";
 import { PRIVACY_URL } from "../util/links";
 import { useTextPrompt, useConfirm } from "../ui/confirm";
 import { forgetProfileBookmarks } from "../util/sftpBookmarks";
@@ -39,7 +39,8 @@ interface CloudProfile { profile: string; name: string; records: number; live_re
 // running build.
 interface UpdateInfo { current: string; latest: string | null; has_update: boolean; release_url: string | null; }
 // The running version and the project's GitHub page (backend: about::app_info).
-interface AppInfo { version: string; github_repo_url: string; }
+// `updates` is false in the App Store's builds, which don't look on GitHub.
+interface AppInfo { version: string; updates: boolean; github_repo_url: string; }
 // The GitHub link's fallback, should app_info ever fail (about::GITHUB_REPO).
 const REPO_URL = "https://github.com/SinaXhpm/Submarine";
 
@@ -506,7 +507,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       // name: the system picker doesn't say where it is), null if the user
       // cancelled the save dialog. We only surface a toast in the success case.
       const saved = await invoke<string | null>("export_profile", { name });
-      if (saved) setInfo(IS_ANDROID ? `Saved as ${saved}` : `Exported to ${saved}`);
+      if (saved) setInfo(IS_ANDROID ? `Saved as ${saved}` : IS_IOS ? `Saved as ${saved} in Files › Submarine` : `Exported to ${saved}`);
     } catch (e) {
       setError(cleanErr(e));
     } finally {
@@ -523,9 +524,9 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   const startImport = async () => {
     if (busy) return;
     setError(null); setInfo(null);
-    // Android: no native dialog — the WebView's file input opens the system
-    // picker (Downloads, Drive, messengers…) and hands us the file.
-    if (IS_ANDROID) { importFileRef.current?.click(); return; }
+    // Android and iOS: no native dialog — the WebView's file input opens the
+    // system picker (Downloads, Drive, Files, messengers…) and hands us the file.
+    if (IS_MOBILE) { importFileRef.current?.click(); return; }
     setPending("work");
     try {
       const picked = await invoke<[string, string] | null>("import_profile_pick");
@@ -718,9 +719,12 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
         className="pointer-events-none absolute inset-x-0 top-0 h-[440px]"
         style={{ background: "radial-gradient(60% 70% at 50% 0%, rgb(var(--primary) / 0.11), transparent 72%)" }}
       />
+      {/* On iOS a file input with no type also offers the camera and the
+          photo library; asking for plain data opens the Files picker only. */}
       <input
         ref={importFileRef}
         type="file"
+        accept={IS_IOS ? ".submarine,application/octet-stream" : undefined}
         className="hidden"
         onChange={onImportFilePicked}
       />
@@ -1057,7 +1061,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
             <FooterButton onClick={openRepo} title="Open Submarine on GitHub" icon={<Github size={12} />} label="GitHub" />
             <FooterDot />
             <FooterButton onClick={() => openLink(PRIVACY_URL)} title="What Submarine stores and sends: the privacy policy" icon={<ShieldCheck size={12} />} label="Privacy" />
-            {!update && (
+            {!update && appInfo?.updates !== false && (
               <>
                 <FooterDot />
                 <FooterButton

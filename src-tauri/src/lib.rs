@@ -5221,7 +5221,14 @@ async fn export_profile(
     {
         return android_bridge::save_export(&app_handle, &src, &format!("{}.submarine", name)).await;
     }
-    #[cfg(not(target_os = "android"))]
+    // iOS: into the app's Documents folder, which the Files app shows as
+    // "On My iPhone › Submarine". The copy stays in the app's own container
+    // until the user moves it on from there.
+    #[cfg(target_os = "ios")]
+    {
+        return ios_save_export(&app_handle, &src, &format!("{}.submarine", name));
+    }
+    #[cfg(desktop)]
     {
         // rfd's blocking dialog must not run on the main thread on macOS — we're
         // already off the UI thread in a tauri async command so a direct call is
@@ -5248,6 +5255,32 @@ async fn export_profile(
             .map_err(|e| format!("[FILE] EXPORT_COPY_FAILED to {:?}: {}", dst, e))?;
         Ok(Some(dst.to_string_lossy().to_string()))
     }
+}
+
+/// The app's Documents folder on iOS: the local pane's home, where exports and
+/// downloads land. The Files app shows it as "On My iPhone › Submarine"
+/// (UIFileSharingEnabled in Info.ios.plist).
+#[cfg(target_os = "ios")]
+fn ios_documents_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().document_dir().map_err(|e| format!("No Documents folder: {}", e))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create the Documents folder: {}", e))?;
+    Ok(dir)
+}
+
+/// Export on iOS: a copy in Documents, next to any earlier one rather than over
+/// it. Returns the copy's name, which is all the user needs to find it.
+#[cfg(target_os = "ios")]
+fn ios_save_export(app: &tauri::AppHandle, src: &std::path::Path, file_name: &str) -> Result<Option<String>, String> {
+    let dir = ios_documents_dir(app).map_err(|e| format!("[FILE] EXPORT_COPY_FAILED: {}", e))?;
+    let stem = file_name.strip_suffix(".submarine").unwrap_or(file_name);
+    let mut dst = dir.join(file_name);
+    let mut n = 2;
+    while dst.exists() {
+        dst = dir.join(format!("{} ({}).submarine", stem, n));
+        n += 1;
+    }
+    fs::copy(src, &dst).map_err(|e| format!("[FILE] EXPORT_COPY_FAILED to {:?}: {}", dst, e))?;
+    Ok(dst.file_name().map(|n| n.to_string_lossy().into_owned()))
 }
 
 /// "Block screenshots" (Android only): whether the app's window is kept out
@@ -5291,11 +5324,12 @@ async fn set_secure_screen(app_handle: tauri::AppHandle, enabled: bool) -> Resul
 /// before committing the copy.
 #[tauri::command]
 async fn import_profile_pick() -> Result<Option<(String, String)>, String> {
-    #[cfg(target_os = "android")]
+    // Phones and tablets import through the webview's file input instead.
+    #[cfg(mobile)]
     {
-        return Err("Profile import is not available on Android.".into());
+        return Err("Profile import is not available here.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let picked = rfd::FileDialog::new()
             .set_title("Import profile")
@@ -6330,11 +6364,11 @@ fn load_key_from_disk(path: &std::path::Path) -> Result<LoadedSshKey, String> {
 #[tauri::command]
 async fn pick_ssh_key_file() -> Result<Option<String>, String> {
     // Native dialogs are desktop-only, same as profile export/import above.
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
-        Err("Browsing for a key file isn't available on Android — paste the key instead.".into())
+        Err("Browsing for a key file isn't available on a phone or tablet — paste the key instead.".into())
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let mut dialog = rfd::FileDialog::new().set_title("Choose an SSH private key");
         // Start where the keys almost always are. Key files are conventionally
@@ -14015,11 +14049,11 @@ async fn list_mirrors(
 /// Native OS folder picker. Used by MirrorsPanel to fill in `local`.
 #[tauri::command]
 async fn pick_local_directory() -> Result<Option<String>, String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
-        return Err("Folder picker not available on Android.".into());
+        return Err("Folder picker not available on a phone or tablet.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let path = rfd::AsyncFileDialog::new().pick_folder().await;
         Ok(path.map(|p| p.path().to_string_lossy().into_owned()))
@@ -14233,7 +14267,7 @@ async fn initiate_rdp(
     let options = options.unwrap_or_default().checked();
 
     // Android has no RDP app to hand it to; the built-in client comes later.
-    if cfg!(target_os = "android") {
+    if cfg!(mobile) {
         return Err("RDP servers open on a computer for now".into());
     }
 
@@ -15898,14 +15932,14 @@ async fn disconnect_session(
 // Android have no such shell, so the setting does nothing there and the
 // settings page doesn't offer it (see `local_shell`). The path is sent to the
 // server, so only a plain absolute one is taken (`is_safe_remote_exec_path`).
-#[cfg(all(unix, not(target_os = "android")))]
+#[cfg(all(unix, desktop))]
 fn local_default_shell() -> Option<String> {
     let shell = std::env::var("SHELL").ok()?;
     let shell = shell.trim();
     is_safe_remote_exec_path(shell).then(|| shell.to_string())
 }
 
-#[cfg(not(all(unix, not(target_os = "android"))))]
+#[cfg(not(all(unix, desktop)))]
 fn local_default_shell() -> Option<String> {
     None
 }
@@ -19741,12 +19775,12 @@ async fn sftp_open_remote_file(
     // intent-based "open with" model would need a Tauri plugin instead,
     // and saving back through SAF doesn't fit the temp-file pattern we
     // depend on. Refuse cleanly so the UI can surface a polite message.
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
         let _ = &temp_file_path;
-        return Err("Live edit in system editor is not available on Android.".into());
+        return Err("Live edit in system editor is not available on a phone or tablet.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let open_res = match opening {
             open_policy::Opening::Editor => open_policy::open_in_editor(&temp_file_path),
@@ -19940,12 +19974,12 @@ async fn sftp_prepare_drag(
 
 #[tauri::command]
 async fn local_open_file(local_path: String) -> Result<(), String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
         let _ = local_path;
-        return Err("Open-with is not available on Android.".into());
+        return Err("Open-with is not available on a phone or tablet.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let safe = guard_local_path(&local_path, false)?;
         child_env::open(&safe).map_err(|e| format!("Failed to open local file: {}", e))?;
@@ -19955,12 +19989,12 @@ async fn local_open_file(local_path: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn local_open_in_explorer(local_path: String) -> Result<(), String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
         let _ = local_path;
-        return Err("Open-in-Explorer is not available on Android.".into());
+        return Err("Open-in-Explorer is not available on a phone or tablet.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let safe = guard_local_path(&local_path, false)?;
         if safe.is_dir() {
@@ -19997,7 +20031,11 @@ async fn local_home_dir(app: tauri::AppHandle) -> Result<String, String> {
         if !dir.is_empty() { return Ok(dir); }
         return Err("Could not resolve home directory".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        return ios_documents_dir(&app).map(|d| d.to_string_lossy().into_owned());
+    }
+    #[cfg(desktop)]
     {
         let _ = app;
         directories::UserDirs::new()
@@ -20017,9 +20055,19 @@ async fn local_desktop_dir(app: tauri::AppHandle) -> Result<String, String> {
         if !dir.is_empty() { return Ok(dir); }
         return Err("Could not resolve default directory".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        return ios_documents_dir(&app).map(|d| d.to_string_lossy().into_owned());
+    }
+    #[cfg(desktop)]
     {
         let _ = app;
+        // The Mac App Store build runs in Apple's sandbox, which keeps the
+        // Desktop closed but lets the app use Downloads (its entitlements).
+        #[cfg(feature = "app-store")]
+        if let Some(d) = directories::UserDirs::new().and_then(|d| d.download_dir().and_then(|p| p.to_str()).map(String::from)) {
+            return Ok(d);
+        }
         // Falls back to the home directory if a Desktop folder isn't configured
         // for the user (rare on desktop OSes but possible on Linux without XDG).
         if let Some(dirs) = directories::UserDirs::new() {
@@ -20178,12 +20226,12 @@ struct ImportedHost {
 /// clear message rather than pretending to look somewhere.
 #[tauri::command]
 async fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
         let _ = path;
-        Err("Not available on Android — use export/import instead".into())
+        Err("Not available on a phone or tablet — use export/import instead".into())
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         // One in-progress Host block. We accumulate resolved fields as we
         // walk the file and emit one ImportedHost per alias when the block
@@ -21402,11 +21450,11 @@ async fn local_rename(from: String, to: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn select_local_folder() -> Result<Option<String>, String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
-        return Err("Folder picker not available on Android.".into());
+        return Err("Folder picker not available on a phone or tablet.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let folder = rfd::FileDialog::new()
             .set_title("Choose Local Directory")
@@ -22320,9 +22368,9 @@ pub fn run() {
     // in app_data_dir. Keeps the user's preferred geometry across launches
     // without us having to wire setSize/setPosition by hand. Plain plugin —
     // it intercepts window events; no JS-facing commands to lock down.
-    // Mobile builds skip this entirely: Android decides window geometry,
-    // not us, and the plugin's crate isn't compiled into the Android target.
-    #[cfg(not(target_os = "android"))]
+    // Mobile builds skip this entirely: Android and iOS decide window
+    // geometry, not us, and the plugin's crate isn't compiled for them.
+    #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
     // Cross-platform URL opener — Android (Intent.ACTION_VIEW), Windows
     // (start), macOS (open), Linux (xdg-open). about.rs's open_external_url

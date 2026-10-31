@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { Keyboard, Loader2 } from "lucide-react";
-import { IS_ANDROID } from "../util/platform";
+import { IS_MOBILE } from "../util/platform";
 import { codeForKey, scancodeFor } from "../util/scancodes";
 
 // The screen of a remote desktop in its tab (VNC, vnc_client.rs) and its
@@ -29,7 +29,7 @@ const PHONE_SHORT_SIDE = 720;
 const MAX_ZOOM = 5;
 function desktopFor(w: number, h: number, scale: number): { width: number; height: number } {
   let k = scale;
-  if (IS_ANDROID) {
+  if (IS_MOBILE) {
     const short = Math.max(1, Math.min(w, h));
     k *= Math.min(Math.max(1, PHONE_SHORT_SIDE / short), Math.max(1, window.devicePixelRatio || 1));
   }
@@ -250,7 +250,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
 
     // Keys focus here when the tab is shown.
     useEffect(() => {
-      if (active && connected && !IS_ANDROID) canvasRef.current?.focus();
+      if (active && connected && !IS_MOBILE) canvasRef.current?.focus();
     }, [active, connected]);
 
     // A point on the canvas as a point of the remote desktop.
@@ -498,7 +498,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
             Waiting for the desktop…
           </div>
         )}
-        {IS_ANDROID && connected && (
+        {IS_MOBILE && connected && (
           <>
             <textarea
               ref={imeRef}

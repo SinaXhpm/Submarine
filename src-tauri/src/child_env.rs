@@ -29,7 +29,7 @@ pub fn clean(cmd: &mut std::process::Command) -> &mut std::process::Command {
 
 /// Opens a file or folder in the desktop's app for it: `open::that`, which on
 /// Linux runs as below.
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
+#[cfg(all(desktop, not(target_os = "linux")))]
 pub fn open(path: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
     open::that(path)
 }

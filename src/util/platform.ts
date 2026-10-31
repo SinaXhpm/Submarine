@@ -9,6 +9,19 @@
 export const IS_ANDROID: boolean =
   typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
 
+// iPhone and iPad. An iPad's WebView says "Macintosh" like a Mac's does (it
+// asks for desktop pages), so it is told apart by its touch screen: a Mac has
+// none.
+export const IS_IOS: boolean =
+  typeof navigator !== "undefined" &&
+  (/iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1));
+
+// A phone or tablet: no file dialogs, no "open with", no window to move or
+// resize, no ssh-agent or ~/.ssh/config. (The layout itself follows the
+// window's width, not this.)
+export const IS_MOBILE: boolean = IS_ANDROID || IS_IOS;
+
 // Desktop Linux, where the webview is WebKitGTK. (Android's user agent says
 // "Linux" too, so it is ruled out.) Clipboard reads go through the backend
 // there — see TerminalView.
