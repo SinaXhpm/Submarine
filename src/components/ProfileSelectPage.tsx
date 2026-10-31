@@ -345,10 +345,11 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     (async () => {
       try {
         const support = await invoke<{ method: string | null; ready: boolean }>("quick_unlock_support");
-        if (!support.method || !support.ready) return;
-        const on = await invoke<boolean>("quick_unlock_status", { name });
-        if (!live || !on) return;
-        setQuick({ name, method: support.method });
+        if (!support.method) return;
+        const status = await invoke<{ method: string | null; can_open: boolean }>("quick_unlock_status", { name });
+        if (!live || !status.method || !status.can_open) return;
+        if (status.method === support.method && !support.ready) return;
+        setQuick({ name, method: status.method });
         if (!autoQuickTried.current && name === lastProfile()) {
           autoQuickTried.current = true;
           void quickUnlock(name);
@@ -358,7 +359,8 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
-  const quickLabel = quick?.method === "android-biometric" ? "Unlock with fingerprint" : "Unlock with Windows Hello";
+  const quickLabel = quick?.method === "android-biometric" ? "Unlock with fingerprint"
+    : quick?.method === "windows-auto" ? "Open on this Windows account" : "Unlock with Windows Hello";
   const quickUnlock = async (name: string) => {
     if (busy) return;
     autoQuickTried.current = true;
@@ -368,7 +370,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     } catch (e) {
       const raw = String(e);
       setPending(null);
-      if (raw.includes("[QUICK_UNLOCK] CANCELLED")) {
+      if (raw.includes("[QUICK_UNLOCK] CANCELLED") || raw.includes("[QUICK_UNLOCK] LOCKED")) {
         requestAnimationFrame(() => passwordInputRef.current?.focus());
         return;
       }
