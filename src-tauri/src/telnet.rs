@@ -404,6 +404,8 @@ pub async fn run_pump(
 ) {
     let Conn { stream, route, telnet_port } = conn;
     let size = *resize_rx.borrow();
+    // The terminal's size, for the output filter below.
+    let sizes = resize_rx.clone();
     let telnet = Arc::new(std::sync::Mutex::new(Telnet::new(size.cols, size.rows)));
     let (mut read_half, mut write_half) = tokio::io::split(stream);
     // Answers the reader owes the server, and text typed here that the
@@ -486,6 +488,8 @@ pub async fn run_pump(
                     if let Ok(mut t) = telnet.lock() {
                         t.receive(&buf[..n], &mut text, &mut reply);
                     }
+                    let size = *sizes.borrow();
+                    limiter.set_size(size.cols, size.rows);
                     limiter.filter(&text, &mut out);
                     // A server that floods requests past the queue loses the
                     // answers; one that negotiates gets each.

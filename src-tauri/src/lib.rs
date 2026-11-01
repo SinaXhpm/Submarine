@@ -5239,18 +5239,18 @@ async fn export_profile(
     }
     #[cfg(desktop)]
     {
-        // rfd's blocking dialog must not run on the main thread on macOS — we're
-        // already off the UI thread in a tauri async command so a direct call is
-        // fine. spawn_blocking would be needed if this was wrapped differently.
+        // The async dialog: a blocking one would hold one of the runtime's
+        // workers for as long as it stays open.
         let default_name = format!("{}.submarine", name);
-        let chosen = rfd::FileDialog::new()
+        let chosen = rfd::AsyncFileDialog::new()
             .set_title("Export profile")
             .set_file_name(&default_name)
             .add_filter("Submarine profile", &["submarine"])
-            .save_file();
+            .save_file()
+            .await;
 
         let dst = match chosen {
-            Some(p) => p,
+            Some(p) => p.path().to_path_buf(),
             None => return Ok(None),
         };
 
@@ -5340,13 +5340,14 @@ async fn import_profile_pick() -> Result<Option<(String, String)>, String> {
     }
     #[cfg(desktop)]
     {
-        let picked = rfd::FileDialog::new()
+        let picked = rfd::AsyncFileDialog::new()
             .set_title("Import profile")
             .add_filter("Submarine profile", &["submarine"])
-            .pick_file();
+            .pick_file()
+            .await;
 
         let path = match picked {
-            Some(p) => p,
+            Some(p) => p.path().to_path_buf(),
             None => return Ok(None),
         };
 
@@ -6368,8 +6369,7 @@ fn load_key_from_disk(path: &std::path::Path) -> Result<LoadedSshKey, String> {
 /// read until the caller asks for it by name, so cancelling costs nothing and
 /// the key never travels for a dialog the user backed out of.
 ///
-/// `async` for the same reason `export_profile` is: rfd's blocking dialog must
-/// not run on the main thread on macOS, and a sync Tauri command does.
+/// The async dialog, for the same reason as in `export_profile`.
 #[tauri::command]
 async fn pick_ssh_key_file() -> Result<Option<String>, String> {
     // Native dialogs are desktop-only, same as profile export/import above.
@@ -6379,7 +6379,7 @@ async fn pick_ssh_key_file() -> Result<Option<String>, String> {
     }
     #[cfg(desktop)]
     {
-        let mut dialog = rfd::FileDialog::new().set_title("Choose an SSH private key");
+        let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose an SSH private key");
         // Start where the keys almost always are. Key files are conventionally
         // extensionless (`id_ed25519`), which no filter can express, so the
         // picker stays unfiltered and `load_key_from_disk` does the rejecting.
@@ -6389,7 +6389,7 @@ async fn pick_ssh_key_file() -> Result<Option<String>, String> {
                 dialog = dialog.set_directory(&ssh_dir);
             }
         }
-        Ok(dialog.pick_file().map(|p| p.to_string_lossy().into_owned()))
+        Ok(dialog.pick_file().await.map(|p| p.path().to_string_lossy().into_owned()))
     }
 }
 
@@ -8116,9 +8116,11 @@ pub(crate) enum KeyDecodeError {
 /// an encrypted PKCS#8 one) — the same checks `load_key_from_disk` uses — so a
 /// wrong passphrase is reported as `NeedsPassphrase` rather than `Malformed`.
 /// The most bcrypt rounds an OpenSSH private key may ask for. `ssh-keygen`
-/// defaults to 16 and never writes more than a few hundred even when told to;
-/// 1024 leaves generous headroom while keeping a decode bounded to a fraction
-/// of a second, so a key can't make decoding hang.
+/// defaults to 16 and takes any number, and people do raise it for a stronger
+/// passphrase (`-a 100` is about a second to open), so 1024, about ten seconds
+/// of one core, leaves them room while a key can't make decoding hang. Those
+/// seconds hold nothing else up: decoding has a thread of its own and takes no
+/// lock (`decode_private_key_blocking`).
 const MAX_KEY_KDF_ROUNDS: u32 = 1024;
 
 /// What a key's passphrase may cost to try, for the formats that name the cost
@@ -8212,21 +8214,65 @@ fn pbes2_kdf(der: &[u8]) -> Option<Pbes2Kdf> {
 }
 
 /// The Argon2 settings in the header of a PuTTY `.ppk` key: memory (KiB),
-/// passes, lanes. `None` unless all three are there.
-fn ppk_argon2(text: &str) -> Option<(u64, u64, u64)> {
+/// passes, lanes, read by the decoder's rules (`PpkWrapper`, ssh-key's ppk.rs):
+/// `name: value` lines, the last of a name counting, and each `…-Lines: n`
+/// followed by n lines of key text that aren't headers. `Ok(None)` unless all
+/// three are there: without them the decoder asks for no Argon2 work. A number
+/// that can't be read here is an error, as it can't be judged.
+fn ppk_argon2(text: &str) -> Result<Option<(u64, u64, u64)>, String> {
     let (mut memory, mut passes, mut lanes) = (None, None, None);
+    let mut lines = text.lines();
+    lines.next();
+    while let Some(line) = lines.next() {
+        // The decoder stops here too, before any derivation.
+        let Some((key, value)) = line.split_once(": ") else { break };
+        if key.ends_with("-Lines") {
+            let Ok(count) = value.parse::<usize>() else { break };
+            if count > 0 {
+                lines.nth(count - 1);
+            }
+            continue;
+        }
+        let slot = match key {
+            "Argon2-Memory" => &mut memory,
+            "Argon2-Passes" => &mut passes,
+            "Argon2-Parallelism" => &mut lanes,
+            _ => continue,
+        };
+        *slot = Some(value.parse::<u64>().map_err(|_| format!("{key}: {value}"))?);
+    }
+    Ok(memory.zip(passes).zip(lanes).map(|((memory, passes), lanes)| (memory, passes, lanes)))
+}
+
+/// What russh's decoder reads of a PEM key (`decode_secret_key`), by its own
+/// rules: lines taken exactly as they are, nothing before the first BEGIN line
+/// it knows or after the END line that follows, and a line in between that
+/// isn't all base64 characters skipped. Returns the BEGIN lines found (the
+/// last one says how the decoder reads the body) and the body.
+fn pem_as_russh_reads_it(text: &str) -> (Vec<&str>, String) {
+    const BEGIN_LINES: [&str; 5] = [
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY-----",
+        "-----BEGIN EC PRIVATE KEY-----",
+    ];
+    let mut begins = Vec::new();
+    let mut body = String::new();
     for line in text.lines() {
-        if let Some((key, value)) = line.split_once(':') {
-            let value = value.trim().parse::<u64>().ok();
-            match key.trim() {
-                "Argon2-Memory" => memory = value,
-                "Argon2-Passes" => passes = value,
-                "Argon2-Parallelism" => lanes = value,
-                _ => {}
+        if !begins.is_empty() {
+            if line.starts_with("-----END ") {
+                break;
+            }
+            if line.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '+' | '=')) {
+                body.push_str(line);
             }
         }
+        if BEGIN_LINES.contains(&line) {
+            begins.push(line);
+        }
     }
-    Some((memory?, passes?, lanes?))
+    (begins, body)
 }
 
 /// Refuse a private key that asks for more work to unlock than a real key ever
@@ -8235,41 +8281,49 @@ fn ppk_argon2(text: &str) -> Option<(u64, u64, u64)> {
 /// rounds of an OpenSSH key, the Argon2 settings of a PuTTY `.ppk`, the PBKDF2
 /// iterations or scrypt cost of an encrypted PKCS#8 key. Anything else (a
 /// legacy PEM key, whose derivation is a hash or two) parses past this.
+///
+/// It reads what the decoder reads, in the decoder's order, and a cost it
+/// can't read refuses the key: a cost that's unreadable here but readable
+/// there would run with nothing to stop it. The body is decoded stricter than
+/// the decoder does (`BASE64_MIME` also takes padding in the middle), which
+/// can only refuse more.
 fn guard_key_kdf_cost(pem: &str) -> Result<(), KeyDecodeError> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     let too_costly = |what: String| {
         KeyDecodeError::Malformed(format!(
             "this key asks for far more work to unlock than a real key needs ({what}); re-save it with a lower cost (an OpenSSH key: `ssh-keygen -p -f <keyfile>`)"
         ))
     };
-    if let Ok(key) = ssh_key::PrivateKey::from_openssh(pem.trim()) {
-        if let ssh_key::Kdf::Bcrypt { rounds, .. } = key.kdf() {
-            if *rounds > MAX_KEY_KDF_ROUNDS {
-                return Err(KeyDecodeError::Malformed(format!(
-                    "this key asks for {rounds} key-derivation rounds — far more than a real key needs (limit {MAX_KEY_KDF_ROUNDS}); re-save it with `ssh-keygen -p -f <keyfile>`"
-                )));
-            }
-        }
-        return Ok(());
-    }
+    let unreadable = || KeyDecodeError::Malformed("what this key costs to unlock can't be read, so it isn't opened".to_string());
     if pem.trim_start().starts_with("PuTTY-User-Key-File-") {
-        if let Some((kib, passes, lanes)) = ppk_argon2(pem) {
+        let argon2 = ppk_argon2(pem).map_err(|line| KeyDecodeError::Malformed(format!("this key's cost can't be read ({line}), so it isn't opened")))?;
+        if let Some((kib, passes, lanes)) = argon2 {
             if kib > MAX_PPK_ARGON2_KIB || kib.saturating_mul(passes) > MAX_PPK_ARGON2_WORK || lanes > MAX_PPK_ARGON2_LANES {
                 return Err(too_costly(format!("Argon2: {kib} KiB, {passes} passes, {lanes} lanes")));
             }
         }
         return Ok(());
     }
-    if pem_private_key_header(pem) == "-----BEGIN ENCRYPTED PRIVATE KEY-----" {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
-        let body: String = pem
-            .lines()
-            .map(str::trim)
-            .skip_while(|l| !l.starts_with("-----BEGIN "))
-            .skip(1)
-            .take_while(|l| !l.starts_with("-----END "))
-            .collect();
-        if let Some(kdf) = STANDARD.decode(body.as_bytes()).ok().as_deref().and_then(pbes2_kdf) {
-            match kdf {
+    let (begins, body) = pem_as_russh_reads_it(pem);
+    // The decoder would go by the last, the checks around it by the first.
+    if begins.len() > 1 {
+        return Err(KeyDecodeError::Malformed("this key has more than one key header in one block".to_string()));
+    }
+    match begins.first().copied() {
+        Some("-----BEGIN OPENSSH PRIVATE KEY-----") => {
+            let der = STANDARD.decode(body.as_bytes()).map_err(|_| unreadable())?;
+            let key = ssh_key::PrivateKey::from_bytes(&der).map_err(|e| KeyDecodeError::Malformed(e.to_string()))?;
+            if let ssh_key::Kdf::Bcrypt { rounds, .. } = key.kdf() {
+                if *rounds > MAX_KEY_KDF_ROUNDS {
+                    return Err(KeyDecodeError::Malformed(format!(
+                        "this key asks for {rounds} key-derivation rounds — far more than a real key needs (limit {MAX_KEY_KDF_ROUNDS}); re-save it with `ssh-keygen -p -f <keyfile>`"
+                    )));
+                }
+            }
+        }
+        Some("-----BEGIN ENCRYPTED PRIVATE KEY-----") => {
+            let der = STANDARD.decode(body.as_bytes()).map_err(|_| unreadable())?;
+            match pbes2_kdf(&der).ok_or_else(unreadable)? {
                 Pbes2Kdf::Pbkdf2 { iterations } if iterations > MAX_PBKDF2_ITERATIONS => {
                     return Err(too_costly(format!("PBKDF2: {iterations} iterations")));
                 }
@@ -8282,8 +8336,23 @@ fn guard_key_kdf_cost(pem: &str) -> Result<(), KeyDecodeError> {
                 _ => {}
             }
         }
+        _ => {}
     }
     Ok(())
+}
+
+/// `decode_private_key` off the async workers: within its caps a key may take
+/// up to a minute to open, and code that never yields can't be timed out. A
+/// caller that goes away leaves it to finish by itself, holding nothing.
+pub(crate) async fn decode_private_key_blocking(
+    private_key: &str,
+    passphrase: Option<&str>,
+) -> Result<russh::keys::PrivateKey, KeyDecodeError> {
+    let private_key = Zeroizing::new(private_key.to_string());
+    let passphrase = passphrase.map(|p| Zeroizing::new(p.to_string()));
+    tokio::task::spawn_blocking(move || decode_private_key(&private_key, passphrase.as_ref().map(|p| p.as_str())))
+        .await
+        .unwrap_or_else(|e| Err(KeyDecodeError::Malformed(e.to_string())))
 }
 
 pub(crate) fn decode_private_key(
@@ -8322,9 +8391,11 @@ pub(crate) fn decode_private_key(
     }
     // An unencrypted SEC1 / PKCS#8 key is read without the passphrase: russh's
     // PKCS#8 reader takes any passphrase it is handed to mean "this key is
-    // encrypted" and fails, so one saved with such a key would break it.
-    let header = pem_private_key_header(&normalized);
-    let plain_pem = header == "-----BEGIN PRIVATE KEY-----" || header == "-----BEGIN EC PRIVATE KEY-----";
+    // encrypted" and fails, so one saved with such a key would break it. The
+    // header is the one russh goes by: handed a passphrase, that reader runs
+    // the key derivation of whatever the body says, which nothing checked.
+    let (begins, _) = pem_as_russh_reads_it(&normalized);
+    let plain_pem = matches!(begins.first().copied(), Some("-----BEGIN PRIVATE KEY-----" | "-----BEGIN EC PRIVATE KEY-----"));
     let passphrase = if plain_pem { None } else { passphrase };
     match russh::keys::decode_secret_key(&normalized, passphrase) {
         Ok(key) => Ok(key),
@@ -8471,8 +8542,11 @@ struct SecretPromptCtx<'a> {
     /// Set when an agent signature failed or timed out after the server had
     /// accepted the key. russh's session then waits for that signature and
     /// drops everything else, so no other method may run on it — the
-    /// keyboard-interactive fallback included.
+    /// keyboard-interactive fallback included. Set too when the login was
+    /// stopped part-way (`login_step`).
     session_unusable: std::sync::atomic::AtomicBool,
+    /// Milliseconds of this login the server has had (`drive_login`).
+    server_time: std::sync::atomic::AtomicU64,
 }
 
 /// The ssh-agent for one login. Looked up the first time a step wants it, so a
@@ -8776,7 +8850,9 @@ async fn try_agent_keys<H: russh::client::Handler>(
     if let Some(key) = already_offered {
         agent.mark_offered(key);
     }
-    match agent_auth::offer_keys(session, user, agent, which, |m| ctx.log(&m, "info")).await {
+    // An agent may be waiting for a PIN or a touch: each key has its own limit
+    // (AGENT_SIGN_TIMEOUT), and the login's deadline stands still meanwhile.
+    match ctx.attempt.at_prompt(agent_auth::offer_keys(session, user, agent, which, |m| ctx.log(&m, "info"))).await {
         Ok(outcome) => Ok(Some(outcome)),
         Err(e) => {
             ctx.session_unusable.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -8825,7 +8901,7 @@ async fn decode_identity_file(text: &str, path: &str, ctx: &SecretPromptCtx<'_>)
     let mut from_cache = passphrase.is_some();
     let mut prompts = 0u32;
     loop {
-        match decode_private_key(text, passphrase.as_ref().map(|p| p.as_str())) {
+        match ctx.attempt.at_prompt(decode_private_key_blocking(text, passphrase.as_ref().map(|p| p.as_str()))).await {
             Ok(key) => {
                 if let Some(p) = passphrase {
                     if !from_cache {
@@ -8994,6 +9070,24 @@ impl SecretPromptCtx<'_> {
         };
         Some(SaveTarget { ticked: !keys, ..to })
     }
+
+    /// One stretch of the login: `step`, unless the tab closes first or the
+    /// server has used up LOGIN_SERVER_TIME (see `drive_login`). `None` then,
+    /// with a prompt that was open taken down. Nothing else runs on the
+    /// session after that, and it goes when the caller's login ends.
+    async fn login_step<T>(&self, step: impl std::future::Future<Output = T>) -> Option<T> {
+        use tauri::Emitter;
+        let done = drive_login(step, self.attempt, &self.server_time, LOGIN_SERVER_TIME).await;
+        if done.is_none() {
+            self.session_unusable.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.kbi_txs.lock().await.remove(self.nonce);
+            let _ = self.app.emit(
+                &format!("kbi-prompt-dismiss-{}", self.session_id),
+                serde_json::json!({ "nonce": self.nonce }),
+            );
+        }
+        done
+    }
 }
 
 /// Ask the user for ONE value at connect time — a password or key passphrase
@@ -9044,7 +9138,7 @@ async fn prompt_for_secret_offering_save(
         payload["save"] = to.offer(ctx.app);
     }
     let _ = ctx.app.emit(&format!("kbi-prompt-{}", ctx.session_id), payload);
-    let answer = match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
+    let answer = match ctx.attempt.at_prompt(tokio::time::timeout(std::time::Duration::from_secs(120), rx)).await {
         Ok(Ok(Some(mut answers))) => {
             // One prompt → one answer; ignore extras, treat a missing one as "".
             let first = if answers.is_empty() { String::new() } else { answers.swap_remove(0) };
@@ -9296,7 +9390,8 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
     let mut agent_checked = false;
 
     loop {
-        match decode_private_key(private_key, attempt.as_ref().map(|(p, _)| p.as_str())) {
+        // A slow key's minute is this device's, not the server's (drive_login).
+        match ctx.attempt.at_prompt(decode_private_key_blocking(private_key, attempt.as_ref().map(|(p, _)| p.as_str()))).await {
             Ok(keypair) => {
                 if let Some((passphrase, source)) = attempt {
                     if source != SecretSource::Given {
@@ -9606,9 +9701,62 @@ mod key_format_tests {
         // Just over the limit is refused; the limit itself is allowed.
         assert!(guard_key_kdf_cost(&patch_bcrypt_rounds(&pem, MAX_KEY_KDF_ROUNDS + 1)).is_err());
         assert!(guard_key_kdf_cost(&patch_bcrypt_rounds(&pem, MAX_KEY_KDF_ROUNDS)).is_ok());
+        // What people pick for a stronger passphrase.
+        assert!(guard_key_kdf_cost(&patch_bcrypt_rounds(&pem, 100)).is_ok());
+        assert!(guard_key_kdf_cost(&patch_bcrypt_rounds(&pem, 420)).is_ok());
         // An unencrypted key (no KDF) is untouched.
         let plain = kp.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
         assert!(guard_key_kdf_cost(&plain).is_ok());
+    }
+
+    // What russh's decoder skips doesn't hide a key's cost from the guard: each
+    // of these is still read by the decoder, which would run the rounds.
+    #[test]
+    fn an_openssh_keys_cost_is_read_the_way_the_decoder_reads_it() {
+        use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
+        let kp = ssh_key::PrivateKey::from(Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[7u8; 32])));
+        let enc = kp.encrypt(&mut rand::rng(), "pw").expect("encrypt with default rounds");
+        let pem = enc.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
+        let junk_line = |text: &str| text.replacen('\n', "\nx: y\n", 1);
+        let huge = patch_bcrypt_rounds(&pem, u32::MAX);
+        for variant in [
+            junk_line(&huge),
+            format!("{huge}text after the end\n"),
+            format!("text before the start\n{huge}"),
+            format!("-----BEGIN RSA PRIVATE KEY-----\n{huge}"),
+        ] {
+            assert!(
+                matches!(russh::keys::decode_secret_key(&variant, None), Err(russh::keys::Error::KeyIsEncrypted)),
+                "the decoder has to read this one: {variant}"
+            );
+            assert!(matches!(guard_key_kdf_cost(&variant), Err(KeyDecodeError::Malformed(_))), "{variant}");
+            assert!(decode_private_key(&variant, Some("pw")).is_err());
+        }
+        // A real key with such a line in it still opens, as it always did.
+        assert!(decode_private_key(&junk_line(&pem), Some("pw")).is_ok());
+        // A body that can't be read at all.
+        assert!(guard_key_kdf_cost("-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n").is_err());
+    }
+
+    // A slow key must not hold an async worker: on this one-thread runtime the
+    // ticks stop if it does.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_key_is_decoded_off_the_async_worker() {
+        use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
+        let kp = ssh_key::PrivateKey::from(Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[7u8; 32])));
+        let enc = kp.encrypt(&mut rand::rng(), "pw").expect("encrypt with default rounds");
+        let pem = enc.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
+        let decoding = decode_private_key_blocking(&pem, Some("pw"));
+        tokio::pin!(decoding);
+        let mut ticks = 0;
+        let result = loop {
+            tokio::select! {
+                result = &mut decoding => break result,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(1)) => ticks += 1,
+            }
+        };
+        assert!(result.is_ok());
+        assert!(ticks > 1, "the runtime went on meanwhile: {ticks}");
     }
 
     #[test]
@@ -9753,6 +9901,39 @@ mod key_kdf_cap_tests {
         assert!(guard_key_kdf_cost(super::key_format_tests::P521_PKCS8_ENC).is_ok());
     }
 
+    // What russh's decoder skips doesn't hide a key's cost from the guard.
+    #[test]
+    fn a_pkcs8_keys_cost_is_read_the_way_the_decoder_reads_it() {
+        let huge = scrypt(1 << 40, 8, 1);
+        for variant in [
+            huge.replacen('\n', "\nx: y\n", 1),
+            format!("{huge}text after the end\n"),
+            format!("text before the start\n{huge}"),
+            // The decoder goes by the last header: this first one is a decoy.
+            format!("-----BEGIN RSA PRIVATE KEY-----\n{huge}"),
+            // Seen by pem_private_key_header, which trims, not by the decoder.
+            format!("  -----BEGIN RSA PRIVATE KEY-----\n{huge}"),
+        ] {
+            assert!(refused(&variant), "{variant}");
+        }
+        // A cost that can't be read is refused, not waved through.
+        for unreadable in [
+            // The decoder reads padding in the middle; this guard doesn't.
+            "AAA=AAA=",
+            "",
+            // Not PBES2.
+            "MAA=",
+        ] {
+            assert!(refused(&format!("-----BEGIN ENCRYPTED PRIVATE KEY-----\n{unreadable}\n-----END ENCRYPTED PRIVATE KEY-----\n")), "{unreadable}");
+        }
+        // A plain header on an encrypted body, behind a decoy that made it look
+        // like a key that takes a passphrase: russh's PKCS#8 reader would run
+        // the key derivation in the body with it, and scrypt would end the app.
+        let plain = huge.replace("ENCRYPTED PRIVATE KEY", "PRIVATE KEY");
+        let decoy = format!("  -----BEGIN RSA PRIVATE KEY-----\n{plain}");
+        assert!(decode_private_key(&decoy, Some("pw")).is_err());
+    }
+
     #[test]
     fn ppk_argon2_settings_are_capped() {
         let ppk = |memory: &str, passes: &str, lanes: &str| {
@@ -9763,9 +9944,19 @@ mod key_kdf_cap_tests {
         assert!(refused(&ppk("4000000", "13", "1")), "4 GB");
         assert!(refused(&ppk("8192", "100000", "1")));
         assert!(refused(&ppk("8192", "13", "1000")));
-        assert!(refused(&ppk("99999999999999999999", "1", "1")) || guard_key_kdf_cost(&ppk("99999999999999999999", "1", "1")).is_ok(), "does not panic");
-        // Missing or unreadable numbers are left to the decoder.
-        assert!(guard_key_kdf_cost("PuTTY-User-Key-File-3: ssh-ed25519\nArgon2-Memory: lots\n").is_ok());
+        // PuTTYgen's memory at 128 MiB, with a high "time to use".
+        assert!(guard_key_kdf_cost(&ppk("131072", "34", "1")).is_ok());
+        // 64 GiB of work is the most.
+        assert!(guard_key_kdf_cost(&ppk("262144", "256", "1")).is_ok());
+        assert!(refused(&ppk("262144", "257", "1")));
+        // A number that can't be read can't be judged, so the key isn't opened.
+        assert!(refused(&ppk("99999999999999999999", "1", "1")), "more than a u64 holds");
+        assert!(refused("PuTTY-User-Key-File-3: ssh-ed25519\nArgon2-Memory: lots\n"));
+        // No Argon2 settings: an unencrypted key, or an older format.
+        assert!(guard_key_kdf_cost("PuTTY-User-Key-File-2: ssh-ed25519\nEncryption: none\nPublic-Lines: 1\nAAAA\nPrivate-Lines: 1\nBBBB\nPrivate-MAC: 00\n").is_ok());
+        // Text in a key's own lines isn't a header to the decoder.
+        let in_key_text = ppk("4000000", "13", "1").replace("Private-Lines: 1\nCCCC", "Private-Lines: 1\nArgon2-Memory: 8192");
+        assert!(refused(&in_key_text), "{in_key_text}");
     }
 
     #[test]
@@ -10267,11 +10458,9 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                 let _ = app.emit(&format!("kbi-prompt-{}", session_id), payload);
 
                 // 120s: 2FA codes often mean reaching for a phone / authenticator.
-                let answers = match tokio::time::timeout(
-                    std::time::Duration::from_secs(120),
-                    rx,
-                )
-                .await
+                let answers = match attempt
+                    .at_prompt(tokio::time::timeout(std::time::Duration::from_secs(120), rx))
+                    .await
                 {
                     Ok(Ok(Some(a))) => a,
                     _ => {
@@ -10787,6 +10976,130 @@ where
     }
 }
 
+/// How long a login may wait on the server, all its turns together. It's only
+/// here to end a server that never answers: russh has no limit of its own, so
+/// one that goes quiet after the handshake would leave the tab on "Connecting"
+/// for good. So it's long: a server may hold its answer while the user acts
+/// elsewhere (Duo pushes tried in turn, Tailscale's check in a browser), and
+/// closing the tab stops the wait anyway. What the user takes at a prompt and
+/// what this device takes to open a key aren't counted.
+const LOGIN_SERVER_TIME: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Drive one stretch of a login, adding the time that was the server's to
+/// `server_ms`. Stops (`None`) when the attempt is superseded (the tab closed,
+/// a reconnect) or once `server_ms` reaches `limit`; the time counted is carried
+/// from one stretch to the next. While the user has a prompt the clock stands
+/// still, and closing the tab still stops it.
+async fn drive_login<F>(
+    step: F,
+    attempt: &ssh_manager::ConnectAttempt,
+    server_ms: &std::sync::atomic::AtomicU64,
+    limit: std::time::Duration,
+) -> Option<F::Output>
+where
+    F: std::future::Future,
+{
+    use std::sync::atomic::Ordering;
+    const TICK: std::time::Duration = std::time::Duration::from_millis(250);
+    tokio::pin!(step);
+    let superseded = attempt.superseded();
+    tokio::pin!(superseded);
+    let mut ticker = tokio::time::interval(TICK);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await; // the first tick is immediate — consume it
+    loop {
+        tokio::select! {
+            // Biased: a step that ended is never thrown away for a tick.
+            biased;
+            out = &mut step => return Some(out),
+            _ = &mut superseded => return None,
+            _ = ticker.tick() => {
+                if !attempt.is_at_prompt() {
+                    let tick = TICK.as_millis() as u64;
+                    if server_ms.fetch_add(tick, Ordering::Relaxed) + tick >= limit.as_millis() as u64 {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod login_deadline_tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    const LIMIT: Duration = LOGIN_SERVER_TIME;
+
+    fn attempt() -> (ssh_manager::ConnectAttempt, Arc<Mutex<std::collections::HashMap<String, u64>>>) {
+        let generations = Arc::new(Mutex::new(std::collections::HashMap::from([("s".to_string(), 1)])));
+        (ssh_manager::ConnectAttempt::new(Arc::clone(&generations), "s".to_string(), 1), generations)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_server_that_goes_quiet_runs_out_of_time() {
+        let (attempt, _generations) = attempt();
+        let start = tokio::time::Instant::now();
+        let out = drive_login(std::future::pending::<()>(), &attempt, &AtomicU64::new(0), LIMIT).await;
+        assert_eq!(out, None);
+        assert!(start.elapsed() >= LIMIT && start.elapsed() < LIMIT + Duration::from_secs(1), "{:?}", start.elapsed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn time_at_a_prompt_is_not_the_servers() {
+        let (attempt, _generations) = attempt();
+        let used = AtomicU64::new(0);
+        let step = async {
+            tokio::time::sleep(LIMIT - Duration::from_secs(20)).await;
+            attempt.at_prompt(tokio::time::sleep(LIMIT * 2)).await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            "logged in"
+        };
+        assert_eq!(drive_login(step, &attempt, &used, LIMIT).await, Some("logged in"));
+        // The next stretch has only what's left, and a prompt there still doesn't count.
+        let start = tokio::time::Instant::now();
+        let out = drive_login(std::future::pending::<()>(), &attempt, &used, LIMIT).await;
+        assert_eq!(out, None);
+        assert!(start.elapsed() <= Duration::from_secs(11), "{:?}", start.elapsed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tab_closed_stops_the_login_at_once_prompt_or_not() {
+        for at_prompt in [false, true] {
+            let (attempt, generations) = attempt();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                generations.lock().await.insert("s".to_string(), 2);
+            });
+            let start = tokio::time::Instant::now();
+            let step = async {
+                if at_prompt {
+                    attempt.at_prompt(std::future::pending::<()>()).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            assert_eq!(drive_login(step, &attempt, &AtomicU64::new(0), LIMIT).await, None);
+            assert!(start.elapsed() < Duration::from_secs(6), "{:?}", start.elapsed());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_that_ends_on_a_tick_is_kept() {
+        let (attempt, _generations) = attempt();
+        let used = AtomicU64::new(0);
+        let step = async {
+            tokio::time::sleep(LIMIT).await;
+            "logged in"
+        };
+        assert_eq!(drive_login(step, &attempt, &used, LIMIT).await, Some("logged in"));
+    }
+}
+
 #[cfg(test)]
 mod connect_timeout_tests {
     use super::{connect_deadline_elapsed, ConnectDeadline, ConnectTimeoutCaps};
@@ -11291,8 +11604,9 @@ mod proxy_jump_tests {
 }
 
 /// A `direct-tcpip` channel through `via` to `host:port`, as a transport.
-async fn hop_channel(
-    via: &russh::client::Handle<ssh_manager::ClientHandler>,
+/// Within 15 seconds: russh waits for the jump host's answer with no limit.
+async fn hop_channel<H: russh::client::Handler>(
+    via: &russh::client::Handle<H>,
     host: &str,
     port: u16,
 ) -> Result<tunnel::DrainedChannelStream, String> {
@@ -11300,10 +11614,34 @@ async fn hop_channel(
     // could fill this channel's queue while the next session waits for a
     // window, block the previous hop's protocol task — which is what delivers
     // that window — and deadlock the route.
-    via.channel_open_direct_tcpip(host.to_string(), u32::from(port), "127.0.0.1", 0)
-        .await
-        .map(tunnel::drained_stream)
-        .map_err(|e| format!("could not open a channel to {host}:{port} through the jump host: {e}"))
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        via.channel_open_direct_tcpip(host.to_string(), u32::from(port), "127.0.0.1", 0),
+    )
+    .await
+    .map_err(|_| format!("the jump host didn't answer within 15 seconds when asked to reach {host}:{port}"))?
+    .map(tunnel::drained_stream)
+    .map_err(|e| format!("could not open a channel to {host}:{port} through the jump host: {e}"))
+}
+
+#[cfg(test)]
+mod hop_channel_tests {
+    use super::hop_channel;
+    use crate::ssh_test_server::{connect, TestServer};
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_jump_host_that_doesnt_answer_is_given_up_on() {
+        let via = connect(TestServer::not_answering_opens(), |_| {}, russh::client::Config::default())
+            .await
+            .expect("in-process SSH connection");
+        let start = tokio::time::Instant::now();
+        let opened = tokio::time::timeout(Duration::from_secs(30), hop_channel(&via, "target", 22))
+            .await
+            .expect("it gives up on its own");
+        assert!(opened.err().is_some_and(|e| e.contains("didn't answer within 15 seconds")));
+        assert!(start.elapsed() >= Duration::from_secs(15));
+    }
 }
 
 /// Establish + authenticate the connection to a ProxyJump intermediate
@@ -11590,9 +11928,10 @@ async fn login_hop(
         save_to,
         agent: AgentSlot::new(ctx.use_agent, identity_agent, identities),
         session_unusable: std::sync::atomic::AtomicBool::new(false),
+        server_time: std::sync::atomic::AtomicU64::new(0),
     };
     let (effective_user, user_prompted, login_cancelled) =
-        match resolve_login_user(&saved_user, &host, SecretSlot::JumpUsername, &prompt_ctx).await {
+        match prompt_ctx.login_step(resolve_login_user(&saved_user, &host, SecretSlot::JumpUsername, &prompt_ctx)).await.flatten() {
             Some((name, typed)) => (name, typed, false),
             None => (Zeroizing::new(String::new()), false, true),
         };
@@ -11611,28 +11950,32 @@ async fn login_hop(
         let key_label = key_name
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| format!("{}@{}", effective_user.as_str(), host));
-        authenticate_key_prompting(
-            &mut session,
-            &effective_user,
-            &private_key,
-            &key_label,
-            passphrase.map(Zeroizing::new),
-            SecretSlot::JumpPassphrase,
-            &prompt_ctx,
-        )
-        .await
+        prompt_ctx
+            .login_step(authenticate_key_prompting(
+                &mut session,
+                &effective_user,
+                &private_key,
+                &key_label,
+                passphrase.map(Zeroizing::new),
+                SecretSlot::JumpPassphrase,
+                &prompt_ctx,
+            ))
+            .await
+            .unwrap_or(Err(russh::Error::ConnectionTimeout))
     } else {
         ctx.log("Jump host: password authentication...", "info");
-        authenticate_password_prompting(
-            &mut session,
-            &effective_user,
-            &host,
-            None,
-            password.map(Zeroizing::new),
-            SecretSlot::JumpPassword,
-            &prompt_ctx,
-        )
-        .await
+        prompt_ctx
+            .login_step(authenticate_password_prompting(
+                &mut session,
+                &effective_user,
+                &host,
+                None,
+                password.map(Zeroizing::new),
+                SecretSlot::JumpPassword,
+                &prompt_ctx,
+            ))
+            .await
+            .unwrap_or(Err(russh::Error::ConnectionTimeout))
     };
 
     // A declined prompt ends the hop — don't fall back to asking again. Nor
@@ -11641,20 +11984,23 @@ async fn login_hop(
         && !prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed)
         && !prompt_ctx.session_unusable.load(std::sync::atomic::Ordering::Relaxed)
     {
-        if let Some(kbi_res) = run_keyboard_interactive(
-            &mut session,
-            &effective_user,
-            ctx.app,
-            ctx.session_id,
-            &jump_nonce,
-            ctx.kbi_txs,
-            ctx.attempt,
-            kbi_password.as_ref().map(|p| p.as_str()),
-            prompt_ctx.save_offer().await,
-            ctx.allow_prompt,
-            &mut None,
-        )
-        .await
+        let save_offer = prompt_ctx.save_offer().await;
+        if let Some(kbi_res) = prompt_ctx
+            .login_step(run_keyboard_interactive(
+                &mut session,
+                &effective_user,
+                ctx.app,
+                ctx.session_id,
+                &jump_nonce,
+                ctx.kbi_txs,
+                ctx.attempt,
+                kbi_password.as_ref().map(|p| p.as_str()),
+                save_offer,
+                ctx.allow_prompt,
+                &mut None,
+            ))
+            .await
+            .unwrap_or(Some(Err(russh::Error::ConnectionTimeout)))
         {
             auth_res = kbi_res;
         }
@@ -12531,10 +12877,11 @@ async fn initiate_connection(
                     save_to: if server_id > 0 && key_data.is_none() { SaveTarget::for_server(&app, server_id) } else { None },
                     agent: AgentSlot::new(use_agent, identity_agent.clone(), identities.clone()),
                     session_unusable: std::sync::atomic::AtomicBool::new(false),
+                    server_time: std::sync::atomic::AtomicU64::new(0),
                 };
 
                 let (effective_user, user_prompted, login_cancelled) =
-                    match resolve_login_user(&saved_user, &host, SecretSlot::Username, &prompt_ctx).await {
+                    match prompt_ctx.login_step(resolve_login_user(&saved_user, &host, SecretSlot::Username, &prompt_ctx)).await.flatten() {
                         Some((name, typed)) => (name, typed, false),
                         None => (Zeroizing::new(String::new()), false, true),
                     };
@@ -12562,32 +12909,36 @@ async fn initiate_connection(
                     let key_label = key_name
                         .filter(|n| !n.trim().is_empty())
                         .unwrap_or_else(|| format!("{}@{}", effective_user.as_str(), host));
-                    authenticate_key_prompting(
-                        &mut session,
-                        &effective_user,
-                        &private_key,
-                        &key_label,
-                        passphrase.map(Zeroizing::new),
-                        SecretSlot::Passphrase,
-                        &prompt_ctx,
-                    )
-                    .await
+                    prompt_ctx
+                        .login_step(authenticate_key_prompting(
+                            &mut session,
+                            &effective_user,
+                            &private_key,
+                            &key_label,
+                            passphrase.map(Zeroizing::new),
+                            SecretSlot::Passphrase,
+                            &prompt_ctx,
+                        ))
+                        .await
+                        .unwrap_or(Err(russh::Error::ConnectionTimeout))
                 } else {
                     emit_log("Attempting Password Authentication...", "info");
                     // The failed-screen override (if any) is tried first, then
                     // the cache, then the saved password; with none of them the
                     // user is asked — unless the server doesn't take passwords,
                     // in which case keyboard-interactive below runs as before.
-                    authenticate_password_prompting(
-                        &mut session,
-                        &effective_user,
-                        &host,
-                        custom_password.map(Zeroizing::new),
-                        password.map(Zeroizing::new),
-                        SecretSlot::Password,
-                        &prompt_ctx,
-                    )
-                    .await
+                    prompt_ctx
+                        .login_step(authenticate_password_prompting(
+                            &mut session,
+                            &effective_user,
+                            &host,
+                            custom_password.map(Zeroizing::new),
+                            password.map(Zeroizing::new),
+                            SecretSlot::Password,
+                            &prompt_ctx,
+                        ))
+                        .await
+                        .unwrap_or(Err(russh::Error::ConnectionTimeout))
                 };
 
                 // Keyboard-interactive (2FA / verification-code) fallback. Many
@@ -12608,20 +12959,23 @@ async fn initiate_connection(
                     && !prompt_ctx.session_unusable.load(std::sync::atomic::Ordering::Relaxed)
                 {
                     let mut typed_password = None;
-                    if let Some(kbi_res) = run_keyboard_interactive(
-                        &mut session,
-                        &effective_user,
-                        &app,
-                        &session_id_clone,
-                        &connect_nonce,
-                        &kbi_txs_clone,
-                        &attempt,
-                        kbi_password.as_ref().map(|p| p.as_str()),
-                        prompt_ctx.save_offer().await,
-                        allow_kbi,
-                        &mut typed_password,
-                    )
-                    .await
+                    let save_offer = prompt_ctx.save_offer().await;
+                    if let Some(kbi_res) = prompt_ctx
+                        .login_step(run_keyboard_interactive(
+                            &mut session,
+                            &effective_user,
+                            &app,
+                            &session_id_clone,
+                            &connect_nonce,
+                            &kbi_txs_clone,
+                            &attempt,
+                            kbi_password.as_ref().map(|p| p.as_str()),
+                            save_offer,
+                            allow_kbi,
+                            &mut typed_password,
+                        ))
+                        .await
+                        .unwrap_or(Some(Err(russh::Error::ConnectionTimeout)))
                     {
                         auth_res = kbi_res;
                     }
@@ -16013,8 +16367,7 @@ async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>,
         _ => None,
     };
 
-    let session = session_arc.read().await;
-    let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
+    let channel = shell_sftp::open_session_channel(&session_arc).await?;
 
     // Request PTY
     channel.request_pty(false, "xterm-256color", cols, rows, 0, 0, &[]).await.map_err(|e| e.to_string())?;
@@ -16431,10 +16784,7 @@ async fn run_info_script(
     };
 
     let start = std::time::Instant::now();
-    let channel = {
-        let session = session_arc.read().await;
-        session.channel_open_session().await.map_err(|e| e.to_string())?
-    };
+    let channel = shell_sftp::open_session_channel(&session_arc).await?;
     channel.exec(true, script.as_bytes()).await.map_err(|e| e.to_string())?;
     let mut stream = channel.into_stream();
 
@@ -16687,10 +17037,7 @@ async fn run_exec_capture(
         connections.get(session_id).map(Arc::clone)
             .ok_or_else(|| "Session not connected".to_string())?
     };
-    let channel = {
-        let session = session_arc.read().await;
-        session.channel_open_session().await.map_err(|e| e.to_string())?
-    };
+    let channel = shell_sftp::open_session_channel(&session_arc).await?;
     channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
     let mut stream = channel.into_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
@@ -16946,10 +17293,7 @@ async fn exec_with_stdin_capture(
     timeout_secs: u64,
 ) -> Result<String, String> {
     use russh::ChannelMsg;
-    let mut channel = {
-        let session = session_arc.read().await;
-        session.channel_open_session().await.map_err(|e| e.to_string())?
-    };
+    let mut channel = shell_sftp::open_session_channel(session_arc).await?;
     channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
     if let Some(input) = stdin {
         channel.data(input).await.map_err(|e| e.to_string())?;
@@ -17128,10 +17472,7 @@ pub(crate) async fn start_sftp(
 pub(crate) async fn open_sftp(
     session_arc: &SessionHandleArc,
 ) -> Result<(russh_sftp::client::SftpSession, bool), String> {
-    let channel = {
-        let session = session_arc.read().await;
-        session.channel_open_session().await.map_err(|e| e.to_string())?
-    };
+    let channel = shell_sftp::open_session_channel(session_arc).await?;
     match start_sftp(channel).await {
         Ok(sftp) => Ok((sftp, false)),
         Err(e) if e == SFTP_REFUSED || e == SFTP_ENDED => {
@@ -17232,10 +17573,7 @@ async fn open_elevated_sftp(
     }
     let sudo = if password.is_some() { "sudo -S -k -p ''" } else { "sudo -n" };
     let cmd = format!("echo {}; exec {} {}", ELEVATED_SFTP_READY, sudo, server_path);
-    let channel = {
-        let session = session_arc.read().await;
-        session.channel_open_session().await.map_err(|e| e.to_string())?
-    };
+    let channel = shell_sftp::open_session_channel(session_arc).await?;
     channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
     let mut stream = channel.into_stream();
     if let Some(pw) = password {
@@ -21616,10 +21954,11 @@ async fn select_local_folder() -> Result<Option<String>, String> {
     }
     #[cfg(desktop)]
     {
-        let folder = rfd::FileDialog::new()
+        let folder = rfd::AsyncFileDialog::new()
             .set_title("Choose Local Directory")
-            .pick_folder();
-        Ok(folder.map(|p| p.to_string_lossy().to_string()))
+            .pick_folder()
+            .await;
+        Ok(folder.map(|p| p.path().to_string_lossy().to_string()))
     }
 }
 
@@ -22441,6 +22780,47 @@ async fn clipboard_read_text(app: tauri::AppHandle) -> Result<String, String> {
     }
 }
 
+/// How long `open_main_window` waits for an earlier run's WebView2 to let go.
+#[cfg(windows)]
+const MAIN_WINDOW_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// A webview creation that failed because the data folder is still in use
+/// (ERROR_BUSY): a run that was killed or crashed a moment ago leaves its
+/// WebView2 browser holding the folder for a second or so.
+#[cfg(windows)]
+fn webview_data_folder_busy(error: &str) -> bool {
+    error.contains("0x800700AA")
+}
+
+/// Opens the window the config describes, as Tauri would, waiting out an
+/// earlier run's WebView2. If there's still no window the app can't go on:
+/// a plain message says why, instead of a panic nobody sees.
+#[cfg(windows)]
+fn open_main_window(app: &tauri::App) {
+    let Some(config) = app.config().app.windows.first().cloned() else { return };
+    let started = std::time::Instant::now();
+    let error = loop {
+        match tauri::WebviewWindowBuilder::from_config(app.handle(), &config).and_then(|window| window.build()) {
+            Ok(_) => return,
+            Err(e) if webview_data_folder_busy(&e.to_string()) && started.elapsed() < MAIN_WINDOW_WAIT => {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+            Err(e) => break e.to_string(),
+        }
+    };
+    let why = if webview_data_folder_busy(&error) {
+        "Submarine's last run is still closing. Wait a few seconds and start it again."
+    } else {
+        error.as_str()
+    };
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Submarine")
+        .set_description(format!("Submarine couldn't open its window.\n\n{why}"))
+        .show();
+    std::process::exit(1);
+}
+
 /// Library entrypoint shared by both the desktop `bin/main.rs` shim and
 /// Tauri's Android entry-point macro. Everything that builds the
 /// `tauri::Builder`, registers plugins/state/commands, and finally calls
@@ -22522,6 +22902,12 @@ pub fn run() {
     // Without the folder nothing is touched. See portable.rs.
     let mut context = tauri::generate_context!();
     portable::apply(context.config_mut());
+    // Tauri panics when it can't create a window from the config, so on
+    // Windows `setup` below does that instead (see open_main_window).
+    #[cfg(windows)]
+    for window in &mut context.config_mut().app.windows {
+        window.create = false;
+    }
 
     let builder = tauri::Builder::default();
     // Save/restore the main window's last size + position to a JSON file
@@ -22574,6 +22960,8 @@ pub fn run() {
             app.manage(cloud_state);
             // .rdp files an earlier run left behind (issue #3).
             std::thread::spawn(rdp::clear_old_files);
+            #[cfg(windows)]
+            open_main_window(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -22793,6 +23181,19 @@ mod tests {
         assert!(download_walk_too_big(DOWNLOAD_DIR_MAX_FILES + 1, 0, 0).is_some());
         assert!(download_walk_too_big(0, DOWNLOAD_DIR_MAX_BYTES + 1, 0).is_some());
         assert!(download_walk_too_big(0, 0, DOWNLOAD_DIR_MAX_PATH_BYTES + 1).is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_a_busy_data_folder_is_waited_out() {
+        // As a killed run's successor reported it.
+        assert!(webview_data_folder_busy(
+            "failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x800700AA), message: \"The requested resource is in use.\" })"
+        ));
+        // WebView2 isn't installed.
+        assert!(!webview_data_folder_busy(
+            "failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x80070002), message: \"The system cannot find the file specified.\" })"
+        ));
     }
 
     #[test]
