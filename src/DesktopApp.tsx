@@ -52,6 +52,10 @@ import { parseObjectList } from "./util/serverJson";
 
 const appWindow = getCurrentWindow();
 
+// How long Lock waits for the open tabs to disconnect: a stuck mirror holds a
+// disconnect for 2 s (mirror.rs), and an ordinary one takes moments.
+const LOGOUT_DISCONNECT_LIMIT_MS = 3000;
+
 // Sessions can be either DB-backed (saved node, `serverId > 0`) or quick
 // connect (one-shot, `serverId === 0` and `quickAuth` populated). SessionView
 // forwards `quickAuth` to `initiate_connection` which uses it instead of
@@ -909,11 +913,17 @@ function DesktopApp() {
       if (!ok) return;
       // Best-effort: tell the backend to clean up each session. We don't
       // bail if one fails — `close_profile` will drop the DB anyway, and
-      // the OS will eventually reap the sockets.
-      for (const s of sessions) {
-        try { await invoke("disconnect_session", { sessionId: s.id }); }
-        catch (e) { console.error("disconnect on logout failed:", e); }
-      }
+      // the OS will eventually reap the sockets. All at once and with a
+      // limit: one tab stuck on a server that stopped answering must not
+      // keep the profile open, with its key in memory, while the screen
+      // still waits for the lock.
+      const disconnects = sessions.map((s) =>
+        invoke("disconnect_session", { sessionId: s.id })
+          .catch((e) => console.error("disconnect on logout failed:", e)));
+      await Promise.race([
+        Promise.all(disconnects),
+        new Promise((done) => setTimeout(done, LOGOUT_DISCONNECT_LIMIT_MS)),
+      ]);
     }
     try { await invoke("close_profile"); }
     catch (e) { addLog(`LOGOUT_EXCEPTION: ${e}`, "error"); }

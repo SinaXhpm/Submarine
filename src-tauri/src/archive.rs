@@ -518,15 +518,165 @@ pub async fn local_archive(
     Ok(None)
 }
 
+/// What one local extraction may do. An archive is the sender's: without
+/// limits a small one fills the disk, or memory until the app is killed.
+#[derive(Clone, Copy)]
+struct ExtractLimits {
+    entries: usize,
+    bytes: u64,
+    /// What it may unpack to, as a multiple of its own size. Deflate stops at
+    /// about 1032 to 1, so only a crafted archive goes past this: zip entries
+    /// that share one stream, tar entries that claim a huge hole.
+    ratio: u64,
+    /// What tar may read for one entry before its data. GNU long names and PAX
+    /// records are read whole, and they are as long as the archive says.
+    header: u64,
+    /// What tar may hold of the folder entries, which it sets up last.
+    held: u64,
+}
+
+const EXTRACT_LIMITS: ExtractLimits = ExtractLimits {
+    entries: 1_000_000,
+    bytes: 100 * 1024 * 1024 * 1024,
+    ratio: 1100,
+    header: 1024 * 1024,
+    held: 256 * 1024 * 1024,
+};
+
+/// How deep a tree may nest. Each level of a walk below takes a frame on a
+/// 2 MiB blocking thread, up to 8 KiB of it in a debug build, and on Windows,
+/// where the stage is a `\\?\` path, an archive can reach thousands of levels.
+/// Names deeper than this are refused up front. Links inside the stage can
+/// still build a deeper tree, so `settle_staged` looks too, and it runs before
+/// the other walkers.
+const EXTRACT_MAX_DEPTH: usize = 128;
+
+fn too_deep(name: &[u8]) -> bool {
+    name.iter().filter(|b| matches!(b, b'/' | b'\\')).count() > EXTRACT_MAX_DEPTH
+}
+
+fn nests_too_deep() -> String {
+    format!("The archive has folders nested more than {} levels deep", EXTRACT_MAX_DEPTH)
+}
+
+fn too_many_entries(limits: &ExtractLimits) -> String {
+    format!("The archive has more than {} entries", limits.entries)
+}
+
+const TOO_MUCH_DATA: &str = "The archive unpacks to too much data";
+
+/// Counts what tar reads, and fails past `allowed`.
+struct CountRead<'a, R> {
+    inner: R,
+    read: &'a std::cell::Cell<u64>,
+    allowed: &'a std::cell::Cell<u64>,
+}
+
+impl<R: Read> Read for CountRead<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.allowed.get().saturating_sub(self.read.get());
+        if left == 0 {
+            return Err(std::io::Error::other("The archive has an entry with headers that are too large"));
+        }
+        let room = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..room])?;
+        self.read.set(self.read.get() + n as u64);
+        Ok(n)
+    }
+}
+
+/// `tar::Archive::unpack`, one entry at a time so each can be counted first.
+/// That call keeps the folder entries for the end too, in this order: a folder
+/// made read-only early would stop what goes in it.
+fn unpack_tar<R: Read>(reader: R, into: &Path, most: u64, limits: &ExtractLimits) -> Result<(), String> {
+    let read = std::cell::Cell::new(0u64);
+    let allowed = std::cell::Cell::new(0u64);
+    let mut archive = tar::Archive::new(CountRead { inner: reader, read: &read, allowed: &allowed });
+    let into = into.canonicalize().unwrap_or_else(|_| into.to_path_buf());
+    let mut entries = archive.entries().map_err(|e| e.to_string())?;
+    let mut folders = Vec::new();
+    let (mut count, mut total, mut held) = (0usize, 0u64, 0u64);
+    // Where the last entry's data ends in the stream.
+    let mut data_end = 0u64;
+    loop {
+        allowed.set(data_end.saturating_add(limits.header));
+        let Some(entry) = entries.next() else { break };
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let header = read.get().saturating_sub(data_end);
+        count += 1;
+        total = total.saturating_add(header).saturating_add(entry.size());
+        if count > limits.entries {
+            return Err(too_many_entries(limits));
+        }
+        if total > most {
+            return Err(TOO_MUCH_DATA.to_string());
+        }
+        if too_deep(&entry.path_bytes()) {
+            return Err(nests_too_deep());
+        }
+        // What the stream holds of it. A GNU sparse entry's size has its holes
+        // in it, which are in `total` above but take no room here: counted
+        // here, they would let the next entry's headers read that much.
+        let stored = if entry.header().entry_type().is_gnu_sparse() {
+            entry.header().entry_size().map_err(|e| e.to_string())?
+        } else {
+            entry.size()
+        };
+        data_end = read.get().saturating_add(stored);
+        allowed.set(data_end);
+        if entry.header().entry_type() == tar::EntryType::Directory {
+            held = held.saturating_add(header);
+            if held > limits.held {
+                return Err("The archive has too many folders".to_string());
+            }
+            folders.push(entry);
+        } else {
+            entry.unpack_in(&into).map_err(|e| e.to_string())?;
+        }
+    }
+    folders.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
+    for mut folder in folders {
+        folder.unpack_in(&into).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The zip reader holds each member to the size it declares, so the declared
+/// sizes bound what comes out, and all of it is known before a byte is written.
+fn check_zip<R: Read + Seek>(zip: &zip::ZipArchive<R>, most: u64, limits: &ExtractLimits) -> Result<(), String> {
+    if zip.len() > limits.entries {
+        return Err(too_many_entries(limits));
+    }
+    let mut total = 0u64;
+    for i in 0..zip.len() {
+        let member = zip.by_index_data(i).map_err(|e| e.to_string())?;
+        total = total.saturating_add(member.size());
+        if too_deep(member.name_raw()) {
+            return Err(nests_too_deep());
+        }
+    }
+    if total > most {
+        return Err(TOO_MUCH_DATA.to_string());
+    }
+    Ok(())
+}
+
 fn unpack_local(archive: &Path, into: &Path, format: Format, cancel: &AtomicBool) -> Result<(), String> {
+    unpack_limited(archive, into, format, cancel, &EXTRACT_LIMITS)
+}
+
+fn unpack_limited(archive: &Path, into: &Path, format: Format, cancel: &AtomicBool, limits: &ExtractLimits) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("Failed to open archive: {}", e))?;
+    let size = file.metadata().map_err(|e| format!("Failed to open archive: {}", e))?.len();
+    let most = limits.bytes.min(size.saturating_mul(limits.ratio));
     let reader = CancelRead { inner: std::io::BufReader::new(file), cancel };
     let res = match format {
-        Format::Zip => zip::ZipArchive::new(reader).and_then(|mut z| z.extract(into)).map_err(|e| e.to_string()),
-        Format::Tar => tar::Archive::new(reader).unpack(into).map_err(|e| e.to_string()),
-        Format::TarGz => tar::Archive::new(flate2::read::GzDecoder::new(reader))
-            .unpack(into)
-            .map_err(|e| e.to_string()),
+        Format::Zip => zip::ZipArchive::new(reader).map_err(|e| e.to_string()).and_then(|mut zip| {
+            check_zip(&zip, most, limits)?;
+            zip.extract(into).map_err(|e| e.to_string())
+        }),
+        Format::Tar => unpack_tar(reader, into, most, limits),
+        Format::TarGz => unpack_tar(flate2::read::GzDecoder::new(reader), into, most, limits),
     };
     res.map_err(|e| step_err(cancel, "Extract failed", e))
 }
@@ -577,7 +727,10 @@ fn make_usable(dir: &Path, meta: &std::fs::Metadata) -> Result<(), String> {
 // destination: such an archive is refused as a whole, as on the remote side.
 // So is anything that is not a file, folder or link. Folders are made usable
 // (`make_usable`) on the way down, and setuid and setgid bits are dropped.
-fn settle_staged(dir: &Path, rel: &str) -> Result<(), String> {
+fn settle_staged(dir: &Path, rel: &str, depth: usize) -> Result<(), String> {
+    if depth > EXTRACT_MAX_DEPTH {
+        return Err(nests_too_deep());
+    }
     let meta = std::fs::symlink_metadata(dir).map_err(|e| e.to_string())?;
     make_usable(dir, &meta).map_err(|e| format!("{}: {}", if rel.is_empty() { "." } else { rel }, e))?;
     for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
@@ -592,7 +745,7 @@ fn settle_staged(dir: &Path, rel: &str) -> Result<(), String> {
                 return Err(format!("The archive has a link that points outside the destination: {}", rel));
             }
         } else if meta.is_dir() {
-            settle_staged(&path, &rel)?;
+            settle_staged(&path, &rel, depth + 1)?;
         } else if meta.is_file() {
             #[cfg(unix)]
             {
@@ -612,7 +765,8 @@ fn settle_staged(dir: &Path, rel: &str) -> Result<(), String> {
 
 // Every path the staged tree will take in `dest` goes through the same policy
 // as any other local write: no system folders, no folder the OS runs things
-// from at login. A link's own path is checked; it is never followed.
+// from at login. A link's own path is checked; it is never followed. Runs after
+// `settle_staged`, which holds the tree to EXTRACT_MAX_DEPTH.
 fn check_staged_policy(stage: &Path, dest: &Path) -> Result<(), String> {
     crate::check_local_path_policy(dest.to_path_buf())?;
     for entry in std::fs::read_dir(stage).map_err(|e| e.to_string())? {
@@ -643,7 +797,8 @@ fn existing_dest_is_folder(target: &Path, label: &str) -> Result<bool, String> {
 // false (only looks) and once with it true, so a refusal leaves the
 // destination untouched. Same-named files are replaced; a link in a file's
 // place is removed, not written through. A folder is merged into an existing
-// folder and refused where the destination has a link or a file.
+// folder and refused where the destination has a link or a file. Runs after
+// `settle_staged`, which holds the tree to EXTRACT_MAX_DEPTH.
 fn merge_staged(src: &Path, dst: &Path, rel: &str, apply: bool) -> Result<(), String> {
     for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -697,22 +852,20 @@ fn place_staged(stage: &Path, dest: &Path, label: &str) -> Result<(), String> {
 }
 
 // Makes a staged tree removable again (`settle_staged` may not have reached
-// all of it) and removes it.
+// all of it) and removes it. An explicit stack: this also has to clean up the
+// tree `settle_staged` refused for being too deep.
 fn remove_stage(stage: &Path) {
-    fn usable(dir: &Path) {
-        if let Ok(meta) = std::fs::symlink_metadata(dir) {
+    if std::fs::symlink_metadata(stage).is_ok() {
+        let mut stack = vec![stage.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(meta) = std::fs::symlink_metadata(&dir) else { continue };
             if meta.is_dir() && !is_link(&meta) {
-                let _ = make_usable(dir, &meta);
-                if let Ok(read_dir) = std::fs::read_dir(dir) {
-                    for entry in read_dir.flatten() {
-                        usable(&entry.path());
-                    }
+                let _ = make_usable(&dir, &meta);
+                if let Ok(read_dir) = std::fs::read_dir(&dir) {
+                    stack.extend(read_dir.flatten().map(|entry| entry.path()));
                 }
             }
         }
-    }
-    if std::fs::symlink_metadata(stage).is_ok() {
-        usable(stage);
         let _ = std::fs::remove_dir_all(stage);
     }
 }
@@ -740,7 +893,7 @@ fn extract_local(
     // Not `create_dir_all`: a folder already under that name is not ours.
     std::fs::create_dir(&stage).map_err(|e| format!("Failed to create temporary folder: {}", e))?;
     let res = unpack_local(archive, &stage, format, cancel)
-        .and_then(|()| settle_staged(&stage, ""))
+        .and_then(|()| settle_staged(&stage, "", 0))
         .and_then(|()| check_staged_policy(&stage, &dest))
         .and_then(|()| if cancel.load(Ordering::Relaxed) { Err(cancelled()) } else { Ok(()) })
         .and_then(|()| place_staged(&stage, &dest, folder.unwrap_or(".")));
@@ -1623,6 +1776,232 @@ mod tests {
         assert_eq!(std::fs::read(work.join("fresh/ro/sub/b.txt")).unwrap(), b"beta");
         no_staging_left(&work);
         remove_stage(&root);
+    }
+
+    // Unpacks `bytes`, saved as `name`, into a fresh folder under the limits.
+    fn unpack_within(root: &Path, name: &str, bytes: &[u8], limits: ExtractLimits) -> Result<(), String> {
+        let archive = root.join(name);
+        std::fs::write(&archive, bytes).unwrap();
+        let into = root.join("into");
+        remove_stage(&into);
+        std::fs::create_dir(&into).unwrap();
+        unpack_limited(&archive, &into, format_of_name(name).unwrap(), &go(), &limits)
+    }
+
+    fn zip_of(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, data) in files {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        gz.write_all(bytes).unwrap();
+        gz.finish().unwrap()
+    }
+
+    /// A tar member named by a GNU long name of `len` bytes.
+    fn long_name_tar(len: usize) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_entry_type(Regular);
+        header.set_mode(0o644);
+        builder.append_data(&mut header, "a/".repeat(len / 2), &b""[..]).unwrap();
+        builder.into_inner().unwrap()
+    }
+
+    #[test]
+    fn extract_limits_leave_an_ordinary_archive_alone() {
+        let root = temp_root("limits-fine");
+        let tar = raw_tar(&[("d/", Directory, "", b"", 0o755), ("d/a.txt", Regular, "", b"alpha", 0o644)]);
+        let limits = ExtractLimits { entries: 2, bytes: 5 + 3 * 512, ..EXTRACT_LIMITS };
+        unpack_within(&root, "o.tar", &tar, limits).unwrap();
+        assert_eq!(std::fs::read(root.join("into/d/a.txt")).unwrap(), b"alpha");
+        let zip = zip_of(&[("d/a.txt", b"alpha")]);
+        unpack_within(&root, "o.zip", &zip, ExtractLimits { entries: 1, bytes: 5, ..EXTRACT_LIMITS }).unwrap();
+        assert_eq!(std::fs::read(root.join("into/d/a.txt")).unwrap(), b"alpha");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_stops_at_too_many_entries() {
+        let root = temp_root("limits-entries");
+        let limits = ExtractLimits { entries: 2, ..EXTRACT_LIMITS };
+        let three: &[(&str, tar::EntryType, &str, &[u8], u32)] = &[
+            ("a", Regular, "", b"", 0o644),
+            ("b", Regular, "", b"", 0o644),
+            ("c", Directory, "", b"", 0o755),
+        ];
+        let err = unpack_within(&root, "o.tar", &raw_tar(three), limits).unwrap_err();
+        assert!(err.contains("more than 2 entries"), "{}", err);
+        let err = unpack_within(&root, "o.tar.gz", &gzip(&raw_tar(three)), limits).unwrap_err();
+        assert!(err.contains("more than 2 entries"), "{}", err);
+        let err = unpack_within(&root, "o.zip", &zip_of(&[("a", b""), ("b", b""), ("c", b"")]), limits).unwrap_err();
+        assert!(err.contains("more than 2 entries"), "{}", err);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_stops_at_too_much_data() {
+        let root = temp_root("limits-bytes");
+        let limits = ExtractLimits { bytes: 1000, ..EXTRACT_LIMITS };
+        let big = vec![7u8; 2000];
+        let tar = raw_tar(&[("big", Regular, "", &big, 0o644)]);
+        let err = unpack_within(&root, "o.tar", &tar, limits).unwrap_err();
+        assert!(err.contains(TOO_MUCH_DATA), "{}", err);
+        assert!(!root.join("into/big").exists(), "refused before it was written");
+        let err = unpack_within(&root, "o.zip", &zip_of(&[("big", &big)]), limits).unwrap_err();
+        assert!(err.contains(TOO_MUCH_DATA), "{}", err);
+        assert!(!root.join("into/big").exists(), "refused before it was written");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // A small archive that unpacks to far more than it is: all zeros here,
+    // which real compression reaches only so far.
+    #[test]
+    fn extract_stops_at_a_ratio_no_real_archive_has() {
+        let root = temp_root("limits-ratio");
+        let zeros = vec![0u8; 8 * 1024 * 1024];
+        let tar = gzip(&raw_tar(&[("zeros", Regular, "", &zeros, 0o644)]));
+        let zip = zip_of(&[("zeros", &zeros)]);
+        let err = unpack_within(&root, "o.tar.gz", &tar, ExtractLimits { ratio: 100, ..EXTRACT_LIMITS }).unwrap_err();
+        assert!(err.contains(TOO_MUCH_DATA), "{}", err);
+        let err = unpack_within(&root, "o.zip", &zip, ExtractLimits { ratio: 100, ..EXTRACT_LIMITS }).unwrap_err();
+        assert!(err.contains(TOO_MUCH_DATA), "{}", err);
+        // Under the real limit, which is above what deflate can do.
+        unpack_within(&root, "o.tar.gz", &tar, EXTRACT_LIMITS).unwrap();
+        assert_eq!(std::fs::metadata(root.join("into/zeros")).unwrap().len(), zeros.len() as u64);
+        unpack_within(&root, "o.zip", &zip, EXTRACT_LIMITS).unwrap();
+        assert_eq!(std::fs::metadata(root.join("into/zeros")).unwrap().len(), zeros.len() as u64);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // A long name is read whole into memory before anything can look at it.
+    #[test]
+    fn extract_stops_at_a_header_too_long() {
+        let root = temp_root("limits-header");
+        let limits = ExtractLimits { header: 4096, ..EXTRACT_LIMITS };
+        let err = unpack_within(&root, "o.tar", &long_name_tar(64 * 1024), limits).unwrap_err();
+        assert!(err.contains("too large"), "{}", err);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // A sparse entry says it is far longer than what the archive holds of it.
+    // That must not become room for the long name after it.
+    #[test]
+    fn extract_stops_at_a_header_too_long_after_a_sparse_entry() {
+        const HOLE: u64 = 1024 * 1024;
+        let padded = |header: &tar::Header, data: &[u8]| {
+            let mut out = header.as_bytes().to_vec();
+            out.extend_from_slice(data);
+            out.resize(out.len().next_multiple_of(512), 0);
+            out
+        };
+        let mut sparse = tar::Header::new_gnu();
+        sparse.set_entry_type(tar::EntryType::GNUSparse);
+        sparse.set_path("holes").unwrap();
+        sparse.set_size(512);
+        sparse.set_mode(0o644);
+        let gnu = sparse.as_gnu_mut().unwrap();
+        gnu.set_real_size(HOLE);
+        gnu.sparse[0].set_offset(HOLE - 512);
+        gnu.sparse[0].set_length(512);
+        sparse.set_cksum();
+        let mut bytes = padded(&sparse, &[7; 512]);
+        let mut long = tar::Header::new_gnu();
+        long.set_entry_type(tar::EntryType::GNULongName);
+        long.set_size(64 * 1024);
+        long.set_cksum();
+        bytes.extend(padded(&long, &[b'n'; 64 * 1024]));
+        let mut last = tar::Header::new_gnu();
+        last.set_entry_type(Regular);
+        last.set_size(0);
+        last.set_cksum();
+        bytes.extend(padded(&last, &[]));
+        bytes.extend_from_slice(&[0; 1024]);
+
+        let root = temp_root("limits-sparse");
+        let limits = ExtractLimits { header: 4096, ..EXTRACT_LIMITS };
+        let err = unpack_within(&root, "o.tar", &bytes, limits).unwrap_err();
+        assert!(err.contains("too large"), "{}", err);
+        // The file itself comes out whole, holes and all.
+        assert_eq!(std::fs::metadata(root.join("into/holes")).unwrap().len(), HOLE);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Folder entries are kept until the end: millions of them would be all
+    // memory. Files aren't, so their number doesn't count here.
+    #[test]
+    fn extract_stops_at_too_many_folders_to_hold() {
+        let root = temp_root("limits-held");
+        let limits = ExtractLimits { held: 1024, ..EXTRACT_LIMITS };
+        let names: Vec<String> = (0..4).map(|n| format!("n{n}")).collect();
+        let folders: Vec<_> = names.iter().map(|n| (n.as_str(), Directory, "", &b""[..], 0o755)).collect();
+        assert!(unpack_within(&root, "o.tar", &raw_tar(&folders), limits).is_err());
+        let files: Vec<_> = names.iter().map(|n| (n.as_str(), Regular, "", &b""[..], 0o644)).collect();
+        unpack_within(&root, "o.tar", &raw_tar(&files), limits).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_stops_at_a_tree_too_deep() {
+        let root = temp_root("limits-depth");
+        let deep = format!("{}x", "d/".repeat(EXTRACT_MAX_DEPTH + 1));
+        let fine = format!("{}x", "d/".repeat(EXTRACT_MAX_DEPTH));
+        assert!(too_deep(deep.as_bytes()) && !too_deep(fine.as_bytes()));
+        assert!(too_deep(deep.replace('/', "\\").as_bytes()));
+        let err = unpack_within(&root, "o.zip", &zip_of(&[(deep.as_str(), b"x")]), EXTRACT_LIMITS).unwrap_err();
+        assert!(err.contains("nested"), "{}", err);
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_entry_type(Regular);
+        header.set_mode(0o644);
+        builder.append_data(&mut header, &deep, &b""[..]).unwrap();
+        let err = unpack_within(&root, "o.tar", &builder.into_inner().unwrap(), EXTRACT_LIMITS).unwrap_err();
+        assert!(err.contains("nested"), "{}", err);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The deepest tree allowed goes through every walker, on a thread the size
+    // of the one they run on.
+    #[test]
+    fn a_staged_tree_at_the_limit_fits_every_walker() {
+        let root = temp_root("limits-walkers");
+        let base = root.canonicalize().unwrap();
+        let (stage, dest) = (base.join("stage"), base.join("dest"));
+        let deep: PathBuf = std::iter::repeat_n("d", EXTRACT_MAX_DEPTH).collect();
+        std::fs::create_dir_all(stage.join(&deep)).unwrap();
+        std::fs::create_dir_all(dest.join(&deep)).unwrap();
+        std::fs::write(stage.join(&deep).join("f"), b"x").unwrap();
+        settle_staged(&stage, "", 0).unwrap();
+        check_staged_policy(&stage, &dest).unwrap();
+        merge_staged(&stage, &dest, "", false).unwrap();
+        merge_staged(&stage, &dest, "", true).unwrap();
+        assert_eq!(std::fs::read(dest.join(&deep).join("f")).unwrap(), b"x");
+        remove_stage(&base);
+    }
+
+    // A tree already on disk that is too deep (links in the stage can build
+    // one) stops the walker, and the cleanup after it still takes all of it.
+    #[test]
+    fn a_staged_tree_too_deep_is_refused_and_removed() {
+        let root = temp_root("limits-stage");
+        let stage = root.canonicalize().unwrap().join("stage");
+        let mut deep = stage.clone();
+        for _ in 0..=EXTRACT_MAX_DEPTH + 1 {
+            deep.push("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        let err = settle_staged(&stage, "", 0).unwrap_err();
+        assert!(err.contains("nested"), "{}", err);
+        remove_stage(&stage);
+        assert!(std::fs::symlink_metadata(&stage).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // Packing or unpacking stops at its next read once cancelled, and leaves

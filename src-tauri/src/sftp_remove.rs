@@ -172,7 +172,7 @@ async fn probe(sftp: &SftpSession, path: String, parent: Option<usize>, depth: u
     if !is_status(&rmdir, StatusCode::Failure) {
         return Outcome::Failed { parent, message: format!("rmdir {}: {}", path, words(&rmdir)) };
     }
-    match sftp.read_dir(path.as_str()).await {
+    match crate::sftp_listing::read_dir(sftp, &path).await {
         Ok(read) => {
             let entries = read.map(|entry| (entry.file_name(), entry.file_type())).collect();
             Outcome::Listed { path, parent, depth, entries }
