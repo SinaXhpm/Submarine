@@ -20,8 +20,18 @@
 //! platform key it needs stays behind.
 //!
 //! The password itself is never kept. Linux and macOS aren't offered it.
+//!
+//! Windows also offers the opposite trade, as a separate choice that is off
+//! until the user turns it on (#275): `AUTO_METHOD` seals the vault key with
+//! DPAPI for the current Windows account, so the profile opens by itself when
+//! the app starts, with no user verification at all. Anyone or any program
+//! using that account can open it, which the setting says plainly. Once a
+//! profile has been closed in this run (Lock, or the idle lock), it doesn't
+//! open that way again until the app restarts, so Lock still means the
+//! password; the check is here, not in the page.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -32,12 +42,29 @@ use zeroize::Zeroizing;
 use crate::{DbState, SALT_LEN};
 
 const FILE_VERSION: u8 = 1;
+/// The method of a key sealed with DPAPI, opened with no prompt (Windows only).
+const AUTO_METHOD: &str = "windows-auto";
 /// What the UI tells apart: the user closed the prompt (just ask for the
 /// password), the file no longer fits this profile (it was dropped: set it up
-/// again), or the platform can't do it here.
+/// again), the platform can't do it here, or a profile was closed in this run
+/// so only the password opens this one (see `profile_closed`).
 pub const CANCELLED: &str = "[QUICK_UNLOCK] CANCELLED";
 pub const STALE: &str = "[QUICK_UNLOCK] STALE";
 pub const UNAVAILABLE: &str = "[QUICK_UNLOCK] UNAVAILABLE";
+pub const LOCKED: &str = "[QUICK_UNLOCK] LOCKED";
+
+/// A profile was closed since the app started.
+static CLOSED_THIS_RUN: AtomicBool = AtomicBool::new(false);
+
+/// Lock means the password: from here on `AUTO_METHOD` doesn't open anything
+/// until the app restarts.
+pub fn profile_closed() {
+    CLOSED_THIS_RUN.store(true, Ordering::SeqCst);
+}
+
+fn auto_may_open() -> bool {
+    !CLOSED_THIS_RUN.load(Ordering::SeqCst)
+}
 
 #[derive(Serialize, Deserialize)]
 struct SealedFile {
@@ -81,7 +108,14 @@ fn file_for(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
 fn read_file(path: &std::path::Path) -> Option<SealedFile> {
     let text = std::fs::read_to_string(path).ok()?;
     let f: SealedFile = serde_json::from_str(&text).ok()?;
-    (f.v == FILE_VERSION && f.method == METHOD).then_some(f)
+    (f.v == FILE_VERSION && (f.method == METHOD || (cfg!(windows) && f.method == AUTO_METHOD))).then_some(f)
+}
+
+/// Removes what the system keeps for a file. A DPAPI file has nothing there.
+fn forget_platform_key(app: &tauri::AppHandle, f: &SealedFile) {
+    if f.method == METHOD {
+        platform::forget(app, &f.id);
+    }
 }
 
 /// What a vault file says about its salt.
@@ -129,7 +163,7 @@ fn vault_salt(app: &tauri::AppHandle, name: &str) -> VaultSalt {
 pub fn forget(app: &tauri::AppHandle, name: &str) {
     let Ok(path) = file_for(app, name) else { return };
     if let Some(f) = read_file(&path) {
-        platform::forget(app, &f.id);
+        forget_platform_key(app, &f);
     }
     let _ = std::fs::remove_file(&path);
 }
@@ -154,43 +188,60 @@ pub struct Support {
     /// The device can do it now: Windows Hello is set up, a fingerprint is
     /// enrolled. Else the UI says what to set up first.
     ready: bool,
+    /// `AUTO_METHOD` is offered too. It needs nothing set up first.
+    auto: bool,
 }
 
 #[tauri::command]
 pub async fn quick_unlock_support(app: tauri::AppHandle) -> Result<Support, String> {
     if METHOD.is_empty() {
-        return Ok(Support { method: None, ready: false });
+        return Ok(Support { method: None, ready: false, auto: false });
     }
     let ready = platform::ready(&app).await;
-    Ok(Support { method: Some(METHOD), ready })
+    Ok(Support { method: Some(METHOD), ready, auto: cfg!(windows) })
+}
+
+#[derive(Serialize)]
+pub struct Status {
+    /// How it's on for this profile: a `Support` method or `AUTO_METHOD`. None
+    /// when it's off.
+    method: Option<String>,
+    /// That method can open the profile now.
+    can_open: bool,
 }
 
 /// Whether it's on for this profile on this device. A file that no longer
 /// fits the profile's vault is dropped here.
 #[tauri::command]
-pub async fn quick_unlock_status(app: tauri::AppHandle, name: String) -> Result<bool, String> {
+pub async fn quick_unlock_status(app: tauri::AppHandle, name: String) -> Result<Status, String> {
+    let off = Status { method: None, can_open: false };
     if METHOD.is_empty() {
-        return Ok(false);
+        return Ok(off);
     }
     let path = file_for(&app, &name)?;
-    let Some(f) = read_file(&path) else { return Ok(false) };
-    match vault_salt(&app, &name) {
-        VaultSalt::Salt(salt) if hex::encode(salt) == f.vault_salt => Ok(true),
+    let Some(f) = read_file(&path) else { return Ok(off) };
+    let on = match vault_salt(&app, &name) {
+        VaultSalt::Salt(salt) => hex::encode(salt) == f.vault_salt,
         // Can't be read now: leave it as it is. Dropping it here lost the
         // Windows Hello key to a vault file that was only busy for a moment.
-        VaultSalt::Unreadable => Ok(true),
-        _ => {
-            forget(&app, &name);
-            Ok(false)
-        }
+        VaultSalt::Unreadable => true,
+        VaultSalt::Gone => false,
+    };
+    if !on {
+        forget(&app, &name);
+        return Ok(off);
     }
+    let can_open = f.method != AUTO_METHOD || auto_may_open();
+    Ok(Status { method: Some(f.method), can_open })
 }
 
-/// Turns it on for the open profile. Takes its password again, so a profile
-/// left open can't be set to open with somebody else's finger.
+/// Turns it on for the open profile, replacing what was on: Windows Hello or
+/// the fingerprint, or with `auto` the DPAPI key. Takes its password again, so
+/// a profile left open can't be set to open with somebody else's finger, or
+/// with nothing at all.
 #[tauri::command]
-pub async fn quick_unlock_enable(app: tauri::AppHandle, state: tauri::State<'_, DbState>, password: String) -> Result<(), String> {
-    if METHOD.is_empty() {
+pub async fn quick_unlock_enable(app: tauri::AppHandle, state: tauri::State<'_, DbState>, password: String, auto: bool) -> Result<(), String> {
+    if METHOD.is_empty() || (auto && !cfg!(windows)) {
         return Err(UNAVAILABLE.into());
     }
     let password = Zeroizing::new(password);
@@ -218,10 +269,10 @@ pub async fn quick_unlock_enable(app: tauri::AppHandle, state: tauri::State<'_, 
     let mut raw = [0u8; 16];
     rand::rng().fill_bytes(&mut raw);
     let id = format!("submarine-quick-unlock-{}", hex::encode(raw));
-    let sealed = platform::seal(&app, &id, &key).await?;
+    let sealed = if auto { dpapi::seal(&key).await? } else { platform::seal(&app, &id, &key).await? };
     let file = SealedFile {
         v: FILE_VERSION,
-        method: METHOD.into(),
+        method: if auto { AUTO_METHOD } else { METHOD }.into(),
         id,
         vault_salt: hex::encode(salt),
         challenge: sealed.challenge.map(|c| B64.encode(c)),
@@ -246,12 +297,14 @@ pub async fn quick_unlock_enable(app: tauri::AppHandle, state: tauri::State<'_, 
         std::fs::rename(&tmp, &path).map_err(|e| format!("[FILE] WRITE_FAILED: {e}"))
     })();
     if let Err(e) = written {
-        platform::forget(&app, &new_id);
+        if !auto {
+            platform::forget(&app, &new_id);
+        }
         return Err(e);
     }
     // The new one is in place: now the old key can go.
     if let Some(old) = previous {
-        platform::forget(&app, &old.id);
+        forget_platform_key(&app, &old);
     }
     Ok(())
 }
@@ -263,8 +316,9 @@ pub async fn quick_unlock_disable(app: tauri::AppHandle, name: String) -> Result
     Ok(())
 }
 
-/// Opens the profile `name` with Windows Hello or the fingerprint. Never
-/// creates one: there has to be a vault the sealed key fits.
+/// Opens the profile `name` with Windows Hello or the fingerprint, or with no
+/// prompt if that's what is on. Never creates one: there has to be a vault the
+/// sealed key fits.
 #[tauri::command]
 pub async fn quick_unlock(app: tauri::AppHandle, state: tauri::State<'_, DbState>, name: String) -> Result<(), String> {
     if METHOD.is_empty() {
@@ -272,6 +326,10 @@ pub async fn quick_unlock(app: tauri::AppHandle, state: tauri::State<'_, DbState
     }
     let path = file_for(&app, &name)?;
     let f = read_file(&path).ok_or(STALE)?;
+    let auto = f.method == AUTO_METHOD;
+    if auto && !auto_may_open() {
+        return Err(LOCKED.into());
+    }
     let salt = match vault_salt(&app, &name) {
         VaultSalt::Salt(salt) => salt,
         VaultSalt::Gone => return Err(STALE.into()),
@@ -292,7 +350,8 @@ pub async fn quick_unlock(app: tauri::AppHandle, state: tauri::State<'_, DbState
         sealed: B64.decode(&f.sealed).map_err(|_| STALE.to_string())?,
         iv: b64(&f.iv)?,
     };
-    let key = match platform::open(&app, &f.id, &sealed).await {
+    let opened = if auto { dpapi::open(&sealed).await } else { platform::open(&app, &f.id, &sealed).await };
+    let key = match opened {
         Ok(k) => k,
         Err(e) if e == STALE => {
             forget(&app, &name);
@@ -467,6 +526,79 @@ mod platform {
 }
 
 // ---------------------------------------------------------------------------
+// Windows, with no prompt: DPAPI for the current Windows account (#275).
+// ---------------------------------------------------------------------------
+#[cfg(windows)]
+mod dpapi {
+    use super::{Sealed, STALE, UNAVAILABLE};
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN};
+    use zeroize::{Zeroize, Zeroizing};
+
+    struct OwnedBlob(CRYPT_INTEGER_BLOB);
+
+    impl Drop for OwnedBlob {
+        fn drop(&mut self) {
+            if !self.0.pbData.is_null() {
+                unsafe {
+                    std::slice::from_raw_parts_mut(self.0.pbData, self.0.cbData as usize).zeroize();
+                    let _ = LocalFree(Some(HLOCAL(self.0.pbData.cast())));
+                }
+            }
+        }
+    }
+
+    pub(super) fn protect(input: &[u8], protect: bool) -> Result<Zeroizing<Vec<u8>>, String> {
+        let n = u32::try_from(input.len()).map_err(|_| UNAVAILABLE.to_string())?;
+        let source = CRYPT_INTEGER_BLOB { cbData: n, pbData: input.as_ptr() as *mut u8 };
+        let mut output = OwnedBlob(CRYPT_INTEGER_BLOB::default());
+        let result = unsafe {
+            if protect {
+                CryptProtectData(&source, PCWSTR::null(), None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut output.0)
+            } else {
+                CryptUnprotectData(&source, None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut output.0)
+            }
+        };
+        result.map_err(|e| format!("{UNAVAILABLE}: Windows credential protection failed: {e}"))?;
+        if output.0.pbData.is_null() || output.0.cbData == 0 {
+            return Err(STALE.into());
+        }
+        Ok(Zeroizing::new(unsafe { std::slice::from_raw_parts(output.0.pbData, output.0.cbData as usize) }.to_vec()))
+    }
+
+    pub async fn seal(key: &[u8; 32]) -> Result<Sealed, String> {
+        let key = Zeroizing::new(*key);
+        tokio::task::spawn_blocking(move || {
+            let wrapped = protect(key.as_ref(), true)?;
+            Ok(Sealed { challenge: None, nonce: None, sealed: wrapped.to_vec(), iv: None })
+        })
+        .await
+        .map_err(|e| format!("[QUICK_UNLOCK] JOIN: {e}"))?
+    }
+
+    pub async fn open(sealed: &Sealed) -> Result<Zeroizing<[u8; 32]>, String> {
+        let blob = sealed.sealed.clone();
+        tokio::task::spawn_blocking(move || {
+            // Another account or machine (a portable folder moved): this file is no use here.
+            let raw = protect(&blob, false).map_err(|_| STALE.to_string())?;
+            let key: [u8; 32] = raw.as_slice().try_into().map_err(|_| STALE.to_string())?;
+            Ok(Zeroizing::new(key))
+        })
+        .await
+        .map_err(|e| format!("[QUICK_UNLOCK] JOIN: {e}"))?
+    }
+}
+
+#[cfg(not(windows))]
+mod dpapi {
+    use super::{Sealed, UNAVAILABLE};
+    use zeroize::Zeroizing;
+    pub async fn seal(_key: &[u8; 32]) -> Result<Sealed, String> { Err(UNAVAILABLE.into()) }
+    pub async fn open(_s: &Sealed) -> Result<Zeroizing<[u8; 32]>, String> { Err(UNAVAILABLE.into()) }
+}
+
+// ---------------------------------------------------------------------------
 // Android: a Keystore key behind BiometricPrompt (SubmarinePlugin.kt).
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "android")]
@@ -595,6 +727,40 @@ mod tests {
         std::fs::write(&p, b"not json").unwrap();
         assert!(read_file(&p).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dpapi_file_is_read_only_on_windows_and_a_hello_file_stays_readable() {
+        let dir = std::env::temp_dir().join(format!("qu-auto-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("x.json");
+        let hello = SealedFile { v: 1, method: METHOD.into(), id: "i".into(), vault_salt: "00".into(), challenge: None, nonce: None, sealed: "AA==".into(), iv: None };
+        std::fs::write(&p, serde_json::to_vec(&hello).unwrap()).unwrap();
+        assert!(read_file(&p).is_some(), "what's set up today keeps working");
+        let auto = SealedFile { method: AUTO_METHOD.into(), ..hello };
+        std::fs::write(&p, serde_json::to_vec(&auto).unwrap()).unwrap();
+        assert_eq!(read_file(&p).is_some(), cfg!(windows));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_closed_profile_stops_auto_opening_for_this_run() {
+        // Other tests don't read this flag, and it only ever goes one way.
+        profile_closed();
+        assert!(!auto_may_open());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dpapi_opens_what_it_sealed_and_refuses_a_changed_blob() {
+        let key = [42u8; 32];
+        let wrapped = dpapi::protect(&key, true).unwrap();
+        assert_ne!(&wrapped[..], &key[..]);
+        assert_eq!(&dpapi::protect(&wrapped, false).unwrap()[..], &key[..]);
+        let mut corrupt = wrapped.to_vec();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 1;
+        assert!(dpapi::protect(&corrupt, false).is_err());
     }
 }
 

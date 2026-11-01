@@ -17,7 +17,7 @@ Submarine is made by Sina Xhpm ([sinaxhpm.com](https://sinaxhpm.com)), who also 
 ## What stays on your device
 
 - **Your profiles** (servers, logins, SSH keys, tunnels, notes, commands, known host keys) are stored in the app's data folder. They are encrypted with AES-256-GCM, using a key made from your profile password with Argon2id. The profile password is never stored and never sent anywhere. There is no way to recover it: if you forget it, the profile cannot be opened.
-- **Quick unlock** (optional, off by default): if you turn on Windows Hello or an Android fingerprint, the profile's key is sealed to a key held by the system (the TPM or the Android Keystore). The system checks your fingerprint or PIN; the app never sees it.
+- **Quick unlock** (optional, off by default): if you turn on Windows Hello or an Android fingerprint, the profile's key is sealed to a key held by the system (the TPM or the Android Keystore). The system checks your fingerprint or PIN; the app never sees it. On Windows you can instead choose to open a profile automatically (also off by default): its key is then protected by Windows for your account, with no check at all, so anyone or any program using that Windows account can open it.
 - **Settings** such as the window position, the last-used profile name and the colour theme are stored in the app's own settings, not encrypted.
 - **The clipboard** is read only when you paste into the app, and never sent anywhere.
 - **The activity log** in the app lives in memory and goes away when the app closes.

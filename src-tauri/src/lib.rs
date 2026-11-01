@@ -5052,6 +5052,8 @@ async fn close_profile(
     monitor_map: tauri::State<'_, MonitorMap>,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<(), String> {
+    quick_unlock::profile_closed();
+
     // 0. Persist any accumulated in-memory changes (chief among them:
     // cmd_history rows written by TerminalView's Enter-key handler, which
     // deliberately skip a per-keystroke fsync). Best-effort: if the vault
