@@ -198,6 +198,9 @@ fn write_stored_token(app: &tauri::AppHandle, tok: &StoredToken) -> Result<(), S
     // portable mode app_data_dir is the user's own `submarine-data` folder,
     // so its ACLs are whatever they made them — the README tells them to keep
     // it private.
+    //
+    // Written next to itself and renamed over: a crash halfway through must
+    // not leave half a token, which signs the user out.
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -206,10 +209,18 @@ fn write_stored_token(app: &tauri::AppHandle, tok: &StoredToken) -> Result<(), S
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let mut f = opts.open(&path).map_err(|e| format!("[CLOUD] TOKEN_OPEN: {}", e))?;
-    f.write_all(&bytes).map_err(|e| format!("[CLOUD] TOKEN_WRITE: {}", e))?;
-    f.sync_all().map_err(|e| format!("[CLOUD] TOKEN_FSYNC: {}", e))?;
-    Ok(())
+    let tmp = path.with_extension("json.tmp");
+    let written = (|| -> Result<(), String> {
+        let mut f = opts.open(&tmp).map_err(|e| format!("[CLOUD] TOKEN_OPEN: {}", e))?;
+        f.write_all(&bytes).map_err(|e| format!("[CLOUD] TOKEN_WRITE: {}", e))?;
+        f.sync_all().map_err(|e| format!("[CLOUD] TOKEN_FSYNC: {}", e))?;
+        drop(f);
+        std::fs::rename(&tmp, &path).map_err(|e| format!("[CLOUD] TOKEN_RENAME: {}", e))
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 fn delete_stored_token(app: &tauri::AppHandle) {
@@ -586,6 +597,10 @@ pub const MAX_SYNC_ANSWER: usize = 64 * 1024 * 1024;
 /// ...and of every other answer (a login, a list of shares, a key): these are
 /// a few hundred bytes in practice.
 pub const MAX_ANSWER: usize = 1024 * 1024;
+/// The most records one sync answer can hold: the server keeps an account, and
+/// a share, to this many. Only a broken or hostile server sends more, and the
+/// merge takes the vault's lock for every record of it.
+pub const MAX_SYNC_RECORDS: usize = 20_000;
 /// ...and of the text of an error.
 const MAX_ERROR_ANSWER: usize = 16 * 1024;
 
@@ -1091,12 +1106,15 @@ pub struct Exchange {
 }
 
 impl SyncExchangeResp {
-    fn into_exchange(self) -> Exchange {
+    fn into_exchange(self) -> Result<Exchange, String> {
+        if self.records.len() > MAX_SYNC_RECORDS {
+            return Err(format!("[CLOUD] TOO_MANY_RECORDS: the server sent {} records, more than an account can hold, so none were used.", self.records.len()));
+        }
         let cursor = match (self.rev, self.epoch) {
             (Some(rev), Some(epoch)) if !epoch.is_empty() => Some(DeltaCursor { epoch, rev }),
             _ => None,
         };
-        Exchange { records: self.records, cursor, full: self.full }
+        Ok(Exchange { records: self.records, cursor, full: self.full })
     }
 }
 
@@ -1139,7 +1157,7 @@ pub async fn sync_exchange_from(
     };
     let resp = post_json_authed(app, state, session, "/sync", &req).await?;
     let body: SyncExchangeResp = json_capped(resp, MAX_SYNC_ANSWER).await?;
-    Ok(body.into_exchange())
+    body.into_exchange()
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,7 +1280,7 @@ pub async fn shared_sync_exchange_from(
     };
     let resp = post_json_authed(app, state, session, "/shares/sync", &req).await?;
     let body: SyncExchangeResp = json_capped(resp, MAX_SYNC_ANSWER).await?;
-    Ok(body.into_exchange())
+    body.into_exchange()
 }
 
 // ---------------------------------------------------------------------------
@@ -1568,6 +1586,23 @@ pub async fn delete_share(app: &tauri::AppHandle, state: &CloudState, session: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A sync answer of many tiny records would hold the vault's lock for as
+    // long as they take: no more than an account can hold gets to the merge.
+    #[test]
+    fn an_answer_with_more_records_than_an_account_can_hold_is_refused() {
+        let rec = crate::SyncRecord {
+            uuid: "ab".into(),
+            entity_type: "servers".into(),
+            updated_at: "000000000000001:00000:a".into(),
+            deleted: true,
+            blob: None,
+        };
+        let answer = |n: usize| SyncExchangeResp { records: vec![rec.clone(); n], rev: Some(1), epoch: Some("e".into()), full: false };
+        assert_eq!(answer(MAX_SYNC_RECORDS).into_exchange().unwrap().records.len(), MAX_SYNC_RECORDS);
+        let err = answer(MAX_SYNC_RECORDS + 1).into_exchange().err().unwrap();
+        assert!(err.starts_with("[CLOUD] TOO_MANY_RECORDS"), "{err}");
+    }
 
     #[test]
     fn a_refused_deletion_says_why_in_plain_words() {

@@ -28,7 +28,8 @@
 //!   `metric:<command>`, `moved:<where it went, in words>`.
 //!
 //! Deletions are held the same way when one sync would take out much of a
-//! shared profile at once, or an SSH key (see `hold_deletions`).
+//! shared profile at once, or an SSH key (see `hold_deletions`), and so is a
+//! record that empties a saved key or password (see `hold_wipe`).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -71,6 +72,7 @@ pub fn create_schema(conn: &Connection) -> Result<(), String> {
     let ddl = format!(
         "CREATE TABLE IF NOT EXISTS held_approvals (uuid TEXT NOT NULL, item TEXT NOT NULL, since INTEGER NOT NULL, PRIMARY KEY (uuid, item));
          CREATE TABLE IF NOT EXISTS held_deletions (uuid TEXT PRIMARY KEY, entity_type TEXT NOT NULL, updated_at TEXT NOT NULL, since INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS held_wipes (uuid TEXT PRIMARY KEY, entity_type TEXT NOT NULL, updated_at TEXT NOT NULL, blob TEXT NOT NULL, since INTEGER NOT NULL);
          DROP TRIGGER IF EXISTS servers_held_au;
          DROP TRIGGER IF EXISTS servers_held_ad;
          DROP TRIGGER IF EXISTS monitor_configs_held_au;
@@ -116,6 +118,16 @@ pub fn ready(conn: &Connection) -> bool {
 pub fn profile_is_shared(conn: &Connection) -> bool {
     conn.query_row("SELECT 1 FROM sync_meta WHERE key = 'share_id'", [], |_| Ok(()))
         .is_ok()
+}
+
+/// This device's user can only view this shared profile: nothing they do here
+/// goes up. A role that's missing counts as that, as it does for the push
+/// (`sync_round`).
+pub fn is_viewer(conn: &Connection) -> bool {
+    profile_is_shared(conn)
+        && conn
+            .query_row("SELECT value FROM sync_meta WHERE key = 'share_role'", [], |r| r.get::<_, String>(0))
+            .map_or(true, |role| role == "user")
 }
 
 /// The tables whose records can carry something that runs by itself.
@@ -521,28 +533,81 @@ pub fn hold_deletions(conn: &Connection, tombstones: &[&crate::SyncRecord]) -> R
     Ok(skip)
 }
 
-/// A held deletion, for the user to decide on: what it would delete.
+/// A record that would empty a saved key or password here. Such a key is gone
+/// as surely as by a deletion, so in a shared profile the record waits for this
+/// device's user like an SSH key's deletion does, whole, so the user's yes can
+/// still apply it. The newest one for a row stays. The row stays until the
+/// user applies it, or keeps the row, which brings it back for everyone
+/// (`resolve_held_deletions`). A viewer has nothing to bring back and is never
+/// asked: see `apply_remote_inner`.
+pub fn hold_wipe(conn: &Connection, rec: &crate::SyncRecord) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO held_wipes (uuid, entity_type, updated_at, blob, since) VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
+         ON CONFLICT(uuid) DO UPDATE SET updated_at = excluded.updated_at, blob = excluded.blob
+         WHERE excluded.updated_at > held_wipes.updated_at",
+        params![rec.uuid, rec.entity_type, rec.updated_at, rec.blob.as_deref().unwrap_or("")],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("[SYNC] HELD_WIPE: {e}"))
+}
+
+/// A record for this row landed, or lost to what is here, so what was held
+/// from before it no longer has anything to do.
+pub fn release_wipe(conn: &Connection, rec: &crate::SyncRecord) -> Result<(), String> {
+    conn.execute("DELETE FROM held_wipes WHERE uuid = ?1 AND updated_at <= ?2", params![rec.uuid, rec.updated_at])
+        .map(|_| ())
+        .map_err(|e| format!("[SYNC] HELD_WIPE: {e}"))
+}
+
+/// `rec` is held already, or something newer for its row is.
+pub fn wipe_is_held(conn: &Connection, rec: &crate::SyncRecord) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM held_wipes WHERE uuid = ?1 AND updated_at >= ?2",
+        params![rec.uuid, rec.updated_at],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// The records held by `hold_wipe`, as they came.
+pub fn held_wipes(conn: &Connection) -> Vec<crate::SyncRecord> {
+    let Ok(mut stmt) = conn.prepare("SELECT uuid, entity_type, updated_at, blob FROM held_wipes") else {
+        return Vec::new();
+    };
+    stmt.query_map([], |r| {
+        Ok(crate::SyncRecord { uuid: r.get(0)?, entity_type: r.get(1)?, updated_at: r.get(2)?, deleted: false, blob: r.get(3)? })
+    })
+    .map(|rows| rows.filter_map(Result::ok).collect())
+    .unwrap_or_default()
+}
+
+/// A held deletion, for the user to decide on: what it would delete. With
+/// `emptied` set, a held record that would empty a key or password in it.
 #[derive(serde::Serialize)]
 pub struct HeldDeletion {
     pub uuid: String,
     pub entity_type: String,
     pub name: String,
+    pub emptied: bool,
 }
 
-/// The deletions held on this device, with the name of what each would
-/// delete. One whose row is gone already (deleted here meanwhile) isn't
-/// listed.
+/// What is held on this device, with the name of what each would take. One
+/// whose row is gone already (deleted here meanwhile) isn't listed.
 pub fn held_deletions(conn: &Connection) -> Vec<HeldDeletion> {
-    let Ok(mut stmt) = conn.prepare("SELECT uuid, entity_type FROM held_deletions ORDER BY entity_type, since") else {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT uuid, entity_type, 0, since FROM held_deletions
+         UNION ALL SELECT uuid, entity_type, 1, since FROM held_wipes
+         ORDER BY 2, 4",
+    ) else {
         return Vec::new();
     };
-    let held: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    let held: Vec<(String, String, bool)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .map(|rows| rows.filter_map(Result::ok).collect())
         .unwrap_or_default();
     held.into_iter()
-        .filter(|(_, t)| crate::SYNCED_TABLES.contains(&t.as_str()))
-        .filter_map(|(uuid, t)| {
+        .filter(|(_, t, _)| crate::SYNCED_TABLES.contains(&t.as_str()))
+        .filter_map(|(uuid, t, emptied)| {
             let name = match t.as_str() {
                 "commands" | "notes" => "title",
                 "monitor_configs" => "(SELECT s.name FROM servers s WHERE s.id = node_id)",
@@ -553,7 +618,7 @@ pub fn held_deletions(conn: &Connection) -> Vec<HeldDeletion> {
                 .optional()
                 .ok()?
                 .map(|n: Option<String>| n.unwrap_or_default());
-            name.map(|name| HeldDeletion { uuid, entity_type: t, name })
+            name.map(|name| HeldDeletion { uuid, entity_type: t, name, emptied })
         })
         .collect()
 }

