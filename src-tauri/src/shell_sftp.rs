@@ -107,6 +107,10 @@ const IDLE: Duration = Duration::from_secs(150);
 
 /// The most a folder listing may print (about 300,000 entries).
 const LISTING_LIMIT: usize = 64 * 1024 * 1024;
+/// How many entries of a listing are read. One more than a listing may hold,
+/// so a folder over that limit is refused by the client, not cut short; junk
+/// that packs millions of tiny records into LISTING_LIMIT stops here.
+const LISTING_ENTRIES: usize = crate::sftp_listing::MAX_ENTRIES as usize + 1;
 /// Reads, writes and folders open at once.
 const MAX_HANDLES: usize = 256;
 /// How long a listing answers stat/lstat for what it listed: right after a
@@ -131,7 +135,7 @@ async fn start_with(open: OpenChannel, sudo: Sudo, portable: bool) -> Result<Sft
     russh_sftp::server::run(server_io, ShellSftp::new(remote, caps)).await;
     tokio::time::timeout(
         Duration::from_secs(20),
-        SftpSession::new_with_config(client_io, crate::sftp_client_config()),
+        SftpSession::new_with_config(crate::sftp_listing::counted(client_io), crate::sftp_client_config()),
     )
     .await
     .map_err(|_| "file access over shell commands didn't start".to_string())?
@@ -532,11 +536,13 @@ struct Entry {
 }
 
 /// GNU find listing: `%y ... %f\0` per entry, then `T %Y ... %f\0` with the
-/// target of each symlink (find -L).
+/// target of each symlink (find -L). The output is the server's, and its
+/// `find` can be anything: a name that isn't one plain step is left out.
 fn parse_find_listing(out: &[u8]) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
     let mut targets: HashMap<String, Option<FileAttributes>> = HashMap::new();
-    for rec in out.split(|b| *b == 0) {
+    // An entry and a link target each, at most.
+    for rec in out.split(|b| *b == 0).take(2 * LISTING_ENTRIES) {
         if rec.is_empty() {
             continue;
         }
@@ -550,8 +556,11 @@ fn parse_find_listing(out: &[u8]) -> Vec<Entry> {
             continue;
         }
         let f: Vec<&str> = rec.splitn(8, ' ').collect();
-        if f.len() < 8 || f[7].is_empty() || f[7] == "." || f[7] == ".." {
+        if f.len() < 8 || !crate::sftp_listing::is_plain_name(f[7]) {
             continue;
+        }
+        if entries.len() == LISTING_ENTRIES {
+            break;
         }
         if let Some(lstat) = parse_find_fields(&f[..7]) {
             entries.push(Entry { name: f[7].to_string(), lstat, target: None });
@@ -567,7 +576,7 @@ fn parse_find_listing(out: &[u8]) -> Vec<Entry> {
 
 /// Portable listing: `name\0ls -ldn line\0target line, N or nothing\0mtime\0`.
 fn parse_ls_listing(out: &[u8]) -> Vec<Entry> {
-    let fields: Vec<&[u8]> = out.split(|b| *b == 0).collect();
+    let fields: Vec<&[u8]> = out.split(|b| *b == 0).take(4 * LISTING_ENTRIES).collect();
     let mut entries = Vec::new();
     for rec in fields.chunks(4) {
         if rec.len() < 4 {
@@ -576,7 +585,7 @@ fn parse_ls_listing(out: &[u8]) -> Vec<Entry> {
         let name = String::from_utf8_lossy(rec[0]).into_owned();
         let mtime = String::from_utf8_lossy(rec[3]);
         let Some(lstat) = parse_ls(&String::from_utf8_lossy(rec[1]), &mtime) else { continue };
-        if name.is_empty() || name == "." || name == ".." {
+        if !crate::sftp_listing::is_plain_name(&name) {
             continue;
         }
         let target = if lstat.is_symlink() {
@@ -883,6 +892,11 @@ async fn read_range(
                 bytes = &bytes[drop_now..];
                 if !bytes.is_empty() {
                     got += bytes.len() as u64;
+                    // READ_AHEAD only counts between ranges: a server that
+                    // goes on past its end would grow the feed for good.
+                    if got + skip as u64 > RANGE_LEN {
+                        return Err(failure("The server sent more than the file range asked for"));
+                    }
                     feed.lock().unwrap().buf.extend(bytes);
                     added.notify_waiters();
                 }
@@ -1633,6 +1647,53 @@ mod tests {
         assert_eq!((e[0].name.as_str(), e[0].lstat.size), ("a b", Some(12)));
         assert!(e[1].target.as_ref().unwrap().is_dir());
         assert!(e[2].lstat.is_symlink() && e[2].target.is_none() && e[2].lstat.mtime.is_none());
+    }
+
+    // The output comes from the server: a "name" of several steps is no name.
+    #[test]
+    fn listings_keep_only_plain_names() {
+        let out = b"f 644 1 0 0 0 0 fine\0\
+                    f 644 1 0 0 0 0 ../x\0\
+                    f 644 1 0 0 0 0 /../x\0\
+                    f 644 1 0 0 0 0 a/../../x\0\
+                    f 644 1 0 0 0 0 ..\0";
+        let e = parse_find_listing(out);
+        assert_eq!(e.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["fine"]);
+        let line = "-rw-r--r-- 1 0 0 1 Oct 15 10:13 ./x";
+        let mut out = Vec::new();
+        for name in ["fine", "../x", "/../x", "a/../../x", "."] {
+            out.extend_from_slice(format!("{name}\0{line}\0\0\0").as_bytes());
+        }
+        let e = parse_ls_listing(&out);
+        assert_eq!(e.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["fine"]);
+    }
+
+    // Junk that packs a huge number of tiny records into one listing stops
+    // one past the limit: enough for the client to refuse it, and no more.
+    #[test]
+    fn listings_stop_one_past_the_limit() {
+        let out = b"f 1 1 1 1 1 1 n\0".repeat(LISTING_ENTRIES + 10);
+        assert_eq!(parse_find_listing(&out).len(), LISTING_ENTRIES);
+        let out = b"n\0-rw-r--r-- 1 0 0 1 Oct 15 10:13 ./n\0\0\0".repeat(LISTING_ENTRIES + 10);
+        assert_eq!(parse_ls_listing(&out).len(), LISTING_ENTRIES);
+    }
+
+    // A server that answers one range with more than the range keeps sending:
+    // the read stops there, and the feed doesn't grow without end.
+    #[tokio::test]
+    async fn a_range_that_goes_on_past_its_end_is_cut_off() {
+        use crate::ssh_test_server::{connect, TestServer};
+        let mut start = MARKER.to_vec();
+        start.push(b'R');
+        let server = TestServer::flooding_every_exec(start);
+        let session = connect(server, |_| {}, crate::build_ssh_client_config()).await.expect("ssh");
+        let remote = Remote::new(opener(Arc::new(tokio::sync::RwLock::new(session))), Sudo::No);
+        let feed = std::sync::Mutex::new(Feed::default());
+        let added = tokio::sync::Notify::new();
+        let read = read_range(&remote, Caps { dd: true, ..Caps::default() }, "/x", 0, 0, 0, &feed, &added);
+        let result = tokio::time::timeout(Duration::from_secs(60), read).await.expect("cut off");
+        assert_eq!(result.unwrap_err().error_message.as_deref(), Some("The server sent more than the file range asked for"));
+        assert!(feed.lock().unwrap().buf.len() as u64 <= RANGE_LEN);
     }
 
     #[test]
