@@ -928,7 +928,7 @@ async fn connect_for_monitor(
     let mut accepted = false;
 
     if let Some((pem, passphrase)) = key_pair.as_ref() {
-        match crate::decode_private_key(pem, passphrase.as_deref()) {
+        match crate::decode_private_key_blocking(pem, passphrase.as_deref()).await {
             Ok(kp) => {
                 match crate::ssh_manager::authenticate_with_key(&mut session, &auth.username, kp)
                     .await

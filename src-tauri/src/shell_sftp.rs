@@ -33,6 +33,27 @@ pub(crate) type ChannelFuture = Pin<Box<dyn Future<Output = Result<Channel<Msg>,
 /// Opens a fresh session channel on the connection.
 pub(crate) type OpenChannel = Arc<dyn Fn() -> ChannelFuture + Send + Sync>;
 
+/// How long a server gets to answer a channel open. russh waits with no limit
+/// of its own, and a server that answers keepalives but not this one would
+/// hang whatever asked, for good. A healthy server's answer can still take a
+/// while: on one connection it queues behind what was already sent, and a
+/// download keeps about 4 MiB on its way, 32 seconds at 1 Mbit/s.
+pub(crate) const CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// A new session channel on a connection, within `CHANNEL_OPEN_TIMEOUT`.
+pub(crate) async fn open_session_channel<H>(session: &tokio::sync::RwLock<russh::client::Handle<H>>) -> Result<Channel<Msg>, String>
+where
+    H: russh::client::Handler,
+{
+    let open = async {
+        let s = session.read().await;
+        s.channel_open_session().await.map_err(|e| e.to_string())
+    };
+    tokio::time::timeout(CHANNEL_OPEN_TIMEOUT, open)
+        .await
+        .map_err(|_| "the server didn't open a channel".to_string())?
+}
+
 /// An `OpenChannel` for a connection handle.
 pub(crate) fn opener<H>(session: Arc<tokio::sync::RwLock<russh::client::Handle<H>>>) -> OpenChannel
 where
@@ -40,15 +61,7 @@ where
 {
     Arc::new(move || {
         let session = Arc::clone(&session);
-        Box::pin(async move {
-            let open = async {
-                let s = session.read().await;
-                s.channel_open_session().await.map_err(|e| e.to_string())
-            };
-            tokio::time::timeout(Duration::from_secs(20), open)
-                .await
-                .map_err(|_| "the server didn't open a channel".to_string())?
-        })
+        Box::pin(async move { open_session_channel(&session).await })
     })
 }
 
@@ -102,7 +115,8 @@ const QUICK: Duration = Duration::from_secs(60);
 /// A folder listing, a rename across file systems.
 const SLOW: Duration = Duration::from_secs(150);
 /// A transfer with nothing moving. All of these stay under the SFTP client's
-/// own 240 s per request, so it gets an answer rather than a timeout.
+/// own 240 s per request, with QUICK before them for starting a command, so it
+/// gets an answer rather than a timeout.
 const IDLE: Duration = Duration::from_secs(150);
 
 /// The most a folder listing may print (about 300,000 entries).
@@ -269,12 +283,14 @@ impl Remote {
             input.push(b'\n');
         }
         input.extend_from_slice(encode_script(&format!("{}{}", PRELUDE, script)).as_bytes());
+        let opening = Instant::now();
         let channel = (self.open)().await.map_err(|e| failure(format!("Couldn't run a command: {}", e)))?;
         let sent = async {
             channel.exec(true, self.command()).await?;
             channel.data(&input[..]).await
         };
-        let sent = match tokio::time::timeout(QUICK, sent).await {
+        // QUICK for all of it, the channel open too (see IDLE).
+        let sent = match tokio::time::timeout(QUICK.saturating_sub(opening.elapsed()), sent).await {
             Ok(r) => r.map_err(|e| e.to_string()),
             Err(_) => Err("the server took too long".to_string()),
         };
@@ -1515,6 +1531,32 @@ impl russh_sftp::server::Handler for ShellSftp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A server that answers keepalives but not this: whatever asked is told
+    /// so, rather than waiting for good.
+    #[tokio::test(start_paused = true)]
+    async fn a_channel_open_that_gets_no_answer_is_given_up_on() {
+        use crate::ssh_test_server::{connect, TestServer};
+        let session = connect(TestServer::not_answering_opens(), |_| {}, russh::client::Config::default())
+            .await
+            .expect("in-process SSH connection");
+        let session = tokio::sync::RwLock::new(session);
+        let start = tokio::time::Instant::now();
+        let opened = tokio::time::timeout(CHANNEL_OPEN_TIMEOUT * 2, open_session_channel(&session))
+            .await
+            .expect("it gives up on its own");
+        assert_eq!(opened.err().as_deref(), Some("the server didn't open a channel"));
+        assert!(start.elapsed() >= CHANNEL_OPEN_TIMEOUT);
+    }
+
+    /// Starting a command, its channel open included, then the longest wait for
+    /// it: the SFTP client has to hear of the outcome before its own limit.
+    #[test]
+    fn a_command_answers_before_the_sftp_client_gives_up() {
+        assert!(CHANNEL_OPEN_TIMEOUT < QUICK);
+        let limit = Duration::from_secs(crate::sftp_client_config().request_timeout_secs);
+        assert!(QUICK + SLOW.max(IDLE) < limit);
+    }
 
     #[test]
     fn the_runner_survives_any_login_shell() {

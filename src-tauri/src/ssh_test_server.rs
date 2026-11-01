@@ -52,6 +52,11 @@ pub(crate) struct TestServer {
     /// Answer every `exec`, whatever the command, with these bytes and then
     /// output that doesn't end until the channel is gone.
     flood_exec: Option<Vec<u8>>,
+    /// Channels the client has closed.
+    pub closed: Arc<AtomicUsize>,
+    /// Leave every channel open unanswered, as a wedged server does that still
+    /// answers keepalives.
+    no_answer_to_opens: bool,
 }
 
 /// How the test server runs `exec` commands with the local `sh` (unix only).
@@ -101,6 +106,11 @@ impl TestServer {
     /// A server that answers an `sftp` subsystem request with `answer`.
     pub(crate) fn with_sftp(answer: SftpAnswer) -> Self {
         Self { sftp: answer, ..Self::default() }
+    }
+
+    /// A server that never answers a channel open.
+    pub(crate) fn not_answering_opens() -> Self {
+        Self { no_answer_to_opens: true, ..Self::default() }
     }
 
     /// A server without SFTP that runs commands with this machine's `sh`.
@@ -237,6 +247,11 @@ impl server::Handler for TestServer {
         // Client data is consumed through the `data` callback; the channel
         // object is dropped so its (never read) queue can't stall this server.
         drop(channel);
+        if self.no_answer_to_opens {
+            // Dropped, the reply would be a refusal.
+            std::mem::forget(reply);
+            return Ok(());
+        }
         reply.accept().await;
         Ok(())
     }
@@ -251,6 +266,10 @@ impl server::Handler for TestServer {
         reply: server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.no_answer_to_opens {
+            std::mem::forget(reply);
+            return Ok(());
+        }
         reply.accept().await;
         let (jump_end, target_end) = tokio::io::duplex(256 * 1024);
         let target = TestServer {
@@ -358,6 +377,7 @@ impl server::Handler for TestServer {
     }
 
     async fn channel_close(&mut self, channel: ChannelId, _session: &mut Session) -> Result<(), Self::Error> {
+        self.closed.fetch_add(1, Ordering::SeqCst);
         self.stdin.remove(&channel);
         if self.shell.as_ref().is_some_and(|s| s.keep_running_on_close) {
             return Ok(());

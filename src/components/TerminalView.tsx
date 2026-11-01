@@ -95,6 +95,15 @@ const PTY_SIZE_SETTLE_MS = 150;
 const DRAWN_REPORT_MS = 50;
 // The end of the output that the password-prompt check looks at.
 const PROMPT_TAIL = 2048;
+// xterm parses a write in one go and only looks at the clock (12 ms, then the
+// page gets a turn) between writes. What a write costs goes with its control
+// sequences, not its bytes: 256 KiB of text is a moment, and handing it over
+// whole keeps a flood's pace (in small pieces a busy page spends its turns
+// drawing, and Ctrl+C took 40 s to show on a slowed one, not 5). The same bytes
+// of control sequences would hold the page, every tab with it, for seconds, so
+// past a few of those they go in pieces of WRITE_PIECE.
+const WRITE_PIECE = 16 * 1024;
+const WRITE_WHOLE_SEQUENCES = 256;
 
 // Output as bytes: straight from base64 where the web view can, which makes
 // none of the big strings a flood left behind for the garbage collector.
@@ -105,6 +114,24 @@ const decodeOutput = (b64: string): Uint8Array => {
   const data = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
   return data;
+};
+// `data` in order, whole or in pieces of WRITE_PIECE at most (the same memory,
+// no copy). A character or a sequence cut in two is fine: xterm picks up where
+// it was. Counted is what opens a sequence with work in it: ESC [, ESC ] and
+// ESC P, and their one-character forms in UTF-8. A lone ESC isn't: binary junk
+// has one every 256 bytes that opens nothing, and in pieces it took twice as long.
+const opensSequence = (a: number, b: number) =>
+  (a === 0x1b && (b === 0x5b || b === 0x5d || b === 0x50)) ||
+  (a === 0xc2 && (b === 0x9b || b === 0x9d || b === 0x90));
+const writePieces = (data: Uint8Array): Uint8Array[] => {
+  let sequences = 0;
+  for (let i = 0; i + 1 < data.length && sequences <= WRITE_WHOLE_SEQUENCES; i++) {
+    if (opensSequence(data[i], data[i + 1])) sequences++;
+  }
+  if (sequences <= WRITE_WHOLE_SEQUENCES) return [data];
+  const pieces: Uint8Array[] = [];
+  for (let at = 0; at < data.length; at += WRITE_PIECE) pieces.push(data.subarray(at, at + WRITE_PIECE));
+  return pieces;
 };
 
 // How long the cursor goes on blinking after the last key, click or focus.
@@ -1290,12 +1317,14 @@ const TerminalView = ({
       // this main-thread handler and froze the tab on big output). Decode back
       // to bytes; xterm buffers any multibyte sequence split across batches.
       const data = decodeOutput(event.payload as string);
-      if (attachOnly) {
-        term.write(data);
-      } else {
-        // Drawn once xterm has taken it in; also when xterm turned it away
-        // (past its own limit), so the count stays true.
-        try { term.write(data, () => drew(data.length)); } catch { drew(data.length); }
+      for (const piece of writePieces(data)) {
+        if (attachOnly) {
+          term.write(piece);
+        } else {
+          // Drawn once xterm has taken it in; also when xterm turned it away
+          // (past its own limit), so the count stays true.
+          try { term.write(piece, () => drew(piece.length)); } catch { drew(piece.length); }
+        }
       }
       // Keep a short tail of decoded output so command-history capture can
       // recognize a no-echo password prompt and skip the typed secret.

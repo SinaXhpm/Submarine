@@ -7,6 +7,10 @@
 //!   - A host key listed for the host is trusted without the first-time
 //!     prompt. Entries are looked up as `host`, or `[host]:port` when the port
 //!     isn't 22; hashed entries (`|1|salt|hash`, Ubuntu's default) count.
+//!   - A key that isn't listed, for a host with another key of the same kind
+//!     listed, gets the "changed" warning, not the plain prompt (OpenSSH
+//!     refuses it). With only other kinds listed it's a new key to the file: a
+//!     server has one of each kind, so the first-time prompt, and a log line.
 //!   - A host CERTIFICATE is trusted when an `@cert-authority` line for the
 //!     host names the CA that signed it, it's a host certificate, it's within
 //!     its validity period, its signature checks out, and it's issued for the
@@ -42,8 +46,13 @@ pub(crate) enum Verdict {
     Trusted(String),
     /// Refused; the reason goes to the connect log.
     Refused(String),
+    /// The files list another key of this kind for this host, and not this
+    /// one. What the app has on file still decides whether it's trusted, but
+    /// it's not a first-time host: the "changed" warning, with `listed` as what
+    /// was trusted before. The note goes to the log.
+    Changed { note: String, listed: Vec<String> },
     /// The files say nothing that decides it: the usual first-time / known
-    /// check runs. A note (a different key listed) goes to the log.
+    /// check runs. A note (keys of other kinds listed) goes to the log.
     Undecided(Option<String>),
 }
 
@@ -61,11 +70,25 @@ impl HostTrust {
         if let Some((_, file)) = self.keys.iter().find(|(k, _)| k.key_data() == key.key_data()) {
             return Verdict::Trusted(format!("Host key found in {file}. Verified."));
         }
-        match self.keys.first() {
-            Some((_, file)) => Verdict::Undecided(Some(format!(
-                "{file} lists a different key for this host; it may have changed, or this isn't the same server."
-            ))),
-            None => Verdict::Undecided(None),
+        // "Changed" takes a key of the same kind. A server has one of each kind
+        // and shows the one asked for, so a line of another kind (an old ECDSA
+        // line, usually) says nothing about this one.
+        let kind = |k: &PublicKey| crate::ssh_manager::key_type_family(k.algorithm().as_str());
+        let Some((_, file)) = self.keys.iter().find(|(k, _)| kind(k) == kind(key)) else {
+            return Verdict::Undecided(
+                self.keys.first().map(|(_, file)| format!("{file} lists only other kinds of key for this host, so this one is new to it.")),
+            );
+        };
+        let mut listed = Vec::new();
+        for (k, _) in &self.keys {
+            let line = format!("{} ({})", crate::ssh_manager::host_key_fingerprint(k), k.algorithm());
+            if !listed.contains(&line) {
+                listed.push(line);
+            }
+        }
+        Verdict::Changed {
+            note: format!("{file} lists a different key for this host; it may have changed, or this isn't the same server."),
+            listed,
         }
     }
 
@@ -235,7 +258,7 @@ fn line_key(key: &PublicKey) -> String {
 mod tests {
     use super::*;
     use russh::keys::ssh_key::certificate::Builder;
-    use russh::keys::{Algorithm, PrivateKey};
+    use russh::keys::{Algorithm, EcdsaCurve, PrivateKey};
 
     fn key() -> PrivateKey {
         PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()
@@ -271,11 +294,38 @@ mod tests {
         assert!(matches!(trust(&format!("[db.example.com]:2222 {line}\n"), "db.example.com", 2222).check_key(&pk), Verdict::Trusted(_)));
         // The port-22 entry doesn't vouch for port 2222.
         assert_eq!(trust(&format!("db.example.com {line}\n"), "db.example.com", 2222).check_key(&pk), Verdict::Undecided(None));
-        // Another key listed: a note, not a refusal (the app's own check decides).
-        let other = line_key(key().public_key());
-        assert!(matches!(trust(&format!("db.example.com {other}\n"), "db.example.com", 22).check_key(&pk), Verdict::Undecided(Some(_))));
+        // Another key of this kind listed: not a refusal, but not a first-time
+        // host either, and the prompt says what's listed. The same key twice
+        // shows once.
+        let other = key();
+        let other_line = line_key(other.public_key());
+        let shown = format!("{} ({})", crate::ssh_manager::host_key_fingerprint(other.public_key()), other.public_key().algorithm());
+        let text = format!("db.example.com {other_line}\ndb.example.com {other_line}\n");
+        assert!(matches!(trust(&text, "db.example.com", 22).check_key(&pk), Verdict::Changed { listed, .. } if listed == [shown.clone()]));
         assert!(matches!(trust(&format!("*.example.com,!bad.example.com {line}\n"), "x.example.com", 22).check_key(&pk), Verdict::Trusted(_)));
         assert_eq!(trust(&format!("*.example.com,!bad.example.com {line}\n"), "bad.example.com", 22).check_key(&pk), Verdict::Undecided(None));
+    }
+
+    #[test]
+    fn only_a_key_of_the_same_kind_makes_it_a_change() {
+        let ed25519 = key();
+        let other_ed25519 = key();
+        let ecdsa = PrivateKey::random(&mut rand::rng(), Algorithm::Ecdsa { curve: EcdsaCurve::NistP256 }).unwrap();
+        let p384 = PrivateKey::random(&mut rand::rng(), Algorithm::Ecdsa { curve: EcdsaCurve::NistP384 }).unwrap();
+        let listed = |keys: &[&PrivateKey]| keys.iter().map(|k| format!("db.example.com {}\n", line_key(k.public_key()))).collect::<String>();
+        let judged = |text: String, offered: &PrivateKey| trust(&text, "db.example.com", 22).check_key(offered.public_key());
+
+        // The usual old file: an ECDSA line, and a server that shows Ed25519.
+        // No change, so the first-time prompt, and a note in the log.
+        assert!(matches!(judged(listed(&[&ecdsa]), &ed25519), Verdict::Undecided(Some(_))));
+        assert!(matches!(judged(listed(&[&ed25519]), &ecdsa), Verdict::Undecided(Some(_))));
+        // Each curve is a kind of its own, as in OpenSSH.
+        assert!(matches!(judged(listed(&[&ecdsa]), &p384), Verdict::Undecided(Some(_))));
+        // Another key of the kind shown, with or without other kinds beside it.
+        assert!(matches!(judged(listed(&[&other_ed25519]), &ed25519), Verdict::Changed { .. }));
+        assert!(matches!(judged(listed(&[&ecdsa, &other_ed25519]), &ed25519), Verdict::Changed { .. }));
+        // The key itself beats all that.
+        assert!(matches!(judged(listed(&[&other_ed25519, &ecdsa, &ed25519]), &ed25519), Verdict::Trusted(_)));
     }
 
     #[test]

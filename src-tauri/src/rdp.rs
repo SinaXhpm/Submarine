@@ -349,9 +349,10 @@ pub async fn forward_through(
                         let _permit = permit;
                         crate::tunnel::apply_tunnel_sockopts(&sock);
                         let Some(last) = route.last() else { return };
-                        let opened = last
-                            .channel_open_direct_tcpip(host.clone(), u32::from(port), peer.ip().to_string(), u32::from(peer.port()))
-                            .await;
+                        let open = last.channel_open_direct_tcpip(host.clone(), u32::from(port), peer.ip().to_string(), u32::from(peer.port()));
+                        let opened = tokio::time::timeout(crate::shell_sftp::CHANNEL_OPEN_TIMEOUT, open)
+                            .await
+                            .unwrap_or(Err(russh::Error::ConnectionTimeout));
                         match opened {
                             Ok(channel) => {
                                 let mut sock = sock;

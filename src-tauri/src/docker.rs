@@ -88,13 +88,7 @@ async fn run_capture(
             .map(Arc::clone)
             .ok_or_else(|| "Session not connected".to_string())?
     };
-    let channel = {
-        let session = session_arc.read().await;
-        session
-            .channel_open_session()
-            .await
-            .map_err(|e| e.to_string())?
-    };
+    let channel = crate::shell_sftp::open_session_channel(&session_arc).await?;
     let wrapped = format!("{}\necho __DOCK_EXIT:$?", cmd);
     channel
         .exec(true, wrapped.as_bytes())
@@ -532,13 +526,7 @@ pub async fn ssh_docker_logs_start(
             .map(Arc::clone)
             .ok_or_else(|| "Session not connected".to_string())?
     };
-    let channel = {
-        let session = session_arc.read().await;
-        session
-            .channel_open_session()
-            .await
-            .map_err(|e| e.to_string())?
-    };
+    let channel = crate::shell_sftp::open_session_channel(&session_arc).await?;
     // -f for follow; we own the channel for the lifetime of the stream.
     // sudo fallback: we try plain first, but follow can't easily re-try
     // sudo mid-stream, so we pre-detect by running a quick probe.
@@ -708,13 +696,7 @@ pub async fn open_container_terminal(
             .map(Arc::clone)
             .ok_or_else(|| "Session not connected".to_string())?
     };
-    let channel = {
-        let session = session_arc.read().await;
-        session
-            .channel_open_session()
-            .await
-            .map_err(|e| e.to_string())?
-    };
+    let channel = crate::shell_sftp::open_session_channel(&session_arc).await?;
     channel
         .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
         .await

@@ -112,6 +112,24 @@ pub(crate) fn judge_host_key(
     Ok(if prior.is_empty() { HostKeyVerdict::New } else { HostKeyVerdict::Changed { prior } })
 }
 
+/// What a host key verdict comes to, with `listed` what the user's known_hosts
+/// lists for the host when it has another key of this kind (empty otherwise):
+/// whether it's trusted, whether it's the "changed" warning, and what was
+/// trusted before. Those count as keys on file: a key that contradicts them
+/// isn't a first-time host, or a man-in-the-middle would get the plain prompt
+/// where OpenSSH refuses. Only the app's own approval of this very key goes
+/// before them.
+fn host_key_outcome(verdict: HostKeyVerdict, listed: Vec<String>) -> (bool, bool, Vec<String>) {
+    match verdict {
+        HostKeyVerdict::Known => (true, false, Vec::new()),
+        HostKeyVerdict::Changed { mut prior } => {
+            prior.extend(listed);
+            (false, true, prior)
+        }
+        HostKeyVerdict::New => (false, !listed.is_empty(), listed),
+    }
+}
+
 /// Persist a host key the user just approved in the fingerprint prompt.
 ///
 /// When the prompt was a KEY-CHANGED warning (`replace`), every key on file
@@ -490,7 +508,9 @@ impl Outflow {
         self.hold(out);
         self.trim(AFTER_INTERRUPT_KEEP);
         let on_its_way = self.handed.saturating_sub(page.drawn().saturating_add(self.written_off));
-        let secs = (on_its_way as f64 / self.pace()).clamp(0.25, 1.0);
+        // A long gap with nothing drawn takes the pace to exactly 0 (measure),
+        // and 0 / 0 would pass the clamp as NaN, which from_secs_f64 panics on.
+        let secs = (on_its_way as f64 / self.pace().max(1.0)).clamp(0.25, 1.0);
         self.quiet_until = Some(tokio::time::Instant::now() + std::time::Duration::from_secs_f64(secs));
     }
 
@@ -727,6 +747,8 @@ async fn pty_pump<F>(
     use russh::ChannelMsg;
 
     let (mut read_half, write_half) = channel.split();
+    // The terminal's size, for the output filter below.
+    let sizes = resize_rx.clone();
 
     // Writer: keystrokes + last-wins resizes. It signals `stop` in the same
     // cases the old loop `break`ed on the write side: the UI dropped the
@@ -754,7 +776,12 @@ async fn pty_pump<F>(
                 // collapse to one window_change call.
                 changed = resize_rx.changed() => {
                     if changed.is_err() {
-                        break; // all senders dropped
+                        // All senders dropped: the tab closed. `close_terminal`
+                        // drops the data sender too, so either arm may be the
+                        // one that sees it, and a dropped half closes nothing:
+                        // the shell would stay on the server.
+                        let _ = write_half.close().await;
+                        break;
                     }
                     let size = *resize_rx.borrow();
                     let _ = write_half.window_change(size.cols, size.rows, 0, 0).await;
@@ -774,8 +801,8 @@ async fn pty_pump<F>(
     const FLUSH_CAP: usize = 256 * 1024;
     const FLUSH_WINDOW: std::time::Duration = std::time::Duration::from_millis(8);
     let mut out_buf: Vec<u8> = Vec::new();
-    // What the page shows is cut down first: a number past four digits in a
-    // control sequence can freeze the page (term_filter.rs).
+    // What the page shows is cut down first: numbers in control sequences
+    // can freeze the page (term_filter.rs).
     let mut limiter = crate::term_filter::CsiLimiter::default();
     // A flush timer armed ONLY while bytes are buffered. When the buffer is
     // empty its deadline is parked far in the future, so an open-but-idle
@@ -797,6 +824,8 @@ async fn pty_pump<F>(
                 Some(ChannelMsg::Data { ref data })
                 | Some(ChannelMsg::ExtendedData { ref data, .. }) => {
                     let was_empty = out_buf.is_empty();
+                    let size = *sizes.borrow();
+                    limiter.set_size(size.cols, size.rows);
                     limiter.filter(data, &mut out_buf);
                     if out_buf.len() >= FLUSH_CAP {
                         let next = if flow.send(&mut out_buf, &page, &mut flush) { park() } else { flow.wait_until() };
@@ -1078,6 +1107,9 @@ pub struct ConnectAttempt {
     session_id: String,
     generation: u64,
     abandoned: Arc<std::sync::atomic::AtomicBool>,
+    /// This attempt waits on the user or on this device: the time isn't the
+    /// server's.
+    at_prompt: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ConnectAttempt {
@@ -1087,7 +1119,22 @@ impl ConnectAttempt {
             session_id,
             generation,
             abandoned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            at_prompt: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Waits on something that isn't the server (an answer at a prompt, a touch
+    /// on a security key, a key being opened): a login's deadline stands still
+    /// meanwhile (see `drive_login`).
+    pub async fn at_prompt<T>(&self, wait: impl std::future::Future<Output = T>) -> T {
+        self.at_prompt.store(true, std::sync::atomic::Ordering::SeqCst);
+        let out = wait.await;
+        self.at_prompt.store(false, std::sync::atomic::Ordering::SeqCst);
+        out
+    }
+
+    pub fn is_at_prompt(&self) -> bool {
+        self.at_prompt.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// No newer attempt has started for the session, and it wasn't disconnected.
@@ -1156,6 +1203,9 @@ impl client::Handler for ClientHandler {
             (PublicKeyOrCertificate::PublicKey { key, .. }, Some(trust)) => Some(trust.check_key(key)),
             _ => None,
         };
+        // What the user's known_hosts lists for this host, when it has another
+        // key of this kind and not this one.
+        let mut listed = Vec::new();
         match trust_verdict {
             Some(crate::known_hosts::Verdict::Trusted(why)) => {
                 log(&why, "success");
@@ -1169,6 +1219,10 @@ impl client::Handler for ClientHandler {
                 }
                 self.fp_outcome.store(0, std::sync::atomic::Ordering::SeqCst);
                 return Ok(false);
+            }
+            Some(crate::known_hosts::Verdict::Changed { note, listed: keys }) => {
+                log(&note, "warn");
+                listed = keys;
             }
             Some(crate::known_hosts::Verdict::Undecided(Some(note))) => log(&note, "warn"),
             Some(crate::known_hosts::Verdict::Undecided(None)) | None => {}
@@ -1217,11 +1271,7 @@ impl client::Handler for ClientHandler {
             }));
             return Ok(false);
         };
-        let (is_known, mismatch, prior_fingerprints) = match verdict {
-            HostKeyVerdict::Known => (true, false, Vec::new()),
-            HostKeyVerdict::Changed { prior } => (false, true, prior),
-            HostKeyVerdict::New => (false, false, Vec::new()),
-        };
+        let (is_known, mismatch, prior_fingerprints) = host_key_outcome(verdict, listed);
 
         if is_known {
             let _ = self.app.emit(&format!("session-log-{}", self.session_id), serde_json::json!({
@@ -2062,6 +2112,16 @@ mod tests {
             HostKeyVerdict::Changed { prior: vec!["ED (ssh-ed25519)".to_string(), "LEGACY".to_string()] }
         );
         assert_eq!(judge_host_key(&conn, "new", 22, "ECDSA").unwrap(), HostKeyVerdict::New);
+        // A key that contradicts the user's known_hosts isn't a first-time host;
+        // the app's own approval of this very key still stands.
+        let listed = vec!["LISTED (ssh-ed25519)".to_string()];
+        assert_eq!(host_key_outcome(HostKeyVerdict::New, Vec::new()), (false, false, Vec::new()));
+        assert_eq!(host_key_outcome(HostKeyVerdict::New, listed.clone()), (false, true, listed.clone()));
+        assert_eq!(host_key_outcome(HostKeyVerdict::Known, listed.clone()), (true, false, Vec::new()));
+        assert_eq!(
+            host_key_outcome(HostKeyVerdict::Changed { prior: vec!["ON_FILE".to_string()] }, listed),
+            (false, true, vec!["ON_FILE".to_string(), "LISTED (ssh-ed25519)".to_string()])
+        );
     }
 
     #[test]
@@ -2221,6 +2281,91 @@ mod tests {
         let skipped = FLOOD - note_at - kept;
         assert_eq!(&got[note_at..note_end], skipped_note(skipped as u64).as_bytes());
         assert!(got[note_end..].iter().all(|&b| b == b'x'));
+    }
+
+    /// Closing a terminal drops its two senders together, so either arm of the
+    /// writer may see it first. Both close the channel, or the shell stays on
+    /// the server and holds one of its MaxSessions slots.
+    #[tokio::test]
+    async fn closing_a_terminal_closes_its_channel_whichever_arm_sees_it() {
+        use crate::ssh_test_server::{connect, TestServer};
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        let server = TestServer::default();
+        let closed = Arc::clone(&server.closed);
+        let session = connect(server, |_| {}, crate::build_ssh_client_config())
+            .await
+            .expect("in-process SSH connection");
+        // Enough that the arm that doesn't close would be picked at least once.
+        const TERMINALS: usize = 24;
+        for _ in 0..TERMINALS {
+            let channel = session.channel_open_session().await.unwrap();
+            channel.exec(false, "echo").await.unwrap();
+            let (tx, rx) = mpsc::channel::<TerminalCommand>(32);
+            let (resize_tx, resize_rx) = tokio::sync::watch::channel(PtySize { cols: 80, rows: 24 });
+            let pump = tokio::spawn(pty_pump(channel, rx, resize_rx, Arc::new(PageDrawn::default()), |buf: &mut Vec<u8>| buf.clear()));
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            drop(tx);
+            drop(resize_tx);
+            tokio::time::timeout(Duration::from_secs(10), pump).await.expect("the pump stops").unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while closed.load(Ordering::SeqCst) < TERMINALS {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("only {} of {TERMINALS} channels were closed", closed.load(Ordering::SeqCst)));
+    }
+
+    /// The count of a control sequence is cut to the terminal's size as it is
+    /// at that moment (term_filter.rs).
+    #[tokio::test]
+    async fn pty_pump_cuts_counts_to_the_size_the_terminal_has_now() {
+        use crate::ssh_test_server::{connect, TestServer};
+        use std::time::Duration;
+
+        let session = connect(TestServer::default(), |_| {}, crate::build_ssh_client_config())
+            .await
+            .expect("in-process SSH connection");
+        let channel = session.channel_open_session().await.unwrap();
+        channel.exec(false, "echo").await.unwrap();
+        let (tx, rx) = mpsc::channel::<TerminalCommand>(32);
+        let (resize_tx, resize_rx) = tokio::sync::watch::channel(PtySize { cols: 80, rows: 24 });
+        let got = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let sink = Arc::clone(&got);
+        let pump = tokio::spawn(pty_pump(channel, rx, resize_rx, Arc::new(PageDrawn::default()), move |buf: &mut Vec<u8>| {
+            sink.lock().unwrap().extend_from_slice(buf);
+            buf.clear();
+        }));
+        let shows = |wanted: &'static [u8]| {
+            let got = Arc::clone(&got);
+            tokio::time::timeout(Duration::from_secs(10), async move {
+                while !got.lock().unwrap().windows(wanted.len()).any(|w| w == wanted) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+        };
+        tx.send(TerminalCommand::Data(b"\x1b[9999S".to_vec())).await.unwrap();
+        shows(b"\x1b[24S").await.expect("cut to the first size");
+        resize_tx.send(PtySize { cols: 80, rows: 10 }).unwrap();
+        tx.send(TerminalCommand::Data(b"\x1b[9999S".to_vec())).await.unwrap();
+        shows(b"\x1b[10S").await.expect("cut to the new size");
+        drop((tx, resize_tx));
+        tokio::time::timeout(Duration::from_secs(10), pump).await.expect("the pump stops").unwrap();
+    }
+
+    /// A long gap with nothing drawn takes the page's pace to exactly 0 (see
+    /// Outflow::measure); `typed` can then leave nothing on its way, and an
+    /// interrupt would divide 0 by 0, which panics in Duration::from_secs_f64
+    /// and takes the pump with it.
+    #[tokio::test(start_paused = true)]
+    async fn an_interrupt_with_a_pace_of_zero_and_nothing_on_its_way() {
+        let page = PageDrawn::default();
+        let mut flow = Outflow { held: vec![b'x'; 16], pace: Some(0.0), ..Outflow::default() };
+        flow.interrupted(&mut Vec::new(), &page);
+        assert!(flow.quiet());
     }
 
     /// A key file signs a certificate login as an agent would: the signature,
