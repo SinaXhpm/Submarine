@@ -9,7 +9,7 @@ import { usePageShown } from "../hooks/usePageShown";
 import { readUseSshAgent } from "../util/sshAgent";
 import type { LinkStats } from "../util/screenLink";
 import { VNC_PRESETS, readVncOptions, vncNeedsReconnect, writeVncOptions, type VncOptions } from "../util/vncOptions";
-import { type PasteKeys, pasteKeysOf, readLocalClipboard } from "../util/rdpClipboard";
+import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
 
 // A VNC server's tab: the server's screen in the tab itself (vnc_client.rs),
@@ -40,11 +40,12 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
   // Hidden while the screen shows; open again on request.
   const [showLog, setShowLog] = useState(false);
   // The clipboard shared with the server (this server's option, read when the
-  // tab connects); text copied on the server that couldn't go on this device's
-  // clipboard by itself (a webview that wants a click for that); and why a
-  // paste didn't go to the server.
+  // tab connects); text copied on the server that didn't go on this device's
+  // clipboard by itself (the tab wasn't in front, or a webview that wants a
+  // click for that); and why a paste didn't go to the server.
   const [shareClipboard, setShareClipboard] = useState(false);
   const [serverCopy, setServerCopy] = useState<string | null>(null);
+  const inFront = useRef(false);
   const [pasteNote, setPasteNote] = useState<string | null>(null);
   // The tab's tools: this server's options on this device as the settings
   // panel changes them, the ones the session now open was opened with, and
@@ -164,10 +165,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       // Text the user copied on the server, for this device's clipboard.
       listen(`vnc-clipboard-${id}`, (e: any) => {
         const text = String(e.payload?.text ?? "");
-        navigator.clipboard.writeText(text).then(
-          () => setServerCopy(null),
-          () => setServerCopy(text),
-        );
+        takeServerCopy(text, inFront.current, setServerCopy);
         // The server sends its clipboard as Latin-1; the VNC library reads it as
         // UTF-8, so a character beyond ASCII arrives as a replacement mark.
         if (text.includes("\uFFFD")) {
@@ -269,6 +267,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
   // view, or the window minimised), if the user lets it: a few seconds on, and
   // they start again as soon as the tab is back.
   const pageShown = usePageShown();
+  inFront.current = isActiveView && shown && pageShown;
   usePauseWhileHidden(status === "connected" && !(shown && pageShown) && opts.pauseHidden, "vnc_shown", session.id);
   // No link to show without a connection.
   useEffect(() => {

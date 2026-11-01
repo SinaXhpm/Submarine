@@ -180,7 +180,7 @@ export function RdpSettingsPanel({ o, set, reconnect }: { o: RdpOptions; set: (p
       <RdpSpeedFields o={o} set={set} />
       <SwitchRow
         label="Share the clipboard"
-        hint="Text you copy on the server comes to this device; this device's goes to the server when you paste it there."
+        hint="Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there."
         checked={o.clipboard}
         onChange={(clipboard) => set({ clipboard })}
       />
@@ -196,7 +196,7 @@ export function VncSettingsPanel({ o, set, reconnect }: { o: VncOptions; set: (p
       <VncSpeedFields o={o} set={set} />
       <SwitchRow
         label="Share the clipboard"
-        hint="Text you copy on the server comes to this device; this device's goes to the server when you paste it there. Plain ASCII text only, such as links and commands."
+        hint="Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there. Plain ASCII text only, such as links and commands."
         checked={o.clipboard}
         onChange={(clipboard) => set({ clipboard })}
       />

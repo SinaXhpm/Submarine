@@ -14,7 +14,7 @@
 //! certificate's key, so a pinned certificate can't be replayed by someone
 //! who doesn't hold that key.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,21 +28,25 @@ use ironrdp::cliprdr::pdu::{
 use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{self, BitmapConfig, ClientConnector, ClientConnectorState, Credentials, DesktopSize, Sequence as _};
-use ironrdp::core::{IntoOwned as _, WriteBuf};
+use ironrdp::core::{decode, decode_cursor, IntoOwned as _, ReadCursor, WriteBuf};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::input::{Database, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
+use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
+use ironrdp::pdu::fast_path::{FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp::pdu::gcc::{ConnectionType, KeyboardType};
 use ironrdp::pdu::geometry::InclusiveRectangle;
-use ironrdp::pdu::mcs::decode_send_data_indication;
+use ironrdp::pdu::mcs::{decode_send_data_indication, SendDataIndicationCtx};
 use ironrdp::pdu::nego::SecurityProtocol;
+use ironrdp::pdu::slow_path::{decode_slow_path_bitmap, read_graphics_update_type, GraphicsUpdateType};
 use ironrdp::pdu::Action;
 use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, BitmapCodecs, MajorPlatformType, RailSupportLevel};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
-use ironrdp::pdu::rdp::headers::{decode_share_control, ShareControlCtx, ShareControlPdu, ShareDataPdu};
+use ironrdp::pdu::rdp::headers::{decode_share_control, decode_share_data, ShareControlCtx, ShareControlPdu, ShareDataCtx, ShareDataPdu};
 use ironrdp::pdu::rdp::refresh_rectangle::RefreshRectanglePdu;
 use ironrdp::pdu::rdp::suppress_output::SuppressOutputPdu;
+use ironrdp::pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_tokio::{split_tokio_framed, FramedWrite as _, TokioFramed};
@@ -52,7 +56,9 @@ use tokio::sync::mpsc;
 use tokio_rustls::rustls;
 use zeroize::Zeroizing;
 
+use crate::screen_flow::PageSize;
 use crate::screen_link::{Counted, LinkStats, Meter, Probe, Traffic, LINK_EVERY, PROBE_SIDE};
+use crate::vnc_client::{Copies, COPY_EVERY};
 
 /// How often the changed parts of the screen go to the page, at most.
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -63,6 +69,9 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Below this, a desktop is too small to be of use; above, too big to send.
 const MIN_SIDE: u16 = 200;
 const MAX_SIDE: u16 = 8192;
+/// The tallest desktop: an 8K screen's height. A bitmap is at most as tall as
+/// the desktop, and IronRDP makes room for it by its height times its width.
+const MAX_HEIGHT: u16 = 4320;
 /// More changed rectangles than this before a frame goes out: one rectangle
 /// around them all is sent instead.
 const MAX_RECTS: usize = 32;
@@ -74,9 +83,214 @@ const MAX_PIXELS: u32 = 3840 * 2160;
 /// the server picks it (up to 65535 on a side), and a failed allocation would
 /// end the whole app, not only this tab.
 fn desktop_fits(width: u16, height: u16) -> Result<(), String> {
-    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE || u32::from(width) * u32::from(height) > MAX_PIXELS {
+    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_HEIGHT || u32::from(width) * u32::from(height) > MAX_PIXELS {
         return Err(format!("The RDP server asked for a {width}×{height} desktop, which this client doesn't draw"));
     }
+    Ok(())
+}
+
+/// What a fast-path update may come to, put together: the 8 MiB this client
+/// tells the server it takes (IronRDP's connector, the Multifragment Update
+/// capability). A server keeps to that whatever the screen: a bigger picture,
+/// 4K included, goes as several updates.
+const MAX_FAST_PATH_BYTES: usize = 8 * 1024 * 1024;
+/// What one message on a static channel may come to, from its FLAG_FIRST on.
+/// Well above a shared file's largest write (1 MiB) and the longest copy this
+/// client brings over (`MAX_CLIP_BYTES`, 4 MB); a copy too long even for this
+/// is passed over, not kept (`Intake::static_channel`).
+const MAX_CHANNEL_BYTES: usize = 16 * 1024 * 1024;
+/// What `drdynvc` may carry in a whole session. Here it has only Display
+/// Control, a few hundred bytes a session. A budget and not a limit on one
+/// message: IronRDP puts its messages together on its own, over any number of
+/// static ones, up to a length the server declares.
+const MAX_DYNAMIC_BYTES: usize = 16 * 1024 * 1024;
+/// How much wider than the place it goes a bitmap may be: servers round a
+/// width up to a multiple of 4.
+const MAX_WIDTH_PADDING: u32 = 3;
+/// What channel data is kept while the desktop restarts, a few seconds at
+/// most. Files and copies are questions and answers, so a server that isn't
+/// being answered soon stops with far less than this.
+const MAX_REPLAY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Looks at every PDU from the server before IronRDP gets it. IronRDP puts
+/// messages together from their parts with no limit of its own, and takes a
+/// bitmap's width from the server, and a failed allocation would end the
+/// whole app, not only this tab. Past a limit the session ends with a plain
+/// message.
+#[derive(Default)]
+struct Intake {
+    io_channel: u16,
+    message_channel: Option<u16>,
+    dynamic_channel: Option<u16>,
+    /// The clipboard's channel, and where a copy that is too long is said.
+    clipboard: Option<(u16, mpsc::UnboundedSender<ClipEvent>)>,
+    /// A copy too long to keep is going by: none of it reaches IronRDP.
+    passing_copy_over: bool,
+    /// The fast-path update being put together: its bytes so far, and the
+    /// parts of a bitmap update, to look at once it is whole.
+    update_bytes: usize,
+    bitmap_parts: Option<Vec<u8>>,
+    /// The bytes so far of each static channel's unfinished message.
+    unfinished: HashMap<u16, usize>,
+    /// What `drdynvc` has carried so far.
+    dynamic_bytes: usize,
+}
+
+impl Intake {
+    /// Whether IronRDP is to get `pdu`; an error ends the session. What can't
+    /// be read here is left for IronRDP to refuse.
+    fn pass(&mut self, action: Action, pdu: &[u8]) -> Result<bool, String> {
+        match action {
+            Action::FastPath => self.fast_path(pdu).map(|()| true),
+            Action::X224 => {
+                let Ok(data) = decode_send_data_indication(pdu) else { return Ok(true) };
+                if data.channel_id == self.io_channel {
+                    slow_path_bitmaps(data).map(|()| true)
+                } else if self.message_channel == Some(data.channel_id) {
+                    Ok(true)
+                } else {
+                    self.static_channel(data.channel_id, data.user_data)
+                }
+            }
+        }
+    }
+
+    fn fast_path(&mut self, pdu: &[u8]) -> Result<(), String> {
+        let mut src = ReadCursor::new(pdu);
+        if decode_cursor::<FastPathHeader>(&mut src).is_err() {
+            return Ok(());
+        }
+        while let Ok(update) = decode_cursor::<FastPathUpdatePdu<'_>>(&mut src) {
+            let bitmap = update.update_code == UpdateCode::Bitmap;
+            match update.fragmentation {
+                Fragmentation::Single => {
+                    self.update_bytes = 0;
+                    self.bitmap_parts = None;
+                    if bitmap {
+                        bitmap_update(update.data)?;
+                    }
+                }
+                Fragmentation::First => {
+                    self.update_bytes = update.data.len();
+                    self.bitmap_parts = bitmap.then(|| update.data.to_vec());
+                }
+                Fragmentation::Next | Fragmentation::Last => {
+                    self.update_bytes += update.data.len();
+                    if self.update_bytes > MAX_FAST_PATH_BYTES {
+                        return Err("The RDP server sent a screen update too large to take, so the session was ended.".into());
+                    }
+                    if let Some(parts) = &mut self.bitmap_parts {
+                        parts.extend_from_slice(update.data);
+                    }
+                    if update.fragmentation == Fragmentation::Last {
+                        self.update_bytes = 0;
+                        if let Some(parts) = self.bitmap_parts.take() {
+                            bitmap_update(&parts)?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn static_channel(&mut self, id: u16, user_data: &[u8]) -> Result<bool, String> {
+        let Ok(header) = decode::<ChannelPduHeader>(user_data) else { return Ok(true) };
+        // Never asked for: no channel here is opened with compression.
+        if header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) {
+            return Err("The RDP server sent compressed channel data it wasn't asked for, so the session was ended.".into());
+        }
+        let first = header.flags.contains(ChannelControlFlags::FLAG_FIRST);
+        let last = header.flags.contains(ChannelControlFlags::FLAG_LAST);
+        let chunk = user_data.len().saturating_sub(8);
+        if self.dynamic_channel == Some(id) {
+            self.dynamic_bytes += chunk;
+            if self.dynamic_bytes > MAX_DYNAMIC_BYTES {
+                return Err("The RDP server sent too much on its dynamic channels, so the session was ended.".into());
+            }
+        }
+        // A copy can be any length, and bringing it over is this client's own
+        // idea: a long one is passed over and said to be too long, as a
+        // shorter one is, and the session goes on. IronRDP sees none of it.
+        if let Some((_, events)) = self.clipboard.as_ref().filter(|(channel, _)| *channel == id) {
+            let declared = header.length as usize;
+            if first {
+                self.passing_copy_over = declared > MAX_CHANNEL_BYTES;
+                if self.passing_copy_over {
+                    let _ = events.send(ClipEvent::RemoteTooLong(declared));
+                }
+            }
+            if self.passing_copy_over {
+                self.passing_copy_over = !last;
+                return Ok(false);
+            }
+        }
+        let so_far = match self.unfinished.get(&id) {
+            _ if first => chunk,
+            Some(bytes) => bytes + chunk,
+            // No message is going on: IronRDP keeps nothing of this one.
+            None => return Ok(true),
+        };
+        if so_far > MAX_CHANNEL_BYTES {
+            return Err("The RDP server sent a channel message too large to take, so the session was ended.".into());
+        }
+        if last {
+            self.unfinished.remove(&id);
+        } else {
+            self.unfinished.insert(id, so_far);
+        }
+        Ok(true)
+    }
+}
+
+/// A fast-path bitmap update, whole. One that can't be read is passed over
+/// by IronRDP too.
+fn bitmap_update(data: &[u8]) -> Result<(), String> {
+    decode::<BitmapUpdateData<'_>>(data).map_or(Ok(()), |update| bitmaps_fit(&update.rectangles))
+}
+
+/// The bitmaps on the session's own channel, the slow way. An indication may
+/// hold several PDUs, each starting with its length, and IronRDP takes them all.
+fn slow_path_bitmaps(data: SendDataIndicationCtx<'_>) -> Result<(), String> {
+    let mut rest = data.user_data;
+    while let [low, high, ..] = *rest {
+        let length = usize::from(u16::from_le_bytes([low, high]));
+        let (part, after) = rest.split_at(if length == 0 || length > rest.len() { rest.len() } else { length });
+        rest = after;
+        // Compressed: IronRDP refuses it, there is no decompressor here.
+        if let Ok(ShareDataCtx { compression_flags, pdu: ShareDataPdu::Update(update), .. }) = decode_share_data(SendDataIndicationCtx { user_data: part, ..data }) {
+            let mut src = ReadCursor::new(&update);
+            if compression_flags.is_empty() && matches!(read_graphics_update_type(&mut src), Ok(GraphicsUpdateType::Bitmap)) {
+                if let Ok(update) = decode_slow_path_bitmap(&mut src) {
+                    bitmaps_fit(&update.rectangles)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A compressed 32 bpp bitmap gets room by the width it declares, where
+/// IronRDP asks only for at least the rectangle's. The other kinds don't need
+/// this: IronRDP caps the width of RLE bitmaps, and raw ones only use what came.
+fn bitmaps_fit(rectangles: &[BitmapData<'_>]) -> Result<(), String> {
+    let too_wide = |b: &BitmapData<'_>| {
+        let place = u32::from(b.rectangle.right).saturating_sub(u32::from(b.rectangle.left)) + 1;
+        b.bits_per_pixel == 32 && b.compression_flags.contains(Compression::BITMAP_COMPRESSION) && u32::from(b.width) > place + MAX_WIDTH_PADDING
+    };
+    if rectangles.iter().any(too_wide) {
+        return Err("The RDP server sent a bitmap far wider than the place it goes, so the session was ended.".into());
+    }
+    Ok(())
+}
+
+/// Keeps a channel's `pdu` for the session while the desktop restarts.
+fn hold_for_later(replay: &mut VecDeque<Vec<u8>>, held: &mut usize, pdu: &[u8]) -> Result<(), String> {
+    *held += pdu.len();
+    if *held > MAX_REPLAY_BYTES {
+        return Err("The RDP server sent too much channel data while it restarted the desktop, so the session was ended.".into());
+    }
+    replay.push_back(pdu.to_vec());
     Ok(())
 }
 
@@ -535,8 +749,8 @@ pub fn clamp_size(width: u16, height: u16) -> (u16, u16) {
     // A tab on a 5K or 8K screen asks for no more than `desktop_fits` takes,
     // keeping its shape: the desktop is drawn scaled up to fill it.
     let pixels = u32::from(w) * u32::from(h);
-    if pixels > MAX_PIXELS {
-        let k = (f64::from(MAX_PIXELS) / f64::from(pixels)).sqrt();
+    let k = (f64::from(MAX_PIXELS) / f64::from(pixels)).sqrt().min(f64::from(MAX_HEIGHT) / f64::from(h));
+    if k < 1.0 {
         w = ((f64::from(w) * k) as u16).max(MIN_SIDE);
         h = ((f64::from(h) * k) as u16).max(MIN_SIDE);
     }
@@ -789,8 +1003,10 @@ where
     let mut connector = ClientConnector::new(connector_config(&login), client_addr).with_static_channel(drdynvc);
     // The shared clipboard is a channel of its own, only there when it's wanted.
     let mut clip_events = None;
+    let mut clip_says = None;
     if login.clipboard {
         let (tx, rx) = mpsc::unbounded_channel();
+        clip_says = Some(tx.clone());
         connector = connector.with_static_channel(CliprdrClient::new(Box::new(ClipBridge(tx))));
         clip_events = Some(rx);
     }
@@ -820,6 +1036,12 @@ where
         _ => return Err("The RDP server picked a way of logging in that this client doesn't offer".into()),
     };
     let (plain, leftover) = framed.into_inner();
+    // A server sends nothing here: it waits for TLS. Bytes that came now
+    // would be read as if they came inside TLS, from whoever holds the
+    // certificate, while anyone on the way can have put them in.
+    if !leftover.is_empty() {
+        return Err("The RDP server sent data before TLS began, so the connection was dropped.".into());
+    }
 
     // TLS, then the certificate check, before anything secret is sent.
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -865,7 +1087,7 @@ where
     }
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
-    let mut framed = TokioFramed::new_with_leftover(tls, leftover);
+    let mut framed = TokioFramed::new(tls);
     let result = tokio::time::timeout(
         STEP_TIMEOUT,
         ironrdp_tokio::connect_finalize(upgraded, connector, &mut framed, &mut NoNetwork, host.clone().into(), public_key, None),
@@ -882,6 +1104,13 @@ where
     let mut can_measure = result.refresh_rect_support;
     let mut can_pause = result.suppress_output_support;
     let activation_factory = result.activation_factory;
+    let mut intake = Intake {
+        io_channel: result.io_channel_id,
+        message_channel: result.message_channel_id,
+        dynamic_channel: result.static_channels.get_channel_id_by_type::<DrdynvcClient>(),
+        clipboard: result.static_channels.get_channel_id_by_type::<CliprdrClient>().zip(clip_says),
+        ..Intake::default()
+    };
     let mut stage: ActiveStage = ActiveStageBuilder {
         static_channels: result.static_channels,
         user_channel_id: result.user_channel_id,
@@ -912,6 +1141,18 @@ where
     let mut local_text: Option<Zeroizing<String>> = None;
     let mut asked_formats: VecDeque<ClipboardFormatId> = VecDeque::new();
     let mut held_paste: Option<(PasteKeys, tokio::time::Instant)> = None;
+    // The server's copies reach the tab at most every COPY_EVERY, the latest
+    // one winning, and what goes wrong with them is said once: a small PDU from
+    // the server is enough for either, and neither is under the frames' flow control.
+    let mut copies = Copies::default();
+    let mut copy_tick = tokio::time::interval(COPY_EVERY);
+    copy_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (mut said_clip_failed, mut said_too_long) = (false, false);
+    let once = |said: &mut bool, msg: &str| {
+        if !std::mem::replace(said, true) {
+            notice(msg);
+        }
+    };
     // The link: a probe now and then, the bytes since the last look, and
     // whether the picture is paused (the tab isn't shown).
     let mut link_tick = tokio::time::interval(LINK_EVERY);
@@ -928,16 +1169,23 @@ where
     // Channel data (files, clipboard) that came while the desktop restarted:
     // the session takes it first, in order.
     let mut replay: VecDeque<Vec<u8>> = VecDeque::new();
+    // The desktop's size after a restart: a server can go through them as fast
+    // as it can send a few KB (see PageSize).
+    let mut page_size = PageSize::told((size.width, size.height));
 
     loop {
         let paste_due = held_paste.map(|(_, at)| at);
         let outputs = if let Some(pdu) = replay.pop_front() {
-            stage.process(&mut image, Action::X224, &pdu).map_err(|e| format!("RDP: {e}"))?
+            if intake.pass(Action::X224, &pdu)? {
+                stage.process(&mut image, Action::X224, &pdu).map_err(|e| format!("RDP: {e}"))?
+            } else {
+                Vec::new()
+            }
         } else {
             tokio::select! {
                 Some(event) = next_clip_event(&mut clip_events) => match event {
                     ClipEvent::FormatListWanted => offer_text(&mut stage, local_text.is_some()).unwrap_or_else(|e| {
-                        notice(&e);
+                        once(&mut said_clip_failed, &e);
                         Vec::new()
                     }),
                     // The server has the text: the held-back paste key goes now.
@@ -960,7 +1208,7 @@ where
                             outputs
                         }
                         Err(e) => {
-                            notice(&e);
+                            once(&mut said_clip_failed, &e);
                             Vec::new()
                         }
                     },
@@ -971,7 +1219,7 @@ where
                     }
                     ClipEvent::RemoteTooLong(bytes) => {
                         asked_formats.pop_front();
-                        notice(&format!("The server's copy is too long to bring over ({bytes} bytes; the most is {MAX_CLIP_CHARS} characters)."));
+                        once(&mut said_too_long, &format!("The server's copy is too long to bring over ({bytes} bytes; the most is {MAX_CLIP_CHARS} characters)."));
                         Vec::new()
                     }
                     ClipEvent::Wanted(format) => {
@@ -982,20 +1230,26 @@ where
                         }
                         .into_owned();
                         clip_step(&mut stage, |c| c.submit_format_data(response)).unwrap_or_else(|e| {
-                            notice(&e);
+                            once(&mut said_clip_failed, &e);
                             Vec::new()
                         })
                     }
                     ClipEvent::RemoteText(Some(data)) => {
                         let format = asked_formats.pop_front().unwrap_or(ClipboardFormatId::CF_UNICODETEXT);
                         match decode_clip_text(format, &data) {
-                            Ok(text) if !text.is_empty() => remote_copy(text),
+                            Ok(text) if !text.is_empty() => copies.due = Some(text),
                             Ok(_) => {}
-                            Err(e) => notice(&e),
+                            Err(e) => once(&mut said_too_long, &e),
                         }
                         Vec::new()
                     }
                 },
+                _ = copy_tick.tick(), if copies.due.is_some() => {
+                    if let Some(text) = copies.take(std::time::Instant::now()) {
+                        remote_copy(text);
+                    }
+                    Vec::new()
+                }
                 // What the shared files' backend finished later: a lock granted,
                 // a change in a folder the server watches.
                 _ = drive_tick.tick(), if sharing => drive_deferred(&mut stage).unwrap_or_else(|e| {
@@ -1027,7 +1281,11 @@ where
                 }
                 pdu = reader.read_pdu() => {
                     let (action, payload) = pdu.map_err(link_ended)?;
-                    stage.process(&mut image, action, &payload).map_err(|e| format!("RDP: {e}"))?
+                    if intake.pass(action, &payload)? {
+                        stage.process(&mut image, action, &payload).map_err(|e| format!("RDP: {e}"))?
+                    } else {
+                        Vec::new()
+                    }
                 }
                 cmd = cmds.recv() => match cmd {
                     None | Some(Cmd::Close) => {
@@ -1117,7 +1375,13 @@ where
                 },
                 // While the page is far behind on what it was sent, what changes
                 // waits here as one rectangle at most (see screen_flow.rs).
-                _ = tick.tick(), if !dirty.is_empty() && flow.has_room() => {
+                _ = tick.tick(), if (!dirty.is_empty() || page_size.waiting()) && flow.has_room() => {
+                    // The size first: the frames below are drawn on it.
+                    if let Some((w, h)) = page_size.next() {
+                        if !frame(size_frame(w, h)) {
+                            return Ok("closed".into());
+                        }
+                    }
                     let rects = tidy(std::mem::take(&mut dirty), u64::from(image.width()) * u64::from(image.height()));
                     for r in &rects {
                         if let Some(f) = rect_frame(&image, r) {
@@ -1130,7 +1394,7 @@ where
                 }
                 // The page has caught up: what it is owed goes now, not with the
                 // next thing the server says.
-                _ = flow.room(), if !dirty.is_empty() && !flow.has_room() => Vec::new(),
+                _ = flow.room(), if (!dirty.is_empty() || page_size.waiting()) && !flow.has_room() => Vec::new(),
             }
         };
 
@@ -1164,6 +1428,7 @@ where
                     // would hold this loop for good, deaf to Close.
                     let restarted_at = tokio::time::Instant::now();
                     let deadline = restarted_at + STEP_TIMEOUT;
+                    let mut held = 0;
                     loop {
                         buf.clear();
                         let step = if activation.next_pdu_hint().is_some() {
@@ -1187,7 +1452,7 @@ where
                             if let Ok(data) = decode_send_data_indication(&pdu) {
                                 // Nor is a channel's (files, clipboard): it waits for the session.
                                 if data.channel_id != activation.io_channel_id() {
-                                    replay.push_back(pdu.to_vec());
+                                    hold_for_later(&mut replay, &mut held, &pdu)?;
                                     continue;
                                 }
                                 // Nor what the restart doesn't take of the session's own channel.
@@ -1229,9 +1494,7 @@ where
                             ) {
                                 return Err("RDP: the server started over with settings this client can't use".into());
                             }
-                            if !frame(size_frame(desktop_size.width, desktop_size.height)) {
-                                return Ok("closed".into());
-                            }
+                            page_size.set((desktop_size.width, desktop_size.height));
                             can_measure = refresh_rect_support;
                             can_pause = suppress_output_support;
                             // Paused before the restart: paused again (the restart
@@ -1667,8 +1930,11 @@ mod tests {
         assert!(u32::from(w) * u32::from(h) <= MAX_PIXELS && w % 4 == 0 && (f64::from(w) / f64::from(h) - 16.0 / 9.0).abs() < 0.01, "{w}x{h}");
         let (w, h) = clamp_size(20000, 20000);
         assert!(w == h - h % 4 && u32::from(w) * u32::from(h) <= MAX_PIXELS, "{w}x{h}");
+        // Taller than a desktop gets: the same, the shape kept.
+        let (w, h) = clamp_size(1000, 8000);
+        assert!(h <= MAX_HEIGHT && h >= MAX_HEIGHT - 1 && (f64::from(w) / f64::from(h) - 0.125).abs() < 0.01, "{w}x{h}");
         // What we ask for is always what we accept.
-        for (a, b) in [(1366, 768), (7680, 4320), (20000, 20000), (50, 9000)] {
+        for (a, b) in [(1366, 768), (7680, 4320), (20000, 20000), (50, 9000), (1000, 8000), (2160, 7680)] {
             let (w, h) = clamp_size(a, b);
             assert!(desktop_fits(w, h).is_ok(), "{a}x{b} -> {w}x{h}");
         }
@@ -1684,6 +1950,325 @@ mod tests {
         assert!(desktop_fits(65535, 65535).is_err());
         assert!(desktop_fits(8192, 8192).is_err());
         assert!(desktop_fits(8193, 100).is_err());
+        // Narrow and tall: few pixels, but a bitmap on it can be very wide for its area.
+        assert!(desktop_fits(1012, 8192).is_err());
+        assert!(desktop_fits(1012, 4320).is_ok());
+    }
+
+    const IO: u16 = 1003;
+    const MESSAGES: u16 = 1010;
+    const DYNAMIC: u16 = 1005;
+    const CLIPBOARD: u16 = 1006;
+    const FILES: u16 = 1007;
+    const FIRST: ChannelControlFlags = ChannelControlFlags::FLAG_FIRST;
+    const NEXT: ChannelControlFlags = ChannelControlFlags::empty();
+    const LAST: ChannelControlFlags = ChannelControlFlags::FLAG_LAST;
+
+    fn intake() -> Intake {
+        Intake { io_channel: IO, message_channel: Some(MESSAGES), dynamic_channel: Some(DYNAMIC), ..Intake::default() }
+    }
+
+    /// `user_data` on a channel, as it comes from the server.
+    fn indication(channel_id: u16, user_data: &[u8]) -> Vec<u8> {
+        let pdu = ironrdp::pdu::mcs::SendDataIndication { initiator_id: 1002, channel_id, user_data: std::borrow::Cow::Borrowed(user_data) };
+        ironrdp::core::encode_vec(&ironrdp::pdu::x224::X224(pdu)).unwrap()
+    }
+
+    /// A chunk of a message of `declared` bytes on a static channel.
+    fn chunk(channel: u16, declared: u32, flags: ChannelControlFlags, data: &[u8]) -> Vec<u8> {
+        let mut user_data = ironrdp::core::encode_vec(&ChannelPduHeader { length: declared, flags }).unwrap();
+        user_data.extend_from_slice(data);
+        indication(channel, &user_data)
+    }
+
+    /// Sends a whole message of `bytes` in chunks; what `pass` said for each.
+    fn message(i: &mut Intake, channel: u16, bytes: usize) -> Vec<Result<bool, String>> {
+        let part = [0u8; 16_000];
+        let declared = u32::try_from(bytes).unwrap();
+        let mut left = bytes;
+        let mut said = Vec::new();
+        let mut flags = FIRST;
+        while left > 0 {
+            let n = left.min(part.len());
+            left -= n;
+            if left == 0 {
+                flags |= LAST;
+            }
+            said.push(i.pass(Action::X224, &chunk(channel, declared, flags, &part[..n])));
+            flags = NEXT;
+        }
+        said
+    }
+
+    fn fragment<'a>(fragmentation: Fragmentation, update_code: UpdateCode, data: &'a [u8]) -> FastPathUpdatePdu<'a> {
+        FastPathUpdatePdu { fragmentation, update_code, compression_flags: None, compression_type: None, data }
+    }
+
+    fn fast_path(updates: &[FastPathUpdatePdu<'_>]) -> Vec<u8> {
+        use ironrdp::pdu::fast_path::EncryptionFlags;
+        let body: Vec<u8> = updates.iter().flat_map(|u| ironrdp::core::encode_vec(u).unwrap()).collect();
+        let mut pdu = ironrdp::core::encode_vec(&FastPathHeader::new(EncryptionFlags::empty(), body.len())).unwrap();
+        pdu.extend(body);
+        pdu
+    }
+
+    fn bitmap(place: u16, width: u16, bits_per_pixel: u16, compression_flags: Compression) -> BitmapData<'static> {
+        BitmapData {
+            rectangle: InclusiveRectangle { left: 10, top: 20, right: 10 + place - 1, bottom: 20 + 63 },
+            width,
+            height: 64,
+            bits_per_pixel,
+            compression_flags,
+            compressed_data_header: None,
+            bitmap_data: &[0; 32],
+        }
+    }
+
+    fn rdp6(place: u16, width: u16) -> BitmapData<'static> {
+        bitmap(place, width, 32, Compression::BITMAP_COMPRESSION | Compression::NO_BITMAP_COMPRESSION_HDR)
+    }
+
+    fn bitmap_bytes(rectangles: Vec<BitmapData<'static>>) -> Vec<u8> {
+        ironrdp::core::encode_vec(&BitmapUpdateData { rectangles }).unwrap()
+    }
+
+    /// A slow-path bitmap update as a Share Control PDU of its own (written out:
+    /// IronRDP doesn't encode these). Its first word is its type, as in a fast-path one.
+    fn slow_bitmap(rectangles: Vec<BitmapData<'static>>) -> Vec<u8> {
+        let update = bitmap_bytes(rectangles);
+        let length = u16::try_from(update.len()).unwrap();
+        let mut pdu = (18 + length).to_le_bytes().to_vec(); // totalLength
+        pdu.extend(0x17u16.to_le_bytes()); // a data PDU
+        pdu.extend(1002u16.to_le_bytes()); // pduSource
+        pdu.extend(1u32.to_le_bytes()); // shareId
+        pdu.extend([0, 2]); // padding, medium priority
+        pdu.extend(length.to_le_bytes()); // uncompressedLength
+        pdu.extend([2, 0, 0, 0]); // an update, not compressed
+        pdu.extend(update);
+        pdu
+    }
+
+    #[test]
+    fn a_screen_update_may_reach_what_the_server_was_told_and_no_more() {
+        let mut i = intake();
+        let part = vec![0u8; 16_000];
+        let code = UpdateCode::SurfaceCommands;
+        let parts = MAX_FAST_PATH_BYTES / part.len();
+        // As big as this client said it takes, again and again: a 4K screen in several updates.
+        for _ in 0..3 {
+            assert_eq!(i.pass(Action::FastPath, &fast_path(&[fragment(Fragmentation::First, code, &part)])), Ok(true));
+            for _ in 1..parts {
+                assert_eq!(i.pass(Action::FastPath, &fast_path(&[fragment(Fragmentation::Next, code, &part)])), Ok(true));
+            }
+            let rest = &part[..MAX_FAST_PATH_BYTES - parts * part.len()];
+            assert_eq!(i.pass(Action::FastPath, &fast_path(&[fragment(Fragmentation::Last, code, rest)])), Ok(true));
+        }
+        // A server that never says Last.
+        assert_eq!(i.pass(Action::FastPath, &fast_path(&[fragment(Fragmentation::First, code, &part)])), Ok(true));
+        let endless = fast_path(&[fragment(Fragmentation::Next, code, &part)]);
+        for _ in 1..parts {
+            assert_eq!(i.pass(Action::FastPath, &endless), Ok(true));
+        }
+        assert!(i.pass(Action::FastPath, &endless).unwrap_err().contains("too large"));
+        // Several in one PDU count the same.
+        let mut i = intake();
+        let small = [0u8; 1000];
+        let many: Vec<_> = (0..30).map(|_| fragment(Fragmentation::Next, code, &small)).collect();
+        let many = fast_path(&many);
+        assert_eq!(i.pass(Action::FastPath, &fast_path(&[fragment(Fragmentation::First, code, &small)])), Ok(true));
+        let sent = (1..).find(|_| i.pass(Action::FastPath, &many).is_err()).unwrap();
+        assert_eq!(sent, (MAX_FAST_PATH_BYTES - small.len()) / (30 * small.len()) + 1);
+        // Whole updates add up to nothing, and what isn't an update is IronRDP's to refuse.
+        let mut i = intake();
+        let whole = fast_path(&[fragment(Fragmentation::Single, code, &part)]);
+        for _ in 0..=parts {
+            assert_eq!(i.pass(Action::FastPath, &whole), Ok(true));
+        }
+        assert_eq!(i.pass(Action::FastPath, &[0xff]), Ok(true));
+    }
+
+    #[test]
+    fn a_channel_message_may_be_big_and_ends_the_session_past_the_limit() {
+        let mut i = intake();
+        // The longest copy brought over, a large file write, one up to the limit, in turn: all whole.
+        for bytes in [MAX_CLIP_BYTES, 1024 * 1024, MAX_CHANNEL_BYTES, MAX_CHANNEL_BYTES] {
+            assert!(message(&mut i, FILES, bytes).into_iter().all(|said| said == Ok(true)), "{bytes}");
+        }
+        // Past it: the first chunk over, whatever length was declared.
+        let said = message(&mut i, FILES, MAX_CHANNEL_BYTES + 1);
+        assert!(said.last().unwrap().as_ref().unwrap_err().contains("too large"), "{:?}", said.last());
+        // Each channel counts for itself.
+        let mut i = intake();
+        let part = [0u8; 16_000];
+        let (a, b) = (chunk(FILES, u32::MAX, NEXT, &part), chunk(1008, u32::MAX, NEXT, &part));
+        assert_eq!(i.pass(Action::X224, &chunk(FILES, u32::MAX, FIRST, &part)), Ok(true));
+        assert_eq!(i.pass(Action::X224, &chunk(1008, u32::MAX, FIRST, &part)), Ok(true));
+        for _ in 0..(MAX_CHANNEL_BYTES / part.len() * 3 / 4) {
+            assert_eq!(i.pass(Action::X224, &a), Ok(true));
+            assert_eq!(i.pass(Action::X224, &b), Ok(true));
+        }
+        // Chunks that are whole messages leave nothing behind, however many.
+        let mut i = intake();
+        let whole = chunk(FILES, 16_000, FIRST | LAST, &part);
+        for _ in 0..3000 {
+            assert_eq!(i.pass(Action::X224, &whole), Ok(true));
+        }
+        // No message going on: IronRDP takes it as it is, or refuses it.
+        for _ in 0..3000 {
+            assert_eq!(i.pass(Action::X224, &chunk(FILES, 16_000, NEXT, &part)), Ok(true));
+        }
+        // The session's own channels aren't static ones.
+        let mut i = intake();
+        for channel in [IO, MESSAGES] {
+            let looks_compressed = chunk(channel, 8, ChannelControlFlags::PACKET_COMPRESSED, &part);
+            assert_eq!(i.pass(Action::X224, &looks_compressed), Ok(true));
+        }
+    }
+
+    #[test]
+    fn compressed_channel_data_ends_the_session() {
+        // IronRDP's check of a message's length is skipped for these.
+        let mut i = intake();
+        let compressed = chunk(FILES, 16, FIRST | ChannelControlFlags::PACKET_COMPRESSED, &[0; 1600]);
+        assert!(i.pass(Action::X224, &compressed).unwrap_err().contains("compressed"));
+    }
+
+    #[test]
+    fn the_dynamic_channel_has_a_budget_for_the_session() {
+        let mut i = intake();
+        let part = [0u8; 16_000];
+        let small = chunk(DYNAMIC, 16_000, FIRST | LAST, &part);
+        for _ in 0..(MAX_DYNAMIC_BYTES / part.len()) {
+            assert_eq!(i.pass(Action::X224, &small), Ok(true));
+        }
+        assert!(i.pass(Action::X224, &small).unwrap_err().contains("dynamic channels"));
+        // No other channel has one.
+        let mut i = intake();
+        let other = chunk(FILES, 16_000, FIRST | LAST, &part);
+        for _ in 0..=(MAX_DYNAMIC_BYTES / part.len()) {
+            assert_eq!(i.pass(Action::X224, &other), Ok(true));
+        }
+    }
+
+    #[test]
+    fn a_copy_too_long_to_keep_is_passed_over_and_the_session_goes_on() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut i = Intake { clipboard: Some((CLIPBOARD, tx)), ..intake() };
+        let long = MAX_CHANNEL_BYTES + 5_000_000;
+        assert!(message(&mut i, CLIPBOARD, long).into_iter().all(|said| said == Ok(false)), "none of it reaches IronRDP");
+        let said: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok()).map(|e| format!("{e:?}")).collect();
+        assert_eq!(said, [format!("RemoteTooLong({long})")], "said once");
+        // A copy that fits comes through, the longest one brought over too.
+        assert!(message(&mut i, CLIPBOARD, 40).into_iter().all(|said| said == Ok(true)));
+        assert!(message(&mut i, CLIPBOARD, MAX_CLIP_BYTES).into_iter().all(|said| said == Ok(true)));
+        // One that stops halfway: the next one is looked at for itself.
+        assert_eq!(i.pass(Action::X224, &chunk(CLIPBOARD, u32::MAX, FIRST, &[0; 100])), Ok(false));
+        assert_eq!(i.pass(Action::X224, &chunk(CLIPBOARD, 10, FIRST | LAST, &[0; 10])), Ok(true));
+        // Only the clipboard: on any other channel a message that long ends the session.
+        assert!(message(&mut i, FILES, long).iter().any(Result::is_err));
+    }
+
+    #[test]
+    fn a_bitmap_far_wider_than_its_place_ends_the_session() {
+        let single = |b| fast_path(&[fragment(Fragmentation::Single, UpdateCode::Bitmap, &bitmap_bytes(vec![b]))]);
+        let mut i = intake();
+        // One pixel wide, declared as wide as a u16 goes: all that room would be made.
+        assert!(i.pass(Action::FastPath, &single(rdp6(1, 65535))).unwrap_err().contains("wider"));
+        assert!(i.pass(Action::FastPath, &single(rdp6(61, 65))).is_err(), "four over");
+        // The same width, and a width rounded up to a multiple of 4.
+        for (place, width) in [(64, 64), (61, 64), (1, 4), (3840, 3840), (3837, 3840)] {
+            assert_eq!(i.pass(Action::FastPath, &single(rdp6(place, width))), Ok(true), "{place} {width}");
+        }
+        // The other kinds aren't sized by it: IronRDP caps RLE, and raw uses what came.
+        let wide_rle = bitmap(1, 65535, 16, Compression::BITMAP_COMPRESSION | Compression::NO_BITMAP_COMPRESSION_HDR);
+        assert_eq!(i.pass(Action::FastPath, &single(wide_rle)), Ok(true));
+        assert_eq!(i.pass(Action::FastPath, &single(bitmap(1, 65535, 32, Compression::empty()))), Ok(true));
+        // The second of several, and behind another update in the PDU.
+        let two = bitmap_bytes(vec![rdp6(64, 64), rdp6(1, 65535)]);
+        let palette = [0u8; 8];
+        let pdu = fast_path(&[fragment(Fragmentation::Single, UpdateCode::Palette, &palette), fragment(Fragmentation::Single, UpdateCode::Bitmap, &two)]);
+        assert!(i.pass(Action::FastPath, &pdu).is_err());
+    }
+
+    #[test]
+    fn a_bitmap_in_parts_is_looked_at_once_whole() {
+        let all = bitmap_bytes(vec![rdp6(1, 65535)]);
+        for split in [1, 5, 12, all.len() - 1] {
+            let (a, b) = all.split_at(split);
+            let mut i = intake();
+            assert_eq!(i.pass(Action::FastPath, &fast_path(&[fragment(Fragmentation::First, UpdateCode::Bitmap, a)])), Ok(true));
+            assert!(i.pass(Action::FastPath, &fast_path(&[fragment(Fragmentation::Last, UpdateCode::Bitmap, b)])).is_err(), "{split}");
+        }
+        // A good one goes through, in three parts.
+        let good = bitmap_bytes(vec![rdp6(61, 64)]);
+        let (a, b) = good.split_at(9);
+        let (b, c) = b.split_at(9);
+        let mut i = intake();
+        let parts = [(Fragmentation::First, a), (Fragmentation::Next, b), (Fragmentation::Last, c)];
+        for (fragmentation, data) in parts {
+            assert_eq!(i.pass(Action::FastPath, &fast_path(&[fragment(fragmentation, UpdateCode::Bitmap, data)])), Ok(true));
+        }
+        assert!(i.bitmap_parts.is_none());
+    }
+
+    #[test]
+    fn a_bitmap_the_slow_way_is_looked_at_too() {
+        let mut i = intake();
+        let good = slow_bitmap(vec![rdp6(61, 64)]);
+        let bad = slow_bitmap(vec![rdp6(1, 65535)]);
+        assert_eq!(i.pass(Action::X224, &indication(IO, &good)), Ok(true));
+        assert!(i.pass(Action::X224, &indication(IO, &bad)).unwrap_err().contains("wider"));
+        // Behind a good PDU in the same indication: IronRDP takes them all.
+        let together = [good.clone(), bad].concat();
+        assert!(i.pass(Action::X224, &indication(IO, &together)).is_err());
+        // What isn't one is left alone.
+        assert_eq!(i.pass(Action::X224, &indication(IO, &[1, 2, 3])), Ok(true));
+        assert_eq!(i.pass(Action::X224, b"not an indication"), Ok(true));
+    }
+
+    #[test]
+    fn what_a_channel_sends_during_a_restart_is_kept_up_to_a_limit() {
+        let (mut replay, mut held) = (VecDeque::new(), 0);
+        let pdu = vec![0u8; 64 * 1024];
+        for _ in 0..(MAX_REPLAY_BYTES / pdu.len()) {
+            hold_for_later(&mut replay, &mut held, &pdu).unwrap();
+        }
+        assert_eq!(replay.len(), 256);
+        assert!(hold_for_later(&mut replay, &mut held, &pdu).unwrap_err().contains("restarted the desktop"));
+        assert_eq!(replay.len(), 256, "not kept");
+    }
+
+    // An attacker on the way adds bytes to the plain confirmation: they must
+    // not be read as the first data from the server inside TLS.
+    #[tokio::test]
+    async fn bytes_that_come_before_tls_end_the_connection() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (client, mut server) = tokio::io::duplex(1 << 16);
+        let srv = tokio::spawn(async move {
+            let _ = server.read(&mut [0u8; 1024]).await;
+            // An X.224 confirmation that picks NLA, then what was put behind it.
+            let mut answer = vec![3, 0, 0, 19, 14, 0xd0, 0, 0, 0, 0, 0, 2, 0, 8, 0, 2, 0, 0, 0];
+            answer.extend_from_slice(b"injected");
+            server.write_all(&answer).await.unwrap();
+            server
+        });
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let run = run(
+            client,
+            SocketAddr::from(([127, 0, 0, 1], 1)),
+            login_with(Graphics::default()),
+            |_| async { true },
+            |_, _, _| {},
+            |_| {},
+            |_| true,
+            |_| {},
+            |_| {},
+            Arc::default(),
+            rx,
+        );
+        let out = tokio::time::timeout(Duration::from_secs(5), run).await.expect("refused at once");
+        assert!(out.unwrap_err().contains("before TLS"));
+        drop(srv);
     }
 
     #[test]

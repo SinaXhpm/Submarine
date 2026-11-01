@@ -332,11 +332,16 @@ mod confined {
                         }));
                     }
                 }
-                ServerDriveIoRequest::ServerDriveQueryDirectoryRequest(r) if r.initial_query != 0 && inside(&self.base, &r.path, true).is_none() => {
-                    return answer(RdpdrPdu::ClientDriveQueryDirectoryResponse(ClientDriveQueryDirectoryResponse {
-                        device_io_reply: DeviceIoResponse::new(r.device_io_request.clone(), NtStatus::NO_MORE_FILES),
-                        buffer: None,
-                    }));
+                // A listing opens what it names as well, `\pipe*` as much as `\pipe`.
+                ServerDriveIoRequest::ServerDriveQueryDirectoryRequest(r) if r.initial_query != 0 => {
+                    let place = inside(&self.base, &r.path, true);
+                    let odd = place.as_deref().and_then(|p| std::fs::symlink_metadata(p).ok()).is_some_and(|m| !m.is_file() && !m.is_dir());
+                    if place.is_none() || odd {
+                        return answer(RdpdrPdu::ClientDriveQueryDirectoryResponse(ClientDriveQueryDirectoryResponse {
+                            device_io_reply: DeviceIoResponse::new(r.device_io_request.clone(), NtStatus::NO_MORE_FILES),
+                            buffer: None,
+                        }));
+                    }
                 }
                 ServerDriveIoRequest::ServerDriveSetInformationRequest(r) => {
                     let leads_out = matches!(&r.set_buffer, FileInformationClass::Rename(to) if inside(&self.base, &to.file_name, false).is_none());
@@ -520,6 +525,79 @@ mod tests {
         let r = send(file_id, 3, read);
         assert_eq!(status(&r), 0);
         assert_eq!(&r[20..], b"hello");
+        // The server can't use up this process's file handles.
+        for _ in 1..ironrdp_rdpdr_native::backend::MAX_OPEN_FILES {
+            assert_eq!(status(&send(0, 0, open(r"\small.txt"))), 0);
+        }
+        assert_eq!(status(&send(0, 0, open(r"\small.txt"))), 0xC000_0001, "unsuccessful");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A listing opens what it names, without O_NONBLOCK: a FIFO would wait for a
+    // writer inside the session's loop, and the tab with it.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_listing_of_a_fifo_by_a_name_with_a_star_holds_nothing_up() {
+        use ironrdp::core::ReadCursor;
+        use ironrdp::rdpdr::pdu::efs::{DeviceIoRequest, ServerDriveIoRequest};
+        use ironrdp::rdpdr::RdpdrBackend;
+        let dir = std::env::temp_dir().join(format!("sub-share-star-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs").join("a.txt"), b"x").unwrap();
+        assert!(std::process::Command::new("mkfifo").arg(dir.join("pipe")).status().unwrap().success());
+        let base = std::fs::canonicalize(&dir).unwrap();
+        let (done, answers) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut backend = confined::Confined::new(base, false);
+            let mut send = |file_id: u32, major: u32, minor: u32, payload: Vec<u8>| -> Vec<u8> {
+                let mut bytes = Vec::new();
+                for x in [1u32, file_id, 7, major, minor] {
+                    bytes.extend(x.to_le_bytes());
+                }
+                bytes.extend(payload);
+                let mut src = ReadCursor::new(&bytes);
+                let io = DeviceIoRequest::decode(&mut src).unwrap();
+                let req = ServerDriveIoRequest::decode(io, &mut src).unwrap();
+                backend.handle_drive_io_request(req).unwrap()[0].encode_unframed_pdu().unwrap()
+            };
+            let text = |path: &str| path.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+            let status = |r: Vec<u8>| u32::from_le_bytes(r[12..16].try_into().unwrap());
+            // The folder, opened as a server does before it lists anything.
+            let open = || {
+                let mut request = Vec::new();
+                for x in [0x0012_0089u32, 0, 0, 0, 7, 1, 0, text(r"\").len() as u32] {
+                    request.extend(x.to_le_bytes());
+                }
+                request.extend(text(r"\"));
+                request
+            };
+            // A first look (FILE_BOTH_DIRECTORY_INFORMATION, initial): the same as opening what it names.
+            let list = |path: &str| {
+                let name = text(path);
+                let mut query = 3u32.to_le_bytes().to_vec();
+                query.push(1);
+                query.extend((name.len() as u32).to_le_bytes());
+                query.extend([0u8; 23]);
+                query.extend(name);
+                query
+            };
+            let opened = send(0, 0, 0, open());
+            let file_id = u32::from_le_bytes(opened[16..20].try_into().unwrap());
+            let pipe = status(send(file_id, 0x0C, 1, list(r"\pipe*")));
+            let docs = status(send(file_id, 0x0C, 1, list(r"\docs\*")));
+            // A listing holds a file handle too: it counts towards the limit.
+            for _ in 2..ironrdp_rdpdr_native::backend::MAX_OPEN_FILES {
+                assert_eq!(status(send(0, 0, 0, open())), 0);
+            }
+            let one_more = status(send(0, 0, 0, open()));
+            let one_more_list = status(send(file_id, 0x0C, 1, list(r"\docs\*")));
+            done.send((pipe, docs, one_more, one_more_list)).unwrap();
+        });
+        let (pipe, docs, one_more, one_more_list) = answers.recv_timeout(std::time::Duration::from_secs(10)).expect("answered, not waiting for a writer");
+        assert_eq!(pipe, 0x8000_0006, "no more files");
+        assert_eq!(docs, 0, "a folder is listed as before");
+        assert_eq!(one_more, 0xC000_0001, "unsuccessful");
+        assert_eq!(one_more_list, 0xC000_000F, "no such file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

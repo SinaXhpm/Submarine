@@ -646,7 +646,7 @@ pub(crate) fn apply_tunnel_sockopts(sock: &tokio::net::TcpStream) {
 /// way a "permanent" tunnel must NEVER tear its listener down over one accept
 /// error — that was itself a silent-death path: a momentary EMFILE would return
 /// from the loop, unbind the port, and kill the tunnel.
-fn transient_accept_error(e: &std::io::Error) -> bool {
+pub(crate) fn transient_accept_error(e: &std::io::Error) -> bool {
     use std::io::ErrorKind::*;
     matches!(e.kind(), ConnectionAborted | ConnectionReset | Interrupted | WouldBlock)
 }
@@ -1298,7 +1298,7 @@ pub async fn bridge_forwarded_channel(
 /// permit within this window, and if the link is truly gone the watcher's own
 /// probe strikes out and triggers a reconnect. A real open completes in one
 /// round-trip (milliseconds), so 10s never trips a healthy link.
-const CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Open a `direct-tcpip` channel through the SSH session, with ONE quick
 /// retry on transient failure. Modern browsers fire bursts of channel-open

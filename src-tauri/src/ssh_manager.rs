@@ -333,7 +333,7 @@ impl PageDrawn {
     pub(crate) fn take_interrupt(&self) -> bool {
         self.interrupted.swap(false, std::sync::atomic::Ordering::Relaxed)
     }
-    fn superseded(&self) -> bool {
+    pub(crate) fn superseded(&self) -> bool {
         self.superseded.load(std::sync::atomic::Ordering::Relaxed)
     }
     fn drawn(&self) -> u64 {

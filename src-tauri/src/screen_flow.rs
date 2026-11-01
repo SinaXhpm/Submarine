@@ -24,6 +24,54 @@ use std::sync::{Arc, Mutex};
 /// check is made before a batch goes out, so a few of these are in flight at most.
 pub const HIGH: u64 = 16 * 1024 * 1024;
 
+/// The least one frame counts for, here and in the page (`MIN_FRAME` in
+/// RemoteScreen.tsx). A tiny frame costs the page about what a big one does:
+/// each under 1 KB is a script of its own for the webview to run. Counted by
+/// their bytes, millions of them would pass under `HIGH`; so `HIGH` is 4096
+/// frames at most, and a page that keeps up never comes near it.
+pub const MIN_FRAME: usize = 4096;
+
+/// What a frame of `bytes` counts for.
+pub fn frame_cost(bytes: usize) -> usize {
+    bytes.max(MIN_FRAME)
+}
+
+/// The desktop's size on its way to the page. A server can say a new size with
+/// every rectangle it sends (12 bytes each), and each one makes the page reset
+/// its canvas. So only the newest waits here, and it goes once a tick while
+/// the page has room, and not at all when the page already has it.
+#[derive(Default)]
+pub struct PageSize {
+    newest: Option<(u16, u16)>,
+    page: Option<(u16, u16)>,
+}
+
+impl PageSize {
+    /// The page was told `size` already.
+    pub fn told(size: (u16, u16)) -> Self {
+        Self { newest: None, page: Some(size) }
+    }
+
+    pub fn set(&mut self, size: (u16, u16)) {
+        self.newest = Some(size);
+    }
+
+    /// A size is waiting to be looked at.
+    pub fn waiting(&self) -> bool {
+        self.newest.is_some()
+    }
+
+    /// The size to send now, if any. Called once a tick, with room.
+    pub fn next(&mut self) -> Option<(u16, u16)> {
+        let size = self.newest.take()?;
+        if self.page == Some(size) {
+            return None;
+        }
+        self.page = Some(size);
+        Some(size)
+    }
+}
+
 /// What one session has sent and the page has answered.
 #[derive(Default)]
 pub struct Flow {
@@ -114,6 +162,49 @@ mod tests {
         assert!(!f.has_room(), "one huge frame is held against the next, never refused");
         f.drawn(10 * HIGH);
         assert!(f.has_room());
+    }
+
+    #[test]
+    fn tiny_frames_reach_the_limit_too() {
+        let f = Flow::default();
+        // Size frames, 5 bytes each: counted by their bytes, millions of them would pass.
+        for _ in 0..(HIGH as usize / MIN_FRAME) {
+            f.sent(frame_cost(5));
+        }
+        assert!(f.has_room());
+        f.sent(frame_cost(5));
+        assert!(!f.has_room(), "held after 4096 frames");
+        assert_eq!(frame_cost(100_000), 100_000, "a big frame counts for what it is");
+        // The page answers with the same count, or the unanswered would never go back down.
+        let page = include_str!("../../src/components/RemoteScreen.tsx");
+        assert!(page.contains(&format!("const MIN_FRAME = {MIN_FRAME};")), "RemoteScreen.tsx: MIN_FRAME must be {MIN_FRAME}");
+        assert!(page.contains("ack(Math.max(MIN_FRAME,"), "RemoteScreen.tsx: a frame's answer counts it as here");
+    }
+
+    #[test]
+    fn only_the_newest_size_goes_and_none_the_page_has() {
+        let mut s = PageSize::default();
+        assert_eq!(s.next(), None, "nothing said yet");
+        s.set((800, 600));
+        assert_eq!(s.next(), Some((800, 600)));
+        // A flood of sizes in one tick: one frame, the newest.
+        for i in 0..1000 {
+            s.set((1000 + i, 700));
+        }
+        assert_eq!(s.next(), Some((1999, 700)));
+        assert_eq!(s.next(), None, "one a tick");
+        // Two sizes in turn, ending where it started: the page has it, nothing goes.
+        s.set((1024, 768));
+        s.set((1999, 700));
+        assert!(s.waiting());
+        assert_eq!(s.next(), None);
+        assert!(!s.waiting());
+        // Told before the session's loop started: the same.
+        let mut s = PageSize::told((640, 480));
+        s.set((640, 480));
+        assert_eq!(s.next(), None);
+        s.set((640, 500));
+        assert_eq!(s.next(), Some((640, 500)));
     }
 
     #[test]
