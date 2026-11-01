@@ -104,8 +104,7 @@ function MirrorLiveStatus({ live }: { live: MirrorStatus }) {
       </div>
       {live.state === "initial-sync" && live.transfer_total > 0 && (
         <div className="h-1 bg-white/5 rounded overflow-hidden">
-          <div className="h-full bg-indigo-500 transition-[width] duration-150"
-               style={{ width: `${pct}%` }} />
+          <div className="h-full bg-indigo-500" style={{ width: `${pct}%` }} />
         </div>
       )}
     </div>

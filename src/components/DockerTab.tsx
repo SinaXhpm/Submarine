@@ -840,6 +840,11 @@ const PruneView = ({ sessionId }: { sessionId: string }) => {
 
 // ============== Modals ==============
 
+// How much text a live log holds: past MAX it is cut back to KEPT, from the
+// front. Some thousands of lines, plenty of scroll-back for triage.
+const LIVE_LOG_MAX = 200_000;
+const LIVE_LOG_KEPT = 160_000;
+
 const ContainerDetailsModal = ({
   sessionId, container, onClose, onOpenContainerTerminal,
 }: {
@@ -863,8 +868,9 @@ const ContainerDetailsModal = ({
   const autoScrollRef = useRef(true);
   // Live-log chunks are coalesced through a one-per-frame rAF before hitting
   // React state: a chatty stream used to fire a setLogs per event, each
-  // re-rendering the whole (up to 1 MB) <pre> — O(n*chunks) work that froze the
-  // tab. Buffering here caps that to ~60 state updates/sec no matter the rate.
+  // re-rendering the whole <pre> — O(n*chunks) work that froze the tab.
+  // Buffering here caps that to ~60 state updates/sec no matter the rate, and
+  // LIVE_LOG_MAX keeps each of them short.
   const logBufRef = useRef("");
   const logRafRef = useRef<number | null>(null);
 
@@ -919,9 +925,10 @@ const ContainerDetailsModal = ({
             if (!chunk) return;
             setLogs(prev => {
               const next = prev + chunk;
-              // Trim from the front so memory doesn't explode in a long live
-              // tail. 1 MB of text is plenty of scroll-back for triage.
-              return next.length > 1_000_000 ? next.slice(next.length - 800_000) : next;
+              // Trim from the front: every update lays all of this text out
+              // again, so what a long live tail holds is what the page pays
+              // for, up to 60 times a second.
+              return next.length > LIVE_LOG_MAX ? next.slice(next.length - LIVE_LOG_KEPT) : next;
             });
           });
         }

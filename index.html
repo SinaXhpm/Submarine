@@ -52,13 +52,13 @@
          transition is invisible. -->
     <style>
       html, body { margin: 0; height: 100%; background: #0a0a0c; color-scheme: dark; }
-      /* #root height is driven by the --vv-h custom property that main.tsx
-         keeps in sync with window.visualViewport.height. On desktop the
+      /* 100vh is for the pre-JS paint: main.tsx sets #root's height from
+         window.visualViewport.height and keeps it in sync. On desktop the
          value equals innerHeight and never changes; on Android when the
          soft keyboard opens the visualViewport shrinks and the whole app
          tree (which uses h-full / flex-1 / min-h-0) cascades correctly
-         above the keyboard. Falls back to 100vh for the pre-JS paint. */
-      #root { height: var(--vv-h, 100vh); background: #0a0a0c; }
+         above the keyboard. */
+      #root { height: 100vh; background: #0a0a0c; }
     </style>
   </head>
   <body>
