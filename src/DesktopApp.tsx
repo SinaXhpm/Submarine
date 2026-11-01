@@ -47,7 +47,7 @@ import RdpSessionView from "./components/RdpSessionView";
 import TelnetSessionView from "./components/TelnetSessionView";
 import VncSessionView from "./components/VncSessionView";
 import MonitoringPanel from "./components/MonitoringPanel";
-import { ErrorBoundary } from "./ui/ErrorBoundary";
+import { ErrorBoundary, Guarded } from "./ui/ErrorBoundary";
 import { parseObjectList } from "./util/serverJson";
 
 const appWindow = getCurrentWindow();
@@ -55,6 +55,11 @@ const appWindow = getCurrentWindow();
 // How long Lock waits for the open tabs to disconnect: a stuck mirror holds a
 // disconnect for 2 s (mirror.rs), and an ordinary one takes moments.
 const LOGOUT_DISCONNECT_LIMIT_MS = 3000;
+// The login and key forms with nothing in them.
+const EMPTY_CRED = { id: null, name: "", auth_type: "password", username: "", password: "", key_id: null };
+const EMPTY_KEY = { id: null, name: "", public_key: "", private_key: "", passphrase: "" };
+// How long a slide-over takes to slide out (their duration-500).
+const SLIDE_OUT_MS = 500;
 
 // Sessions can be either DB-backed (saved node, `serverId > 0`) or quick
 // connect (one-shot, `serverId === 0` and `quickAuth` populated). SessionView
@@ -161,6 +166,11 @@ function DesktopApp() {
       return { ...prev, [sid]: terms };
     });
     setSessionActiveTerm(prev => (prev[sid] === activeTermId ? prev : { ...prev, [sid]: activeTermId }));
+    // A terminal that closed leaves no tile behind, with nothing to show.
+    setWallItems(prev => {
+      const next = prev.filter(i => i.sessionId !== sid || terms.some(t => t.id === i.terminalId));
+      return next.length === prev.length ? prev : next;
+    });
   }, []);
   const wallHasTerminal = (terminalId: string) => wallItems.some(i => i.terminalId === terminalId);
   const pinTerminalToWall = (sid: string, terminalId: string) => {
@@ -269,10 +279,10 @@ function DesktopApp() {
   const [libraryTab, setLibraryTab] = useState<"commands" | "notes">("commands");
 
   const [isCredPanelOpen, setIsCredPanelOpen] = useState(false);
-  const [editCredData, setEditCredData] = useState<any>({ id: null, name: "", auth_type: "password", username: "", password: "", key_id: null });
-  
+  const [editCredData, setEditCredData] = useState<any>(EMPTY_CRED);
+
   const [isKeyPanelOpen, setIsKeyPanelOpen] = useState(false);
-  const [editKeyData, setEditKeyData] = useState<any>({ id: null, name: "", public_key: "", private_key: "", passphrase: "" });
+  const [editKeyData, setEditKeyData] = useState<any>(EMPTY_KEY);
   const [formError, setFormError] = useState("");
   const commandPanelRef = useSlideOverFocus(isCommandPanelOpen);
   const notePanelRef = useSlideOverFocus(isNotePanelOpen);
@@ -332,6 +342,25 @@ function DesktopApp() {
   const isMobile = useIsNarrow();
 
   const [newNode, setNewNode] = useState(defaultNode);
+  // A closed panel stays mounted, its fields hidden: what it held goes once it
+  // has slid out, or a revealed password, key or passphrase would stay in the
+  // page after it was put away.
+  useEffect(() => {
+    if (isPanelOpen) return;
+    const t = setTimeout(() => setNewNode(defaultNode), SLIDE_OUT_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPanelOpen]);
+  useEffect(() => {
+    if (isCredPanelOpen) return;
+    const t = setTimeout(() => setEditCredData(EMPTY_CRED), SLIDE_OUT_MS);
+    return () => clearTimeout(t);
+  }, [isCredPanelOpen]);
+  useEffect(() => {
+    if (isKeyPanelOpen) return;
+    const t = setTimeout(() => setEditKeyData(EMPTY_KEY), SLIDE_OUT_MS);
+    return () => clearTimeout(t);
+  }, [isKeyPanelOpen]);
   const [appSettings, setAppSettings] = useState({
     primaryColor: localStorage.getItem('submarine-primary-color') || '#60a5fa',
     backgroundColor: localStorage.getItem('submarine-bg-color') || '#0a0a0c',
@@ -941,6 +970,25 @@ function DesktopApp() {
     }).then((fn) => { unlisten = fn; });
     return () => { if (unlisten) unlisten(); };
   }, [confirm]);
+  // Commands typed since the last save are only in memory. The backend saves
+  // them on exit; a phone's app has no exit to speak of, swiped away in the
+  // background it just ends, so they are saved as it goes there.
+  useEffect(() => {
+    if (!IS_MOBILE) return;
+    const off = listen<boolean>("app-shown", (e) => {
+      if (!e.payload) invoke("persist_vault").catch(() => {});
+    });
+    return () => { off.then((f) => f()); };
+  }, []);
+
+  // A Library panel saves what is being typed as it closes, and at a Lock that
+  // comes after the profile has closed, too late. So the open panels are asked
+  // first: each adds the promise of its save to the list (false: it couldn't).
+  const saveDrafts = async () => {
+    const saves: Promise<boolean>[] = [];
+    window.dispatchEvent(new CustomEvent("submarine-save-drafts", { detail: saves }));
+    return (await Promise.all(saves)).every(Boolean);
+  };
 
   // Lock the current profile and return to the picker. Confirms first when
   // there are open SSH sessions because they will be torn down — accidental
@@ -955,6 +1003,17 @@ function DesktopApp() {
         destructive: true,
       });
       if (!ok) return;
+    }
+    if (!(await saveDrafts())) {
+      const lockAnyway = await confirm({
+        title: "Lock without saving?",
+        message: "What you were typing in the Library couldn't be saved.\n\nIf you lock now, it is lost.",
+        okLabel: "Lock anyway",
+        cancelLabel: "Stay",
+        destructive: true,
+        safeDefault: true,
+      });
+      if (!lockAnyway) return;
     }
     // The last save, before anything is torn down. If it fails (a stick
     // pulled, a full disk), what changed since the last good save is only in
@@ -994,7 +1053,23 @@ function DesktopApp() {
     setSessions([]);
     setTabNames({});
     setActiveView("nodes");
-    setServers([]); setCredentials([]); setSshKeys([]); setFolders([]); setCommands([]);
+    setServers([]); setCredentials([]); setSshKeys([]); setFolders([]); setCommands([]); setNotes([]);
+    // The next profile numbers its servers from 1 too, so anything kept by
+    // session id would land on its sessions: an armed broadcast most of all.
+    broadcast.disable();
+    broadcast.selectNone();
+    setWallItems([]);
+    setMergedSessionIds([]);
+    setSessionStatuses({});
+    setSessionTerminals({});
+    setSessionActiveTerm({});
+    setPromptSessions(new Set());
+    setLastSyncLabel(null);
+    setActiveFolderId(null);
+    // And no revealed secret stays behind in a form.
+    setNewNode(defaultNode);
+    setEditCredData(EMPTY_CRED);
+    setEditKeyData(EMPTY_KEY);
     addLog("Profile locked.", "info");
   };
 
@@ -1908,6 +1983,7 @@ function DesktopApp() {
 
           <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-transparent relative">
             {activeView === "nodes" && (
+              <ErrorBoundary label="Servers">
               <NodeGrid
                 servers={servers}
                 folders={folders}
@@ -1952,31 +2028,37 @@ function DesktopApp() {
                 }}
                 isMobile={isMobile}
               />
+              </ErrorBoundary>
             )}
 
             {activeView === "profile" && (
-              <ProfilePanel
-                onSync={handleCloudSync}
-                syncing={cloudSyncing}
-                lastSyncLabel={lastSyncLabel}
-                autoSync={appSettings.autoSync}
-                syncIntervalMin={appSettings.syncIntervalMin}
-                onSetInterval={(m: number) => setAppSettings((s: any) => ({ ...s, syncIntervalMin: m }))}
-                onToggleAutoSync={() => setAppSettings((s: any) => ({ ...s, autoSync: !s.autoSync }))}
-              />
+              <ErrorBoundary label="Profile">
+                <ProfilePanel
+                  onSync={handleCloudSync}
+                  syncing={cloudSyncing}
+                  lastSyncLabel={lastSyncLabel}
+                  autoSync={appSettings.autoSync}
+                  syncIntervalMin={appSettings.syncIntervalMin}
+                  onSetInterval={(m: number) => setAppSettings((s: any) => ({ ...s, syncIntervalMin: m }))}
+                  onToggleAutoSync={() => setAppSettings((s: any) => ({ ...s, autoSync: !s.autoSync }))}
+                />
+              </ErrorBoundary>
             )}
 
             {activeView === "settings" && (
-              <SettingsPanel
-                settings={appSettings}
-                setSettings={setAppSettings}
-                servers={servers}
-                isMobile={isMobile}
-                onOpenLogs={() => setActiveView("logs")}
-              />
+              <ErrorBoundary label="Settings">
+                <SettingsPanel
+                  settings={appSettings}
+                  setSettings={setAppSettings}
+                  servers={servers}
+                  isMobile={isMobile}
+                  onOpenLogs={() => setActiveView("logs")}
+                />
+              </ErrorBoundary>
             )}
 
             {activeView === "vault" && (
+              <ErrorBoundary label="Logins"><Guarded render={() => (
               <div className="flex-1 flex flex-col p-4 sm:p-8 space-y-6 sm:space-y-8 animate-in overflow-y-auto custom-scrollbar">
                 <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 border-b border-zinc-700 pb-5 sm:pb-6 shrink-0">
                   <div className="min-w-0">
@@ -1985,14 +2067,14 @@ function DesktopApp() {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button
-                      onClick={() => { setEditCredData({ id: null, name: "", auth_type: "password", username: "", password: "", key_id: null }); setIsCredPanelOpen(true); }}
+                      onClick={() => { setEditCredData(EMPTY_CRED); setIsCredPanelOpen(true); }}
                       title="Add Password"
                       className="h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[12px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-zinc-800 transition-all flex items-center gap-1.5"
                     >
                       <Plus size={14} /> <span className="hidden sm:inline">Add Password</span><span className="sm:hidden">Password</span>
                     </button>
                     <button
-                      onClick={() => { setEditKeyData({ id: null, name: "", public_key: "", private_key: "", passphrase: "" }); setIsKeyPanelOpen(true); }}
+                      onClick={() => { setEditKeyData(EMPTY_KEY); setIsKeyPanelOpen(true); }}
                       title="Add Key"
                       className="h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[12px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-zinc-800 transition-all flex items-center gap-1.5"
                     >
@@ -2009,7 +2091,7 @@ function DesktopApp() {
                           okLabel: "Generate",
                           validate: (v) => v.length === 0 ? "Name is required" : null,
                         });
-                        if (name) invoke("generate_ssh_key", { name }).then(() => refreshSshKeys());
+                        if (name) invoke("generate_ssh_key", { name }).then(() => refreshSshKeys()).catch((e) => addLog(`KEY_GENERATE_ERROR: ${e}`, "error"));
                       }}
                       title="Generate Key"
                       className="h-9 px-2.5 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5"
@@ -2047,7 +2129,7 @@ function DesktopApp() {
                                 <button aria-label={`Delete ${c.name}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete saved password?", message: `“${c.name}” will be removed. Servers using this login will lose it.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_credential", { id: c.id }).then(() => { refreshCredentials(); bumpSync(); });
+                                  invoke("delete_credential", { id: c.id }).then(() => { refreshCredentials(); bumpSync(); }).catch((e) => addLog(`CRED_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -2096,7 +2178,7 @@ function DesktopApp() {
                                 <button aria-label={`Delete ${k.name}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete SSH key?", message: `“${k.name}” will be removed. This key cannot be recovered.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_ssh_key", { id: k.id }).then(() => { refreshSshKeys(); bumpSync(); });
+                                  invoke("delete_ssh_key", { id: k.id }).then(() => { refreshSshKeys(); bumpSync(); }).catch((e) => addLog(`KEY_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -2115,6 +2197,7 @@ function DesktopApp() {
                   </section>
                 </div>
               </div>
+              )} /></ErrorBoundary>
             )}
 
             {/* Sessions live in an absolute layer that overlays the rest of
@@ -2443,15 +2526,17 @@ function DesktopApp() {
                                 drop the session. */}
                             {sessionStatuses[item.sessionId] === 'connected' ? (
                               <div className="flex-1 min-h-0 relative">
-                                <TerminalView
-                                  sessionId={item.sessionId}
-                                  terminalId={item.terminalId}
-                                  attachOnly
-                                  disabled={false}
-                                  isActive={true}
-                                  serverId={sess.serverId}
-                                  serverName={sess.serverName}
-                                />
+                                <ErrorBoundary label={tabLabel(sess)}>
+                                  <TerminalView
+                                    sessionId={item.sessionId}
+                                    terminalId={item.terminalId}
+                                    attachOnly
+                                    disabled={false}
+                                    isActive={true}
+                                    serverId={sess.serverId}
+                                    serverName={sess.serverName}
+                                  />
+                                </ErrorBoundary>
                               </div>
                             ) : (
                               <div className="flex-1 flex items-center justify-center text-zinc-500 text-[10.5px] font-medium uppercase tracking-wider">
@@ -2562,7 +2647,7 @@ function DesktopApp() {
                 on narrow viewports and puts both lists under one search
                 box. The sub-tab state (`libraryTab`) is kept at the parent
                 so it survives navigation elsewhere and back. */}
-            {activeView === "library" && (() => {
+            {activeView === "library" && <ErrorBoundary label="Library"><Guarded render={() => {
               const q = libraryQuery.trim().toLowerCase();
               const filteredCommands = q
                 ? commands.filter(c =>
@@ -2672,7 +2757,7 @@ function DesktopApp() {
                                 <button aria-label={`Delete ${cmd.title}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete command?", message: `“${cmd.title}” will be removed.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_command", { id: cmd.id }).then(() => { refreshCommands(); bumpSync(); });
+                                  invoke("delete_command", { id: cmd.id }).then(() => { refreshCommands(); bumpSync(); }).catch((e) => addLog(`COMMAND_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -2705,7 +2790,7 @@ function DesktopApp() {
                                 <button aria-label={`Delete ${n.title || "Untitled"}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete note?", message: `“${n.title || "Untitled"}” will be removed.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_note", { id: n.id }).then(() => { refreshNotes(); bumpSync(); });
+                                  invoke("delete_note", { id: n.id }).then(() => { refreshNotes(); bumpSync(); }).catch((e) => addLog(`NOTE_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -2720,7 +2805,7 @@ function DesktopApp() {
                   )}
                 </div>
               );
-            })()}
+            }} /></ErrorBoundary>}
 
             {/* Monitor is mounted permanently and just CSS-hidden when not
                 active. Unmounting would tear down the sample/history ring
@@ -2729,7 +2814,9 @@ function DesktopApp() {
                 mounted preserves the live data; the backend pollers were
                 always running, only the UI side was losing state. */}
             <div className={`flex-1 flex flex-col overflow-hidden ${activeView === "monitor" ? "" : "hidden"}`}>
-              <MonitoringPanel servers={servers} refreshServers={refreshServers} addLog={addLog} active={activeView === "monitor"} />
+              <ErrorBoundary label="Monitor">
+                <MonitoringPanel servers={servers} refreshServers={refreshServers} addLog={addLog} active={activeView === "monitor"} />
+              </ErrorBoundary>
             </div>
 
             {/* Compare workspace — pick any subset of open sessions and
@@ -2749,6 +2836,7 @@ function DesktopApp() {
                 lengths — the whole point of compare mode is uniform
                 side-by-side. */}
             {activeView === "logs" && (
+              <ErrorBoundary label="Activity"><Guarded render={() => (
               <div className="flex-1 flex flex-col p-3 sm:p-8 space-y-3 sm:space-y-6 animate-in overflow-hidden">
                 <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-3 border-b border-zinc-700 pb-3 sm:pb-6 shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
@@ -2804,12 +2892,14 @@ function DesktopApp() {
                   )}
                 </div>
               </div>
+              )} /></ErrorBoundary>
             )}
 
           </main>
         </div>
       )}
 
+      <ErrorBoundary overlay label="Server form" onReset={() => { setIsPanelOpen(false); setFormError(""); }}>
       <AddNodePanel
         isOpen={isPanelOpen} onClose={() => { setIsPanelOpen(false); setFormError(""); }}
         newNode={newNode} setNewNode={setNewNode}
@@ -2977,16 +3067,20 @@ function DesktopApp() {
         servers={servers}
         isMobile={isMobile}
       />
+      </ErrorBoundary>
 
-      <QuickConnectModal
-        isOpen={isQuickConnectOpen}
-        onClose={() => setIsQuickConnectOpen(false)}
-        onConnect={openQuickConnect}
-      />
+      <ErrorBoundary overlay label="Quick connect" onReset={() => setIsQuickConnectOpen(false)}>
+        <QuickConnectModal
+          isOpen={isQuickConnectOpen}
+          onClose={() => setIsQuickConnectOpen(false)}
+          onConnect={openQuickConnect}
+        />
+      </ErrorBoundary>
 
 
       {/* The slide-overs stay mounted while closed (to slide out): inert
           then, so Tab can't reach their fields. */}
+      <ErrorBoundary overlay label="Command form" onReset={() => setIsCommandPanelOpen(false)}><Guarded render={() => (
       <div inert={isCommandPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCommandPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsCommandPanelOpen(false)}>
         <div ref={commandPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCommandPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
@@ -3053,7 +3147,9 @@ function DesktopApp() {
           </div>
         </div>
       </div>
+      )} /></ErrorBoundary>
 
+      <ErrorBoundary overlay label="Note form" onReset={() => setIsNotePanelOpen(false)}><Guarded render={() => (
       <div inert={isNotePanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isNotePanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsNotePanelOpen(false)}>
         <div ref={notePanelRef} tabIndex={-1} className={`w-full max-w-[480px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isNotePanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
@@ -3104,7 +3200,9 @@ function DesktopApp() {
           </div>
         </div>
       </div>
+      )} /></ErrorBoundary>
 
+      <ErrorBoundary overlay label="Login form" onReset={() => setIsCredPanelOpen(false)}><Guarded render={() => (
       <div inert={isCredPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCredPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsCredPanelOpen(false)}>
         <div ref={credPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCredPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
@@ -3207,7 +3305,9 @@ function DesktopApp() {
           </div>
         </div>
       </div>
+      )} /></ErrorBoundary>
 
+      <ErrorBoundary overlay label="Key form" onReset={() => setIsKeyPanelOpen(false)}><Guarded render={() => (
       <div inert={isKeyPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isKeyPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsKeyPanelOpen(false)}>
         <div ref={keyPanelRef} tabIndex={-1} className={`w-full max-w-[450px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isKeyPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
@@ -3317,6 +3417,7 @@ function DesktopApp() {
           </div>
         </div>
       </div>
+      )} /></ErrorBoundary>
     </div>
   );
 }

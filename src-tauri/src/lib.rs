@@ -108,9 +108,19 @@ pub struct DbState {
     /// changes (see `lock_profile`). Let go by `close_profile`, or by the system
     /// when the app exits or dies.
     profile_lock: StdMutex<Option<(PathBuf, fs::File)>>,
+    /// Held while what a reloaded page left open is closed (`close_after_reload`).
+    /// That runs beside the new page, so opening a profile waits for it: a
+    /// teardown takes everything it finds, the new profile's sessions and file
+    /// lock too.
+    closing: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl DbState {
+    /// Waits for the teardown after a reload, if one is running (`closing`).
+    async fn teardown_finished(&self) {
+        drop(self.closing.lock().await);
+    }
+
     /// The current generation. Read it while holding `conn`'s lock, so it
     /// names the profile that lock gives access to.
     fn generation_now(&self) -> u64 {
@@ -6314,7 +6324,56 @@ async fn close_profile(
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<(), String> {
     quick_unlock::profile_closed();
+    let opened = state.generation_now();
+    teardown_profile(&state, &ssh, &monitor_map, &cloud, opened).await?;
+    // Here and not in the teardown: after a reload the name may be the one
+    // the new page has just picked.
+    *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE")? = None;
+    Ok(())
+}
 
+/// The page started anew (a reload, the error screen's button) with a profile
+/// open. The old page went without closing anything, and the new one shows the
+/// picker, with no way to reach what is left: every session, forward, mirror
+/// and monitor, and the master key behind them. So it ends here, in a Lock's
+/// order: each session as its tab would close it, then the profile. A reload
+/// isn't a Lock though, so quick unlock may still open by itself: `_closing`
+/// keeps that waiting until all this is done, and the limits below keep the
+/// wait short whatever gets stuck.
+async fn close_after_reload(app: tauri::AppHandle, _closing: tokio::sync::OwnedMutexGuard<()>) {
+    let db = app.state::<DbState>();
+    let opened = match db.conn.lock() {
+        Ok(conn) if conn.is_some() => db.generation_now(),
+        _ => return,
+    };
+    let ssh = app.state::<SshState>();
+    let mut sessions: Vec<String> = ssh.connections.lock().await.keys().cloned().collect();
+    sessions.extend(app.state::<rdp::RdpSessions>().lock().await.keys().cloned());
+    sessions.extend(app.state::<vnc_client::VncClients>().lock().await.keys().cloned());
+    sessions.extend(app.state::<RdpClients>().lock().await.keys().cloned());
+    sessions.extend(app.state::<telnet::Pending>().lock().await.keys().cloned());
+    let disconnect_all = async {
+        for session_id in sessions {
+            let _ = disconnect_session(app.clone(), app.state(), app.state(), app.state(), app.state(), app.state(), app.state(), session_id).await;
+        }
+    };
+    // One session that won't let go doesn't keep the key in memory.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), disconnect_all).await;
+    let monitor_map = app.state::<MonitorMap>();
+    let cloud = app.state::<std::sync::Arc<cloud::CloudState>>();
+    let teardown = teardown_profile(&db, &ssh, &monitor_map, &cloud, opened);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), teardown).await;
+}
+
+/// What closing a profile takes down, see `close_profile`. `opened` is the
+/// generation of the profile that closes.
+async fn teardown_profile(
+    state: &DbState,
+    ssh: &SshState,
+    monitor_map: &MonitorMap,
+    cloud: &cloud::CloudState,
+    opened: u64,
+) -> Result<(), String> {
     // 0. Persist any accumulated in-memory changes (chief among them:
     // cmd_history rows written by TerminalView's Enter-key handler, which
     // deliberately skip a per-keystroke fsync). Best-effort: if the vault
@@ -6322,12 +6381,12 @@ async fn close_profile(
     // the returned Err and continue teardown — losing recent history is
     // preferable to leaking session state. The page saves first and asks the
     // user when that fails (`handleLogout`), so by here the choice is made.
-    let _ = save_vault_async(&state).await;
+    let _ = save_vault_async(state).await;
 
     // 1. Stop monitor pollers: each is told to stop (one waiting on a server
     // that never answers would otherwise keep its connection, the node's
     // password or key and its events going), and the list is emptied.
-    monitor::stop_all(monitor_map.inner().clone()).await;
+    monitor::stop_all(monitor_map.clone()).await;
 
     // 1b. Lock sharing too. The account's sharing identity (its secret half
     // is wiped) outlived a lock until now: someone at the picker could take a
@@ -6408,17 +6467,26 @@ async fn close_profile(
     ssh.kbi_txs.lock().await.clear();
 
     // 6. Drop DB state last, so any in-flight write triggered by a
-    // disconnecting handler above had a valid DB to land in. All of it under
-    // the connection's lock, in the order a save takes the locks: nothing can
-    // see this profile's key with no database, or the next one's database
-    // with this one's key. The new generation tells a command still waiting
-    // on the network that the profile it read from is gone.
+    // disconnecting handler above had a valid DB to land in.
+    forget_open_profile(state, opened)
+}
+
+/// Drops the profile opened at generation `opened`. All of it under the
+/// connection's lock, in the order a save takes the locks: nothing can see
+/// this profile's key with no database, or the next one's database with this
+/// one's key. The new generation tells a command still waiting on the network
+/// that the profile it read from is gone.
+fn forget_open_profile(state: &DbState, opened: u64) -> Result<(), String> {
     let mut conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED_CONN")?;
+    // After a reload this runs beside the new page, which may have opened a
+    // profile by now: that one stays.
+    if state.generation_now() != opened {
+        return Ok(());
+    }
     *conn_guard = None;
     *state.master_key.lock().map_err(|_| "[STATE] LOCK_FAILED_KEY")? = None;
     *state.salt.lock().map_err(|_| "[STATE] LOCK_FAILED_SALT")? = None;
     *state.db_path.lock().map_err(|_| "[STATE] LOCK_FAILED_PATH")? = None;
-    *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE")? = None;
     *state.hlc.lock().map_err(|_| "[STATE] LOCK_FAILED_HLC")? = None;
     *state.profile_lock.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE_LOCK")? = None;
     state.bump_generation();
@@ -7056,6 +7124,9 @@ async fn setup_master_db_inner(
     state: tauri::State<'_, DbState>,
     enforce_strength: bool,
 ) -> Result<u64, String> {
+    // Whatever opens a profile comes through here: after a reload, not before
+    // the teardown of what the old page left open is done (see `closing`).
+    state.teardown_finished().await;
     let (mut password, known_key) = match secret {
         VaultSecret::Password(p) => (p, None),
         VaultSecret::Key(k) => (String::new(), Some(k)),
@@ -24475,7 +24546,7 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder.plugin(android_bridge::init());
     let builder = builder
-        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None), profile_lock: StdMutex::new(None) })
+        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None), profile_lock: StdMutex::new(None), closing: std::sync::Arc::new(tokio::sync::Mutex::new(())) })
         .manage(SshState::new())
         .manage(rdp::RdpSessions::default())
         .manage(telnet::Pending::default())
@@ -24512,6 +24583,19 @@ pub fn run() {
             #[cfg(windows)]
             open_main_window(app);
             Ok(())
+        })
+        // Also the first load, when no profile is open and this does nothing.
+        .on_page_load(|webview, payload| {
+            if payload.event() != tauri::webview::PageLoadEvent::Started {
+                return;
+            }
+            // Taken here, before the new page can ask to open anything. If
+            // it's taken already, a teardown is running and sees to it all.
+            let app = webview.app_handle().clone();
+            let closing = std::sync::Arc::clone(&app.state::<DbState>().closing);
+            if let Ok(closing) = closing.try_lock_owned() {
+                tauri::async_runtime::spawn(close_after_reload(app, closing));
+            }
         })
         .invoke_handler(tauri::generate_handler![
             check_db_exists, setup_master_db, persist_vault,
@@ -24605,6 +24689,10 @@ pub fn run() {
                 let _ = _app.emit("app-shown", matches!(window_event, tauri::WindowEvent::Resumed));
             }
             if let tauri::RunEvent::Exit = event {
+                // What is only in memory goes to the vault: the commands typed
+                // since the last save (cmd_history_add doesn't save). With no
+                // profile open there is nothing to save, and this says so.
+                let _ = save_vault_internal(&_app.state::<DbState>());
                 // The decrypted copies this run staged go with it.
                 sweep_app_temp(true);
             }
@@ -24614,6 +24702,58 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open_db_state() -> DbState {
+        DbState {
+            conn: std::sync::Arc::new(StdMutex::new(Some(Connection::open_in_memory().unwrap()))),
+            master_key: StdMutex::new(Some(Zeroizing::new([7u8; 32]))),
+            salt: StdMutex::new(None),
+            db_path: StdMutex::new(None),
+            active_profile: StdMutex::new(Some("next".to_string())),
+            hlc: StdMutex::new(None),
+            generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            sync_cursor: StdMutex::new(None),
+            profile_lock: StdMutex::new(None),
+            closing: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    /// A profile that has moved the generation on stays. And the name stays
+    /// either way: after a reload it may be what the new page has just picked.
+    #[test]
+    fn closing_a_profile_leaves_one_opened_meanwhile() {
+        let state = open_db_state();
+        let opened = state.generation_now();
+        state.bump_generation();
+        forget_open_profile(&state, opened).unwrap();
+        assert!(state.conn.lock().unwrap().is_some());
+        assert!(state.master_key.lock().unwrap().is_some());
+
+        // Nothing else opened: this one goes, and later commands can tell.
+        let current = state.generation_now();
+        forget_open_profile(&state, current).unwrap();
+        assert!(state.conn.lock().unwrap().is_none());
+        assert!(state.master_key.lock().unwrap().is_none());
+        assert_ne!(state.generation_now(), current);
+        assert_eq!(state.active_profile.lock().unwrap().as_deref(), Some("next"));
+    }
+
+    /// After a reload the teardown runs beside the new page. Opening a profile
+    /// waits for it (a teardown takes all it finds), and a second reload
+    /// doesn't start another.
+    #[tokio::test]
+    async fn opening_a_profile_waits_for_the_teardown_after_a_reload() {
+        use std::time::Duration;
+
+        let state = open_db_state();
+        let closing = std::sync::Arc::clone(&state.closing).try_lock_owned().unwrap();
+        assert!(std::sync::Arc::clone(&state.closing).try_lock_owned().is_err());
+        let open = state.teardown_finished();
+        tokio::pin!(open);
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut open).await.is_err(), "it has to wait");
+        drop(closing);
+        tokio::time::timeout(Duration::from_secs(5), open).await.expect("it goes on once the teardown is done");
+    }
 
     #[test]
     fn dir_entry_name_rejects_traversal_and_separators() {

@@ -705,7 +705,9 @@ fn skipped_note(bytes: u64) -> String {
 /// Drive an interactive PTY channel — an SSH shell (`open_terminal`) or a
 /// `docker exec -it` (`docker::open_container_terminal`) — for the life of the
 /// tab: output → coalesced `terminal-output-{id}` events, keystrokes /
-/// resizes → the channel, then `terminal-closed-{id}`. See `pty_pump`.
+/// resizes → the channel, then `terminal-closed-{id}`, whose `shell_ended` says
+/// the server ended it (`exit`), as against a closed terminal or a lost
+/// connection. See `pty_pump`.
 pub async fn run_pty_pump(
     app: AppHandle,
     terminal_id: String,
@@ -714,15 +716,16 @@ pub async fn run_pty_pump(
     resize_rx: tokio::sync::watch::Receiver<PtySize>,
 ) {
     let page = page_start(&terminal_id);
-    pty_pump(channel, rx, resize_rx, Arc::clone(&page), |buf| emit_terminal_batch(&app, &terminal_id, buf)).await;
+    let shell_ended = pty_pump(channel, rx, resize_rx, Arc::clone(&page), |buf| emit_terminal_batch(&app, &terminal_id, buf)).await;
     page_end(&terminal_id, &page);
-    let _ = app.emit(&format!("terminal-closed-{}", terminal_id), serde_json::json!({}));
+    let _ = app.emit(&format!("terminal-closed-{}", terminal_id), serde_json::json!({ "shell_ended": shell_ended }));
 }
 
 /// The pump behind `run_pty_pump`, with the output sink abstracted (`flush`
 /// gets each coalesced batch and must leave the buffer empty, as
 /// `emit_terminal_batch` does) so tests can run it against a real connection.
 /// `page` is what the page has drawn: what it hasn't stays bounded (Outflow).
+/// Returns whether the server ended the channel.
 ///
 /// The channel is SPLIT so its read side is drained continuously, whatever the
 /// write side is doing. Since russh 0.50 every channel has a bounded queue and
@@ -741,7 +744,8 @@ async fn pty_pump<F>(
     mut resize_rx: tokio::sync::watch::Receiver<PtySize>,
     page: Arc<PageDrawn>,
     mut flush: F,
-) where
+) -> bool
+where
     F: FnMut(&mut Vec<u8>),
 {
     use russh::ChannelMsg;
@@ -818,6 +822,7 @@ async fn pty_pump<F>(
     // interrupt key ends, or guards a page that draws none (PAGE_STALL). The
     // channel is drained all along.
     let mut flow = Outflow::default();
+    let mut server_ended = false;
     loop {
         tokio::select! {
             msg_opt = read_half.wait() => match msg_opt {
@@ -835,9 +840,15 @@ async fn pty_pump<F>(
                     }
                 }
                 // Flush whatever's buffered before the terminal goes away so
-                // the last screenful isn't lost. `None` = channel gone (e.g.
-                // after disconnect_session).
-                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                // the last screenful isn't lost. The server ended it, unless
+                // that's its answer to the writer having closed it.
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => {
+                    flow.finish(&mut out_buf, &page, &mut flush);
+                    server_ended = stop_rx.try_recv().is_err();
+                    break;
+                }
+                // `None` = channel gone (e.g. after disconnect_session).
+                None => {
                     flow.finish(&mut out_buf, &page, &mut flush);
                     break;
                 }
@@ -874,6 +885,7 @@ async fn pty_pump<F>(
     // Reader done: stop the writer too. Dropping its `rx` makes later
     // write_terminal_data calls silent no-ops, as before.
     writer.abort();
+    server_ended
 }
 
 pub struct SshState {
@@ -2216,6 +2228,41 @@ mod tests {
             .await
             .expect("pump must stop once the terminal is closed")
             .unwrap();
+    }
+
+    /// The page tells the user a shell has ended only when the server ended
+    /// it, not when this side closed the terminal.
+    #[tokio::test]
+    async fn pty_pump_tells_a_shell_that_ended_from_a_terminal_closed_here() {
+        use crate::ssh_test_server::{connect, TestServer};
+        use std::time::Duration;
+
+        let session = connect(TestServer::default(), |_| {}, crate::build_ssh_client_config())
+            .await
+            .expect("in-process SSH connection");
+
+        // The "shell" prints a little and ends.
+        let channel = session.channel_open_session().await.unwrap();
+        channel.exec(false, "flood 1024").await.unwrap();
+        let (_tx, rx) = mpsc::channel::<TerminalCommand>(32);
+        let (_resize_tx, resize_rx) = tokio::sync::watch::channel(PtySize { cols: 80, rows: 24 });
+        let page = Arc::new(PageDrawn::default());
+        let ended = tokio::time::timeout(Duration::from_secs(10), pty_pump(channel, rx, resize_rx, page, |buf: &mut Vec<u8>| buf.clear()))
+            .await
+            .expect("the pump ends with the shell");
+        assert!(ended, "the server ended this one");
+
+        // This one is closed from here (the tab went, or a reconnect replaced it).
+        let channel = session.channel_open_session().await.unwrap();
+        channel.exec(false, "echo").await.unwrap();
+        let (tx, rx) = mpsc::channel::<TerminalCommand>(32);
+        let (_resize_tx, resize_rx) = tokio::sync::watch::channel(PtySize { cols: 80, rows: 24 });
+        let page = Arc::new(PageDrawn::default());
+        drop(tx);
+        let ended = tokio::time::timeout(Duration::from_secs(10), pty_pump(channel, rx, resize_rx, page, |buf: &mut Vec<u8>| buf.clear()))
+            .await
+            .expect("the pump ends once the terminal is closed");
+        assert!(!ended, "this side closed that one");
     }
 
     /// A page that stops drawing doesn't stop the channel being drained: what
