@@ -1220,8 +1220,10 @@ fn apply_remote_inner(
     // In a shared profile, whatever a record newly sets running by itself
     // (commands on connect, autostart, forwards, monitor commands) is held
     // until this device's user allows it — see approvals.rs. Holding is part
-    // of the merge's transaction: if it can't be recorded, nothing lands.
+    // of the merge's transaction: if it can't be recorded, nothing lands. It's
+    // done once the batch is in: a server's jump host lands in the repair pass.
     let shared = approvals::ready(&tx) && approvals::profile_is_shared(&tx);
+    let mut watched = Vec::new();
     for spec in ENTITIES {
         let watch = shared && approvals::watches(spec.table);
         for rec in records.iter().filter(|r| !r.deleted && r.entity_type == spec.table) {
@@ -1232,7 +1234,7 @@ fn apply_remote_inner(
                 continue;
             }
             if watch {
-                approvals::hold_changes(&tx, spec.table, &rec.uuid, before.as_ref())?;
+                watched.push((spec.table, &rec.uuid, before));
             }
         }
     }
@@ -1262,6 +1264,9 @@ fn apply_remote_inner(
         ) {
             eprintln!("[SYNC] fk fixup skipped {}.{} uuid={}: {}", f.table, f.fk_col, f.uuid, e);
         }
+    }
+    for (table, uuid, before) in &watched {
+        approvals::hold_changes(&tx, table, uuid, before.as_ref())?;
     }
     // Not toward the size the vault can no longer be saved or opened at. An
     // honest server never sends that much, so none of it lands.
@@ -3652,6 +3657,70 @@ mod sync_engine_tests {
         assert!(approvals::held_by_server(&c).is_empty(), "a personal profile holds nothing");
     }
 
+    // A foreign file's first unlock, in the order it happens there: its
+    // triggers go, this app's come back and work, and what it would do is held.
+    #[test]
+    fn a_foreign_profile_works_as_usual_after_its_first_unlock() {
+        let (a, _ha) = device("A");
+        a.execute_batch(
+            "CREATE TABLE known_hosts(id INTEGER PRIMARY KEY, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
+             INSERT INTO known_hosts(host,port,fingerprint) VALUES('h',22,'SHA256:x');
+             INSERT INTO servers(name,host,port,autostart) VALUES('web','h',22,1);
+             CREATE TRIGGER theirs AFTER UPDATE ON servers BEGIN DELETE FROM known_hosts; END;",
+        )
+        .unwrap();
+        approvals::clear_foreign_schema(&a).unwrap();
+        create_sync_triggers(&a).unwrap();
+        approvals::create_schema(&a).unwrap();
+        approvals::hold_foreign(&a).unwrap();
+        let (uuid, stamp): (String, String) =
+            a.query_row("SELECT uuid, updated_at FROM servers WHERE name='web'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(approvals::held_for(&a, &uuid).into_iter().collect::<Vec<_>>(), vec!["autostart".to_string()]);
+        assert_eq!(count(&a, "known_hosts"), 0);
+
+        a.execute("UPDATE servers SET name='renamed' WHERE name='web'", []).unwrap();
+        let now: String = a.query_row("SELECT updated_at FROM servers WHERE name='renamed'", [], |r| r.get(0)).unwrap();
+        assert!(now > stamp, "an edit is stamped again");
+        let triggers: i64 = a.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='theirs'", [], |r| r.get(0)).unwrap();
+        assert_eq!(triggers, 0);
+    }
+
+    // A co-member moves an allowed server behind a jump host they add in the
+    // same sync. The server's record lands first, with its link still empty;
+    // the repair pass sets it, and that's a move like any other.
+    #[test]
+    fn a_shared_profile_holds_a_server_a_co_member_moves() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port,run_on_connect) VALUES('web','old.example',22,'ls')", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = shared_device("B");
+        let (c, hc) = device("C");
+        approvals::create_schema(&c).unwrap();
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        apply_remote_records(&c, &KEY, &recs, &hc).unwrap();
+        let uuid: String = b.query_row("SELECT uuid FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        approvals::allow(&b, &uuid, &[]).unwrap();
+
+        a.execute("INSERT INTO servers(name,host,port) VALUES('hop','j.example',22)", []).unwrap();
+        a.execute("UPDATE servers SET jump_host_id=(SELECT id FROM servers WHERE name='hop') WHERE name='web'", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let held: Vec<String> = approvals::held_for(&b, &uuid).into_iter().collect();
+        assert_eq!(held, vec!["moved:old.example:22", "run_on_connect"]);
+        assert_eq!(approvals::target_words(&b, &uuid).as_deref(), Some("old.example:22 through hop"));
+
+        // A record that doesn't touch the address holds nothing new.
+        approvals::allow(&b, &uuid, &[]).unwrap();
+        a.execute("UPDATE servers SET color='#fff' WHERE name='web'", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        assert!(approvals::held_for(&b, &uuid).is_empty());
+
+        // A personal profile follows without a word.
+        apply_remote_records(&c, &KEY, &recs, &hc).unwrap();
+        assert!(approvals::held_by_server(&c).is_empty());
+    }
+
     #[test]
     fn dek_is_stable_and_encrypts_blobs() {
         let conn = Connection::open_in_memory().unwrap();
@@ -5192,6 +5261,7 @@ async fn delete_profile(app_handle: tauri::AppHandle, name: String, state: tauri
             .map_err(|e| format!("[FILE] DELETE_PROFILE_FAILED at {:?}: {}", path, e))?;
     }
     let _ = fs::remove_file(&lock_path);
+    let _ = fs::remove_file(foreign_marker(&path));
     // A save that died between writing the tmp and renaming it leaves a
     // `<name>.submarine.tmp` holding a complete vault. `list_profiles` filters
     // on the `.submarine` extension so nothing ever surfaces it, which means
@@ -5221,6 +5291,7 @@ async fn export_profile(
     if !src.exists() {
         return Err(format!("Profile '{}' not found on disk", name));
     }
+    note_own_export(&app_handle, &src);
 
     // Android: the system's "Save to" picker (android_bridge.rs). The user
     // picks the place; nothing is left in a shared folder like Download
@@ -5290,6 +5361,42 @@ fn ios_save_export(app: &tauri::AppHandle, src: &std::path::Path, file_name: &st
     }
     fs::copy(src, &dst).map_err(|e| format!("[FILE] EXPORT_COPY_FAILED to {:?}: {}", dst, e))?;
     Ok(dst.file_name().map(|n| n.to_string_lossy().into_owned()))
+}
+
+/// Keeps the app's data out of iCloud and computer backups. iOS backs up
+/// everything here unless told not to, and that's the vault and the sign-in
+/// token: "a silent credential leak", as Android's manifest calls it where it
+/// shuts backups off. Set on the folder, it counts for all that's in it, so
+/// saves that replace a file don't undo it. Documents, where exports go, stays
+/// in: what's there the user put there.
+#[cfg(target_os = "ios")]
+fn keep_app_data_out_of_backups(app: &tauri::AppHandle) {
+    use std::os::unix::ffi::OsStrExt as _;
+    type CfRef = *const std::ffi::c_void;
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFBooleanTrue: CfRef;
+        static kCFURLIsExcludedFromBackupKey: CfRef;
+        fn CFURLCreateFromFileSystemRepresentation(allocator: CfRef, path: *const u8, len: isize, is_directory: u8) -> CfRef;
+        fn CFURLSetResourcePropertyForKey(url: CfRef, key: CfRef, value: CfRef, error: *mut CfRef) -> u8;
+        fn CFRelease(value: CfRef);
+    }
+    let Ok(dir) = app.path().app_data_dir() else { return };
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.as_os_str().as_bytes();
+    let done = unsafe {
+        let url = CFURLCreateFromFileSystemRepresentation(std::ptr::null(), path.as_ptr(), path.len() as isize, 1);
+        !url.is_null() && {
+            let done = CFURLSetResourcePropertyForKey(url, kCFURLIsExcludedFromBackupKey, kCFBooleanTrue, std::ptr::null_mut());
+            CFRelease(url);
+            done != 0
+        }
+    };
+    if !done {
+        eprintln!("[SYSTEM] BACKUP_EXCLUSION_FAILED");
+    }
 }
 
 /// "Block screenshots" (Android only): whether the app's window is kept out
@@ -5384,6 +5491,71 @@ async fn import_profile_pick() -> Result<Option<(String, String)>, String> {
     }
 }
 
+/// `<name>.submarine.imported`: this profile came from a file and hasn't been
+/// unlocked yet. An imported file is encrypted, so nothing can be written into
+/// it until then, and whoever made it chose everything in it: servers that
+/// connect by themselves, forwards into this network, host keys that skip the
+/// prompt. The first unlock holds all that (`approvals::hold_foreign`), and this
+/// marker goes once the result is saved.
+fn foreign_marker(profile: &Path) -> PathBuf {
+    profile.with_extension("submarine.imported")
+}
+
+/// How many exports `OWN_EXPORTS_FILE` remembers.
+const OWN_EXPORTS_MAX: usize = 100;
+/// The hashes of the files this device exported, one to a line: an export that
+/// comes back unchanged is the user's own backup, and restoring it doesn't turn
+/// it into something to review. The vault can't say so itself: all it holds was
+/// written by someone who knew the password, and a hash can only match what left
+/// this device. A backup from another device, or copied by hand, is held like any
+/// other file and allowed once.
+const OWN_EXPORTS_FILE: &str = "own_exports.txt";
+
+fn vault_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn is_own_export(list: &Path, hash: &str) -> bool {
+    fs::read_to_string(list).is_ok_and(|text| text.lines().any(|line| line == hash))
+}
+
+/// Adds a hash to the list, the oldest going past `OWN_EXPORTS_MAX`. Losing the
+/// list costs a review, so a failure here doesn't stop the export.
+fn add_own_export(list: &Path, hash: &str) {
+    let text = fs::read_to_string(list).unwrap_or_default();
+    let mut hashes: Vec<&str> = text.lines().filter(|line| *line != hash).collect();
+    hashes.push(hash);
+    let start = hashes.len().saturating_sub(OWN_EXPORTS_MAX);
+    let _ = fs::write(list, hashes[start..].join("\n"));
+}
+
+/// Remembers a profile's file before it is exported. One not unlocked here yet
+/// is still a foreign file, and its export would be too.
+fn note_own_export(app: &tauri::AppHandle, src: &Path) {
+    if foreign_marker(src).exists() {
+        return;
+    }
+    if let (Ok(dir), Ok(bytes)) = (profiles_dir(app), read_vault_file(src)) {
+        add_own_export(&dir.join(OWN_EXPORTS_FILE), &vault_hash(&bytes));
+    }
+}
+
+/// Puts an imported vault in place, marked unless it's this device's own
+/// export. The marker goes first: a file from elsewhere never lands without it.
+fn place_imported_vault(dst: &Path, bytes: &[u8], name: &str, own_exports: &Path) -> Result<(), String> {
+    if is_own_export(own_exports, &vault_hash(bytes)) {
+        return write_new_profile_file(dst, bytes, name);
+    }
+    let marker = foreign_marker(dst);
+    fs::write(&marker, b"").map_err(|e| format!("[FILE] IMPORT_WRITE_FAILED to {:?}: {}", marker, e))?;
+    write_new_profile_file(dst, bytes, name).inspect_err(|_| {
+        if !dst.exists() {
+            let _ = fs::remove_file(&marker);
+        }
+    })
+}
+
 /// Header + minimum-size check for an exported vault (no decryption — that
 /// needs the profile password, entered later at unlock).
 fn validate_vault_bytes(bytes: &[u8]) -> Result<(), String> {
@@ -5429,7 +5601,7 @@ async fn import_profile_bytes(
     if dst.exists() {
         return Err(format!("Profile '{}' already exists", name));
     }
-    write_new_profile_file(&dst, &bytes, &name)
+    place_imported_vault(&dst, &bytes, &name, &dir.join(OWN_EXPORTS_FILE))
 }
 
 #[cfg(test)]
@@ -5502,6 +5674,78 @@ mod profile_import_tests {
         assert!(validate_vault_bytes(&v).is_err());
         assert!(validate_vault_bytes(&fake_vault(HEADER_LEN + 3)).is_err());
     }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("submarine-profile-import-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_imported_file_is_marked_unless_this_device_exported_it() {
+        let dir = temp_dir("marked");
+        let list = dir.join(OWN_EXPORTS_FILE);
+        let bytes = fake_vault(HEADER_LEN + NONCE_LEN + 64);
+
+        // From elsewhere.
+        let a = dir.join("a.submarine");
+        place_imported_vault(&a, &bytes, "a", &list).unwrap();
+        assert_eq!(fs::read(&a).unwrap(), bytes);
+        assert!(foreign_marker(&a).exists());
+
+        // This device's own export comes back as it left.
+        add_own_export(&list, &vault_hash(&bytes));
+        let b = dir.join("b.submarine");
+        place_imported_vault(&b, &bytes, "b", &list).unwrap();
+        assert!(b.exists() && !foreign_marker(&b).exists());
+
+        // One byte different and it isn't the same file.
+        let mut other = bytes.clone();
+        *other.last_mut().unwrap() ^= 1;
+        let c = dir.join("c.submarine");
+        place_imported_vault(&c, &other, "c", &list).unwrap();
+        assert!(foreign_marker(&c).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_import_leaves_no_marker_behind() {
+        let dir = temp_dir("failed");
+        let bytes = fake_vault(HEADER_LEN + NONCE_LEN + 64);
+        // Can't be written: the temp name is a folder.
+        let a = dir.join("a.submarine");
+        fs::create_dir(a.with_extension("submarine.tmp")).unwrap();
+        assert!(place_imported_vault(&a, &bytes, "a", &dir.join(OWN_EXPORTS_FILE)).is_err());
+        assert!(!a.exists() && !foreign_marker(&a).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_own_export_list_keeps_the_newest_and_no_doubles() {
+        let dir = temp_dir("list");
+        let list = dir.join(OWN_EXPORTS_FILE);
+        assert!(!is_own_export(&list, "aa"), "no list yet");
+        for i in 0..OWN_EXPORTS_MAX + 5 {
+            add_own_export(&list, &format!("h{i}"));
+        }
+        assert!(!is_own_export(&list, "h4"));
+        assert!(is_own_export(&list, "h5"));
+        assert!(is_own_export(&list, &format!("h{}", OWN_EXPORTS_MAX + 4)));
+        // Exported again, an old one is new again, and counted once.
+        add_own_export(&list, "h5");
+        assert_eq!(fs::read_to_string(&list).unwrap().lines().count(), OWN_EXPORTS_MAX);
+        assert!(!is_own_export(&list, "h"), "the whole line, not a part of it");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_marker_is_no_profile() {
+        let marker = foreign_marker(Path::new("work.submarine"));
+        assert_eq!(marker, Path::new("work.submarine.imported"));
+        // The picker lists files that end in .submarine only.
+        assert_ne!(marker.extension().and_then(|e| e.to_str()), Some("submarine"));
+    }
 }
 
 /// Commit a picked vault file into the profiles dir under `name`. Refuses
@@ -5539,7 +5783,7 @@ async fn import_profile_save(
         return Err("Source file is truncated — header is valid but the body is too small.".into());
     }
 
-    write_new_profile_file(&dst, &bytes, &name)
+    place_imported_vault(&dst, &bytes, &name, &dir.join(OWN_EXPORTS_FILE))
 }
 
 /// Whether the *currently selected* profile's encrypted file exists on
@@ -5607,6 +5851,8 @@ async fn setup_master_db_inner(
     // Before anything is read: another window on this profile stops it here.
     // If the password turns out wrong the lock is let go with this function.
     let profile_lock = lock_profile(&state, &path)?;
+    let marker = foreign_marker(&path);
+    let foreign = path.exists() && marker.exists();
     let mut conn;
     let salt_bytes: [u8; SALT_LEN];
     // Wrap the derived AES key so it's wiped on every early-return path
@@ -5653,6 +5899,9 @@ async fn setup_master_db_inner(
         let owned = to_sqlite_owned(&decrypted_data)?;
         conn.deserialize(MAIN_DB, owned, false)
             .map_err(|e| format!("[DATABASE] DESERIALIZE_FAILED: {}", e))?;
+        if foreign {
+            approvals::clear_foreign_schema(&conn)?;
+        }
         // Schema migration for vaults created before the Notes feature shipped.
         // Existing tables are untouched; only the new ones get materialised.
         // Idempotent — running it on a fresh vault that already has `notes`
@@ -5947,6 +6196,10 @@ async fn setup_master_db_inner(
     if get_or_create_dek(&conn)?.1 {
         needs_resave = true;
     }
+    if foreign {
+        approvals::hold_foreign(&conn)?;
+        needs_resave = true;
+    }
 
     // Reset every monitor to paused on profile open. Pollers don't survive
     // app restart, so a row with `paused=0` left over from the previous
@@ -5987,6 +6240,8 @@ async fn setup_master_db_inner(
     if needs_resave {
         save_vault_internal(&state)?;
     }
+    // Only now: what a foreign file's first unlock held is in the saved file.
+    let _ = fs::remove_file(&marker);
     Ok(generation)
 }
 
@@ -7132,17 +7387,19 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
     // What this device holds back for each server until the user allows it:
-    // a change someone else made in a shared profile (see approvals.rs).
-    // Empty for every server of a personal profile.
+    // a change someone else made in a shared profile, or all that a profile
+    // imported from elsewhere would do (see approvals.rs). Empty for every
+    // server of a personal profile of this device's.
     let mut held = approvals::held_by_server(conn);
     let mut list = Vec::new();
     for r in rows {
         let mut row = r.map_err(|e| format!("[DATABASE] ROW_FETCH_FAILED: {}", e))?;
-        let items = row
-            .get("uuid")
-            .and_then(|u| u.as_str())
-            .and_then(|u| held.remove(u))
-            .unwrap_or_default();
+        let uuid = row.get("uuid").and_then(|u| u.as_str()).map(str::to_string);
+        let items = uuid.as_deref().and_then(|u| held.remove(u)).unwrap_or_default();
+        // A held move: where the server goes now, for the review to say.
+        if let (true, Some(u)) = (items.iter().any(|i| i.starts_with(approvals::MOVED)), uuid.as_deref()) {
+            row["moved_to"] = json!(approvals::target_words(conn, u));
+        }
         row["held"] = json!(items);
         list.push(row);
     }
@@ -22956,6 +23213,8 @@ pub fn run() {
         // is the earliest hook we get an AppHandle, so initialise it there and
         // `manage` it for commands.
         .setup(|app| {
+            #[cfg(target_os = "ios")]
+            keep_app_data_out_of_backups(app.handle());
             let cloud_state = cloud::CloudState::new(&app.handle());
             app.manage(cloud_state);
             // .rdp files an earlier run left behind (issue #3).

@@ -939,11 +939,25 @@ function DesktopApp() {
     addLog("Profile locked.", "info");
   };
 
-  const openServer = (server: any) => {
+  const openServer = async (server: any) => {
     const sessionId = `session-${server.id}`;
     const existing = sessions.find(s => s.id === sessionId);
     if (!existing) {
-      setSessions([...sessions, {
+      // Someone moved this server and this device hasn't allowed it: it still
+      // connects, but not unasked. Cancel has the focus, as for held commands.
+      const moved: string | undefined = (server.held || []).find((i: string) => i.startsWith("moved:"));
+      if (moved) {
+        const ok = await confirm({
+          title: "Connect to the new address?",
+          message: `${server.name} now connects to ${server.moved_to || "a new address"}. It connected to ${moved.slice("moved:".length)}, and this device hasn't allowed the change.`,
+          okLabel: "Allow and connect",
+          cancelLabel: "Not now",
+          safeDefault: true,
+        });
+        if (!ok) return;
+        await allowHeld(server.id, [moved]);
+      }
+      setSessions((prev: Session[]) => prev.some((s) => s.id === sessionId) ? prev : [...prev, {
         id: sessionId,
         serverId: server.id,
         serverName: server.name,
@@ -957,8 +971,8 @@ function DesktopApp() {
         runOnConnect: server.run_on_connect || "",
         // And once into each new terminal of the tab (#256).
         runOnConnectEvery: !!server.run_on_connect_every,
-        // Set or changed by someone this profile is shared with, not allowed
-        // here yet: SessionView asks before typing them.
+        // Set or changed elsewhere, not allowed here yet: SessionView asks
+        // before typing them.
         runOnConnectHeld: (server.held || []).includes("run_on_connect"),
       }]);
     }

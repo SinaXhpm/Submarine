@@ -647,8 +647,8 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           <ShieldAlert size={14} className="text-amber-400 shrink-0" />
           <span className="flex-1 min-w-0">
             {heldCount === 1
-              ? "A change from someone you share this profile with is waiting for your OK."
-              : `${heldCount} changes from people you share this profile with are waiting for your OK.`}
+              ? "A change made elsewhere is waiting for your OK."
+              : `${heldCount} changes made elsewhere are waiting for your OK.`}
           </span>
           <button
             onClick={() => setReviewOpen(true)}
