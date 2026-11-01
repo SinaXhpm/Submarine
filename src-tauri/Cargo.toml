@@ -85,7 +85,7 @@ directories = "6.0"
 # its Perl build requirement are gone. `ring` is picked as the crypto backend
 # because it is already in the tree via rustls (aws-lc-rs would add a cmake /
 # NASM build dependency on Windows for nothing).
-russh = { version = "0.63", default-features = false, features = ["flate2", "ring", "rsa"] }
+russh = { version = "0.65", default-features = false, features = ["flate2", "ring", "rsa"] }
 # Must be the exact version russh pins: the key types are shared between our
 # key generation / validation code and russh's auth API.
 ssh-key = { version = "=0.7.0-rc.11", features = ["alloc", "encryption", "ed25519", "rsa"] }
