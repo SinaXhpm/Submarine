@@ -8,9 +8,10 @@
 //! channel: what `ssh -L` does, for this one tab.
 //!
 //! The forward listens on the node's own loopback address, the same every
-//! time (`listen_candidates`), so what the RDP app remembers for it (a login
-//! saved with "Remember me", a certificate it trusts) is found again. Remote
-//! Desktop Connection on Windows also gets the node's saved password, if it
+//! time for the same server (`listen_candidates`, `forward_key`), so what the
+//! RDP app remembers for it (a login saved with "Remember me", a certificate
+//! it trusts) is found again. Remote Desktop Connection on Windows also gets
+//! the node's saved password, if it
 //! has one, in its `.rdp` file: encrypted for this Windows user, the way it
 //! keeps passwords itself, and the file goes once it has been read. The other
 //! apps ask for the password themselves. The built-in client (rdp_client.rs)
@@ -45,6 +46,8 @@ pub struct RdpSession {
     pub login: Option<String>,
     /// What the RDP app connects to: `host:port` or the forward's address.
     pub address: String,
+    /// The server's own `host:port`, either way.
+    pub target: String,
     pub username: String,
     /// The options it was opened with; "Open again" may bring newer ones.
     pub options: RdpOptions,
@@ -57,7 +60,8 @@ pub struct RdpSession {
 
 impl RdpSession {
     pub fn direct(server_id: i32, address: String, username: String, options: RdpOptions) -> Self {
-        Self { _route: Arc::new(Vec::new()), accept: None, server_id, login: None, address, username, options, file: None, windows: Arc::default() }
+        let target = address.clone();
+        Self { _route: Arc::new(Vec::new()), accept: None, server_id, login: None, address, target, username, options, file: None, windows: Arc::default() }
     }
 }
 
@@ -129,12 +133,14 @@ pub struct RdpOptions {
     pub clipboard: bool,
     /// This computer's drives (with Remmina: the home folder).
     pub drives: bool,
+    /// The server's `host:port` these options are for (see `moved`).
+    pub shared_for: String,
 }
 
 impl Default for RdpOptions {
     /// What Remote Desktop Connection does on its own, files kept private.
     fn default() -> Self {
-        Self { full_screen: true, width: 1600, height: 900, clipboard: true, drives: false }
+        Self { full_screen: true, width: 1600, height: 900, clipboard: true, drives: false, shared_for: String::new() }
     }
 }
 
@@ -145,6 +151,42 @@ impl RdpOptions {
         self.height = self.height.clamp(480, 4320);
         self
     }
+
+    /// The options as they may go to a server at `target`, and whether what
+    /// they share had to be turned off for it (`moved`).
+    pub fn for_target(mut self, target: &str, shared_profile: bool) -> (Self, bool) {
+        let held = moved(shared_profile, &self.shared_for, target) && (self.clipboard || self.drives);
+        if held {
+            self.clipboard = false;
+            self.drives = false;
+        }
+        (self, held)
+    }
+}
+
+/// Whether someone else may have moved a server: it is no longer where this
+/// device's options for it were chosen. Those options are kept by the server's
+/// sync id and never synced, but its address is: in a shared profile someone
+/// else can point the same row at a server of their own, which must not get
+/// the folder, the clipboard or the login without NLA this device allowed the
+/// old one. They stay off until the user allows them for the new address. A
+/// personal profile is written by the user's own devices only, so nothing is
+/// held there. `shared_for` is empty until the server first connects (nothing
+/// to compare with yet).
+pub fn moved(shared_profile: bool, shared_for: &str, target: &str) -> bool {
+    shared_profile && !shared_for.is_empty() && shared_for != target
+}
+
+/// Whether the address of this connection becomes the one the options are for
+/// (the tab keeps it, `sharedFor`): the first time; in a personal profile
+/// always, the server having moved by the user's own hand if it moved at all.
+pub fn pins_address(shared_profile: bool, shared_for: &str) -> bool {
+    !shared_profile || shared_for.is_empty()
+}
+
+/// What the tab's log says when `moved` turned the options off.
+pub fn moved_note(shared_for: &str, target: &str) -> String {
+    format!("This server's address changed from {shared_for} to {target}: what this device shared with it (files, clipboard, logging in without NLA) stays off until you allow it for the new address.")
 }
 
 /// The `.rdp` file for `address` (already checked): where to connect, who
@@ -200,13 +242,15 @@ pub fn protect_password(_password: &str) -> Result<String, String> {
 
 /// The same as a Remmina profile, which (unlike its `.rdp` import) carries
 /// full screen and a shared folder. `home` is the folder shared for
-/// `drives`. Values are checked already; a line break can't reach here.
+/// `drives`. Values are checked already; a line break can't reach here. A
+/// profile is a GLib key file, where `\` starts an escape (`CORP\tom` would
+/// read as CORP, a tab and "om").
 pub fn remmina_file(address: &str, user: &str, options: &RdpOptions, home: Option<&Path>) -> String {
-    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>().replace('\\', "\\\\");
     let mut out = format!("[remmina]\nname={address}\nprotocol=RDP\nserver={address}\n");
     let user = user.trim();
     if !user.is_empty() {
-        out.push_str(&format!("username={user}\n"));
+        out.push_str(&format!("username={}\n", clean(user)));
     }
     // Remmina 1.4: viewmode 4 is full screen, 1 a window; resolution_mode 2
     // takes the window's (there: the screen's) size, 1 the one given.
@@ -262,6 +306,25 @@ pub fn loopback_for(node_key: &str) -> IpAddr {
     // Not 127.0.0.0, 127.0.0.1 (shared with everything else) or .255.
     let z = z.clamp(2, 254);
     IpAddr::V4(Ipv4Addr::new(127, x, y, z))
+}
+
+/// Where a node goes through the SSH server `jump`: what its forward leads to.
+pub fn route(host: &str, port: u16, jump: i32) -> String {
+    format!("{} via {jump}", address(host, port))
+}
+
+/// What a node's forward is named by (`listen_candidates`). The node's id
+/// alone for `first_route`, where this device first reached it: what the RDP
+/// app saved for that address is found again. Anywhere else the route goes in
+/// with the id: a row someone else in a shared profile pointed at a server of
+/// their own gets another address, and the RDP app offers that server no
+/// login it saved for this one.
+pub fn forward_key(node: &str, first_route: &str, route: &str) -> String {
+    if first_route == route {
+        node.to_string()
+    } else {
+        format!("{node} {route}")
+    }
 }
 
 /// A node's own ports, besides the RDP port, are in 20000-29999: below the
@@ -332,6 +395,9 @@ pub async fn forward_through(
     let accept = tokio::spawn(async move {
         let limit = Arc::new(tokio::sync::Semaphore::new(MAX_FORWARDED_CONNS));
         let mut watch = tokio::time::interval(std::time::Duration::from_secs(2));
+        // Held here: when the tab closes, this task's end ends them too, and
+        // with them the hold they have on the SSH route.
+        let mut conns = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 _ = watch.tick() => {
@@ -340,19 +406,33 @@ pub async fn forward_through(
                         return;
                     }
                 }
+                Some(_) = conns.join_next(), if !conns.is_empty() => {}
                 accepted = listener.accept() => {
-                    let Ok((sock, peer)) = accepted else { continue };
+                    let (sock, peer) = match accepted {
+                        Ok(accepted) => accepted,
+                        // The next try fails at once too (no file handles left):
+                        // a short wait, not a spin (see the tunnels' accept loop).
+                        Err(e) => {
+                            if !crate::tunnel::transient_accept_error(&e) {
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            }
+                            continue;
+                        }
+                    };
                     let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else { continue };
                     let route = Arc::clone(&route);
                     let host = host.clone();
-                    tokio::spawn(async move {
+                    conns.spawn(async move {
                         let _permit = permit;
                         crate::tunnel::apply_tunnel_sockopts(&sock);
                         let Some(last) = route.last() else { return };
-                        let open = last.channel_open_direct_tcpip(host.clone(), u32::from(port), peer.ip().to_string(), u32::from(peer.port()));
-                        let opened = tokio::time::timeout(crate::shell_sftp::CHANNEL_OPEN_TIMEOUT, open)
-                            .await
-                            .unwrap_or(Err(russh::Error::ConnectionTimeout));
+                        // Bounded: a server that doesn't answer would keep its permit for good.
+                        let opened = tokio::time::timeout(
+                            crate::tunnel::CHANNEL_OPEN_TIMEOUT,
+                            last.channel_open_direct_tcpip(host.clone(), u32::from(port), peer.ip().to_string(), u32::from(peer.port())),
+                        )
+                        .await
+                        .unwrap_or(Err(russh::Error::ConnectionTimeout));
                         match opened {
                             Ok(channel) => {
                                 let mut sock = sock;
@@ -376,13 +456,20 @@ pub struct RdpSessionParts {
 }
 
 impl RdpSession {
-    pub fn forwarded(parts: RdpSessionParts, server_id: i32, address: String, username: String, options: RdpOptions) -> Self {
-        Self { _route: parts.hops, accept: Some(parts.accept), server_id, login: None, address, username, options, file: None, windows: Arc::default() }
+    pub fn forwarded(parts: RdpSessionParts, server_id: i32, address: String, target: String, username: String, options: RdpOptions) -> Self {
+        Self { _route: parts.hops, accept: Some(parts.accept), server_id, login: None, address, target, username, options, file: None, windows: Arc::default() }
     }
 }
 
+/// On Linux the temp folder is everyone's: a fixed name in it can be made
+/// first by another user, who then owns what is written there (a Remmina
+/// profile can run commands). Windows and macOS have one per user.
 fn files_dir() -> PathBuf {
-    std::env::temp_dir().join("submarine-rdp")
+    if cfg!(any(windows, target_os = "macos")) {
+        std::env::temp_dir().join("submarine-rdp")
+    } else {
+        crate::app_temp_root().join("rdp")
+    }
 }
 
 /// Writes the session's `.rdp` (or `.remmina`) file into this user's temp
@@ -639,7 +726,7 @@ mod tests {
                 "drivestoredirect:s:\r\n",
             )
         );
-        let window = RdpOptions { full_screen: false, width: 1280, height: 720, clipboard: false, drives: true };
+        let window = RdpOptions { full_screen: false, width: 1280, height: 720, clipboard: false, drives: true, ..RdpOptions::default() };
         assert_eq!(
             rdp_file("[::1]:3389", "  ", &window, None),
             concat!(
@@ -694,8 +781,55 @@ mod tests {
     }
 
     #[test]
+    fn what_is_shared_stays_with_the_address_it_was_chosen_for() {
+        let sharing = RdpOptions { clipboard: true, drives: true, shared_for: "server-a:3389".into(), ..RdpOptions::default() };
+        // The same address, and a server that hasn't connected since the option existed.
+        let (o, held) = sharing.clone().for_target("server-a:3389", true);
+        assert!(!held && o.clipboard && o.drives);
+        let (o, held) = RdpOptions { shared_for: String::new(), ..sharing.clone() }.for_target("server-b:3389", true);
+        assert!(!held && o.clipboard && o.drives);
+        // Another host or port: off, whoever moved it.
+        for elsewhere in ["server-b:3389", "server-a:3390"] {
+            let (o, held) = sharing.clone().for_target(elsewhere, true);
+            assert!(held && !o.clipboard && !o.drives, "{elsewhere}");
+            assert_eq!(o.shared_for, "server-a:3389", "still for the old one, until the user says");
+        }
+        // Moved with nothing shared: nothing to say.
+        let quiet = RdpOptions { clipboard: false, drives: false, shared_for: "server-a:3389".into(), ..RdpOptions::default() };
+        assert!(!quiet.for_target("server-b:3389", true).1);
+        // A personal profile has nobody else to move it: nothing stays off.
+        let (o, held) = sharing.clone().for_target("server-b:3389", false);
+        assert!(!held && o.clipboard && o.drives);
+        assert!(!moved(false, "server-a:3389", "server-b:3389"));
+        // The tab keeps the new address there; in a shared profile only the first one.
+        assert!(pins_address(false, "server-a:3389") && pins_address(false, ""));
+        assert!(pins_address(true, ""));
+        assert!(!pins_address(true, "server-a:3389"), "held until the user allows it");
+        // The page's name for it.
+        let o: RdpOptions = serde_json::from_str(r#"{"sharedFor":"server-a:3389"}"#).unwrap();
+        assert_eq!(o.shared_for, "server-a:3389");
+        assert!(include_str!("../../src/util/rdpOptions.ts").contains("sharedFor"));
+    }
+
+    #[test]
+    fn a_saved_login_stays_with_the_server_it_was_saved_for() {
+        let first = route("server-a", 3389, 7);
+        assert_eq!(first, "server-a:3389 via 7");
+        let here = |now: &str| listen_candidates(&forward_key("8a3c-uuid-one", &first, now));
+        // The first route: the address the node always had.
+        assert_eq!(here(&first), listen_candidates("8a3c-uuid-one"));
+        // Another host, port or SSH server: another address, each its own.
+        let others = [route("server-b", 3389, 7), route("server-a", 3390, 7), route("server-a", 3389, 8)];
+        for other in &others {
+            assert_ne!(here(other)[0], here(&first)[0], "{other}");
+            assert_eq!(here(other), here(other), "the same every time");
+        }
+        assert_ne!(here(&others[0])[0], here(&others[1])[0]);
+    }
+
+    #[test]
     fn remmina_and_freerdp_get_the_same_options() {
-        let window = RdpOptions { full_screen: false, width: 1024, height: 700, clipboard: false, drives: true };
+        let window = RdpOptions { full_screen: false, width: 1024, height: 700, clipboard: false, drives: true, ..RdpOptions::default() };
         assert_eq!(
             remmina_file("127.0.0.5:5000", "alice", &window, Some(Path::new("/home/alice"))),
             concat!(
@@ -727,6 +861,9 @@ mod tests {
             ),
             "no folder shared unless asked"
         );
+        // A key file's `\` escapes: doubled, it reads as itself.
+        assert!(remmina_file("h:1", r"CORP\tom", &full, Some(Path::new(r"C:\Users\tom"))).contains("username=CORP\\\\tom\n"));
+        assert!(remmina_file("h:1", "", &RdpOptions { drives: true, ..full.clone() }, Some(Path::new(r"\\nas\tom"))).contains(r"sharefolder=\\\\nas\\tom"));
         assert_eq!(freerdp_args("h:1", r"CORP\alice", &full), vec!["/v:h:1", r"/u:CORP\alice", "+f", "/clipboard"]);
         assert_eq!(freerdp_args("h:1", " ", &window), vec!["/v:h:1", "/size:1024x700", "-clipboard", "+drives"], "no /u: without a user");
     }
@@ -839,6 +976,13 @@ mod tests {
         assert_eq!(last_words("one\n\ntwo\nthree\n", 2), vec!["two".to_string(), "three".to_string()], "no errors: the last lines");
         assert!(last_words("", 3).is_empty());
         assert_eq!(last_words(&"x".repeat(1000), 1)[0].len(), 300);
+    }
+
+    #[test]
+    fn on_linux_the_files_go_in_a_folder_only_this_copy_knows() {
+        if !cfg!(any(windows, target_os = "macos")) {
+            assert!(files_dir().starts_with(crate::app_temp_root()), "{:?}", files_dir());
+        }
     }
 
     #[tokio::test]

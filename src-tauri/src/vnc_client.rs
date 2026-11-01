@@ -158,18 +158,19 @@ pub const MAX_PASTE: usize = 1_000_000;
 /// The server's copies reach the tab at most this often, the latest one
 /// winning: a server that copies over and over (up to 1 MiB each time) can't
 /// keep the page busy.
-const COPY_EVERY: Duration = Duration::from_millis(250);
+pub const COPY_EVERY: Duration = Duration::from_millis(250);
 
-/// The server's copy waiting for the tab, and when the last one went.
+/// The server's copy waiting for the tab, and when the last one went (the
+/// built-in RDP client's too).
 #[derive(Default)]
-struct Copies {
-    due: Option<String>,
+pub struct Copies {
+    pub due: Option<String>,
     sent_at: Option<Instant>,
 }
 
 impl Copies {
     /// The copy to hand on at `now`, if one is due and the last went long enough ago.
-    fn take(&mut self, now: Instant) -> Option<String> {
+    pub fn take(&mut self, now: Instant) -> Option<String> {
         if self.sent_at.is_some_and(|at| now.saturating_duration_since(at) < COPY_EVERY) {
             return None;
         }
@@ -792,6 +793,7 @@ where
     let client = started.finish().map_err(|e| explain(&e))?;
 
     let mut screen = Screen::with_wire(wire);
+    let mut page_size = crate::screen_flow::PageSize::default();
     let mut pointer = Pointer::default();
     let mut connected = Some(connected);
     let mut asked_size: Option<(u16, u16)> = None;
@@ -904,12 +906,12 @@ where
                     match next {
                         Ok(Some(ev)) => { got = true; match ev {
                             VncEvent::SetResolution(s) => {
-                                screen.resize(s.width, s.height);
-                                probe.whole_picture();
-                                if !frame(size_frame(s.width, s.height)) {
-                                    ended = Some(Ok("closed".to_string()));
-                                    break;
+                                // The same size again keeps the picture, which the page keeps too.
+                                if (s.width, s.height) != (screen.w, screen.h) {
+                                    screen.resize(s.width, s.height);
                                 }
+                                probe.whole_picture();
+                                page_size.set((s.width, s.height));
                                 if let Some(c) = connected.take() {
                                     c(s.width, s.height);
                                     // The tab's size, asked once the server
@@ -926,10 +928,7 @@ where
                                     if (l.width, l.height) != (screen.w, screen.h) {
                                         screen.resize(l.width, l.height);
                                         probe.whole_picture();
-                                        if !frame(size_frame(l.width, l.height)) {
-                                            ended = Some(Ok("closed".to_string()));
-                                            break;
-                                        }
+                                        page_size.set((l.width, l.height));
                                     }
                                     resize(&client, resizer.layout());
                                 }
@@ -986,6 +985,12 @@ where
                 // new update is asked for: the server, which only sends on a
                 // request, waits too.
                 let held = !flow.has_room();
+                // The size first: the frames below are drawn on it.
+                if let Some((w, h)) = if held { None } else { page_size.next() } {
+                    if !frame(size_frame(w, h)) {
+                        break Ok("closed".to_string());
+                    }
+                }
                 let sent = if held { Vec::new() } else { screen.frames() };
                 let changed = !sent.is_empty();
                 for f in sent {
@@ -1448,18 +1453,8 @@ mod tests {
         if pf[2] != 0 { all[4 - n..].to_vec() } else { all[..n].to_vec() }
     }
 
-    /// A server with no password and a 4×2 desktop. It writes down the pixel
-    /// format and the encodings the client asks for, and answers the first ask
-    /// for an update with a row of `pixels` in the format that was asked for,
-    /// then with each of `copied` on its clipboard (ServerCutText), one after the
-    /// other. Later it answers only an ask for a part afresh (a probe), with
-    /// that part; the rest wait, as for a desktop where nothing changes.
-    async fn scripted_server(
-        mut s: tokio::io::DuplexStream,
-        pixels: [(u8, u8, u8); 2],
-        heard: Arc<Mutex<Heard>>,
-        copied: Vec<&'static [u8]>,
-    ) -> std::io::Result<()> {
+    /// The start of a server with no password and a 4×2 desktop.
+    async fn greet(s: &mut tokio::io::DuplexStream) -> std::io::Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         s.write_all(b"RFB 003.008\n").await?;
         s.read_exact(&mut [0u8; 12]).await?;
@@ -1473,7 +1468,112 @@ mod tests {
         init.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
         init.extend_from_slice(&5u32.to_be_bytes());
         init.extend_from_slice(b"fake!");
-        s.write_all(&init).await?;
+        s.write_all(&init).await
+    }
+
+    /// A server that says a new desktop size `sizes.len()` times in one update,
+    /// 12 bytes each, unasked, and then just listens.
+    async fn resizing_server(mut s: tokio::io::DuplexStream, sizes: Vec<(u16, u16)>) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        greet(&mut s).await?;
+        let mut update = vec![0u8, 0];
+        update.extend_from_slice(&u16::try_from(sizes.len()).unwrap().to_be_bytes());
+        for (w, h) in sizes {
+            for v in [0, 0, w, h] {
+                update.extend_from_slice(&v.to_be_bytes());
+            }
+            update.extend_from_slice(&(-223i32).to_be_bytes());
+        }
+        s.write_all(&update).await?;
+        tokio::io::copy(&mut s, &mut tokio::io::sink()).await?;
+        Ok(())
+    }
+
+    /// The real session against `resizing_server`, and the frames the page gets.
+    fn resizing_session(
+        sizes: Vec<(u16, u16)>,
+        flow: Arc<crate::screen_flow::Flow>,
+    ) -> (Arc<Mutex<Vec<Vec<u8>>>>, mpsc::UnboundedSender<Cmd>, tokio::task::JoinHandle<Result<String, String>>) {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        tokio::spawn(resizing_server(server, sizes));
+        let frames = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let sink = Arc::clone(&frames);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let run = tokio::spawn(run(
+            client,
+            std::future::ready(None::<Zeroizing<String>>),
+            |_, _| {},
+            move |f| {
+                sink.lock().unwrap().push(f);
+                true
+            },
+            flow,
+            rx,
+            (4, 2),
+            Options::default(),
+            false,
+            |_| {},
+            |_| {},
+        ));
+        (frames, tx, run)
+    }
+
+    // No login is needed for this, and 12 bytes make a frame the page has to
+    // answer by resetting its canvas: one a tick, the newest, reaches it.
+    #[tokio::test]
+    async fn a_flood_of_sizes_is_one_frame_a_tick() {
+        let mut sizes: Vec<(u16, u16)> = (0..4000u16).map(|i| (640 + i % 2, 480)).collect();
+        sizes.push((700, 500));
+        let last = size_frame(700, 500);
+        let (frames, tx, run) = resizing_session(sizes, Arc::default());
+        for _ in 0..1000 {
+            if frames.lock().unwrap().last() == Some(&last) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let _ = tx.send(Cmd::Close);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10), run).await.unwrap().unwrap(), Ok("closed".to_string()));
+        let frames = frames.lock().unwrap().clone();
+        assert_eq!(frames.last(), Some(&last), "the newest size");
+        assert!(frames.len() < 500, "{} frames for 4000 sizes", frames.len());
+    }
+
+    // A page that is far behind gets no more of them, and the newest when it has caught up.
+    #[tokio::test]
+    async fn no_size_goes_while_the_page_is_behind() {
+        let flow = Arc::new(crate::screen_flow::Flow::default());
+        flow.sent(crate::screen_flow::HIGH as usize + 1);
+        let (frames, tx, run) = resizing_session(vec![(800, 600), (1024, 768), (640, 480)], Arc::clone(&flow));
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(frames.lock().unwrap().is_empty(), "held");
+        flow.drawn(u64::MAX);
+        for _ in 0..500 {
+            if !frames.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = tx.send(Cmd::Close);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10), run).await.unwrap().unwrap(), Ok("closed".to_string()));
+        assert_eq!(*frames.lock().unwrap(), [size_frame(640, 480)]);
+    }
+
+    /// A server with no password and a 4×2 desktop. It writes down the pixel
+    /// format and the encodings the client asks for, and answers the first ask
+    /// for an update with a row of `pixels` in the format that was asked for,
+    /// then with each of `copied` on its clipboard (ServerCutText), one after the
+    /// other. Later it answers only an ask for a part afresh (a probe), with
+    /// that part; the rest wait, as for a desktop where nothing changes.
+    async fn scripted_server(
+        mut s: tokio::io::DuplexStream,
+        pixels: [(u8, u8, u8); 2],
+        heard: Arc<Mutex<Heard>>,
+        copied: Vec<&'static [u8]>,
+    ) -> std::io::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        greet(&mut s).await?;
         loop {
             let mut t = [0u8; 1];
             s.read_exact(&mut t).await?;

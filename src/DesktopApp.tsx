@@ -2873,7 +2873,12 @@ function DesktopApp() {
             if (isRdp) {
               try {
                 const uuid = (await invoke<any[]>("get_servers")).find((s) => s.id === savedId)?.uuid;
-                if (uuid) writeRdpOptions(uuid, newNode.rdpOptions || DEFAULT_RDP_OPTIONS);
+                // Moved here by the user, not by someone else in a shared
+                // profile: what it shares goes with it.
+                const before = servers.find((s) => s.id === newNode.id);
+                const moved = !!before && (before.host !== newNode.host || Number(before.port) !== Number(newNode.port));
+                const options = newNode.rdpOptions || DEFAULT_RDP_OPTIONS;
+                if (uuid) writeRdpOptions(uuid, moved ? { ...options, sharedFor: "" } : options);
               } catch (e) {
                 addLog(`SAVE_RDP_OPTIONS_FAILED: ${e}`, "error");
               }
