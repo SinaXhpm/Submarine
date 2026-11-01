@@ -103,6 +103,24 @@ select optgroup {
   }
 }
 
+/* What stays running behind what is on screen: a session, a terminal tab, the
+   layer of sessions. It keeps its size and moves past the window's left edge:
+   xterm pauses a terminal whose screen is out of the viewport, by an
+   IntersectionObserver that doesn't see opacity, so one left in place went on
+   drawing every frame for nobody. By `left` and not a transform: see animate-in
+   above. In vw and not %: a terminal beside a wide tool panel has a narrow
+   parent, and twice its width to the left can still be inside the window. The
+   opacity stays for `position: fixed` children, which don't move with the box. */
+.out-of-view {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -200vw;
+  width: 100%;
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* ==========================================================================
    BULLETPROOF THEMED SCROLLBAR OVERRIDES
    ========================================================================== */

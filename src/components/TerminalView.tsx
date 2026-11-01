@@ -71,8 +71,8 @@ const cycleMod = (s: "off" | "armed" | "locked"): "off" | "armed" | "locked" =>
 // A terminal can be shown in two places, its session tab and a Wall tile, but
 // its PTY has one size (#174). A Wall tile only exists while the Wall is on
 // screen, so while one is open it sets the size; the session tab, hidden
-// behind it, still refits but sends nothing. When the tile goes away the tab
-// gives the PTY its own size back. ptySizes remembers what each PTY was last
+// behind it, sends nothing. When the tile goes away the tab gives the PTY its
+// own size back. ptySizes remembers what each PTY was last
 // given, so the same size isn't sent twice.
 const ptySizes = new Map<string, { cols: number; rows: number }>();
 const wallTiles = new Map<string, number>();
@@ -659,11 +659,11 @@ const TerminalView = ({
     term.focus();
   };
 
-  // Repaint when this terminal becomes the active one. The parent uses
-  // opacity (within a session) or display:none (across sessions/tabs) to
-  // swap visible terminals — neither triggers xterm's internal redraw, so
-  // the canvas can end up showing a stale row of glyphs from before the
-  // switch. Calling `fit()` recomputes cols/rows and `refresh()` forces
+  // Refit and repaint when this terminal comes on screen. The parent moves a
+  // hidden terminal out of the viewport (`.out-of-view` in App.css) or hides it
+  // with display:none. xterm stops drawing it then and draws all of it again,
+  // by itself, on the frame after it is back in view; its size is ours to
+  // catch up with. Calling `fit()` recomputes cols/rows and `refresh()` forces
   // every visible row to repaint. rAF defers until the layout has settled
   // — without it `fit()` would measure 0×0 in the display:none case.
   const refit = () => {
@@ -897,6 +897,22 @@ const TerminalView = ({
     term.parser.registerOscHandler(7, (data) => { folder(parseOsc7(data)); return true; });
     term.parser.registerOscHandler(1337, (data) => folder(parseOsc1337(data)));
     term.open(terminalRef.current);
+
+    // A scroll redraws the selection, and the DOM renderer draws every row for
+    // that: a second time each frame on screen, and past xterm's pause out of
+    // view, so a hidden terminal went on drawing. With nothing selected before
+    // or now there is nothing to redraw (a click leaves both ends on one spot).
+    // A private field: if it isn't there, xterm goes on as it was.
+    const renderService = (term as any)._core?._renderService;
+    if (renderService?.handleSelectionChanged) {
+      const redrawSelection = renderService.handleSelectionChanged.bind(renderService);
+      let selected = false;
+      renderService.handleSelectionChanged = (start?: number[], end?: number[], columnMode?: boolean) => {
+        const now = !!start && !!end && (start[0] !== end[0] || start[1] !== end[1]);
+        if (now || selected) redrawSelection(start, end, columnMode);
+        selected = now;
+      };
+    }
 
     // The cursor blinks while the terminal is in use and holds still
     // CURSOR_BLINK_IDLE_MS after the last key, click or focus, the way Windows
@@ -1516,7 +1532,13 @@ const TerminalView = ({
     let lastVvHeight = window.visualViewport?.height ?? window.innerHeight;
     const onVvResize = () => {
       const h = window.visualViewport?.height ?? window.innerHeight;
-      if (h < lastVvHeight - 80) {
+      // The height is followed by all, or a terminal that was hidden while the
+      // keyboard closed would miss its next opening. Only the terminal being
+      // typed in moves: a shown pane beside it refits with its box and keeps
+      // its place, and a hidden one must not refit, or its server is told a
+      // new size and its shell redraws for nobody. `isActive` alone is true
+      // for the front tab of a session behind others, `shown` isn't.
+      if (h < lastVvHeight - 80 && isActiveRef.current && shownRef.current) {
         // Drop ≥80px almost always means the soft keyboard opened (not a
         // small browser-UI reflow). 80px is comfortably above the URL-bar
         // collapse delta on Chrome/Android.

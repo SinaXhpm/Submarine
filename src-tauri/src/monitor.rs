@@ -25,7 +25,7 @@ use russh::keys::PublicKeyOrCertificate;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncReadExt;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, Notify};
 
 // Defaults — overridable per-app via the `monitor_settings` table.
 pub const DEFAULT_INTERVAL_SECS: u64 = 5;
@@ -116,6 +116,8 @@ pub struct MonitorEntry {
     pub enabled_metrics: Arc<Mutex<Vec<String>>>,
     pub custom_metrics: Arc<Mutex<Vec<CustomMetric>>>,
     pub paused: Arc<Mutex<bool>>,
+    /// Told when `paused` goes off, for a poller that sleeps on it (`wait_while_paused`).
+    pub resumed: Notify,
     pub state: Arc<Mutex<MonitorState>>,
     /// Wrapped in `Mutex<Option<...>>` so the sender can be `take()`-en
     /// from any holder (the entry is shared via `Arc` between the map
@@ -254,6 +256,7 @@ pub async fn start_monitor(
         enabled_metrics: Arc::new(Mutex::new(enabled_metrics)),
         custom_metrics: Arc::new(Mutex::new(custom_metrics)),
         paused: Arc::new(Mutex::new(paused)),
+        resumed: Notify::new(),
         state: Arc::new(Mutex::new(MonitorState::default())),
         stop_tx: Mutex::new(Some(stop_tx)),
     });
@@ -313,6 +316,9 @@ pub async fn set_paused(map: MonitorMap, node_id: i32, paused: bool) -> Result<(
         .cloned()
         .ok_or_else(|| format!("Node {} is not being monitored", node_id))?;
     *entry.paused.lock().await = paused;
+    if !paused {
+        entry.resumed.notify_one();
+    }
     Ok(())
 }
 
@@ -383,6 +389,17 @@ async fn entry_status(entry: &MonitorEntry) -> MonitorInfo {
 // ---------------------------------------------------------------------------
 // Poller loop
 // ---------------------------------------------------------------------------
+
+/// A paused poller sleeps here until it is resumed (true) or stopped (false).
+/// On a signal and not a timer: a timer woke the CPU each second for each
+/// paused node, for as long as it was listed. A resume that comes just before
+/// this wait isn't lost, `notify_one` keeps it for the next `notified`.
+async fn wait_while_paused(entry: &MonitorEntry, stop_rx: &mut oneshot::Receiver<()>) -> bool {
+    tokio::select! {
+        _ = stop_rx => false,
+        _ = entry.resumed.notified() => true,
+    }
+}
 
 async fn run_poller(
     app: AppHandle,
@@ -497,10 +514,10 @@ async fn run_poller(
                 s.consecutive_failures = 0;
                 s.outage_since_ms = None;
             }
-            tokio::select! {
-                _ = &mut stop_rx => break,
-                _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+            if !wait_while_paused(&entry, &mut stop_rx).await {
+                break;
             }
+            continue;
         }
 
         // 2) Pull current settings (hot-applied each cycle).
@@ -1606,10 +1623,10 @@ mod probe_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{monitor_client_config, stop_all, within, MonitorEntry, MonitorMap, MonitorState};
+    use super::{monitor_client_config, set_paused, stop_all, wait_while_paused, within, MonitorEntry, MonitorMap, MonitorState};
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::{oneshot, Mutex};
+    use tokio::sync::{oneshot, Mutex, Notify};
 
     fn entry(id: i32, stop: oneshot::Sender<()>) -> Arc<MonitorEntry> {
         Arc::new(MonitorEntry {
@@ -1617,6 +1634,7 @@ mod tests {
             enabled_metrics: Arc::new(Mutex::new(Vec::new())),
             custom_metrics: Arc::new(Mutex::new(Vec::new())),
             paused: Arc::new(Mutex::new(false)),
+            resumed: Notify::new(),
             state: Arc::new(Mutex::new(MonitorState::default())),
             stop_tx: Mutex::new(Some(stop)),
         })
@@ -1645,6 +1663,31 @@ mod tests {
         }
         // Nothing left to stop: harmless.
         stop_all(map).await;
+    }
+
+    // A paused poller stays asleep for as long as it is paused, with no timer of
+    // its own to wake it, and goes on when resumed or stopped.
+    #[tokio::test(start_paused = true)]
+    async fn a_paused_poller_sleeps_until_it_is_resumed_or_stopped() {
+        let (tx, mut rx) = oneshot::channel::<()>();
+        let e = entry(1, tx);
+        let map: MonitorMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        map.lock().await.insert(1, Arc::clone(&e));
+        set_paused(Arc::clone(&map), 1, true).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(24 * 3600), wait_while_paused(&e, &mut rx)).await.is_err(),
+            "a day of pause, and it never woke"
+        );
+        // Resumed just before it goes to sleep: not lost.
+        set_paused(Arc::clone(&map), 1, false).await.unwrap();
+        assert!(wait_while_paused(&e, &mut rx).await, "resumed");
+        // Resumed while it sleeps.
+        let (woke, resume) = tokio::join!(wait_while_paused(&e, &mut rx), set_paused(Arc::clone(&map), 1, false));
+        resume.unwrap();
+        assert!(woke, "resumed");
+        // Stopped while it sleeps.
+        let stopped = tokio::join!(wait_while_paused(&e, &mut rx), stop_all(Arc::clone(&map))).0;
+        assert!(!stopped, "stopped");
     }
 
     #[tokio::test]

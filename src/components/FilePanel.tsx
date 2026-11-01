@@ -1482,7 +1482,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   // ---- sorting ----------------------------------------------------------------
 
-  const sortedEntries = (() => {
+  // Kept between renders, and so are the rows: the pane renders for many things
+  // that leave the list as it is (a key in the path box, the divider of the tool
+  // panel), and sorting and building thousands of rows for each of them took
+  // the thread from the terminal beside it.
+  const sortedEntries = useMemo(() => {
     const sorted = [...entries].sort((a, b) => {
       if (a.isDir !== b.isDir) return b.isDir ? 1 : -1;
       let va: any, vb: any;
@@ -1500,7 +1504,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const matches = nameFilterMatcher(nameFilter);
     const named = matches ? sorted.filter(e => matches(e.name)) : sorted;
     return compareMarks && hideSame ? named.filter((e) => e.isDir || compareMarks.has(e.path)) : named;
-  })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries, sort, nameFilter, compareMarks, hideSame, owners]);
   const filteredOut = nameFilter.trim() || (compareMarks && hideSame) ? entries.length - sortedEntries.length : 0;
 
   // As wide as the folder's longest name needs (see NAME_MIN). Measured on
@@ -1764,6 +1769,101 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     : column === "modified" ? formatTime(entry.modified)
     : column === "owner" ? ownerName(entry)
     : formatRights(entry.isDir, entry.permissions, entry.isSymlink);
+
+  // The rows, kept between renders with sortedEntries above: `columnsFit`
+  // stands for shownColumns and movedColumns, new arrays on each render. What a
+  // row does when used goes through rowActions, as it depends on far more than
+  // the row shows, and has to see the pane as it is by then.
+  const rowActions = useRef({ handleRowMouseDown, openMenu, onRowClick, openEntry });
+  rowActions.current = { handleRowMouseDown, openMenu, onRowClick, openEntry };
+  const rows = useMemo(() => sortedEntries.map((entry) => {
+    const isSel = selected.has(entry.path);
+    const isCursor = entry.path === cursor;
+    const moved = movedColumns.map((c) => columnText(c, entry)).filter(Boolean).join(" · ");
+    const mark = compareMarks?.get(entry.path);
+    return (
+    <div
+      key={entry.path}
+      onMouseDown={(e) => rowActions.current.handleRowMouseDown(e, entry)}
+      onContextMenu={(e) => rowActions.current.openMenu(e, entry)}
+      onClick={(e) => rowActions.current.onRowClick(e, entry, sortedEntries)}
+      onDoubleClick={() => rowActions.current.openEntry(entry)}
+      data-fs-row-path={entry.path}
+      data-fs-row-isdir={entry.isDir ? "1" : "0"}
+      data-fs-row-selected={isSel ? "1" : "0"}
+      style={{ gridTemplateColumns }}
+      className={`group grid gap-x-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center scroll-mt-8 ${
+        barUp ? "scroll-mb-16" : ""
+      } ${
+        isSel
+          ? "bg-indigo-500/15 border-indigo-400 text-indigo-100"
+          : mark
+            ? `${COMPARE_ROW[mark]} text-zinc-200 hover:bg-white/5 hover:text-white`
+            : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
+      } ${keyNav && isCursor ? "ring-1 ring-inset ring-indigo-400/60" : ""}`}
+      title={mark ? COMPARE_LABEL[mark] : undefined}
+      data-fs-compare={mark}
+    >
+      {/* Selection mode only. A click anywhere on the row does what
+          a click on its box would. */}
+      {inMode && (
+        <span className="flex items-center justify-center">
+          {isSel
+            ? <CheckSquare size={12} className="text-indigo-300" />
+            : <Square size={12} className="text-zinc-500 group-hover:text-zinc-300" />}
+        </span>
+      )}
+      <div className="flex items-center gap-2 min-w-0 pr-1">
+        <span
+          className="relative inline-flex shrink-0"
+          title={entry.isSymlink ? (entry.brokenLink ? "Broken link: target is missing or not accessible" : "Symbolic link") : undefined}
+        >
+          {entry.isDir
+            ? <Folder size={12} className="text-indigo-300" />
+            : <File size={12} className={entry.brokenLink ? "text-rose-400/70" : "text-zinc-500"} />}
+          {entry.isSymlink && (
+            <Link2
+              size={8}
+              className={`absolute -bottom-1 -right-1.5 rounded-sm bg-zinc-950 ${entry.brokenLink ? "text-rose-400" : "text-sky-300"}`}
+            />
+          )}
+        </span>
+        <div title={entry.name} className={`min-w-0 flex-1 truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
+        {mark && <span className="sr-only">{COMPARE_LABEL[mark]}</span>}
+      </div>
+      {shownColumns.map((c) => (
+        <div key={c} className={`truncate ${COLUMN_CELL[c]}`} title={c === "owner" ? columnText(c, entry) : undefined}>{columnText(c, entry)}</div>
+      ))}
+      {/* The row's menu, for a pointer without a right button. Shown
+          on hover, on the selected rows and on the keyboard's row
+          (always on Android, which has no hover). */}
+      <button
+        type="button"
+        tabIndex={-1}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => rowActions.current.openMenu(e, entry)}
+        title="Options"
+        aria-label="Options"
+        className={`flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-white/10 hover:!opacity-100 ${
+          IS_MOBILE || isSel || isCursor ? "opacity-60" : "opacity-0 group-hover:opacity-60"
+        }`}
+      >
+        <MoreVertical size={11} />
+      </button>
+      {/* What the columns that gave way show: a line of its own
+          under the name, as wide as the row. */}
+      {moved && (
+        <div
+          style={{ gridColumn: `${inMode ? 2 : 1} / -1` }}
+          className="row-start-2 pl-5 truncate text-[10px] text-zinc-500"
+        >
+          {moved}
+        </div>
+      )}
+    </div>
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [sortedEntries, selected, cursor, keyNav, inMode, barUp, gridTemplateColumns, columnsFit, compareMarks, owners]);
 
   return (
     <div
@@ -2252,93 +2352,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 : filteredOut ? "Every file here looks the same on the other side" : "Empty"}
             </div>
           ) : (
-            sortedEntries.map((entry) => {
-              const isSel = selected.has(entry.path);
-              const isCursor = entry.path === cursor;
-              const moved = movedColumns.map((c) => columnText(c, entry)).filter(Boolean).join(" · ");
-              const mark = compareMarks?.get(entry.path);
-              return (
-              <div
-                key={entry.path}
-                onMouseDown={(e) => handleRowMouseDown(e, entry)}
-                onContextMenu={(e) => openMenu(e, entry)}
-                onClick={(e) => onRowClick(e, entry, sortedEntries)}
-                onDoubleClick={() => openEntry(entry)}
-                data-fs-row-path={entry.path}
-                data-fs-row-isdir={entry.isDir ? "1" : "0"}
-                data-fs-row-selected={isSel ? "1" : "0"}
-                style={{ gridTemplateColumns }}
-                className={`group grid gap-x-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center scroll-mt-8 ${
-                  selectedEntries.length > 0 ? "scroll-mb-16" : ""
-                } ${
-                  isSel
-                    ? "bg-indigo-500/15 border-indigo-400 text-indigo-100"
-                    : mark
-                      ? `${COMPARE_ROW[mark]} text-zinc-200 hover:bg-white/5 hover:text-white`
-                      : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
-                } ${keyNav && isCursor ? "ring-1 ring-inset ring-indigo-400/60" : ""}`}
-                title={mark ? COMPARE_LABEL[mark] : undefined}
-                data-fs-compare={mark}
-              >
-                {/* Selection mode only. A click anywhere on the row does what
-                    a click on its box would. */}
-                {inMode && (
-                  <span className="flex items-center justify-center">
-                    {isSel
-                      ? <CheckSquare size={12} className="text-indigo-300" />
-                      : <Square size={12} className="text-zinc-500 group-hover:text-zinc-300" />}
-                  </span>
-                )}
-                <div className="flex items-center gap-2 min-w-0 pr-1">
-                  <span
-                    className="relative inline-flex shrink-0"
-                    title={entry.isSymlink ? (entry.brokenLink ? "Broken link: target is missing or not accessible" : "Symbolic link") : undefined}
-                  >
-                    {entry.isDir
-                      ? <Folder size={12} className="text-indigo-300" />
-                      : <File size={12} className={entry.brokenLink ? "text-rose-400/70" : "text-zinc-500"} />}
-                    {entry.isSymlink && (
-                      <Link2
-                        size={8}
-                        className={`absolute -bottom-1 -right-1.5 rounded-sm bg-zinc-950 ${entry.brokenLink ? "text-rose-400" : "text-sky-300"}`}
-                      />
-                    )}
-                  </span>
-                  <div title={entry.name} className={`min-w-0 flex-1 truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
-                  {mark && <span className="sr-only">{COMPARE_LABEL[mark]}</span>}
-                </div>
-                {shownColumns.map((c) => (
-                  <div key={c} className={`truncate ${COLUMN_CELL[c]}`} title={c === "owner" ? columnText(c, entry) : undefined}>{columnText(c, entry)}</div>
-                ))}
-                {/* The row's menu, for a pointer without a right button. Shown
-                    on hover, on the selected rows and on the keyboard's row
-                    (always on Android, which has no hover). */}
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => openMenu(e, entry)}
-                  title="Options"
-                  aria-label="Options"
-                  className={`flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-white/10 hover:!opacity-100 ${
-                    IS_MOBILE || isSel || isCursor ? "opacity-60" : "opacity-0 group-hover:opacity-60"
-                  }`}
-                >
-                  <MoreVertical size={11} />
-                </button>
-                {/* What the columns that gave way show: a line of its own
-                    under the name, as wide as the row. */}
-                {moved && (
-                  <div
-                    style={{ gridColumn: `${inMode ? 2 : 1} / -1` }}
-                    className="row-start-2 pl-5 truncate text-[10px] text-zinc-500"
-                  >
-                    {moved}
-                  </div>
-                )}
-              </div>
-              );
-            })
+            rows
           )}
         </div>
       </div>

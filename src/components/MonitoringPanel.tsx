@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -286,6 +286,36 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
   };
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
+  const addSample = (s: Sample) => {
+    setLatest((prev) => ({ ...prev, [s.node_id]: s }));
+    setHistory((prev) => {
+      const nodeHist = { ...(prev[s.node_id] || {}) };
+      for (const [k, v] of Object.entries(s.values)) {
+        if (!isNumber(v)) continue;
+        const arr = nodeHist[k] ? [...nodeHist[k], v] : [v];
+        if (arr.length > HISTORY) arr.splice(0, arr.length - HISTORY);
+        nodeHist[k] = arr;
+      }
+      return { ...prev, [s.node_id]: nodeHist };
+    });
+  };
+
+  // While the view is behind another one nobody sees the cards, so a sample
+  // waits here (a history's worth per node) rather than render them all. What
+  // waited goes in before the view is painted, and the rows ask the backend,
+  // which knows what came after those samples (a node that dropped since).
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const waitingSamplesRef = useRef(new Map<number, Sample[]>());
+  useLayoutEffect(() => {
+    const waiting = waitingSamplesRef.current;
+    if (!active || waiting.size === 0) return;
+    waiting.forEach((samples) => samples.forEach(addSample));
+    waiting.clear();
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
   useEffect(() => {
     // Async cleanup guard: listen() returns its unlisten via a Promise. If
     // the dep key changes (rows shape shifts) while some listen() promises
@@ -309,17 +339,14 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
       track(listen<Sample>(`monitor-sample-${r.node_id}`, (event) => {
         const s = event.payload;
         if (!s) return;
-        setLatest((prev) => ({ ...prev, [s.node_id]: s }));
-        setHistory((prev) => {
-          const nodeHist = { ...(prev[s.node_id] || {}) };
-          for (const [k, v] of Object.entries(s.values)) {
-            if (!isNumber(v)) continue;
-            const arr = nodeHist[k] ? [...nodeHist[k], v] : [v];
-            if (arr.length > HISTORY) arr.splice(0, arr.length - HISTORY);
-            nodeHist[k] = arr;
-          }
-          return { ...prev, [s.node_id]: nodeHist };
-        });
+        if (!activeRef.current) {
+          const waiting = waitingSamplesRef.current.get(s.node_id) ?? [];
+          waiting.push(s);
+          if (waiting.length > HISTORY) waiting.shift();
+          waitingSamplesRef.current.set(s.node_id, waiting);
+          return;
+        }
+        addSample(s);
         // Keep `row.last_sample_ts` in sync so the "Xs ago" indicator
         // ticks immediately on each new sample instead of waiting for the
         // next status event / reload(). Without this the timer would

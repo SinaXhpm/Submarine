@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
-import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { File as FileIcon, Download, Upload, AlertTriangle, Check, X, Ban, Folder, Rows, Columns, LayoutPanelTop, Shield, ShieldAlert, Trash2, GitCompare } from "lucide-react";
 import FilePanel, { ActiveDrag, FilePanelHandle } from "./FilePanel";
@@ -10,6 +9,7 @@ import { createLocalProvider } from "../fs/localProvider";
 import { createRemoteProvider } from "../fs/remoteProvider";
 import { useTextPrompt } from "../ui/confirm";
 import { useIsNarrow } from "../hooks/useViewport";
+import { useTauriListen } from "../hooks/useTauriListen";
 import { bookmarksKey } from "../util/sftpBookmarks";
 import { FOLLOW_SETUP, type ShellFolderState } from "../util/shellFolder";
 
@@ -109,6 +109,134 @@ const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
   );
 });
 DragGhost.displayName = "DragGhost";
+
+// Live transfer progress, keyed by the backend-assigned id. The Rust
+// commands stream events at ~10Hz; we replace the entry on each update so
+// a single growing progress bar shows per transfer. A folder delete that
+// takes a while comes through here too (kind "delete"): for it `bytes` is
+// the number of entries removed so far, and there is no total.
+interface Transfer {
+  id: string;
+  name: string;
+  kind: "upload" | "download" | "delete";
+  bytes: number;
+  total: number;
+  status: "progress" | "done" | "error" | "cancelled";
+  error?: string;
+}
+
+const formatBytes = (n: number) => {
+  if (!n) return "0 B";
+  const k = 1024, units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(k)));
+  return `${(n / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+};
+
+// The live transfer cards: one growing progress bar per active upload or
+// download; a card fades out shortly after its transfer ends. A component of
+// its own for the same reason as DragGhost: an event re-renders only this, not
+// the whole SftpWorkspace and both FilePanels, ten times a second per transfer,
+// on the thread the terminal beside them draws and takes keys on.
+function TransferCards({ sessionId }: { sessionId: string }) {
+  const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
+
+  useTauriListen<Transfer>(`sftp-transfer-${sessionId}`, (event) => {
+    const t = event.payload;
+    if (!t || !t.id) return;
+    setTransfers((prev) => ({ ...prev, [t.id]: t }));
+    if (t.status === "done" || t.status === "error" || t.status === "cancelled") {
+      // Leave the final state visible briefly before clearing the card so
+      // the user sees the success tick / failure colour / cancel notice.
+      const linger = t.status === "error" || t.error ? 6000 : t.status === "cancelled" ? 3000 : 1800;
+      setTimeout(() => {
+        setTransfers((prev) => {
+          const { [t.id]: _, ...rest } = prev;
+          return rest;
+        });
+      }, linger);
+    }
+  }, [sessionId]);
+
+  const cancelTransfer = (id: string) => {
+    // Fire-and-forget: the backend emits its own "cancelled" event when the
+    // loop notices the flag, which is what wipes the card.
+    invoke("sftp_cancel_transfer", { transferId: id }).catch(() => {});
+  };
+
+  return (
+    <>
+      {Object.values(transfers).map((t) => {
+        const pct = t.total > 0 ? Math.min(100, Math.round((t.bytes * 100) / t.total)) : 0;
+        const tone =
+          t.status === "error"     ? "border-rose-500/40 bg-rose-950/85 text-rose-200" :
+          t.status === "done"      ? "border-emerald-500/40 bg-emerald-950/85 text-emerald-200" :
+          t.status === "cancelled" ? "border-amber-500/40 bg-amber-950/85 text-amber-200" :
+                                     "border-indigo-500/40 bg-indigo-950/85 text-indigo-100";
+        const barTone =
+          t.status === "error"     ? "bg-rose-500" :
+          t.status === "done"      ? "bg-emerald-500" :
+          t.status === "cancelled" ? "bg-amber-500" :
+                                     "bg-indigo-500";
+        const Icon =
+          t.status === "error"     ? AlertTriangle :
+          t.status === "done"      ? Check :
+          t.status === "cancelled" ? Ban :
+          t.kind   === "upload"    ? Upload :
+          t.kind   === "delete"    ? Trash2 :
+                                     Download;
+        const statusLabel =
+          t.status === "error"     ? "failed"
+          : t.status === "cancelled" ? "cancelled"
+          : t.kind === "delete"      ? `${t.bytes.toLocaleString()} removed`
+          : t.total > 0              ? `${pct}%`
+                                     : formatBytes(t.bytes);
+        return (
+          <div key={t.id} className={`w-full max-w-[280px] pointer-events-auto px-2.5 py-1.5 rounded border ${tone} font-mono text-[10.5px] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4`}>
+            <div className="flex items-center gap-1.5 mb-1">
+              <Icon size={11} className="shrink-0" />
+              <span className="truncate flex-1" title={t.name}>{t.name}</span>
+              <span className="text-[9.5px] opacity-80 shrink-0">{statusLabel}</span>
+              {/* Stop button — only while the transfer is still running.
+                  Finished / failed / cancelled cards fade out on their
+                  own timer; no button needed. */}
+              {t.status === "progress" && (
+                <button
+                  onClick={() => cancelTransfer(t.id)}
+                  title="Cancel"
+                  className="shrink-0 p-0.5 rounded hover:bg-white/15 text-zinc-300 hover:text-rose-300"
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+            {t.status !== "error" && (
+              <div className="h-1 bg-white/10 rounded overflow-hidden">
+                {/* No transition: with a step every 100 ms, an animated width
+                    is a layout and a paint at every frame for as long as the
+                    transfer runs, a whole core beside a long file list. */}
+                <div
+                  className={`h-full ${barTone} ${t.kind === "delete" && t.status === "progress" ? "animate-pulse" : ""}`}
+                  style={{ width: t.total > 0 ? `${pct}%` : "100%" }}
+                />
+              </div>
+            )}
+            {/* Why it failed: up to three lines, so the reason can be
+                read without hovering; the tooltip has all of it. */}
+            {t.status === "error" && t.error && (
+              <div className="text-[9.5px] opacity-80 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
+            )}
+            {/* A finished folder download can carry a note, e.g. names
+                this computer can't store were skipped; a cancelled
+                upload says what it left on the server. */}
+            {(t.status === "done" || t.status === "cancelled") && t.error && (
+              <div className="text-[9.5px] text-amber-300/90 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
 
 // Follow is on but the terminal's shell hasn't said which folder it is in:
 // the one line that makes it, for the shell picked.
@@ -391,56 +519,6 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
     else ghostRef.current?.hide();
   };
 
-  // Live transfer progress, keyed by the backend-assigned id. The Rust
-  // commands stream events at ~10Hz; we replace the entry on each update so
-  // a single growing progress bar shows per transfer. A folder delete that
-  // takes a while comes through here too (kind "delete"): for it `bytes` is
-  // the number of entries removed so far, and there is no total.
-  interface Transfer {
-    id: string;
-    name: string;
-    kind: "upload" | "download" | "delete";
-    bytes: number;
-    total: number;
-    status: "progress" | "done" | "error" | "cancelled";
-    error?: string;
-  }
-  const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
-
-  useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    listen<Transfer>(`sftp-transfer-${sessionId}`, (event) => {
-      const t = event.payload;
-      if (!t || !t.id) return;
-      setTransfers((prev) => ({ ...prev, [t.id]: t }));
-      if (t.status === "done" || t.status === "error" || t.status === "cancelled") {
-        // Leave the final state visible briefly before clearing the card so
-        // the user sees the success tick / failure colour / cancel notice.
-        const linger = t.status === "error" || t.error ? 6000 : t.status === "cancelled" ? 3000 : 1800;
-        setTimeout(() => {
-          setTransfers((prev) => {
-            const { [t.id]: _, ...rest } = prev;
-            return rest;
-          });
-        }, linger);
-      }
-    }).then((fn) => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
-  }, [sessionId]);
-
-  const cancelTransfer = (id: string) => {
-    // Fire-and-forget: the backend emits its own "cancelled" event when the
-    // loop notices the flag, which is what wipes the card.
-    invoke("sftp_cancel_transfer", { transferId: id }).catch(() => {});
-  };
-
-  const formatBytes = (n: number) => {
-    if (!n) return "0 B";
-    const k = 1024, units = ["B", "KB", "MB", "GB"];
-    const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(k)));
-    return `${(n / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-  };
-
   // The workspace's own element: a drop counts only on its panes.
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -645,88 +723,19 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
       )}
 
       {/* Notices along the bottom of the workspace: the toast, then the live
-          transfer cards (one growing progress bar per active upload or
-          download; a card fades out shortly after its transfer ends). The
-          stack spans the workspace, so nothing in it can be wider than a
-          narrow panel and end up cut off at the panel's edge. Clicks go
-          through it everywhere but on a card. */}
-      {(notification || Object.values(transfers).length > 0) && (
-        <div className="absolute bottom-3 inset-x-3 z-50 flex flex-col items-end gap-1.5 pointer-events-none">
-          {notification && (
-            <div className={`self-center max-w-full px-3 py-1.5 rounded-lg border text-[11px] font-mono [overflow-wrap:anywhere] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-4 duration-300 ${
-              notification.type === "success" ? "bg-emerald-950/90 border-emerald-500/30 text-emerald-400" :
-              notification.type === "error"   ? "bg-rose-950/90 border-rose-500/30 text-rose-400" :
-                                                "bg-indigo-950/90 border-indigo-500/30 text-indigo-400"
-            }`}>{notification.msg}</div>
-          )}
-          {Object.values(transfers).map((t) => {
-            const pct = t.total > 0 ? Math.min(100, Math.round((t.bytes * 100) / t.total)) : 0;
-            const tone =
-              t.status === "error"     ? "border-rose-500/40 bg-rose-950/85 text-rose-200" :
-              t.status === "done"      ? "border-emerald-500/40 bg-emerald-950/85 text-emerald-200" :
-              t.status === "cancelled" ? "border-amber-500/40 bg-amber-950/85 text-amber-200" :
-                                         "border-indigo-500/40 bg-indigo-950/85 text-indigo-100";
-            const barTone =
-              t.status === "error"     ? "bg-rose-500" :
-              t.status === "done"      ? "bg-emerald-500" :
-              t.status === "cancelled" ? "bg-amber-500" :
-                                         "bg-indigo-500";
-            const Icon =
-              t.status === "error"     ? AlertTriangle :
-              t.status === "done"      ? Check :
-              t.status === "cancelled" ? Ban :
-              t.kind   === "upload"    ? Upload :
-              t.kind   === "delete"    ? Trash2 :
-                                         Download;
-            const statusLabel =
-              t.status === "error"     ? "failed"
-              : t.status === "cancelled" ? "cancelled"
-              : t.kind === "delete"      ? `${t.bytes.toLocaleString()} removed`
-              : t.total > 0              ? `${pct}%`
-                                         : formatBytes(t.bytes);
-            return (
-              <div key={t.id} className={`w-full max-w-[280px] pointer-events-auto px-2.5 py-1.5 rounded border ${tone} font-mono text-[10.5px] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4`}>
-                <div className="flex items-center gap-1.5 mb-1">
-                  <Icon size={11} className="shrink-0" />
-                  <span className="truncate flex-1" title={t.name}>{t.name}</span>
-                  <span className="text-[9.5px] opacity-80 shrink-0">{statusLabel}</span>
-                  {/* Stop button — only while the transfer is still running.
-                      Finished / failed / cancelled cards fade out on their
-                      own timer; no button needed. */}
-                  {t.status === "progress" && (
-                    <button
-                      onClick={() => cancelTransfer(t.id)}
-                      title="Cancel"
-                      className="shrink-0 p-0.5 rounded hover:bg-white/15 text-zinc-300 hover:text-rose-300"
-                    >
-                      <X size={11} />
-                    </button>
-                  )}
-                </div>
-                {t.status !== "error" && (
-                  <div className="h-1 bg-white/10 rounded overflow-hidden">
-                    <div
-                      className={`h-full ${barTone} transition-[width] duration-150 ${t.kind === "delete" && t.status === "progress" ? "animate-pulse" : ""}`}
-                      style={{ width: t.total > 0 ? `${pct}%` : "100%" }}
-                    />
-                  </div>
-                )}
-                {/* Why it failed: up to three lines, so the reason can be
-                    read without hovering; the tooltip has all of it. */}
-                {t.status === "error" && t.error && (
-                  <div className="text-[9.5px] opacity-80 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
-                )}
-                {/* A finished folder download can carry a note, e.g. names
-                    this computer can't store were skipped; a cancelled
-                    upload says what it left on the server. */}
-                {(t.status === "done" || t.status === "cancelled") && t.error && (
-                  <div className="text-[9.5px] text-amber-300/90 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+          transfer cards. The stack spans the workspace, so nothing in it can
+          be wider than a narrow panel and end up cut off at the panel's edge.
+          Clicks go through it everywhere but on a card. */}
+      <div className="absolute bottom-3 inset-x-3 z-50 flex flex-col items-end gap-1.5 pointer-events-none">
+        {notification && (
+          <div className={`self-center max-w-full px-3 py-1.5 rounded-lg border text-[11px] font-mono [overflow-wrap:anywhere] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-4 duration-300 ${
+            notification.type === "success" ? "bg-emerald-950/90 border-emerald-500/30 text-emerald-400" :
+            notification.type === "error"   ? "bg-rose-950/90 border-rose-500/30 text-rose-400" :
+                                              "bg-indigo-950/90 border-indigo-500/30 text-indigo-400"
+          }`}>{notification.msg}</div>
+        )}
+        <TransferCards sessionId={sessionId} />
+      </div>
 
       {/* Cursor-following drag ghost. Self-contained so its per-mousemove
           position updates don't re-render this workspace or the FilePanels. */}

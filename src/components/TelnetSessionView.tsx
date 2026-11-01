@@ -18,7 +18,7 @@ type Status = "connecting" | "connected" | "failed" | "disconnected";
 
 const NOT_ENCRYPTED = "Telnet isn't encrypted: what is typed here, passwords too, crosses the network as plain text.";
 
-export default function TelnetSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, onPromptChange }: any) {
+export default function TelnetSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
   const [status, setStatus] = useState<Status>("connecting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [reason, setReason] = useState("");
@@ -229,6 +229,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
             telnet
             disabled={status !== "connected"}
             isActive
+            shown={shown}
             isActiveView={isActiveView}
             focusSignal={focusTick}
             connectionEpoch={epoch}

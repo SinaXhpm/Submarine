@@ -1,5 +1,5 @@
 import { Search, Plus, Server, Globe, Folder, FolderPlus, ChevronLeft, ChevronRight, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound } from "lucide-react";
-import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
 import { HeldReview } from "./HeldReview";
@@ -65,7 +65,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
   // Folders nest (see util/folderTree): the grid shows the folders and
   // servers directly inside the open folder (or the top level).
-  const tree = folderTree(folders);
+  const tree = useMemo(() => folderTree(folders), [folders]);
   // The open folder was deleted (here or on another device): back to the top.
   useEffect(() => {
     if (activeFolderId !== null && folders && !tree.has(activeFolderId)) setActiveFolderId(null);
@@ -502,8 +502,10 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
   // Folders share the compact horizontal language so the grid reads as one
   // surface: a tinted folder glyph, name + server count, inline rename in
-  // place, and the same hover lift as server cards.
-  const FolderCard = ({ f }: { f: any }) => {
+  // place, and the same hover lift as server cards. A function that returns
+  // the card, not a component: one defined in here would be a new type on each
+  // render, and React would rebuild every card, the rename field with them.
+  const renderFolder = (f: any) => {
     const serverCount = servers?.filter((s: any) => tree.serverFolder(s) === f.id).length || 0;
     const folderCount = tree.childrenOf(f.id).length;
     const isRenaming = renaming?.id === f.id;
@@ -516,6 +518,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
     ].filter(Boolean).join(' · ');
     return (
       <div
+        key={`folder-${f.id}`}
         data-drop-folder={f.id}
         onClick={() => { if (!isRenaming && !draggedRef.current) setActiveFolderId(f.id); }}
         className={`group relative flex items-center gap-3 h-16 pl-3.5 pr-2 rounded-xl bg-gradient-to-br from-[#1c1c22] to-[#141418] border transition-colors duration-150 cursor-pointer overflow-hidden ${
@@ -874,9 +877,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             )}
 
             {/* The folders inside the open one (or the top level); none while searching. */}
-            {displayedFolders.map((f: any) => (
-              <FolderCard key={`folder-${f.id}`} f={f} />
-            ))}
+            {displayedFolders.map((f: any) => renderFolder(f))}
 
             {/* Render Servers — honours the live drag order while reordering. */}
             {orderedServers.map((s: any) => renderServer(s))}

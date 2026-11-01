@@ -74,11 +74,18 @@ fn over_corner(r: Rect) -> bool {
 const DRAIN_BUDGET: Duration = Duration::from_millis(10);
 const DRAIN_WAIT: Duration = Duration::from_millis(2);
 
-/// The tick while the tab is hidden: nothing is asked for then, so the loop
-/// only takes what the server sends unasked (a copied text). At TICK_MS a
-/// hidden tab woke the CPU 30-60 times a second for nothing; on a phone with
-/// the app in the background that is battery.
-const PAUSED_TICK: Duration = Duration::from_millis(250);
+/// The tick while nothing is going on: the tab is hidden, or the screen holds
+/// still. The session then waits for the server's next message, which brings
+/// the tick forward at once, so all this paces is the ask kept out at the
+/// server, every sixth tick: 1.5 s. A server holds an ask until it has something
+/// to send, so that is for one that doesn't. At TICK_MS such a tab woke the CPU
+/// 30-60 times a second and asked 10 times a second for nothing: on a phone,
+/// battery, and a radio that never goes idle.
+const QUIET_TICK: Duration = Duration::from_millis(250);
+/// How long after the user's input the tick stays at TICK_MS, whatever the
+/// screen does: an answer is on its way, and with a server that doesn't hold
+/// asks, an ask every 1.5 s would be how long it takes to show.
+const INPUT_WATCH: Duration = Duration::from_secs(1);
 
 /// The desktop's size the tab wants, asked of the server one request at a
 /// time (the VNC library refuses a second while one is out), the latest
@@ -395,8 +402,8 @@ impl Wire {
     }
 }
 
-/// When to ask the server for the next update: right after one came, else a few
-/// times a second; never closer than `gap` to the last ask (the page's "updates a
+/// When to ask the server for the next update: right after one came, else every
+/// sixth tick; never closer than `gap` to the last ask (the page's "updates a
 /// second" choice, kept in time and not in ticks: the tick is only as even as the
 /// system's timer, which on Windows is 16 ms at best and often 31); and never
 /// while the page is behind (`held`), the ask being made once it has caught up.
@@ -819,6 +826,11 @@ where
     probe.whole_picture();
     let mut meter = Meter::new(std::sync::Arc::clone(&traffic));
     let mut paused = false;
+    // Between two ticks at QUIET_TICK, waiting for the server's next message:
+    // `early` holds it for the tick it brings forward.
+    let mut quiet = false;
+    let mut early = None;
+    let mut watch_until = tokio::time::Instant::now();
     let outcome = loop {
         tokio::select! {
             cmd = rx.recv() => match cmd {
@@ -827,6 +839,11 @@ where
                         if client.input(ev).await.is_err() {
                             break;
                         }
+                    }
+                    watch_until = tokio::time::Instant::now() + INPUT_WATCH;
+                    if quiet {
+                        quiet = false;
+                        tick.reset_immediately();
                     }
                 }
                 Some(Cmd::Resize(w, h)) => {
@@ -850,7 +867,7 @@ where
                         paused = !shown;
                         if shown {
                             probe.whole_picture();
-                            // Back to TICK_MS at once (see PAUSED_TICK).
+                            // Back to TICK_MS at once (see QUIET_TICK).
                             tick.reset_immediately();
                         } else {
                             probe.out = None;
@@ -882,7 +899,17 @@ where
                     probe.out = Some(asked);
                 }
             }
+            // Only while quiet: otherwise the tick sets the pace of the frames.
+            // The wait holds the client's lock, and `select!` drops it before
+            // any other branch runs, so their calls to the client still go. A
+            // message is only taken if this branch wins.
+            next = client.recv_event(), if quiet => {
+                early = Some(next);
+                quiet = false;
+                tick.reset_immediately();
+            }
             _ = tick.tick() => {
+                quiet = false;
                 let mut ended = None;
                 // An answer to the probe came this tick: a part over its
                 // corner, or the layout a server like TigerVNC answers a
@@ -896,12 +923,15 @@ where
                     if got && left.is_zero() {
                         break;
                     }
-                    let next = match client.poll_event().await {
-                        Ok(None) if got => match tokio::time::timeout(left.min(DRAIN_WAIT), client.recv_event()).await {
-                            Ok(next) => next.map(Some),
-                            Err(_) => Ok(None),
+                    let next = match early.take() {
+                        Some(next) => next.map(Some),
+                        None => match client.poll_event().await {
+                            Ok(None) if got => match tokio::time::timeout(left.min(DRAIN_WAIT), client.recv_event()).await {
+                                Ok(next) => next.map(Some),
+                                Err(_) => Ok(None),
+                            },
+                            next => next,
                         },
-                        next => next,
                     };
                     match next {
                         Ok(Some(ev)) => { got = true; match ev {
@@ -998,16 +1028,21 @@ where
                         break;
                     }
                 }
-                // The next incremental update: right after one came, else a
-                // few times a second, and not oftener than the page chose;
-                // none while the tab is hidden.
+                // The next incremental update: right after one came, else now
+                // and then, and not oftener than the page chose; none while
+                // the tab is hidden.
                 if pacer.tick(Instant::now(), changed, held || paused) {
                     if client.input(X11Event::Refresh).await.is_err() {
                         break Ok("The VNC server closed the connection.".to_string());
                     }
                 }
-                if paused {
-                    tick.reset_after(PAUSED_TICK);
+                // Another tick soon, if one can be of use: something came, so
+                // more may; an ask, a frame, a size or a copy waits its turn; or
+                // the user just did something.
+                let busy = got || held || pacer.wanted || page_size.waiting() || copies.due.is_some() || tokio::time::Instant::now() < watch_until;
+                if paused || !busy {
+                    quiet = true;
+                    tick.reset_after(QUIET_TICK);
                 }
             }
         }
@@ -1883,6 +1918,111 @@ mod tests {
         assert!(heard.lock().unwrap().requests.len() > asked, "asking again");
         tokio::time::sleep(LINK_EVERY).await;
         assert!(!latest().paused);
+        let _ = tx.send(Cmd::Close);
+        assert_eq!(run.await.expect("no panic"), Ok("closed".to_string()));
+        srv.abort();
+    }
+
+    // A desktop where nothing changes, on tokio's paused clock: an update is
+    // asked for now and then, not ten times a second, until the user does
+    // something, when the asks go at the full pace for a moment.
+    #[tokio::test(start_paused = true)]
+    async fn a_still_screen_is_left_alone_until_the_user_does_something() {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let heard = Arc::new(Mutex::new(Heard::default()));
+        let srv = tokio::spawn(scripted_server(server, [(255, 0, 0), (0, 0, 255)], Arc::clone(&heard), Vec::new()));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let run = tokio::spawn(run(
+            client,
+            std::future::ready(None::<Zeroizing<String>>),
+            |_, _| {},
+            |_| true,
+            Arc::new(crate::screen_flow::Flow::default()),
+            rx,
+            (4, 2),
+            Options::default(),
+            false,
+            |_| {},
+            |_| {},
+        ));
+        let asks = || heard.lock().unwrap().requests.iter().filter(|r| r.0 == 1).count();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let before = asks();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        // One each 1.5 s, and one behind each probe's corner, each 2 s. Over 300 at TICK_MS.
+        let still = asks() - before;
+        assert!((10..=40).contains(&still), "{still} asks in 30 s of a still screen");
+        let before = asks();
+        let _ = tx.send(Cmd::Input(vec![InputEvent::Move { x: 1, y: 1 }]));
+        tokio::time::sleep(INPUT_WATCH / 2).await;
+        let watching = asks() - before;
+        assert!(watching >= 4, "{watching} asks in the half second after the user's input");
+        let _ = tx.send(Cmd::Close);
+        assert_eq!(run.await.expect("no panic"), Ok("closed".to_string()));
+        srv.abort();
+    }
+
+    /// A desktop that holds still until `change` is told, then changes a pixel.
+    /// What the client says goes unread.
+    async fn server_with_a_change(mut s: tokio::io::DuplexStream, change: Arc<tokio::sync::Notify>) -> std::io::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        greet(&mut s).await?;
+        let mut said = [0u8; 256];
+        loop {
+            tokio::select! {
+                n = s.read(&mut said) => if n? == 0 {
+                    return Ok(());
+                },
+                _ = change.notified() => {
+                    // One raw rectangle: a pixel, in the full colour asked for.
+                    let mut u = vec![0u8, 0, 0, 1];
+                    for v in [0u16, 0, 1, 1] {
+                        u.extend_from_slice(&v.to_be_bytes());
+                    }
+                    u.extend_from_slice(&0i32.to_be_bytes());
+                    u.extend_from_slice(&[9, 9, 9, 0]);
+                    s.write_all(&u).await?;
+                }
+            }
+        }
+    }
+
+    // What the server sends to a session that went quiet doesn't wait for the
+    // slow tick, wherever between two of those ticks it comes.
+    #[tokio::test(start_paused = true)]
+    async fn a_change_on_a_still_screen_shows_at_once() {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let change = Arc::new(tokio::sync::Notify::new());
+        let srv = tokio::spawn(server_with_a_change(server, Arc::clone(&change)));
+        let frames = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&frames);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let run = tokio::spawn(run(
+            client,
+            std::future::ready(None::<Zeroizing<String>>),
+            |_, _| {},
+            move |_| {
+                *sink.lock().unwrap() += 1;
+                true
+            },
+            Arc::new(crate::screen_flow::Flow::default()),
+            rx,
+            (4, 2),
+            Options::default(),
+            false,
+            |_| {},
+            |_| {},
+        ));
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        for wait in [1, 61, 127, 191] {
+            tokio::time::sleep(Duration::from_millis(wait)).await;
+            let before = *frames.lock().unwrap();
+            change.notify_one();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            assert!(*frames.lock().unwrap() > before, "not drawn {wait} ms after the last look");
+            // Quiet again.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         let _ = tx.send(Cmd::Close);
         assert_eq!(run.await.expect("no panic"), Ok("closed".to_string()));
         srv.abort();
