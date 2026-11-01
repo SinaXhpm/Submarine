@@ -113,7 +113,14 @@ pub struct DbState {
     /// teardown takes everything it finds, the new profile's sessions and file
     /// lock too.
     closing: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// `total_changes` of the open profile's database when its file was last
+    /// written, or `NOT_SAVED`: what tells a save with nothing to write
+    /// (`has_unsaved_changes`). An Arc so a save on the blocking pool can set it.
+    saved_at: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
+
+/// `DbState::saved_at` for a profile that hasn't been saved since it opened.
+const NOT_SAVED: u64 = u64::MAX;
 
 impl DbState {
     /// Waits for the teardown after a reload, if one is running (`closing`).
@@ -129,7 +136,17 @@ impl DbState {
 
     /// For whatever opens or closes a profile, while it holds `conn`'s lock.
     fn bump_generation(&self) -> u64 {
+        self.saved_at.store(NOT_SAVED, std::sync::atomic::Ordering::SeqCst);
         self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// Whether the open profile holds anything its file doesn't: what a sync
+    /// merged, and also what was left for a later save (`cmd_history_add`,
+    /// `save_unless_batched`).
+    fn has_unsaved_changes(&self) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        Ok(conn.total_changes() != self.saved_at.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Before a write that follows an await: is the profile that was open at
@@ -435,10 +452,25 @@ fn save_vault_internal(state: &DbState) -> Result<(), String> {
     if let (Some(conn), Some(key), Some(salt), Some(path)) =
         (&*conn_guard, &*key_guard, &*salt_guard, &*path_guard)
     {
-        save_vault_blocking(conn, key, salt, path)
+        save_vault_blocking(conn, key, salt, path)?;
+        state.saved_at.store(conn.total_changes(), std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     } else {
         Err("[STATE] MISSING_REQUIRED_RESOURCES_FOR_SAVE".into())
     }
+}
+
+/// A command's save, unless the page saves once at the end of a batch of them
+/// (`persist_vault`): each save writes the whole vault, so a batch cost that
+/// once per command. Until the batch's save the changes are in memory only, as
+/// commands typed in a terminal are: a save of any kind takes them along, the
+/// next sync's, Lock's or the one on exit (`has_unsaved_changes`). If the app
+/// dies first the file is as it was before the batch, all of it.
+fn save_unless_batched(state: &DbState, persist: Option<bool>) -> Result<(), String> {
+    if persist == Some(false) {
+        return Ok(());
+    }
+    save_vault_internal(state)
 }
 
 /// Pure-sync vault serialise + encrypt + atomic write. Pulled out of
@@ -1147,6 +1179,11 @@ fn collect_local_records(conn: &Connection, key: &[u8; 32], since: &str) -> Resu
 /// many records it couldn't apply (refused, wouldn't decrypt or parse): delta
 /// sync asks for those again rather than move past them.
 fn apply_remote_records(conn: &Connection, key: &[u8; 32], records: &[SyncRecord], hlc: &hlc::Hlc) -> Result<usize, String> {
+    // The flag's two writes would make a round that brought nothing look like
+    // one that changed something (`has_unsaved_changes`).
+    if records.is_empty() {
+        return Ok(0);
+    }
     conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
         .map_err(|e| format!("[SYNC] MERGE_ON: {e}"))?;
     let r = apply_remote_inner(conn, key, records, hlc, MERGE_MAX_BYTES);
@@ -2309,8 +2346,13 @@ async fn sync_round(
         }),
         _ => None,
     };
-    // Persist the merged vault so the applied changes survive a restart.
-    save_vault_async(db_state).await?;
+    // Persist the merged vault so the applied changes survive a restart. A
+    // round that changed nothing has nothing to write: no full write and fsync
+    // every few minutes, on a phone's flash too. What other commands left for
+    // a later save still goes here (`has_unsaved_changes`).
+    if db_state.has_unsaved_changes()? {
+        save_vault_async(db_state).await?;
+    }
     // Only now: if the save failed, the kept rows are still to be kept.
     if put_back {
         if let Ok(path) = &vault {
@@ -2598,7 +2640,7 @@ fn note_share_grant(conn: &Connection, sealed_dek: &str, role: &str, opened: Opt
     let seen = grant_tag(sealed_dek);
     let put = |key: &str| {
         conn.execute(
-            "INSERT INTO sync_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            "INSERT INTO sync_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value",
             [key, &seen],
         )
         .map_err(|e| format!("[SHARE] NOTE_GRANT: {e}"))
@@ -2649,7 +2691,7 @@ fn note_share_role(conn: &Connection, role: &str) -> Result<(), String> {
         return Ok(());
     }
     conn.execute(
-        "UPDATE sync_meta SET value=?1 WHERE key='share_role' AND value<>'owner'",
+        "UPDATE sync_meta SET value=?1 WHERE key='share_role' AND value<>'owner' AND value<>?1",
         [role],
     )
     .map_err(|e| format!("[SHARE] NOTE_ROLE: {e}"))?;
@@ -5134,6 +5176,30 @@ mod sync_engine_tests {
         assert!(!share_key_is_waiting(&m));
     }
 
+    // What most rounds of a shared profile bring: the grant and role it has.
+    #[test]
+    fn the_same_grant_again_writes_nothing() {
+        let (m, _h) = member("M", "editor");
+        note_share_grant(&m, "aa", "editor", Some(&KEY), true).unwrap();
+        let before = m.total_changes();
+        note_share_grant(&m, "aa", "editor", Some(&KEY), true).unwrap();
+        note_share_grant(&m, "aa", "editor", None, false).unwrap();
+        assert_eq!(m.total_changes(), before);
+        // What did change still lands.
+        note_share_grant(&m, "aa", "user", Some(&KEY), true).unwrap();
+        assert_eq!(meta(&m, "share_role").as_deref(), Some("user"));
+    }
+
+    // Delta sync's usual round: nothing new either way. The merge flag's two
+    // writes looked like a change, so each round wrote the whole vault.
+    #[test]
+    fn a_round_that_brought_nothing_changes_nothing() {
+        let (m, h) = member("M", "editor");
+        let before = m.total_changes();
+        merge_answer(&m, &KEY, &[], &h, Err("no file"), false).unwrap();
+        assert_eq!(m.total_changes(), before);
+    }
+
     // Sealing is random, so the same key sealed again looks like a change
     // until it's opened; and a server that goes back to the grant it had
     // changed nothing.
@@ -6073,6 +6139,7 @@ mod sync_engine_tests {
 async fn save_vault_async(state: &DbState) -> Result<(), String> {
     let conn_arc = std::sync::Arc::clone(&state.conn);
     let generation = std::sync::Arc::clone(&state.generation);
+    let saved_at = std::sync::Arc::clone(&state.saved_at);
     let (key, salt, path, opened) = {
         let cg = state.conn.lock().map_err(|_| "[STATE] MUTEX_POISON_CONN")?;
         let kg = state.master_key.lock().map_err(|_| "[STATE] MUTEX_POISON_KEY")?;
@@ -6091,7 +6158,9 @@ async fn save_vault_async(state: &DbState) -> Result<(), String> {
             return Err("[STATE] PROFILE_CHANGED: the profile was locked, or another one opened, before it could be saved.".to_string());
         }
         let conn = cg.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-        save_vault_blocking(conn, &key, &salt, &path)
+        save_vault_blocking(conn, &key, &salt, &path)?;
+        saved_at.store(conn.total_changes(), std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     })
     .await
     .map_err(|e| format!("[CRYPTO] VAULT_JOIN: {}", e))?
@@ -8114,6 +8183,7 @@ async fn add_server(
     autostart: Option<bool>,
     mirrors: Option<Vec<serde_json::Value>>,
     color: Option<String>,
+    persist: Option<bool>,
 ) -> Result<i64, String> {
     check_server_port(port)?;
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
@@ -8152,7 +8222,7 @@ async fn add_server(
         rusqlite::params![new_id, folder_id],
     );
     drop(conn_guard);
-    save_vault_internal(&state)?;
+    save_unless_batched(&state, persist)?;
     Ok(new_id)
 }
 
@@ -8257,6 +8327,7 @@ async fn edit_server(
     // whenever the password field wasn't touched, and the SQL below uses
     // COALESCE(?, password) so the existing column survives.
     preserve_password: Option<bool>,
+    persist: Option<bool>,
 ) -> Result<(), String> {
     check_server_port(port)?;
     let tunnels_json = serde_json::to_string(&tunnels).unwrap_or_else(|_| "[]".to_string());
@@ -8322,7 +8393,7 @@ async fn edit_server(
         old_tunnels_json != tunnels_json
     };
 
-    save_vault_internal(&state)?;
+    save_unless_batched(&state, persist)?;
 
     // Forwarding rules changed → drop this server's live tunnel replay cache so
     // every (re)connect / restore path re-seeds from the freshly-saved DB rules
@@ -8500,7 +8571,7 @@ async fn set_folder_color(state: tauri::State<'_, DbState>, id: i32, color: Opti
 /// as plain text in the `notes` column; the UI renders it monospace and lets
 /// the user dump runbook snippets, contact info, alerts to remember, etc.
 #[tauri::command]
-async fn set_server_notes(state: tauri::State<'_, DbState>, id: i32, notes: String) -> Result<(), String> {
+async fn set_server_notes(state: tauri::State<'_, DbState>, id: i32, notes: String, persist: Option<bool>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     conn.execute(
@@ -8508,7 +8579,7 @@ async fn set_server_notes(state: tauri::State<'_, DbState>, id: i32, notes: Stri
         rusqlite::params![notes, id],
     ).map_err(|e| format!("[DATABASE] SERVER_NOTES_FAILED: {}", e))?;
     drop(conn_guard);
-    save_vault_internal(&state)?;
+    save_unless_batched(&state, persist)?;
     Ok(())
 }
 
@@ -8520,7 +8591,7 @@ async fn set_server_notes(state: tauri::State<'_, DbState>, id: i32, notes: Stri
 /// through add_server / edit_server's positional parameter lists. `every`
 /// left out keeps what the server has.
 #[tauri::command]
-async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, value: String, every: Option<bool>) -> Result<(), String> {
+async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, value: String, every: Option<bool>, persist: Option<bool>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     conn.execute(
@@ -8528,7 +8599,7 @@ async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, va
         rusqlite::params![value, every.map(i64::from), id],
     ).map_err(|e| format!("[DATABASE] SERVER_RUN_ON_CONNECT_FAILED: {}", e))?;
     drop(conn_guard);
-    save_vault_internal(&state)?;
+    save_unless_batched(&state, persist)?;
     Ok(())
 }
 
@@ -8537,7 +8608,7 @@ async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, va
 /// (like set_server_notes / set_server_run_on_connect) so it stays out of
 /// add_server / edit_server's positional parameter lists.
 #[tauri::command]
-async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: Option<i32>) -> Result<(), String> {
+async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: Option<i32>, persist: Option<bool>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     conn.execute(
@@ -8545,7 +8616,7 @@ async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: 
         rusqlite::params![value, id],
     ).map_err(|e| format!("[DATABASE] SERVER_JUMP_HOST_FAILED: {}", e))?;
     drop(conn_guard);
-    save_vault_internal(&state)?;
+    save_unless_batched(&state, persist)?;
     Ok(())
 }
 
@@ -8565,7 +8636,7 @@ fn non_ssh_kind(protocol: Option<&str>) -> Option<&'static str> {
 /// Written through its own command, like set_server_jump_host. Unchanged
 /// values aren't written, so they don't stamp the row for sync.
 #[tauri::command]
-async fn set_server_protocol(state: tauri::State<'_, DbState>, id: i32, value: Option<String>) -> Result<(), String> {
+async fn set_server_protocol(state: tauri::State<'_, DbState>, id: i32, value: Option<String>, persist: Option<bool>) -> Result<(), String> {
     let value: Option<&str> = match value.as_deref() {
         None | Some("ssh") => None,
         Some("rdp") => Some("rdp"),
@@ -8581,7 +8652,7 @@ async fn set_server_protocol(state: tauri::State<'_, DbState>, id: i32, value: O
     ).map_err(|e| format!("[DATABASE] SERVER_PROTOCOL_FAILED: {}", e))?;
     drop(conn_guard);
     if changed > 0 {
-        save_vault_internal(&state)?;
+        save_unless_batched(&state, persist)?;
     }
     Ok(())
 }
@@ -19039,17 +19110,24 @@ async fn probe_sudo_files(session_arc: &SessionHandleArc, password: Option<&str>
 /// waits for the others and can run out of time while the transfer is still
 /// moving. With the default 10 s, a download (16 reads of up to 255 KiB = 4 MiB
 /// in flight) failed with "Timeout" on anything under ~3 Mbit/s, and an upload
-/// (16 writes of 32 KiB) under ~420 kbit/s. The same goes for a directory
+/// (then 16 writes of 32 KiB) under ~420 kbit/s. The same goes for a directory
 /// listing queued behind a running transfer.
 ///
 /// 240 s per request carries downloads down to ~140 kbit/s and uploads down to
-/// ~17 kbit/s, and keeps the 16 reads in flight that fast high-latency links
+/// ~35 kbit/s, and keeps the 16 reads in flight that fast high-latency links
 /// need. It doesn't make a dead connection hang: the session watcher closes
 /// the SFTP session when it gives up on the connection, and the requests still
 /// pending fail with it. The deadline is only for a server that stops
 /// answering on a connection that is still up.
+///
+/// An upload can't pass what is in flight per round trip: 32 writes of 32 KiB,
+/// 1 MiB, so 10 MB/s at 100 ms (half that with the default 16), however fast
+/// the line. OpenSSH keeps 64 out. More isn't free: a key typed on the same
+/// connection can wait behind all of it on a slow uplink (not with "Dedicated
+/// session" on), so this stays at half of that.
 pub(crate) fn sftp_client_config() -> russh_sftp::client::Config {
     russh_sftp::client::Config {
+        max_concurrent_writes: 32,
         request_timeout_secs: 240,
         ..Default::default()
     }
@@ -19182,7 +19260,7 @@ mod start_sftp_tests {
 
 #[cfg(test)]
 mod sftp_config_tests {
-    use super::sftp_client_config;
+    use super::{sftp_client_config, DIR_FILES_AT_ONCE, DIR_FILE_ALONE_UP};
 
     /// What OpenSSH's sftp-server reports in limits@openssh.com as its
     /// maximum read length (256 KiB message minus 1 KiB of headroom).
@@ -19199,6 +19277,22 @@ mod sftp_config_tests {
         let upload_floor = writes_in_flight / cfg.request_timeout_secs;
         assert!(download_floor <= 150_000 / 8, "downloads need {download_floor} B/s");
         assert!(upload_floor <= 40_000 / 8, "uploads need {upload_floor} B/s");
+    }
+
+    // What sets an upload's speed on a far server: it can't pass this per round
+    // trip, whatever the line can do.
+    #[test]
+    fn an_upload_keeps_a_mebibyte_on_its_way() {
+        let cfg = sftp_client_config();
+        assert_eq!(cfg.max_concurrent_writes as u64 * cfg.max_write_packet_len as u64, 1 << 20);
+    }
+
+    // The small files of a folder, moving at once, ask no more of the deadline
+    // than one big file on its own.
+    #[test]
+    fn small_files_at_once_have_no_more_on_their_way_than_one_big_file() {
+        let cfg = sftp_client_config();
+        assert!(DIR_FILES_AT_ONCE as u64 * DIR_FILE_ALONE_UP <= cfg.max_concurrent_writes as u64 * cfg.max_write_packet_len as u64);
     }
 }
 
@@ -20155,12 +20249,12 @@ async fn sftp_download_file(
 /// without SFTP) the requests wait their turn anyway: one at a time there.
 const DIR_FILES_AT_ONCE: usize = 4;
 
-/// A file bigger than this moves alone. Each file keeps up to 16 requests in
-/// flight on the one SFTP channel, and each request's time limit runs from
-/// when it was sent: big files at once would put every request behind the
+/// A file bigger than this moves alone. Each file keeps up to 16 reads or 32
+/// writes in flight on the one SFTP channel, and each request's time limit runs
+/// from when it was sent: big files at once would put every request behind the
 /// others' data, and on a slow link past its limit. Files up to these sizes
-/// at once have no more in flight than one file had when they moved one by one
-/// (16 reads of 255 KiB; 16 writes of 32 KiB).
+/// at once have no more in flight than one file has when it moves by itself
+/// (16 reads of 255 KiB; 32 writes of 32 KiB, sftp_client_config).
 const DIR_FILE_ALONE_DOWN: u64 = 1 << 20;
 const DIR_FILE_ALONE_UP: u64 = 128 << 10;
 
@@ -20553,6 +20647,355 @@ fn walk_upload_tree(
     Ok((files, dirs, total_bytes))
 }
 
+/// How many folders a folder download lists at once. A listing is at least
+/// four round trips, so one by one a tree of 3,000 folders (a node_modules) at
+/// 100 ms took 20 minutes before its first byte. Over shell commands one at a
+/// time: the requests wait their turn anyway.
+const DIR_LISTINGS_AT_ONCE: usize = 8;
+
+/// What sftp_download_dir moves.
+#[derive(Default)]
+struct DownloadTree {
+    /// Each file: its remote path, its path below the root, its size.
+    files: Vec<(String, String, u64)>,
+    total_bytes: u64,
+    /// Names left out, for the note on the finished card.
+    skipped_names: u64,
+}
+
+/// Walks the remote tree under `remote_root` into `tree`, `at_once` folders at
+/// a time, on an explicit stack of (folder, depth). Depth bounds how deep a
+/// hostile server can send us, and the file and byte caps how much `tree` can
+/// grow, so a broken or endless tree is refused instead of growing memory
+/// without bound. `report` hears the files found so far every 100 ms while
+/// that number grows. Err(None) is a cancel.
+async fn walk_download_tree(
+    sftp: &Arc<russh_sftp::client::SftpSession>,
+    remote_root: &str,
+    local_root: &std::path::Path,
+    at_once: usize,
+    cancel: &std::sync::atomic::AtomicBool,
+    tree: &mut DownloadTree,
+    mut report: impl FnMut(usize),
+) -> Result<(), Option<String>> {
+    use std::sync::atomic::Ordering;
+    let mut stack: Vec<(String, usize)> = vec![(remote_root.to_string(), 0)];
+    let mut path_bytes: usize = 0;
+    let mut told = 0;
+    let mut listing = tokio::task::JoinSet::new();
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let walked: Result<(), Option<String>> = async {
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(None);
+            }
+            while listing.len() < at_once.max(1) {
+                let Some((dir, depth)) = stack.pop() else { break };
+                if depth > DOWNLOAD_DIR_MAX_DEPTH {
+                    return Err(Some(format!("folder nesting is deeper than {} levels — refusing to download.", DOWNLOAD_DIR_MAX_DEPTH)));
+                }
+                let sftp = Arc::clone(sftp);
+                listing.spawn(async move {
+                    let read = sftp_listing::read_dir(&sftp, &dir).await;
+                    (dir, depth, read)
+                });
+            }
+            // The tick also brings a Cancel to a walk waiting on the server.
+            let ended = tokio::select! {
+                ended = listing.join_next() => ended,
+                _ = tick.tick() => {
+                    if tree.files.len() != told {
+                        told = tree.files.len();
+                        report(told);
+                    }
+                    continue;
+                }
+            };
+            let Some(ended) = ended else { return Ok(()) };
+            let (dir, depth, read) = ended.map_err(|e| Some(format!("read_dir: {e}")))?;
+            let read = read.map_err(|e| Some(format!("read_dir {}: {}", dir, e)))?;
+            for entry in read {
+                // A single directory can hold millions of entries; a Cancel (and
+                // the caps) must take effect inside the walk, not only between
+                // directories.
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(None);
+                }
+                if let Some(msg) = download_walk_too_big(tree.files.len() + stack.len(), tree.total_bytes, path_bytes) {
+                    return Err(Some(msg));
+                }
+                let name = entry.file_name();
+                if name == "." || name == ".." { continue; }
+                // Skip any entry whose name isn't a single plain component this OS
+                // can store. A hostile SFTP server can return `../../x` or `..\x`
+                // here; joining that onto local_root below would escape the chosen
+                // folder. Ordinary names Windows can't store (`a:b`) are skipped
+                // too — counted, so the user hears about them instead of a quietly
+                // incomplete copy. See is_safe_dir_entry_name.
+                if !is_safe_dir_entry_name(&name) {
+                    tree.skipped_names = tree.skipped_names.saturating_add(1);
+                    continue;
+                }
+                let full = format!("{}/{}", dir.trim_end_matches('/'), name);
+                let rel = full.strip_prefix(remote_root)
+                    .map(|s| s.trim_start_matches('/').to_string())
+                    .unwrap_or_else(|| name.clone());
+                // What the walk keeps is paths, built here from short names.
+                path_bytes = path_bytes.saturating_add(full.len() + rel.len());
+                if entry.file_type().is_dir() {
+                    // Each folder goes through the path policy, not just the top
+                    // one: a remote `.config/autostart` taken into the home folder
+                    // lands where the OS runs things at login. What it would refuse
+                    // is left out and counted, and the rest of the tree still comes.
+                    if check_local_path_policy(local_root.join(&rel)).is_err() {
+                        tree.skipped_names = tree.skipped_names.saturating_add(1);
+                        continue;
+                    }
+                    stack.push((full, depth + 1));
+                } else if entry.file_type().is_file() {
+                    let size = entry.metadata().size.unwrap_or(0);
+                    tree.total_bytes = tree.total_bytes.saturating_add(size);
+                    tree.files.push((full, rel, size));
+                }
+                // Symlinks and other types skipped — same conservative policy
+                // as the mirror module.
+            }
+        }
+    }
+    .await;
+    // What is still listing ends by itself, within the limits of a listing, and
+    // closes its folder on the server. Cut off, it would leave that open.
+    listing.detach_all();
+    walked
+}
+
+#[cfg(test)]
+mod download_walk_tests {
+    use super::*;
+    use russh_sftp::client::SftpSession;
+    use russh_sftp::protocol::{File, FileAttributes, Handle, Name, Status, StatusCode};
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// A server with `tree`, folder by folder. It answers one request at a
+    /// time, as a real one does, so what shows the listings overlapping is how
+    /// many folders are open at once.
+    struct Server {
+        tree: HashMap<String, Vec<File>>,
+        open: HashMap<String, (String, bool)>,
+        next: u32,
+        open_now: Arc<AtomicUsize>,
+        most_open: Arc<AtomicUsize>,
+        /// How long each listing's answer takes.
+        pause: Duration,
+        /// A folder whose listing is never answered.
+        stuck: Option<String>,
+    }
+
+    impl russh_sftp::server::Handler for Server {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> StatusCode {
+            StatusCode::OpUnsupported
+        }
+
+        async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, StatusCode> {
+            if !self.tree.contains_key(&path) {
+                return Err(StatusCode::NoSuchFile);
+            }
+            let open = self.open_now.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most_open.fetch_max(open, Ordering::SeqCst);
+            self.next += 1;
+            let handle = format!("h{}", self.next);
+            self.open.insert(handle.clone(), (path, false));
+            Ok(Handle { id, handle })
+        }
+
+        async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, StatusCode> {
+            let (path, sent) = self.open.get_mut(&handle).ok_or(StatusCode::Failure)?;
+            if *sent {
+                return Err(StatusCode::Eof);
+            }
+            *sent = true;
+            if self.stuck.as_deref() == Some(path.as_str()) {
+                std::future::pending::<()>().await;
+            }
+            tokio::time::sleep(self.pause).await;
+            Ok(Name { id, files: self.tree[path.as_str()].clone() })
+        }
+
+        async fn close(&mut self, id: u32, handle: String) -> Result<Status, StatusCode> {
+            self.open.remove(&handle);
+            self.open_now.fetch_sub(1, Ordering::SeqCst);
+            Ok(Status { id, status_code: StatusCode::Ok, error_message: "Ok".into(), language_tag: "en-US".into() })
+        }
+    }
+
+    fn with_mode(name: &str, mode: u32, size: u64) -> File {
+        File::new(name, FileAttributes { permissions: Some(mode), size: Some(size), ..Default::default() })
+    }
+
+    fn folder(name: &str) -> File {
+        with_mode(name, 0o040755, 0)
+    }
+
+    fn file(name: &str, size: u64) -> File {
+        with_mode(name, 0o100644, size)
+    }
+
+    /// `/top` with `folders` folders of two files each.
+    fn wide_tree(folders: usize) -> HashMap<String, Vec<File>> {
+        let mut tree = HashMap::new();
+        tree.insert("/top".to_string(), (0..folders).map(|i| folder(&format!("d{i}"))).collect());
+        for i in 0..folders {
+            tree.insert(format!("/top/d{i}"), vec![file("a", 10), file("b", 20)]);
+        }
+        tree
+    }
+
+    struct Lab {
+        sftp: Arc<SftpSession>,
+        most_open: Arc<AtomicUsize>,
+    }
+
+    async fn lab(tree: HashMap<String, Vec<File>>, pause: Duration, stuck: Option<&str>) -> Lab {
+        let most_open = Arc::new(AtomicUsize::new(0));
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let handler = Server {
+            tree,
+            open: HashMap::new(),
+            next: 0,
+            open_now: Arc::new(AtomicUsize::new(0)),
+            most_open: Arc::clone(&most_open),
+            pause,
+            stuck: stuck.map(str::to_string),
+        };
+        russh_sftp::server::run(server, handler).await;
+        Lab { sftp: Arc::new(SftpSession::new(client).await.unwrap()), most_open }
+    }
+
+    fn local_root() -> std::path::PathBuf {
+        std::env::temp_dir().join("sub-download-walk")
+    }
+
+    async fn walk(lab: &Lab, at_once: usize) -> DownloadTree {
+        let mut tree = DownloadTree::default();
+        let cancel = AtomicBool::new(false);
+        walk_download_tree(&lab.sftp, "/top", &local_root(), at_once, &cancel, &mut tree, |_| {}).await.unwrap();
+        tree
+    }
+
+    // One by one, each folder would be open alone, and 3,000 of them at 100 ms
+    // would take 20 minutes.
+    #[tokio::test]
+    async fn folders_are_listed_side_by_side_up_to_the_limit() {
+        let lab = lab(wide_tree(40), Duration::ZERO, None).await;
+        let tree = walk(&lab, DIR_LISTINGS_AT_ONCE).await;
+        assert_eq!(tree.files.len(), 80);
+        assert_eq!(tree.total_bytes, 40 * 30);
+        let most = lab.most_open.load(Ordering::SeqCst);
+        assert!((2..=DIR_LISTINGS_AT_ONCE).contains(&most), "{most} open at once");
+    }
+
+    // Over shell commands the requests wait their turn anyway.
+    #[tokio::test]
+    async fn one_at_a_time_is_one_at_a_time() {
+        let lab = lab(wide_tree(12), Duration::ZERO, None).await;
+        assert_eq!(walk(&lab, 1).await.files.len(), 24);
+        assert_eq!(lab.most_open.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn the_walk_finds_the_tree_and_leaves_out_what_it_should() {
+        let mut tree = HashMap::new();
+        tree.insert(
+            "/top".to_string(),
+            vec![
+                file("top.txt", 1),
+                folder("sub"),
+                with_mode("link", 0o120777, 7),
+                file("../escape", 100),
+                file("a/b", 100),
+            ],
+        );
+        tree.insert("/top/sub".to_string(), vec![folder("deep")]);
+        tree.insert("/top/sub/deep".to_string(), vec![file("x", 2)]);
+        let lab = lab(tree, Duration::ZERO, None).await;
+        let mut found = walk(&lab, 8).await;
+        found.files.sort();
+        assert_eq!(
+            found.files,
+            [
+                ("/top/sub/deep/x".to_string(), "sub/deep/x".to_string(), 2),
+                ("/top/top.txt".to_string(), "top.txt".to_string(), 1),
+            ]
+        );
+        assert_eq!(found.total_bytes, 3);
+        // The two names that aren't one step.
+        assert_eq!(found.skipped_names, 2);
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_will_not_list_ends_the_walk_with_its_name() {
+        let mut tree = wide_tree(3);
+        tree.get_mut("/top").unwrap().push(folder("gone"));
+        let lab = lab(tree, Duration::ZERO, None).await;
+        let mut found = DownloadTree::default();
+        let cancel = AtomicBool::new(false);
+        let err = walk_download_tree(&lab.sftp, "/top", &local_root(), 8, &cancel, &mut found, |_| {}).await.unwrap_err();
+        assert!(err.as_deref().is_some_and(|e| e.starts_with("read_dir /top/gone: ")), "{err:?}");
+    }
+
+    // A tree without end stops at the depth limit, with listings side by side
+    // as without.
+    #[tokio::test]
+    async fn the_depth_limit_holds() {
+        let mut tree = HashMap::new();
+        let mut path = "/top".to_string();
+        for _ in 0..=DOWNLOAD_DIR_MAX_DEPTH + 1 {
+            tree.insert(path.clone(), vec![folder("d"), file("f", 1)]);
+            path.push_str("/d");
+        }
+        let lab = lab(tree, Duration::ZERO, None).await;
+        let mut found = DownloadTree::default();
+        let cancel = AtomicBool::new(false);
+        let err = walk_download_tree(&lab.sftp, "/top", &local_root(), 8, &cancel, &mut found, |_| {}).await.unwrap_err();
+        assert!(err.as_deref().is_some_and(|e| e.contains("nesting is deeper")), "{err:?}");
+    }
+
+    // Cancel can't wait for a server that doesn't answer.
+    #[tokio::test]
+    async fn a_cancel_ends_a_walk_that_waits_on_the_server() {
+        let lab = lab(wide_tree(3), Duration::ZERO, Some("/top/d1")).await;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+        let mut found = DownloadTree::default();
+        let local = local_root();
+        let walked = walk_download_tree(&lab.sftp, "/top", &local, 8, &cancel, &mut found, |_| {});
+        let ended = tokio::time::timeout(Duration::from_secs(5), walked).await.expect("ended, not waiting for the server");
+        assert_eq!(ended, Err(None));
+    }
+
+    // The card shows the count going up while the listing goes on.
+    #[tokio::test]
+    async fn the_count_is_told_as_it_grows() {
+        let lab = lab(wide_tree(6), Duration::from_millis(40), None).await;
+        let mut found = DownloadTree::default();
+        let cancel = AtomicBool::new(false);
+        let mut told = Vec::new();
+        walk_download_tree(&lab.sftp, "/top", &local_root(), 1, &cancel, &mut found, |n| told.push(n)).await.unwrap();
+        assert_eq!(found.files.len(), 12);
+        assert!(!told.is_empty(), "nothing told");
+        assert!(told.windows(2).all(|pair| pair[0] < pair[1]), "{told:?}");
+    }
+}
+
 /// Recursive remote directory download. Walks the remote tree under
 /// `remote_path`, mirrors its structure into `local_path/{basename}`, and
 /// streams every file across with progress events aggregated under a SINGLE
@@ -20668,87 +21111,36 @@ async fn sftp_download_dir(
 
     // Phase 1: enumerate. Collect every file under remote_path along with
     // its relative path (so we can preserve the tree on the local side) and
-    // its size (so the progress bar has a meaningful total). Tracked
-    // iteratively with an explicit stack so we don't blow the async-recursion
-    // budget on pathological trees.
+    // its size (so the progress bar has a meaningful total).
     let remote_root = remote_path.trim_end_matches('/').to_string();
     // The tree goes in {local_path}/{folder_name}/.
     let local_root = std::path::PathBuf::from(&local_path).join(&folder_name);
-    let mut files: Vec<(String, String, u64)> = Vec::new(); // (remote, rel, size)
-    let mut total_bytes: u64 = 0;
-    let mut path_bytes: usize = 0;
-    let mut skipped_names: u64 = 0;
-    // (dir, depth). Depth bounds how deep a hostile server can send us, and
-    // the file/byte caps bound how much the list below can grow — so a broken
-    // or endless tree is refused instead of growing memory without bound.
-    let mut stack: Vec<(String, usize)> = vec![(remote_root.clone(), 0)];
-
-    while let Some((dir, depth)) = stack.pop() {
-        if cancel.load(Ordering::Relaxed) {
-            emit_progress(0, total_bytes, "cancelled", None);
+    let over_shell = state.sftp_shell.lock().await.contains(&session_id);
+    let listings = if over_shell { 1 } else { DIR_LISTINGS_AT_ONCE };
+    let mut tree = DownloadTree::default();
+    // No total yet: `listed` is what the card shows in place of a percentage.
+    let tell_found = |found: usize| {
+        let _ = app.emit(
+            &event_name,
+            serde_json::json!({
+                "id": id, "name": folder_name, "kind": "download",
+                "bytes": 0, "total": 0,
+                "status": "progress", "error": null, "listed": found,
+            }),
+        );
+    };
+    match walk_download_tree(&sftp, &remote_root, &local_root, listings, &cancel, &mut tree, tell_found).await {
+        Ok(()) => {}
+        Err(None) => {
+            emit_progress(0, tree.total_bytes, "cancelled", None);
             return Err("cancelled".into());
         }
-        if depth > DOWNLOAD_DIR_MAX_DEPTH {
-            let msg = format!("folder nesting is deeper than {} levels — refusing to download.", DOWNLOAD_DIR_MAX_DEPTH);
-            emit_progress(0, total_bytes, "error", Some(msg.clone()));
+        Err(Some(msg)) => {
+            emit_progress(0, tree.total_bytes, "error", Some(msg.clone()));
             return Err(msg);
         }
-        let read = match sftp_listing::read_dir(&sftp, &dir).await {
-            Ok(r) => r,
-            Err(e) => {
-                emit_progress(0, total_bytes, "error", Some(format!("read_dir {}: {}", dir, e)));
-                return Err(format!("read_dir {}: {}", dir, e));
-            }
-        };
-        for entry in read {
-            // A single directory can hold millions of entries; a Cancel (and
-            // the caps) must take effect inside the walk, not only between
-            // directories.
-            if cancel.load(Ordering::Relaxed) {
-                emit_progress(0, total_bytes, "cancelled", None);
-                return Err("cancelled".into());
-            }
-            if let Some(msg) = download_walk_too_big(files.len() + stack.len(), total_bytes, path_bytes) {
-                emit_progress(0, total_bytes, "error", Some(msg.clone()));
-                return Err(msg);
-            }
-            let name = entry.file_name();
-            if name == "." || name == ".." { continue; }
-            // Skip any entry whose name isn't a single plain component this OS
-            // can store. A hostile SFTP server can return `../../x` or `..\x`
-            // here; joining that onto local_root below would escape the chosen
-            // folder. Ordinary names Windows can't store (`a:b`) are skipped
-            // too — counted, so the user hears about them instead of a quietly
-            // incomplete copy. See is_safe_dir_entry_name.
-            if !is_safe_dir_entry_name(&name) {
-                skipped_names = skipped_names.saturating_add(1);
-                continue;
-            }
-            let full = format!("{}/{}", dir.trim_end_matches('/'), name);
-            let rel = full.strip_prefix(&remote_root)
-                .map(|s| s.trim_start_matches('/').to_string())
-                .unwrap_or_else(|| name.clone());
-            // What the walk keeps is paths, built here from short names.
-            path_bytes = path_bytes.saturating_add(full.len() + rel.len());
-            if entry.file_type().is_dir() {
-                // Each folder goes through the path policy, not just the top
-                // one: a remote `.config/autostart` taken into the home folder
-                // lands where the OS runs things at login. What it would refuse
-                // is left out and counted, and the rest of the tree still comes.
-                if check_local_path_policy(local_root.join(&rel)).is_err() {
-                    skipped_names = skipped_names.saturating_add(1);
-                    continue;
-                }
-                stack.push((full, depth + 1));
-            } else if entry.file_type().is_file() {
-                let size = entry.metadata().size.unwrap_or(0);
-                total_bytes = total_bytes.saturating_add(size);
-                files.push((full, rel, size));
-            }
-            // Symlinks and other types skipped — same conservative policy
-            // as the mirror module.
-        }
     }
+    let DownloadTree { files, total_bytes, skipped_names } = tree;
 
     // Shown on the finished transfer card when the walk skipped names.
     let skipped_note = skipped_names_note(skipped_names);
@@ -20771,7 +21163,7 @@ async fn sftp_download_dir(
     }
 
     let transferred = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let at_once = if state.sftp_shell.lock().await.contains(&session_id) { 1 } else { DIR_FILES_AT_ONCE };
+    let at_once = if over_shell { 1 } else { DIR_FILES_AT_ONCE };
     let jobs = files.iter().map(|(remote_file_path, rel, size)| DirJob {
         alone: *size > DIR_FILE_ALONE_DOWN,
         // The local name: this disk may ignore case.
@@ -20951,8 +21343,9 @@ async fn open_upload_target(
 
 /// Close the remote file of an upload cancelled mid-write and, when this
 /// upload created it, delete it, so no half-written copy stays on the
-/// server. Awaited (for up to 10 s) before the upload reports its cancel, so
-/// an upload of the same file started right after can't lose its file to
+/// server. Awaited (for up to 20 s: the writes on their way go first, 1 MiB,
+/// and that takes as long at 420 kbit/s) before the upload reports its cancel,
+/// so an upload of the same file started right after can't lose its file to
 /// this delete. Returns the card's note: what the cancel left on the server.
 /// `name` is how the note names the file.
 async fn finish_cancelled_upload(
@@ -20967,7 +21360,7 @@ async fn finish_cancelled_upload(
         let _ = remote_file.shutdown().await;
         if created { sftp.remove_file(remote_path).await.err() } else { None }
     };
-    let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), cleanup).await;
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(20), cleanup).await;
     if !created {
         return Some(format!("{name} on the server holds only the part sent before the cancel."));
     }
@@ -21199,6 +21592,23 @@ async fn sftp_cancel_transfer(
         flag.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// What the page goes by to move selected files side by side, the way a
+/// folder's files move (run_dir_files).
+#[derive(serde::Serialize)]
+struct SftpBatchLimits {
+    /// How many at once on this session.
+    at_once: usize,
+    /// Over these sizes a file moves alone (DIR_FILE_ALONE_*).
+    alone_up: u64,
+    alone_down: u64,
+}
+
+#[tauri::command]
+async fn sftp_batch_limits(state: tauri::State<'_, SshState>, session_id: String) -> Result<SftpBatchLimits, String> {
+    let at_once = if state.sftp_shell.lock().await.contains(&session_id) { 1 } else { DIR_FILES_AT_ONCE };
+    Ok(SftpBatchLimits { at_once, alone_up: DIR_FILE_ALONE_UP, alone_down: DIR_FILE_ALONE_DOWN })
 }
 
 /// Bucket the failure modes that can come out of an SSH connect / auth round.
@@ -24595,7 +25005,7 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder.plugin(android_bridge::init());
     let builder = builder
-        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None), profile_lock: StdMutex::new(None), closing: std::sync::Arc::new(tokio::sync::Mutex::new(())) })
+        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None), profile_lock: StdMutex::new(None), closing: std::sync::Arc::new(tokio::sync::Mutex::new(())), saved_at: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NOT_SAVED)) })
         .manage(SshState::new())
         .manage(rdp::RdpSessions::default())
         .manage(telnet::Pending::default())
@@ -24707,7 +25117,7 @@ pub fn run() {
             parse_client_import,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner, sftp_stat,
-            sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,
+            sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_batch_limits, sftp_open_remote_file,
             sftp_set_elevated, sftp_elevation_status, sftp_login_user, sftp_resolve_owners,
             archive::local_archive, archive::local_extract, archive::sftp_archive, archive::sftp_extract,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
@@ -24764,7 +25174,46 @@ mod tests {
             sync_cursor: StdMutex::new(None),
             profile_lock: StdMutex::new(None),
             closing: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            saved_at: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NOT_SAVED)),
         }
+    }
+
+    // What a sync goes by to leave the file alone, and what a batch of commands
+    // leaves for the save at its end: it must never look saved before that.
+    #[tokio::test]
+    async fn what_the_file_lacks_is_known_until_a_save_of_any_kind() {
+        let dir = std::env::temp_dir().join(format!("submarine-unsaved-{}", transfer_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.submarine");
+        let state = open_db_state();
+        *state.salt.lock().unwrap() = Some([1u8; SALT_LEN]);
+        *state.db_path.lock().unwrap() = Some(path.clone());
+        let change = || {
+            let conn = state.conn.lock().unwrap();
+            conn.as_ref().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS t(v); INSERT INTO t VALUES(1)").unwrap();
+        };
+        assert!(state.has_unsaved_changes().unwrap(), "opened, not saved yet");
+
+        // In a batch the command leaves the file alone.
+        change();
+        save_unless_batched(&state, Some(false)).unwrap();
+        assert!(!path.exists());
+        assert!(state.has_unsaved_changes().unwrap());
+        // Any other command saves, and that takes the batch along.
+        save_unless_batched(&state, None).unwrap();
+        assert!(path.exists());
+        assert!(!state.has_unsaved_changes().unwrap());
+
+        // What is left for later without a batch, as typed commands are.
+        change();
+        assert!(state.has_unsaved_changes().unwrap());
+        save_vault_async(&state).await.unwrap();
+        assert!(!state.has_unsaved_changes().unwrap());
+
+        // Another opening knows nothing of what was saved before it.
+        state.bump_generation();
+        assert!(state.has_unsaved_changes().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A profile that has moved the generation on stays. And the name stays

@@ -342,6 +342,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
           autostart: false,
           mirrors: [],
           color: null,
+          persist: false,
         });
         ok++;
       } catch (e: any) {
@@ -349,8 +350,21 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
         lastErr = typeof e === "string" ? e : (e?.message || String(e));
       }
     }
+    // One save for all of them: each writes the whole vault, so one per host
+    // grew with the square of the hosts. Until it's done they're in memory. If
+    // the app dies first, the file is as it was and the import can be run again.
+    let saveErr: string | null = null;
+    if (ok > 0) {
+      try {
+        await invoke("persist_vault");
+      } catch (e: any) {
+        saveErr = typeof e === "string" ? e : (e?.message || String(e));
+      }
+    }
     setImportBusy(false);
-    if (failed > 0) {
+    if (saveErr) {
+      setImportError(`${ok} imported, but they couldn't be saved: ${saveErr}`);
+    } else if (failed > 0) {
       setImportError(`${ok} imported, ${failed} failed${lastErr ? `: ${lastErr}` : ""}`);
     }
     if (refreshServers) {
@@ -370,7 +384,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
       );
       return;
     }
-    if (failed === 0) {
+    if (failed === 0 && !saveErr) {
       closeImportModal();
     }
   };

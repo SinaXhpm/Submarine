@@ -2989,9 +2989,10 @@ function DesktopApp() {
               // would overwrite the DB value.
               preservePassword: !!newNode.id && !newNode.password_dirty,
             };
+            // These writes share one save, at the end: each writes the whole vault.
             const action = newNode.id
-              ? invoke<void>("edit_server", { id: newNode.id, ...payload }).then(() => newNode.id!)
-              : invoke<number>("add_server", payload);
+              ? invoke<void>("edit_server", { id: newNode.id, ...payload, persist: false }).then(() => newNode.id!)
+              : invoke<number>("add_server", { ...payload, persist: false });
 
             const savedId = await action;
             // Notes live on the server row but go through their own command
@@ -2999,29 +3000,30 @@ function DesktopApp() {
             // through every add/edit_server signature. Empty string is valid
             // — clears any previous note.
             try {
-              await invoke("set_server_notes", { id: savedId, notes: newNode.notes || "" });
+              await invoke("set_server_notes", { id: savedId, notes: newNode.notes || "", persist: false });
             } catch (e) {
               addLog(`SAVE_NOTES_FAILED: ${e}`, "error");
             }
             // Same separate-write pattern for the on-connect commands.
             try {
-              await invoke("set_server_run_on_connect", { id: savedId, value: newNode.runOnConnect || "", every: !!newNode.runOnConnectEvery });
+              await invoke("set_server_run_on_connect", { id: savedId, value: newNode.runOnConnect || "", every: !!newNode.runOnConnectEvery, persist: false });
             } catch (e) {
               addLog(`SAVE_RUN_ON_CONNECT_FAILED: ${e}`, "error");
             }
             // ProxyJump target — same separate-write pattern. Empty string
             // means "no jump host" → store NULL.
             try {
-              await invoke("set_server_jump_host", { id: savedId, value: newNode.jumpHostId ? parseInt(newNode.jumpHostId) : null });
+              await invoke("set_server_jump_host", { id: savedId, value: newNode.jumpHostId ? parseInt(newNode.jumpHostId) : null, persist: false });
             } catch (e) {
               addLog(`SAVE_JUMP_HOST_FAILED: ${e}`, "error");
             }
             // SSH, RDP, telnet or VNC: the same separate-write pattern.
             try {
-              await invoke("set_server_protocol", { id: savedId, value: isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : null });
+              await invoke("set_server_protocol", { id: savedId, value: isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : null, persist: false });
             } catch (e) {
               addLog(`SAVE_PROTOCOL_FAILED: ${e}`, "error");
             }
+            await invoke("persist_vault");
             // An RDP server's options are this device's own, kept by its sync
             // id (a new server has one once it's saved).
             if (isRdp) {
