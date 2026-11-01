@@ -248,6 +248,11 @@ function maskToPrefix(mask: string): number {
   return mask.split(".").reduce((acc, o) => acc + (((parseInt(o, 10) || 0).toString(2).match(/1/g) || []).length), 0);
 }
 
+// `ip -j` output is the server's to choose: a JSON field of the wrong type would
+// reach React as a child and take the whole tab with it.
+const textOf = (v: unknown): string => (typeof v === "string" ? v : "");
+const numberOf = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
 // Tier 1 — `ip -j addr` JSON (iproute2 >= 4.13).
 function parseNicsJson(raw: string): Nic[] {
   if (!raw) return [];
@@ -255,12 +260,12 @@ function parseNicsJson(raw: string): Nic[] {
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
     return sortNics(arr.map((n: any) => ({
-      name: n.ifname || "?",
-      state: n.operstate || (Array.isArray(n.flags) && n.flags.includes("UP") ? "UP" : "DOWN"),
-      mac: n.address || "",
-      mtu: n.mtu || 0,
-      addrs: (n.addr_info || []).map((a: any) => ({
-        family: a.family || "", local: a.local || "", prefixlen: a.prefixlen || 0,
+      name: textOf(n.ifname) || "?",
+      state: textOf(n.operstate) || (Array.isArray(n.flags) && n.flags.includes("UP") ? "UP" : "DOWN"),
+      mac: textOf(n.address),
+      mtu: numberOf(n.mtu),
+      addrs: (Array.isArray(n.addr_info) ? n.addr_info : []).map((a: any) => ({
+        family: textOf(a.family), local: textOf(a.local), prefixlen: numberOf(a.prefixlen),
       })),
     })));
   } catch { return []; }
@@ -361,7 +366,7 @@ function parseRoutesJson(raw: string): RouteRow[] {
   try {
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
-    return arr.map((r: any): RouteRow => ({ dst: r.dst || "default", via: r.gateway || "", dev: r.dev || "" }));
+    return arr.map((r: any): RouteRow => ({ dst: textOf(r.dst) || "default", via: textOf(r.gateway), dev: textOf(r.dev) }));
   } catch { return []; }
 }
 // `ip -o route show`: "default via 192.168.1.1 dev eth0 proto dhcp .."
@@ -922,8 +927,12 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
     return () => {
       for (const k of Object.keys(tokenRef.current) as ProbeSubTab[]) {
         tokenRef.current[k]++;
+        // The reply of that probe is dropped now, so nothing else would end
+        // its "loading": the tab would spin for good with Refresh off.
+        stateMap[k][1]((prev) => (prev.loading ? { ...prev, loading: false } : prev));
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   // ---------- Tab strip ----------
@@ -1813,14 +1822,6 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
     return rows;
   }, [data.rows, filter, stateFilter]);
 
-  if (!data.available) {
-    return (
-      <BannerIcon tone="amber" icon={<AlertTriangle size={14} />}>
-        <code className="font-mono px-1">systemctl</code> not available. This server likely uses a different init system (e.g. OpenRC, runit).
-      </BannerIcon>
-    );
-  }
-
   const counts = useMemo(() => {
     const c = { active: 0, inactive: 0, failed: 0, other: 0 };
     for (const r of data.rows) {
@@ -1843,6 +1844,16 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
     if (counts.failed > 0) setStateFilter("failed");
     else setStateFilter("all");
   }, [data.rows, counts.failed]);
+
+  // Below every hook: a Refresh can flip `available`, and the same component
+  // then has to run the same hooks.
+  if (!data.available) {
+    return (
+      <BannerIcon tone="amber" icon={<AlertTriangle size={14} />}>
+        <code className="font-mono px-1">systemctl</code> not available. This server likely uses a different init system (e.g. OpenRC, runit).
+      </BannerIcon>
+    );
+  }
 
   const performAction = async (unit: string, action: "start" | "stop" | "restart") => {
     if (action === "stop" || action === "restart") {

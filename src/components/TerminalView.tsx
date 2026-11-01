@@ -12,7 +12,7 @@ import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
 import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
 import { readScrollback } from '../util/terminalScrollback';
-import { withoutPasteControls } from '../util/pasteText';
+import { TERMINAL_PASTE, withoutPasteControls, type TerminalPaste } from '../util/pasteText';
 import { READABLE_CONTRAST, readBoldBright, readMinContrast, readScheme } from '../util/terminalTheme';
 import { readUseLocalShell } from '../util/terminalShell';
 import { readUseSshAgent } from '../util/sshAgent';
@@ -427,6 +427,9 @@ const TerminalView = ({
   // holds pasted text, so its Enter is skipped too.
   const pastingRef = useRef(false);
   const commandBufPastedRef = useRef(false);
+  // Set while a paste from outside the terminal runs (see TERMINAL_PASTE):
+  // what xterm's paste hands handleData then goes out as this says.
+  const pasteRequestRef = useRef<{ enter: boolean } | null>(null);
   // The app's confirm dialog, for the terminal's long-lived handlers (links,
   // multi-line paste), which would otherwise see a stale function.
   const confirm = useConfirm();
@@ -1000,6 +1003,20 @@ const TerminalView = ({
       if (disabledRef.current) return;
       markUsed();
       showPasswordButton(false);
+      // One write, to this terminal only. Enter in a call of its own could
+      // land before the text, and here it follows the end of a bracketed
+      // paste as it should. Broadcast stays out of it: a Library command can
+      // be for this server alone.
+      const request = pasteRequestRef.current;
+      if (request) {
+        invoke('write_terminal_data', {
+          terminalId,
+          data: Array.from(new TextEncoder().encode(request.enter ? `${data}\r` : data)),
+        }).catch(console.error);
+        commandBufRef.current = "";
+        commandBufPastedRef.current = !request.enter;
+        return;
+      }
       // A paste: our right-click path, or xterm's own keyboard paste, which
       // starts with the bracketed-paste marker when the remote program asked
       // for one. Never run through the armed modifiers or into history.
@@ -1322,6 +1339,19 @@ const TerminalView = ({
     window.addEventListener('blur', onWindowBlur);
     terminalRef.current.addEventListener('contextmenu', onContextMenu);
     terminalRef.current.addEventListener('paste', onPasteEvent, true);
+    // A paste from outside the terminal (see TERMINAL_PASTE). Only the view
+    // that owns the PTY takes it: a Wall tile would send the text again.
+    const onPasteRequest = (e: Event) => {
+      const { terminalId: target, text, enter } = (e as CustomEvent<TerminalPaste>).detail;
+      if (attachOnly || target !== terminalId) return;
+      pasteRequestRef.current = { enter };
+      try {
+        term.paste(text);
+      } finally {
+        pasteRequestRef.current = null;
+      }
+    };
+    window.addEventListener(TERMINAL_PASTE, onPasteRequest);
 
     // Handle Resize, once the size has settled (PTY_SIZE_SETTLE_MS).
     let sizeTimer = 0;
@@ -1517,6 +1547,7 @@ const TerminalView = ({
       }
       document.removeEventListener('mouseup', onDocMouseUp);
       window.removeEventListener('blur', onWindowBlur);
+      window.removeEventListener(TERMINAL_PASTE, onPasteRequest);
       window.visualViewport?.removeEventListener('resize', onVvResize);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
       unlistenPromise.then(unlisten => unlisten());

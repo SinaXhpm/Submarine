@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Cpu, X, Link2, ArrowLeftRight, Shield, ShieldAlert, Key, User, FolderPlus, Download, CheckSquare, Square, History, Plus, Copy, Play, FlaskConical } from "lucide-react";
@@ -91,12 +91,53 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
   // The panel stays mounted and slides off-screen rather than unmounting, so
   // the note from the last key someone loaded would still be sitting there the
   // next time they open it — against a different server.
+  const [portError, setPortError] = useState("");
   useEffect(() => {
     if (!isOpen) {
       setKeyBrowseNote(null);
       setGeneratedKey(null);
+      setPortError("");
     }
   }, [isOpen]);
+
+  // One save at a time: it is several writes, and a click while they run would
+  // add the server a second time.
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (savingRef.current) return;
+    // Empty, it reaches the backend as null; out of range, the connection
+    // would wrap it to some other port.
+    if (!Number.isInteger(newNode.port) || newNode.port < 1 || newNode.port > 65535) {
+      setPortError("Port must be 1 to 65535.");
+      return;
+    }
+    setPortError("");
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await onSave();
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
+  // What the form opened with. A click beside it closes it only if nothing
+  // would be lost: "Add server" starts blank and the pencil reloads the row,
+  // so what was typed doesn't come back. X is there for a deliberate close.
+  // The revealed password stays out of it, and all of it goes with the form:
+  // nothing here may outlive what DesktopApp clears on close and Lock. A typed
+  // password still counts as a change, through `password_dirty`.
+  const openedWithRef = useRef("");
+  const withoutPassword = ({ password, ...rest }: any) => JSON.stringify(rest);
+  useEffect(() => {
+    openedWithRef.current = isOpen ? withoutPassword(newNode) : "";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+  const closeFromBackdrop = () => {
+    if (withoutPassword(newNode) === openedWithRef.current) onClose();
+  };
 
   // SSH-config import modal state. Lives here so it's colocated with the
   // "Add server" flow — the button that triggers it sits in this panel's
@@ -422,7 +463,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
   return (
     // Mounted while closed too (to slide out): inert then, so Tab can't reach
     // its fields.
-    <div inert={isOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isOpen ? 'bg-black/60 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={onClose}>
+    <div inert={isOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isOpen ? 'bg-black/60 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={closeFromBackdrop}>
       <div ref={panelRef} tabIndex={-1} className={`w-full ${isMobile ? 'max-w-full' : 'max-w-[450px]'} bg-background border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
 
         {/* Header */}
@@ -459,7 +500,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
 
         {/* Scrollable Content */}
         <div className="p-6 flex-1 overflow-y-auto custom-scrollbar space-y-6">
-          {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+          {(portError || formError) && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{portError || formError}</div>}
 
           <div className="grid grid-cols-1 gap-4">
             {/* SSH, RDP, telnet or VNC. An RDP server opens in this
@@ -1215,7 +1256,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
 
         {/* Footer */}
         <div className="p-6 border-t border-white/5 shrink-0">
-          <button onClick={onSave} className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:bg-primary hover:shadow-[0_0_20px_rgba(var(--primary),0.3)] transition-all active:scale-[0.98] flex items-center justify-center gap-2">
+          <button onClick={save} disabled={saving} className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:bg-primary hover:shadow-[0_0_20px_rgba(var(--primary),0.3)] transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center gap-2">
             <Cpu size={14} /> {isEditMode ? "Save changes" : "Save server"}
           </button>
         </div>

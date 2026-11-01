@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, X, Activity, AlertTriangle, Globe, ArrowRight, ArrowDownLeft, Square, Play, Pencil, FileText, Trash2 } from "lucide-react";
 import { useConfirm } from "../ui/confirm";
+import { serverRowChanged } from "../util/serverJson";
 
 // Tunnels panel — the session's port-forwarding rules, running and stopped,
 // with start / stop / rename / remove. A node's saved rules start at connect
@@ -204,7 +205,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
   // never block the action the user just took).
   const persistTunnels = () => {
     if (!nodeId) return;
-    invoke("persist_session_tunnels", { sessionId, serverId: nodeId }).catch(() => {});
+    invoke("persist_session_tunnels", { sessionId, serverId: nodeId }).then(serverRowChanged).catch(() => {});
   };
 
   // Run one change to the rules: no two at once, the error (if any) shown,

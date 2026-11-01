@@ -385,7 +385,9 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
                 <X size={12} />
               </button>
             </div>
-            <p className="text-[12px] text-zinc-300 leading-relaxed mb-4 whitespace-pre-wrap break-words">
+            {/* Scrolls: a Library command is shown whole, however long it is,
+                and the buttons have to stay on screen. */}
+            <p className="text-[12px] text-zinc-300 leading-relaxed mb-4 whitespace-pre-wrap break-words max-h-[60vh] overflow-y-auto custom-scrollbar">
               {state.opts.message}
             </p>
             <div className="flex justify-end gap-2">

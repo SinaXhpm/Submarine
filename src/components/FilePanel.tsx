@@ -16,7 +16,7 @@ import {
 import { localDir, localJoin, pathCrumbs } from "../fs/localPath";
 import { COMPARE_LABEL, CompareMark, compareListings } from "../fs/compare";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
-import { IS_ANDROID, IS_IOS, IS_MOBILE } from "../util/platform";
+import { IS_ANDROID, IS_IOS, IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import { nameFilterMatcher } from "../util/nameFilter";
 import { BOOKMARKS_MAX, readBookmarks, writeBookmarks } from "../util/sftpBookmarks";
 
@@ -871,28 +871,41 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       async (event) => {
         const { paths, position } = event.payload || ({} as any);
         if (!paths?.length || !paneRef.current) return;
-        const hit = document.elementFromPoint(position.x, position.y);
+        // Physical pixels on Windows; elementFromPoint takes CSS pixels, which
+        // is what macOS and Linux report. At another scale than 100% this
+        // tested a point further out: the other pane, or another server's.
+        const scale = IS_WINDOWS ? window.devicePixelRatio : 1;
+        const hit = document.elementFromPoint(position.x / scale, position.y / scale);
         if (!hit || !paneRef.current.contains(hit)) return;
         setDragOver(false);
         const dir = currentPathRef.current;
         const batch: OverwriteBatch = { kind: "ask" };
+        let count = 0;
         let cancelled = false;
         for (const p of paths) {
           if (cancelled) break;
           const name = p.split(/[\\/]/).pop() || "file";
           notify(`Uploading ${name}...`, "info");
           try {
-            const remote = dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
+            // A folder goes as in uploadItems: it is given the folder it goes
+            // into. As a file, Unix opens it, and the remote file is created
+            // or emptied before the first read fails.
+            const isDir = await invoke<boolean>("local_is_dir", { path: p }).catch(() => false);
+            const cmd = isDir ? "sftp_upload_dir" : "sftp_upload_file";
+            const remote = isDir ? dir : dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
             const res = await transferWithOverwriteCheck(
-              (ow) => invoke("sftp_upload_file", { sessionId, localPath: p, remotePath: remote, overwrite: ow }),
+              (ow) => invoke(cmd, { sessionId, localPath: p, remotePath: remote, overwrite: ow }),
               name, "upload", paths.length, batch, overwritePrompt
             );
-            if (res === "done") notify(`Uploaded ${name}`, "success");
-            if (res === "cancelled") { cancelled = true; notify("Upload batch cancelled", "info"); }
+            if (res === "done") { count++; notify(`Uploaded ${name}`, "success"); }
+            if (res === "cancelled") { cancelled = true; }
           } catch (err: any) {
+            // Stopped from its card: the rest of the batch stops with it.
+            if (String(err) === "cancelled") { cancelled = true; break; }
             notify(`Upload failed: ${err}`, "error");
           }
         }
+        if (cancelled) notify(count > 0 ? `Upload stopped after ${count} of ${paths.length} items` : "Upload batch cancelled", "info");
         await fetch(dir);
       }
     ).then((fn) => { unlisten = fn; });
@@ -922,13 +935,22 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     setModal({ type: "properties", entry, v1: mode.toString(8).padStart(3, "0"), v2: uid?.toString(), orig: { mode, uid } });
   };
 
+  // The dialog stays up until the server answers: a second Enter on a slow
+  // link would run the rename or mkdir again, and report a failure over one
+  // that worked.
+  const submittingRef = useRef(false);
   const submitModal = async () => {
-    if (!modal) return;
+    if (!modal || submittingRef.current) return;
+    submittingRef.current = true;
     const { type, entry, v1, v2 } = modal;
     if (type === "archive") {
       // The dialog stays open when the name is refused; the job itself runs
       // on after it closes.
-      if (await startArchive(modal.items ?? [], v1 || "", (v2 || "zip") as ArchiveFormat)) setModal(null);
+      try {
+        if (await startArchive(modal.items ?? [], v1 || "", (v2 || "zip") as ArchiveFormat)) setModal(null);
+      } finally {
+        submittingRef.current = false;
+      }
       return;
     }
     try {
@@ -1006,6 +1028,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     } catch (err: any) {
       notify(`Failed: ${err}`, "error");
     } finally {
+      submittingRef.current = false;
       setModal(null);
     }
   };
@@ -1299,14 +1322,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (res === "done") count++;
         if (res === "cancelled") { cancelled = true; }
       } catch (err: any) {
+        // Stopped from its card: the rest of the batch stops with it.
+        if (String(err) === "cancelled") { cancelled = true; break; }
         notify(`Download failed for ${e.name}: ${err}`, "error");
       }
     }
-    if (count > 0) {
+    if (count > 0) onTransferred?.();
+    if (cancelled) {
+      notify(count > 0 ? `Download stopped after ${count} of ${items.length} items` : "Download batch cancelled", "info");
+    } else if (count > 0) {
       notify(items.length === 1 ? `Downloaded ${items[0].name}` : `Downloaded ${count} of ${items.length} items`, "success");
-      onTransferred?.();
-    } else if (cancelled) {
-      notify("Download batch cancelled", "info");
     }
   };
 
@@ -1345,14 +1370,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (res === "done") count++;
         if (res === "cancelled") { cancelled = true; }
       } catch (err: any) {
+        // Stopped from its card: the rest of the batch stops with it.
+        if (String(err) === "cancelled") { cancelled = true; break; }
         notify(`Upload failed for ${e.name}: ${err}`, "error");
       }
     }
-    if (count > 0) {
+    if (count > 0) onTransferred?.();
+    if (cancelled) {
+      notify(count > 0 ? `Upload stopped after ${count} of ${items.length} items` : "Upload batch cancelled", "info");
+    } else if (count > 0) {
       notify(items.length === 1 ? `Uploaded ${items[0].name}` : `Uploaded ${count} of ${items.length} items`, "success");
-      onTransferred?.();
-    } else if (cancelled) {
-      notify("Upload batch cancelled", "info");
     }
   };
   sendToRef.current = (items, dir) => (provider.id === "remote" ? downloadItems(items, dir) : uploadItems(items, dir));
@@ -2116,7 +2143,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           <div className="flex-1" />
           {isRemote && (
             <button
-              onClick={() => downloadItems(selectedEntries)}
+              // The second click of a double click: not a second batch.
+              onClick={(ev) => { if (ev.detail < 2) downloadItems(selectedEntries); }}
               title={getOppositeDir?.()
                 ? `Download to ${getOppositeDir!()}`
                 : "Pick a destination folder…"}
@@ -2127,7 +2155,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           )}
           {!isRemote && (
             <button
-              onClick={() => uploadItems(selectedEntries)}
+              onClick={(ev) => { if (ev.detail < 2) uploadItems(selectedEntries); }}
               title={getOppositeDir?.()
                 ? `Upload to ${getOppositeDir!()}`
                 : "Open a remote directory first…"}

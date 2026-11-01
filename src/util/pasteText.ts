@@ -12,3 +12,14 @@ const CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 export function withoutPasteControls(text: string): string {
   return text.replace(CONTROLS, "");
 }
+
+// Text for a terminal from outside it (the Library's Run and Paste): it goes
+// the way a paste does, and `enter` presses Enter after it, in the same write.
+// It reaches this terminal only, whatever broadcast is set to. A plain write
+// would skip the brackets, and every line break in it would be an Enter.
+export const TERMINAL_PASTE = "submarine-terminal-paste";
+export interface TerminalPaste { terminalId: string; text: string; enter: boolean; }
+
+export function pasteIntoTerminal(detail: TerminalPaste) {
+  window.dispatchEvent(new CustomEvent<TerminalPaste>(TERMINAL_PASTE, { detail }));
+}
