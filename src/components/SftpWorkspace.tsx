@@ -123,6 +123,8 @@ interface Transfer {
   total: number;
   status: "progress" | "done" | "error" | "cancelled";
   error?: string;
+  /** A folder download still listing its tree: the files found so far. */
+  listed?: number;
 }
 
 const formatBytes = (n: number) => {
@@ -188,6 +190,7 @@ function TransferCards({ sessionId }: { sessionId: string }) {
           t.status === "error"     ? "failed"
           : t.status === "cancelled" ? "cancelled"
           : t.kind === "delete"      ? `${t.bytes.toLocaleString()} removed`
+          : t.listed !== undefined   ? `${t.listed.toLocaleString()} file${t.listed === 1 ? "" : "s"} found`
           : t.total > 0              ? `${pct}%`
                                      : formatBytes(t.bytes);
         return (

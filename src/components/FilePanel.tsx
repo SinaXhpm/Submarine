@@ -21,11 +21,49 @@ import { nameFilterMatcher } from "../util/nameFilter";
 import { BOOKMARKS_MAX, readBookmarks, writeBookmarks } from "../util/sftpBookmarks";
 
 // Batch overwrite state shared across items in a single download/upload run.
-// Once the user picks "Overwrite all" or "Skip all" the kind is sticky and we
-// stop prompting; "ask" means we prompt on each individual conflict. Mutated
-// in place inside the helper so the loop sees updates immediately.
-type OverwriteBatchKind = "ask" | "overwrite-all" | "skip-all";
-interface OverwriteBatch { kind: OverwriteBatchKind; }
+// Once the user picks "Overwrite all", "Skip all" or Cancel the kind is sticky
+// and we stop prompting; "ask" means we prompt on each individual conflict.
+// Mutated in place inside the helper so the loop sees updates immediately.
+// `asking` is the question on screen, for those side by side to wait for.
+type OverwriteBatchKind = "ask" | "overwrite-all" | "skip-all" | "cancel";
+interface OverwriteBatch { kind: OverwriteBatchKind; asking?: Promise<unknown>; }
+
+// What the backend allows a selection on this session (`sftp_batch_limits`).
+interface BatchLimits { at_once: number; alone_up: number; alone_down: number; }
+const ONE_BY_ONE: BatchLimits = { at_once: 1, alone_up: 0, alone_down: 0 };
+
+// Which of a selection move alone, as the backend moves a folder's files. A
+// folder has its own pool, a link's size says nothing of what it leads to, a
+// big file would put the others' requests behind its data, and names that
+// differ only in case are one file on a disk or server that ignores case.
+function aloneInBatch(items: FileEntry[], limit: number) {
+  const names = new Map<string, number>();
+  for (const e of items) names.set(e.name.toLowerCase(), (names.get(e.name.toLowerCase()) ?? 0) + 1);
+  return (e: FileEntry) => e.isDir || !!e.isSymlink || e.size > limit || names.get(e.name.toLowerCase())! > 1;
+}
+
+// `move` each item in turn, up to `atOnce` at a time: selected files one by one
+// cost a few round trips each, in a row. An item that `alone` picks out waits
+// for those moving and has the line to itself. Once `stopped` says so nothing
+// new starts; what is moving finishes. `move` must not throw.
+async function moveInTurn<T>(
+  items: T[],
+  atOnce: number,
+  alone: (item: T) => boolean,
+  stopped: () => boolean,
+  move: (item: T) => Promise<void>,
+): Promise<void> {
+  const moving = new Set<Promise<void>>();
+  for (const item of items) {
+    const solo = alone(item);
+    while (moving.size > 0 && (solo || moving.size >= atOnce)) await Promise.race(moving);
+    if (stopped()) break;
+    const turn: Promise<void> = move(item).finally(() => { moving.delete(turn); });
+    moving.add(turn);
+    if (solo) await turn;
+  }
+  await Promise.all(moving);
+}
 
 // Run a single transfer that may trip the backend's `EXISTS:<path>` sentinel.
 // First attempt is always with overwrite=false unless the batch state already
@@ -49,12 +87,17 @@ async function transferWithOverwriteCheck(
   } catch (err: any) {
     const msg = String(err);
     if (!msg.startsWith("EXISTS:")) throw err;
-    if (batch.kind === "skip-all") return "skipped";
-    const choice = await overwritePrompt({ name, direction, batchSize });
+    // One question at a time, and the answer before may settle this one too.
+    const answer = (batch.asking ?? Promise.resolve()).then(async (): Promise<OverwriteChoice> => {
+      if (batch.kind !== "ask") return batch.kind;
+      const choice = await overwritePrompt({ name, direction, batchSize });
+      if (choice !== "overwrite" && choice !== "skip") batch.kind = choice;
+      return choice;
+    });
+    batch.asking = answer.catch(() => {});
+    const choice = await answer;
     if (choice === "cancel") return "cancelled";
-    if (choice === "skip") return "skipped";
-    if (choice === "skip-all") { batch.kind = "skip-all"; return "skipped"; }
-    if (choice === "overwrite-all") batch.kind = "overwrite-all";
+    if (choice === "skip" || choice === "skip-all") return "skipped";
     await invokeFn(true);
     return "done";
   }
@@ -1308,8 +1351,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const batch: OverwriteBatch = { kind: "ask" };
     let count = 0;
     let cancelled = false;
-    for (const e of items) {
-      if (cancelled) break;
+    const limits = await invoke<BatchLimits>("sftp_batch_limits", { sessionId }).catch(() => ONE_BY_ONE);
+    await moveInTurn(items, limits.at_once, aloneInBatch(items, limits.alone_down), () => cancelled, async (e) => {
       try {
         // A folder is given the folder it goes into (the backend adds its
         // name), a file the full path it is saved as.
@@ -1323,10 +1366,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (res === "cancelled") { cancelled = true; }
       } catch (err: any) {
         // Stopped from its card: the rest of the batch stops with it.
-        if (String(err) === "cancelled") { cancelled = true; break; }
+        if (String(err) === "cancelled") { cancelled = true; return; }
         notify(`Download failed for ${e.name}: ${err}`, "error");
       }
-    }
+    });
     if (count > 0) onTransferred?.();
     if (cancelled) {
       notify(count > 0 ? `Download stopped after ${count} of ${items.length} items` : "Download batch cancelled", "info");
@@ -1355,8 +1398,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const batch: OverwriteBatch = { kind: "ask" };
     let count = 0;
     let cancelled = false;
-    for (const e of items) {
-      if (cancelled) break;
+    const limits = await invoke<BatchLimits>("sftp_batch_limits", { sessionId }).catch(() => ONE_BY_ONE);
+    await moveInTurn(items, limits.at_once, aloneInBatch(items, limits.alone_up), () => cancelled, async (e) => {
       try {
         // For files we pass the remote target as a full file path; for dirs
         // we pass the remote PARENT and sftp_upload_dir hangs the source
@@ -1371,10 +1414,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (res === "cancelled") { cancelled = true; }
       } catch (err: any) {
         // Stopped from its card: the rest of the batch stops with it.
-        if (String(err) === "cancelled") { cancelled = true; break; }
+        if (String(err) === "cancelled") { cancelled = true; return; }
         notify(`Upload failed for ${e.name}: ${err}`, "error");
       }
-    }
+    });
     if (count > 0) onTransferred?.();
     if (cancelled) {
       notify(count > 0 ? `Upload stopped after ${count} of ${items.length} items` : "Upload batch cancelled", "info");
