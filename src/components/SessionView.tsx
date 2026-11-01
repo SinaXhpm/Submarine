@@ -1221,12 +1221,12 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           };
         };
         if (session.runOnConnectHeld) {
-          // Someone this profile is shared with set or changed these
-          // commands and this device hasn't allowed them: ask, never type
+          // These commands were set or changed elsewhere (a co-member, an
+          // imported file) and this device hasn't allowed them: ask, never type
           // them unasked. Cancel has the focus, so a stray Enter is a no.
           confirmRef.current({
             title: "Run the on-connect commands?",
-            message: `Someone you share this profile with set these commands to run when you connect to ${session.serverName}:\n\n${cmds.trimEnd()}\n\nThey would be typed into your terminal on that server${session.runOnConnectEvery ? ", and into each new terminal you open there" : ""}.`,
+            message: `These commands were set elsewhere to run when you connect to ${session.serverName}, and this device hasn't allowed them:\n\n${cmds.trimEnd()}\n\nThey would be typed into your terminal on that server${session.runOnConnectEvery ? ", and into each new terminal you open there" : ""}.`,
             okLabel: "Allow and run",
             cancelLabel: "Not now",
             safeDefault: true,

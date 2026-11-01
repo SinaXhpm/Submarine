@@ -303,12 +303,30 @@ fn build_command(command: &str) -> Result<std::process::Command, String> {
     if program.is_empty() {
         return Err("ProxyCommand is empty".into());
     }
+    // A bare name comes from PATH. Left to `Command`, it would be looked for
+    // in this app's own folder first, which can be Downloads for a portable copy.
+    let program = if program.contains(['\\', '/']) {
+        std::path::PathBuf::from(program)
+    } else {
+        on_path(&program, crate::rdp::find_on_path).ok_or_else(|| format!("ProxyCommand couldn't start: {program} wasn't found"))?
+    };
     let mut cmd = std::process::Command::new(&program);
     if !rest.is_empty() {
         cmd.raw_arg(&rest);
     }
     cmd.creation_flags(CREATE_NO_WINDOW);
     Ok(cmd)
+}
+
+/// A program named without a path, looked up by `find`: as CreateProcess reads
+/// the name, one with no extension is an `.exe`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn on_path(name: &str, find: impl Fn(&str) -> Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    if name.contains('.') {
+        find(name)
+    } else {
+        find(&format!("{name}.exe"))
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -408,6 +426,25 @@ mod tests {
         assert_eq!(split_program("cloudflared access ssh", is_file), ("cloudflared".into(), "access ssh".into()));
         assert_eq!(split_program("  ssh.exe -W h:22 b", is_file), ("ssh.exe".into(), "-W h:22 b".into()));
         assert_eq!(split_program("\"unclosed", is_file), ("unclosed".into(), String::new()));
+    }
+
+    #[test]
+    fn a_bare_program_name_is_looked_up_with_its_exe() {
+        let find = |n: &str| (n == "nc.exe" || n == "tool.cmd").then(|| std::path::PathBuf::from(format!("C:\\bin\\{n}")));
+        assert_eq!(on_path("nc", find), Some("C:\\bin\\nc.exe".into()));
+        assert_eq!(on_path("nc.exe", find), Some("C:\\bin\\nc.exe".into()));
+        assert_eq!(on_path("tool.cmd", find), Some("C:\\bin\\tool.cmd".into()));
+        assert_eq!(on_path("tool", find), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_bare_program_comes_from_path_or_not_at_all() {
+        let cmd = build_command("cmd /c echo hi").unwrap();
+        assert!(std::path::Path::new(cmd.get_program()).is_absolute(), "{:?}", cmd.get_program());
+        // Not left for `Command` to find beside this app.
+        let e = build_command("submarine-not-a-real-program x y").unwrap_err();
+        assert!(e.contains("wasn't found"), "{e}");
     }
 
     #[test]

@@ -565,7 +565,8 @@ pub fn last_words(stderr: &str, n: usize) -> Vec<String> {
 /// A program on PATH, as a shell would find it.
 pub fn find_on_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|dir| dir.join(program)).find(|p| is_executable(p))
+    // An empty entry would mean the current folder, not a folder on PATH.
+    std::env::split_paths(&path).filter(|dir| !dir.as_os_str().is_empty()).map(|dir| dir.join(program)).find(|p| is_executable(p))
 }
 
 fn is_executable(path: &Path) -> bool {

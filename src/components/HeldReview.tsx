@@ -3,9 +3,10 @@ import { createPortal } from "react-dom";
 import { ShieldAlert, X } from "lucide-react";
 import { useFocusTrap } from "../ui/confirm";
 
-// What this device holds back in a shared profile until its user allows it:
-// a change someone else made that would act on its own here (see
-// src-tauri/src/approvals.rs). Opened from the notice above the server list.
+// What this device holds back until its user allows it: a change someone else
+// made in a shared profile that would act on its own here, or what a profile
+// imported from elsewhere would do (see src-tauri/src/approvals.rs). Opened from
+// the notice above the server list.
 
 type HeldServer = {
   id: number;
@@ -14,15 +15,22 @@ type HeldServer = {
   run_on_connect_every?: boolean;
   edited_by?: string | null;
   held?: string[];
+  moved_to?: string | null;
 };
 
-/** Commands first (they run in a shell), then autostart, forwards, monitor commands. */
+/** A move first (it's why the rest is held), then commands (they run in a shell), autostart, forwards, monitor commands. */
 const rank = (item: string) =>
-  item === "run_on_connect" ? 0 : item === "autostart" ? 1 : item.startsWith("tunnel:") ? 2 : 3;
+  item.startsWith("moved:") ? 0 : item === "run_on_connect" ? 1 : item === "autostart" ? 2 : item.startsWith("tunnel:") ? 3 : 4;
 const byRank = (a: string, b: string) => rank(a) - rank(b) || a.localeCompare(b);
 
 /** One held item, in words, with the text it would run when there is one. */
 function describe(item: string, server: HeldServer): { what: string; detail?: string } {
+  if (item.startsWith("moved:")) {
+    return {
+      what: `Now connects to ${server.moved_to || "a new address"}`,
+      detail: `It connected to ${item.slice("moved:".length)}. Opening it asks you first.`,
+    };
+  }
   if (item === "run_on_connect") {
     const where = server.run_on_connect_every
       ? "into your terminal when you connect, and into each new terminal you open"
@@ -73,6 +81,12 @@ export function HeldReview({ servers, onAllow, onClose }: {
     try { await onAllow(serverId, items); } finally { setBusy(false); }
   };
 
+  // An imported profile holds all its servers: one OK for all of them.
+  const allowEverything = async () => {
+    setBusy(true);
+    try { for (const s of held) await onAllow(s.id, []); } finally { setBusy(false); }
+  };
+
   return createPortal(
     <div className="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div
@@ -95,9 +109,9 @@ export function HeldReview({ servers, onAllow, onClose }: {
           </button>
         </div>
         <p className="px-4 pb-3 text-[12px] text-zinc-400 leading-relaxed">
-          Someone you share this profile with made these changes. Until you allow one, it doesn't run on this
-          device: commands aren't typed, forwards stay stopped, autostart doesn't connect and monitor commands
-          don't run. Allowing counts for this device only.
+          These came from someone you share this profile with, or from a profile file you imported. Until you
+          allow one, it doesn't run on this device: commands aren't typed, forwards stay stopped, autostart
+          doesn't connect and monitor commands don't run. Allowing counts for this device only.
         </p>
         <div className="flex-1 overflow-y-auto custom-scrollbar px-4 pb-2 space-y-3">
           {held.map((s) => (
@@ -147,7 +161,16 @@ export function HeldReview({ servers, onAllow, onClose }: {
             </section>
           ))}
         </div>
-        <div className="flex justify-end p-4 pt-2">
+        <div className="flex justify-end gap-2 p-4 pt-2">
+          {held.length > 1 && (
+            <button
+              disabled={busy}
+              onClick={allowEverything}
+              className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-50"
+            >
+              Allow everything
+            </button>
+          )}
           <button
             onClick={onClose}
             data-default-focus
