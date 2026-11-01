@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle, ArrowBigUp, ArrowRight, ArrowUpCircle, Check, CheckCircle2, Cloud, CloudOff, Download,
-  Eye, EyeOff, Fingerprint, Github, HardDrive, Loader2, MoreHorizontal, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X,
+  Eye, EyeOff, Fingerprint, Github, HardDrive, History, Loader2, MoreHorizontal, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X,
 } from "lucide-react";
 import CloudPanel from "./CloudPanel";
 import { CloudConfigView, hostOf } from "./SyncServerSetting";
@@ -17,6 +17,9 @@ import { forgetProfileBookmarks } from "../util/sftpBookmarks";
 // Android imports so a wrong file fails before the user picks a name.
 const VAULT_MAGIC = "OMNV";
 const VAULT_VERSION = 1;
+// What the backend takes as a vault file (lib.rs VAULT_FILE_MAX_BYTES). Larger
+// than that isn't read at all: base64 of it could take the phone's memory.
+const VAULT_FILE_MAX_BYTES = 65 * 1024 * 1024;
 
 // Base64 in 32 KB chunks: spreading a large Uint8Array into one
 // String.fromCharCode call would overflow the call stack.
@@ -34,6 +37,9 @@ interface CloudStatus { signed_in: boolean; email: string | null; }
 // partition key (a name for legacy profiles, a UUID for new ones); `name` is the
 // human-readable label to show and to restore under.
 interface CloudProfile { profile: string; name: string; records: number; live_records: number; last_updated: string; }
+// A copy of a profile kept before a sync deleted or emptied something in it
+// (vault_backup.rs). `when` is in Unix seconds.
+interface KeptCopy { file: string; when: number; }
 // Result of the GitHub release check (backend: about::check_for_updates).
 // `has_update` is true only when `latest` is a strictly newer semver than the
 // running build.
@@ -71,6 +77,14 @@ const forgetLastProfile = (name: string) => {
 
 // Clean the [PREFIX] off backend errors for display.
 const cleanErr = (e: unknown) => String(e).replace(/^\[[A-Z_]+\]\s*/, "");
+
+// The app starting on the profile used last asks for quick unlock once. Not
+// again when the page comes back after Lock: this outlives the page for that.
+let autoQuickTried = false;
+
+// When a kept copy was made, as a person reads it.
+const copyDate = (unix: number) =>
+  new Date(unix * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" });
 
 // The backend's rules for a profile name (lib.rs validate_profile_name),
 // checked while it's typed, plus the names already taken. Case doesn't count:
@@ -193,9 +207,9 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   const [cloudProfiles, setCloudProfiles] = useState<CloudProfile[]>([]);
   // A click on refresh, while it runs.
   const [refreshing, setRefreshing] = useState(false);
-  // The row whose actions menu is open, where to put it, and what to focus
-  // when it closes.
-  const [menu, setMenu] = useState<{ name: string; place: MenuPlace; from: HTMLElement | null } | null>(null);
+  // The row whose actions menu is open, where to put it, what to focus when it
+  // closes, and the copies kept of that profile.
+  const [menu, setMenu] = useState<{ name: string; place: MenuPlace; from: HTMLElement | null; copies: KeptCopy[] } | null>(null);
   // A newer published release than the running build, if any. Set only when
   // one actually exists, so the notice under the footer appears solely when
   // there's something to announce.
@@ -336,12 +350,15 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   // app starting on the profile used last asks for it right away, once;
   // closing that prompt leaves the password.
   const [quick, setQuick] = useState<{ name: string; method: string } | null>(null);
-  const autoQuickTried = useRef(false);
   useEffect(() => {
     let live = true;
     const name = selected;
     setQuick(null);
     if (!name) return;
+    // Only the first row looked at, as the app starts: not after a Lock, and
+    // not for a profile that had it turned on since.
+    const askNow = !autoQuickTried && name === lastProfile();
+    autoQuickTried = true;
     (async () => {
       try {
         const support = await invoke<{ method: string | null; ready: boolean }>("quick_unlock_support");
@@ -350,10 +367,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
         if (!live || !status.method || !status.can_open) return;
         if (status.method === support.method && !support.ready) return;
         setQuick({ name, method: status.method });
-        if (!autoQuickTried.current && name === lastProfile()) {
-          autoQuickTried.current = true;
-          void quickUnlock(name);
-        }
+        if (askNow) void quickUnlock(name, true);
       } catch { /* the password still works */ }
     })();
     return () => { live = false; };
@@ -361,9 +375,10 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   }, [selected]);
   const quickLabel = quick?.method === "android-biometric" ? "Unlock with fingerprint"
     : quick?.method === "windows-auto" ? "Open on this Windows account" : "Unlock with Windows Hello";
-  const quickUnlock = async (name: string) => {
+  // `auto`: nobody asked for this one, so a key that isn't on this device
+  // (a portable folder on another PC) isn't worth an error.
+  const quickUnlock = async (name: string, auto = false) => {
     if (busy) return;
-    autoQuickTried.current = true;
     setPending("quick"); setUnlockError(null);
     try {
       await invoke("quick_unlock", { name });
@@ -376,7 +391,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       }
       if (raw.includes("[QUICK_UNLOCK] STALE")) {
         setQuick(null);
-        setUnlockError("Quick unlock no longer fits this profile here. Unlock with the password, then turn it on again.");
+        if (!auto) setUnlockError("Quick unlock no longer fits this profile here. Unlock with the password, then turn it on again.");
       } else {
         setUnlockError(cleanErr(e));
       }
@@ -550,6 +565,10 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     if (!file) return;
     setError(null); setInfo(null);
     try {
+      if (file.size > VAULT_FILE_MAX_BYTES) {
+        setError("That file is too large to be a Submarine profile.");
+        return;
+      }
       const bytes = new Uint8Array(await file.arrayBuffer());
       // Same quick header check the backend does, for instant feedback.
       if (bytes.length < 5 || String.fromCharCode(...bytes.subarray(0, 4)) !== VAULT_MAGIC || bytes[4] !== VAULT_VERSION) {
@@ -593,16 +612,17 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     }
   };
 
-  // Remove the on-disk copy. If the profile is also in the cloud, it stays
-  // there and can be pulled back with its password; if not, it's gone for good
-  // — the confirm wording says which.
+  // Remove the on-disk copy. If the cloud has a profile of this name, it may
+  // be this one and can be pulled back with its password; if not, it's gone
+  // for good — the confirm wording says which. The two are matched by name
+  // only, so it doesn't promise more than that.
   const removeLocal = async (name: string) => {
     if (busy) return;
     const inCloud = cloudProfiles.some((c) => c.name.toLowerCase() === name.toLowerCase());
     const ok = await confirm({
       title: "Remove from this device",
       message: inCloud
-        ? `Remove "${name}" from this device?\n\nThe encrypted file here is deleted. It stays in your cloud — you can Get it again anytime with its password.`
+        ? `Remove "${name}" from this device?\n\nThe encrypted file here is deleted. Your cloud has a profile of this name: if it's this one, you can Get it again anytime with its password.`
         : `Remove "${name}" from this device?\n\nThe encrypted file here is deleted. This profile is not in your cloud, so it will be gone for good.`,
       destructive: true,
       okLabel: "Remove",
@@ -628,7 +648,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     if (!row.cloud || busy) return;
     const ok = await confirm({
       title: "Delete from cloud",
-      message: `Delete "${row.name}" from your cloud?\n\nThis erases its synced copy and its restore key from the cloud. Copies already on your devices are NOT touched. This can't be undone.`,
+      message: `Delete "${row.name}" from your cloud?\n\nThis erases its synced copy and its restore key from the cloud, and can't be undone. Copies on your devices are NOT touched.\n\nThis device won't upload it again until you say so in the profile's Profile panel. Any other device that has it puts it back at its next sync, so remove it there first.`,
       destructive: true,
       okLabel: "Delete from cloud",
     });
@@ -680,11 +700,44 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     }
   };
 
+  // Go back to a copy kept before a sync deleted or emptied something. What
+  // the profile holds now is kept too, so the wrong copy can be undone the same
+  // way. Only the backend's put-back works: a file renamed back by hand loses
+  // the same rows again at the next sync.
+  const putBack = async (name: string, copy: KeptCopy) => {
+    if (busy) return;
+    const when = copyDate(copy.when);
+    const ok = await confirm({
+      title: "Put this copy back?",
+      message: `Go back to "${name}" as it was on ${when}?\n\nWhat a sync deleted or emptied since then comes back here and, at the next sync, on your other devices too. What the profile holds now is kept as another copy.`,
+      okLabel: "Put it back",
+    });
+    if (!ok) return;
+    setPending("work"); setError(null); setInfo(null);
+    try {
+      await invoke("restore_profile_copy", { name, file: copy.file });
+      setInfo(`"${name}" is back as it was on ${when}. Open it with its password.`);
+    } catch (e) {
+      setError(cleanErr(e));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  // Opens a row's menu, with the copies kept of that profile in it.
+  const openMenu = async (name: string, place: MenuPlace, from: HTMLElement | null) => {
+    const copies = await invoke<KeptCopy[]>("profile_copies", { name }).catch(() => []);
+    setMenu({ name, place, from, copies });
+  };
+
   // A row's actions, in its ⋯ menu. The ones that ask first end in "…".
   const menuItems = (row: Row): MenuItem[] => {
     const items: MenuItem[] = [];
     if (row.local) {
       items.push({ label: "Export…", icon: <Download size={14} />, onSelect: () => exportProfile(row.name) });
+      for (const copy of menu?.copies ?? []) {
+        items.push({ label: `Put back the copy of ${copyDate(copy.when)}…`, icon: <History size={14} />, onSelect: () => putBack(row.name, copy) });
+      }
       items.push({ label: "Remove from this device…", icon: <Trash2 size={14} />, danger: true, onSelect: () => removeLocal(row.name) });
     } else if (row.cloud) {
       const c = row.cloud;
@@ -928,11 +981,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                       onContextMenu={(e) => {
                         e.preventDefault();
                         if (busy) return;
-                        setMenu({
-                          name: row.name,
-                          place: { x: e.clientX, top: e.clientY, bottom: e.clientY, end: false },
-                          from: e.currentTarget.querySelector("button"),
-                        });
+                        void openMenu(row.name, { x: e.clientX, top: e.clientY, bottom: e.clientY, end: false }, e.currentTarget.querySelector("button"));
                       }}
                     >
                       <button
@@ -952,7 +1001,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                         type="button"
                         onClick={(e) => {
                           const r = e.currentTarget.getBoundingClientRect();
-                          setMenu({ name: row.name, place: { x: r.right, top: r.top, bottom: r.bottom, end: true }, from: e.currentTarget });
+                          void openMenu(row.name, { x: r.right, top: r.top, bottom: r.bottom, end: true }, e.currentTarget);
                         }}
                         disabled={busy}
                         aria-haspopup="menu"

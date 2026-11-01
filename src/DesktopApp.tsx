@@ -450,14 +450,20 @@ function DesktopApp() {
     setLogs(prev => [...prev.slice(-99), { id, msg, type, time: new Date().toLocaleTimeString() }]);
   }, []);
 
-  // A sync that deleted rows (deleted on another device, or by whoever sent
-  // the server's answer) says so, and where the profile as it was is kept.
-  const logRemoved = useCallback((report: { removed?: number; backup?: string | null }) => {
-    const n = report.removed ?? 0;
-    if (n <= 0) return;
+  // A sync that deleted rows or emptied a saved key or password (done on
+  // another device, or by whoever sent the server's answer) says so, and where
+  // the profile as it was is kept. Renaming that file back isn't enough: the
+  // next sync would do the same again, so the way back is the picker's.
+  const logRemoved = useCallback((report: { removed?: number; emptied?: number; backup?: string | null }) => {
+    const removed = report.removed ?? 0;
+    const emptied = report.emptied ?? 0;
+    if (removed <= 0 && emptied <= 0) return;
     addLog(
-      `Sync removed ${n} item${n === 1 ? "" : "s"} from this profile (deleted elsewhere).` +
-        (report.backup ? ` The profile as it was is kept next to its file as ${report.backup}.` : ""),
+      [
+        removed > 0 && `Sync removed ${removed} item${removed === 1 ? "" : "s"} from this profile (deleted elsewhere).`,
+        emptied > 0 && `Sync emptied a saved key or password in ${emptied} item${emptied === 1 ? "" : "s"} (done elsewhere).`,
+        report.backup && `The profile as it was is kept as ${report.backup}. To go back to it, lock the profile and use its ⋯ menu.`,
+      ].filter(Boolean).join(" "),
       "info",
     );
   }, [addLog]);
@@ -519,16 +525,21 @@ function DesktopApp() {
   };
 
   // What a shared profile waits on the user for: a new key, as a fingerprint
-  // (until it's accepted a sync only pulls, see note_share_key), and
-  // deletions someone else's sync would have made here (see HeldDeletions).
+  // (until it's accepted a sync only pulls, see note_share_key), a grant the
+  // sync couldn't open ("locked" while sharing is, "checking" until a sync has
+  // tried it since, "unreadable" if that didn't open it; see note_share_grant),
+  // and deletions someone else's sync would have made here (see HeldDeletions).
   const [shareKeyChange, setShareKeyChange] = useState<string | null>(null);
+  const [shareGrant, setShareGrant] = useState<"locked" | "checking" | "unreadable" | null>(null);
   const [heldDeletions, setHeldDeletions] = useState<HeldDeletion[]>([]);
   const refreshSharedState = useCallback(async () => {
     try {
-      const s = await invoke<{ current: string | null; pending: string | null }>("share_key_state");
+      const s = await invoke<{ current: string | null; pending: string | null; grant_unread: boolean; grant_refused: boolean; identity_unlocked: boolean }>("share_key_state");
       setShareKeyChange(s.pending);
+      setShareGrant(!s.grant_unread ? null : s.grant_refused ? "unreadable" : s.identity_unlocked ? "checking" : "locked");
     } catch {
       setShareKeyChange(null);
+      setShareGrant(null);
     }
     try {
       setHeldDeletions(await invoke<HeldDeletion[]>("held_deletions_list"));
@@ -544,14 +555,14 @@ function DesktopApp() {
   const handleCloudSync = useCallback(async () => {
     setCloudSyncing(true);
     try {
-      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; backup?: string | null }>("sync_now");
+      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; emptied?: number; backup?: string | null }>("sync_now");
       await refreshAll();
       refreshSharedState();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
       addLog(`Cloud sync complete — pushed ${report.pushed}, pulled ${report.pulled}.`, "success");
       logRemoved(report);
       if (report.key_change) {
-        addLog("This shared profile's key has changed. Your changes aren't uploaded until you accept the new key (Servers → Review).", "info");
+        addLog("This shared profile's key has changed. Your changes aren't uploaded until you deal with the notice in Servers.", "info");
       }
     } catch (e) {
       const msg = String(e);
@@ -584,13 +595,14 @@ function DesktopApp() {
   // What a shared profile still waits on from an earlier session shows on unlock.
   useEffect(() => {
     if (isUnlocked) refreshSharedState();
-    else { setShareKeyChange(null); setHeldDeletions([]); }
+    else { setShareKeyChange(null); setShareGrant(null); setHeldDeletions([]); }
   }, [isUnlocked, refreshSharedState]);
   // The user compared the new key's fingerprint with the owner's: use it, and
-  // sync, which uploads again.
-  const acceptShareKey = useCallback(async () => {
+  // sync, which uploads again. `fingerprint` is the one they saw: the backend
+  // refuses if another key has come in since.
+  const acceptShareKey = useCallback(async (fingerprint: string) => {
     try {
-      await invoke("accept_share_key");
+      await invoke("accept_share_key", { fingerprint });
       addLog("This shared profile now uses its new key.", "success");
     } catch (e) {
       addLog(`Couldn't switch to the new key: ${e}`, "error");
@@ -619,7 +631,7 @@ function DesktopApp() {
     autoSyncBusy.current = true;
     setCloudSyncing(true);
     try {
-      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; backup?: string | null }>("sync_now");
+      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; emptied?: number; backup?: string | null }>("sync_now");
       if (report.pulled > 0) await refreshAllRef.current();
       refreshSharedState();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
@@ -646,7 +658,7 @@ function DesktopApp() {
     try {
       const n = await invoke<number>("resolve_held_deletions", { deleteThem });
       const s = n === 1 ? "" : "s";
-      addLog(deleteThem ? `Deleted ${n} item${s} here too.` : `Kept ${n} item${s}.`, "success");
+      addLog(deleteThem ? `Done here too: ${n} item${s}.` : `Kept ${n} item${s}.`, "success");
     } catch (e) {
       addLog(`HELD_DELETIONS: ${e}`, "error");
     }
@@ -847,6 +859,10 @@ function DesktopApp() {
         serverName: s.name,
         mirrors: s.mirrors,
         serverUuid: s.uuid ?? null,
+        // As when it's opened by hand (openServer).
+        runOnConnect: s.run_on_connect || "",
+        runOnConnectEvery: !!s.run_on_connect_every,
+        runOnConnectHeld: (s.held || []).includes("run_on_connect"),
       }));
       setSessions((prev: any[]) => {
         const seen = new Set(prev.map((p) => p.id));
@@ -862,6 +878,34 @@ function DesktopApp() {
 
   const confirm = useConfirm();
   const textPrompt = useTextPrompt();
+
+  // A shared profile's grant changed while sharing was locked, so the sync
+  // can't tell whether its key did: unlock sharing, and sync, which opens the
+  // grant. A key that did change then waits for the user's OK as usual. The
+  // same passphrase as ever, so no rule for it here but that it's there.
+  const unlockSharing = async () => {
+    const pass = await textPrompt({
+      title: "Unlock sharing",
+      message:
+        "This shared profile's key may have changed. Enter your sharing passphrase to check. " +
+        "Until then this device can't read what's new, and your changes aren't uploaded. The passphrase never leaves this device.",
+      placeholder: "Sharing passphrase",
+      password: true,
+      okLabel: "Unlock",
+      validate: (v) => (v.length < 1 ? "Enter your sharing passphrase" : null),
+    });
+    if (!pass) return;
+    try {
+      await invoke("setup_identity", { encPassphrase: pass });
+      addLog("Sharing unlocked.", "success");
+    } catch (e) {
+      addLog(`Couldn't unlock sharing: ${String(e).replace(/^\[[A-Z_]+\]\s*/, "")}`, "error");
+      return;
+    }
+    await handleCloudSync();
+    // Also when that sync failed: sharing is unlocked either way.
+    await refreshSharedState();
+  };
 
   // Window-close guard. Keep `sessions` mirrored into a ref so the close
   // handler (which is registered ONCE inside useEffect, capturing snapshot
@@ -911,20 +955,35 @@ function DesktopApp() {
         destructive: true,
       });
       if (!ok) return;
-      // Best-effort: tell the backend to clean up each session. We don't
-      // bail if one fails — `close_profile` will drop the DB anyway, and
-      // the OS will eventually reap the sockets. All at once and with a
-      // limit: one tab stuck on a server that stopped answering must not
-      // keep the profile open, with its key in memory, while the screen
-      // still waits for the lock.
-      const disconnects = sessions.map((s) =>
-        invoke("disconnect_session", { sessionId: s.id })
-          .catch((e) => console.error("disconnect on logout failed:", e)));
-      await Promise.race([
-        Promise.all(disconnects),
-        new Promise((done) => setTimeout(done, LOGOUT_DISCONNECT_LIMIT_MS)),
-      ]);
     }
+    // The last save, before anything is torn down. If it fails (a stick
+    // pulled, a full disk), what changed since the last good save is only in
+    // memory, and locking throws that away: the user's call.
+    try { await invoke("persist_vault"); }
+    catch (e) {
+      const lockAnyway = await confirm({
+        title: "Lock without saving?",
+        message: `This profile couldn't be saved: ${e}\n\nIf you lock it now, everything changed since the last good save is lost.`,
+        okLabel: "Lock anyway",
+        cancelLabel: "Stay",
+        destructive: true,
+        safeDefault: true,
+      });
+      if (!lockAnyway) return;
+    }
+    // Best-effort: tell the backend to clean up each session. We don't
+    // bail if one fails — `close_profile` will drop the DB anyway, and
+    // the OS will eventually reap the sockets. All at once and with a
+    // limit: one tab stuck on a server that stopped answering must not
+    // keep the profile open, with its key in memory, while the screen
+    // still waits for the lock.
+    const disconnects = sessions.map((s) =>
+      invoke("disconnect_session", { sessionId: s.id })
+        .catch((e) => console.error("disconnect on logout failed:", e)));
+    await Promise.race([
+      Promise.all(disconnects),
+      new Promise((done) => setTimeout(done, LOGOUT_DISCONNECT_LIMIT_MS)),
+    ]);
     try { await invoke("close_profile"); }
     catch (e) { addLog(`LOGOUT_EXCEPTION: ${e}`, "error"); }
 
@@ -1871,6 +1930,8 @@ function DesktopApp() {
                 onAllowHeld={allowHeld}
                 keyChange={shareKeyChange}
                 onAcceptKey={acceptShareKey}
+                shareGrant={shareGrant}
+                onUnlockSharing={unlockSharing}
                 heldDeletions={heldDeletions}
                 onResolveDeletions={resolveHeldDeletions}
                 onRemoveServer={removeServer}

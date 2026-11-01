@@ -58,11 +58,16 @@ interface ShareStatus {
   current_server: string;
   /** Whether that is a self-hosted one, not the default. */
   custom_server: boolean;
+  /** Deleted from the cloud on this device: it isn't uploaded until the user says so. */
+  cloud_deleted: boolean;
 }
 
 interface MemberInfo { user_id: number; email: string; role: string; status: string; }
 // A member who wasn't given a share's new key after a removal, and why.
 interface LeftOut { email: string; reason: string; }
+// What came of replacing a share's key. `first_seen`: members who got the new
+// key with no key of theirs on record here to check against.
+interface KeyResult { left_out: LeftOut[]; first_seen: string[]; }
 const LEFT_OUT_WHY: Record<string, string> = {
   key_changed: "their sharing key changed since you invited them",
   other_account: "the server answered for another account",
@@ -73,6 +78,12 @@ const LEFT_OUT_WHY: Record<string, string> = {
 const leftOutText = (l: LeftOut[]) =>
   "These people didn't get the new key, so they can't see changes from now on until you invite them again: " +
   l.map((x) => `${x.email} (${LEFT_OUT_WHY[x.reason] ?? x.reason})`).join(", ") + ".";
+// The member list comes from the server, so a name it added would get the key
+// too. This device can't tell, but the owner can.
+const firstSeenText = (emails: string[]) =>
+  `The new key also went to ${emails.join(", ")}, with no earlier key on record here to check. If you don't know someone on that list, remove them.`;
+const keyResultText = (r: KeyResult) =>
+  [r.left_out.length > 0 && leftOutText(r.left_out), r.first_seen.length > 0 && firstSeenText(r.first_seen)].filter(Boolean).join(" ");
 
 type Props = {
   onSync: () => Promise<void> | void;
@@ -236,11 +247,11 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
     try {
       // Removing someone replaces the key, which needs the sharing identity.
       if (!(await ensureIdentity())) return;
-      const r = await invoke<{ left_out: LeftOut[] }>("share_revoke", { shareId: st!.share_id, memberUserId: m.user_id });
+      const r = await invoke<KeyResult>("share_revoke", { shareId: st!.share_id, memberUserId: m.user_id });
       setKeyRetry(false);
       await refresh();
       loadStats(); // the removal synced
-      if (r.left_out.length) fail(`${m.email} removed. ${leftOutText(r.left_out)}`);
+      if (keyResultText(r)) fail(`${m.email} removed. ${keyResultText(r)}`);
       else flash(`${m.email} removed.`);
     } catch (e) {
       // Out of the share, but the key wasn't replaced: offer to finish it.
@@ -255,11 +266,11 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
     setBusy(true); setErr(null);
     try {
       if (!(await ensureIdentity())) return;
-      const r = await invoke<{ left_out: LeftOut[] }>("share_replace_key");
+      const r = await invoke<KeyResult>("share_replace_key");
       setKeyRetry(false);
       await refresh();
       loadStats();
-      if (r.left_out.length) fail(`Key replaced. ${leftOutText(r.left_out)}`);
+      if (keyResultText(r)) fail(`Key replaced. ${keyResultText(r)}`);
       else flash("Key replaced.");
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
@@ -311,6 +322,16 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
       await refresh();
       flash(`This profile now syncs with ${to}.`);
       if (signedIn) await doSync();
+    } catch (e) { fail(e); } finally { setBusy(false); }
+  };
+
+  // Deleted from the cloud on this device: the user's word to upload it again.
+  const uploadAgain = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await invoke("cloud_resume_profile");
+      await refresh();
+      await doSync();
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
 
@@ -393,6 +414,26 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                 className="h-8 px-3 rounded-lg bg-amber-500/20 border border-amber-400/30 text-amber-100 text-[12px] font-bold hover:bg-amber-500/30 disabled:opacity-40"
               >
                 Sync with {hostOf(st.current_server)}
+              </button>
+            )}
+          </div>
+        )}
+        {st?.cloud_deleted && (
+          <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-100 text-[12px] space-y-2">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-300" />
+              <span className="flex-1 break-words">
+                You deleted this profile from the cloud on this device, so it doesn't sync now. Upload it again if you
+                want it back there.
+              </span>
+            </div>
+            {signedIn && (
+              <button
+                onClick={uploadAgain}
+                disabled={busy}
+                className="h-8 px-3 rounded-lg bg-amber-500/20 border border-amber-400/30 text-amber-100 text-[12px] font-bold hover:bg-amber-500/30 disabled:opacity-40"
+              >
+                Upload it again
               </button>
             )}
           </div>
