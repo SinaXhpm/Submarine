@@ -200,14 +200,14 @@ impl server::Handler for TestServer {
     async fn auth_publickey_offered(
         &mut self,
         _user: &str,
-        key: &russh::keys::PublicKey,
+        offer: russh::server::PublicKeyOffer<'_>,
     ) -> Result<Auth, Self::Error> {
         self.pk_offers.fetch_add(1, Ordering::SeqCst);
-        Ok(if self.accepts(key) { Auth::Accept } else { Auth::reject() })
+        Ok(if self.accepts(offer.public_key) { Auth::Accept } else { Auth::reject() })
     }
 
-    async fn auth_publickey(&mut self, _user: &str, key: &russh::keys::PublicKey) -> Result<Auth, Self::Error> {
-        if !self.accepts(key) {
+    async fn auth_publickey(&mut self, _user: &str, key: russh::server::VerifiedPublicKey<'_>) -> Result<Auth, Self::Error> {
+        if !self.accepts(key.public_key) {
             return Ok(Auth::reject());
         }
         if self.second_factor {
