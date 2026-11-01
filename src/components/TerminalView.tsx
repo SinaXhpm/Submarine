@@ -35,6 +35,14 @@ const looksLikePasswordPrompt = (out: string): boolean => {
   return /(?:password|passphrase)\b[^:\n]*:\s*$/i.test(tail);
 };
 
+// What the terminal says by itself, not what was typed: its answers to a
+// program's questions (device attributes, status, cursor position, a mode, a
+// colour, a setting) and its focus and mouse reports. They belong to that one
+// program, so a broadcast doesn't copy them: elsewhere they arrive as typed
+// text. F3 with a modifier looks like a cursor position (ESC [ 1 ; 2 R), so
+// that key stays on its own server too.
+const TERMINAL_REPLY = /^\x1b(?:\[[?>]?[0-9;]*[cnRt]|\[\??[0-9;]*\$y|\[[IO]|\[<[0-9;]+[Mm]|\][0-9]+;[^\x07\x1b]*(?:\x07|\x1b\\)|P[01]\$r[^\x1b]*\x1b\\)$/;
+
 // Shared search options — highlight all matches in yellow, the active
 // match in orange. `decorations` uses the marker overlay so the highlight
 // survives scrollback and repaints (the addon's built-in selection-based
@@ -142,6 +150,7 @@ const TerminalView = ({
   terminalId,
   disabled = false,
   isActive = true,
+  shown = isActive,
   isActiveView = false,
   focusSignal = 0,
   containerExec,
@@ -171,6 +180,11 @@ const TerminalView = ({
   /// the parent's display/opacity change and the prompt appears garbled
   /// until the user types something.
   isActive?: boolean;
+  /// On screen, active or not: the other panes of a split are shown too. A
+  /// shown terminal follows the size of its box; a hidden one waits until it
+  /// is shown again, so no size reaches a background PTY. The same as
+  /// `isActive` when not given.
+  shown?: boolean;
   /// True only when this terminal's SessionView is the frontmost server
   /// tab (DesktopApp's active view). Auto-focus is gated on this so a
   /// background session — or an attach-only Wall mirror — never steals the
@@ -288,15 +302,18 @@ const TerminalView = ({
   useEffect(() => {
     disabledRef.current = disabled;
   }, [disabled]);
-  // Mirror of `isActive` readable inside the ResizeObserver callback. The
-  // observer is bound once at mount and runs for the lifetime of the
-  // terminal, so a stale closure over the initial `isActive` would block
-  // the gate from ever flipping. A ref is the cheapest way to expose live
-  // state to that callback.
+  // Mirror of `isActive`, for the focus signal's callback.
   const isActiveRef = useRef(isActive);
   useEffect(() => {
     isActiveRef.current = isActive;
   }, [isActive]);
+  // Mirror of `shown` readable inside the ResizeObserver callback. The
+  // observer is bound once at mount and runs for the lifetime of the
+  // terminal, so a stale closure over the initial value would block the gate
+  // from ever flipping. Set here, not in an effect: a change of layout reaches
+  // the observer before an effect would run, and its size would be lost.
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
   // Mirror of isActiveView, read inside focusTerminal's rAF / signal
   // callbacks (which would otherwise close over a stale value).
   const isActiveViewRef = useRef(isActiveView);
@@ -322,6 +339,14 @@ const TerminalView = ({
   const [modifiers, setModifiers] = useState<ModifiersState>({ ctrl: "off", alt: "off", shift: "off" });
   const modifiersRef = useRef<ModifiersState>(modifiers);
   useEffect(() => { modifiersRef.current = modifiers; }, [modifiers]);
+  // The bar is for a device with no Ctrl, Esc, Tab or arrows, at any width: a
+  // tablet, or a phone turned sideways. A narrow desktop window has it too.
+  const showKeyBar = (IS_MOBILE || isMobile) && !disabled;
+  // A modifier left on with no bar in sight would go on changing what is typed.
+  useEffect(() => {
+    if (showKeyBar) return;
+    setModifiers(m => (m.ctrl === "off" && m.alt === "off" && m.shift === "off" ? m : { ctrl: "off", alt: "off", shift: "off" }));
+  }, [showKeyBar]);
 
   // In-terminal search (Ctrl+Shift+F / Cmd+Shift+F). Query state is component-scoped so
   // reopening the chip pre-fills the last search — matches VS Code / Chrome
@@ -357,6 +382,37 @@ const TerminalView = ({
       unregisterActiveTerminal(sessionId, terminalId);
     };
   }, [isActive, sessionId, terminalId, registerActiveTerminal, unregisterActiveTerminal]);
+
+  // ── Broadcast fan-out ──────────────────────────────────────────────────
+  // Broadcast writes AFTER the local write so if the fan-out throws
+  // synchronously it doesn't drop the source shell's own byte. We only
+  // fan out when there are 2+ selected targets — a single target would
+  // let the user broadcast to a single foreign session, which is
+  // technically fine but almost always a footgun ("wait, why did that
+  // command run there instead of here?"). 2+ makes the intent explicit.
+  const broadcastInput = (bytes: number[]) => {
+    const bcast = broadcastRef.current;
+    // Fan out ONLY when the source session is itself one of the armed
+    // targets. Without this guard, typing into an unrelated session (not in
+    // the target set) still wrote to every target — so a command meant only
+    // for the focused server would silently execute on the broadcast group.
+    // Requiring the source to be a member makes "this pane broadcasts to the
+    // group" the explicit, safe model.
+    if (bcast.enabled && bcast.targetSessionIds.size >= 2 && bcast.targetSessionIds.has(sessionId)) {
+      for (const targetSid of bcast.targetSessionIds) {
+        if (targetSid === sessionId) continue; // skip source; already written
+        const targetTid = bcast.sessionTerminalMap[targetSid];
+        if (!targetTid) continue; // target has no live terminal — silently skip
+        invoke('write_terminal_data', {
+          terminalId: targetTid,
+          data: bytes,
+        }).catch(() => {
+          // Dead target — do NOT surface. The user asked for fire-and-forget
+          // fan-out; failures here would spam their console every keystroke.
+        });
+      }
+    }
+  };
 
   // Buffer keystrokes locally so we can log "the command line the user
   // typed" on each Enter press. Best-effort: pastes, arrow-key edits,
@@ -465,6 +521,7 @@ const TerminalView = ({
       }
     }
     invoke('write_terminal_data', { terminalId, data: bytes }).catch(console.error);
+    broadcastInput(bytes);
     if (consumes) consumeArmedModifiers();
   };
 
@@ -552,6 +609,16 @@ const TerminalView = ({
     return () => { off.then((f) => f()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ownConn, ownLogin]);
+  // The shell ended by itself (`exit`, Ctrl+D, its program quit): keys go
+  // nowhere from here on, while everything else on screen still looks alive.
+  // Not said for a connection that dropped: the banner and the badge do that.
+  useEffect(() => {
+    const off = listen(`terminal-closed-${terminalId}`, (e: any) => {
+      if (!e.payload?.shell_ended) return;
+      xtermRef.current?.write("\r\n\x1b[33m── this shell has ended; + opens a new terminal ──\x1b[0m\r\n");
+    });
+    return () => { off.then((f) => f()); };
+  }, [terminalId]);
 
   // Move keyboard focus into this terminal's xterm. Shared by the
   // become-active effect and the parent-driven focus signal below, so the
@@ -596,20 +663,29 @@ const TerminalView = ({
   // switch. Calling `fit()` recomputes cols/rows and `refresh()` forces
   // every visible row to repaint. rAF defers until the layout has settled
   // — without it `fit()` would measure 0×0 in the display:none case.
+  const refit = () => {
+    try {
+      fitAddonRef.current?.fit();
+      const t = xtermRef.current;
+      if (t) t.refresh(0, Math.max(0, t.rows - 1));
+    } catch { /* terminal not ready yet — next tick will catch it */ }
+  };
   useEffect(() => {
     if (!isActive) return;
     const id = requestAnimationFrame(() => {
-      try {
-        fitAddonRef.current?.fit();
-        const t = xtermRef.current;
-        if (t) t.refresh(0, Math.max(0, t.rows - 1));
-      } catch { /* terminal not ready yet — next tick will catch it */ }
+      refit();
       // Layout has settled and this is now the visible terminal: land the
       // caret in it so the user can type without a second click (#51).
       focusTerminal();
     });
     return () => cancelAnimationFrame(id);
   }, [isActive]);
+  // A pane of a split comes on screen without becoming the active terminal.
+  useEffect(() => {
+    if (!shown) return;
+    const id = requestAnimationFrame(refit);
+    return () => cancelAnimationFrame(id);
+  }, [shown]);
 
   // Parent-driven re-focus. The effect above only fires when the ACTIVE
   // terminal CHANGES (isActive false→true); this handles the selections
@@ -950,6 +1026,10 @@ const TerminalView = ({
         bytes = [];
         if (mods.alt !== "off") bytes.push(0x1b); // ESC prefix → Meta
         bytes.push(...new TextEncoder().encode(String.fromCharCode(ch)));
+        // What was sent is what the history below goes by: a key bar Ctrl+C
+        // ends the line there as a real one does, or what was typed at a
+        // password prompt would run into the next command.
+        data = (mods.alt !== "off" ? "\x1b" : "") + String.fromCharCode(ch);
         consumeArmedModifiers();
       } else {
         bytes = Array.from(new TextEncoder().encode(data));
@@ -958,35 +1038,7 @@ const TerminalView = ({
         terminalId,
         data: bytes,
       }).catch(console.error);
-
-      // ── Broadcast fan-out ────────────────────────────────────────────────
-      // Broadcast writes AFTER the local write so if the fan-out throws
-      // synchronously it doesn't drop the source shell's own byte. We only
-      // fan out when there are 2+ selected targets — a single target would
-      // let the user broadcast to a single foreign session, which is
-      // technically fine but almost always a footgun ("wait, why did that
-      // command run there instead of here?"). 2+ makes the intent explicit.
-      const bcast = broadcastRef.current;
-      // Fan out ONLY when the source session is itself one of the armed
-      // targets. Without this guard, typing into an unrelated session (not in
-      // the target set) still wrote to every target — so a command meant only
-      // for the focused server would silently execute on the broadcast group.
-      // Requiring the source to be a member makes "this pane broadcasts to the
-      // group" the explicit, safe model.
-      if (bcast.enabled && bcast.targetSessionIds.size >= 2 && bcast.targetSessionIds.has(sessionId)) {
-        for (const targetSid of bcast.targetSessionIds) {
-          if (targetSid === sessionId) continue; // skip source; already written
-          const targetTid = bcast.sessionTerminalMap[targetSid];
-          if (!targetTid) continue; // target has no live terminal — silently skip
-          invoke('write_terminal_data', {
-            terminalId: targetTid,
-            data: bytes,
-          }).catch(() => {
-            // Dead target — do NOT surface. The user asked for fire-and-forget
-            // fan-out; failures here would spam their console every keystroke.
-          });
-        }
-      }
+      if (!TERMINAL_REPLY.test(data)) broadcastInput(bytes);
 
       // ── Command history capture (best-effort) ────────────────────────────
       // Bufffer up bytes until we see a CR (Enter), then log the accumulated
@@ -1163,17 +1215,13 @@ const TerminalView = ({
     // there.
     const readClipboardText = (): Promise<string> =>
       IS_LINUX ? invoke<string>('clipboard_read_text') : navigator.clipboard.readText();
-    // Paste the clipboard into the PTY. Disabled sessions silently drop the
-    // paste (matches onData).
-    const pasteClipboard = async (toast: boolean) => {
-      if (disabledRef.current) return;
-      let text = '';
-      try { text = await readClipboardText(); }
-      catch { notify('Clipboard read denied', 'err'); return; }
-      if (!text) return;
+    // Paste text into the PTY, however it got here. Disabled sessions silently
+    // drop the paste (matches onData).
+    const pasteText = async (raw: string, toast: boolean) => {
+      if (disabledRef.current || !raw) return;
       // No escape sequence or other control character gets through (see pasteText.ts).
-      const clean = withoutPasteControls(text);
-      if (clean !== text) { text = clean; notify('Control characters left out of the paste'); }
+      const text = withoutPasteControls(raw);
+      if (text !== raw) notify('Control characters left out of the paste');
       if (!text) return;
       // More than one line into a program that hasn't turned bracketed-paste
       // mode on (an older bash, a plain sh): each line would run the moment it
@@ -1210,24 +1258,22 @@ const TerminalView = ({
       }
       if (toast) notify('Pasted');
     };
-    // Ctrl+V, Ctrl+Shift+V, Shift+Insert and a phone's paste menu reach xterm's
-    // own paste. When there is something to take out of the text, it is pasted
-    // without it instead (the capture phase runs before xterm's handler); text
-    // with nothing to take out goes the way it always did.
+    const pasteClipboard = async (toast: boolean) => {
+      if (disabledRef.current) return;
+      let text = '';
+      try { text = await readClipboardText(); }
+      catch { notify('Clipboard read denied', 'err'); return; }
+      await pasteText(text, toast);
+    };
+    // Ctrl+V, Ctrl+Shift+V, Shift+Insert and a phone's paste menu would reach
+    // xterm's own paste. They go through pasteText instead, like a right-click,
+    // so control characters and the question about several lines apply to
+    // them too. The capture phase runs before xterm's handler.
     const onPasteEvent = (ev: ClipboardEvent) => {
       const raw = ev.clipboardData?.getData('text/plain') ?? '';
-      const clean = withoutPasteControls(raw);
-      if (clean === raw) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
-      if (disabledRef.current || !clean) return;
-      pastingRef.current = true;
-      try {
-        term.paste(clean);
-      } finally {
-        pastingRef.current = false;
-      }
-      notify('Control characters left out of the paste');
+      void pasteText(raw, false);
     };
     // Right-click → paste. preventDefault swallows the platform context menu
     // so the user gets the terminal-style behavior they asked for.
@@ -1342,7 +1388,7 @@ const TerminalView = ({
     let rafId = 0;
     const resizeObserver = new ResizeObserver(() => {
       if (!xtermRef.current) return;
-      if (!isActiveRef.current) return;
+      if (!shownRef.current) return;
       // A terminal at its bottom stays there. On a phone, the box changing
       // while output comes in (the key bar back after a reconnect, the
       // keyboard) is at times taken by xterm for the user scrolling up, and
@@ -1357,7 +1403,7 @@ const TerminalView = ({
       rafId = requestAnimationFrame(() => {
         rafId = 0;
         if (!xtermRef.current) return;
-        if (!isActiveRef.current) return;
+        if (!shownRef.current) return;
         try {
           fitAddon.fit();
           const t = xtermRef.current;
@@ -1603,7 +1649,7 @@ const TerminalView = ({
           )}
         </div>
       )}
-      {isMobile && !disabled && (
+      {showKeyBar && (
         <MobileKeyBar
           modifiers={modifiers}
           onToggleModifier={toggleModifier}

@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { IS_MOBILE } from "./util/platform";
 import "./App.css";
 // Registers the bundled terminal fonts (@font-face) before any terminal mounts.
 import "./util/bundledFonts";
@@ -27,6 +28,29 @@ window.addEventListener("keydown", (e) => {
   const reloadCombo = (e.ctrlKey || e.metaKey) && !e.altKey && e.keyCode === 82;
   if (e.key === "F5" || reloadCombo) e.preventDefault();
 }, true);
+
+// The webview's own right-click menu has a Reload too, so it stays shut, in
+// the capture phase as above. Only the default is cancelled: the app's own
+// menus and the terminal's paste get the event as before. Two places keep it,
+// and neither has a Reload there: a text field (paste, spell check) and
+// selected text (Copy). A phone's webview has no such menu: a long press
+// selects text there, and cancelling this could cost it its Copy bar.
+const NOT_TEXT_INPUT = /^(checkbox|radio|range|color|file|button|submit|reset|image)$/;
+const inTextField = (target: EventTarget | null) => {
+  const field = target instanceof Element ? target.closest("input, textarea, [contenteditable]") : null;
+  return !!field && !(field instanceof HTMLInputElement && NOT_TEXT_INPUT.test(field.type));
+};
+const onSelectedText = (e: MouseEvent) => {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed) return false;
+  return Array.from(selection.getRangeAt(0).getClientRects()).some((r) =>
+    e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+};
+if (!IS_MOBILE) {
+  window.addEventListener("contextmenu", (e) => {
+    if (!inTextField(e.target) && !onSelectedText(e)) e.preventDefault();
+  }, true);
+}
 
 // ── Android soft-keyboard sizing (visualViewport → --vv-h) ──────────────────
 // The Android on-screen keyboard covers our fixed-bottom UI (MobileKeyBar,
