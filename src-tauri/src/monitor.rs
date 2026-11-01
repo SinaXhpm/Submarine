@@ -1251,7 +1251,9 @@ fn parse_probe(
                 snap.swap_free_kb = rest[1].parse().unwrap_or(0);
             }
             "LOAD" if !rest.is_empty() => {
-                snap.load1 = rest[0].parse().unwrap_or(0.0);
+                // f64 parses `nan` and `inf` too; JSON can't carry them, the
+                // page would get a null.
+                snap.load1 = rest[0].parse().ok().filter(|v: &f64| v.is_finite()).unwrap_or(0.0);
             }
             "DISK" if rest.len() >= 2 => {
                 snap.disk_total_kb = rest[0].parse().unwrap_or(0);
@@ -1405,7 +1407,8 @@ fn extract_number(s: &str) -> Option<f64> {
             }
         }
     }
-    if buf.is_empty() { None } else { buf.parse::<f64>().ok() }
+    // A run of 400 digits parses as infinity.
+    if buf.is_empty() { None } else { buf.parse::<f64>().ok().filter(|v| v.is_finite()) }
 }
 
 /// Apply a user-provided regex to the output and pull the first capture
@@ -1418,8 +1421,10 @@ fn apply_regex_number(pattern: &str, text: &str) -> Result<f64, String> {
     let re = regex::Regex::new(pattern).map_err(|e| format!("bad regex: {}", e))?;
     let caps = re.captures(text).ok_or("regex did not match")?;
     let m = caps.get(1).or_else(|| caps.get(0)).ok_or("no capture group")?;
-    m.as_str().trim().parse::<f64>()
-        .map_err(|e| format!("captured value not numeric: {}", e))
+    let v = m.as_str().trim().parse::<f64>()
+        .map_err(|e| format!("captured value not numeric: {}", e))?;
+    // `nan` and `inf` parse, but aren't a reading the page can show.
+    if v.is_finite() { Ok(v) } else { Err("captured value not numeric".into()) }
 }
 
 fn now_ms() -> u64 {
@@ -1432,7 +1437,10 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod probe_tests {
-    use super::{build_probe_script, parse_probe, CustomMetric, CUSTOM_BEGIN, CUSTOM_END};
+    use super::{
+        apply_regex_number, build_probe_script, compute_sample, extract_number, parse_probe, CustomMetric,
+        CUSTOM_BEGIN, CUSTOM_END,
+    };
 
     fn metric(id: &str, command: &str) -> CustomMetric {
         CustomMetric {
@@ -1543,6 +1551,48 @@ mod probe_tests {
         // A complete poll blames nothing.
         let snap = parse_probe(text, "t", &customs, false).unwrap();
         assert_eq!(snap.truncated_custom, None);
+    }
+
+    /// What JSON has no way to write: serde sends it as null, and the page
+    /// took that for a number and crashed.
+    const NOT_FINITE: [&str; 5] = ["nan", "NaN", "inf", "-infinity", "1e999"];
+
+    #[test]
+    fn a_load_that_is_not_a_finite_number_reads_as_zero() {
+        for v in NOT_FINITE {
+            let snap = parse_probe(&format!("LOAD {v}\n"), "n", &[], false).unwrap();
+            assert_eq!(snap.load1, 0.0, "LOAD {v}");
+        }
+        let snap = parse_probe("LOAD 1.5\n", "n", &[], false).unwrap();
+        assert_eq!(snap.load1, 1.5);
+    }
+
+    #[test]
+    fn a_custom_number_must_be_finite() {
+        let digits = "9".repeat(400);
+        assert_eq!(extract_number(&digits), None);
+        assert_eq!(extract_number("load 1.25 0.5"), Some(1.25));
+        for v in NOT_FINITE {
+            assert!(apply_regex_number("(\\S+)", v).is_err(), "regex took {v}");
+        }
+        assert_eq!(apply_regex_number("(\\S+)", "1.5"), Ok(1.5));
+    }
+
+    #[test]
+    fn a_sample_never_holds_a_value_the_page_cannot_get() {
+        // Through the whole path, from the host's output to what is emitted.
+        let mut number = metric("num", "x");
+        number.parse = "number".into();
+        let mut regex = metric("re", "y");
+        regex.parse = "regex".into();
+        regex.regex = Some("(\\S+)".into());
+        let customs = [number, regex];
+        let text = format!("LOAD nan\n{}{}", block("k", 0, &"9".repeat(400)), block("k", 1, "inf"));
+        let snap = parse_probe(&text, "k", &customs, false).unwrap();
+        let sample = compute_sample(1, &snap, &None, &["load".to_string()], &customs);
+        assert!(sample.values.values().all(|v| v.is_finite()), "{:?}", sample.values);
+        assert!(sample.errors.contains_key("num") && sample.errors.contains_key("re"));
+        assert_eq!(serde_json::to_value(&sample).unwrap()["values"]["load"], serde_json::json!(0.0));
     }
 
     #[test]
