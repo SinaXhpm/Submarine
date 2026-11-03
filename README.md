@@ -181,8 +181,9 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | Arch / Manjaro / EndeavourOS | `.pkg.tar.zst` — `sudo pacman -U submarine-*.pkg.tar.zst` |
 | Any Linux | `.AppImage` — `chmod +x` and double-click |
 | Android 8.0+ | `.apk` — sideload, no Play Store required |
+| iPhone / iPad (iOS 15+), and macOS signed by Apple | the beta on [TestFlight](https://testflight.apple.com/join/TmefAPrY) — install Apple's TestFlight app, then open the link |
 
-> Builds are currently **unsigned**. Windows SmartScreen will prompt — click "More info → Run anyway". On macOS you may need `xattr -d com.apple.quarantine /Applications/Submarine.app`. Android sideloading needs "Install unknown apps" enabled for the installer source.
+> The release builds are currently **unsigned**. Windows SmartScreen will prompt — click "More info → Run anyway". On macOS you may need `xattr -d com.apple.quarantine /Applications/Submarine.app`, or take the TestFlight version, which Apple signs. Android sideloading needs "Install unknown apps" enabled for the installer source.
 
 ### Portable mode (Windows)
 
