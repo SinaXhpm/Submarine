@@ -7487,6 +7487,12 @@ async fn setup_master_db_inner(
     conn.execute_batch("PRAGMA secure_delete = ON;")
         .map_err(|e| format!("[DATABASE] PRAGMA_FAILED: {}", e))?;
 
+    // The VACUUM below, and any large sort or index build, can spill pages to
+    // SQLite's temporary files, which would put decrypted vault contents on
+    // disk outside the vault's encryption. Kept in memory instead.
+    conn.execute_batch("PRAGMA temp_store = MEMORY;")
+        .map_err(|e| format!("[DATABASE] PRAGMA_FAILED: {}", e))?;
+
     // secure_delete only governs deletes from here on. A vault that has been
     // in use since before this build still carries whatever its old frees
     // left behind, so purge that history once: VACUUM rebuilds the database
