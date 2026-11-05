@@ -180,10 +180,7 @@ fn semver_greater(a: &str, b: &str) -> bool {
 /// Android yet" — now fixed).
 #[tauri::command]
 pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    let lowered = url.to_ascii_lowercase();
-    if !(lowered.starts_with("https://") || lowered.starts_with("http://")) {
-        return Err("[OPEN] only http(s) urls are allowed".into());
-    }
+    let url = checked_url(&url)?;
     // On Linux the browser starts without this app's own WebKit workarounds
     // (child_env.rs), which the plugin would hand down to it.
     #[cfg(target_os = "linux")]
@@ -197,5 +194,45 @@ pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), Strin
         app.opener()
             .open_url(&url, None::<&str>)
             .map_err(|e| format!("[OPEN] {}", e))
+    }
+}
+
+/// The address the browser gets: parsed, not only checked at its start, so
+/// a space, a quote or a control character can't reach a handler that might
+/// read it differently. An http(s) scheme and a host are required.
+fn checked_url(url: &str) -> Result<String, String> {
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("[OPEN] that address has spaces or control characters".into());
+    }
+    let parsed = tauri::Url::parse(url).map_err(|_| "[OPEN] that isn't a web address".to_string())?;
+    if !matches!(parsed.scheme(), "https" | "http") {
+        return Err("[OPEN] only http(s) urls are allowed".into());
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err("[OPEN] that address has no host".into());
+    }
+    Ok(parsed.as_str().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_url;
+
+    #[test]
+    fn only_a_parsed_web_address_opens() {
+        assert_eq!(checked_url("https://example.com/a?b=1").unwrap(), "https://example.com/a?b=1");
+        assert_eq!(checked_url("HTTP://Example.COM").unwrap(), "http://example.com/");
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ms-settings:",
+            "https://exa mple.com",
+            "https://example.com/\u{7}",
+            "https://example.com/\n--flag",
+            "https://",
+            "",
+        ] {
+            assert!(checked_url(bad).is_err(), "{bad:?}");
+        }
     }
 }
