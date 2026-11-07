@@ -320,7 +320,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
                   {owState.opts.direction === "download" ? "Local file exists" : "Remote file exists"}
                 </span>
               </div>
-              <button aria-label="Close" onClick={() => closeOverwrite("cancel")} className="text-zinc-500 hover:text-white shrink-0">
+              <button aria-label="Close" onClick={() => closeOverwrite("cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
@@ -334,21 +334,21 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             </p>
             <div className="grid grid-cols-2 gap-2">
               <button onClick={() => closeOverwrite("overwrite")} data-default-focus
-                      className="h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
+                      className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
                 Overwrite
               </button>
               <button onClick={() => closeOverwrite("skip")}
-                      className="h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
+                      className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
                 Skip
               </button>
               {owState.opts.batchSize > 1 && (
                 <>
                   <button onClick={() => closeOverwrite("overwrite-all")}
-                          className="h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20">
+                          className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20">
                     Overwrite all
                   </button>
                   <button onClick={() => closeOverwrite("skip-all")}
-                          className="h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.03] border border-white/10 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200">
+                          className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.03] border border-white/10 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200">
                     Skip all
                   </button>
                 </>
@@ -381,7 +381,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
                   {state.opts.title || (state.opts.destructive ? "Confirm action" : "Are you sure?")}
                 </span>
               </div>
-              <button aria-label="Close" onClick={() => close(false)} className="text-zinc-500 hover:text-white shrink-0">
+              <button aria-label="Close" onClick={() => close(false)} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
@@ -393,12 +393,12 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             <div className="flex justify-end gap-2">
               <button onClick={() => close(false)}
                       data-default-focus={state.opts.safeDefault ? true : undefined}
-                      className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
+                      className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
                 {state.opts.cancelLabel || "Cancel"}
               </button>
               <button onClick={() => close(true)} ref={confirmOkRef}
                       data-default-focus={state.opts.safeDefault ? undefined : true}
-                      className={`px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider border ${
+                      className={`px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider border ${
                         state.opts.destructive
                           ? "bg-rose-500/15 border-rose-500/40 text-rose-300 hover:bg-rose-500/25"
                           : "bg-primary/15 border-primary/40 text-primary hover:bg-primary/25"
@@ -424,7 +424,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               <span id="text-prompt-modal-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
                 {tpState.opts.title || "Enter value"}
               </span>
-              <button aria-label="Close" onClick={() => closeTextPrompt(null)} className="text-zinc-500 hover:text-white shrink-0">
+              <button aria-label="Close" onClick={() => closeTextPrompt(null)} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
@@ -447,11 +447,11 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             )}
             <div className="flex justify-end gap-2 mt-2">
               <button onClick={() => closeTextPrompt(null)}
-                      className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
+                      className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
                 {tpState.opts.cancelLabel || "Cancel"}
               </button>
               <button onClick={submitTextPrompt}
-                      className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
+                      className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
                 {tpState.opts.okLabel || "OK"}
               </button>
             </div>

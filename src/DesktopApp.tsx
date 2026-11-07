@@ -1246,7 +1246,7 @@ function DesktopApp() {
             <button
               type="button"
               onClick={() => setMobileSessionPickerOpen(v => !v)}
-              className={`w-full h-7 px-3 rounded-full flex items-center gap-2 border transition-all ${
+              className={`relative w-full h-7 px-3 rounded-full flex items-center gap-2 border transition-all before:absolute before:inset-x-0 before:-top-1 before:-bottom-2 before:content-[''] ${
                 activeView.startsWith('session-') || activeView === 'wall'
                   ? 'bg-primary/15 text-primary border-primary/40 shadow-inner'
                   : 'bg-white/[0.06] text-zinc-300 border-white/10'
@@ -1308,7 +1308,7 @@ function DesktopApp() {
                           role="option"
                           aria-selected={isActive}
                           onClick={() => { setActiveView(s.id); setMobileSessionPickerOpen(false); }}
-                          className={`flex-1 flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-all ${
+                          className={`flex-1 flex items-center gap-2 px-2.5 py-3 sm:py-2 rounded-lg text-left transition-all ${
                             isActive
                               ? 'bg-primary/15 text-primary'
                               : isMerged
@@ -1368,7 +1368,7 @@ function DesktopApp() {
                             setActiveView(prev => (prev === sid ? 'nodes' : prev));
                           }}
                           title="Close session"
-                          className="h-8 w-8 shrink-0 rounded-lg flex items-center justify-center text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] transition-all"
+                          className="h-10 w-10 sm:h-8 sm:w-8 shrink-0 rounded-lg flex items-center justify-center text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] transition-all"
                         >
                           <X size={13} />
                         </button>
@@ -1386,7 +1386,7 @@ function DesktopApp() {
                       setActiveView('wall');
                       setMobileSessionPickerOpen(false);
                     }}
-                    className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-all ${
+                    className={`w-full flex items-center gap-2 px-2.5 py-3 sm:py-2 rounded-lg text-left transition-all ${
                       activeView === 'wall'
                         ? 'bg-primary/15 text-primary'
                         : 'text-zinc-200 hover:bg-white/[0.06]'
@@ -1609,7 +1609,7 @@ function DesktopApp() {
               ? `Wall · ${wallItems.length} pinned terminal${wallItems.length === 1 ? '' : 's'}`
               : "Wall — pinboard for terminals across servers"}
             aria-label="Wall pinboard"
-            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all ${
+            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all max-sm:before:absolute max-sm:before:-inset-1.5 max-sm:before:content-[''] ${
               activeView === "wall"
                 ? "bg-primary/15 border border-primary/40 text-primary shadow-inner shadow-primary/10"
                 : "bg-white/[0.06] border border-white/10 text-zinc-400 hover:bg-white/[0.1] hover:text-white"
@@ -1644,7 +1644,7 @@ function DesktopApp() {
               ? `Broadcasting to ${broadcast.targetSessionIds.size} session${broadcast.targetSessionIds.size === 1 ? "" : "s"}`
               : "Broadcast input to multiple sessions"}
             aria-label="Broadcast input"
-            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all ${
+            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all max-sm:before:absolute max-sm:before:-inset-1.5 max-sm:before:content-[''] ${
               broadcast.enabled
                 ? "bg-orange-500/15 border border-orange-400/40 text-orange-300 shadow-inner shadow-orange-400/10"
                 : "bg-white/[0.06] border border-white/10 text-zinc-400 hover:bg-white/[0.1] hover:text-white"
