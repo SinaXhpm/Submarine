@@ -790,6 +790,22 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   }, [status]);
 
   const [activeTool, setActiveTool] = useState<'sftp' | 'tunnels' | 'mirrors' | 'cmds' | 'info' | null>(null);
+  // A tool panel closed: its button keeps the focus, or the focus falls to the
+  // page when the control went with the panel, and typing lands nowhere (#298).
+  // Switching to another tool isn't a close. Nor does its toolbar button give up
+  // the focus when pressed from the keyboard: Tab goes on from there, and a held
+  // Enter must not reach the shell. Where the panel had the terminal's place (a
+  // compact window, full screen), the terminal coming back would take the focus
+  // by itself; it reads the same flag (keepFocusRef) before this clears it.
+  const hadToolRef = useRef(false);
+  const closedFromKeyboardRef = useRef(false);
+  useEffect(() => {
+    const had = hadToolRef.current;
+    hadToolRef.current = activeTool !== null;
+    if (had && activeTool === null && !closedFromKeyboardRef.current) requestTerminalFocus();
+    closedFromKeyboardRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTool]);
 
   // "Push shell config": a one-shot push, not a dockable tool pane like the
   // four above, so it gets its own preview/confirm dialog. Offered on the
@@ -1903,7 +1919,11 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             return (
               <button
                 key={id}
-                onClick={() => setActiveTool(on ? null : id)}
+                onClick={(e) => {
+                  // A click from the keyboard (Enter, Space) has no mouse detail.
+                  closedFromKeyboardRef.current = on && e.detail === 0;
+                  setActiveTool(on ? null : id);
+                }}
                 title={hint}
                 aria-label={hint}
                 aria-pressed={on}
@@ -2293,6 +2313,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   shown={shown && sessionShown}
                   isActiveView={isActiveView}
                   focusSignal={focusTick}
+                  keepFocusRef={closedFromKeyboardRef}
                   containerExec={t.container ? { container: t.container.name, useSudo: t.container.useSudo } : undefined}
                   connectionEpoch={connectionEpoch}
                   serverId={session.serverId}
