@@ -16,6 +16,7 @@ import { TERMINAL_PASTE, withoutPasteControls, type TerminalPaste } from '../uti
 import { READABLE_CONTRAST, readBoldBright, readMinContrast, readScheme } from '../util/terminalTheme';
 import { readUseLocalShell } from '../util/terminalShell';
 import { readUseSshAgent } from '../util/sshAgent';
+import { readSendKeepalives } from '../util/sessionKeep';
 import { IS_MOBILE, IS_LINUX } from '../util/platform';
 import { useConfirm } from '../ui/confirm';
 import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
@@ -157,6 +158,7 @@ const TerminalView = ({
   connectionEpoch = 0,
   serverId = 0,
   serverName = "",
+  serverUuid,
   attachOnly = false,
   telnet = false,
   ownLogin = false,
@@ -226,6 +228,8 @@ const TerminalView = ({
   /// CA Access Control's `sesu`. When that login fails it uses the tab's
   /// connection and says so.
   ownLogin?: boolean;
+  /// The saved server's sync id, for this device's choices about it.
+  serverUuid?: string | null;
   /// A quick connect's login (it has no saved server), for `ownLogin`.
   quickAuth?: unknown;
   /// The folder the shell says it is in (OSC 7 or OSC 1337 CurrentDir, see
@@ -267,6 +271,7 @@ const TerminalView = ({
         sessionRole: 'terminal',
         separateSessions: false,
         useSshAgent: readUseSshAgent(),
+        sendKeepalives: readSendKeepalives(serverUuid),
       }).catch((e) => settle(String(e)));
     }
     const result = await done;

@@ -68,6 +68,49 @@ function DefaultShellSetting({ settings, setSettings }: any) {
   );
 }
 
+// "Send keepalives" and "Reconnect automatically" (util/sessionKeep).
+function SessionKeepSettings({ settings, setSettings }: any) {
+  const rows = [
+    {
+      field: "sendKeepalives",
+      title: "Send keepalives",
+      text: "While a session is idle, check on it every 30 seconds and ask the system to keep the connection open. This stops routers and firewalls from dropping it, and shows a dead connection quickly. Off, the server's or firewall's idle timeout can close the session, and an idle session can look connected long after the link has died. A change applies the next time a session connects.",
+    },
+    {
+      field: "autoReconnect",
+      title: "Reconnect automatically",
+      text: "When a session drops, log back in every 5 seconds until it works or the server turns the login down, and bring its port forwards back. Off, the tab stays disconnected until you press Reconnect.",
+    },
+  ];
+  return (
+    <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl space-y-5">
+      {rows.map(({ field, title, text }) => {
+        const on = settings[field] !== false;
+        return (
+          <div key={field} className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-zinc-100">{title}</div>
+              <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">{text}</p>
+            </div>
+            <button
+              role="switch"
+              aria-checked={on}
+              aria-label={title}
+              onClick={() => setSettings((s: any) => ({ ...s, [field]: !(s[field] !== false) }))}
+              className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${on ? 'bg-primary' : 'bg-zinc-700'}`}
+            >
+              <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${on ? 'left-[22px]' : 'left-0.5'}`} />
+            </button>
+          </div>
+        );
+      })}
+      <p className="text-[11px] text-zinc-500 leading-relaxed">
+        These are for this device. A server can have its own choice in its details. They apply to SSH sessions.
+      </p>
+    </div>
+  );
+}
+
 // "Use keys from an ssh-agent" (util/sshAgent, src-tauri/src/agent_auth.rs).
 function SshAgentSetting({ settings, setSettings }: any) {
   const on = settings.useSshAgent !== false;
@@ -789,6 +832,14 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, servers = [] }: any)
           <DefaultShellSetting settings={settings} setSettings={setSettings} />
           
           <ShellConfigSyncSettings servers={servers} />
+        </section>
+
+        <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+            <RefreshCw size={14} /> Connections
+          </div>
+
+          <SessionKeepSettings settings={settings} setSettings={setSettings} />
         </section>
 
         {/* Not on a phone or tablet, which has no ssh-agent or ~/.ssh/config to use. */}

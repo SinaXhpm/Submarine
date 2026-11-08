@@ -29,6 +29,7 @@ import {
 } from "./util/terminalTheme";
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
+import { AUTO_RECONNECT_KEY, DEFAULT_SESSION_KEEP, SEND_KEEPALIVES_KEY, forgetSessionKeep, readAutoReconnectDefault, readSendKeepalivesDefault, readSessionKeep, writeSessionKeep } from "./util/sessionKeep";
 import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
 import { DEFAULT_RDP_OPTIONS, forgetRdpOptions, readRdpOptions, writeRdpOptions } from "./util/rdpOptions";
 import { DEFAULT_VNC_OPTIONS, forgetVncOptions, readVncOptions, writeVncOptions } from "./util/vncOptions";
@@ -299,6 +300,8 @@ function DesktopApp() {
     protocol: "ssh" as "ssh" | "rdp" | "telnet" | "vnc",
     // An RDP server's window and sharing on this device (util/rdpOptions).
     rdpOptions: { ...DEFAULT_RDP_OPTIONS },
+    // An SSH server's keepalives and reconnecting on this device (util/sessionKeep).
+    sessionKeep: { ...DEFAULT_SESSION_KEEP },
     // A VNC server's speed and quality on this device (util/vncOptions).
     vncOptions: { ...DEFAULT_VNC_OPTIONS },
     name: "", host: "", port: 22, username: "", password: "",
@@ -382,6 +385,10 @@ function DesktopApp() {
     // On by default: logins may use keys from an ssh-agent on this computer.
     // See util/sshAgent.
     useSshAgent: readUseSshAgent(),
+    // On by default: idle sessions send keepalives, and a dropped one logs back
+    // in by itself. See util/sessionKeep.
+    sendKeepalives: readSendKeepalivesDefault(),
+    autoReconnect: readAutoReconnectDefault(),
     // On by default: connections use what ~/.ssh/config says about a host.
     // See util/sshConfig.
     useSshConfig: readUseSshConfig(),
@@ -410,6 +417,8 @@ function DesktopApp() {
     localStorage.setItem(MIN_CONTRAST_KEY, appSettings.terminalMinContrast ? 'on' : 'off');
     localStorage.setItem(USE_LOCAL_SHELL_KEY, appSettings.useLocalShell ? 'on' : 'off');
     localStorage.setItem(USE_SSH_AGENT_KEY, appSettings.useSshAgent ? 'on' : 'off');
+    localStorage.setItem(SEND_KEEPALIVES_KEY, appSettings.sendKeepalives === false ? 'off' : 'on');
+    localStorage.setItem(AUTO_RECONNECT_KEY, appSettings.autoReconnect === false ? 'off' : 'on');
     localStorage.setItem(USE_SSH_CONFIG_KEY, appSettings.useSshConfig ? 'on' : 'off');
     invoke("set_use_ssh_config", { enabled: appSettings.useSshConfig }).catch(() => {});
     localStorage.setItem('submarine-auto-sync', appSettings.autoSync ? 'on' : 'off');
@@ -768,6 +777,7 @@ function DesktopApp() {
     if (activeProfile) forgetServerBookmarks(activeProfile, s.id);
     if (s.uuid) {
       forgetRdpOptions(s.uuid);
+      forgetSessionKeep(s.uuid);
       forgetVncOptions(s.uuid);
     }
   };
@@ -1164,6 +1174,7 @@ function DesktopApp() {
       id: server.id,
       protocol: ["rdp", "telnet", "vnc"].includes(server.protocol) ? server.protocol : "ssh",
       rdpOptions: readRdpOptions(server.uuid),
+      sessionKeep: readSessionKeep(server.uuid),
       vncOptions: readVncOptions(server.uuid),
       name: server.name || "",
       host: server.host || "",
@@ -3037,6 +3048,15 @@ function DesktopApp() {
                 if (uuid) writeRdpOptions(uuid, moved ? { ...options, sharedFor: "" } : options);
               } catch (e) {
                 addLog(`SAVE_RDP_OPTIONS_FAILED: ${e}`, "error");
+              }
+            }
+            // An SSH server's keepalives and reconnecting: the same, this device's own.
+            if (!isRdp && !isVnc && !isTelnet) {
+              try {
+                const uuid = (await invoke<any[]>("get_servers")).find((s) => s.id === savedId)?.uuid;
+                if (uuid) writeSessionKeep(uuid, newNode.sessionKeep || DEFAULT_SESSION_KEEP);
+              } catch (e) {
+                addLog(`SAVE_SESSION_KEEP_FAILED: ${e}`, "error");
               }
             }
             // A VNC server's speed and quality: the same, this device's own.
