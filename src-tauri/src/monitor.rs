@@ -944,8 +944,21 @@ async fn connect_for_monitor(
     let mut last_err: Option<String> = None;
     let mut accepted = false;
 
-    if let Some((pem, passphrase)) = key_pair.as_ref() {
+    // A security key's file holds only a handle, and signing with it would end
+    // the session: only an ssh-agent can sign for it, and monitoring doesn't
+    // use one. Looked for before decoding too, so a missing passphrase isn't
+    // blamed.
+    let security_key = || {
+        format!(
+            "the SSH key for {}@{} is a security key, which monitoring can't use: only an ssh-agent can sign with it",
+            auth.username, auth.host,
+        )
+    };
+    if key_pair.as_ref().is_some_and(|(pem, _)| crate::agent_auth::security_key_file(pem).is_some()) {
+        last_err = Some(security_key());
+    } else if let Some((pem, passphrase)) = key_pair.as_ref() {
         match crate::decode_private_key_blocking(pem, passphrase.as_deref()).await {
+            Ok(kp) if crate::agent_auth::is_security_key(&kp.algorithm()) => last_err = Some(security_key()),
             Ok(kp) => {
                 match crate::ssh_manager::authenticate_with_key(&mut session, &auth.username, kp)
                     .await

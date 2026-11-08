@@ -7752,6 +7752,14 @@ fn private_key_is_encrypted(text: &str) -> bool {
 fn check_key_algorithm(algorithm: &ssh_key::Algorithm) -> Result<(), String> {
     match algorithm {
         ssh_key::Algorithm::Ed25519 | ssh_key::Algorithm::Rsa { .. } | ssh_key::Algorithm::Ecdsa { .. } => Ok(()),
+        sk if agent_auth::is_security_key(sk) && cfg!(mobile) => Err(format!(
+            "[SSH] UNSUPPORTED_KEY_TYPE: Security keys ({}) aren't supported on phones and tablets yet.",
+            sk.as_str()
+        )),
+        sk if agent_auth::is_security_key(sk) => Err(format!(
+            "[SSH] UNSUPPORTED_KEY_TYPE: This is a security key ({}): its file can't sign here, the key itself has to. An ssh-agent that supports security keys can use it: load it with ssh-add, and leave the server's password and key empty.",
+            sk.as_str()
+        )),
         other => Err(format!("[SSH] UNSUPPORTED_KEY_TYPE: {} keys are not supported.", other.as_str())),
     }
 }
@@ -10205,6 +10213,8 @@ struct SecretPromptCtx<'a> {
 /// login that works without one never touches an agent, and let go once the
 /// login is over.
 struct AgentSlot {
+    /// The device's "Use keys from an ssh-agent" setting.
+    use_agent: bool,
     looked: bool,
     agent: Option<agent_auth::AgentSession>,
     /// What `IdentityAgent` in `~/.ssh/config` says for this host, if it
@@ -10219,15 +10229,23 @@ struct AgentSlot {
 impl AgentSlot {
     /// `use_agent` is the device's "Use keys from an ssh-agent" setting. Off,
     /// the slot starts as looked-and-none, so no agent is ever contacted. With
-    /// `IdentitiesOnly yes` only the config's key files are used, as OpenSSH.
+    /// `IdentitiesOnly yes` the agent signs only for a named security key (see
+    /// `agent_allowed`).
     fn new(
         use_agent: bool,
         identity_agent: Option<ssh_config::IdentityAgent>,
         identities: ConfigIdentities,
     ) -> tokio::sync::Mutex<Self> {
-        let use_agent = use_agent && !identities.only;
-        tokio::sync::Mutex::new(Self { looked: !use_agent, agent: None, identity_agent, identities, identities_tried: false })
+        tokio::sync::Mutex::new(Self { use_agent, looked: !use_agent, agent: None, identity_agent, identities, identities_tried: false })
     }
+}
+
+/// Whether this login may offer `which` from the agent. With `IdentitiesOnly
+/// yes` only the key files ~/.ssh/config names are used, and the agent signs
+/// only for a security key among them, whose file can't. The node's own
+/// security key counts as named too, like a key given with `ssh -i`.
+fn agent_allowed(identities_only: bool, which: &agent_auth::Offer<'_>) -> bool {
+    !identities_only || matches!(which, agent_auth::Offer::Only(key) if agent_auth::is_security_key(&key.algorithm()))
 }
 
 /// The key and certificate files `~/.ssh/config` names for a host, paths
@@ -10333,7 +10351,7 @@ impl ConfigTarget {
         let certs = self.expand_paths(&c.certificate_files, "CertificateFile", user);
         let only = c.identities_only == Some(true);
         if only && !keys.is_empty() {
-            self.log.push("~/.ssh/config: IdentitiesOnly yes: only its IdentityFile keys are used, not an ssh-agent's.".into());
+            self.log.push("~/.ssh/config: IdentitiesOnly yes: only its IdentityFile keys are used, not the other keys an ssh-agent holds.".into());
         }
         ConfigIdentities { keys, certs, only }
     }
@@ -10492,7 +10510,19 @@ async fn try_agent_keys<H: russh::client::Handler>(
             return Ok(Some(outcome));
         }
     }
-    if !agent_available(ctx).await {
+    offer_agent_keys(session, user, which, already_offered, ctx).await
+}
+
+/// The agent's part of `try_agent_keys`, without the key files.
+async fn offer_agent_keys<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    which: agent_auth::Offer<'_>,
+    already_offered: Option<&russh::keys::PublicKey>,
+    ctx: &SecretPromptCtx<'_>,
+) -> Result<Option<agent_auth::AgentOutcome>, russh::Error> {
+    let identities_only = ctx.agent.lock().await.identities.only;
+    if !agent_allowed(identities_only, &which) || !agent_available(ctx).await {
         return Ok(None);
     }
     let mut slot = ctx.agent.lock().await;
@@ -10520,6 +10550,10 @@ async fn device_keys_available(ctx: &SecretPromptCtx<'_>) -> bool {
         let slot = ctx.agent.lock().await;
         if !slot.identities_tried && !slot.identities.keys.is_empty() {
             return true;
+        }
+        // IdentitiesOnly yes: no agent key but one those files name.
+        if slot.identities.only {
+            return false;
         }
     }
     agent_available(ctx).await
@@ -10628,8 +10662,24 @@ async fn try_config_identities<H: russh::client::Handler>(
                 continue;
             }
         };
+        // A security key's file holds only a handle, and signing with it would
+        // end the session: the agent's copy of the key is offered in its place.
+        // Looked for before decoding, so no passphrase is asked for it, and
+        // after, for a file only the decoder reads.
+        if let Some(public) = agent_auth::security_key_file(&text) {
+            if let Some(found) = security_key_from_agent(session, user, &format!("IdentityFile {path}"), &public, ctx).await? {
+                return Ok(Some(found));
+            }
+            continue;
+        }
         let Some(key) = decode_identity_file(&text, &path, ctx).await else { continue };
         let public = key.public_key().clone();
+        if agent_auth::is_security_key(&public.algorithm()) {
+            if let Some(found) = security_key_from_agent(session, user, &format!("IdentityFile {path}"), &public, ctx).await? {
+                return Ok(Some(found));
+            }
+            continue;
+        }
         let key = std::sync::Arc::new(key);
         let mut with_certs: Vec<(String, russh::keys::Certificate)> =
             named_certs.iter().filter(|(_, c)| c.public_key() == public.key_data()).cloned().collect();
@@ -10674,6 +10724,44 @@ async fn try_config_identities<H: russh::client::Handler>(
     Ok(Some(outcome))
 }
 
+/// Log in with an ssh-agent's copy of a security key. Its file (`what`: an
+/// IdentityFile, or the node's own key) holds only a handle, and signing with
+/// it would end the session. `Ok(Some(_))` once logged in or the server wants
+/// another factor; `Ok(None)` otherwise, with why logged when no agent here
+/// can sign for it.
+async fn security_key_from_agent<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    what: &str,
+    key: &russh::keys::PublicKey,
+    ctx: &SecretPromptCtx<'_>,
+) -> Result<Option<agent_auth::AgentOutcome>, russh::Error> {
+    use agent_auth::AgentOutcome;
+    let use_agent = ctx.agent.lock().await.use_agent;
+    let why = if !use_agent {
+        "keys from an ssh-agent are turned off in Settings".to_string()
+    } else if !agent_available(ctx).await {
+        "no ssh-agent with keys is available".to_string()
+    } else {
+        let (source, held, offered) = match ctx.agent.lock().await.agent.as_ref() {
+            Some(agent) => (agent.source, agent.holds(key), agent.was_offered(key)),
+            None => return Ok(None),
+        };
+        // Tried on this connection already (named twice, say).
+        if offered {
+            return Ok(None);
+        }
+        if held {
+            ctx.log(&format!("{what} is a security key, whose file can't sign here: trying it through {source}..."), "info");
+            let outcome = offer_agent_keys(session, user, agent_auth::Offer::Only(key), None, ctx).await?;
+            return Ok(outcome.filter(|o| matches!(o, AgentOutcome::Authenticated | AgentOutcome::PartialSuccess { .. })));
+        }
+        format!("{source} doesn't hold it (load it with ssh-add)")
+    };
+    ctx.log(&format!("{what} is a security key, whose file can't sign here; it isn't used: {why}."), "info");
+    Ok(None)
+}
+
 /// The agent's keys not offered yet, after the node's own credentials didn't
 /// log in. `Ok(true)` once logged in; a partial success leaves the second
 /// factor to the keyboard-interactive fallback, as with the node's own key.
@@ -10687,6 +10775,22 @@ async fn agent_keys_after<H: russh::client::Handler>(
         try_agent_keys(session, user, agent_auth::Offer::Rest, already_offered, ctx).await?,
         Some(agent_auth::AgentOutcome::Authenticated)
     ))
+}
+
+/// The node's own key is a security key, whose file can't sign: the agent's
+/// copy of it is offered, then the other keys this login may try. `Ok(true)`
+/// once logged in; a partial success leaves the second factor to the
+/// keyboard-interactive fallback.
+async fn node_security_key<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    key: &russh::keys::PublicKey,
+    ctx: &SecretPromptCtx<'_>,
+) -> Result<bool, russh::Error> {
+    match security_key_from_agent(session, user, "This key", key, ctx).await? {
+        Some(outcome) => Ok(matches!(outcome, agent_auth::AgentOutcome::Authenticated)),
+        None => agent_keys_after(session, user, None, ctx).await,
+    }
 }
 
 /// Let the ssh-agent go once the login is over.
@@ -11034,6 +11138,11 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
     slot: SecretSlot,
     ctx: &SecretPromptCtx<'_>,
 ) -> Result<bool, russh::Error> {
+    // A security key's file can't sign, and trying would end the session: an
+    // ssh-agent's copy of the key is tried instead, with no passphrase asked.
+    if let Some(public) = agent_auth::security_key_file(private_key) {
+        return node_security_key(session, user, &public, ctx).await;
+    }
     let cached = cache_get_secret(ctx.cache, ctx.base, slot).await;
     let mut candidates = secret_candidates(None, cached, saved_passphrase).into_iter();
     let mut attempt = candidates.next();
@@ -11051,6 +11160,10 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
                     }
                 }
                 let own_key = keypair.public_key().clone();
+                // The same for one only the decoder reads (see try_config_identities).
+                if agent_auth::is_security_key(&own_key.algorithm()) {
+                    return node_security_key(session, user, &own_key, ctx).await;
+                }
                 return match ssh_manager::authenticate_with_key_result(session, user, keypair).await? {
                     russh::client::AuthResult::Success => Ok(true),
                     // The node's key was turned down. If the server still
@@ -11290,6 +11403,22 @@ mod key_format_tests {
         assert!(!AgentSlot::new(true, None, ConfigIdentities::default()).try_lock().unwrap().looked);
     }
 
+    // IdentitiesOnly yes keeps the agent's keys out, but not its copy of a
+    // security key that's named: that key's file can't sign.
+    #[test]
+    fn identities_only_lets_the_agent_sign_only_for_a_named_security_key() {
+        use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
+        let only = ConfigIdentities { keys: vec!["id_ed25519_sk".into()], certs: Vec::new(), only: true };
+        assert!(!AgentSlot::new(true, None, only).try_lock().unwrap().looked);
+        let plain = Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[3; 32])).public;
+        let named = ssh_key::PublicKey::new(ssh_key::public::KeyData::SkEd25519(ssh_key::public::SkEd25519::new(plain, "ssh:")), "");
+        let plain = ssh_key::PublicKey::new(ssh_key::public::KeyData::Ed25519(plain), "");
+        assert!(agent_allowed(true, &agent_auth::Offer::Only(&named)));
+        assert!(!agent_allowed(true, &agent_auth::Offer::Only(&plain)));
+        assert!(!agent_allowed(true, &agent_auth::Offer::Rest));
+        assert!(agent_allowed(false, &agent_auth::Offer::Only(&plain)) && agent_allowed(false, &agent_auth::Offer::Rest));
+    }
+
     fn host_config(f: impl FnOnce(&mut ssh_config::HostConfig)) -> Option<ssh_config::HostConfig> {
         let mut c = ssh_config::HostConfig::default();
         f(&mut c);
@@ -11424,6 +11553,38 @@ mod key_format_tests {
     fn a_passphrase_saved_with_an_unencrypted_pem_key_is_ignored() {
         assert_eq!(public_of(&decoded(P521_PKCS8, Some("stray"))), P521_PUBLIC);
         assert_eq!(public_of(&decoded(P521_SEC1, Some("stray"))), P521_PUBLIC);
+    }
+
+    #[test]
+    fn a_security_key_is_refused_with_the_way_to_use_it() {
+        for algorithm in [ssh_key::Algorithm::SkEd25519, ssh_key::Algorithm::SkEcdsaSha2NistP256] {
+            assert!(agent_auth::is_security_key(&algorithm));
+            let err = check_key_algorithm(&algorithm).unwrap_err();
+            assert!(err.starts_with("[SSH] UNSUPPORTED_KEY_TYPE:") && err.contains("ssh-add"), "{err}");
+            assert!(err.contains("that supports security keys") && !err.contains("this server"), "{err}");
+        }
+        assert!(!agent_auth::is_security_key(&ssh_key::Algorithm::Ed25519));
+        assert_eq!(check_key_algorithm(&ssh_key::Algorithm::Ed25519), Ok(()));
+    }
+
+    // A line after the END line: the check made before decoding (the stricter
+    // reader) misses the security key, the decoder reads it. So the connect
+    // path checks the decoded key as well.
+    #[test]
+    fn a_security_key_file_only_the_decoder_reads_is_known_once_decoded() {
+        use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey, KeypairData, SkEd25519};
+        let public = Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[4; 32])).public;
+        let keypair = SkEd25519::new(ssh_key::public::SkEd25519::new(public, "ssh:"), 0x01, vec![4u8; 16]).unwrap();
+        let file = ssh_key::PrivateKey::new(KeypairData::SkEd25519(keypair), "")
+            .unwrap()
+            .to_openssh(ssh_key::LineEnding::LF)
+            .unwrap()
+            .to_string();
+        assert!(agent_auth::security_key_file(&file).is_some());
+        let edited = format!("{file}a note\n");
+        assert!(agent_auth::security_key_file(&edited).is_none());
+        let Ok(decoded) = decode_private_key(&edited, None) else { panic!("the decoder reads it") };
+        assert!(agent_auth::is_security_key(&decoded.algorithm()));
     }
 
     #[test]
