@@ -43,6 +43,14 @@ const looksLikePasswordPrompt = (out: string): boolean => {
 // that key stays on its own server too.
 const TERMINAL_REPLY = /^\x1b(?:\[[?>]?[0-9;]*[cnRt]|\[\??[0-9;]*\$y|\[[IO]|\[<[0-9;]+[Mm]|\][0-9]+;[^\x07\x1b]*(?:\x07|\x1b\\)|P[01]\$r[^\x1b]*\x1b\\)$/;
 
+// The characters Ctrl turns into ^_ (0x1F), the undo key of emacs, zsh and
+// readline (#296). xterm only does this for "_", and not on a layout where "_"
+// sits on a digit key. Native terminals go further: X11's rule gives ^_ for
+// Ctrl+/, and PuTTY for Ctrl+- and Ctrl+/. By character: a layout where one of
+// them takes Shift or sits on another non-letter key gets the same, except that
+// the \ key without Shift stays ^\ (see attachCustomKeyEventHandler).
+const isUnderscoreKey = (key: string) => key === "-" || key === "/" || key === "_";
+
 // Shared search options — highlight all matches in yellow, the active
 // match in orange. `decorations` uses the marker overlay so the highlight
 // survives scrollback and repaints (the addon's built-in selection-based
@@ -1049,8 +1057,10 @@ const TerminalView = ({
             // Letters → C0 control (Ctrl+A = 0x01 … Ctrl+Z = 0x1a). `code & 0x1f`
             // does the right thing for both upper- and lower-case letters.
             ch = code & 0x1f;
+          } else if (isUnderscoreKey(data)) {
+            ch = 0x1f;
           }
-          // Non-letters under Ctrl are left as-is — Android's soft keyboard
+          // Other non-letters under Ctrl are left as-is — Android's soft keyboard
           // rarely lets the user type the ones with defined C0 mappings
           // (Ctrl+@, Ctrl+[, Ctrl+\, Ctrl+] etc.) anyway, and silently
           // mangling normal punctuation while a Ctrl chip is lit would
@@ -1347,6 +1357,27 @@ const TerminalView = ({
           if (ev.type === 'keydown' && !ev.repeat) void pasteClipboard(false);
           return false;
         }
+      }
+      // ^_ (see isUnderscoreKey). No Alt or Meta: those combinations aren't ^_,
+      // and with Ctrl+Alt the layout may be typing the character. No letter key:
+      // those are xterm's, by keyCode, so Hebrew's Q key, which types /, stays ^Q.
+      // Nor the \ key without Shift, where a few layouts type /: Ctrl on it stays
+      // ^\, the quit signal. With Shift xterm has no ^\ there, so Ctrl+Shift on
+      // it is ^_ where Shift types / (Russian, Ukrainian and others). Repeats go
+      // out as any held key's do. Keyup and keypress send nothing with Ctrl down.
+      if (
+        ev.type === 'keydown' && ev.ctrlKey && !ev.altKey && !ev.metaKey &&
+        isUnderscoreKey(ev.key) && !(ev.keyCode >= 65 && ev.keyCode <= 90) &&
+        !(ev.keyCode === 220 && !ev.shiftKey)
+      ) {
+        ev.preventDefault();
+        // What xterm does for a typed key before it sends the data.
+        term.scrollToBottom();
+        term.clearSelection();
+        // A word still being composed goes first, as with the key bar's keys.
+        const send = () => { flushComposition(); handleData('\x1f'); };
+        if (compositionEndingRef.current) setTimeout(send); else send();
+        return false;
       }
       return true;
     });
