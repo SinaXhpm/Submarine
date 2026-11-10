@@ -31,9 +31,9 @@ interface UnsavedGuardOptions<T> {
 // them or keep editing.
 //  - What the form opened with is kept (as JSON) while it is open, and dropped
 //    when it closes.
-//  - Only a click that starts beside the form counts: a text selection dragged
-//    out of a field ends in a click on the backdrop too. That press leaves the
-//    focus in the field, so "Keep editing" goes back to it. Clicks from a
+//  - A click beside the form must start there too: a text selection dragged
+//    out of a field ends in a click on the backdrop as well. That press leaves
+//    the focus in the field, so "Keep editing" goes back to it. Clicks from a
 //    portal inside the form (they bubble here through React) don't count.
 //  - Saves run one at a time; the Save button uses the returned `save` too. A
 //    close while one runs does nothing.
@@ -84,7 +84,8 @@ export function useUnsavedGuard<T>(options: UnsavedGuardOptions<T>) {
   }, [prompt, save]);
 
   // The press is seen as a pointer event (mouse, touch and pen alike); its
-  // mouse event only keeps the focus where it was.
+  // mouse event only keeps the focus where it was. A click made by a script
+  // (the lab tests close forms that way) has no press, and counts.
   const pressedBesideRef = useRef(false);
   const backdropProps = {
     onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
@@ -94,7 +95,9 @@ export function useUnsavedGuard<T>(options: UnsavedGuardOptions<T>) {
       if (e.target === e.currentTarget) e.preventDefault();
     },
     onClick: (e: React.MouseEvent<HTMLElement>) => {
-      if (e.target === e.currentTarget && pressedBesideRef.current) void requestClose();
+      const beside = pressedBesideRef.current || !e.nativeEvent.isTrusted;
+      pressedBesideRef.current = false;
+      if (e.target === e.currentTarget && beside) void requestClose();
     },
   };
 

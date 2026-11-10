@@ -153,6 +153,12 @@ type Pending =
 // the prompt before it and must not answer this one too.
 const CHAIN_GRACE_MS = 500;
 
+// How long the unsaved-changes question ignores the pointer once it is up. It
+// comes up under the pointer of the click that asked for it (a click beside a
+// form), so the second click of a double-click, or a second quick tap, lands
+// on it, maybe on Discard. The keyboard answers at once.
+const UNSAVED_POINTER_GRACE_MS = 300;
+
 const sameConfirm = (a: ConfirmOptions, b: ConfirmOptions) =>
   a.title === b.title && a.message === b.message && a.okLabel === b.okLabel &&
   a.cancelLabel === b.cancelLabel && !!a.destructive === !!b.destructive;
@@ -266,6 +272,21 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   };
   const closeUnsaved = (choice: UnsavedChoice) => {
     if (usState && advance(usState)) usState.resolve(choice);
+  };
+  // An answer by the pointer, unless the click came with the one that opened
+  // the question (see UNSAVED_POINTER_GRACE_MS): a later click of a
+  // double-click (`detail` counts them), or one just after the question came
+  // up, where a touch screen counts no clicks. A click made by the keyboard
+  // or by a script has no count and answers at once.
+  const usShownAtRef = useRef(0);
+  useLayoutEffect(() => {
+    if (usState) usShownAtRef.current = performance.now();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usState?.id]);
+  const clickUnsaved = (e: React.MouseEvent, choice: UnsavedChoice) => {
+    if (e.detail > 1) return;
+    if (e.detail === 1 && performance.now() - usShownAtRef.current < UNSAVED_POINTER_GRACE_MS) return;
+    closeUnsaved(choice);
   };
   const submitTextPrompt = () => {
     if (!tpState) return;
@@ -507,11 +528,12 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
         document.body
       )}
       {/* Discard sits apart from Save, so a click that misses Save can't
-          throw the changes away. */}
+          throw the changes away. Clicks go through clickUnsaved: the one that
+          opened the question may have a second click right behind it. */}
       {usState && createPortal(
         <div key={usState.id}
              className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
-             onClick={() => closeUnsaved("cancel")}>
+             onClick={(e) => clickUnsaved(e, "cancel")}>
           <div ref={usPanelRef}
                role="dialog"
                aria-modal="true"
@@ -526,7 +548,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
                   {usState.opts.title || "Unsaved changes"}
                 </span>
               </div>
-              <button aria-label="Close" data-choice="cancel" onClick={() => closeUnsaved("cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
+              <button aria-label="Close" data-choice="cancel" onClick={(e) => clickUnsaved(e, "cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
@@ -534,16 +556,16 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               {usState.opts.message}
             </p>
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <button data-choice="discard" onClick={() => closeUnsaved("discard")}
+              <button data-choice="discard" onClick={(e) => clickUnsaved(e, "discard")}
                       className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20">
                 {usState.opts.discardLabel || "Discard"}
               </button>
               <div className="ml-auto flex gap-2">
-                <button data-choice="cancel" onClick={() => closeUnsaved("cancel")}
+                <button data-choice="cancel" onClick={(e) => clickUnsaved(e, "cancel")}
                         className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
                   {usState.opts.cancelLabel || "Keep editing"}
                 </button>
-                <button data-choice="save" data-default-focus onClick={() => closeUnsaved("save")}
+                <button data-choice="save" data-default-focus onClick={(e) => clickUnsaved(e, "save")}
                         className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
                   {usState.opts.saveLabel || "Save"}
                 </button>
