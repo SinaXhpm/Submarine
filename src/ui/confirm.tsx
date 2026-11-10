@@ -142,6 +142,17 @@ const sameConfirm = (a: ConfirmOptions, b: ConfirmOptions) =>
   a.title === b.title && a.message === b.message && a.okLabel === b.okLabel &&
   a.cancelLabel === b.cancelLabel && !!a.destructive === !!b.destructive;
 
+// A dialog comes up under the pointer of the click that asked for it, so the
+// second click of a double-click lands on the dialog: beside it, or on one of
+// its buttons. With a server's bin where the dialog's Delete comes up, a
+// double-click deleted the server before the question was seen. The later
+// clicks of a multi-click (`detail` counts them) answer nothing: they stop
+// here, on the way down to the dialog's own handlers. A click made by the
+// keyboard or by a script has no count.
+const ignoreLaterClicks = (e: React.MouseEvent) => {
+  if (e.detail > 1) e.stopPropagation();
+};
+
 export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => {
   // Every request, of any kind, waits in one line, and only the first in line
   // is on screen. There used to be one slot per kind, which went wrong two
@@ -306,6 +317,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
       {owState && createPortal(
         <div key={owState.id}
              className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+             onClickCapture={ignoreLaterClicks}
              onClick={() => closeOverwrite("cancel")}>
           <div ref={owPanelRef}
                role="dialog"
@@ -367,6 +379,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
       {state && createPortal(
         <div key={state.id}
              className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+             onClickCapture={ignoreLaterClicks}
              onClick={() => close(false)}>
           <div ref={confirmPanelRef}
                role="dialog"
@@ -413,6 +426,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
       {tpState && createPortal(
         <div key={tpState.id}
              className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+             onClickCapture={ignoreLaterClicks}
              onClick={() => closeTextPrompt(null)}>
           <div ref={tpPanelRef}
                role="dialog"
