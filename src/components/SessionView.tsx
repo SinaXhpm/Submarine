@@ -13,6 +13,7 @@ import { CmdsPanel } from "./CmdsPanel";
 import { RenameInput } from "../ui/renameInput";
 import { useIsCompact } from "../hooks/useViewport";
 import { fontFamilyCss, readFontFamily, readFontSize } from "../util/terminalFont";
+import { writeTerminal } from "../util/terminalWrite";
 import { readShellSyncPairs, useShellSyncServer, type ShellSyncPair } from "../util/shellSync";
 import { readUseLocalShell } from "../util/terminalShell";
 import { readUseSshAgent } from "../util/sshAgent";
@@ -1054,7 +1055,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     typedOnConnectRef.current.add(terminalId);
     const bytes = Array.from(new TextEncoder().encode(onConnectText(session.runOnConnect || '')));
     setTimeout(() => {
-      invoke('write_terminal_data', { terminalId, data: bytes }).catch(() => {});
+      writeTerminal(terminalId, bytes);
     }, 700);
   };
   // A terminal of this tab that gets them as soon as its shell is open.
