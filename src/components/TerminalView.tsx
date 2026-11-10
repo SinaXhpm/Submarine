@@ -161,6 +161,7 @@ const TerminalView = ({
   shown = isActive,
   isActiveView = false,
   focusSignal = 0,
+  keepFocusRef,
   containerExec,
   connectionEpoch = 0,
   serverId = 0,
@@ -205,6 +206,11 @@ const TerminalView = ({
   /// change — not the value — triggers the focus; only the active terminal
   /// reacts.
   focusSignal?: number;
+  /// While this holds true, becoming the active terminal doesn't take the
+  /// focus. The parent sets it around a change that must leave the focus where
+  /// it is: a tool panel closed from the keyboard keeps it on its toolbar
+  /// button, also where the panel had the terminal's place (#298).
+  keepFocusRef?: { readonly current: boolean };
   /// When set, this terminal runs `docker exec -it <container> <shell>`
   /// on the SSH host instead of the user's login shell. Used by the
   /// Docker tab in InfoPanel to open an interactive session inside a
@@ -683,11 +689,14 @@ const TerminalView = ({
   };
   useEffect(() => {
     if (!isActive) return;
+    // Read now, not in the frame: the parent clears it in an effect of its
+    // own, which runs after this one.
+    const keepFocus = !!keepFocusRef?.current;
     const id = requestAnimationFrame(() => {
       refit();
       // Layout has settled and this is now the visible terminal: land the
       // caret in it so the user can type without a second click (#51).
-      focusTerminal();
+      if (!keepFocus) focusTerminal();
     });
     return () => cancelAnimationFrame(id);
   }, [isActive]);
@@ -1324,6 +1333,14 @@ const TerminalView = ({
       ev.preventDefault();
       void pasteClipboard(true);
     };
+    // A key held down while the focus moved here (Enter on a panel's close
+    // button) goes on repeating into the terminal. It wasn't pressed for the
+    // shell, so its repeats are dropped until a key goes down here. Keys an
+    // input method takes (keyCode 229) are left alone: it has used them before
+    // they get here, and xterm reads what it typed from its field afterwards.
+    let noKeySinceFocus = false;
+    const onTextareaFocus = () => { noKeySinceFocus = true; };
+    term.textarea?.addEventListener('focus', onTextareaFocus);
     // Ctrl+Shift+A / Ctrl+Shift+C / Ctrl+Shift+V — Warp/GNOME-Terminal-style
     // select-all / copy / paste, deliberately on the SHIFTED combo so plain
     // Ctrl+A (start of line) and Ctrl+C (SIGINT) keep going straight to the
@@ -1331,6 +1348,12 @@ const TerminalView = ({
     // xterm.js only allows one attachCustomKeyEventHandler at a time, so all
     // three live in this single handler rather than three separate calls.
     term.attachCustomKeyEventHandler((ev) => {
+      // A held key's repeats (see noKeySinceFocus).
+      if (ev.type === 'keydown' && !ev.repeat) noKeySinceFocus = false;
+      if (noKeySinceFocus && ev.repeat && !ev.isComposing && ev.keyCode !== 229) {
+        ev.preventDefault();
+        return false;
+      }
       const noOtherMods = !ev.altKey && !ev.metaKey && ev.ctrlKey && ev.shiftKey;
       if (noOtherMods && ev.code === 'KeyA') {
         if (ev.type === 'keydown' && !ev.repeat) term.selectAll();
@@ -1589,6 +1612,7 @@ const TerminalView = ({
       onDataDisposable.dispose();
       term.textarea?.removeEventListener("compositionupdate", onCompositionUpdate);
       term.textarea?.removeEventListener("compositionend", onCompositionEnd);
+      term.textarea?.removeEventListener('focus', onTextareaFocus);
       if (inputRef.current === handleData) inputRef.current = null;
       onResizeDisposable.dispose();
       window.clearTimeout(sizeTimer);
