@@ -7,6 +7,7 @@ import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { folderTree } from "../util/folderTree";
 import { DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_WINDOW_SIZES, type RdpOptions } from "../util/rdpOptions";
+import { DEFAULT_SESSION_KEEP } from "../util/sessionKeep";
 import { SwitchRow } from "./FormRows";
 import { RdpShareFields, RdpSpeedFields } from "./RdpOptionFields";
 import { VncSpeedFields } from "./VncOptionFields";
@@ -1198,6 +1199,31 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               </button>
             </div>
             </>)}
+
+            {/* This device's own choice for this server, see util/sessionKeep. */}
+            {isSsh && (
+              <div className="space-y-2 pt-1">
+                {([
+                  ["keepalives", "Send keepalives"],
+                  ["reconnect", "Reconnect automatically"],
+                ] as const).map(([field, label]) => (
+                  <div key={field} className="flex items-center justify-between gap-3">
+                    <label className="text-[11px] font-bold text-zinc-400 ml-1">{label}</label>
+                    <select
+                      aria-label={label}
+                      className="h-8 bg-[#1a1a1e] rounded-lg px-2 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50"
+                      value={(newNode.sessionKeep || DEFAULT_SESSION_KEEP)[field]}
+                      onChange={(e) => setNewNode({ ...newNode, sessionKeep: { ...(newNode.sessionKeep || DEFAULT_SESSION_KEEP), [field]: e.target.value } })}
+                    >
+                      <option value="default" className="bg-[#1a1a1e]">As in Settings</option>
+                      <option value="on" className="bg-[#1a1a1e]">On</option>
+                      <option value="off" className="bg-[#1a1a1e]">Off</option>
+                    </select>
+                  </div>
+                ))}
+                <p className="text-[10px] text-zinc-500 ml-1">Kept on this device only. A keepalive change applies the next time a session connects.</p>
+              </div>
+            )}
 
             {/* Per-node notes — free-form, plain text. Lives on the server
                 row (servers.notes column) and never crosses the network. The
