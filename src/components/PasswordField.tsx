@@ -8,7 +8,8 @@ import { Eye, EyeOff } from "lucide-react";
 //
 // `className` is forwarded verbatim to the input so the surrounding
 // styling (height, bg, border) stays consistent with the neighbouring
-// fields in each form. We just add `pr-10` to make room for the eye button.
+// fields in each form. We just add `pr-10` to make room for the eye button,
+// and `no-native-reveal` so Windows doesn't add an eye of its own.
 
 interface Props {
   value: string;
@@ -34,7 +35,7 @@ const PasswordField = ({
         autoFocus={autoFocus}
         onKeyDown={onKeyDown}
         disabled={disabled}
-        className={`pr-10 ${className || ""}`}
+        className={`pr-10 no-native-reveal ${className || ""}`}
       />
       <button
         type="button"

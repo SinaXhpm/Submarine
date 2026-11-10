@@ -83,6 +83,13 @@ select optgroup {
   .no-drag {
     -webkit-app-region: no-drag;
   }
+
+  /* Windows' web view (Edge) puts its own eye button in a password box once
+     something is typed in it. A box with the app's own show / hide button
+     hides that one, or it shows two eyes. */
+  .no-native-reveal::-ms-reveal {
+    display: none;
+  }
 }
 
 .animate-in {
