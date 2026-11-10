@@ -18,7 +18,7 @@ type Status = "connecting" | "connected" | "failed" | "disconnected";
 
 const NOT_ENCRYPTED = "Telnet isn't encrypted: what is typed here, passwords too, crosses the network as plain text.";
 
-export default function TelnetSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, onPromptChange }: any) {
+export default function TelnetSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
   const [status, setStatus] = useState<Status>("connecting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [reason, setReason] = useState("");
@@ -45,8 +45,9 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
   useEffect(() => {
     if (kbiPrompt && isActiveView) kbiFirstInputRef.current?.focus();
   }, [kbiPrompt, isActiveView]);
-  // The terminal takes the keys when the tab comes to the front.
-  useEffect(() => { if (isActiveView) setFocusTick((t) => t + 1); }, [isActiveView]);
+  // The terminal takes the keys when the tab comes to the front, and when it
+  // is connected (it refuses them while it isn't).
+  useEffect(() => { if (isActiveView) setFocusTick((t) => t + 1); }, [isActiveView, status]);
 
   const pushLog = useCallback((p: any) => {
     const time = new Date().toLocaleTimeString();
@@ -179,7 +180,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
     <div className="relative flex-1 flex flex-col min-h-0 bg-[#0a0a0c] text-white overflow-hidden" data-telnet-status={status}>
       <div className="h-10 shrink-0 flex items-center gap-2 px-3 border-b border-white/5 bg-[#111114]">
         <span className={`shrink-0 ${broken ? "text-red-400" : "text-primary"}`} aria-hidden="true">
-          {working ? <Loader2 size={14} className="animate-spin" /> : broken ? <AlertTriangle size={14} /> : <TerminalSquare size={14} />}
+          {working ? <Loader2 size={14} className="animate-spin-brief" /> : broken ? <AlertTriangle size={14} /> : <TerminalSquare size={14} />}
         </span>
         <span className="text-[12px] font-semibold text-zinc-100 truncate" title={session.serverName}>{name}</span>
         <span
@@ -228,6 +229,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
             telnet
             disabled={status !== "connected"}
             isActive
+            shown={shown}
             isActiveView={isActiveView}
             focusSignal={focusTick}
             connectionEpoch={epoch}

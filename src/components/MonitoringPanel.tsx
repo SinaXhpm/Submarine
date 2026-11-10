@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import Sparkline from "./Sparkline";
 import { useConfirm } from "../ui/confirm";
+import { usePageShown } from "../hooks/usePageShown";
 
 // ---------- shared types ------------------------------------------------------
 
@@ -156,14 +157,17 @@ const formatBitsPerSec = (bytesPerSec: number) => {
   if (bits >= 1e3) return `${(bits / 1e3).toFixed(1)} Kbps`;
   return `${Math.round(bits)} bps`;
 };
+// A value that isn't a number arrives as null (JSON has no NaN), and the global
+// isFinite calls null finite: it has to be the strict one here.
+const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const formatBuiltin = (key: string, v: number | undefined) => {
-  if (v === undefined || !isFinite(v)) return "—";
+  if (!isNumber(v)) return "—";
   if (key === "net_in" || key === "net_out") return formatBitsPerSec(v);
   if (BUILTINS[key]?.is_pct) return `${v.toFixed(1)}%`;
   return v.toFixed(2);
 };
 const formatCustomNumber = (v: number | undefined, unit?: string) => {
-  if (v === undefined || !isFinite(v)) return "—";
+  if (!isNumber(v)) return "—";
   const num = Math.abs(v) >= 100 ? v.toFixed(0)
             : Math.abs(v) >= 1   ? v.toFixed(2)
                                  : v.toFixed(3);
@@ -200,9 +204,12 @@ interface Props {
   /// every outage / recovered event is recorded there too so the user has
   /// a persistent history beyond the transient toast.
   addLog?: (msg: string, type: "info" | "success" | "warn" | "error") => void;
+  /// The Monitor view is the one shown. It stays mounted behind the others
+  /// (DesktopApp), and its once-a-second display tick is only for eyes on it.
+  active?: boolean;
 }
 
-const MonitoringPanel = ({ servers, addLog }: Props) => {
+const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
   const confirm = useConfirm();
   const [rows, setRows] = useState<MonitorRow[]>([]);
   const [addOpen, setAddOpen] = useState(false);
@@ -252,23 +259,20 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
   };
 
   // Tick once per second so "offline for Xs" badges advance even without
-  // a new event firing. Pause while the OS window is hidden/minimized — nobody
-  // is watching the badges then, and the backend keeps monitoring regardless
-  // (this tick is display-only). Re-showing does an immediate tick so the
-  // badges are current the instant the window comes back.
+  // a new event firing. Only while the Monitor view is the one shown and the
+  // window is (not minimized, and on a phone the app not in the background) —
+  // nobody is watching the badges otherwise, and the backend keeps monitoring
+  // regardless (this tick is display-only). Coming back does an immediate tick
+  // so the badges are current the instant the view shows again.
   const [, forceTick] = useState(0);
-  const [winShown, setWinShown] = useState(() => typeof document === "undefined" || !document.hidden);
+  const pageShown = usePageShown();
+  const ticking = active && pageShown;
   useEffect(() => {
-    const onVis = () => setWinShown(!document.hidden);
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, []);
-  useEffect(() => {
-    if (!winShown) return;
+    if (!ticking) return;
     forceTick((n) => n + 1);
     const id = window.setInterval(() => forceTick((n) => n + 1), 1000);
     return () => window.clearInterval(id);
-  }, [winShown]);
+  }, [ticking]);
 
   // ---- data load + live listeners --------------------------------------------
 
@@ -281,6 +285,36 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
     }
   };
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
+
+  const addSample = (s: Sample) => {
+    setLatest((prev) => ({ ...prev, [s.node_id]: s }));
+    setHistory((prev) => {
+      const nodeHist = { ...(prev[s.node_id] || {}) };
+      for (const [k, v] of Object.entries(s.values)) {
+        if (!isNumber(v)) continue;
+        const arr = nodeHist[k] ? [...nodeHist[k], v] : [v];
+        if (arr.length > HISTORY) arr.splice(0, arr.length - HISTORY);
+        nodeHist[k] = arr;
+      }
+      return { ...prev, [s.node_id]: nodeHist };
+    });
+  };
+
+  // While the view is behind another one nobody sees the cards, so a sample
+  // waits here (a history's worth per node) rather than render them all. What
+  // waited goes in before the view is painted, and the rows ask the backend,
+  // which knows what came after those samples (a node that dropped since).
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const waitingSamplesRef = useRef(new Map<number, Sample[]>());
+  useLayoutEffect(() => {
+    const waiting = waitingSamplesRef.current;
+    if (!active || waiting.size === 0) return;
+    waiting.forEach((samples) => samples.forEach(addSample));
+    waiting.clear();
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   useEffect(() => {
     // Async cleanup guard: listen() returns its unlisten via a Promise. If
@@ -305,16 +339,14 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
       track(listen<Sample>(`monitor-sample-${r.node_id}`, (event) => {
         const s = event.payload;
         if (!s) return;
-        setLatest((prev) => ({ ...prev, [s.node_id]: s }));
-        setHistory((prev) => {
-          const nodeHist = { ...(prev[s.node_id] || {}) };
-          for (const [k, v] of Object.entries(s.values)) {
-            const arr = nodeHist[k] ? [...nodeHist[k], v] : [v];
-            if (arr.length > HISTORY) arr.splice(0, arr.length - HISTORY);
-            nodeHist[k] = arr;
-          }
-          return { ...prev, [s.node_id]: nodeHist };
-        });
+        if (!activeRef.current) {
+          const waiting = waitingSamplesRef.current.get(s.node_id) ?? [];
+          waiting.push(s);
+          if (waiting.length > HISTORY) waiting.shift();
+          waitingSamplesRef.current.set(s.node_id, waiting);
+          return;
+        }
+        addSample(s);
         // Keep `row.last_sample_ts` in sync so the "Xs ago" indicator
         // ticks immediately on each new sample instead of waiting for the
         // next status event / reload(). Without this the timer would

@@ -28,6 +28,22 @@ export function pasteKeysOf(
   return null;
 }
 
+/** Text the user copied on a server. It goes on this device's clipboard only
+ *  while the server's tab is in front: from behind another tab, a server could
+ *  replace what the user just copied there, and have its own text pasted into
+ *  another server. Otherwise, or when the webview refuses (one that wants a
+ *  click for it), `hold` keeps it for the tab's "Copy it here" bar. */
+export function takeServerCopy(text: string, inFront: boolean, hold: (text: string | null) => void): void {
+  if (!inFront) {
+    hold(text);
+    return;
+  }
+  navigator.clipboard.writeText(text).then(
+    () => hold(null),
+    () => hold(text),
+  );
+}
+
 /** This computer's clipboard text. On Linux the backend reads it (the
  *  webview crashes on an empty clipboard there, see TerminalView). */
 export function readLocalClipboard(): Promise<string> {

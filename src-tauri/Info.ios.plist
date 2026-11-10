@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged by Tauri into the iOS app's Info.plist (gen/apple). -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Submarine</string>
+	<!-- iOS asks before an app reaches a device on the local network; this is
+	     the reason it shows. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Submarine connects to the servers you add, including the ones on your local network.</string>
+	<!-- The app's Documents folder shows in the Files app as
+	     "On My iPhone > Submarine": exports and downloads land there. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<!-- An iPad app that shares the screen with others must turn every way. -->
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>

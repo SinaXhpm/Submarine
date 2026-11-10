@@ -1,17 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Cpu, X, Link2, ArrowLeftRight, Shield, ShieldAlert, Key, User, FolderPlus, Download, CheckSquare, Square, History, Plus, Copy, Play, FlaskConical } from "lucide-react";
 import PasswordField from "./PasswordField";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import { useSlideOverFocus } from "../ui/slideOverFocus";
+import { FormError, unsavedQuestion, useUnsavedGuard } from "../ui/slideOverForm";
 import { folderTree } from "../util/folderTree";
 import { DEFAULT_RDP_OPTIONS, RDP_BUILTIN_EXPERIMENTAL, RDP_WINDOW_SIZES, type RdpOptions } from "../util/rdpOptions";
+import { DEFAULT_SESSION_KEEP } from "../util/sessionKeep";
 import { SwitchRow } from "./FormRows";
 import { RdpShareFields, RdpSpeedFields } from "./RdpOptionFields";
 import { VncSpeedFields } from "./VncOptionFields";
 import { DEFAULT_VNC_OPTIONS, normalizeVncOptions, type VncOptions } from "../util/vncOptions";
-import { IS_ANDROID, IS_WINDOWS } from "../util/platform";
+import { IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
 
 // Compact "2h ago" style relative time for the attribution line.
@@ -91,12 +93,54 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
   // The panel stays mounted and slides off-screen rather than unmounting, so
   // the note from the last key someone loaded would still be sitting there the
   // next time they open it — against a different server.
+  const [portError, setPortError] = useState("");
   useEffect(() => {
     if (!isOpen) {
       setKeyBrowseNote(null);
       setGeneratedKey(null);
+      setPortError("");
     }
   }, [isOpen]);
+
+  // One save at a time: it is several writes, and a click while they run would
+  // add the server a second time.
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (savingRef.current) return;
+    // Empty, it reaches the backend as null; out of range, the connection
+    // would wrap it to some other port.
+    if (!Number.isInteger(newNode.port) || newNode.port < 1 || newNode.port > 65535) {
+      setPortError("Port must be 1 to 65535.");
+      return;
+    }
+    setPortError("");
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await onSave();
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
+  // A click beside the form, or X, closes it at once only if nothing would be
+  // lost: "Add server" starts blank and the pencil reloads the row, so what was
+  // typed doesn't come back. With changes, it asks: save them, discard them or
+  // keep editing (ui/slideOverForm). The revealed password stays out of what
+  // the form opened with, and all of it goes with the form: nothing here may
+  // outlive what DesktopApp clears on close and Lock. A typed password still
+  // counts as a change, through `password_dirty`.
+  const { requestClose, backdropProps } = useUnsavedGuard({
+    open: isOpen,
+    value: newNode,
+    close: onClose,
+    save,
+    busy: () => savingRef.current,
+    snapshot: ({ password, ...rest }: any) => JSON.stringify(rest),
+    question: (opened: any) => unsavedQuestion("server", !isEditMode, opened.name),
+  });
 
   // SSH-config import modal state. Lives here so it's colocated with the
   // "Add server" flow — the button that triggers it sits in this panel's
@@ -301,6 +345,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
           autostart: false,
           mirrors: [],
           color: null,
+          persist: false,
         });
         ok++;
       } catch (e: any) {
@@ -308,8 +353,21 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
         lastErr = typeof e === "string" ? e : (e?.message || String(e));
       }
     }
+    // One save for all of them: each writes the whole vault, so one per host
+    // grew with the square of the hosts. Until it's done they're in memory. If
+    // the app dies first, the file is as it was and the import can be run again.
+    let saveErr: string | null = null;
+    if (ok > 0) {
+      try {
+        await invoke("persist_vault");
+      } catch (e: any) {
+        saveErr = typeof e === "string" ? e : (e?.message || String(e));
+      }
+    }
     setImportBusy(false);
-    if (failed > 0) {
+    if (saveErr) {
+      setImportError(`${ok} imported, but they couldn't be saved: ${saveErr}`);
+    } else if (failed > 0) {
       setImportError(`${ok} imported, ${failed} failed${lastErr ? `: ${lastErr}` : ""}`);
     }
     if (refreshServers) {
@@ -329,7 +387,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
       );
       return;
     }
-    if (failed === 0) {
+    if (failed === 0 && !saveErr) {
       closeImportModal();
     }
   };
@@ -421,8 +479,13 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
 
   return (
     // Mounted while closed too (to slide out): inert then, so Tab can't reach
-    // its fields.
-    <div inert={isOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isOpen ? 'bg-black/60 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={onClose}>
+    // its fields. Clicks from the import dialog (a portal, so its events
+    // bubble here) aren't clicks beside the form.
+    <div
+      inert={isOpen ? undefined : ""}
+      className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isOpen ? 'bg-black/60 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`}
+      {...backdropProps}
+    >
       <div ref={panelRef} tabIndex={-1} className={`w-full ${isMobile ? 'max-w-full' : 'max-w-[450px]'} bg-background border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
 
         {/* Header */}
@@ -451,7 +514,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 <span className="sm:hidden">Import</span>
               </button>
             )}
-            <button aria-label="Close" onClick={onClose} className="w-8 h-8 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-xl transition-all shadow-inner">
+            <button aria-label="Close" onClick={() => void requestClose()} className="w-8 h-8 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-xl transition-all shadow-inner">
               <X size={16} />
             </button>
           </div>
@@ -459,7 +522,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
 
         {/* Scrollable Content */}
         <div className="p-6 flex-1 overflow-y-auto custom-scrollbar space-y-6">
-          {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+          <FormError message={portError || formError} active={isOpen} />
 
           <div className="grid grid-cols-1 gap-4">
             {/* SSH, RDP, telnet or VNC. An RDP server opens in this
@@ -789,11 +852,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               const set = (patch: Partial<RdpOptions>) => setNewNode({ ...newNode, rdpOptions: { ...o, ...patch } });
               const size = `${o.width}x${o.height}`;
               const known = RDP_WINDOW_SIZES.some(([w, h]) => w === o.width && h === o.height);
-              const builtin = IS_ANDROID || o.app === "builtin";
+              const builtin = IS_MOBILE || o.app === "builtin";
               return (
                 <div className="space-y-3 pt-1">
                   {/* A phone has only the built-in client (offered in the tab). */}
-                  {!IS_ANDROID && (
+                  {!IS_MOBILE && (
                     <div className="flex justify-between items-center gap-3">
                       <label className="text-[11px] font-bold text-zinc-400 shrink-0">Open in</label>
                       <select
@@ -836,7 +899,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       <div className="min-w-0">
                         <div className="text-[11px] font-bold text-zinc-300">Share the clipboard</div>
                         <div className="text-[10.5px] text-zinc-500 leading-snug">
-                          Text you copy on the server comes to this device. This device's text goes to the server only when you paste it there (a paste key in the tab, or its Paste button).
+                          Text you copy on the server comes to this device, by itself while the tab is in front. This device's text goes to the server only when you paste it there (a paste key in the tab, or its Paste button).
                         </div>
                       </div>
                       <button
@@ -851,7 +914,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       </button>
                     </div>
                     {/* Files: a folder or a whole drive of this computer (rdp_share.rs). */}
-                    {!IS_ANDROID && <RdpShareFields o={o} set={set} drives={localDrives} />}
+                    {!IS_MOBILE && <RdpShareFields o={o} set={set} drives={localDrives} />}
                     <div className="pt-1 space-y-2.5">
                       <div className="text-[11px] font-bold text-zinc-300">Speed and quality</div>
                       <RdpSpeedFields o={o} set={set} />
@@ -923,7 +986,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 <div className="space-y-2.5 pt-1">
                   <SwitchRow
                     label="Share the clipboard"
-                    hint="Text you copy on the server comes to this device; this device's goes to the server when you paste it there (a paste key in the tab, or its Paste button). Plain ASCII text only, such as links and commands: a VNC clipboard can't carry other characters."
+                    hint="Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there (a paste key in the tab, or its Paste button). Plain ASCII text only, such as links and commands: a VNC clipboard can't carry other characters."
                     checked={o.clipboard}
                     onChange={(clipboard) => set({ clipboard })}
                   />
@@ -1144,6 +1207,31 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             </div>
             </>)}
 
+            {/* This device's own choice for this server, see util/sessionKeep. */}
+            {isSsh && (
+              <div className="space-y-2 pt-1">
+                {([
+                  ["keepalives", "Send keepalives"],
+                  ["reconnect", "Reconnect automatically"],
+                ] as const).map(([field, label]) => (
+                  <div key={field} className="flex items-center justify-between gap-3">
+                    <label className="text-[11px] font-bold text-zinc-400 ml-1">{label}</label>
+                    <select
+                      aria-label={label}
+                      className="h-8 bg-[#1a1a1e] rounded-lg px-2 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50"
+                      value={(newNode.sessionKeep || DEFAULT_SESSION_KEEP)[field]}
+                      onChange={(e) => setNewNode({ ...newNode, sessionKeep: { ...(newNode.sessionKeep || DEFAULT_SESSION_KEEP), [field]: e.target.value } })}
+                    >
+                      <option value="default" className="bg-[#1a1a1e]">As in Settings</option>
+                      <option value="on" className="bg-[#1a1a1e]">On</option>
+                      <option value="off" className="bg-[#1a1a1e]">Off</option>
+                    </select>
+                  </div>
+                ))}
+                <p className="text-[10px] text-zinc-500 ml-1">Kept on this device only. A keepalive change applies the next time a session connects.</p>
+              </div>
+            )}
+
             {/* Per-node notes — free-form, plain text. Lives on the server
                 row (servers.notes column) and never crosses the network. The
                 primary use case is small runbooks: which user owns root,
@@ -1180,8 +1268,9 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             </div>
 
             {/* On-connect commands — auto-typed into the FIRST terminal the
-                first time you connect to this server (not on reconnects, not
-                on extra shells you open later). One command per line. */}
+                first time you connect to this server (not on reconnects).
+                With the box ticked, also once into each terminal opened
+                later (#256). One command per line. */}
             {isSsh && (
             <div className="space-y-1.5 pt-1">
               <label className="text-[11px] font-bold text-zinc-400 ml-1 flex items-center gap-2">
@@ -1198,6 +1287,15 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 spellCheck={false}
                 className="w-full bg-[#1a1a1e] rounded-lg p-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner font-mono leading-relaxed resize-y"
               />
+              <label className="flex items-center gap-1.5 ml-1 text-[10.5px] text-zinc-400 select-none cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!newNode.runOnConnectEvery}
+                  onChange={(e) => setNewNode({ ...newNode, runOnConnectEvery: e.target.checked })}
+                  className="accent-primary"
+                />
+                <span>Also run them in each new terminal you open</span>
+              </label>
             </div>
             )}
           </div>
@@ -1205,7 +1303,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
 
         {/* Footer */}
         <div className="p-6 border-t border-white/5 shrink-0">
-          <button onClick={onSave} className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:bg-primary hover:shadow-[0_0_20px_rgba(var(--primary),0.3)] transition-all active:scale-[0.98] flex items-center justify-center gap-2">
+          <button onClick={save} disabled={saving} className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:bg-primary hover:shadow-[0_0_20px_rgba(var(--primary),0.3)] transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center gap-2">
             <Cpu size={14} /> {isEditMode ? "Save changes" : "Save server"}
           </button>
         </div>

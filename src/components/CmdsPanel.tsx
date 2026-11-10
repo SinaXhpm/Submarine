@@ -2,6 +2,9 @@ import { Fragment, useState, useEffect, useRef } from "react";
 import { parseCommandScope, scopeMatches, serverScopeIds } from "../util/commandScope";
 import { invoke } from "@tauri-apps/api/core";
 import { Play, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, ChevronDown, ChevronRight, Pencil, Check, Server } from "lucide-react";
+import { useConfirm } from "../ui/confirm";
+import { pasteIntoTerminal, withoutPasteControls } from "../util/pasteText";
+import { serverRowChanged } from "../util/serverJson";
 
 // Side panel that opens from a terminal session and surfaces *both* the
 // user's saved Quick Commands and their Notes. Two patterns for editing:
@@ -33,9 +36,18 @@ type EditTarget =
   | { kind: "command"; id: number; title: string; body: string }
   | { kind: "note"; id: number; title: string; body: string };
 
+// Whether the command of a card's Run button is cut short on that card. Measured,
+// not counted: a card shows about 30 characters in the narrowest panel and far
+// more in a wide one.
+const cutOnCard = (button: HTMLElement) => {
+  const line = button.closest("[data-command-card]")?.querySelector("pre");
+  return !line || line.scrollWidth > line.clientWidth;
+};
+
 // `headerActions`: extra title-bar buttons from the session view (full screen),
 // shown just before Close.
 export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverName }: { activeTab: string; onClose: () => void; headerActions?: React.ReactNode; serverId?: number; serverName?: string }) => {
+  const confirm = useConfirm();
   const [tab, setTab] = useState<Tab>("commands");
   const [commands, setCommands] = useState<CommandItem[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
@@ -60,6 +72,8 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
 
   const [edit, setEdit] = useState<EditTarget | null>(null);
   const [saving, setSaving] = useState(false);
+  // Why the last save failed, until the next one.
+  const [saveError, setSaveError] = useState<string | null>(null);
   // Ref mirror of the edit slot so the cleanup logic in tab-switch /
   // refresh / unmount can read the latest draft without re-binding the
   // effect on every keystroke.
@@ -105,7 +119,8 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         const server = servers.find((s) => s.id === serverId);
         const text: string = server?.notes ?? "";
         setNodeOriginal(text);
-        setNodeDraft(text);
+        // A draft being typed stays: this also runs on Refresh.
+        setNodeDraft((draft) => (draft !== nodeOriginal ? draft : text));
         setScopeIds(server ? serverScopeIds(server, (out[3] as any[]) || []) : null);
       } else {
         setScopeIds(null);
@@ -120,14 +135,19 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   useEffect(() => { fetchAll(); }, [serverId]);
 
   const isNodeDirty = nodeDraft !== nodeOriginal;
+  // False when the notes couldn't be saved (the reason is on screen).
   const saveNodeNotes = async () => {
-    if (!hasNode || nodeSaving || !isNodeDirty) return;
+    if (!hasNode || nodeSaving || !isNodeDirty) return true;
     setNodeSaving(true);
+    setSaveError(null);
     try {
       await invoke("set_server_notes", { id: serverId, notes: nodeDraft });
       setNodeOriginal(nodeDraft);
+      serverRowChanged();
+      return true;
     } catch (e) {
-      console.error("Failed to save node notes:", e);
+      setSaveError(`Couldn't save the notes: ${e}`);
+      return false;
     } finally {
       setNodeSaving(false);
     }
@@ -136,11 +156,13 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   // Save the currently editing row (if dirty), without touching the edit
   // state itself — the caller decides whether to collapse afterwards. We
   // accept a target arg so callers that already cleared local state can
-  // still pass through their snapshot.
+  // still pass through their snapshot. False when the save failed: the text
+  // goes back into the editor, which may have closed already.
   const flushIfDirty = async (target: EditTarget | null) => {
-    if (!target) return;
+    if (!target) return true;
     const o = originalForEdit(target);
-    if (!o || (o.title === target.title && o.body === target.body)) return;
+    if (!o || (o.title === target.title && o.body === target.body)) return true;
+    setSaveError(null);
     try {
       if (target.kind === "command") {
         await invoke("edit_command", { id: target.id, title: target.title, content: target.body });
@@ -149,10 +171,41 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         await invoke("edit_note", { id: target.id, title: target.title, body: target.body });
         setNotes((prev) => prev.map((n) => n.id === target.id ? { ...n, title: target.title, body: target.body } : n));
       }
+      return true;
     } catch (e) {
-      console.error("Failed to auto-save:", e);
+      setEdit((cur) => cur ?? target);
+      setSaveError(`Couldn't save "${target.title || "Untitled"}": ${e}`);
+      return false;
     }
   };
+
+  // Everything being typed, saved. False when something couldn't be.
+  const flushDrafts = async () => {
+    const saved = await flushIfDirty(editRef.current);
+    return (await saveNodeNotes()) && saved;
+  };
+
+  // Close, another tool and closing the tab all unmount this panel, and what
+  // is being typed would go with it. From refs, for the latest drafts and
+  // lists; X has saved them already. The panel can't show a failure any more,
+  // so a dialog does.
+  const flushRef = useRef(flushDrafts);
+  flushRef.current = flushDrafts;
+  const closedRef = useRef(false);
+  useEffect(() => () => {
+    if (closedRef.current) return;
+    void flushRef.current().then((saved) => {
+      if (!saved) void confirm({ title: "Not saved", message: "What you were typing in the Library couldn't be saved.", okLabel: "OK" });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Lock asks before the profile closes, while a save can still land
+  // (`saveDrafts` in DesktopApp).
+  useEffect(() => {
+    const onSaveDrafts = (e: Event) => { (e as CustomEvent<Promise<boolean>[]>).detail.push(flushRef.current()); };
+    window.addEventListener("submarine-save-drafts", onSaveDrafts);
+    return () => window.removeEventListener("submarine-save-drafts", onSaveDrafts);
+  }, []);
 
   // Tab switch: persist whatever's open in the current tab before clearing
   // the editor and search so the next tab starts clean. Also auto-saves
@@ -191,6 +244,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   const saveEdit = async () => {
     if (!edit || saving) return;
     setSaving(true);
+    setSaveError(null);
     try {
       if (edit.kind === "command") {
         await invoke("edit_command", { id: edit.id, title: edit.title, content: edit.body });
@@ -202,26 +256,37 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
       setEdit(null);
       fetchAll();
     } catch (e) {
-      console.error("Failed to save:", e);
+      setSaveError(`Couldn't save: ${e}`);
     } finally {
       setSaving(false);
     }
   };
 
-  // Write `text` into the active PTY. `execute=true` appends a CR so the
-  // shell runs the line immediately; false leaves the cursor at the end so
-  // the user can review / edit before pressing Enter themselves.
-  const writeToTerminal = async (text: string, execute: boolean) => {
+  // Put `text` in the active terminal as a paste: no control characters, and
+  // bracketed when the program there asked for that. `execute=true` presses
+  // Enter after it so the shell runs it; false leaves the cursor at the end so
+  // the user can review / edit before pressing Enter themselves. Library text
+  // isn't typed here (in a shared profile it can be anyone's) and a card shows
+  // only the start of it, so what the card can't show is shown whole first:
+  // more than one line, a line with a run of blanks, or a line to be run that
+  // the card cuts short (`cut`). A long line that is only pasted can be read at
+  // the prompt before anything runs.
+  const writeToTerminal = async (text: string, execute: boolean, cut = false) => {
     if (!activeTab) return;
-    try {
-      const payload = execute
-        ? (text.endsWith("\n") || text.endsWith("\r") ? text : text + "\r")
-        : text;
-      const dataBytes = Array.from(new TextEncoder().encode(payload));
-      await invoke("write_terminal_data", { terminalId: activeTab, data: dataBytes });
-    } catch (e) {
-      console.error("Failed to write to terminal:", e);
+    const clean = withoutPasteControls(text).replace(/[\r\n]+$/, "");
+    if (!clean) return;
+    const lines = clean.split(/\r\n|\r|\n/).length;
+    if (lines > 1 || cut || /[ \t]{16,}/.test(clean)) {
+      const what = lines > 1 ? `these ${lines} lines` : "this line";
+      const ok = await confirm({
+        title: execute ? `Run ${what}?` : `Paste ${what}?`,
+        message: clean,
+        okLabel: execute ? "Run" : "Paste",
+        safeDefault: true,
+      });
+      if (!ok) return;
     }
+    pasteIntoTerminal({ terminalId: activeTab, text: clean, enter: execute });
   };
 
   const copyToClipboard = async (text: string) => {
@@ -262,7 +327,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={async () => { await flushIfDirty(editRef.current); fetchAll(); }}
+            onClick={async () => { await flushDrafts(); fetchAll(); }}
             disabled={loading}
             className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all disabled:opacity-50"
             title="Refresh list"
@@ -271,7 +336,10 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           </button>
           {headerActions}
           <button
-            onClick={async () => { await flushIfDirty(editRef.current); onClose(); }}
+            onClick={async () => {
+              // A failed save keeps the panel open, with the text and the reason.
+              if (await flushDrafts()) { closedRef.current = true; onClose(); }
+            }}
             className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all"
             title="Close Panel"
           >
@@ -320,6 +388,12 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           </button>
         )}
       </div>
+
+      {saveError && (
+        <div role="alert" className="shrink-0 px-3 py-1.5 border-b border-white/5 bg-rose-500/10 text-[10.5px] text-rose-300 break-words">
+          {saveError}
+        </div>
+      )}
 
       {/* Search Input — only on list-shaped tabs; the Node tab is a single
           editor so search would have nothing to filter. */}
@@ -447,7 +521,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                       </div>
                     </div>
                   ) : (
-                    <div className="p-3">
+                    <div className="p-3" data-command-card>
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
                           <h4 className="text-xs font-bold text-zinc-200 truncate group-hover:text-primary transition-colors">
@@ -463,7 +537,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                       </div>
                       <div className="flex gap-1.5 mt-2">
                         <button
-                          onClick={() => writeToTerminal(c.content, true)}
+                          onClick={(e) => writeToTerminal(c.content, true, cutOnCard(e.currentTarget))}
                           className="flex-1 h-7 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
                           title="Run in active terminal (writes + Enter)"
                         >
@@ -508,13 +582,13 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                 className="group relative rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10 transition-all"
               >
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     if (expanded) {
                       // Click on row again → collapse + auto-save.
                       collapseEditedNote();
-                    } else {
-                      // Switching from one note to another also auto-saves.
-                      flushIfDirty(editRef.current);
+                    } else if (await flushIfDirty(editRef.current)) {
+                      // Switching from one note to another also auto-saves;
+                      // if that fails the editor stays on the unsaved note.
                       beginEditNote(n);
                     }
                   }}

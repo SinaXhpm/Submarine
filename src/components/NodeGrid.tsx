@@ -1,12 +1,12 @@
 import { Search, Plus, Server, Globe, Folder, FolderPlus, ChevronLeft, ChevronRight, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound } from "lucide-react";
-import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
 import { HeldReview } from "./HeldReview";
 import { HeldDeletions } from "./HeldDeletions";
 import { folderTree } from "../util/folderTree";
 
-export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCreateFolder, onMoveServer, onMoveFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, heldDeletions, onResolveDeletions, isMobile }: any) => {
+export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCreateFolder, onMoveServer, onMoveFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, shareGrant, onUnlockSharing, heldDeletions, onResolveDeletions, isMobile }: any) => {
   const [search, setSearch] = useState("");
   // Changes someone else made in a shared profile that this device holds
   // back until its user allows them (see HeldReview).
@@ -25,19 +25,21 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
   const confirm = useConfirm();
   // A shared profile's new key, waiting for the user's OK: they compare its
   // fingerprint with the one in the owner's Profile panel first. Cancel has
-  // the focus, so a stray Enter doesn't accept it.
+  // the focus, so a stray Enter doesn't accept it. The answer goes with the
+  // fingerprint shown: the waiting key can change while the dialog is open.
   const reviewKey = async () => {
     if (!keyChange || !onAcceptKey) return;
+    const shown: string = keyChange;
     const ok = await confirm({
       title: "Use the new key?",
       message:
-        `This shared profile's key was replaced, usually because its owner removed someone. The new key's fingerprint is ${keyChange}. ` +
+        `This shared profile's key was replaced, usually because its owner removed someone. The new key's fingerprint is ${shown}. ` +
         "Ask the owner whether their Profile panel shows the same one. If it doesn't, the key didn't come from them: don't use it.",
       okLabel: "Use the new key",
       cancelLabel: "Not now",
       safeDefault: true,
     });
-    if (ok) onAcceptKey();
+    if (ok) onAcceptKey(shown);
   };
   // Folder navigation is controlled when the parent passes both props, so the
   // selection survives NodeGrid unmount/remount (the parent sticks it onto
@@ -63,7 +65,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
   // Folders nest (see util/folderTree): the grid shows the folders and
   // servers directly inside the open folder (or the top level).
-  const tree = folderTree(folders);
+  const tree = useMemo(() => folderTree(folders), [folders]);
   // The open folder was deleted (here or on another device): back to the top.
   useEffect(() => {
     if (activeFolderId !== null && folders && !tree.has(activeFolderId)) setActiveFolderId(null);
@@ -500,8 +502,10 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
   // Folders share the compact horizontal language so the grid reads as one
   // surface: a tinted folder glyph, name + server count, inline rename in
-  // place, and the same hover lift as server cards.
-  const FolderCard = ({ f }: { f: any }) => {
+  // place, and the same hover lift as server cards. A function that returns
+  // the card, not a component: one defined in here would be a new type on each
+  // render, and React would rebuild every card, the rename field with them.
+  const renderFolder = (f: any) => {
     const serverCount = servers?.filter((s: any) => tree.serverFolder(s) === f.id).length || 0;
     const folderCount = tree.childrenOf(f.id).length;
     const isRenaming = renaming?.id === f.id;
@@ -514,6 +518,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
     ].filter(Boolean).join(' · ');
     return (
       <div
+        key={`folder-${f.id}`}
         data-drop-folder={f.id}
         onClick={() => { if (!isRenaming && !draggedRef.current) setActiveFolderId(f.id); }}
         className={`group relative flex items-center gap-3 h-16 pl-3.5 pr-2 rounded-xl bg-gradient-to-br from-[#1c1c22] to-[#141418] border transition-colors duration-150 cursor-pointer overflow-hidden ${
@@ -647,8 +652,8 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           <ShieldAlert size={14} className="text-amber-400 shrink-0" />
           <span className="flex-1 min-w-0">
             {heldCount === 1
-              ? "A change from someone you share this profile with is waiting for your OK."
-              : `${heldCount} changes from people you share this profile with are waiting for your OK.`}
+              ? "A change made elsewhere is waiting for your OK."
+              : `${heldCount} changes made elsewhere are waiting for your OK.`}
           </span>
           <button
             onClick={() => setReviewOpen(true)}
@@ -665,8 +670,8 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
         <div role="status" className="max-w-xl w-full mx-auto -mt-3 mb-5 shrink-0 flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-100/90">
           <Trash2 size={14} className="text-amber-400 shrink-0" />
           <span className="flex-1 min-w-0">
-            {deletionCount === 1 ? "An item was" : `${deletionCount} items were`} deleted by someone you share this
-            profile with. {deletionCount === 1 ? "It stays" : "They stay"} here until you decide.
+            {deletionCount === 1 ? "An item was" : `${deletionCount} items were`} {(heldDeletions || []).some((d: any) => d.emptied) ? "deleted or emptied" : "deleted"} by
+            someone you share this profile with. {deletionCount === 1 ? "It stays" : "They stay"} here until you decide.
           </span>
           <button
             onClick={() => setDeletionsOpen(true)}
@@ -691,6 +696,28 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           >
             Review
           </button>
+        </div>
+      )}
+      {/* The grant changed and this device couldn't open it (note_share_grant):
+          it only pulls until that's sorted out. */}
+      {shareGrant && (
+        <div role="status" className="max-w-xl w-full mx-auto -mt-3 mb-5 shrink-0 flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-100/90">
+          <KeyRound size={14} className="text-amber-400 shrink-0" />
+          <span className="flex-1 min-w-0">
+            {shareGrant === "locked"
+              ? "This shared profile's key may have changed. Unlock sharing to check. Until then you can't see what's new, and your changes aren't uploaded."
+              : shareGrant === "checking"
+                ? "Sharing is unlocked. The next sync checks this shared profile's key. Until then you can't see what's new, and your changes aren't uploaded."
+                : "This shared profile has a new key your sharing key can't open. Ask its owner to invite you again. Until then your changes aren't uploaded."}
+          </span>
+          {shareGrant === "locked" && onUnlockSharing && (
+            <button
+              onClick={onUnlockSharing}
+              className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
+            >
+              Unlock sharing
+            </button>
+          )}
         </div>
       )}
 
@@ -850,9 +877,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             )}
 
             {/* The folders inside the open one (or the top level); none while searching. */}
-            {displayedFolders.map((f: any) => (
-              <FolderCard key={`folder-${f.id}`} f={f} />
-            ))}
+            {displayedFolders.map((f: any) => renderFolder(f))}
 
             {/* Render Servers — honours the live drag order while reordering. */}
             {orderedServers.map((s: any) => renderServer(s))}

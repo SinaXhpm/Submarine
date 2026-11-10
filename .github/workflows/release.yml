@@ -1,9 +1,10 @@
 name: Release
 
 # Fires when you push a tag like v0.1.0. The job builds Submarine on
-# Windows, macOS, and Ubuntu, stamps the tag's version into Cargo.toml
-# and tauri.conf.json so the bundled binary's version matches the tag,
-# and uploads the installers/bundles as a draft GitHub Release.
+# Windows and Ubuntu (and Android, and iOS + macOS in apple.yml), stamps the
+# tag's version into Cargo.toml and tauri.conf.json so the bundled binary's
+# version matches the tag, and uploads the installers/bundles as a draft
+# GitHub Release. The iOS and Mac App Store builds go to App Store Connect.
 #
 # Triggering a release: locally run
 #   git tag v0.1.0 && git push origin v0.1.0
@@ -53,17 +54,8 @@ jobs:
             bundles: "msi,nsis"
             rust_target: x86_64-pc-windows-msvc
 
-          # macOS Apple Silicon. We produce both:
-          #   - Submarine.app (zipped → unzip + double-click, no DMG drag)
-          #   - Submarine_x.y.z_aarch64.dmg (classic DMG installer)
-          # Intel macOS users can run this same arm64 build under Rosetta 2 —
-          # we dropped the dedicated macos-13 (Intel) matrix entry because
-          # GitHub's Intel macOS runner pool is so scarce that jobs would
-          # routinely hit the 45-minute queue timeout and fail the release.
-          - platform: macos-latest
-            os_name: macos-arm64
-            bundles: "app,dmg"
-            rust_target: aarch64-apple-darwin
+          # macOS is built in apple.yml (the `apple` job below): one universal
+          # app for Apple Silicon and Intel, signed and notarized.
 
           # Linux: ship four flavours so users on any major distro can
           # double-click an installer that matches their package manager:
@@ -268,20 +260,6 @@ jobs:
               sudo -u b makepkg -f --noconfirm --skipinteg --nodeps
             '
 
-      # macOS: zip the .app bundle so a user can download a single file
-      # and just double-click. No DMG drag-to-Applications dance.
-      - name: Zip macOS .app
-        if: startsWith(matrix.os_name, 'macos')
-        run: |
-          APP_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos"
-          cd "$APP_DIR"
-          # The .app folder is named after productName ("Submarine").
-          # Wrap it in a versioned zip for the release asset name.
-          ARCH="${{ matrix.os_name }}"
-          ZIP_NAME="Submarine-v${{ env.VERSION }}-${ARCH}.app.zip"
-          ditto -c -k --sequesterRsrc --keepParent "Submarine.app" "$ZIP_NAME"
-          echo "MAC_ZIP=$APP_DIR/$ZIP_NAME" >> $GITHUB_ENV
-
       # Collect every artifact this job produced into one folder for upload.
       - name: Stage artifacts (Windows)
         if: matrix.os_name == 'windows'
@@ -308,13 +286,6 @@ jobs:
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = Join-Path (Resolve-Path artifacts).Path "Submarine-v${{ env.VERSION }}-windows-x64-portable.zip"
           [System.IO.Compression.ZipFile]::CreateFromDirectory($stage.FullName, $zip)
-
-      - name: Stage artifacts (macOS)
-        if: startsWith(matrix.os_name, 'macos')
-        run: |
-          mkdir -p artifacts
-          cp "$MAC_ZIP" artifacts/
-          find "src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg" -name "*.dmg" -exec cp {} artifacts/ \; || true
 
       - name: Stage artifacts (Linux)
         if: matrix.os_name == 'linux-x64'
@@ -617,10 +588,20 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
 
+  # iOS and macOS (apple.yml): the signed, notarized Mac download comes back
+  # here as the `submarine-macos` artifact; the iOS and Mac App Store builds
+  # are uploaded to App Store Connect when this is a release.
+  apple:
+    uses: ./.github/workflows/apple.yml
+    with:
+      version: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
+      upload: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish_release == 'true' }}
+    secrets: inherit
+
   # Gather every platform's artifacts and attach them to a GitHub Release.
   # Skips when triggered via workflow_dispatch unless `publish_release=true`.
   release:
-    needs: [build, android-sign]
+    needs: [build, android-sign, apple]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish_release == 'true'
     # Only this job writes: it attaches the built artifacts to the Release.

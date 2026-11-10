@@ -30,6 +30,7 @@ mod identity;
 mod portable;
 mod fonts;
 mod webkit_sandbox;
+mod sftp_listing;
 mod sftp_remove;
 mod shell_sftp;
 mod archive;
@@ -37,6 +38,7 @@ mod approvals;
 mod agent_auth;
 mod ssh_config;
 mod proxy_command;
+mod child_env;
 mod open_policy;
 mod known_hosts;
 mod rdp;
@@ -106,9 +108,26 @@ pub struct DbState {
     /// changes (see `lock_profile`). Let go by `close_profile`, or by the system
     /// when the app exits or dies.
     profile_lock: StdMutex<Option<(PathBuf, fs::File)>>,
+    /// Held while what a reloaded page left open is closed (`close_after_reload`).
+    /// That runs beside the new page, so opening a profile waits for it: a
+    /// teardown takes everything it finds, the new profile's sessions and file
+    /// lock too.
+    closing: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// `total_changes` of the open profile's database when its file was last
+    /// written, or `NOT_SAVED`: what tells a save with nothing to write
+    /// (`has_unsaved_changes`). An Arc so a save on the blocking pool can set it.
+    saved_at: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// `DbState::saved_at` for a profile that hasn't been saved since it opened.
+const NOT_SAVED: u64 = u64::MAX;
+
 impl DbState {
+    /// Waits for the teardown after a reload, if one is running (`closing`).
+    async fn teardown_finished(&self) {
+        drop(self.closing.lock().await);
+    }
+
     /// The current generation. Read it while holding `conn`'s lock, so it
     /// names the profile that lock gives access to.
     fn generation_now(&self) -> u64 {
@@ -117,17 +136,33 @@ impl DbState {
 
     /// For whatever opens or closes a profile, while it holds `conn`'s lock.
     fn bump_generation(&self) -> u64 {
+        self.saved_at.store(NOT_SAVED, std::sync::atomic::Ordering::SeqCst);
         self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// Whether the open profile holds anything its file doesn't: what a sync
+    /// merged, and also what was left for a later save (`cmd_history_add`,
+    /// `save_unless_batched`).
+    fn has_unsaved_changes(&self) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        Ok(conn.total_changes() != self.saved_at.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Before a write that follows an await: is the profile that was open at
     /// `generation` still the one open? Call it while holding `conn`'s lock.
     fn still_open(&self, generation: u64) -> Result<(), String> {
-        if self.generation_now() == generation {
-            Ok(())
-        } else {
-            Err("[STATE] PROFILE_CHANGED: the profile was locked, or another one opened, while this was running. Nothing was written to it; open it and try again.".into())
-        }
+        still_at(&self.generation, generation)
+    }
+}
+
+/// `DbState::still_open`, for work on the blocking pool, which has the counter
+/// but not the state.
+fn still_at(current: &std::sync::atomic::AtomicU64, generation: u64) -> Result<(), String> {
+    if current.load(std::sync::atomic::Ordering::SeqCst) == generation {
+        Ok(())
+    } else {
+        Err("[STATE] PROFILE_CHANGED: the profile was locked, or another one opened, while this was running. Nothing was written to it; open it and try again.".into())
     }
 }
 
@@ -417,10 +452,25 @@ fn save_vault_internal(state: &DbState) -> Result<(), String> {
     if let (Some(conn), Some(key), Some(salt), Some(path)) =
         (&*conn_guard, &*key_guard, &*salt_guard, &*path_guard)
     {
-        save_vault_blocking(conn, key, salt, path)
+        save_vault_blocking(conn, key, salt, path)?;
+        state.saved_at.store(conn.total_changes(), std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     } else {
         Err("[STATE] MISSING_REQUIRED_RESOURCES_FOR_SAVE".into())
     }
+}
+
+/// A command's save, unless the page saves once at the end of a batch of them
+/// (`persist_vault`): each save writes the whole vault, so a batch cost that
+/// once per command. Until the batch's save the changes are in memory only, as
+/// commands typed in a terminal are: a save of any kind takes them along, the
+/// next sync's, Lock's or the one on exit (`has_unsaved_changes`). If the app
+/// dies first the file is as it was before the batch, all of it.
+fn save_unless_batched(state: &DbState, persist: Option<bool>) -> Result<(), String> {
+    if persist == Some(false) {
+        return Ok(());
+    }
+    save_vault_internal(state)
 }
 
 /// Pure-sync vault serialise + encrypt + atomic write. Pulled out of
@@ -947,7 +997,7 @@ const ENTITIES: &[EntitySpec] = &[
     EntitySpec { table: "credentials", cols: &["name", "auth_type", "username", "password", "edited_by"], fks: &[Fk { key: "key_uuid", col: "key_id", ref_table: "ssh_keys", required: false }] },
     EntitySpec {
         table: "servers",
-        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "protocol", "position", "edited_by"],
+        cols: &["name", "host", "port", "username", "password", "proxy_type", "proxy_host", "proxy_port", "tunnels", "auth_type", "autostart", "mirrors", "color", "notes", "run_on_connect", "run_on_connect_every", "protocol", "position", "edited_by"],
         fks: &[
             Fk { key: "credential_uuid", col: "credential_id", ref_table: "credentials", required: false },
             Fk { key: "folder_uuid", col: "folder_id", ref_table: "folders", required: false },
@@ -1005,7 +1055,7 @@ fn col_kind(table: &str, col: &str) -> ColKind {
         | ("notes", "title" | "body") => ColKind::RequiredText,
         ("servers", "port") => ColKind::Int32,
         ("servers", "proxy_port") => ColKind::OptionalInt32,
-        ("servers", "autostart" | "position") => ColKind::OptionalInt,
+        ("servers", "autostart" | "position" | "run_on_connect_every") => ColKind::OptionalInt,
         ("servers", "tunnels" | "mirrors") => ColKind::ObjectList,
         _ => ColKind::Text,
     }
@@ -1129,6 +1179,11 @@ fn collect_local_records(conn: &Connection, key: &[u8; 32], since: &str) -> Resu
 /// many records it couldn't apply (refused, wouldn't decrypt or parse): delta
 /// sync asks for those again rather than move past them.
 fn apply_remote_records(conn: &Connection, key: &[u8; 32], records: &[SyncRecord], hlc: &hlc::Hlc) -> Result<usize, String> {
+    // The flag's two writes would make a round that brought nothing look like
+    // one that changed something (`has_unsaved_changes`).
+    if records.is_empty() {
+        return Ok(0);
+    }
     conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
         .map_err(|e| format!("[SYNC] MERGE_ON: {e}"))?;
     let r = apply_remote_inner(conn, key, records, hlc, MERGE_MAX_BYTES);
@@ -1144,6 +1199,96 @@ fn sane_record(rec: &SyncRecord) -> bool {
     (1..=64).contains(&rec.uuid.len())
         && rec.uuid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
         && hlc::Hlc::valid_remote(&rec.updated_at)
+}
+
+/// The columns that hold what lives nowhere but in vaults. A record that
+/// empties one takes it as surely as a deletion does.
+fn secret_cols(table: &str) -> &'static [&'static str] {
+    match table {
+        "ssh_keys" => &["private_key", "passphrase"],
+        "credentials" | "servers" => &["password"],
+        _ => &[],
+    }
+}
+
+/// What a row of `table` holds now, by `secret_cols`. No such row gives no
+/// values: nothing to lose.
+fn secrets_here(conn: &Connection, table: &str, uuid: &str) -> Vec<Option<String>> {
+    let cols = secret_cols(table);
+    if cols.is_empty() {
+        return Vec::new();
+    }
+    conn.query_row(&format!("SELECT {} FROM {table} WHERE uuid=?1", cols.join(",")), [uuid], |r| {
+        (0..cols.len()).map(|i| r.get(i)).collect()
+    })
+    .unwrap_or_default()
+}
+
+/// A value of only spaces is as empty as none.
+fn is_filled(secret: &str) -> bool {
+    !secret.trim().is_empty()
+}
+
+/// Of what a row holds (`secrets_here`), the secrets a record with this
+/// payload leaves empty. A record that replaces a secret with another one is
+/// an ordinary edit, and so is a new key with no passphrase: the passphrase
+/// went with the key it opened.
+fn emptied_cols(table: &str, here: &[Option<String>], obj: &serde_json::Map<String, serde_json::Value>) -> Vec<&'static str> {
+    use serde_json::Value;
+    let new_key = |col: &str| {
+        col == "passphrase"
+            && obj.get("private_key").and_then(Value::as_str).is_some_and(|k| is_filled(k) && Some(k) != here[0].as_deref())
+    };
+    secret_cols(table)
+        .iter()
+        .zip(here)
+        .filter(|(col, had)| {
+            had.as_deref().is_some_and(is_filled)
+                && !new_key(col)
+                && match obj.get(**col) {
+                    None | Some(Value::Null) => true,
+                    Some(Value::String(s)) => !is_filled(s),
+                    Some(_) => false,
+                }
+        })
+        .map(|(col, _)| *col)
+        .collect()
+}
+
+/// Would `rec`, if it lands, leave a row here without a secret it has now
+/// (`emptied_cols`)?
+fn empties_a_secret(conn: &Connection, key: &[u8; 32], rec: &SyncRecord) -> bool {
+    use serde_json::Value;
+    if secret_cols(&rec.entity_type).is_empty() || rec.deleted || local_wins(conn, &rec.entity_type, rec) {
+        return false;
+    }
+    let here = secrets_here(conn, &rec.entity_type, &rec.uuid);
+    if !here.iter().flatten().any(|v| is_filled(v)) {
+        return false;
+    }
+    // What won't decrypt or parse isn't going to land: the merge deals with it.
+    let payload = rec
+        .blob
+        .as_deref()
+        .filter(|b| b.len() <= MAX_RECORD_BLOB_HEX)
+        .and_then(|b| decrypt_entity(b, key).ok())
+        .and_then(|plain| serde_json::from_slice::<Value>(&plain).ok());
+    payload.as_ref().and_then(Value::as_object).is_some_and(|obj| !emptied_cols(&rec.entity_type, &here, obj).is_empty())
+}
+
+/// How many rows the records in `records` are about to leave without a secret
+/// (`empties_a_secret`): what the merge does, counted first, so a profile can
+/// be kept as it is before it does (vault_backup.rs). What is held already
+/// changes nothing here, however often it comes, and a viewer keeps theirs
+/// (`apply_remote_inner`).
+fn rows_to_empty(conn: &Connection, key: &[u8; 32], records: &[SyncRecord]) -> usize {
+    if approvals::is_viewer(conn) {
+        return 0;
+    }
+    records
+        .iter()
+        .filter(|r| sane_record(r) && !approvals::wipe_is_held(conn, r) && empties_a_secret(conn, key, r))
+        .count()
 }
 
 /// The vault's size as it would be saved: its SQLite image, free pages and all.
@@ -1218,19 +1363,37 @@ fn apply_remote_inner(
     // In a shared profile, whatever a record newly sets running by itself
     // (commands on connect, autostart, forwards, monitor commands) is held
     // until this device's user allows it — see approvals.rs. Holding is part
-    // of the merge's transaction: if it can't be recorded, nothing lands.
+    // of the merge's transaction: if it can't be recorded, nothing lands. It's
+    // done once the batch is in: a server's jump host lands in the repair pass.
     let shared = approvals::ready(&tx) && approvals::profile_is_shared(&tx);
+    let mut watched = Vec::new();
+    // A viewer's rows go nowhere, so a password they saved here is theirs alone
+    // (each person typing their own is a normal way to share a server list),
+    // and a record with none says nothing about it. The record lands, without
+    // emptying anything (`apply_entity`): held whole, the owner's new address
+    // would stop at this device.
+    let viewer = shared && approvals::is_viewer(&tx);
     for spec in ENTITIES {
         let watch = shared && approvals::watches(spec.table);
         for rec in records.iter().filter(|r| !r.deleted && r.entity_type == spec.table) {
+            // In a shared profile, a record that empties a saved key or
+            // password waits for this device's user, like an SSH key's
+            // deletion (approvals::hold_wipe). A personal profile takes it.
+            if shared && !viewer && empties_a_secret(&tx, key, rec) {
+                approvals::hold_wipe(&tx, rec)?;
+                continue;
+            }
             let before = if watch { approvals::snapshot(&tx, spec.table, &rec.uuid) } else { None };
-            if let Err(e) = apply_entity(&tx, key, spec, rec, &mut fk_fixups) {
+            if let Err(e) = apply_entity(&tx, key, spec, rec, viewer, &mut fk_fixups) {
                 skipped += 1;
                 eprintln!("[SYNC] skipped record uuid={} type={}: {}", rec.uuid, rec.entity_type, e);
                 continue;
             }
             if watch {
-                approvals::hold_changes(&tx, spec.table, &rec.uuid, before.as_ref())?;
+                watched.push((spec.table, &rec.uuid, before));
+            }
+            if shared {
+                approvals::release_wipe(&tx, rec)?;
             }
         }
     }
@@ -1246,20 +1409,9 @@ fn apply_remote_inner(
     }
     // Re-resolve every optional FK against the FINAL state of the batch, now that
     // both the entities and the tombstones have landed.
-    for f in fk_fixups {
-        let id: Option<i64> = tx
-            .query_row(
-                &format!("SELECT id FROM {} WHERE uuid=?1", f.ref_table),
-                [&f.ref_uuid],
-                |r| r.get(0),
-            )
-            .ok();
-        if let Err(e) = tx.execute(
-            &format!("UPDATE {} SET {}=?1 WHERE uuid=?2", f.table, f.fk_col),
-            rusqlite::params![id, f.uuid],
-        ) {
-            eprintln!("[SYNC] fk fixup skipped {}.{} uuid={}: {}", f.table, f.fk_col, f.uuid, e);
-        }
+    repair_links(&tx, fk_fixups);
+    for (table, uuid, before) in &watched {
+        approvals::hold_changes(&tx, table, uuid, before.as_ref())?;
     }
     // Not toward the size the vault can no longer be saved or opened at. An
     // honest server never sends that much, so none of it lands.
@@ -1277,28 +1429,46 @@ fn apply_remote_inner(
     Ok(skipped)
 }
 
-fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &SyncRecord, fk_fixups: &mut Vec<FkFixup>) -> Result<(), String> {
-    // LWW: keep local if it's newer-or-equal. A deleted row is hard-deleted, so
-    // its tombstone carries its only surviving stamp — it has to count as the
-    // local side of the comparison. Without it, a batch collected before a
-    // delete (sync drops the lock for the network leg, so the user can delete
-    // mid-flight) comes back still carrying the row as live, finds no live row
-    // to compare against, and re-inserts it — secrets and all.
+fn repair_links(conn: &Connection, fixups: Vec<FkFixup>) {
+    for f in fixups {
+        let id: Option<i64> = conn
+            .query_row(
+                &format!("SELECT id FROM {} WHERE uuid=?1", f.ref_table),
+                [&f.ref_uuid],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Err(e) = conn.execute(
+            &format!("UPDATE {} SET {}=?1 WHERE uuid=?2", f.table, f.fk_col),
+            rusqlite::params![id, f.uuid],
+        ) {
+            eprintln!("[SYNC] fk fixup skipped {}.{} uuid={}: {}", f.table, f.fk_col, f.uuid, e);
+        }
+    }
+}
+
+/// LWW: keep local if it's newer-or-equal. A deleted row is hard-deleted, so
+/// its tombstone carries its only surviving stamp — it has to count as the
+/// local side of the comparison. Without it, a batch collected before a
+/// delete (sync drops the lock for the network leg, so the user can delete
+/// mid-flight) comes back still carrying the row as live, finds no live row
+/// to compare against, and re-inserts it — secrets and all.
+fn local_wins(conn: &Connection, table: &str, rec: &SyncRecord) -> bool {
     let local_ua: Option<String> = conn
-        .query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", spec.table), [&rec.uuid], |r| r.get(0))
+        .query_row(&format!("SELECT updated_at FROM {table} WHERE uuid=?1"), [&rec.uuid], |r| r.get(0))
         .ok();
     let tomb_ua: Option<String> = conn
         .query_row(
             "SELECT updated_at FROM sync_tombstones WHERE uuid=?1 AND entity_type=?2",
-            rusqlite::params![&rec.uuid, spec.table],
+            rusqlite::params![&rec.uuid, table],
             |r| r.get(0),
         )
         .ok();
-    if [local_ua.as_deref(), tomb_ua.as_deref()]
-        .into_iter()
-        .flatten()
-        .any(|l| l >= rec.updated_at.as_str())
-    {
+    local_ua.iter().chain(&tomb_ua).any(|l| *l >= rec.updated_at)
+}
+
+fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &SyncRecord, keep_own: bool, fk_fixups: &mut Vec<FkFixup>) -> Result<(), String> {
+    if local_wins(conn, spec.table, rec) {
         return Ok(());
     }
     let blob = rec.blob.as_deref().ok_or("[SYNC] ENTITY_NO_BLOB")?;
@@ -1325,9 +1495,15 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     // the node back into an SSH server here, so the local value is kept. A
     // newer peer always sends the key, NULL for an SSH server.
     let preserve_local_protocol = spec.table == "servers" && !obj.contains_key("protocol");
+    // And for a server's `run_on_connect_every` (#256): a peer from before it
+    // would otherwise turn it off whenever it edits the server.
+    let preserve_local_every = spec.table == "servers" && !obj.contains_key("run_on_connect_every");
     // The same for a command's `scope` (#22): a peer from before it would
     // otherwise turn a command for some servers into one for all of them.
     let preserve_local_scope = spec.table == "commands" && !obj.contains_key("scope");
+    // On a viewer, the secrets this record would empty stay as they are (see
+    // `apply_remote_inner`).
+    let keep = if keep_own { emptied_cols(spec.table, &secrets_here(conn, spec.table, &rec.uuid), obj) } else { Vec::new() };
     for c in spec.cols {
         columns.push((*c).into());
         let val = obj.get(*c);
@@ -1410,8 +1586,12 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                 format!("position={}.position", spec.table)
             } else if c.as_str() == "protocol" && preserve_local_protocol {
                 format!("protocol={}.protocol", spec.table)
+            } else if c.as_str() == "run_on_connect_every" && preserve_local_every {
+                format!("run_on_connect_every={}.run_on_connect_every", spec.table)
             } else if c.as_str() == "scope" && preserve_local_scope {
                 format!("scope={}.scope", spec.table)
+            } else if keep.contains(&c.as_str()) {
+                format!("{c}={}.{c}", spec.table)
             } else {
                 format!("{c}=excluded.{c}")
             }
@@ -1434,18 +1614,45 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
 /// `apply_tombstone` does, counted first, so a profile can be kept as it is
 /// before the merge deletes from it (vault_backup.rs).
 fn rows_to_delete(conn: &Connection, records: &[SyncRecord]) -> usize {
-    records
-        .iter()
-        .filter(|r| r.deleted && sane_record(r))
-        .filter(|r| {
-            ENTITIES.iter().find(|s| s.table == r.entity_type).is_some_and(|spec| {
-                conn.query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", spec.table), [&r.uuid], |row| {
-                    row.get::<_, Option<String>>(0)
-                })
-                .is_ok_and(|ua| ua.as_deref().unwrap_or("") < r.updated_at.as_str())
+    records.iter().filter(|r| deletes_a_row(conn, r)).count()
+}
+
+fn deletes_a_row(conn: &Connection, r: &SyncRecord) -> bool {
+    r.deleted
+        && sane_record(r)
+        && ENTITIES.iter().find(|s| s.table == r.entity_type).is_some_and(|spec| {
+            conn.query_row(&format!("SELECT updated_at FROM {} WHERE uuid=?1", spec.table), [&r.uuid], |row| {
+                row.get::<_, Option<String>>(0)
             })
+            .is_ok_and(|ua| ua.as_deref().unwrap_or("") < r.updated_at.as_str())
         })
-        .count()
+}
+
+/// The first sync after a kept copy was put back (vault_backup::put_back):
+/// what the server's answer would take away again stays. Each such row gets a
+/// stamp newer than the record, as a kept row does in `resolve_held`, so the
+/// merge leaves it alone and the next push brings it back on every device.
+/// Everything else merges as usual, so what changed elsewhere since the copy
+/// was made isn't undone.
+fn keep_put_back_rows(conn: &Connection, key: &[u8; 32], hlc: &hlc::Hlc, records: &[SyncRecord]) -> Result<usize, String> {
+    conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
+        .map_err(|e| format!("[SYNC] MERGE_ON: {e}"))?;
+    let kept = (|| -> Result<usize, String> {
+        let mut n = 0;
+        // (A viewer's merge keeps their secrets anyway, and lands the rest.)
+        let viewer = approvals::is_viewer(conn);
+        for rec in records.iter().filter(|r| sane_record(r) && (deletes_a_row(conn, r) || (!viewer && empties_a_secret(conn, key, r)))) {
+            n += conn
+                .execute(
+                    &format!("UPDATE {} SET updated_at=?1 WHERE uuid=?2", rec.entity_type),
+                    rusqlite::params![stamp_past(&hlc.tick(), &rec.updated_at), rec.uuid],
+                )
+                .map_err(|e| format!("[SYNC] KEEP: {e}"))?;
+        }
+        Ok(n)
+    })();
+    let _ = conn.execute("UPDATE sync_flags SET val=0 WHERE key='merge'", []);
+    kept
 }
 
 /// One remote deletion. It can write three things (unlink, delete, record the
@@ -1513,8 +1720,13 @@ struct SyncReport {
     key_change: bool,
     /// Rows this sync is deleting here, because they were deleted elsewhere.
     removed: usize,
-    /// When it deletes any, the copy of the profile kept first: its file name
-    /// (vault_backup.rs). None when nothing was deleted or no copy could be made.
+    /// Rows of a personal profile this sync leaves without a saved key or
+    /// password, because it was emptied elsewhere (`empties_a_secret`). A
+    /// shared profile holds those instead.
+    emptied: usize,
+    /// When it deletes or empties any, the copy of the profile kept first: its
+    /// file name (vault_backup.rs). None when nothing was deleted or no copy
+    /// could be made.
     backup: Option<String>,
 }
 
@@ -1528,7 +1740,10 @@ struct SyncReport {
 // still holds — cracking it costs the same Argon2id work as the vault itself.
 // It never matches an ENTITIES spec, so apply naturally ignores it; only the
 // restore path reads it. The updated_at is a fixed low sentinel so it sorts
-// first and never churns the LWW upsert.
+// first and never churns the LWW upsert. The server keeps the record it has on
+// an equal stamp, so a key that changed while the profile was shared would
+// leave the old key there for good: leaving the share gives the record a real
+// stamp of its own (`escrow_stamp`), which it then keeps.
 //
 // Blob layout (hex): version(1) ‖ salt(SALT_LEN) ‖ nonce(NONCE_LEN) ‖
 // AES-256-GCM(master_key, dek). `master_key` is Argon2id(password, salt) — the
@@ -1547,11 +1762,12 @@ const PW_ESCROW_VERSION: u8 = 2;
 /// Build the reserved DEK-escrow record: the profile DEK sealed under the
 /// profile's master key (Argon2id of its password). `salt` is the vault's own
 /// KDF salt, embedded so a fresh device can re-derive `master_key` from just the
-/// password.
+/// password. `stamp` is the profile's `escrow_stamp`.
 fn build_pw_escrow_record(
     master_key: &[u8; 32],
     salt: &[u8; SALT_LEN],
     dek: &[u8; 32],
+    stamp: &str,
 ) -> Result<SyncRecord, String> {
     let (ct, nonce) = encrypt_with_key(dek, master_key)?;
     let mut blob = Vec::with_capacity(1 + SALT_LEN + NONCE_LEN + ct.len());
@@ -1562,10 +1778,16 @@ fn build_pw_escrow_record(
     Ok(SyncRecord {
         uuid: ESCROW_UUID.to_string(),
         entity_type: ESCROW_ETYPE.to_string(),
-        updated_at: ESCROW_UAT.to_string(),
+        updated_at: stamp.to_string(),
         deleted: false,
         blob: Some(hex::encode(blob)),
     })
+}
+
+/// The stamp the profile's escrow record goes up with (see above).
+fn escrow_stamp(conn: &Connection) -> String {
+    conn.query_row("SELECT value FROM sync_meta WHERE key='escrow_stamp'", [], |r| r.get(0))
+        .unwrap_or_else(|_| ESCROW_UAT.to_string())
 }
 
 /// Recover a profile's DEK from a password-sealed escrow blob. Runs Argon2id, so
@@ -1758,11 +1980,18 @@ struct SyncCursor {
 /// The push cursor after a round that collected `sent`: past the latest of
 /// them when they went up, where it was when nothing was pushed (a viewer, a
 /// key change waiting). Stamps are fixed-width HLCs, so they order as text.
-fn pushed_through_after(previous: &str, sent: &[SyncRecord], pushed: bool) -> String {
+///
+/// Never past `clock`, this device's own clock at the collection. A row
+/// stamped further ahead than the clock follows (a peer's clock an hour fast,
+/// or a co-member's doing) would otherwise put the cursor above every edit
+/// made here from then on, and they would never go up. Such a row is simply
+/// collected again until the clock has passed it.
+fn pushed_through_after(previous: &str, sent: &[SyncRecord], pushed: bool, clock: &str) -> String {
     if !pushed {
         return previous.to_string();
     }
-    sent.iter().map(|r| r.updated_at.as_str()).chain([previous]).max().unwrap_or("").to_string()
+    let latest = sent.iter().map(|r| r.updated_at.as_str()).chain([previous]).max().unwrap_or("");
+    latest.min(clock).to_string()
 }
 
 fn key_tag(key: &[u8; 32]) -> [u8; 32] {
@@ -1828,9 +2057,10 @@ async fn sync_with(
     // a member is revoked, so the copy cached at import time goes stale. Fetch
     // it BEFORE serialising anything. A new key isn't used until the user
     // accepts it, though (`note_share_key`): until then this device only
-    // pulls. Cheap (a primary-key point lookup) and best-effort — offline or a
-    // hiccup just means we sync with what we have, exactly as before this
-    // existed.
+    // pulls, as it does when sharing is locked and the grant is one it hasn't
+    // seen (`note_share_grant`). The member's role comes with it. Cheap (a
+    // primary-key point lookup) and best-effort — offline or a hiccup just
+    // means we sync with what we have, exactly as before this existed.
     let existing_share: Option<String> = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
@@ -1838,19 +2068,15 @@ async fn sync_with(
         conn.query_row("SELECT value FROM sync_meta WHERE key='share_id'", [], |r| r.get(0)).ok()
     };
     if let Some(sid) = &existing_share {
-        if let Some((_, my_secret)) = cloud.identity().await {
-            if let Ok(grant) = cloud::share_dek(app, cloud, session, sid).await {
-                if let Ok(raw) = hex::decode(&grant.sealed_dek) {
-                    if let Ok(opened) = identity::unseal(&my_secret, &raw) {
-                        if opened.len() == 32 {
-                            let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
-                            let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-                            db_state.still_open(generation)?;
-                            note_share_key(conn, &opened)?;
-                        }
-                    }
-                }
-            }
+        if let Ok(grant) = cloud::share_dek(app, cloud, session, sid).await {
+            let me = cloud.identity().await;
+            let opened = me.as_ref().and_then(|(_, my_secret)| {
+                hex::decode(&grant.sealed_dek).ok().and_then(|raw| identity::unseal(my_secret, &raw).ok())
+            });
+            let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+            let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+            db_state.still_open(generation)?;
+            note_share_grant(conn, &grant.sealed_dek, &grant.role, opened.as_deref(), me.is_some())?;
         }
     }
 
@@ -1867,8 +2093,49 @@ async fn sync_with(
         pulled: report.pulled + again.pulled,
         key_change: again.key_change,
         removed: report.removed + again.removed,
+        emptied: report.emptied + again.emptied,
         backup: again.backup.or(report.backup),
     })
+}
+
+/// What a merge did to the open profile.
+struct Merged {
+    /// Records it couldn't apply (see `apply_remote_records`).
+    skipped: usize,
+    removed: usize,
+    emptied: usize,
+    backup: Option<String>,
+}
+
+/// Merges a sync's answer into the open vault. A record proves nothing about
+/// who sent it, so before one deletes a row or empties a saved key or password
+/// the profile is kept as it stands (vault_backup.rs); the file on disk is
+/// still the state from before this merge. `vault` is that file, and
+/// `put_back` that a kept copy has just been made the profile again.
+fn merge_answer(
+    conn: &Connection,
+    key: &[u8; 32],
+    records: &[SyncRecord],
+    hlc: &hlc::Hlc,
+    vault: Result<&Path, &str>,
+    put_back: bool,
+) -> Result<Merged, String> {
+    if put_back {
+        keep_put_back_rows(conn, key, hlc, records)?;
+    }
+    let removed = rows_to_delete(conn, records);
+    let to_empty = rows_to_empty(conn, key, records);
+    let mut backup = None;
+    if removed + to_empty > 0 {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        match vault.map_err(str::to_string).and_then(|p| vault_backup::keep(p, now)) {
+            Ok(name) => backup = name,
+            Err(e) => eprintln!("[SYNC] no copy of the profile before a merge that deletes: {e}"),
+        }
+    }
+    let skipped = apply_remote_records(conn, key, records, hlc)?;
+    let emptied = if approvals::profile_is_shared(conn) { 0 } else { to_empty };
+    Ok(Merged { skipped, removed, emptied, backup })
 }
 
 /// One exchange of `sync_with`: from the open profile's `SyncCursor` when
@@ -1892,7 +2159,7 @@ async fn sync_round(
     // hold the DEK via a sealed grant without ever knowing this vault's
     // password. The DEK is created + persisted at profile-open, so it already
     // exists here; get_or_create is a defensive fallback only.
-    let (records, dek, hlc, share, cloud_profile, master_key, salt, key_change, partition, cursor) = {
+    let (records, dek, hlc, share, cloud_profile, master_key, salt, key_change, partition, cursor, clock, escrow_at) = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         db_state.still_open(generation)?;
@@ -1929,15 +2196,18 @@ async fn sync_round(
         // don't know". A viewer that should have been an editor is a visible,
         // fixable annoyance; an editor that should have been a viewer is not.
         let share = share_id.map(|s| (s, share_role.unwrap_or_else(|| "user".to_string())));
-        let key_change = conn
-            .query_row("SELECT 1 FROM sync_meta WHERE key='pending_dek'", [], |_| Ok(()))
-            .is_ok();
+        let key_change = share_key_is_waiting(conn);
         // The delta cursor, if it is for exactly this: the same opening of the
         // profile, server, sign-in, partition and key.
         let partition = match &share {
             Some((sid, _)) => format!("share:{sid}"),
             None => format!("profile:{cloud_profile}"),
         };
+        // Deleted from the cloud on this device: nothing goes back up until
+        // the user says so (`cloud_delete_profile`).
+        if share.is_none() && is_cloud_deleted(&cloud_deleted_path(app)?, &cloud_deleted_key(session.base(), &cloud_profile)) {
+            return Err("[SYNC] DELETED_FROM_CLOUD: you deleted this profile from the cloud on this device, so it isn't uploaded. To upload it again, use its Profile panel.".into());
+        }
         let cursor: Option<SyncCursor> = if use_cursor {
             db_state
                 .sync_cursor
@@ -1959,14 +2229,18 @@ async fn sync_round(
         // without a cursor.
         let since = cursor.as_ref().map(|c| c.pushed_through.as_str()).unwrap_or("");
         let records = collect_local_records(conn, &dek, since)?;
-        (records, dek, hlc, share, cloud_profile, master_key, salt, key_change, partition, cursor)
+        // Under the same lock: whatever is edited after the collection is
+        // stamped above this (`pushed_through_after`).
+        let clock = hlc.tick();
+        let escrow_at = escrow_stamp(conn);
+        (records, dek, hlc, share, cloud_profile, master_key, salt, key_change, partition, cursor, clock, escrow_at)
     };
 
     // Shared profile → /shares/sync (role-gated). A viewer ('user') pushes
     // nothing — it can only pull, so sending records would just 403. Neither
-    // does a device whose share has a new key waiting for the user's OK: no
-    // one else can read a push sealed with the old key, and the new one may
-    // not be the owner's.
+    // does a device whose share has a new key waiting for the user's OK, or a
+    // grant it couldn't open: no one else can read a push sealed with the old
+    // key, and the new one may not be the owner's.
     let pull_from = cursor.as_ref().and_then(|c| c.pulled.clone());
     // Not what the server just sent and that is unchanged here: it has it.
     let to_send: Vec<SyncRecord> = match &cursor {
@@ -1980,9 +2254,21 @@ async fn sync_round(
     let (exchange, pushed, pushes) = if let Some((share_id, role)) = &share {
         let pushes = !(role == "user" || key_change);
         let to_push: &[SyncRecord] = if pushes { &to_send } else { &[] };
-        let exchange =
-            cloud::shared_sync_exchange_from(app, cloud, session, share_id, "", to_push, pull_from.as_ref()).await?;
-        (exchange, to_push.len(), pushes)
+        match cloud::shared_sync_exchange_from(app, cloud, session, share_id, "", to_push, pull_from.as_ref()).await {
+            // Made a viewer since the role was last read: the pull goes on.
+            // The push would be refused the same way every time, and the
+            // error would end the round before anything came down.
+            Err(e) if pushes && e.contains("read_only") => {
+                let exchange =
+                    cloud::shared_sync_exchange_from(app, cloud, session, share_id, "", &[], pull_from.as_ref()).await?;
+                let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+                let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+                db_state.still_open(generation)?;
+                note_share_role(conn, "user")?;
+                (exchange, 0, false)
+            }
+            result => (result?, to_push.len(), pushes),
+        }
     } else {
         // Personal profile: publish (or refresh) the DEK escrow alongside the
         // data so any device that knows this profile's password can bring it
@@ -1992,7 +2278,7 @@ async fn sync_round(
         let mut to_push = to_send;
         if cursor.is_none() {
             if let (Some(mk), Some(salt)) = (master_key, salt) {
-                to_push.push(build_pw_escrow_record(&mk, &salt, &dek)?);
+                to_push.push(build_pw_escrow_record(&mk, &salt, &dek, &escrow_at)?);
             }
         }
         // Send the local display name so the server can label this partition —
@@ -2006,58 +2292,75 @@ async fn sync_round(
     let pulled = exchange.records.len();
     // The server couldn't answer from the cursor: start over (`sync_with`).
     let reset = exchange.full && pull_from.is_some();
-    let mut removed = 0usize;
-    let mut backup: Option<String> = None;
+    let server_has = exchange.records.iter().map(|r| (r.uuid.clone(), r.updated_at.clone())).collect();
 
-    {
-        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
-        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-        db_state.still_open(generation)?;
-        // About to delete rows? A tombstone proves nothing about who sent it, so
-        // the profile is kept as it stands first (vault_backup.rs); the file on
-        // disk is still the state from before this merge.
-        removed = rows_to_delete(conn, &exchange.records);
-        if removed > 0 {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-            match profile_path(app, profile).and_then(|p| vault_backup::keep(&p, now)) {
-                Ok(name) => backup = name,
-                Err(e) => eprintln!("[SYNC] no copy of the profile before a merge that deletes: {e}"),
+    // On the blocking pool, as a save is: a large answer holds the vault's lock
+    // for as long as it takes, and on a worker it would stop whatever else that
+    // worker runs, terminals and tunnels included.
+    let vault = profile_path(app, profile);
+    let put_back = vault.as_ref().is_ok_and(|p| vault_backup::is_put_back(p));
+    let merged = {
+        let conn_arc = std::sync::Arc::clone(&db_state.conn);
+        let current = std::sync::Arc::clone(&db_state.generation);
+        let records = exchange.records;
+        let vault = vault.clone();
+        let hlc = hlc.clone();
+        let base = session.base().to_string();
+        tokio::task::spawn_blocking(move || -> Result<Merged, String> {
+            let conn_g = conn_arc.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+            let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+            still_at(&current, generation)?;
+            let merged = merge_answer(conn, &dek, &records, &hlc, vault.as_deref().map_err(String::as_str), put_back)?;
+            if unlinked {
+                link_profile_server(conn, &base)?;
             }
-        }
-        let skipped = apply_remote_records(conn, &dek, &exchange.records, &hlc)?;
-        if unlinked {
-            link_profile_server(conn, session.base())?;
-        }
-        // Where the next round starts. The push cursor moves past everything
-        // this round collected: what it sent, and what the server already had
-        // from its last answer. A row edited after the collection is stamped
-        // above all of it (the clock had seen every collected stamp), so it
-        // goes next time. The server's cursor is kept only when its whole
-        // answer landed here, so what didn't is asked for again in full.
-        //
-        // Only with a server that keeps cursors: one that doesn't (an older
-        // or a self-hosted server) can't say when it lost what it was sent,
-        // so every round with it stays a full one, both ways, as before.
-        let previous = cursor.as_ref().map(|c| c.pushed_through.as_str()).unwrap_or("");
-        let pushed_through = pushed_through_after(previous, &records, pushes);
-        let server_has = exchange.records.iter().map(|r| (r.uuid.clone(), r.updated_at.clone())).collect();
-        *db_state.sync_cursor.lock().map_err(|_| "[STATE] LOCK_SYNC_CURSOR")? = match exchange.cursor {
-            Some(server_cursor) if !reset => Some(SyncCursor {
-                generation,
-                server: session.base().to_string(),
-                account: session.account_tag(),
-                partition,
-                key: key_tag(&dek),
-                pushed_through,
-                server_has,
-                pulled: (skipped == 0 && !key_change).then_some(server_cursor),
-            }),
-            _ => None,
-        };
+            Ok(merged)
+        })
+        .await
+        .map_err(|e| format!("[SYNC] MERGE_JOIN: {e}"))??
+    };
+
+    // Where the next round starts. The push cursor moves past everything
+    // this round collected: what it sent, and what the server already had
+    // from its last answer, up to this device's clock. A row edited after the
+    // collection is stamped above that, so it goes next time. The server's
+    // cursor is kept only when its whole answer landed here, so what didn't
+    // is asked for again in full. A cursor left by a sync that lost a race
+    // with Lock is for another opening, and is ignored.
+    //
+    // Only with a server that keeps cursors: one that doesn't (an older
+    // or a self-hosted server) can't say when it lost what it was sent,
+    // so every round with it stays a full one, both ways, as before.
+    let previous = cursor.as_ref().map(|c| c.pushed_through.as_str()).unwrap_or("");
+    let pushed_through = pushed_through_after(previous, &records, pushes, &clock);
+    *db_state.sync_cursor.lock().map_err(|_| "[STATE] LOCK_SYNC_CURSOR")? = match exchange.cursor {
+        Some(server_cursor) if !reset => Some(SyncCursor {
+            generation,
+            server: session.base().to_string(),
+            account: session.account_tag(),
+            partition,
+            key: key_tag(&dek),
+            pushed_through,
+            server_has,
+            pulled: (merged.skipped == 0 && !key_change).then_some(server_cursor),
+        }),
+        _ => None,
+    };
+    // Persist the merged vault so the applied changes survive a restart. A
+    // round that changed nothing has nothing to write: no full write and fsync
+    // every few minutes, on a phone's flash too. What other commands left for
+    // a later save still goes here (`has_unsaved_changes`).
+    if db_state.has_unsaved_changes()? {
+        save_vault_async(db_state).await?;
     }
-    // Persist the merged vault so the applied changes survive a restart.
-    save_vault_async(db_state).await?;
-    Ok((SyncReport { pushed, pulled, key_change, removed, backup }, reset))
+    // Only now: if the save failed, the kept rows are still to be kept.
+    if put_back {
+        if let Ok(path) = &vault {
+            vault_backup::clear_put_back(path);
+        }
+    }
+    let Merged { removed, emptied, backup, .. } = merged;
+    Ok((SyncReport { pushed, pulled, key_change, removed, emptied, backup }, reset))
 }
 
 #[derive(serde::Serialize)]
@@ -2309,6 +2612,99 @@ fn note_share_key(conn: &Connection, key: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// A hash of this member's sealed grant, to tell that it changed without
+/// opening it: opening takes the sharing identity, which every Lock and restart
+/// wipes. Sealing is random, so the same key sealed again counts as a change
+/// until it's opened and compared.
+fn grant_tag(sealed_dek: &str) -> String {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(b"submarine-share-grant-tag-v1\0");
+    h.update(sealed_dek.as_bytes());
+    hex::encode(h.finalize())
+}
+
+/// What a sync takes from this member's grant on the server (`/shares/dek`).
+/// `opened` is the key in it, if this device could open it, and `unlocked` that
+/// the sharing identity was there to try.
+///
+/// Opened, the key goes through `note_share_key`. Not opened, the grant is
+/// only compared with the last one opened here: a different one means the key
+/// may have changed, and with a key it doesn't have this device can neither
+/// read what's new nor write anything the others can read. It then only pulls,
+/// and the page asks the user to unlock sharing (`share_key_state`), or says
+/// the grant won't open when that was tried. A profile from before grants were
+/// kept starts from what the server has now.
+fn note_share_grant(conn: &Connection, sealed_dek: &str, role: &str, opened: Option<&[u8]>, unlocked: bool) -> Result<(), String> {
+    note_share_role(conn, role)?;
+    let seen = grant_tag(sealed_dek);
+    let put = |key: &str| {
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value",
+            [key, &seen],
+        )
+        .map_err(|e| format!("[SHARE] NOTE_GRANT: {e}"))
+    };
+    let settled = || {
+        conn.execute("DELETE FROM sync_meta WHERE key IN ('share_grant_unread','share_grant_refused')", [])
+            .map_err(|e| format!("[SHARE] NOTE_GRANT: {e}"))
+    };
+    let known: Option<String> = conn.query_row("SELECT value FROM sync_meta WHERE key='share_grant'", [], |r| r.get(0)).ok();
+    match opened.filter(|key| key.len() == 32) {
+        Some(key) => {
+            note_share_key(conn, key)?;
+            put("share_grant")?;
+            settled()?;
+        }
+        None if known.is_none() => {
+            put("share_grant")?;
+        }
+        None if known.as_deref() == Some(seen.as_str()) => {
+            settled()?;
+        }
+        None => {
+            put("share_grant_unread")?;
+            if unlocked {
+                put("share_grant_refused")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The grant waiting to be read is one a sync tried with sharing unlocked, and
+/// it wouldn't open, so unlocking won't help. The two have to name the same
+/// grant: a newer one hasn't been tried.
+fn grant_refused(conn: &Connection) -> bool {
+    let meta = |k: &str| conn.query_row("SELECT value FROM sync_meta WHERE key=?1", [k], |r| r.get::<_, String>(0)).ok();
+    let unread = meta("share_grant_unread");
+    unread.is_some() && unread == meta("share_grant_refused")
+}
+
+/// The role the server says this device's user has now. The owner can change
+/// it any time, and nothing else tells a member: an editor made a viewer would
+/// have every push refused, and a viewer made an editor would never push. Only
+/// a member's role moves, between those two: an owner stays one, and no answer
+/// makes anyone an owner here.
+fn note_share_role(conn: &Connection, role: &str) -> Result<(), String> {
+    if role != "editor" && role != "user" {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE sync_meta SET value=?1 WHERE key='share_role' AND value<>'owner' AND value<>?1",
+        [role],
+    )
+    .map_err(|e| format!("[SHARE] NOTE_ROLE: {e}"))?;
+    Ok(())
+}
+
+/// A key change is waiting on the user: a new key to accept, or a grant this
+/// device couldn't open. Either way it only pulls until that's dealt with.
+fn share_key_is_waiting(conn: &Connection) -> bool {
+    conn.query_row("SELECT 1 FROM sync_meta WHERE key IN ('pending_dek','share_grant_unread')", [], |_| Ok(()))
+        .is_ok()
+}
+
 /// A short fingerprint of a share key, for people to compare: the owner's
 /// Profile panel shows the key's, a member's prompt shows a new key's. A
 /// truncated hash of a random 256-bit key gives nothing of the key away.
@@ -2367,46 +2763,83 @@ struct ShareKeyState {
     current: Option<String>,
     /// The fingerprint of a new key waiting for the user's OK.
     pending: Option<String>,
+    /// The server has a grant this device hasn't opened (`note_share_grant`).
+    grant_unread: bool,
+    /// A sync tried that grant with sharing unlocked, and it wouldn't open.
+    grant_refused: bool,
+    /// The sharing identity is unlocked. With `grant_unread` and no
+    /// `grant_refused`, the next sync that reaches the server opens it.
+    identity_unlocked: bool,
 }
 
 /// The open profile's share key, and a new one waiting for the user's OK, as
-/// fingerprints. Nothing for a profile that isn't shared.
+/// fingerprints, and whether the sync is held up by a grant it couldn't open.
+/// Nothing for a profile that isn't shared.
 #[tauri::command]
-async fn share_key_state(db_state: tauri::State<'_, DbState>) -> Result<ShareKeyState, String> {
+async fn share_key_state(
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<ShareKeyState, String> {
+    let identity_unlocked = cloud.identity().await.is_some();
     let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
     let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
     let meta = |k: &str| conn.query_row("SELECT value FROM sync_meta WHERE key=?1", [k], |r| r.get::<_, String>(0)).ok();
     if meta("share_id").is_none() {
-        return Ok(ShareKeyState { current: None, pending: None });
+        return Ok(ShareKeyState { current: None, pending: None, grant_unread: false, grant_refused: false, identity_unlocked });
     }
     Ok(ShareKeyState {
         current: meta("dek").as_deref().and_then(key_fingerprint),
         pending: meta("pending_dek").as_deref().and_then(key_fingerprint),
+        grant_unread: meta("share_grant_unread").is_some(),
+        grant_refused: grant_refused(conn),
+        identity_unlocked,
     })
 }
 
 /// Use the new key the server says the open shared profile has (see
 /// `note_share_key`): the user's call, made after comparing its fingerprint
-/// with the owner's. The next sync uploads again, with it.
+/// with the owner's. `fingerprint` is the one the user was shown. The next
+/// sync uploads again, with it.
 #[tauri::command]
-async fn accept_share_key(db_state: tauri::State<'_, DbState>) -> Result<(), String> {
+async fn accept_share_key(db_state: tauri::State<'_, DbState>, fingerprint: String) -> Result<(), String> {
     {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
-        let pending: String = conn
-            .query_row("SELECT value FROM sync_meta WHERE key='pending_dek'", [], |r| r.get(0))
-            .map_err(|_| "[SHARE] NO_KEY_CHANGE: there's no new key waiting.")?;
-        let tx = conn.unchecked_transaction().map_err(|e| format!("[SHARE] TX: {e}"))?;
-        tx.execute(
-            "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [&pending],
-        )
-        .map_err(|e| format!("[SHARE] SET_DEK: {e}"))?;
-        tx.execute("DELETE FROM sync_meta WHERE key='pending_dek'", [])
-            .map_err(|e| format!("[SHARE] CLEAR_PENDING: {e}"))?;
-        tx.commit().map_err(|e| format!("[SHARE] TX_COMMIT: {e}"))?;
+        take_pending_key(conn, &fingerprint)?;
     }
     save_vault_async(&db_state).await
+}
+
+/// `accept_share_key` on the vault: the key the user checked or nothing. A
+/// sync can replace the waiting key while the dialog is open, and it's the one
+/// the user compared that they said yes to.
+///
+/// Every row is marked to go out again, as when the owner replaces the key
+/// (`bump_for_new_key`): what this device pushed under the old key would
+/// otherwise stay on the server, unreadable to everyone else, because the same
+/// stamp again changes nothing there. A viewer's rows don't go anywhere.
+fn take_pending_key(conn: &Connection, fingerprint: &str) -> Result<(), String> {
+    let pending: String = conn
+        .query_row("SELECT value FROM sync_meta WHERE key='pending_dek'", [], |r| r.get(0))
+        .map_err(|_| "[SHARE] NO_KEY_CHANGE: there's no new key waiting.")?;
+    if key_fingerprint(&pending).as_deref() != Some(fingerprint) {
+        return Err("[SHARE] KEY_CHANGED: another key came in while you were checking that one. Compare the new fingerprint with the owner's.".into());
+    }
+    let role: String = conn
+        .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
+        .unwrap_or_else(|_| "user".to_string());
+    let tx = conn.unchecked_transaction().map_err(|e| format!("[SHARE] TX: {e}"))?;
+    tx.execute(
+        "INSERT INTO sync_meta(key,value) VALUES('dek',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [&pending],
+    )
+    .map_err(|e| format!("[SHARE] SET_DEK: {e}"))?;
+    tx.execute("DELETE FROM sync_meta WHERE key='pending_dek'", [])
+        .map_err(|e| format!("[SHARE] CLEAR_PENDING: {e}"))?;
+    if role != "user" {
+        bump_for_new_key(&tx)?;
+    }
+    tx.commit().map_err(|e| format!("[SHARE] TX_COMMIT: {e}"))
 }
 
 #[cfg(test)]
@@ -2644,6 +3077,12 @@ async fn share_current_profile(
             [],
         )
         .map_err(|e| format!("[SHARE] STORE_ROLE: {e}"))?;
+        // The grant just made is the one to compare with (`note_share_grant`).
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('share_grant',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [grant_tag(&sealed_self)],
+        )
+        .map_err(|e| format!("[SHARE] STORE_GRANT: {e}"))?;
     }
     save_vault_async(&db_state).await?;
     Ok(ShareResult { share_id })
@@ -2949,6 +3388,9 @@ async fn restore_personal_profile(
     if profile_path(&app, &local_name)?.exists() {
         return Err(format!("Profile '{}' already exists", local_name));
     }
+    // Getting a profile from the cloud is wanting it there, whatever was
+    // deleted on this device before.
+    set_cloud_deleted(&cloud_deleted_path(&app)?, &cloud_deleted_key(session.base(), &cloud_profile), false)?;
     *db_state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED")? = Some(local_name.clone());
     // `opened` pins the new profile: the writes and the sync below go to it
     // and nowhere else.
@@ -3029,7 +3471,8 @@ async fn share_set_role(
 /// `/shares/create` replaces the owner's own grant. The owner's next sync
 /// re-uploads every record under the new key (`bump_for_new_key` makes the
 /// server take them), and remaining members are offered the new key on their
-/// next sync (`note_share_key`). Returns the members who weren't given it.
+/// next sync (`note_share_key`). Returns who wasn't given it, and who got it
+/// with no key of theirs on record here to check against.
 async fn rotate_share_dek(
     app: &tauri::AppHandle,
     db_state: &tauri::State<'_, DbState>,
@@ -3038,7 +3481,7 @@ async fn rotate_share_dek(
     share_id: &str,
     share_name: &str,
     generation: u64,
-) -> Result<Vec<LeftOut>, String> {
+) -> Result<RevokeResult, String> {
     let (my_pub, _) = cloud.identity().await.ok_or("[SHARE] IDENTITY_LOCKED")?;
     let mut fresh = [0u8; 32];
     rand::rng().fill_bytes(&mut fresh);
@@ -3129,7 +3572,7 @@ async fn rotate_share_dek(
         tx.commit().map_err(|e| format!("[SHARE] TX_COMMIT: {e}"))?;
     }
     save_vault_async(db_state).await?;
-    Ok(left_out)
+    Ok(RevokeResult { left_out, first_seen: first_seen.into_iter().map(|(email, _)| email).collect() })
 }
 
 /// Marks every synced row to go out again after its share's key is replaced.
@@ -3201,10 +3644,9 @@ async fn share_revoke(
              They can no longer reach the server, but they still hold the old key. Use Replace the key to try again."
         )
     };
-    let left_out = replace_share_key(&app, &db_state, &cloud, &session, &share_id, generation)
+    replace_share_key(&app, &db_state, &cloud, &session, &share_id, generation)
         .await
-        .map_err(not_rotated)?;
-    Ok(RevokeResult { left_out })
+        .map_err(not_rotated)
 }
 
 /// Owner: replace the open shared profile's key, as removing a member does.
@@ -3227,8 +3669,7 @@ async fn share_replace_key(
         own_share(conn, &share_id)?;
         (share_id, db_state.generation_now())
     };
-    let left_out = replace_share_key(&app, &db_state, &cloud, &session, &share_id, generation).await?;
-    Ok(RevokeResult { left_out })
+    replace_share_key(&app, &db_state, &cloud, &session, &share_id, generation).await
 }
 
 /// Replace a share's key and put everything on the server under it. A sync
@@ -3243,7 +3684,7 @@ async fn replace_share_key(
     session: &cloud::Session,
     share_id: &str,
     generation: u64,
-) -> Result<Vec<LeftOut>, String> {
+) -> Result<RevokeResult, String> {
     sync_with(app, db_state, cloud, session, Some(generation)).await?;
     let name = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
@@ -3261,12 +3702,12 @@ async fn replace_share_key(
             .clone()
             .unwrap_or_else(|| "profile".to_string()),
     };
-    let left_out = rotate_share_dek(app, db_state, cloud, session, share_id, &name, generation).await?;
+    let result = rotate_share_dek(app, db_state, cloud, session, share_id, &name, generation).await?;
     // The rows are marked by now, so if this upload fails, the next sync does it.
     if let Err(e) = sync_with(app, db_state, cloud, session, Some(generation)).await {
         eprintln!("[SHARE] uploading under the new key failed, the next sync tries again: {e}");
     }
-    Ok(left_out)
+    Ok(result)
 }
 
 #[derive(serde::Serialize)]
@@ -3274,6 +3715,11 @@ struct RevokeResult {
     /// Members who weren't given the new key, so can't read what changes from
     /// now on until they're invited again.
     left_out: Vec<LeftOut>,
+    /// Members given the new key with no key of theirs on record here to
+    /// check against (invited before keys were kept, or from another device).
+    /// The owner should know each of them: the list comes from the server,
+    /// and a name it added would get the key too.
+    first_seen: Vec<String>,
 }
 
 /// Non-owner: leave a share.
@@ -3312,6 +3758,9 @@ struct ProfileShareStatus {
     current_server: String,
     /// Whether that is a self-hosted one, not the default.
     custom_server: bool,
+    /// Deleted from the cloud on this device: it isn't uploaded until the
+    /// user says so (`cloud_resume_profile`).
+    cloud_deleted: bool,
 }
 
 /// Everything the in-app Profile panel needs about the OPEN profile, read in one
@@ -3320,11 +3769,12 @@ struct ProfileShareStatus {
 /// sharing identity are ready. The member roster is fetched separately.
 #[tauri::command]
 async fn profile_share_status(
+    app: tauri::AppHandle,
     db_state: tauri::State<'_, DbState>,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<ProfileShareStatus, String> {
     // Scoped so both std MutexGuards drop before the awaits below.
-    let (profile, share_id, role, cloud_server) = {
+    let (profile, share_id, role, cloud_server, cloud_profile) = {
         let profile = db_state
             .active_profile
             .lock()
@@ -3339,13 +3789,16 @@ async fn profile_share_status(
                 let role: Option<String> = conn
                     .query_row("SELECT value FROM sync_meta WHERE key='share_role'", [], |r| r.get(0))
                     .ok();
-                (profile, sid, role, profile_server(conn))
+                let cloud_profile = profile.as_deref().map(|p| cloud_profile_of(conn, p));
+                (profile, sid, role, profile_server(conn), cloud_profile)
             }
-            None => (profile, None, None, None),
+            None => (profile, None, None, None, None),
         }
     };
     let st = cloud.status().await;
     let current_server = cloud.base().await;
+    let cloud_deleted = share_id.is_none()
+        && cloud_profile.is_some_and(|p| is_cloud_deleted(&cloud_deleted_path(&app).unwrap_or_default(), &cloud_deleted_key(&current_server, &p)));
     Ok(ProfileShareStatus {
         profile,
         share_id,
@@ -3356,6 +3809,7 @@ async fn profile_share_status(
         cloud_server,
         custom_server: current_server != cloud::CLOUD_API_BASE,
         current_server,
+        cloud_deleted,
     })
 }
 
@@ -3435,18 +3889,49 @@ async fn stop_sharing(
         // Only the profile this was asked for: another one opened meanwhile
         // would otherwise lose its own share link.
         db_state.still_open(generation)?;
-        conn.execute("DELETE FROM sync_meta WHERE key IN ('share_id','share_role','share_name','pending_dek')", [])
-            .map_err(|e| format!("[SHARE] CLEAR_META: {e}"))?;
-        conn.execute("DELETE FROM share_member_keys WHERE share_id=?1", [&share_id])
-            .map_err(|e| format!("[SHARE] CLEAR_PINS: {e}"))?;
-        // Deletions held from the share don't come again once it's left.
-        conn.execute("DELETE FROM held_deletions", [])
-            .map_err(|e| format!("[SHARE] CLEAR_HELD: {e}"))?;
+        let hlc = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?.as_ref().ok_or("[SYNC] NO_HLC")?.clone();
+        leave_share_locally(conn, &share_id, &role, &hlc)?;
     }
     save_vault_async(&db_state).await
 }
 
-/// The deletions held in the open shared profile (approvals::hold_deletions).
+/// What ending or leaving a share does to the open vault.
+fn leave_share_locally(conn: &Connection, share_id: &str, role: &str, hlc: &hlc::Hlc) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM sync_meta WHERE key IN ('share_id','share_role','share_name','pending_dek','share_grant','share_grant_unread','share_grant_refused')",
+        [],
+    )
+    .map_err(|e| format!("[SHARE] CLEAR_META: {e}"))?;
+    conn.execute("DELETE FROM share_member_keys WHERE share_id=?1", [share_id])
+        .map_err(|e| format!("[SHARE] CLEAR_PINS: {e}"))?;
+    // What was held from the share doesn't come again once it's left.
+    conn.execute_batch("DELETE FROM held_deletions; DELETE FROM held_wipes;")
+        .map_err(|e| format!("[SHARE] CLEAR_HELD: {e}"))?;
+    // The profile goes back to syncing as a personal one, and its key may have
+    // changed while it was shared. A stamp of its own gets the escrow past the
+    // one on the server, which holds the key from before, or restoring with
+    // the password would open a key none of the rows are sealed with.
+    conn.execute(
+        "INSERT INTO sync_meta(key,value) VALUES('escrow_stamp',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [hlc.tick()],
+    )
+    .map_err(|e| format!("[SHARE] ESCROW_STAMP: {e}"))?;
+    // A member's copy came from the share, so it has no partition of its own,
+    // and the one named after it may well be somebody else's profile. (An
+    // owner's profile with no row syncs under its name, and stays there.)
+    if role != "owner" {
+        conn.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('cloud_profile',?1) ON CONFLICT(key) DO NOTHING",
+            [new_entity_uuid()],
+        )
+        .map_err(|e| format!("[SHARE] CLOUD_PROFILE: {e}"))?;
+    }
+    Ok(())
+}
+
+/// What is held in the open shared profile: deletions
+/// (approvals::hold_deletions) and records that would empty a secret
+/// (approvals::hold_wipe).
 #[tauri::command]
 async fn held_deletions_list(db_state: tauri::State<'_, DbState>) -> Result<Vec<approvals::HeldDeletion>, String> {
     let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
@@ -3454,22 +3939,24 @@ async fn held_deletions_list(db_state: tauri::State<'_, DbState>) -> Result<Vec<
     Ok(approvals::held_deletions(conn))
 }
 
-/// The user's call on the deletions held in a shared profile: `delete_them`
-/// deletes those rows here too. Otherwise they stay, with a stamp newer than
-/// the deletion's, so the next sync brings them back for everyone.
+/// The user's call on what is held in a shared profile: `delete_them` deletes
+/// those rows here too, and empties what was emptied. Otherwise they stay as
+/// they are, with a stamp newer than the deletion's or the record's, so the
+/// next sync brings them back for everyone.
 #[tauri::command]
 async fn resolve_held_deletions(db_state: tauri::State<'_, DbState>, delete_them: bool) -> Result<usize, String> {
     let done = {
         let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
         let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
         let hlc = db_state.hlc.lock().map_err(|_| "[STATE] LOCK_HLC")?.as_ref().ok_or("[SYNC] NO_HLC")?.clone();
-        resolve_held(conn, &hlc, delete_them)?
+        let (dek, _) = get_or_create_dek(conn)?;
+        resolve_held(conn, &dek, &hlc, delete_them)?
     };
     save_vault_async(&db_state).await?;
     Ok(done)
 }
 
-fn resolve_held(conn: &Connection, hlc: &hlc::Hlc, delete_them: bool) -> Result<usize, String> {
+fn resolve_held(conn: &Connection, key: &[u8; 32], hlc: &hlc::Hlc, delete_them: bool) -> Result<usize, String> {
     let held: Vec<(String, String, String)> = {
         let mut stmt = conn
             .prepare("SELECT uuid, entity_type, updated_at FROM held_deletions")
@@ -3479,6 +3966,7 @@ fn resolve_held(conn: &Connection, hlc: &hlc::Hlc, delete_them: bool) -> Result<
             .map_err(|e| format!("[SYNC] HELD: {e}"))?;
         rows.filter_map(Result::ok).collect()
     };
+    let wipes = approvals::held_wipes(conn);
     // Like a merge: the triggers stay out of it (no tombstone of our own for a
     // deletion, no stamp for a kept row but the one set here).
     conn.execute("INSERT INTO sync_flags(key,val) VALUES('merge',1) ON CONFLICT(key) DO UPDATE SET val=1", [])
@@ -3508,9 +3996,32 @@ fn resolve_held(conn: &Connection, hlc: &hlc::Hlc, delete_them: bool) -> Result<
                 .map_err(|e| format!("[SYNC] KEEP: {e}"))?;
             }
         }
+        let mut fixups = Vec::new();
+        for rec in &wipes {
+            let Some(spec) = ENTITIES.iter().find(|s| s.table == rec.entity_type) else { continue };
+            if delete_them {
+                // As the merge would have: whatever else the record changes
+                // that runs by itself is still held.
+                let watch = approvals::watches(spec.table);
+                let before = if watch { approvals::snapshot(&tx, spec.table, &rec.uuid) } else { None };
+                match apply_entity(&tx, key, spec, rec, false, &mut fixups) {
+                    Ok(()) if watch => approvals::hold_changes(&tx, spec.table, &rec.uuid, before.as_ref())?,
+                    Ok(()) => {}
+                    Err(e) => eprintln!("[SYNC] held record not applied uuid={}: {e}", rec.uuid),
+                }
+            } else {
+                tx.execute(
+                    &format!("UPDATE {} SET updated_at=?1 WHERE uuid=?2", spec.table),
+                    rusqlite::params![stamp_past(&hlc.tick(), &rec.updated_at), rec.uuid],
+                )
+                .map_err(|e| format!("[SYNC] KEEP: {e}"))?;
+            }
+        }
+        repair_links(&tx, fixups);
         tx.execute("DELETE FROM held_deletions", []).map_err(|e| format!("[SYNC] HELD_CLEAR: {e}"))?;
+        tx.execute("DELETE FROM held_wipes", []).map_err(|e| format!("[SYNC] HELD_CLEAR: {e}"))?;
         tx.commit().map_err(|e| format!("[SYNC] TX_COMMIT: {e}"))?;
-        Ok(held.len())
+        Ok(held.len() + wipes.len())
     })();
     let _ = conn.execute("UPDATE sync_flags SET val=0 WHERE key='merge'", []);
     done
@@ -3570,7 +4081,7 @@ mod sync_engine_tests {
         let salt = [3u8; SALT_LEN];
         let password = "correct horse battery staple";
         let master_key = derive_key(password, &salt).unwrap();
-        let rec = build_pw_escrow_record(&master_key, &salt, &dek).unwrap();
+        let rec = build_pw_escrow_record(&master_key, &salt, &dek, ESCROW_UAT).unwrap();
         assert_eq!(rec.entity_type, ESCROW_ETYPE);
         assert_eq!(rec.uuid, ESCROW_UUID);
 
@@ -3645,6 +4156,70 @@ mod sync_engine_tests {
         assert!(approvals::held_by_server(&c).is_empty(), "a personal profile holds nothing");
     }
 
+    // A foreign file's first unlock, in the order it happens there: its
+    // triggers go, this app's come back and work, and what it would do is held.
+    #[test]
+    fn a_foreign_profile_works_as_usual_after_its_first_unlock() {
+        let (a, _ha) = device("A");
+        a.execute_batch(
+            "CREATE TABLE known_hosts(id INTEGER PRIMARY KEY, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
+             INSERT INTO known_hosts(host,port,fingerprint) VALUES('h',22,'SHA256:x');
+             INSERT INTO servers(name,host,port,autostart) VALUES('web','h',22,1);
+             CREATE TRIGGER theirs AFTER UPDATE ON servers BEGIN DELETE FROM known_hosts; END;",
+        )
+        .unwrap();
+        approvals::clear_foreign_schema(&a).unwrap();
+        create_sync_triggers(&a).unwrap();
+        approvals::create_schema(&a).unwrap();
+        approvals::hold_foreign(&a).unwrap();
+        let (uuid, stamp): (String, String) =
+            a.query_row("SELECT uuid, updated_at FROM servers WHERE name='web'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(approvals::held_for(&a, &uuid).into_iter().collect::<Vec<_>>(), vec!["autostart".to_string()]);
+        assert_eq!(count(&a, "known_hosts"), 0);
+
+        a.execute("UPDATE servers SET name='renamed' WHERE name='web'", []).unwrap();
+        let now: String = a.query_row("SELECT updated_at FROM servers WHERE name='renamed'", [], |r| r.get(0)).unwrap();
+        assert!(now > stamp, "an edit is stamped again");
+        let triggers: i64 = a.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='theirs'", [], |r| r.get(0)).unwrap();
+        assert_eq!(triggers, 0);
+    }
+
+    // A co-member moves an allowed server behind a jump host they add in the
+    // same sync. The server's record lands first, with its link still empty;
+    // the repair pass sets it, and that's a move like any other.
+    #[test]
+    fn a_shared_profile_holds_a_server_a_co_member_moves() {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port,run_on_connect) VALUES('web','old.example',22,'ls')", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        let (b, hb) = shared_device("B");
+        let (c, hc) = device("C");
+        approvals::create_schema(&c).unwrap();
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        apply_remote_records(&c, &KEY, &recs, &hc).unwrap();
+        let uuid: String = b.query_row("SELECT uuid FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        approvals::allow(&b, &uuid, &[]).unwrap();
+
+        a.execute("INSERT INTO servers(name,host,port) VALUES('hop','j.example',22)", []).unwrap();
+        a.execute("UPDATE servers SET jump_host_id=(SELECT id FROM servers WHERE name='hop') WHERE name='web'", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let held: Vec<String> = approvals::held_for(&b, &uuid).into_iter().collect();
+        assert_eq!(held, vec!["moved:old.example:22", "run_on_connect"]);
+        assert_eq!(approvals::target_words(&b, &uuid).as_deref(), Some("old.example:22 through hop"));
+
+        // A record that doesn't touch the address holds nothing new.
+        approvals::allow(&b, &uuid, &[]).unwrap();
+        a.execute("UPDATE servers SET color='#fff' WHERE name='web'", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        assert!(approvals::held_for(&b, &uuid).is_empty());
+
+        // A personal profile follows without a word.
+        apply_remote_records(&c, &KEY, &recs, &hc).unwrap();
+        assert!(approvals::held_by_server(&c).is_empty());
+    }
+
     #[test]
     fn dek_is_stable_and_encrypts_blobs() {
         let conn = Connection::open_in_memory().unwrap();
@@ -3674,7 +4249,7 @@ mod sync_engine_tests {
             "CREATE TABLE folders(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
-             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
+             CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
              CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});",
@@ -3946,13 +4521,13 @@ mod sync_engine_tests {
     // deletion's tombstone — and nothing once all of it went up.
     #[test]
     fn a_delta_push_carries_only_what_changed() {
-        let (a, _ha) = device("A");
+        let (a, ha) = device("A");
         a.execute("INSERT INTO folders(name) VALUES('f1')", []).unwrap();
         a.execute("INSERT INTO folders(name) VALUES('f2')", []).unwrap();
         a.execute("INSERT INTO servers(name, host, port) VALUES('s1','h',22)", []).unwrap();
         let first = collect_local_records(&a, &KEY, "").unwrap();
         assert_eq!(first.len(), 3);
-        let cursor = pushed_through_after("", &first, true);
+        let cursor = pushed_through_after("", &first, true, &ha.tick());
         assert!(collect_local_records(&a, &KEY, &cursor).unwrap().is_empty(), "nothing new");
 
         a.execute("UPDATE folders SET name='f1b' WHERE name='f1'", []).unwrap();
@@ -3966,13 +4541,45 @@ mod sync_engine_tests {
             vec![("folders".into(), false), ("folders".into(), true), ("notes".into(), false)],
             "the edit, the new row and the tombstone"
         );
-        let cursor = pushed_through_after(&cursor, &delta, true);
+        let cursor = pushed_through_after(&cursor, &delta, true, &ha.tick());
         assert!(collect_local_records(&a, &KEY, &cursor).unwrap().is_empty());
         // Nothing pushed (a viewer, a key change waiting): the cursor stays.
         a.execute("UPDATE servers SET host='h2'", []).unwrap();
         let held = collect_local_records(&a, &KEY, &cursor).unwrap();
-        assert_eq!(pushed_through_after(&cursor, &held, false), cursor);
+        assert_eq!(pushed_through_after(&cursor, &held, false, &ha.tick()), cursor);
         assert_eq!(collect_local_records(&a, &KEY, &cursor).unwrap().len(), 1, "so it goes next time");
+    }
+
+    // One row stamped further ahead than this device's clock follows (a peer's
+    // clock an hour fast): the cursor stays with the clock, so what's edited
+    // and deleted here afterwards still goes up.
+    #[test]
+    fn a_row_stamped_far_ahead_does_not_stop_this_devices_edits() {
+        let (a, ha) = device("A");
+        a.execute("INSERT INTO folders(name) VALUES('mine')", []).unwrap();
+        a.execute("INSERT INTO notes(title, body) VALUES('gone soon','b')", []).unwrap();
+        let (p, _hp) = device("P");
+        p.execute("INSERT INTO servers(name,host,port) VALUES('s','h',22)", []).unwrap();
+        let mut from_peer = collect_local_records(&p, &KEY, "").unwrap();
+        from_peer[0].updated_at = ahead(60 * 60 * 1000);
+        assert_eq!(apply_remote_records(&a, &KEY, &from_peer, &ha).unwrap(), 0);
+
+        let collected = collect_local_records(&a, &KEY, "").unwrap();
+        let clock = ha.tick();
+        let cursor = pushed_through_after("", &collected, true, &clock);
+        assert_eq!(cursor, clock, "not past what this device's clock has reached");
+        assert!(collect_local_records(&a, &KEY, &cursor).unwrap().iter().all(|r| r.updated_at == from_peer[0].updated_at));
+
+        a.execute("UPDATE folders SET name='edited'", []).unwrap();
+        a.execute("DELETE FROM notes", []).unwrap();
+        let delta = collect_local_records(&a, &KEY, &cursor).unwrap();
+        assert!(delta.iter().any(|r| r.entity_type == "folders" && !r.deleted), "the edit goes up");
+        assert!(delta.iter().any(|r| r.entity_type == "notes" && r.deleted), "and so does the deletion");
+        // Stamps the clock has passed are still the cursor, as before.
+        let (b, hb) = device("B");
+        b.execute("INSERT INTO folders(name) VALUES('f')", []).unwrap();
+        let sent = collect_local_records(&b, &KEY, "").unwrap();
+        assert_eq!(pushed_through_after("", &sent, true, &hb.tick()), sent[0].updated_at);
     }
 
     // Delta sync, the pull side: what couldn't be applied is counted, so the
@@ -4202,6 +4809,61 @@ mod sync_engine_tests {
         apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
         let s: Option<String> = b.query_row("SELECT scope FROM commands WHERE title='uptime'", [], |r| r.get(0)).unwrap();
         assert_eq!(s, None);
+    }
+
+    // #256: on-connect commands for every new terminal sync, and a peer from
+    // before it (no key) editing the server doesn't turn it off.
+    #[test]
+    fn run_on_connect_every_syncs_and_an_older_peers_edit_keeps_it() {
+        let (a, _ha) = device("A");
+        a.execute(
+            "INSERT INTO servers(name, host, port, run_on_connect, run_on_connect_every) VALUES('web', 'h', 22, 'cd /srv', 1)",
+            [],
+        )
+        .unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        let got = |c: &Connection| -> Option<i64> {
+            c.query_row("SELECT run_on_connect_every FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(got(&b), Some(1), "it syncs");
+
+        a.execute("UPDATE servers SET host='h2' WHERE name='web'", []).unwrap();
+        let ahead = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            assert!(obj.as_object_mut().unwrap().remove("run_on_connect_every").is_some(), "a current peer always sends the key");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+            r.updated_at = format!("{ahead:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let host: String = b.query_row("SELECT host FROM servers WHERE name='web'", [], |r| r.get(0)).unwrap();
+        assert_eq!(host, "h2", "the edit applies");
+        assert_eq!(got(&b), Some(1), "and the server keeps it");
+
+        // A current peer turns it off.
+        a.execute("UPDATE servers SET run_on_connect_every=0 WHERE name='web'", []).unwrap();
+        let later = ahead + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            r.updated_at = format!("{later:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        assert_eq!(got(&b), Some(0), "off from a current peer is off");
+
+        // And a server new to this device, from an older peer, lands with it off.
+        let (c, _hc) = device("C");
+        c.execute("INSERT INTO servers(name, host, port) VALUES('db', 'h3', 22)", []).unwrap();
+        let mut recs = collect_local_records(&c, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "servers") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            obj.as_object_mut().unwrap().remove("run_on_connect_every");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let every: Option<i64> = b.query_row("SELECT run_on_connect_every FROM servers WHERE name='db'", [], |r| r.get(0)).unwrap();
+        assert_eq!(every, None);
     }
 
     #[test]
@@ -4447,12 +5109,12 @@ mod sync_engine_tests {
     #[test]
     fn held_deletions_are_deleted_or_kept_by_the_user() {
         let (_a, _ha, b, hb, _batch) = mass_deleted();
-        assert_eq!(resolve_held(&b, &hb, true).unwrap(), 12);
+        assert_eq!(resolve_held(&b, &KEY, &hb, true).unwrap(), 12);
         assert_eq!((count(&b, "servers"), count(&b, "sync_tombstones")), (3, 12));
         assert!(approvals::held_deletions(&b).is_empty());
 
         let (a, ha, b, hb, batch) = mass_deleted();
-        assert_eq!(resolve_held(&b, &hb, false).unwrap(), 12);
+        assert_eq!(resolve_held(&b, &KEY, &hb, false).unwrap(), 12);
         assert_eq!(count(&b, "servers"), 15);
         assert!(approvals::held_deletions(&b).is_empty());
         apply_remote_records(&a, &KEY, &collect_local_records(&b, &KEY, "").unwrap(), &ha).unwrap();
@@ -4467,6 +5129,658 @@ mod sync_engine_tests {
         assert_eq!(stamp_past("000000000000005:00000:me", del), "999999999999990:00008:peer");
         assert_eq!(stamp_past("999999999999999:00000:me", del), "999999999999999:00000:me");
         assert_eq!(stamp_past("000000000000005:00000:me", "999999999999990:99999:peer"), "000000000000005:00000:me");
+    }
+
+    fn meta(c: &Connection, key: &str) -> Option<String> {
+        c.query_row("SELECT value FROM sync_meta WHERE key=?1", [key], |r| r.get(0)).ok()
+    }
+
+    /// A member's device: on a share under `KEY`, with the given role.
+    fn member(node: &str, role: &str) -> (Connection, std::sync::Arc<hlc::Hlc>) {
+        let (c, h) = shared_device(node);
+        c.execute(
+            "INSERT INTO sync_meta(key,value) VALUES('dek',?1),('share_role',?2)",
+            rusqlite::params![hex::encode(KEY), role],
+        )
+        .unwrap();
+        (c, h)
+    }
+
+    // A member with sharing locked can't open their grant, and that's after
+    // every restart. They can still see that it changed: then the device only
+    // pulls, until the grant has been opened and any new key accepted.
+    #[test]
+    fn a_grant_that_changed_while_sharing_was_locked_stops_the_uploads() {
+        let (m, _h) = member("M", "editor");
+        // From before grants were kept: where it starts from, not a change.
+        note_share_grant(&m, "aa", "editor", None, false).unwrap();
+        assert!(!share_key_is_waiting(&m));
+        note_share_grant(&m, "aa", "editor", None, false).unwrap();
+        assert!(!share_key_is_waiting(&m), "the same grant, locked, is nothing new");
+
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(share_key_is_waiting(&m), "the owner replaced the key");
+        assert_eq!(meta(&m, "pending_dek"), None, "and nothing is known of the key yet");
+
+        // Sharing unlocked: the grant opens, and the new key waits for the OK.
+        let new_key = hex::encode([2u8; 32]);
+        note_share_grant(&m, "bb", "editor", Some(&[2u8; 32]), true).unwrap();
+        assert_eq!(meta(&m, "pending_dek").as_deref(), Some(new_key.as_str()));
+        assert_eq!(meta(&m, "share_grant_unread"), None);
+        assert!(share_key_is_waiting(&m), "still only pulling");
+        take_pending_key(&m, &key_fingerprint(&new_key).unwrap()).unwrap();
+        assert!(!share_key_is_waiting(&m));
+
+        // Locked again (every Lock and restart): this grant is known now.
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(!share_key_is_waiting(&m));
+    }
+
+    // What most rounds of a shared profile bring: the grant and role it has.
+    #[test]
+    fn the_same_grant_again_writes_nothing() {
+        let (m, _h) = member("M", "editor");
+        note_share_grant(&m, "aa", "editor", Some(&KEY), true).unwrap();
+        let before = m.total_changes();
+        note_share_grant(&m, "aa", "editor", Some(&KEY), true).unwrap();
+        note_share_grant(&m, "aa", "editor", None, false).unwrap();
+        assert_eq!(m.total_changes(), before);
+        // What did change still lands.
+        note_share_grant(&m, "aa", "user", Some(&KEY), true).unwrap();
+        assert_eq!(meta(&m, "share_role").as_deref(), Some("user"));
+    }
+
+    // Delta sync's usual round: nothing new either way. The merge flag's two
+    // writes looked like a change, so each round wrote the whole vault.
+    #[test]
+    fn a_round_that_brought_nothing_changes_nothing() {
+        let (m, h) = member("M", "editor");
+        let before = m.total_changes();
+        merge_answer(&m, &KEY, &[], &h, Err("no file"), false).unwrap();
+        assert_eq!(m.total_changes(), before);
+    }
+
+    // Sealing is random, so the same key sealed again looks like a change
+    // until it's opened; and a server that goes back to the grant it had
+    // changed nothing.
+    #[test]
+    fn a_grant_that_turns_out_the_same_ends_the_wait() {
+        let (m, _h) = member("M", "editor");
+        note_share_grant(&m, "aa", "editor", None, false).unwrap();
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(share_key_is_waiting(&m));
+        note_share_grant(&m, "bb", "editor", Some(&KEY), true).unwrap();
+        assert!(!share_key_is_waiting(&m), "the key in use, sealed again");
+        assert_eq!(meta(&m, "pending_dek"), None);
+
+        note_share_grant(&m, "cc", "editor", None, false).unwrap();
+        assert!(share_key_is_waiting(&m));
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(!share_key_is_waiting(&m), "back to the one opened here");
+    }
+
+    // Unlocked, and it still won't open: it stays unread, so nothing goes up
+    // under a key the others may have left. Anything but a 32-byte key is no key.
+    #[test]
+    fn a_grant_that_wont_open_keeps_this_device_pulling() {
+        let (m, _h) = member("M", "editor");
+        note_share_grant(&m, "aa", "editor", Some(&KEY), true).unwrap();
+        note_share_grant(&m, "bb", "editor", Some(&[1u8; 16]), true).unwrap();
+        assert!(share_key_is_waiting(&m));
+        assert_eq!(meta(&m, "pending_dek"), None);
+        assert_eq!(meta(&m, "dek"), Some(hex::encode(KEY)));
+    }
+
+    // "It won't open" is only true once a sync tried with sharing unlocked.
+    // Unlocking while offline tries nothing, so it stays a grant still to be
+    // read, and telling the member to ask for a new invitation would be wrong.
+    #[test]
+    fn a_grant_is_called_refused_only_once_a_sync_tried_it() {
+        let (m, _h) = member("M", "editor");
+        note_share_grant(&m, "aa", "editor", Some(&KEY), true).unwrap();
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(share_key_is_waiting(&m) && !grant_refused(&m), "locked: not tried yet");
+
+        note_share_grant(&m, "bb", "editor", None, true).unwrap();
+        assert!(grant_refused(&m), "tried, and it doesn't open");
+        // After a Lock it's the same grant, and it still won't open.
+        note_share_grant(&m, "bb", "editor", None, false).unwrap();
+        assert!(grant_refused(&m));
+
+        note_share_grant(&m, "cc", "editor", None, false).unwrap();
+        assert!(share_key_is_waiting(&m) && !grant_refused(&m), "a newer grant hasn't been tried");
+
+        note_share_grant(&m, "cc", "editor", Some(&KEY), true).unwrap();
+        assert!(!share_key_is_waiting(&m) && !grant_refused(&m));
+        assert_eq!(meta(&m, "share_grant_refused"), None);
+    }
+
+    // The owner changes a member's role and nothing else tells them.
+    #[test]
+    fn the_role_follows_the_server_but_no_answer_makes_or_unmakes_an_owner() {
+        let (m, _h) = member("M", "editor");
+        note_share_grant(&m, "aa", "user", None, false).unwrap();
+        assert_eq!(meta(&m, "share_role").as_deref(), Some("user"), "made a viewer");
+        note_share_role(&m, "editor").unwrap();
+        assert_eq!(meta(&m, "share_role").as_deref(), Some("editor"), "made an editor");
+        for odd in ["owner", "root", ""] {
+            note_share_role(&m, odd).unwrap();
+            assert_eq!(meta(&m, "share_role").as_deref(), Some("editor"), "{odd:?}");
+        }
+        let (o, _h) = member("O", "owner");
+        note_share_role(&o, "user").unwrap();
+        assert_eq!(meta(&o, "share_role").as_deref(), Some("owner"));
+    }
+
+    // The key is the one the user checked, or none: a server can swap what's
+    // waiting while the dialog is open.
+    #[test]
+    fn a_new_key_is_accepted_by_the_fingerprint_the_user_saw() {
+        let (m, _h) = member("M", "editor");
+        note_share_key(&m, &[2u8; 32]).unwrap();
+        let shown = key_fingerprint(&hex::encode([2u8; 32])).unwrap();
+        note_share_key(&m, &[3u8; 32]).unwrap();
+
+        let err = take_pending_key(&m, &shown).unwrap_err();
+        assert!(err.starts_with("[SHARE] KEY_CHANGED"), "{err}");
+        assert_eq!(meta(&m, "dek"), Some(hex::encode(KEY)), "the key in use stays");
+        assert_eq!(meta(&m, "pending_dek"), Some(hex::encode([3u8; 32])));
+
+        take_pending_key(&m, &key_fingerprint(&hex::encode([3u8; 32])).unwrap()).unwrap();
+        assert_eq!(meta(&m, "dek"), Some(hex::encode([3u8; 32])));
+        assert_eq!(meta(&m, "pending_dek"), None);
+        assert!(take_pending_key(&m, &shown).unwrap_err().starts_with("[SHARE] NO_KEY_CHANGE"));
+    }
+
+    // What this device pushed under the old key stays on the server unless a
+    // newer stamp replaces it. Accepting the key marks every row to go out
+    // again; a viewer has nothing up there to put right.
+    #[test]
+    fn accepting_a_new_key_sends_every_row_again() {
+        let stamp = |c: &Connection| -> String { c.query_row("SELECT updated_at FROM servers", [], |r| r.get(0)).unwrap() };
+        let fingerprint = key_fingerprint(&hex::encode([2u8; 32])).unwrap();
+
+        let (m, _h) = member("M", "editor");
+        m.execute("INSERT INTO servers(name,host,port) VALUES('s','h',22)", []).unwrap();
+        let before = stamp(&m);
+        note_share_key(&m, &[2u8; 32]).unwrap();
+        take_pending_key(&m, &fingerprint).unwrap();
+        assert!(stamp(&m) > before, "the server takes it only with a newer stamp");
+        let up = collect_local_records(&m, &[2u8; 32], "").unwrap();
+        assert!(decrypt_entity(up[0].blob.as_ref().unwrap(), &[2u8; 32]).is_ok(), "sealed with the new key");
+
+        let (v, _h) = member("V", "user");
+        v.execute("INSERT INTO servers(name,host,port) VALUES('s','h',22)", []).unwrap();
+        let before = stamp(&v);
+        note_share_key(&v, &[2u8; 32]).unwrap();
+        take_pending_key(&v, &fingerprint).unwrap();
+        assert_eq!(stamp(&v), before);
+        assert_eq!(meta(&v, "dek"), Some(hex::encode([2u8; 32])));
+    }
+
+    /// What the sync server does with what's pushed: a newer stamp replaces
+    /// what it has, anything else leaves it (`sharing.php`, `sync.php`).
+    fn server_takes(server: &mut std::collections::HashMap<String, SyncRecord>, pushed: Vec<SyncRecord>) {
+        for r in pushed {
+            if server.get(&r.uuid).is_none_or(|have| r.updated_at > have.updated_at) {
+                server.insert(r.uuid.clone(), r);
+            }
+        }
+    }
+
+    // The whole of it: the owner replaces the key, a member who hasn't seen
+    // that yet edits a row and pushes it under the old one, which nobody else
+    // can read. Once the member takes the new key, the row is readable again.
+    #[test]
+    fn a_row_pushed_under_the_old_key_heals_when_the_new_key_is_accepted() {
+        let new_key = [2u8; 32];
+        let (o, ho) = member("O", "owner");
+        let (m, hm) = member("M", "editor");
+        o.execute("INSERT INTO servers(name,host,port) VALUES('x','h',22)", []).unwrap();
+        let mut server = std::collections::HashMap::new();
+        server_takes(&mut server, collect_local_records(&o, &KEY, "").unwrap());
+        let all = |s: &std::collections::HashMap<String, SyncRecord>| s.values().cloned().collect::<Vec<_>>();
+        assert_eq!(apply_remote_records(&m, &KEY, &all(&server), &hm).unwrap(), 0);
+
+        bump_for_new_key(&o).unwrap();
+        server_takes(&mut server, collect_local_records(&o, &new_key, "").unwrap());
+        // A later moment than the owner's stamp, whatever this machine's speed.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        m.execute("UPDATE servers SET host='edited'", []).unwrap();
+        server_takes(&mut server, collect_local_records(&m, &KEY, "").unwrap());
+        assert_eq!(apply_remote_records(&o, &new_key, &all(&server), &ho).unwrap(), 1, "the owner can't read it");
+
+        note_share_key(&m, &new_key).unwrap();
+        take_pending_key(&m, &key_fingerprint(&hex::encode(new_key)).unwrap()).unwrap();
+        server_takes(&mut server, collect_local_records(&m, &new_key, "").unwrap());
+        assert_eq!(apply_remote_records(&o, &new_key, &all(&server), &ho).unwrap(), 0);
+        let host: String = o.query_row("SELECT host FROM servers", [], |r| r.get(0)).unwrap();
+        assert_eq!(host, "edited");
+    }
+
+    /// `c` holds a key, a login and a server that all have a secret; the
+    /// records they came in.
+    fn with_secrets(c: &Connection, h: &hlc::Hlc) -> Vec<SyncRecord> {
+        let (a, _ha) = device("A");
+        a.execute("INSERT INTO ssh_keys(name,public_key,private_key,passphrase) VALUES('k','pub','priv','phrase')", []).unwrap();
+        a.execute("INSERT INTO credentials(name,auth_type,username,password) VALUES('c','password','root','pw')", []).unwrap();
+        a.execute("INSERT INTO servers(name,host,port,password) VALUES('s','h',22,'pw2')", []).unwrap();
+        let recs = collect_local_records(&a, &KEY, "").unwrap();
+        assert_eq!(apply_remote_records(c, &KEY, &recs, h).unwrap(), 0);
+        recs
+    }
+
+    fn of<'a>(recs: &'a [SyncRecord], table: &str) -> &'a SyncRecord {
+        recs.iter().find(|r| r.entity_type == table).unwrap()
+    }
+
+    /// `rec` with `field` set to `value`, at a newer stamp.
+    fn with_field(rec: &SyncRecord, field: &str, value: serde_json::Value) -> SyncRecord {
+        reworked(rec, |o| {
+            o.insert(field.to_string(), value);
+        })
+    }
+
+    fn private_key(c: &Connection) -> String {
+        c.query_row("SELECT private_key FROM ssh_keys", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_record_that_empties_a_secret_is_told_from_an_ordinary_edit() {
+        use serde_json::json;
+        let (p, hp) = device("P");
+        let recs = with_secrets(&p, &hp);
+        let key = of(&recs, "ssh_keys");
+        let empties = |rec: &SyncRecord| empties_a_secret(&p, &KEY, rec);
+
+        assert!(empties(&with_field(key, "private_key", json!(""))));
+        assert!(empties(&with_field(key, "private_key", json!(null))));
+        assert!(empties(&with_field(key, "private_key", json!(" \n "))), "spaces are as empty as nothing");
+        assert!(empties(&with_field(key, "passphrase", json!(""))));
+        assert!(empties(&reworked(key, |o| { o.remove("private_key"); })), "a record without it writes NULL");
+        assert!(empties(&with_field(of(&recs, "credentials"), "password", json!(""))));
+        assert!(empties(&with_field(of(&recs, "servers"), "password", json!(""))));
+
+        assert!(!empties(&with_field(key, "private_key", json!("another key"))), "a secret replaced is an edit");
+        let new_key = |c: &str, passphrase: serde_json::Value| {
+            reworked(key, |o| {
+                o.insert("private_key".into(), json!(c));
+                o.insert("passphrase".into(), passphrase);
+            })
+        };
+        assert!(!empties(&new_key("another key", json!(""))), "a new key with no passphrase took the old one along");
+        assert!(empties(&new_key("", json!(""))), "no key at all is what it looks like");
+        assert!(empties(&new_key(" ", json!(null))), "and so are spaces");
+        assert!(!empties(&with_field(key, "name", json!("renamed"))));
+        assert!(!empties(&with_field(of(&recs, "servers"), "host", json!("h2"))));
+
+        // It doesn't land: older than what's here, no such row, can't be read.
+        let mut older = with_field(key, "private_key", json!(""));
+        older.updated_at = key.updated_at.clone();
+        assert!(!empties(&older));
+        let mut new_row = with_field(key, "private_key", json!(""));
+        new_row.uuid = "0123456789abcdef".into();
+        assert!(!empties(&new_row));
+        let mut sealed_elsewhere = with_field(key, "private_key", json!(""));
+        sealed_elsewhere.blob = Some(encrypt_entity(b"{}", &[9u8; 32]).unwrap());
+        assert!(!empties(&sealed_elsewhere));
+        let mut tombstone = with_field(key, "private_key", json!(""));
+        tombstone.deleted = true;
+        assert!(!empties(&tombstone));
+
+        // Nothing there to lose.
+        let empty = with_field(key, "private_key", json!(""));
+        p.execute("UPDATE ssh_keys SET private_key='', passphrase=NULL", []).unwrap();
+        assert!(!empties(&SyncRecord { updated_at: ahead(120_000), ..empty }));
+    }
+
+    // Personal profiles aren't held (the owner's decision): the record lands,
+    // but not before a copy of the profile is kept, and the report says so.
+    #[test]
+    fn a_personal_profile_takes_an_emptied_secret_after_keeping_a_copy() {
+        let (p, hp) = device("P");
+        let recs = with_secrets(&p, &hp);
+        let dir = std::env::temp_dir().join(format!("submarine-emptied-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = dir.join("p.submarine");
+        std::fs::write(&vault, b"the profile as it was").unwrap();
+
+        let wipe = with_field(of(&recs, "ssh_keys"), "private_key", serde_json::json!(""));
+        let merged = merge_answer(&p, &KEY, std::slice::from_ref(&wipe), &hp, Ok(&vault), false).unwrap();
+        assert_eq!((merged.skipped, merged.removed, merged.emptied), (0, 0, 1));
+        let copy = merged.backup.expect("a copy kept first");
+        assert_eq!(std::fs::read(dir.join(copy)).unwrap(), b"the profile as it was");
+        assert_eq!(private_key(&p), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // In a shared profile it waits for this device's user, as an SSH key's
+    // deletion does: the copy is kept, the row stays, and a sync that brings
+    // the same record again changes nothing.
+    #[test]
+    fn a_shared_profile_holds_a_record_that_empties_a_secret() {
+        let (b, hb) = member("B", "editor");
+        let recs = with_secrets(&b, &hb);
+        let dir = std::env::temp_dir().join(format!("submarine-held-wipe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = dir.join("p.submarine");
+        std::fs::write(&vault, b"the profile as it was").unwrap();
+
+        let wipe = with_field(of(&recs, "ssh_keys"), "private_key", serde_json::json!(""));
+        let answer = std::slice::from_ref(&wipe);
+        let merged = merge_answer(&b, &KEY, answer, &hb, Ok(&vault), false).unwrap();
+        assert_eq!((merged.skipped, merged.emptied), (0, 0), "nothing was skipped or lost");
+        assert!(merged.backup.is_some());
+        assert_eq!(private_key(&b), "priv");
+        let held = approvals::held_deletions(&b);
+        assert_eq!((held.len(), held[0].name.as_str(), held[0].emptied), (1, "k", true));
+
+        assert!(merge_answer(&b, &KEY, answer, &hb, Err("no file"), false).unwrap().backup.is_none());
+        assert_eq!(rows_to_empty(&b, &KEY, answer), 0, "held already");
+        assert_eq!(count(&b, "held_wipes"), 1);
+        assert_eq!(private_key(&b), "priv");
+
+        // A newer record that leaves the key alone: nothing is left to decide.
+        let mut renamed = with_field(of(&recs, "ssh_keys"), "name", serde_json::json!("k2"));
+        renamed.updated_at = ahead(120_000);
+        assert_eq!(apply_remote_records(&b, &KEY, &[renamed], &hb).unwrap(), 0);
+        assert_eq!(count(&b, "held_wipes"), 0);
+        assert_eq!(private_key(&b), "priv");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Each person typing their own password is a normal way to share a server
+    // list, and "Save password" is on by default. On a viewer that password goes
+    // nowhere, so the owner's next edit has none. It's no wipe: the edit lands
+    // whole but for that, with nothing held and nothing to review.
+    #[test]
+    fn a_viewers_own_password_stays_and_the_owners_edit_lands() {
+        let (o, _ho) = device("O");
+        o.execute("INSERT INTO servers(name,host,port,username,auth_type) VALUES('s','old.example',22,'root','custom_pass')", []).unwrap();
+        o.execute("INSERT INTO credentials(name,auth_type,username) VALUES('c','password','root')", []).unwrap();
+        let as_shared = collect_local_records(&o, &KEY, "").unwrap();
+        let (v, hv) = member("V", "user");
+        apply_remote_records(&v, &KEY, &as_shared, &hv).unwrap();
+        let id: i32 = v.query_row("SELECT id FROM servers", [], |r| r.get(0)).unwrap();
+        store_prompted_password(&v, id, "own password").unwrap();
+        v.execute("UPDATE credentials SET password='own login'", []).unwrap();
+
+        o.execute("UPDATE servers SET host='new.example', notes='moved', color='red', position=5", []).unwrap();
+        o.execute("UPDATE credentials SET username='ops'", []).unwrap();
+        let mut from_owner = collect_local_records(&o, &KEY, "").unwrap();
+        for r in &mut from_owner {
+            r.updated_at = ahead(60_000);
+        }
+        let dir = std::env::temp_dir().join(format!("submarine-viewer-own-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = dir.join("p.submarine");
+        std::fs::write(&vault, b"the profile").unwrap();
+        let merged = merge_answer(&v, &KEY, &from_owner, &hv, Ok(&vault), false).unwrap();
+        assert_eq!((merged.skipped, merged.removed, merged.emptied), (0, 0, 0));
+        assert_eq!(merged.backup, None, "nothing is lost, so nothing to keep a copy of");
+        assert!(approvals::held_deletions(&v).is_empty(), "nothing to review");
+
+        let server = |c: &str| -> Option<String> { v.query_row(&format!("SELECT {c} FROM servers"), [], |r| r.get(0)).unwrap() };
+        assert_eq!(server("host").as_deref(), Some("new.example"));
+        assert_eq!(server("notes").as_deref(), Some("moved"));
+        assert_eq!(server("color").as_deref(), Some("red"));
+        let position: i64 = v.query_row("SELECT position FROM servers", [], |r| r.get(0)).unwrap();
+        assert_eq!(position, 5);
+        assert_eq!(server("password").as_deref(), Some("own password"));
+        assert_eq!(server("auth_type").as_deref(), Some("custom_pass"), "so it's the one the next connect uses");
+        assert_eq!(server("updated_at"), Some(of(&from_owner, "servers").updated_at.clone()), "in step with the server");
+        let (user, pw): (String, String) = v.query_row("SELECT username, password FROM credentials", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((user.as_str(), pw.as_str()), ("ops", "own login"));
+
+        // A password the owner does give out still arrives.
+        let mut shared_one = with_field(of(&from_owner, "servers"), "password", serde_json::json!("from the owner"));
+        shared_one.updated_at = ahead(120_000);
+        apply_remote_records(&v, &KEY, &[shared_one], &hv).unwrap();
+        assert_eq!(server("password").as_deref(), Some("from the owner"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The same record on an editor is held: the hold is for them.
+        let (e, he) = member("E", "editor");
+        apply_remote_records(&e, &KEY, &as_shared, &he).unwrap();
+        e.execute("UPDATE servers SET password='saved here'", []).unwrap();
+        assert_eq!(apply_remote_records(&e, &KEY, &from_owner, &he).unwrap(), 0);
+        assert_eq!(approvals::held_wipes(&e).len(), 1);
+        let (host, pw): (String, String) = e.query_row("SELECT host, password FROM servers", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((host.as_str(), pw.as_str()), ("old.example", "saved here"));
+    }
+
+    // A viewer keeps what the record would empty, column by column, and the
+    // rest lands: the secret a record replaces, or a new key that needs no
+    // passphrase. An SSH key an editor really wipes stays on a viewer too:
+    // nothing they hold spreads from there. And a role that's missing counts
+    // as viewer, as it does for the push.
+    #[test]
+    fn a_viewer_keeps_only_what_the_record_would_empty() {
+        use serde_json::json;
+        let (v, hv) = member("V", "user");
+        let recs = with_secrets(&v, &hv);
+        let key = of(&recs, "ssh_keys");
+        let passphrase = |c: &Connection| -> Option<String> { c.query_row("SELECT passphrase FROM ssh_keys", [], |r| r.get(0)).unwrap() };
+
+        let wipe = reworked(key, |o| {
+            o.insert("name".into(), json!("renamed"));
+            o.insert("private_key".into(), json!(""));
+            o.insert("passphrase".into(), json!(""));
+        });
+        assert_eq!(rows_to_empty(&v, &KEY, std::slice::from_ref(&wipe)), 0);
+        assert_eq!(apply_remote_records(&v, &KEY, std::slice::from_ref(&wipe), &hv).unwrap(), 0);
+        assert_eq!((private_key(&v).as_str(), passphrase(&v).as_deref()), ("priv", Some("phrase")));
+        let name: String = v.query_row("SELECT name FROM ssh_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(name, "renamed");
+
+        let mut replaced = reworked(key, |o| {
+            o.insert("private_key".into(), json!("another key"));
+            o.insert("passphrase".into(), json!(""));
+        });
+        replaced.updated_at = ahead(120_000);
+        assert_eq!(apply_remote_records(&v, &KEY, &[replaced], &hv).unwrap(), 0);
+        assert_eq!(private_key(&v), "another key");
+        assert_eq!(passphrase(&v).as_deref(), Some(""), "the old key's passphrase went with it");
+
+        // A personal profile and an editor aren't viewers. No role row is.
+        let (p, _hp) = device("P");
+        assert!(!approvals::is_viewer(&p));
+        let (e, _he) = member("E", "editor");
+        assert!(!approvals::is_viewer(&e));
+        let (o, _ho) = member("O", "owner");
+        assert!(!approvals::is_viewer(&o));
+        let (n, _hn) = shared_device("N");
+        assert!(approvals::is_viewer(&n));
+    }
+
+    // Two held in a row: the newest for the row is the one that stays.
+    #[test]
+    fn the_newest_held_record_for_a_row_stays() {
+        let (b, hb) = member("B", "editor");
+        let recs = with_secrets(&b, &hb);
+        let first = with_field(of(&recs, "ssh_keys"), "private_key", serde_json::json!(""));
+        let mut second = with_field(of(&recs, "ssh_keys"), "passphrase", serde_json::json!(""));
+        second.updated_at = ahead(120_000);
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&second), &hb).unwrap();
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&first), &hb).unwrap();
+        let held = approvals::held_wipes(&b);
+        assert_eq!((held.len(), held[0].updated_at.as_str()), (1, second.updated_at.as_str()));
+    }
+
+    // The user's call. Yes: the record lands, as it would have. No: the row
+    // stays, stamped past the record, so it comes back wherever the record landed.
+    #[test]
+    fn a_held_record_is_applied_or_kept_by_the_user() {
+        let (b, hb) = member("B", "editor");
+        let recs = with_secrets(&b, &hb);
+        let wipe = with_field(of(&recs, "ssh_keys"), "private_key", serde_json::json!(""));
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&wipe), &hb).unwrap();
+        assert_eq!(resolve_held(&b, &KEY, &hb, true).unwrap(), 1);
+        assert_eq!(private_key(&b), "");
+        assert!(approvals::held_deletions(&b).is_empty());
+        let stamp: String = b.query_row("SELECT updated_at FROM ssh_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(stamp, wipe.updated_at, "the same row as everywhere else");
+
+        let (b, hb) = member("B", "editor");
+        let recs = with_secrets(&b, &hb);
+        let (other, ho) = device("O");
+        apply_remote_records(&other, &KEY, &recs, &ho).unwrap();
+        let wipe = with_field(of(&recs, "ssh_keys"), "private_key", serde_json::json!(""));
+        apply_remote_records(&other, &KEY, std::slice::from_ref(&wipe), &ho).unwrap();
+        assert_eq!(private_key(&other), "", "a device where it landed");
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&wipe), &hb).unwrap();
+        assert_eq!(resolve_held(&b, &KEY, &hb, false).unwrap(), 1);
+        assert_eq!(private_key(&b), "priv");
+        assert_eq!(count(&b, "held_wipes"), 0);
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&wipe), &hb).unwrap();
+        assert_eq!((private_key(&b).as_str(), count(&b, "held_wipes")), ("priv", 0), "the same record doesn't take it");
+        apply_remote_records(&other, &KEY, &collect_local_records(&b, &KEY, "").unwrap(), &ho).unwrap();
+        assert_eq!(private_key(&other), "priv", "it comes back for everyone");
+    }
+
+    // A yes to the emptied password is no yes to anything else in the record:
+    // on-connect commands in it are held like any others.
+    #[test]
+    fn a_yes_to_a_held_record_allows_only_that() {
+        let (b, hb) = member("B", "editor");
+        let recs = with_secrets(&b, &hb);
+        let server = of(&recs, "servers");
+        let wipe = reworked(server, |o| {
+            o.insert("password".into(), serde_json::json!(""));
+            o.insert("run_on_connect".into(), serde_json::json!("curl x | sh"));
+        });
+        apply_remote_records(&b, &KEY, std::slice::from_ref(&wipe), &hb).unwrap();
+        assert!(approvals::held_for(&b, &server.uuid).is_empty(), "nothing of it landed yet");
+        resolve_held(&b, &KEY, &hb, true).unwrap();
+        assert!(approvals::held_for(&b, &server.uuid).contains(approvals::RUN_ON_CONNECT));
+    }
+
+    // A copy put back: the first sync keeps what its answer would take away
+    // again, and those rows go out with newer stamps. Everything else merges
+    // as usual, so what changed elsewhere since isn't undone.
+    #[test]
+    fn a_copy_put_back_keeps_what_the_next_sync_would_take_again() {
+        let (a, ha) = device("A");
+        a.execute("INSERT INTO servers(name,host,port) VALUES('s1','h',22),('s2','h',22)", []).unwrap();
+        a.execute("INSERT INTO notes(title,body) VALUES('n','old')", []).unwrap();
+        a.execute("INSERT INTO ssh_keys(name,public_key,private_key) VALUES('k','pub','priv')", []).unwrap();
+        // B is the copy, as it was before what happens next.
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+
+        a.execute("DELETE FROM servers WHERE name='s1'", []).unwrap();
+        a.execute("UPDATE ssh_keys SET private_key=''", []).unwrap();
+        a.execute("UPDATE notes SET body='new'", []).unwrap();
+        let answer = collect_local_records(&a, &KEY, "").unwrap();
+
+        let merged = merge_answer(&b, &KEY, &answer, &hb, Err("no file"), true).unwrap();
+        assert_eq!((merged.removed, merged.emptied), (0, 0));
+        assert_eq!(count(&b, "servers"), 2);
+        assert_eq!(private_key(&b), "priv");
+        let body: String = b.query_row("SELECT body FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(body, "new", "an edit from elsewhere still lands");
+
+        apply_remote_records(&a, &KEY, &collect_local_records(&b, &KEY, "").unwrap(), &ha).unwrap();
+        assert_eq!(count(&a, "servers"), 2, "the deleted row is back where it was deleted");
+        assert_eq!(private_key(&a), "priv", "and the key where it was emptied");
+        let merged = merge_answer(&b, &KEY, &answer, &hb, Err("no file"), false).unwrap();
+        assert_eq!((merged.removed, merged.emptied), (0, 0), "the same answer again takes nothing");
+    }
+
+    // Leaving a share puts the profile back on the personal path with whatever
+    // key it has now. The escrow on the server holds the key from before, and
+    // the server keeps what it has on an equal stamp.
+    #[test]
+    fn leaving_a_share_gets_the_escrow_past_the_one_on_the_server() {
+        let (c, h) = member("C", "owner");
+        create_share_pins(&c).unwrap();
+        c.execute("INSERT INTO sync_meta(key,value) VALUES('share_name','n'),('share_grant','a'),('share_grant_unread','b'),('share_grant_refused','b'),('pending_dek','c')", []).unwrap();
+        c.execute("INSERT INTO share_member_keys VALUES('s1','m@x','pk'),('s2','m@x','pk')", []).unwrap();
+        c.execute("INSERT INTO held_deletions VALUES('u1','servers','s',0)", []).unwrap();
+        c.execute("INSERT INTO held_wipes VALUES('u2','ssh_keys','s','b',0)", []).unwrap();
+        assert_eq!(escrow_stamp(&c), ESCROW_UAT, "a profile that never left a share");
+
+        leave_share_locally(&c, "s1", "owner", &h).unwrap();
+        for gone in ["share_id", "share_role", "share_name", "share_grant", "share_grant_unread", "share_grant_refused", "pending_dek"] {
+            assert_eq!(meta(&c, gone), None, "{gone}");
+        }
+        assert_eq!(count(&c, "share_member_keys"), 1, "only that share's");
+        assert_eq!((count(&c, "held_deletions"), count(&c, "held_wipes")), (0, 0));
+
+        let first = escrow_stamp(&c);
+        assert!(first.as_str() > ESCROW_UAT && hlc::Hlc::valid_remote(&first), "{first}");
+        assert_eq!(escrow_stamp(&c), first, "it stays: every full sync sends the same stamp");
+
+        let (master, salt) = ([1u8; 32], [2u8; SALT_LEN]);
+        let mut server = std::collections::HashMap::new();
+        server_takes(&mut server, vec![build_pw_escrow_record(&master, &salt, &[9u8; 32], ESCROW_UAT).unwrap()]);
+        let old = server[ESCROW_UUID].blob.clone();
+        server_takes(&mut server, vec![build_pw_escrow_record(&master, &salt, &KEY, ESCROW_UAT).unwrap()]);
+        assert_eq!(server[ESCROW_UUID].blob, old, "the same stamp changes nothing on the server");
+        server_takes(&mut server, vec![build_pw_escrow_record(&master, &salt, &KEY, &first).unwrap()]);
+        assert_ne!(server[ESCROW_UUID].blob, old, "this one replaces it");
+
+        leave_share_locally(&c, "s1", "owner", &h).unwrap();
+        assert!(escrow_stamp(&c) > first, "and the next time gets past that one");
+    }
+
+    // A member's copy came from the share: it gets a partition of its own, not
+    // one named after it. An owner's profile stays where it has always synced.
+    #[test]
+    fn a_member_who_leaves_gets_a_partition_of_their_own() {
+        let (m, h) = member("M", "editor");
+        create_share_pins(&m).unwrap();
+        leave_share_locally(&m, "s1", "editor", &h).unwrap();
+        let own = meta(&m, "cloud_profile").unwrap();
+        assert_eq!(own.len(), 32);
+        assert_eq!(cloud_profile_of(&m, "work"), own);
+
+        // One that has a partition keeps it.
+        let (m, h) = member("M", "user");
+        create_share_pins(&m).unwrap();
+        m.execute("INSERT INTO sync_meta(key,value) VALUES('cloud_profile','mine')", []).unwrap();
+        leave_share_locally(&m, "s1", "user", &h).unwrap();
+        assert_eq!(meta(&m, "cloud_profile").as_deref(), Some("mine"));
+
+        let (o, h) = member("O", "owner");
+        create_share_pins(&o).unwrap();
+        leave_share_locally(&o, "s1", "owner", &h).unwrap();
+        assert_eq!(meta(&o, "cloud_profile"), None);
+        assert_eq!(cloud_profile_of(&o, "work"), "work");
+    }
+
+    // "Delete from cloud" has to hold until the user says otherwise: the list
+    // is by server and partition, and survives whatever the file holds.
+    #[test]
+    fn partitions_deleted_here_stay_on_the_list_until_taken_off() {
+        let dir = std::env::temp_dir().join(format!("submarine-cloud-deleted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let list = dir.join("cloud_deleted.json");
+        let one = cloud_deleted_key("https://a.example", "p1");
+        let same_elsewhere = cloud_deleted_key("https://b.example", "p1");
+        let other = cloud_deleted_key("https://a.example", "p2");
+
+        assert!(!is_cloud_deleted(&list, &one));
+        set_cloud_deleted(&list, &one, false).unwrap();
+        assert!(!list.exists(), "nothing to note");
+        set_cloud_deleted(&list, &one, true).unwrap();
+        set_cloud_deleted(&list, &one, true).unwrap();
+        set_cloud_deleted(&list, &other, true).unwrap();
+        assert!(is_cloud_deleted(&list, &one) && is_cloud_deleted(&list, &other));
+        assert!(!is_cloud_deleted(&list, &same_elsewhere), "another server's is another partition");
+        assert_eq!(read_cloud_deleted(&list).len(), 2);
+
+        set_cloud_deleted(&list, &one, false).unwrap();
+        assert!(!is_cloud_deleted(&list, &one) && is_cloud_deleted(&list, &other));
+        set_cloud_deleted(&list, &other, false).unwrap();
+        assert!(!list.exists(), "an empty list leaves no file");
+
+        std::fs::write(&list, b"not json").unwrap();
+        assert!(!is_cloud_deleted(&list, &one));
+        set_cloud_deleted(&list, &one, true).unwrap();
+        assert!(is_cloud_deleted(&list, &one), "a bad file is replaced");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A stamp `ms` ahead of now: newer than anything a test device has
@@ -4825,6 +6139,7 @@ mod sync_engine_tests {
 async fn save_vault_async(state: &DbState) -> Result<(), String> {
     let conn_arc = std::sync::Arc::clone(&state.conn);
     let generation = std::sync::Arc::clone(&state.generation);
+    let saved_at = std::sync::Arc::clone(&state.saved_at);
     let (key, salt, path, opened) = {
         let cg = state.conn.lock().map_err(|_| "[STATE] MUTEX_POISON_CONN")?;
         let kg = state.master_key.lock().map_err(|_| "[STATE] MUTEX_POISON_KEY")?;
@@ -4843,7 +6158,9 @@ async fn save_vault_async(state: &DbState) -> Result<(), String> {
             return Err("[STATE] PROFILE_CHANGED: the profile was locked, or another one opened, before it could be saved.".to_string());
         }
         let conn = cg.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-        save_vault_blocking(conn, &key, &salt, &path)
+        save_vault_blocking(conn, &key, &salt, &path)?;
+        saved_at.store(conn.total_changes(), std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     })
     .await
     .map_err(|e| format!("[CRYPTO] VAULT_JOIN: {}", e))?
@@ -4896,6 +6213,10 @@ async fn cloud_list_sync_profiles(
 /// caller can only ever delete their own partition. The local vault (if any) is
 /// left alone; the UI offers "remove from this device" as a separate action.
 /// Returns the number of records the server removed.
+///
+/// The partition is noted on this device first: its local copy would otherwise
+/// go straight back up, escrow and all, at its next unlock (`sync_round`).
+/// Marked before the call so a mark that can't be written stops it there.
 #[tauri::command]
 async fn cloud_delete_profile(
     app: tauri::AppHandle,
@@ -4907,7 +6228,85 @@ async fn cloud_delete_profile(
         return Err("[SYNC] NO_PROFILE_NAME".into());
     }
     let session = cloud.session().await?;
-    cloud::delete_sync_profile(&app, &cloud, &session, &profile).await
+    let list = cloud_deleted_path(&app)?;
+    let key = cloud_deleted_key(session.base(), &profile);
+    let already = is_cloud_deleted(&list, &key);
+    set_cloud_deleted(&list, &key, true)?;
+    let deleted = cloud::delete_sync_profile(&app, &cloud, &session, &profile).await;
+    if deleted.is_err() && !already {
+        let _ = set_cloud_deleted(&list, &key, false);
+    }
+    deleted
+}
+
+/// The user's word to upload the open profile again after
+/// `cloud_delete_profile`: the next sync pushes it in full.
+#[tauri::command]
+async fn cloud_resume_profile(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbState>,
+    cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
+) -> Result<(), String> {
+    let base = cloud.base().await;
+    let partition = {
+        let profile = db_state.active_profile.lock().map_err(|_| "[STATE] LOCK_PROFILE")?.clone().ok_or("[SYNC] NO_PROFILE_OPEN")?;
+        let conn_g = db_state.conn.lock().map_err(|_| "[STATE] LOCK_CONN")?;
+        let conn = conn_g.as_ref().ok_or("[STATE] DB_NOT_OPEN")?;
+        cloud_profile_of(conn, &profile)
+    };
+    set_cloud_deleted(&cloud_deleted_path(&app)?, &cloud_deleted_key(&base, &partition), false)
+}
+
+/// The partition a personal profile syncs under: a restored profile may carry
+/// a different local name than its cloud key, so it records the cloud one in
+/// sync_meta. Everything else goes by its local name.
+fn cloud_profile_of(conn: &Connection, profile: &str) -> String {
+    conn.query_row("SELECT value FROM sync_meta WHERE key='cloud_profile'", [], |r| r.get(0))
+        .unwrap_or_else(|_| profile.to_string())
+}
+
+// The partitions deleted from the cloud on this device, which it doesn't upload
+// again until the user says so. Kept on this device and not in the vault: the
+// profile is closed when it's deleted, and may not be here at all.
+
+fn cloud_deleted_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| format!("[SYSTEM] APP_DATA_DIR_NOT_FOUND: {e}"))?;
+    Ok(dir.join("cloud_deleted.json"))
+}
+
+fn cloud_deleted_key(server: &str, partition: &str) -> String {
+    format!("{server}|{partition}")
+}
+
+fn read_cloud_deleted(path: &Path) -> Vec<String> {
+    fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn is_cloud_deleted(path: &Path, key: &str) -> bool {
+    read_cloud_deleted(path).iter().any(|k| k == key)
+}
+
+/// Adds `key` to the list, or takes it off. No entries leave no file.
+fn set_cloud_deleted(path: &Path, key: &str, deleted: bool) -> Result<(), String> {
+    let mut list = read_cloud_deleted(path);
+    if list.iter().any(|k| k == key) == deleted {
+        return Ok(());
+    }
+    if deleted {
+        list.push(key.to_string());
+    } else {
+        list.retain(|k| k != key);
+    }
+    if list.is_empty() {
+        return fs::remove_file(path).map_err(|e| format!("[SYNC] CLOUD_DELETED_LIST: {e}"));
+    }
+    let bytes = serde_json::to_vec(&list).map_err(|e| format!("[SYNC] CLOUD_DELETED_LIST: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    let written = fs::write(&tmp, bytes).and_then(|_| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written.map_err(|e| format!("[SYNC] CLOUD_DELETED_LIST: {e}"))
 }
 
 /// Replace this profile's entire cloud copy with what's on THIS device.
@@ -4953,6 +6352,8 @@ async fn force_push_profile(
     if share_id.is_some() {
         return Err("[SYNC] SHARED_PROFILE: this profile is shared with other people, and replacing the cloud copy would delete their changes too. Stop sharing first if you really want to reset it.".into());
     }
+    // Asking for the cloud copy to be replaced is saying to upload it.
+    set_cloud_deleted(&cloud_deleted_path(&app)?, &cloud_deleted_key(session.base(), &cloud_profile), false)?;
     let removed = cloud::delete_sync_profile(&app, &cloud, &session, &cloud_profile).await?;
     eprintln!("[SYNC] force push: server dropped {removed} record(s) for '{cloud_profile}'");
     // Pushes are always a full set, so the very next sync repopulates the
@@ -4991,18 +6392,70 @@ async fn close_profile(
     monitor_map: tauri::State<'_, MonitorMap>,
     cloud: tauri::State<'_, std::sync::Arc<cloud::CloudState>>,
 ) -> Result<(), String> {
+    quick_unlock::profile_closed();
+    let opened = state.generation_now();
+    teardown_profile(&state, &ssh, &monitor_map, &cloud, opened).await?;
+    // Here and not in the teardown: after a reload the name may be the one
+    // the new page has just picked.
+    *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE")? = None;
+    Ok(())
+}
+
+/// The page started anew (a reload, the error screen's button) with a profile
+/// open. The old page went without closing anything, and the new one shows the
+/// picker, with no way to reach what is left: every session, forward, mirror
+/// and monitor, and the master key behind them. So it ends here, in a Lock's
+/// order: each session as its tab would close it, then the profile. A reload
+/// isn't a Lock though, so quick unlock may still open by itself: `_closing`
+/// keeps that waiting until all this is done, and the limits below keep the
+/// wait short whatever gets stuck.
+async fn close_after_reload(app: tauri::AppHandle, _closing: tokio::sync::OwnedMutexGuard<()>) {
+    let db = app.state::<DbState>();
+    let opened = match db.conn.lock() {
+        Ok(conn) if conn.is_some() => db.generation_now(),
+        _ => return,
+    };
+    let ssh = app.state::<SshState>();
+    let mut sessions: Vec<String> = ssh.connections.lock().await.keys().cloned().collect();
+    sessions.extend(app.state::<rdp::RdpSessions>().lock().await.keys().cloned());
+    sessions.extend(app.state::<vnc_client::VncClients>().lock().await.keys().cloned());
+    sessions.extend(app.state::<RdpClients>().lock().await.keys().cloned());
+    sessions.extend(app.state::<telnet::Pending>().lock().await.keys().cloned());
+    let disconnect_all = async {
+        for session_id in sessions {
+            let _ = disconnect_session(app.clone(), app.state(), app.state(), app.state(), app.state(), app.state(), app.state(), session_id).await;
+        }
+    };
+    // One session that won't let go doesn't keep the key in memory.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), disconnect_all).await;
+    let monitor_map = app.state::<MonitorMap>();
+    let cloud = app.state::<std::sync::Arc<cloud::CloudState>>();
+    let teardown = teardown_profile(&db, &ssh, &monitor_map, &cloud, opened);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), teardown).await;
+}
+
+/// What closing a profile takes down, see `close_profile`. `opened` is the
+/// generation of the profile that closes.
+async fn teardown_profile(
+    state: &DbState,
+    ssh: &SshState,
+    monitor_map: &MonitorMap,
+    cloud: &cloud::CloudState,
+    opened: u64,
+) -> Result<(), String> {
     // 0. Persist any accumulated in-memory changes (chief among them:
     // cmd_history rows written by TerminalView's Enter-key handler, which
     // deliberately skip a per-keystroke fsync). Best-effort: if the vault
     // isn't in a saveable state (partial init, crypto error) just log via
     // the returned Err and continue teardown — losing recent history is
-    // preferable to leaking session state.
-    let _ = save_vault_async(&state).await;
+    // preferable to leaking session state. The page saves first and asks the
+    // user when that fails (`handleLogout`), so by here the choice is made.
+    let _ = save_vault_async(state).await;
 
     // 1. Stop monitor pollers: each is told to stop (one waiting on a server
     // that never answers would otherwise keep its connection, the node's
     // password or key and its events going), and the list is emptied.
-    monitor::stop_all(monitor_map.inner().clone()).await;
+    monitor::stop_all(monitor_map.clone()).await;
 
     // 1b. Lock sharing too. The account's sharing identity (its secret half
     // is wiped) outlived a lock until now: someone at the picker could take a
@@ -5018,6 +6471,12 @@ async fn close_profile(
         for generation in generations.values_mut() {
             *generation = generation.wrapping_add(1);
         }
+    }
+
+    // 2a. Every transfer and archive job stops. Each holds its own SFTP
+    // session, and would go on moving data for a locked profile.
+    for flag in ssh.transfer_cancels.lock().await.values() {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     // 2b. Collect every active session id, then run the standard
@@ -5077,17 +6536,26 @@ async fn close_profile(
     ssh.kbi_txs.lock().await.clear();
 
     // 6. Drop DB state last, so any in-flight write triggered by a
-    // disconnecting handler above had a valid DB to land in. All of it under
-    // the connection's lock, in the order a save takes the locks: nothing can
-    // see this profile's key with no database, or the next one's database
-    // with this one's key. The new generation tells a command still waiting
-    // on the network that the profile it read from is gone.
+    // disconnecting handler above had a valid DB to land in.
+    forget_open_profile(state, opened)
+}
+
+/// Drops the profile opened at generation `opened`. All of it under the
+/// connection's lock, in the order a save takes the locks: nothing can see
+/// this profile's key with no database, or the next one's database with this
+/// one's key. The new generation tells a command still waiting on the network
+/// that the profile it read from is gone.
+fn forget_open_profile(state: &DbState, opened: u64) -> Result<(), String> {
     let mut conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED_CONN")?;
+    // After a reload this runs beside the new page, which may have opened a
+    // profile by now: that one stays.
+    if state.generation_now() != opened {
+        return Ok(());
+    }
     *conn_guard = None;
     *state.master_key.lock().map_err(|_| "[STATE] LOCK_FAILED_KEY")? = None;
     *state.salt.lock().map_err(|_| "[STATE] LOCK_FAILED_SALT")? = None;
     *state.db_path.lock().map_err(|_| "[STATE] LOCK_FAILED_PATH")? = None;
-    *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE")? = None;
     *state.hlc.lock().map_err(|_| "[STATE] LOCK_FAILED_HLC")? = None;
     *state.profile_lock.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE_LOCK")? = None;
     state.bump_generation();
@@ -5122,6 +6590,7 @@ async fn delete_profile(app_handle: tauri::AppHandle, name: String, state: tauri
             .map_err(|e| format!("[FILE] DELETE_PROFILE_FAILED at {:?}: {}", path, e))?;
     }
     let _ = fs::remove_file(&lock_path);
+    let _ = fs::remove_file(foreign_marker(&path));
     // A save that died between writing the tmp and renaming it leaves a
     // `<name>.submarine.tmp` holding a complete vault. `list_profiles` filters
     // on the `.submarine` extension so nothing ever surfaces it, which means
@@ -5130,9 +6599,35 @@ async fn delete_profile(app_handle: tauri::AppHandle, name: String, state: tauri
     // the profile itself is already gone, so a locked tmp shouldn't fail the
     // delete the user asked for.
     let _ = fs::remove_file(path.with_extension("submarine.tmp"));
+    vault_backup::clear_put_back(&path);
     // And its quick unlock on this device (#166), with its Windows Hello key.
     quick_unlock::forget(&app_handle, &name);
     Ok(())
+}
+
+/// The copies kept of a profile (vault_backup.rs), newest first.
+#[tauri::command]
+async fn profile_copies(app_handle: tauri::AppHandle, name: String) -> Result<Vec<vault_backup::KeptCopy>, String> {
+    validate_profile_name(&name)?;
+    Ok(vault_backup::list(&profile_path(&app_handle, &name)?))
+}
+
+/// Makes a kept copy the profile again (vault_backup.rs). The profile has to
+/// be closed: the file changes under it, as with `delete_profile`.
+#[tauri::command]
+async fn restore_profile_copy(app_handle: tauri::AppHandle, name: String, file: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    validate_profile_name(&name)?;
+    let path = profile_path(&app_handle, &name)?;
+    {
+        let mut held = state.profile_lock.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE_LOCK")?;
+        if held.as_ref().is_some_and(|(p, _)| *p == path) {
+            *held = None;
+        }
+    }
+    // Held to the end: no window can open it while the file changes.
+    let _probe = try_lock_file(&path.with_extension("submarine.lock"))?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    vault_backup::put_back(&path, &file, now)
 }
 
 /// Copy a profile's encrypted file to a user-chosen location so it can be
@@ -5151,6 +6646,7 @@ async fn export_profile(
     if !src.exists() {
         return Err(format!("Profile '{}' not found on disk", name));
     }
+    note_own_export(&app_handle, &src);
 
     // Android: the system's "Save to" picker (android_bridge.rs). The user
     // picks the place; nothing is left in a shared folder like Download
@@ -5160,20 +6656,27 @@ async fn export_profile(
     {
         return android_bridge::save_export(&app_handle, &src, &format!("{}.submarine", name)).await;
     }
-    #[cfg(not(target_os = "android"))]
+    // iOS: into the app's Documents folder, which the Files app shows as
+    // "On My iPhone › Submarine". The copy stays in the app's own container
+    // until the user moves it on from there.
+    #[cfg(target_os = "ios")]
     {
-        // rfd's blocking dialog must not run on the main thread on macOS — we're
-        // already off the UI thread in a tauri async command so a direct call is
-        // fine. spawn_blocking would be needed if this was wrapped differently.
+        return ios_save_export(&app_handle, &src, &format!("{}.submarine", name));
+    }
+    #[cfg(desktop)]
+    {
+        // The async dialog: a blocking one would hold one of the runtime's
+        // workers for as long as it stays open.
         let default_name = format!("{}.submarine", name);
-        let chosen = rfd::FileDialog::new()
+        let chosen = rfd::AsyncFileDialog::new()
             .set_title("Export profile")
             .set_file_name(&default_name)
             .add_filter("Submarine profile", &["submarine"])
-            .save_file();
+            .save_file()
+            .await;
 
         let dst = match chosen {
-            Some(p) => p,
+            Some(p) => p.path().to_path_buf(),
             None => return Ok(None),
         };
 
@@ -5186,6 +6689,68 @@ async fn export_profile(
         fs::copy(&src, &dst)
             .map_err(|e| format!("[FILE] EXPORT_COPY_FAILED to {:?}: {}", dst, e))?;
         Ok(Some(dst.to_string_lossy().to_string()))
+    }
+}
+
+/// The app's Documents folder on iOS: the local pane's home, where exports and
+/// downloads land. The Files app shows it as "On My iPhone › Submarine"
+/// (UIFileSharingEnabled in Info.ios.plist).
+#[cfg(target_os = "ios")]
+fn ios_documents_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().document_dir().map_err(|e| format!("No Documents folder: {}", e))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create the Documents folder: {}", e))?;
+    Ok(dir)
+}
+
+/// Export on iOS: a copy in Documents, next to any earlier one rather than over
+/// it. Returns the copy's name, which is all the user needs to find it.
+#[cfg(target_os = "ios")]
+fn ios_save_export(app: &tauri::AppHandle, src: &std::path::Path, file_name: &str) -> Result<Option<String>, String> {
+    let dir = ios_documents_dir(app).map_err(|e| format!("[FILE] EXPORT_COPY_FAILED: {}", e))?;
+    let stem = file_name.strip_suffix(".submarine").unwrap_or(file_name);
+    let mut dst = dir.join(file_name);
+    let mut n = 2;
+    while dst.exists() {
+        dst = dir.join(format!("{} ({}).submarine", stem, n));
+        n += 1;
+    }
+    fs::copy(src, &dst).map_err(|e| format!("[FILE] EXPORT_COPY_FAILED to {:?}: {}", dst, e))?;
+    Ok(dst.file_name().map(|n| n.to_string_lossy().into_owned()))
+}
+
+/// Keeps the app's data out of iCloud and computer backups. iOS backs up
+/// everything here unless told not to, and that's the vault and the sign-in
+/// token: "a silent credential leak", as Android's manifest calls it where it
+/// shuts backups off. Set on the folder, it counts for all that's in it, so
+/// saves that replace a file don't undo it. Documents, where exports go, stays
+/// in: what's there the user put there.
+#[cfg(target_os = "ios")]
+fn keep_app_data_out_of_backups(app: &tauri::AppHandle) {
+    use std::os::unix::ffi::OsStrExt as _;
+    type CfRef = *const std::ffi::c_void;
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFBooleanTrue: CfRef;
+        static kCFURLIsExcludedFromBackupKey: CfRef;
+        fn CFURLCreateFromFileSystemRepresentation(allocator: CfRef, path: *const u8, len: isize, is_directory: u8) -> CfRef;
+        fn CFURLSetResourcePropertyForKey(url: CfRef, key: CfRef, value: CfRef, error: *mut CfRef) -> u8;
+        fn CFRelease(value: CfRef);
+    }
+    let Ok(dir) = app.path().app_data_dir() else { return };
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.as_os_str().as_bytes();
+    let done = unsafe {
+        let url = CFURLCreateFromFileSystemRepresentation(std::ptr::null(), path.as_ptr(), path.len() as isize, 1);
+        !url.is_null() && {
+            let done = CFURLSetResourcePropertyForKey(url, kCFURLIsExcludedFromBackupKey, kCFBooleanTrue, std::ptr::null_mut());
+            CFRelease(url);
+            done != 0
+        }
+    };
+    if !done {
+        eprintln!("[SYSTEM] BACKUP_EXCLUSION_FAILED");
     }
 }
 
@@ -5230,19 +6795,21 @@ async fn set_secure_screen(app_handle: tauri::AppHandle, enabled: bool) -> Resul
 /// before committing the copy.
 #[tauri::command]
 async fn import_profile_pick() -> Result<Option<(String, String)>, String> {
-    #[cfg(target_os = "android")]
+    // Phones and tablets import through the webview's file input instead.
+    #[cfg(mobile)]
     {
-        return Err("Profile import is not available on Android.".into());
+        return Err("Profile import is not available here.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
-        let picked = rfd::FileDialog::new()
+        let picked = rfd::AsyncFileDialog::new()
             .set_title("Import profile")
             .add_filter("Submarine profile", &["submarine"])
-            .pick_file();
+            .pick_file()
+            .await;
 
         let path = match picked {
-            Some(p) => p,
+            Some(p) => p.path().to_path_buf(),
             None => return Ok(None),
         };
 
@@ -5277,6 +6844,71 @@ async fn import_profile_pick() -> Result<Option<(String, String)>, String> {
 
         Ok(Some((path.to_string_lossy().to_string(), suggested)))
     }
+}
+
+/// `<name>.submarine.imported`: this profile came from a file and hasn't been
+/// unlocked yet. An imported file is encrypted, so nothing can be written into
+/// it until then, and whoever made it chose everything in it: servers that
+/// connect by themselves, forwards into this network, host keys that skip the
+/// prompt. The first unlock holds all that (`approvals::hold_foreign`), and this
+/// marker goes once the result is saved.
+fn foreign_marker(profile: &Path) -> PathBuf {
+    profile.with_extension("submarine.imported")
+}
+
+/// How many exports `OWN_EXPORTS_FILE` remembers.
+const OWN_EXPORTS_MAX: usize = 100;
+/// The hashes of the files this device exported, one to a line: an export that
+/// comes back unchanged is the user's own backup, and restoring it doesn't turn
+/// it into something to review. The vault can't say so itself: all it holds was
+/// written by someone who knew the password, and a hash can only match what left
+/// this device. A backup from another device, or copied by hand, is held like any
+/// other file and allowed once.
+const OWN_EXPORTS_FILE: &str = "own_exports.txt";
+
+fn vault_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn is_own_export(list: &Path, hash: &str) -> bool {
+    fs::read_to_string(list).is_ok_and(|text| text.lines().any(|line| line == hash))
+}
+
+/// Adds a hash to the list, the oldest going past `OWN_EXPORTS_MAX`. Losing the
+/// list costs a review, so a failure here doesn't stop the export.
+fn add_own_export(list: &Path, hash: &str) {
+    let text = fs::read_to_string(list).unwrap_or_default();
+    let mut hashes: Vec<&str> = text.lines().filter(|line| *line != hash).collect();
+    hashes.push(hash);
+    let start = hashes.len().saturating_sub(OWN_EXPORTS_MAX);
+    let _ = fs::write(list, hashes[start..].join("\n"));
+}
+
+/// Remembers a profile's file before it is exported. One not unlocked here yet
+/// is still a foreign file, and its export would be too.
+fn note_own_export(app: &tauri::AppHandle, src: &Path) {
+    if foreign_marker(src).exists() {
+        return;
+    }
+    if let (Ok(dir), Ok(bytes)) = (profiles_dir(app), read_vault_file(src)) {
+        add_own_export(&dir.join(OWN_EXPORTS_FILE), &vault_hash(&bytes));
+    }
+}
+
+/// Puts an imported vault in place, marked unless it's this device's own
+/// export. The marker goes first: a file from elsewhere never lands without it.
+fn place_imported_vault(dst: &Path, bytes: &[u8], name: &str, own_exports: &Path) -> Result<(), String> {
+    if is_own_export(own_exports, &vault_hash(bytes)) {
+        return write_new_profile_file(dst, bytes, name);
+    }
+    let marker = foreign_marker(dst);
+    fs::write(&marker, b"").map_err(|e| format!("[FILE] IMPORT_WRITE_FAILED to {:?}: {}", marker, e))?;
+    write_new_profile_file(dst, bytes, name).inspect_err(|_| {
+        if !dst.exists() {
+            let _ = fs::remove_file(&marker);
+        }
+    })
 }
 
 /// Header + minimum-size check for an exported vault (no decryption — that
@@ -5324,7 +6956,7 @@ async fn import_profile_bytes(
     if dst.exists() {
         return Err(format!("Profile '{}' already exists", name));
     }
-    write_new_profile_file(&dst, &bytes, &name)
+    place_imported_vault(&dst, &bytes, &name, &dir.join(OWN_EXPORTS_FILE))
 }
 
 #[cfg(test)]
@@ -5397,6 +7029,78 @@ mod profile_import_tests {
         assert!(validate_vault_bytes(&v).is_err());
         assert!(validate_vault_bytes(&fake_vault(HEADER_LEN + 3)).is_err());
     }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("submarine-profile-import-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_imported_file_is_marked_unless_this_device_exported_it() {
+        let dir = temp_dir("marked");
+        let list = dir.join(OWN_EXPORTS_FILE);
+        let bytes = fake_vault(HEADER_LEN + NONCE_LEN + 64);
+
+        // From elsewhere.
+        let a = dir.join("a.submarine");
+        place_imported_vault(&a, &bytes, "a", &list).unwrap();
+        assert_eq!(fs::read(&a).unwrap(), bytes);
+        assert!(foreign_marker(&a).exists());
+
+        // This device's own export comes back as it left.
+        add_own_export(&list, &vault_hash(&bytes));
+        let b = dir.join("b.submarine");
+        place_imported_vault(&b, &bytes, "b", &list).unwrap();
+        assert!(b.exists() && !foreign_marker(&b).exists());
+
+        // One byte different and it isn't the same file.
+        let mut other = bytes.clone();
+        *other.last_mut().unwrap() ^= 1;
+        let c = dir.join("c.submarine");
+        place_imported_vault(&c, &other, "c", &list).unwrap();
+        assert!(foreign_marker(&c).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_import_leaves_no_marker_behind() {
+        let dir = temp_dir("failed");
+        let bytes = fake_vault(HEADER_LEN + NONCE_LEN + 64);
+        // Can't be written: the temp name is a folder.
+        let a = dir.join("a.submarine");
+        fs::create_dir(a.with_extension("submarine.tmp")).unwrap();
+        assert!(place_imported_vault(&a, &bytes, "a", &dir.join(OWN_EXPORTS_FILE)).is_err());
+        assert!(!a.exists() && !foreign_marker(&a).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_own_export_list_keeps_the_newest_and_no_doubles() {
+        let dir = temp_dir("list");
+        let list = dir.join(OWN_EXPORTS_FILE);
+        assert!(!is_own_export(&list, "aa"), "no list yet");
+        for i in 0..OWN_EXPORTS_MAX + 5 {
+            add_own_export(&list, &format!("h{i}"));
+        }
+        assert!(!is_own_export(&list, "h4"));
+        assert!(is_own_export(&list, "h5"));
+        assert!(is_own_export(&list, &format!("h{}", OWN_EXPORTS_MAX + 4)));
+        // Exported again, an old one is new again, and counted once.
+        add_own_export(&list, "h5");
+        assert_eq!(fs::read_to_string(&list).unwrap().lines().count(), OWN_EXPORTS_MAX);
+        assert!(!is_own_export(&list, "h"), "the whole line, not a part of it");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_marker_is_no_profile() {
+        let marker = foreign_marker(Path::new("work.submarine"));
+        assert_eq!(marker, Path::new("work.submarine.imported"));
+        // The picker lists files that end in .submarine only.
+        assert_ne!(marker.extension().and_then(|e| e.to_str()), Some("submarine"));
+    }
 }
 
 /// Commit a picked vault file into the profiles dir under `name`. Refuses
@@ -5434,7 +7138,7 @@ async fn import_profile_save(
         return Err("Source file is truncated — header is valid but the body is too small.".into());
     }
 
-    write_new_profile_file(&dst, &bytes, &name)
+    place_imported_vault(&dst, &bytes, &name, &dir.join(OWN_EXPORTS_FILE))
 }
 
 /// Whether the *currently selected* profile's encrypted file exists on
@@ -5454,10 +7158,18 @@ async fn check_db_exists(
 
 #[tauri::command]
 async fn setup_master_db(app_handle: tauri::AppHandle, password: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    // Every path that reaches here from the UI is the user CHOOSING a password
-    // (create a profile, or unlock an existing one), so the strength floor
-    // applies. `restore_personal_profile` is the one caller that doesn't get to
-    // choose — see `enforce_strength` below.
+    // Unlocks what is there. A file gone since the list was read (moved away,
+    // removed in another window) must not turn into a new, empty profile of
+    // that name, under whatever was typed: `create_profile` makes those.
+    let name = state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE")?.clone();
+    if let Some(name) = name {
+        if !profile_path(&app_handle, &name)?.exists() {
+            return Err("[STATE] NO_VAULT: this profile's file isn't here".into());
+        }
+    }
+    // The user chose this password, so the strength floor applies (an existing
+    // vault opens with any). `restore_personal_profile` is the one caller that
+    // doesn't get to choose — see `enforce_strength` below.
     setup_master_db_inner(app_handle, VaultSecret::Password(password), state, true).await.map(|_| ())
 }
 
@@ -5481,6 +7193,9 @@ async fn setup_master_db_inner(
     state: tauri::State<'_, DbState>,
     enforce_strength: bool,
 ) -> Result<u64, String> {
+    // Whatever opens a profile comes through here: after a reload, not before
+    // the teardown of what the old page left open is done (see `closing`).
+    state.teardown_finished().await;
     let (mut password, known_key) = match secret {
         VaultSecret::Password(p) => (p, None),
         VaultSecret::Key(k) => (String::new(), Some(k)),
@@ -5502,6 +7217,8 @@ async fn setup_master_db_inner(
     // Before anything is read: another window on this profile stops it here.
     // If the password turns out wrong the lock is let go with this function.
     let profile_lock = lock_profile(&state, &path)?;
+    let marker = foreign_marker(&path);
+    let foreign = path.exists() && marker.exists();
     let mut conn;
     let salt_bytes: [u8; SALT_LEN];
     // Wrap the derived AES key so it's wiped on every early-return path
@@ -5548,6 +7265,9 @@ async fn setup_master_db_inner(
         let owned = to_sqlite_owned(&decrypted_data)?;
         conn.deserialize(MAIN_DB, owned, false)
             .map_err(|e| format!("[DATABASE] DESERIALIZE_FAILED: {}", e))?;
+        if foreign {
+            approvals::clear_foreign_schema(&conn)?;
+        }
         // Schema migration for vaults created before the Notes feature shipped.
         // Existing tables are untouched; only the new ones get materialised.
         // Idempotent — running it on a fresh vault that already has `notes`
@@ -5637,6 +7357,10 @@ async fn setup_master_db_inner(
             // Commands auto-typed into the FIRST terminal on the INITIAL
             // connect (never on reconnect / extra shells). Empty = nothing.
             "ALTER TABLE servers ADD COLUMN run_on_connect TEXT NOT NULL DEFAULT ''",
+            // 1: the on-connect commands also go into every new terminal of
+            // the server (#256). NULL or 0 = the first terminal only. Synced;
+            // nullable so a record from an older peer still lands.
+            "ALTER TABLE servers ADD COLUMN run_on_connect_every INTEGER",
             // ProxyJump: optional id of another server to bounce through. NULL
             // = connect directly. Nullable + additive so old binaries ignore
             // it (no SCHEMA_VERSION bump, matching run_on_connect above).
@@ -5738,7 +7462,7 @@ async fn setup_master_db_inner(
             "CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, parent_id INTEGER, color TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
-             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
+             CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
              CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
@@ -5761,6 +7485,12 @@ async fn setup_master_db_inner(
     // instead. `execute_batch` rather than `execute` because assigning this
     // pragma reports the resulting value as a row, which `execute` rejects.
     conn.execute_batch("PRAGMA secure_delete = ON;")
+        .map_err(|e| format!("[DATABASE] PRAGMA_FAILED: {}", e))?;
+
+    // The VACUUM below, and any large sort or index build, can spill pages to
+    // SQLite's temporary files, which would put decrypted vault contents on
+    // disk outside the vault's encryption. Kept in memory instead.
+    conn.execute_batch("PRAGMA temp_store = MEMORY;")
         .map_err(|e| format!("[DATABASE] PRAGMA_FAILED: {}", e))?;
 
     // secure_delete only governs deletes from here on. A vault that has been
@@ -5838,6 +7568,10 @@ async fn setup_master_db_inner(
     if get_or_create_dek(&conn)?.1 {
         needs_resave = true;
     }
+    if foreign {
+        approvals::hold_foreign(&conn)?;
+        needs_resave = true;
+    }
 
     // Reset every monitor to paused on profile open. Pollers don't survive
     // app restart, so a row with `paused=0` left over from the previous
@@ -5878,6 +7612,8 @@ async fn setup_master_db_inner(
     if needs_resave {
         save_vault_internal(&state)?;
     }
+    // Only now: what a foreign file's first unlock held is in the saved file.
+    let _ = fs::remove_file(&marker);
     Ok(generation)
 }
 
@@ -6022,6 +7758,14 @@ fn private_key_is_encrypted(text: &str) -> bool {
 fn check_key_algorithm(algorithm: &ssh_key::Algorithm) -> Result<(), String> {
     match algorithm {
         ssh_key::Algorithm::Ed25519 | ssh_key::Algorithm::Rsa { .. } | ssh_key::Algorithm::Ecdsa { .. } => Ok(()),
+        sk if agent_auth::is_security_key(sk) && cfg!(mobile) => Err(format!(
+            "[SSH] UNSUPPORTED_KEY_TYPE: Security keys ({}) aren't supported on phones and tablets yet.",
+            sk.as_str()
+        )),
+        sk if agent_auth::is_security_key(sk) => Err(format!(
+            "[SSH] UNSUPPORTED_KEY_TYPE: This is a security key ({}): its file can't sign here, the key itself has to. An ssh-agent that supports security keys can use it: load it with ssh-add, and leave the server's password and key empty.",
+            sk.as_str()
+        )),
         other => Err(format!("[SSH] UNSUPPORTED_KEY_TYPE: {} keys are not supported.", other.as_str())),
     }
 }
@@ -6260,18 +8004,17 @@ fn load_key_from_disk(path: &std::path::Path) -> Result<LoadedSshKey, String> {
 /// read until the caller asks for it by name, so cancelling costs nothing and
 /// the key never travels for a dialog the user backed out of.
 ///
-/// `async` for the same reason `export_profile` is: rfd's blocking dialog must
-/// not run on the main thread on macOS, and a sync Tauri command does.
+/// The async dialog, for the same reason as in `export_profile`.
 #[tauri::command]
 async fn pick_ssh_key_file() -> Result<Option<String>, String> {
     // Native dialogs are desktop-only, same as profile export/import above.
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
-        Err("Browsing for a key file isn't available on Android — paste the key instead.".into())
+        Err("Browsing for a key file isn't available on a phone or tablet — paste the key instead.".into())
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
-        let mut dialog = rfd::FileDialog::new().set_title("Choose an SSH private key");
+        let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose an SSH private key");
         // Start where the keys almost always are. Key files are conventionally
         // extensionless (`id_ed25519`), which no filter can express, so the
         // picker stays unfiltered and `load_key_from_disk` does the rejecting.
@@ -6281,7 +8024,7 @@ async fn pick_ssh_key_file() -> Result<Option<String>, String> {
                 dialog = dialog.set_directory(&ssh_dir);
             }
         }
-        Ok(dialog.pick_file().map(|p| p.to_string_lossy().into_owned()))
+        Ok(dialog.pick_file().await.map(|p| p.path().to_string_lossy().into_owned()))
     }
 }
 
@@ -6410,6 +8153,31 @@ fn normalize_server_identity(
     }
 }
 
+/// A server's port is kept as an i32 and connected to as a u16: 70000 would
+/// reach port 4464 with no word about it.
+fn check_server_port(port: i32) -> Result<(), String> {
+    if (1..=65535).contains(&port) {
+        Ok(())
+    } else {
+        Err("Port must be 1 to 65535".into())
+    }
+}
+
+#[cfg(test)]
+mod server_port_tests {
+    use super::check_server_port;
+
+    #[test]
+    fn a_port_that_would_wrap_is_refused() {
+        for bad in [0, -1, 65536, 70000] {
+            assert!(check_server_port(bad).is_err(), "took {bad}");
+        }
+        for good in [1, 22, 65535] {
+            assert_eq!(check_server_port(good), Ok(()));
+        }
+    }
+}
+
 #[tauri::command]
 async fn add_server(
     state: tauri::State<'_, DbState>,
@@ -6429,7 +8197,9 @@ async fn add_server(
     autostart: Option<bool>,
     mirrors: Option<Vec<serde_json::Value>>,
     color: Option<String>,
+    persist: Option<bool>,
 ) -> Result<i64, String> {
+    check_server_port(port)?;
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
 
@@ -6466,7 +8236,7 @@ async fn add_server(
         rusqlite::params![new_id, folder_id],
     );
     drop(conn_guard);
-    save_vault_internal(&state)?;
+    save_unless_batched(&state, persist)?;
     Ok(new_id)
 }
 
@@ -6571,7 +8341,9 @@ async fn edit_server(
     // whenever the password field wasn't touched, and the SQL below uses
     // COALESCE(?, password) so the existing column survives.
     preserve_password: Option<bool>,
+    persist: Option<bool>,
 ) -> Result<(), String> {
+    check_server_port(port)?;
     let tunnels_json = serde_json::to_string(&tunnels).unwrap_or_else(|_| "[]".to_string());
     let mirrors_json = mirrors.as_ref()
         .map(|m| serde_json::to_string(m).unwrap_or_else(|_| "[]".into()))
@@ -6635,7 +8407,7 @@ async fn edit_server(
         old_tunnels_json != tunnels_json
     };
 
-    save_vault_internal(&state)?;
+    save_unless_batched(&state, persist)?;
 
     // Forwarding rules changed → drop this server's live tunnel replay cache so
     // every (re)connect / restore path re-seeds from the freshly-saved DB rules
@@ -6813,7 +8585,7 @@ async fn set_folder_color(state: tauri::State<'_, DbState>, id: i32, color: Opti
 /// as plain text in the `notes` column; the UI renders it monospace and lets
 /// the user dump runbook snippets, contact info, alerts to remember, etc.
 #[tauri::command]
-async fn set_server_notes(state: tauri::State<'_, DbState>, id: i32, notes: String) -> Result<(), String> {
+async fn set_server_notes(state: tauri::State<'_, DbState>, id: i32, notes: String, persist: Option<bool>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     conn.execute(
@@ -6821,25 +8593,27 @@ async fn set_server_notes(state: tauri::State<'_, DbState>, id: i32, notes: Stri
         rusqlite::params![notes, id],
     ).map_err(|e| format!("[DATABASE] SERVER_NOTES_FAILED: {}", e))?;
     drop(conn_guard);
-    save_vault_internal(&state)?;
+    save_unless_batched(&state, persist)?;
     Ok(())
 }
 
 /// Per-server commands auto-typed into the first terminal on initial connect.
 /// Stored as a single blob (newline-separated lines); the frontend sends them
-/// only for `-term-0` and only on the first open, never on reconnect. Written
-/// through its own command (like set_server_notes) so it doesn't have to be
-/// threaded through add_server / edit_server's positional parameter lists.
+/// for `-term-0` on the first connect, never on reconnect, and with `every`
+/// also once into each new terminal of the server (#256). Written through its
+/// own command (like set_server_notes) so it doesn't have to be threaded
+/// through add_server / edit_server's positional parameter lists. `every`
+/// left out keeps what the server has.
 #[tauri::command]
-async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, value: String) -> Result<(), String> {
+async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, value: String, every: Option<bool>, persist: Option<bool>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     conn.execute(
-        "UPDATE servers SET run_on_connect=?1 WHERE id=?2",
-        rusqlite::params![value, id],
+        "UPDATE servers SET run_on_connect=?1, run_on_connect_every=COALESCE(?2, run_on_connect_every) WHERE id=?3",
+        rusqlite::params![value, every.map(i64::from), id],
     ).map_err(|e| format!("[DATABASE] SERVER_RUN_ON_CONNECT_FAILED: {}", e))?;
     drop(conn_guard);
-    save_vault_internal(&state)?;
+    save_unless_batched(&state, persist)?;
     Ok(())
 }
 
@@ -6848,7 +8622,7 @@ async fn set_server_run_on_connect(state: tauri::State<'_, DbState>, id: i32, va
 /// (like set_server_notes / set_server_run_on_connect) so it stays out of
 /// add_server / edit_server's positional parameter lists.
 #[tauri::command]
-async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: Option<i32>) -> Result<(), String> {
+async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: Option<i32>, persist: Option<bool>) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     conn.execute(
@@ -6856,7 +8630,7 @@ async fn set_server_jump_host(state: tauri::State<'_, DbState>, id: i32, value: 
         rusqlite::params![value, id],
     ).map_err(|e| format!("[DATABASE] SERVER_JUMP_HOST_FAILED: {}", e))?;
     drop(conn_guard);
-    save_vault_internal(&state)?;
+    save_unless_batched(&state, persist)?;
     Ok(())
 }
 
@@ -6876,7 +8650,7 @@ fn non_ssh_kind(protocol: Option<&str>) -> Option<&'static str> {
 /// Written through its own command, like set_server_jump_host. Unchanged
 /// values aren't written, so they don't stamp the row for sync.
 #[tauri::command]
-async fn set_server_protocol(state: tauri::State<'_, DbState>, id: i32, value: Option<String>) -> Result<(), String> {
+async fn set_server_protocol(state: tauri::State<'_, DbState>, id: i32, value: Option<String>, persist: Option<bool>) -> Result<(), String> {
     let value: Option<&str> = match value.as_deref() {
         None | Some("ssh") => None,
         Some("rdp") => Some("rdp"),
@@ -6892,7 +8666,7 @@ async fn set_server_protocol(state: tauri::State<'_, DbState>, id: i32, value: O
     ).map_err(|e| format!("[DATABASE] SERVER_PROTOCOL_FAILED: {}", e))?;
     drop(conn_guard);
     if changed > 0 {
-        save_vault_internal(&state)?;
+        save_unless_batched(&state, persist)?;
     }
     Ok(())
 }
@@ -6907,8 +8681,8 @@ async fn clone_server(state: tauri::State<'_, DbState>, id: i32) -> Result<i64, 
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     let affected = conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, protocol)
-         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color, notes, run_on_connect, jump_host_id, protocol
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, run_on_connect_every, jump_host_id, protocol)
+         SELECT name || ' (copy)', host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, 0, mirrors, color, notes, run_on_connect, run_on_connect_every, jump_host_id, protocol
          FROM servers WHERE id = ?1",
         rusqlite::params![id],
     ).map_err(|e| format!("[DATABASE] SERVER_CLONE_FAILED: {}", e))?;
@@ -6973,7 +8747,7 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     // ORDER BY (position, id): `position` is the manual drag-to-reorder rank
     // (default 0 for never-reordered rows), and id breaks ties so the order is
     // stable and, before any reorder, identical to the old rowid order.
-    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid, protocol FROM servers ORDER BY position, id")
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, notes, run_on_connect, jump_host_id, updated_at, edited_by, position, uuid, protocol, run_on_connect_every FROM servers ORDER BY position, id")
         .map_err(|e| format!("[DATABASE] PREPARE_FAILED: {}", e))?;
 
     let rows = stmt.query_map([], |row| {
@@ -6998,6 +8772,8 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
             "color": row.get::<_, Option<String>>(16)?,
             "notes": row.get::<_, Option<String>>(17)?.unwrap_or_default(),
             "run_on_connect": row.get::<_, Option<String>>(18)?.unwrap_or_default(),
+            // The commands go into every new terminal too, not only the first (#256).
+            "run_on_connect_every": row.get::<_, Option<i64>>(25)?.unwrap_or(0) != 0,
             "jump_host_id": row.get::<_, Option<i32>>(19)?,
             // Attribution: HLC stamp (encodes last-edit time) + who last edited.
             "updated_at": row.get::<_, Option<String>>(20)?,
@@ -7020,17 +8796,19 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
     }).map_err(|e| format!("[DATABASE] QUERY_MAPPING_FAILED: {}", e))?;
 
     // What this device holds back for each server until the user allows it:
-    // a change someone else made in a shared profile (see approvals.rs).
-    // Empty for every server of a personal profile.
+    // a change someone else made in a shared profile, or all that a profile
+    // imported from elsewhere would do (see approvals.rs). Empty for every
+    // server of a personal profile of this device's.
     let mut held = approvals::held_by_server(conn);
     let mut list = Vec::new();
     for r in rows {
         let mut row = r.map_err(|e| format!("[DATABASE] ROW_FETCH_FAILED: {}", e))?;
-        let items = row
-            .get("uuid")
-            .and_then(|u| u.as_str())
-            .and_then(|u| held.remove(u))
-            .unwrap_or_default();
+        let uuid = row.get("uuid").and_then(|u| u.as_str()).map(str::to_string);
+        let items = uuid.as_deref().and_then(|u| held.remove(u)).unwrap_or_default();
+        // A held move: where the server goes now, for the review to say.
+        if let (true, Some(u)) = (items.iter().any(|i| i.starts_with(approvals::MOVED)), uuid.as_deref()) {
+            row["moved_to"] = json!(approvals::target_words(conn, u));
+        }
         row["held"] = json!(items);
         list.push(row);
     }
@@ -7970,6 +9748,20 @@ fn base_session_id(session_id: &str) -> &str {
     }
 }
 
+/// Which of its tab's connections this is, for the lines its session watcher
+/// adds to the tab's Activity Log; none for the tab's own connection.
+fn connection_label(session_id: &str) -> Option<&'static str> {
+    if session_id.ends_with("::sftp") {
+        Some("dedicated SFTP session")
+    } else if session_id.ends_with("::fwd") {
+        Some("dedicated port forwarding session")
+    } else if base_session_id(session_id) != session_id {
+        Some("a terminal's own login")
+    } else {
+        None
+    }
+}
+
 /// How many times in a row a server may start a keyboard-interactive round with
 /// nothing to answer before the method is given up on (a real one has a
 /// banner, or two).
@@ -8004,9 +9796,11 @@ pub(crate) enum KeyDecodeError {
 /// an encrypted PKCS#8 one) — the same checks `load_key_from_disk` uses — so a
 /// wrong passphrase is reported as `NeedsPassphrase` rather than `Malformed`.
 /// The most bcrypt rounds an OpenSSH private key may ask for. `ssh-keygen`
-/// defaults to 16 and never writes more than a few hundred even when told to;
-/// 1024 leaves generous headroom while keeping a decode bounded to a fraction
-/// of a second, so a key can't make decoding hang.
+/// defaults to 16 and takes any number, and people do raise it for a stronger
+/// passphrase (`-a 100` is about a second to open), so 1024, about ten seconds
+/// of one core, leaves them room while a key can't make decoding hang. Those
+/// seconds hold nothing else up: decoding has a thread of its own and takes no
+/// lock (`decode_private_key_blocking`).
 const MAX_KEY_KDF_ROUNDS: u32 = 1024;
 
 /// What a key's passphrase may cost to try, for the formats that name the cost
@@ -8100,21 +9894,65 @@ fn pbes2_kdf(der: &[u8]) -> Option<Pbes2Kdf> {
 }
 
 /// The Argon2 settings in the header of a PuTTY `.ppk` key: memory (KiB),
-/// passes, lanes. `None` unless all three are there.
-fn ppk_argon2(text: &str) -> Option<(u64, u64, u64)> {
+/// passes, lanes, read by the decoder's rules (`PpkWrapper`, ssh-key's ppk.rs):
+/// `name: value` lines, the last of a name counting, and each `…-Lines: n`
+/// followed by n lines of key text that aren't headers. `Ok(None)` unless all
+/// three are there: without them the decoder asks for no Argon2 work. A number
+/// that can't be read here is an error, as it can't be judged.
+fn ppk_argon2(text: &str) -> Result<Option<(u64, u64, u64)>, String> {
     let (mut memory, mut passes, mut lanes) = (None, None, None);
+    let mut lines = text.lines();
+    lines.next();
+    while let Some(line) = lines.next() {
+        // The decoder stops here too, before any derivation.
+        let Some((key, value)) = line.split_once(": ") else { break };
+        if key.ends_with("-Lines") {
+            let Ok(count) = value.parse::<usize>() else { break };
+            if count > 0 {
+                lines.nth(count - 1);
+            }
+            continue;
+        }
+        let slot = match key {
+            "Argon2-Memory" => &mut memory,
+            "Argon2-Passes" => &mut passes,
+            "Argon2-Parallelism" => &mut lanes,
+            _ => continue,
+        };
+        *slot = Some(value.parse::<u64>().map_err(|_| format!("{key}: {value}"))?);
+    }
+    Ok(memory.zip(passes).zip(lanes).map(|((memory, passes), lanes)| (memory, passes, lanes)))
+}
+
+/// What russh's decoder reads of a PEM key (`decode_secret_key`), by its own
+/// rules: lines taken exactly as they are, nothing before the first BEGIN line
+/// it knows or after the END line that follows, and a line in between that
+/// isn't all base64 characters skipped. Returns the BEGIN lines found (the
+/// last one says how the decoder reads the body) and the body.
+fn pem_as_russh_reads_it(text: &str) -> (Vec<&str>, String) {
+    const BEGIN_LINES: [&str; 5] = [
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY-----",
+        "-----BEGIN EC PRIVATE KEY-----",
+    ];
+    let mut begins = Vec::new();
+    let mut body = String::new();
     for line in text.lines() {
-        if let Some((key, value)) = line.split_once(':') {
-            let value = value.trim().parse::<u64>().ok();
-            match key.trim() {
-                "Argon2-Memory" => memory = value,
-                "Argon2-Passes" => passes = value,
-                "Argon2-Parallelism" => lanes = value,
-                _ => {}
+        if !begins.is_empty() {
+            if line.starts_with("-----END ") {
+                break;
+            }
+            if line.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '+' | '=')) {
+                body.push_str(line);
             }
         }
+        if BEGIN_LINES.contains(&line) {
+            begins.push(line);
+        }
     }
-    Some((memory?, passes?, lanes?))
+    (begins, body)
 }
 
 /// Refuse a private key that asks for more work to unlock than a real key ever
@@ -8123,41 +9961,49 @@ fn ppk_argon2(text: &str) -> Option<(u64, u64, u64)> {
 /// rounds of an OpenSSH key, the Argon2 settings of a PuTTY `.ppk`, the PBKDF2
 /// iterations or scrypt cost of an encrypted PKCS#8 key. Anything else (a
 /// legacy PEM key, whose derivation is a hash or two) parses past this.
+///
+/// It reads what the decoder reads, in the decoder's order, and a cost it
+/// can't read refuses the key: a cost that's unreadable here but readable
+/// there would run with nothing to stop it. The body is decoded stricter than
+/// the decoder does (`BASE64_MIME` also takes padding in the middle), which
+/// can only refuse more.
 fn guard_key_kdf_cost(pem: &str) -> Result<(), KeyDecodeError> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     let too_costly = |what: String| {
         KeyDecodeError::Malformed(format!(
             "this key asks for far more work to unlock than a real key needs ({what}); re-save it with a lower cost (an OpenSSH key: `ssh-keygen -p -f <keyfile>`)"
         ))
     };
-    if let Ok(key) = ssh_key::PrivateKey::from_openssh(pem.trim()) {
-        if let ssh_key::Kdf::Bcrypt { rounds, .. } = key.kdf() {
-            if *rounds > MAX_KEY_KDF_ROUNDS {
-                return Err(KeyDecodeError::Malformed(format!(
-                    "this key asks for {rounds} key-derivation rounds — far more than a real key needs (limit {MAX_KEY_KDF_ROUNDS}); re-save it with `ssh-keygen -p -f <keyfile>`"
-                )));
-            }
-        }
-        return Ok(());
-    }
+    let unreadable = || KeyDecodeError::Malformed("what this key costs to unlock can't be read, so it isn't opened".to_string());
     if pem.trim_start().starts_with("PuTTY-User-Key-File-") {
-        if let Some((kib, passes, lanes)) = ppk_argon2(pem) {
+        let argon2 = ppk_argon2(pem).map_err(|line| KeyDecodeError::Malformed(format!("this key's cost can't be read ({line}), so it isn't opened")))?;
+        if let Some((kib, passes, lanes)) = argon2 {
             if kib > MAX_PPK_ARGON2_KIB || kib.saturating_mul(passes) > MAX_PPK_ARGON2_WORK || lanes > MAX_PPK_ARGON2_LANES {
                 return Err(too_costly(format!("Argon2: {kib} KiB, {passes} passes, {lanes} lanes")));
             }
         }
         return Ok(());
     }
-    if pem_private_key_header(pem) == "-----BEGIN ENCRYPTED PRIVATE KEY-----" {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
-        let body: String = pem
-            .lines()
-            .map(str::trim)
-            .skip_while(|l| !l.starts_with("-----BEGIN "))
-            .skip(1)
-            .take_while(|l| !l.starts_with("-----END "))
-            .collect();
-        if let Some(kdf) = STANDARD.decode(body.as_bytes()).ok().as_deref().and_then(pbes2_kdf) {
-            match kdf {
+    let (begins, body) = pem_as_russh_reads_it(pem);
+    // The decoder would go by the last, the checks around it by the first.
+    if begins.len() > 1 {
+        return Err(KeyDecodeError::Malformed("this key has more than one key header in one block".to_string()));
+    }
+    match begins.first().copied() {
+        Some("-----BEGIN OPENSSH PRIVATE KEY-----") => {
+            let der = STANDARD.decode(body.as_bytes()).map_err(|_| unreadable())?;
+            let key = ssh_key::PrivateKey::from_bytes(&der).map_err(|e| KeyDecodeError::Malformed(e.to_string()))?;
+            if let ssh_key::Kdf::Bcrypt { rounds, .. } = key.kdf() {
+                if *rounds > MAX_KEY_KDF_ROUNDS {
+                    return Err(KeyDecodeError::Malformed(format!(
+                        "this key asks for {rounds} key-derivation rounds — far more than a real key needs (limit {MAX_KEY_KDF_ROUNDS}); re-save it with `ssh-keygen -p -f <keyfile>`"
+                    )));
+                }
+            }
+        }
+        Some("-----BEGIN ENCRYPTED PRIVATE KEY-----") => {
+            let der = STANDARD.decode(body.as_bytes()).map_err(|_| unreadable())?;
+            match pbes2_kdf(&der).ok_or_else(unreadable)? {
                 Pbes2Kdf::Pbkdf2 { iterations } if iterations > MAX_PBKDF2_ITERATIONS => {
                     return Err(too_costly(format!("PBKDF2: {iterations} iterations")));
                 }
@@ -8170,8 +10016,23 @@ fn guard_key_kdf_cost(pem: &str) -> Result<(), KeyDecodeError> {
                 _ => {}
             }
         }
+        _ => {}
     }
     Ok(())
+}
+
+/// `decode_private_key` off the async workers: within its caps a key may take
+/// up to a minute to open, and code that never yields can't be timed out. A
+/// caller that goes away leaves it to finish by itself, holding nothing.
+pub(crate) async fn decode_private_key_blocking(
+    private_key: &str,
+    passphrase: Option<&str>,
+) -> Result<russh::keys::PrivateKey, KeyDecodeError> {
+    let private_key = Zeroizing::new(private_key.to_string());
+    let passphrase = passphrase.map(|p| Zeroizing::new(p.to_string()));
+    tokio::task::spawn_blocking(move || decode_private_key(&private_key, passphrase.as_ref().map(|p| p.as_str())))
+        .await
+        .unwrap_or_else(|e| Err(KeyDecodeError::Malformed(e.to_string())))
 }
 
 pub(crate) fn decode_private_key(
@@ -8210,9 +10071,11 @@ pub(crate) fn decode_private_key(
     }
     // An unencrypted SEC1 / PKCS#8 key is read without the passphrase: russh's
     // PKCS#8 reader takes any passphrase it is handed to mean "this key is
-    // encrypted" and fails, so one saved with such a key would break it.
-    let header = pem_private_key_header(&normalized);
-    let plain_pem = header == "-----BEGIN PRIVATE KEY-----" || header == "-----BEGIN EC PRIVATE KEY-----";
+    // encrypted" and fails, so one saved with such a key would break it. The
+    // header is the one russh goes by: handed a passphrase, that reader runs
+    // the key derivation of whatever the body says, which nothing checked.
+    let (begins, _) = pem_as_russh_reads_it(&normalized);
+    let plain_pem = matches!(begins.first().copied(), Some("-----BEGIN PRIVATE KEY-----" | "-----BEGIN EC PRIVATE KEY-----"));
     let passphrase = if plain_pem { None } else { passphrase };
     match russh::keys::decode_secret_key(&normalized, passphrase) {
         Ok(key) => Ok(key),
@@ -8359,14 +10222,19 @@ struct SecretPromptCtx<'a> {
     /// Set when an agent signature failed or timed out after the server had
     /// accepted the key. russh's session then waits for that signature and
     /// drops everything else, so no other method may run on it — the
-    /// keyboard-interactive fallback included.
+    /// keyboard-interactive fallback included. Set too when the login was
+    /// stopped part-way (`login_step`).
     session_unusable: std::sync::atomic::AtomicBool,
+    /// Milliseconds of this login the server has had (`drive_login`).
+    server_time: std::sync::atomic::AtomicU64,
 }
 
 /// The ssh-agent for one login. Looked up the first time a step wants it, so a
 /// login that works without one never touches an agent, and let go once the
 /// login is over.
 struct AgentSlot {
+    /// The device's "Use keys from an ssh-agent" setting.
+    use_agent: bool,
     looked: bool,
     agent: Option<agent_auth::AgentSession>,
     /// What `IdentityAgent` in `~/.ssh/config` says for this host, if it
@@ -8381,15 +10249,23 @@ struct AgentSlot {
 impl AgentSlot {
     /// `use_agent` is the device's "Use keys from an ssh-agent" setting. Off,
     /// the slot starts as looked-and-none, so no agent is ever contacted. With
-    /// `IdentitiesOnly yes` only the config's key files are used, as OpenSSH.
+    /// `IdentitiesOnly yes` the agent signs only for a named security key (see
+    /// `agent_allowed`).
     fn new(
         use_agent: bool,
         identity_agent: Option<ssh_config::IdentityAgent>,
         identities: ConfigIdentities,
     ) -> tokio::sync::Mutex<Self> {
-        let use_agent = use_agent && !identities.only;
-        tokio::sync::Mutex::new(Self { looked: !use_agent, agent: None, identity_agent, identities, identities_tried: false })
+        tokio::sync::Mutex::new(Self { use_agent, looked: !use_agent, agent: None, identity_agent, identities, identities_tried: false })
     }
+}
+
+/// Whether this login may offer `which` from the agent. With `IdentitiesOnly
+/// yes` only the key files ~/.ssh/config names are used, and the agent signs
+/// only for a security key among them, whose file can't. The node's own
+/// security key counts as named too, like a key given with `ssh -i`.
+fn agent_allowed(identities_only: bool, which: &agent_auth::Offer<'_>) -> bool {
+    !identities_only || matches!(which, agent_auth::Offer::Only(key) if agent_auth::is_security_key(&key.algorithm()))
 }
 
 /// The key and certificate files `~/.ssh/config` names for a host, paths
@@ -8495,7 +10371,7 @@ impl ConfigTarget {
         let certs = self.expand_paths(&c.certificate_files, "CertificateFile", user);
         let only = c.identities_only == Some(true);
         if only && !keys.is_empty() {
-            self.log.push("~/.ssh/config: IdentitiesOnly yes: only its IdentityFile keys are used, not an ssh-agent's.".into());
+            self.log.push("~/.ssh/config: IdentitiesOnly yes: only its IdentityFile keys are used, not the other keys an ssh-agent holds.".into());
         }
         ConfigIdentities { keys, certs, only }
     }
@@ -8654,7 +10530,19 @@ async fn try_agent_keys<H: russh::client::Handler>(
             return Ok(Some(outcome));
         }
     }
-    if !agent_available(ctx).await {
+    offer_agent_keys(session, user, which, already_offered, ctx).await
+}
+
+/// The agent's part of `try_agent_keys`, without the key files.
+async fn offer_agent_keys<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    which: agent_auth::Offer<'_>,
+    already_offered: Option<&russh::keys::PublicKey>,
+    ctx: &SecretPromptCtx<'_>,
+) -> Result<Option<agent_auth::AgentOutcome>, russh::Error> {
+    let identities_only = ctx.agent.lock().await.identities.only;
+    if !agent_allowed(identities_only, &which) || !agent_available(ctx).await {
         return Ok(None);
     }
     let mut slot = ctx.agent.lock().await;
@@ -8664,7 +10552,9 @@ async fn try_agent_keys<H: russh::client::Handler>(
     if let Some(key) = already_offered {
         agent.mark_offered(key);
     }
-    match agent_auth::offer_keys(session, user, agent, which, |m| ctx.log(&m, "info")).await {
+    // An agent may be waiting for a PIN or a touch: each key has its own limit
+    // (AGENT_SIGN_TIMEOUT), and the login's deadline stands still meanwhile.
+    match ctx.attempt.at_prompt(agent_auth::offer_keys(session, user, agent, which, |m| ctx.log(&m, "info"))).await {
         Ok(outcome) => Ok(Some(outcome)),
         Err(e) => {
             ctx.session_unusable.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -8680,6 +10570,10 @@ async fn device_keys_available(ctx: &SecretPromptCtx<'_>) -> bool {
         let slot = ctx.agent.lock().await;
         if !slot.identities_tried && !slot.identities.keys.is_empty() {
             return true;
+        }
+        // IdentitiesOnly yes: no agent key but one those files name.
+        if slot.identities.only {
+            return false;
         }
     }
     agent_available(ctx).await
@@ -8713,7 +10607,7 @@ async fn decode_identity_file(text: &str, path: &str, ctx: &SecretPromptCtx<'_>)
     let mut from_cache = passphrase.is_some();
     let mut prompts = 0u32;
     loop {
-        match decode_private_key(text, passphrase.as_ref().map(|p| p.as_str())) {
+        match ctx.attempt.at_prompt(decode_private_key_blocking(text, passphrase.as_ref().map(|p| p.as_str()))).await {
             Ok(key) => {
                 if let Some(p) = passphrase {
                     if !from_cache {
@@ -8788,8 +10682,24 @@ async fn try_config_identities<H: russh::client::Handler>(
                 continue;
             }
         };
+        // A security key's file holds only a handle, and signing with it would
+        // end the session: the agent's copy of the key is offered in its place.
+        // Looked for before decoding, so no passphrase is asked for it, and
+        // after, for a file only the decoder reads.
+        if let Some(public) = agent_auth::security_key_file(&text) {
+            if let Some(found) = security_key_from_agent(session, user, &format!("IdentityFile {path}"), &public, ctx).await? {
+                return Ok(Some(found));
+            }
+            continue;
+        }
         let Some(key) = decode_identity_file(&text, &path, ctx).await else { continue };
         let public = key.public_key().clone();
+        if agent_auth::is_security_key(&public.algorithm()) {
+            if let Some(found) = security_key_from_agent(session, user, &format!("IdentityFile {path}"), &public, ctx).await? {
+                return Ok(Some(found));
+            }
+            continue;
+        }
         let key = std::sync::Arc::new(key);
         let mut with_certs: Vec<(String, russh::keys::Certificate)> =
             named_certs.iter().filter(|(_, c)| c.public_key() == public.key_data()).cloned().collect();
@@ -8834,6 +10744,44 @@ async fn try_config_identities<H: russh::client::Handler>(
     Ok(Some(outcome))
 }
 
+/// Log in with an ssh-agent's copy of a security key. Its file (`what`: an
+/// IdentityFile, or the node's own key) holds only a handle, and signing with
+/// it would end the session. `Ok(Some(_))` once logged in or the server wants
+/// another factor; `Ok(None)` otherwise, with why logged when no agent here
+/// can sign for it.
+async fn security_key_from_agent<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    what: &str,
+    key: &russh::keys::PublicKey,
+    ctx: &SecretPromptCtx<'_>,
+) -> Result<Option<agent_auth::AgentOutcome>, russh::Error> {
+    use agent_auth::AgentOutcome;
+    let use_agent = ctx.agent.lock().await.use_agent;
+    let why = if !use_agent {
+        "keys from an ssh-agent are turned off in Settings".to_string()
+    } else if !agent_available(ctx).await {
+        "no ssh-agent with keys is available".to_string()
+    } else {
+        let (source, held, offered) = match ctx.agent.lock().await.agent.as_ref() {
+            Some(agent) => (agent.source, agent.holds(key), agent.was_offered(key)),
+            None => return Ok(None),
+        };
+        // Tried on this connection already (named twice, say).
+        if offered {
+            return Ok(None);
+        }
+        if held {
+            ctx.log(&format!("{what} is a security key, whose file can't sign here: trying it through {source}..."), "info");
+            let outcome = offer_agent_keys(session, user, agent_auth::Offer::Only(key), None, ctx).await?;
+            return Ok(outcome.filter(|o| matches!(o, AgentOutcome::Authenticated | AgentOutcome::PartialSuccess { .. })));
+        }
+        format!("{source} doesn't hold it (load it with ssh-add)")
+    };
+    ctx.log(&format!("{what} is a security key, whose file can't sign here; it isn't used: {why}."), "info");
+    Ok(None)
+}
+
 /// The agent's keys not offered yet, after the node's own credentials didn't
 /// log in. `Ok(true)` once logged in; a partial success leaves the second
 /// factor to the keyboard-interactive fallback, as with the node's own key.
@@ -8847,6 +10795,22 @@ async fn agent_keys_after<H: russh::client::Handler>(
         try_agent_keys(session, user, agent_auth::Offer::Rest, already_offered, ctx).await?,
         Some(agent_auth::AgentOutcome::Authenticated)
     ))
+}
+
+/// The node's own key is a security key, whose file can't sign: the agent's
+/// copy of it is offered, then the other keys this login may try. `Ok(true)`
+/// once logged in; a partial success leaves the second factor to the
+/// keyboard-interactive fallback.
+async fn node_security_key<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    key: &russh::keys::PublicKey,
+    ctx: &SecretPromptCtx<'_>,
+) -> Result<bool, russh::Error> {
+    match security_key_from_agent(session, user, "This key", key, ctx).await? {
+        Some(outcome) => Ok(matches!(outcome, agent_auth::AgentOutcome::Authenticated)),
+        None => agent_keys_after(session, user, None, ctx).await,
+    }
 }
 
 /// Let the ssh-agent go once the login is over.
@@ -8881,6 +10845,24 @@ impl SecretPromptCtx<'_> {
             slot.agent.is_some() || !slot.identities.keys.is_empty()
         };
         Some(SaveTarget { ticked: !keys, ..to })
+    }
+
+    /// One stretch of the login: `step`, unless the tab closes first or the
+    /// server has used up LOGIN_SERVER_TIME (see `drive_login`). `None` then,
+    /// with a prompt that was open taken down. Nothing else runs on the
+    /// session after that, and it goes when the caller's login ends.
+    async fn login_step<T>(&self, step: impl std::future::Future<Output = T>) -> Option<T> {
+        use tauri::Emitter;
+        let done = drive_login(step, self.attempt, &self.server_time, LOGIN_SERVER_TIME).await;
+        if done.is_none() {
+            self.session_unusable.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.kbi_txs.lock().await.remove(self.nonce);
+            let _ = self.app.emit(
+                &format!("kbi-prompt-dismiss-{}", self.session_id),
+                serde_json::json!({ "nonce": self.nonce }),
+            );
+        }
+        done
     }
 }
 
@@ -8932,7 +10914,7 @@ async fn prompt_for_secret_offering_save(
         payload["save"] = to.offer(ctx.app);
     }
     let _ = ctx.app.emit(&format!("kbi-prompt-{}", ctx.session_id), payload);
-    let answer = match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
+    let answer = match ctx.attempt.at_prompt(tokio::time::timeout(std::time::Duration::from_secs(120), rx)).await {
         Ok(Ok(Some(mut answers))) => {
             // One prompt → one answer; ignore extras, treat a missing one as "".
             let first = if answers.is_empty() { String::new() } else { answers.swap_remove(0) };
@@ -9176,6 +11158,11 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
     slot: SecretSlot,
     ctx: &SecretPromptCtx<'_>,
 ) -> Result<bool, russh::Error> {
+    // A security key's file can't sign, and trying would end the session: an
+    // ssh-agent's copy of the key is tried instead, with no passphrase asked.
+    if let Some(public) = agent_auth::security_key_file(private_key) {
+        return node_security_key(session, user, &public, ctx).await;
+    }
     let cached = cache_get_secret(ctx.cache, ctx.base, slot).await;
     let mut candidates = secret_candidates(None, cached, saved_passphrase).into_iter();
     let mut attempt = candidates.next();
@@ -9184,7 +11171,8 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
     let mut agent_checked = false;
 
     loop {
-        match decode_private_key(private_key, attempt.as_ref().map(|(p, _)| p.as_str())) {
+        // A slow key's minute is this device's, not the server's (drive_login).
+        match ctx.attempt.at_prompt(decode_private_key_blocking(private_key, attempt.as_ref().map(|(p, _)| p.as_str()))).await {
             Ok(keypair) => {
                 if let Some((passphrase, source)) = attempt {
                     if source != SecretSource::Given {
@@ -9192,6 +11180,10 @@ async fn authenticate_key_prompting<H: russh::client::Handler>(
                     }
                 }
                 let own_key = keypair.public_key().clone();
+                // The same for one only the decoder reads (see try_config_identities).
+                if agent_auth::is_security_key(&own_key.algorithm()) {
+                    return node_security_key(session, user, &own_key, ctx).await;
+                }
                 return match ssh_manager::authenticate_with_key_result(session, user, keypair).await? {
                     russh::client::AuthResult::Success => Ok(true),
                     // The node's key was turned down. If the server still
@@ -9431,6 +11423,22 @@ mod key_format_tests {
         assert!(!AgentSlot::new(true, None, ConfigIdentities::default()).try_lock().unwrap().looked);
     }
 
+    // IdentitiesOnly yes keeps the agent's keys out, but not its copy of a
+    // security key that's named: that key's file can't sign.
+    #[test]
+    fn identities_only_lets_the_agent_sign_only_for_a_named_security_key() {
+        use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
+        let only = ConfigIdentities { keys: vec!["id_ed25519_sk".into()], certs: Vec::new(), only: true };
+        assert!(!AgentSlot::new(true, None, only).try_lock().unwrap().looked);
+        let plain = Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[3; 32])).public;
+        let named = ssh_key::PublicKey::new(ssh_key::public::KeyData::SkEd25519(ssh_key::public::SkEd25519::new(plain, "ssh:")), "");
+        let plain = ssh_key::PublicKey::new(ssh_key::public::KeyData::Ed25519(plain), "");
+        assert!(agent_allowed(true, &agent_auth::Offer::Only(&named)));
+        assert!(!agent_allowed(true, &agent_auth::Offer::Only(&plain)));
+        assert!(!agent_allowed(true, &agent_auth::Offer::Rest));
+        assert!(agent_allowed(false, &agent_auth::Offer::Only(&plain)) && agent_allowed(false, &agent_auth::Offer::Rest));
+    }
+
     fn host_config(f: impl FnOnce(&mut ssh_config::HostConfig)) -> Option<ssh_config::HostConfig> {
         let mut c = ssh_config::HostConfig::default();
         f(&mut c);
@@ -9494,9 +11502,62 @@ mod key_format_tests {
         // Just over the limit is refused; the limit itself is allowed.
         assert!(guard_key_kdf_cost(&patch_bcrypt_rounds(&pem, MAX_KEY_KDF_ROUNDS + 1)).is_err());
         assert!(guard_key_kdf_cost(&patch_bcrypt_rounds(&pem, MAX_KEY_KDF_ROUNDS)).is_ok());
+        // What people pick for a stronger passphrase.
+        assert!(guard_key_kdf_cost(&patch_bcrypt_rounds(&pem, 100)).is_ok());
+        assert!(guard_key_kdf_cost(&patch_bcrypt_rounds(&pem, 420)).is_ok());
         // An unencrypted key (no KDF) is untouched.
         let plain = kp.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
         assert!(guard_key_kdf_cost(&plain).is_ok());
+    }
+
+    // What russh's decoder skips doesn't hide a key's cost from the guard: each
+    // of these is still read by the decoder, which would run the rounds.
+    #[test]
+    fn an_openssh_keys_cost_is_read_the_way_the_decoder_reads_it() {
+        use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
+        let kp = ssh_key::PrivateKey::from(Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[7u8; 32])));
+        let enc = kp.encrypt(&mut rand::rng(), "pw").expect("encrypt with default rounds");
+        let pem = enc.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
+        let junk_line = |text: &str| text.replacen('\n', "\nx: y\n", 1);
+        let huge = patch_bcrypt_rounds(&pem, u32::MAX);
+        for variant in [
+            junk_line(&huge),
+            format!("{huge}text after the end\n"),
+            format!("text before the start\n{huge}"),
+            format!("-----BEGIN RSA PRIVATE KEY-----\n{huge}"),
+        ] {
+            assert!(
+                matches!(russh::keys::decode_secret_key(&variant, None), Err(russh::keys::Error::KeyIsEncrypted)),
+                "the decoder has to read this one: {variant}"
+            );
+            assert!(matches!(guard_key_kdf_cost(&variant), Err(KeyDecodeError::Malformed(_))), "{variant}");
+            assert!(decode_private_key(&variant, Some("pw")).is_err());
+        }
+        // A real key with such a line in it still opens, as it always did.
+        assert!(decode_private_key(&junk_line(&pem), Some("pw")).is_ok());
+        // A body that can't be read at all.
+        assert!(guard_key_kdf_cost("-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n").is_err());
+    }
+
+    // A slow key must not hold an async worker: on this one-thread runtime the
+    // ticks stop if it does.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_key_is_decoded_off_the_async_worker() {
+        use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
+        let kp = ssh_key::PrivateKey::from(Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[7u8; 32])));
+        let enc = kp.encrypt(&mut rand::rng(), "pw").expect("encrypt with default rounds");
+        let pem = enc.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
+        let decoding = decode_private_key_blocking(&pem, Some("pw"));
+        tokio::pin!(decoding);
+        let mut ticks = 0;
+        let result = loop {
+            tokio::select! {
+                result = &mut decoding => break result,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(1)) => ticks += 1,
+            }
+        };
+        assert!(result.is_ok());
+        assert!(ticks > 1, "the runtime went on meanwhile: {ticks}");
     }
 
     #[test]
@@ -9512,6 +11573,38 @@ mod key_format_tests {
     fn a_passphrase_saved_with_an_unencrypted_pem_key_is_ignored() {
         assert_eq!(public_of(&decoded(P521_PKCS8, Some("stray"))), P521_PUBLIC);
         assert_eq!(public_of(&decoded(P521_SEC1, Some("stray"))), P521_PUBLIC);
+    }
+
+    #[test]
+    fn a_security_key_is_refused_with_the_way_to_use_it() {
+        for algorithm in [ssh_key::Algorithm::SkEd25519, ssh_key::Algorithm::SkEcdsaSha2NistP256] {
+            assert!(agent_auth::is_security_key(&algorithm));
+            let err = check_key_algorithm(&algorithm).unwrap_err();
+            assert!(err.starts_with("[SSH] UNSUPPORTED_KEY_TYPE:") && err.contains("ssh-add"), "{err}");
+            assert!(err.contains("that supports security keys") && !err.contains("this server"), "{err}");
+        }
+        assert!(!agent_auth::is_security_key(&ssh_key::Algorithm::Ed25519));
+        assert_eq!(check_key_algorithm(&ssh_key::Algorithm::Ed25519), Ok(()));
+    }
+
+    // A line after the END line: the check made before decoding (the stricter
+    // reader) misses the security key, the decoder reads it. So the connect
+    // path checks the decoded key as well.
+    #[test]
+    fn a_security_key_file_only_the_decoder_reads_is_known_once_decoded() {
+        use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey, KeypairData, SkEd25519};
+        let public = Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[4; 32])).public;
+        let keypair = SkEd25519::new(ssh_key::public::SkEd25519::new(public, "ssh:"), 0x01, vec![4u8; 16]).unwrap();
+        let file = ssh_key::PrivateKey::new(KeypairData::SkEd25519(keypair), "")
+            .unwrap()
+            .to_openssh(ssh_key::LineEnding::LF)
+            .unwrap()
+            .to_string();
+        assert!(agent_auth::security_key_file(&file).is_some());
+        let edited = format!("{file}a note\n");
+        assert!(agent_auth::security_key_file(&edited).is_none());
+        let Ok(decoded) = decode_private_key(&edited, None) else { panic!("the decoder reads it") };
+        assert!(agent_auth::is_security_key(&decoded.algorithm()));
     }
 
     #[test]
@@ -9641,6 +11734,39 @@ mod key_kdf_cap_tests {
         assert!(guard_key_kdf_cost(super::key_format_tests::P521_PKCS8_ENC).is_ok());
     }
 
+    // What russh's decoder skips doesn't hide a key's cost from the guard.
+    #[test]
+    fn a_pkcs8_keys_cost_is_read_the_way_the_decoder_reads_it() {
+        let huge = scrypt(1 << 40, 8, 1);
+        for variant in [
+            huge.replacen('\n', "\nx: y\n", 1),
+            format!("{huge}text after the end\n"),
+            format!("text before the start\n{huge}"),
+            // The decoder goes by the last header: this first one is a decoy.
+            format!("-----BEGIN RSA PRIVATE KEY-----\n{huge}"),
+            // Seen by pem_private_key_header, which trims, not by the decoder.
+            format!("  -----BEGIN RSA PRIVATE KEY-----\n{huge}"),
+        ] {
+            assert!(refused(&variant), "{variant}");
+        }
+        // A cost that can't be read is refused, not waved through.
+        for unreadable in [
+            // The decoder reads padding in the middle; this guard doesn't.
+            "AAA=AAA=",
+            "",
+            // Not PBES2.
+            "MAA=",
+        ] {
+            assert!(refused(&format!("-----BEGIN ENCRYPTED PRIVATE KEY-----\n{unreadable}\n-----END ENCRYPTED PRIVATE KEY-----\n")), "{unreadable}");
+        }
+        // A plain header on an encrypted body, behind a decoy that made it look
+        // like a key that takes a passphrase: russh's PKCS#8 reader would run
+        // the key derivation in the body with it, and scrypt would end the app.
+        let plain = huge.replace("ENCRYPTED PRIVATE KEY", "PRIVATE KEY");
+        let decoy = format!("  -----BEGIN RSA PRIVATE KEY-----\n{plain}");
+        assert!(decode_private_key(&decoy, Some("pw")).is_err());
+    }
+
     #[test]
     fn ppk_argon2_settings_are_capped() {
         let ppk = |memory: &str, passes: &str, lanes: &str| {
@@ -9651,9 +11777,19 @@ mod key_kdf_cap_tests {
         assert!(refused(&ppk("4000000", "13", "1")), "4 GB");
         assert!(refused(&ppk("8192", "100000", "1")));
         assert!(refused(&ppk("8192", "13", "1000")));
-        assert!(refused(&ppk("99999999999999999999", "1", "1")) || guard_key_kdf_cost(&ppk("99999999999999999999", "1", "1")).is_ok(), "does not panic");
-        // Missing or unreadable numbers are left to the decoder.
-        assert!(guard_key_kdf_cost("PuTTY-User-Key-File-3: ssh-ed25519\nArgon2-Memory: lots\n").is_ok());
+        // PuTTYgen's memory at 128 MiB, with a high "time to use".
+        assert!(guard_key_kdf_cost(&ppk("131072", "34", "1")).is_ok());
+        // 64 GiB of work is the most.
+        assert!(guard_key_kdf_cost(&ppk("262144", "256", "1")).is_ok());
+        assert!(refused(&ppk("262144", "257", "1")));
+        // A number that can't be read can't be judged, so the key isn't opened.
+        assert!(refused(&ppk("99999999999999999999", "1", "1")), "more than a u64 holds");
+        assert!(refused("PuTTY-User-Key-File-3: ssh-ed25519\nArgon2-Memory: lots\n"));
+        // No Argon2 settings: an unencrypted key, or an older format.
+        assert!(guard_key_kdf_cost("PuTTY-User-Key-File-2: ssh-ed25519\nEncryption: none\nPublic-Lines: 1\nAAAA\nPrivate-Lines: 1\nBBBB\nPrivate-MAC: 00\n").is_ok());
+        // Text in a key's own lines isn't a header to the decoder.
+        let in_key_text = ppk("4000000", "13", "1").replace("Private-Lines: 1\nCCCC", "Private-Lines: 1\nArgon2-Memory: 8192");
+        assert!(refused(&in_key_text), "{in_key_text}");
     }
 
     #[test]
@@ -9846,6 +11982,15 @@ mod secret_prompt_tests {
         assert_eq!(base_session_id("tab-1::term-"), "tab-1::term-");
         // Anything else is left intact.
         assert_eq!(base_session_id("tab-1::other"), "tab-1::other");
+    }
+
+    #[test]
+    fn connection_label_names_the_tabs_other_connections() {
+        assert_eq!(connection_label("tab-1"), None);
+        assert_eq!(connection_label("tab-1::sftp"), Some("dedicated SFTP session"));
+        assert_eq!(connection_label("tab-1::fwd"), Some("dedicated port forwarding session"));
+        assert_eq!(connection_label("tab-1::term-tab-1-term-1729000000000"), Some("a terminal's own login"));
+        assert_eq!(connection_label("tab-1::other"), None);
     }
 
     // --- candidate order --------------------------------------------------
@@ -10155,11 +12300,9 @@ async fn run_keyboard_interactive<H: russh::client::Handler>(
                 let _ = app.emit(&format!("kbi-prompt-{}", session_id), payload);
 
                 // 120s: 2FA codes often mean reaching for a phone / authenticator.
-                let answers = match tokio::time::timeout(
-                    std::time::Duration::from_secs(120),
-                    rx,
-                )
-                .await
+                let answers = match attempt
+                    .at_prompt(tokio::time::timeout(std::time::Duration::from_secs(120), rx))
+                    .await
                 {
                     Ok(Ok(Some(a))) => a,
                     _ => {
@@ -10410,7 +12553,9 @@ fn build_ssh_client_config() -> russh::client::Config {
     // the session watcher pings every 30s (60s on the dedicated `::sftp` /
     // `::fwd` connections) end to end — well inside the ~2-minute idle limit of
     // consumer NAT and most firewalls — and OS TCP keepalive (see
-    // apply_tcp_keepalive) probes the first hop after 30s of silence.
+    // apply_tcp_keepalive) probes the first hop after 30s of silence. For an
+    // SSH session, both only while "Send keepalives" is on (see
+    // `initiate_connection`).
     config.keepalive_interval = None;
     // russh closes the connection after `keepalive_max` unanswered keepalives
     // (default 3, i.e. ~80s of server silence). Kept OFF: liveness is decided
@@ -10672,6 +12817,130 @@ where
                 }
             }
         }
+    }
+}
+
+/// How long a login may wait on the server, all its turns together. It's only
+/// here to end a server that never answers: russh has no limit of its own, so
+/// one that goes quiet after the handshake would leave the tab on "Connecting"
+/// for good. So it's long: a server may hold its answer while the user acts
+/// elsewhere (Duo pushes tried in turn, Tailscale's check in a browser), and
+/// closing the tab stops the wait anyway. What the user takes at a prompt and
+/// what this device takes to open a key aren't counted.
+const LOGIN_SERVER_TIME: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Drive one stretch of a login, adding the time that was the server's to
+/// `server_ms`. Stops (`None`) when the attempt is superseded (the tab closed,
+/// a reconnect) or once `server_ms` reaches `limit`; the time counted is carried
+/// from one stretch to the next. While the user has a prompt the clock stands
+/// still, and closing the tab still stops it.
+async fn drive_login<F>(
+    step: F,
+    attempt: &ssh_manager::ConnectAttempt,
+    server_ms: &std::sync::atomic::AtomicU64,
+    limit: std::time::Duration,
+) -> Option<F::Output>
+where
+    F: std::future::Future,
+{
+    use std::sync::atomic::Ordering;
+    const TICK: std::time::Duration = std::time::Duration::from_millis(250);
+    tokio::pin!(step);
+    let superseded = attempt.superseded();
+    tokio::pin!(superseded);
+    let mut ticker = tokio::time::interval(TICK);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await; // the first tick is immediate — consume it
+    loop {
+        tokio::select! {
+            // Biased: a step that ended is never thrown away for a tick.
+            biased;
+            out = &mut step => return Some(out),
+            _ = &mut superseded => return None,
+            _ = ticker.tick() => {
+                if !attempt.is_at_prompt() {
+                    let tick = TICK.as_millis() as u64;
+                    if server_ms.fetch_add(tick, Ordering::Relaxed) + tick >= limit.as_millis() as u64 {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod login_deadline_tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    const LIMIT: Duration = LOGIN_SERVER_TIME;
+
+    fn attempt() -> (ssh_manager::ConnectAttempt, Arc<Mutex<std::collections::HashMap<String, u64>>>) {
+        let generations = Arc::new(Mutex::new(std::collections::HashMap::from([("s".to_string(), 1)])));
+        (ssh_manager::ConnectAttempt::new(Arc::clone(&generations), "s".to_string(), 1), generations)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_server_that_goes_quiet_runs_out_of_time() {
+        let (attempt, _generations) = attempt();
+        let start = tokio::time::Instant::now();
+        let out = drive_login(std::future::pending::<()>(), &attempt, &AtomicU64::new(0), LIMIT).await;
+        assert_eq!(out, None);
+        assert!(start.elapsed() >= LIMIT && start.elapsed() < LIMIT + Duration::from_secs(1), "{:?}", start.elapsed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn time_at_a_prompt_is_not_the_servers() {
+        let (attempt, _generations) = attempt();
+        let used = AtomicU64::new(0);
+        let step = async {
+            tokio::time::sleep(LIMIT - Duration::from_secs(20)).await;
+            attempt.at_prompt(tokio::time::sleep(LIMIT * 2)).await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            "logged in"
+        };
+        assert_eq!(drive_login(step, &attempt, &used, LIMIT).await, Some("logged in"));
+        // The next stretch has only what's left, and a prompt there still doesn't count.
+        let start = tokio::time::Instant::now();
+        let out = drive_login(std::future::pending::<()>(), &attempt, &used, LIMIT).await;
+        assert_eq!(out, None);
+        assert!(start.elapsed() <= Duration::from_secs(11), "{:?}", start.elapsed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tab_closed_stops_the_login_at_once_prompt_or_not() {
+        for at_prompt in [false, true] {
+            let (attempt, generations) = attempt();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                generations.lock().await.insert("s".to_string(), 2);
+            });
+            let start = tokio::time::Instant::now();
+            let step = async {
+                if at_prompt {
+                    attempt.at_prompt(std::future::pending::<()>()).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            assert_eq!(drive_login(step, &attempt, &AtomicU64::new(0), LIMIT).await, None);
+            assert!(start.elapsed() < Duration::from_secs(6), "{:?}", start.elapsed());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_that_ends_on_a_tick_is_kept() {
+        let (attempt, _generations) = attempt();
+        let used = AtomicU64::new(0);
+        let step = async {
+            tokio::time::sleep(LIMIT).await;
+            "logged in"
+        };
+        assert_eq!(drive_login(step, &attempt, &used, LIMIT).await, Some("logged in"));
     }
 }
 
@@ -11051,6 +13320,8 @@ struct HopCtx<'a> {
     // refusal, a dropped handshake), so the caller reports a failure worth
     // retrying. Not for a host key, a login or a setting, which waiting won't fix.
     network_failed: &'a std::sync::atomic::AtomicBool,
+    // The connection's "Send keepalives" setting, for the sockets to its hops.
+    tcp_keepalive: bool,
     // The target session's connect attempt; the hops' prompts belong to it.
     attempt: &'a ssh_manager::ConnectAttempt,
     session_id: &'a str,
@@ -11179,8 +13450,9 @@ mod proxy_jump_tests {
 }
 
 /// A `direct-tcpip` channel through `via` to `host:port`, as a transport.
-async fn hop_channel(
-    via: &russh::client::Handle<ssh_manager::ClientHandler>,
+/// Within 15 seconds: russh waits for the jump host's answer with no limit.
+async fn hop_channel<H: russh::client::Handler>(
+    via: &russh::client::Handle<H>,
     host: &str,
     port: u16,
 ) -> Result<tunnel::DrainedChannelStream, String> {
@@ -11188,10 +13460,34 @@ async fn hop_channel(
     // could fill this channel's queue while the next session waits for a
     // window, block the previous hop's protocol task — which is what delivers
     // that window — and deadlock the route.
-    via.channel_open_direct_tcpip(host.to_string(), u32::from(port), "127.0.0.1", 0)
-        .await
-        .map(tunnel::drained_stream)
-        .map_err(|e| format!("could not open a channel to {host}:{port} through the jump host: {e}"))
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        via.channel_open_direct_tcpip(host.to_string(), u32::from(port), "127.0.0.1", 0),
+    )
+    .await
+    .map_err(|_| format!("the jump host didn't answer within 15 seconds when asked to reach {host}:{port}"))?
+    .map(tunnel::drained_stream)
+    .map_err(|e| format!("could not open a channel to {host}:{port} through the jump host: {e}"))
+}
+
+#[cfg(test)]
+mod hop_channel_tests {
+    use super::hop_channel;
+    use crate::ssh_test_server::{connect, TestServer};
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_jump_host_that_doesnt_answer_is_given_up_on() {
+        let via = connect(TestServer::not_answering_opens(), |_| {}, russh::client::Config::default())
+            .await
+            .expect("in-process SSH connection");
+        let start = tokio::time::Instant::now();
+        let opened = tokio::time::timeout(Duration::from_secs(30), hop_channel(&via, "target", 22))
+            .await
+            .expect("it gives up on its own");
+        assert!(opened.err().is_some_and(|e| e.contains("didn't answer within 15 seconds")));
+        assert!(start.elapsed() >= Duration::from_secs(15));
+    }
 }
 
 /// Establish + authenticate the connection to a ProxyJump intermediate
@@ -11329,7 +13625,7 @@ fn reach_hop<'a>(
                 let tcp = match tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect((host.as_str(), port))).await {
                     Ok(Ok(s)) => {
                         let _ = s.set_nodelay(true);
-                        apply_tcp_keepalive(&s);
+                        if ctx.tcp_keepalive { apply_tcp_keepalive(&s); }
                         s
                     }
                     Ok(Err(e)) => {
@@ -11398,6 +13694,7 @@ async fn login_hop(
         attempt: ctx.attempt.clone(),
         // The watcher probes the session, not the bastion hop.
         last_heard: ssh_manager::LastHeard::default(),
+        server_goodbye: ssh_manager::ServerGoodbye::default(),
         host_trust: host_trust.map(std::sync::Arc::new),
         host_key_refusal: std::sync::Arc::clone(&host_key_refusal),
     };
@@ -11478,9 +13775,10 @@ async fn login_hop(
         save_to,
         agent: AgentSlot::new(ctx.use_agent, identity_agent, identities),
         session_unusable: std::sync::atomic::AtomicBool::new(false),
+        server_time: std::sync::atomic::AtomicU64::new(0),
     };
     let (effective_user, user_prompted, login_cancelled) =
-        match resolve_login_user(&saved_user, &host, SecretSlot::JumpUsername, &prompt_ctx).await {
+        match prompt_ctx.login_step(resolve_login_user(&saved_user, &host, SecretSlot::JumpUsername, &prompt_ctx)).await.flatten() {
             Some((name, typed)) => (name, typed, false),
             None => (Zeroizing::new(String::new()), false, true),
         };
@@ -11499,28 +13797,32 @@ async fn login_hop(
         let key_label = key_name
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| format!("{}@{}", effective_user.as_str(), host));
-        authenticate_key_prompting(
-            &mut session,
-            &effective_user,
-            &private_key,
-            &key_label,
-            passphrase.map(Zeroizing::new),
-            SecretSlot::JumpPassphrase,
-            &prompt_ctx,
-        )
-        .await
+        prompt_ctx
+            .login_step(authenticate_key_prompting(
+                &mut session,
+                &effective_user,
+                &private_key,
+                &key_label,
+                passphrase.map(Zeroizing::new),
+                SecretSlot::JumpPassphrase,
+                &prompt_ctx,
+            ))
+            .await
+            .unwrap_or(Err(russh::Error::ConnectionTimeout))
     } else {
         ctx.log("Jump host: password authentication...", "info");
-        authenticate_password_prompting(
-            &mut session,
-            &effective_user,
-            &host,
-            None,
-            password.map(Zeroizing::new),
-            SecretSlot::JumpPassword,
-            &prompt_ctx,
-        )
-        .await
+        prompt_ctx
+            .login_step(authenticate_password_prompting(
+                &mut session,
+                &effective_user,
+                &host,
+                None,
+                password.map(Zeroizing::new),
+                SecretSlot::JumpPassword,
+                &prompt_ctx,
+            ))
+            .await
+            .unwrap_or(Err(russh::Error::ConnectionTimeout))
     };
 
     // A declined prompt ends the hop — don't fall back to asking again. Nor
@@ -11529,20 +13831,23 @@ async fn login_hop(
         && !prompt_ctx.cancelled.load(std::sync::atomic::Ordering::Relaxed)
         && !prompt_ctx.session_unusable.load(std::sync::atomic::Ordering::Relaxed)
     {
-        if let Some(kbi_res) = run_keyboard_interactive(
-            &mut session,
-            &effective_user,
-            ctx.app,
-            ctx.session_id,
-            &jump_nonce,
-            ctx.kbi_txs,
-            ctx.attempt,
-            kbi_password.as_ref().map(|p| p.as_str()),
-            prompt_ctx.save_offer().await,
-            ctx.allow_prompt,
-            &mut None,
-        )
-        .await
+        let save_offer = prompt_ctx.save_offer().await;
+        if let Some(kbi_res) = prompt_ctx
+            .login_step(run_keyboard_interactive(
+                &mut session,
+                &effective_user,
+                ctx.app,
+                ctx.session_id,
+                &jump_nonce,
+                ctx.kbi_txs,
+                ctx.attempt,
+                kbi_password.as_ref().map(|p| p.as_str()),
+                save_offer,
+                ctx.allow_prompt,
+                &mut None,
+            ))
+            .await
+            .unwrap_or(Some(Err(russh::Error::ConnectionTimeout)))
         {
             auth_res = kbi_res;
         }
@@ -11593,11 +13898,12 @@ const AGENT_DID_NOT_SIGN: &str =
 
 /// Fully tear down ONE connection map-entry by its exact key. Used to reap the
 /// dedicated `::sftp` / `::fwd` secondary connections the separate-sessions
-/// feature spins up, so disconnecting or reconnecting the PRIMARY never orphans
-/// them (a leaked secondary would hold a live TCP + SSH session forever). Safe
-/// to call on a key that doesn't exist — every step is then a no-op. Bumps the
-/// key's generation so the secondary's own health watcher observes the change on
-/// its next tick and bows out WITHOUT emitting a `session-disconnected-{key}`.
+/// feature spins up, so disconnecting, reconnecting or losing the PRIMARY never
+/// orphans them (a leaked secondary would hold a live TCP + SSH session
+/// forever). Safe to call on a key that doesn't exist — every step is then a
+/// no-op. Bumps the key's generation so the secondary's own health watcher
+/// observes the change on its next tick and bows out WITHOUT emitting a
+/// `session-disconnected-{key}`.
 async fn teardown_connection_key(state: &SshState, mirrors: &MirrorMap, key: &str) {
     // Bump the generation FIRST — before removing the connection — so a connect
     // worker for this key that's still handshaking observes the newer value at
@@ -11655,6 +13961,13 @@ async fn initiate_connection(
     // frontend says otherwise). Off, no agent is contacted for this
     // connection or its jump host.
     use_ssh_agent: Option<bool>,
+    // The "Send keepalives" setting (on unless the frontend says otherwise). Off,
+    // this connection starts no traffic of its own while idle, and an idle timeout
+    // can do its work. It still answers the server's keepalives and notices a
+    // connection that closes. Two exceptions: russh's key exchange once an hour,
+    // and a saved remote (R) forward the server refused, which the watcher asks
+    // for again every minute (its tunnel retry).
+    send_keepalives: Option<bool>,
 ) -> Result<(), String> {
     use tauri::Emitter;
     use tokio::time::Duration;
@@ -11663,6 +13976,7 @@ async fn initiate_connection(
     use tokio::sync::Mutex;
 
     let use_agent = use_ssh_agent.unwrap_or(true);
+    let keepalives = send_keepalives.unwrap_or(true);
 
     // Connection role + topology flags. Kept as plain locals so the whole
     // function (worker included) can branch on them without re-parsing.
@@ -12016,6 +14330,7 @@ async fn initiate_connection(
     // Stamped by the handler whenever the server sends something; read by the
     // session watcher below.
     let last_heard = ssh_manager::LastHeard::default();
+    let server_goodbye = ssh_manager::ServerGoodbye::default();
 
     // Built here, while the database handle is still ours: the handshake
     // asks this host for the kinds of host key on file for it first.
@@ -12041,6 +14356,7 @@ async fn initiate_connection(
         prompt_allowed: !is_secondary,
         attempt: attempt.clone(),
         last_heard: last_heard.clone(),
+        server_goodbye: server_goodbye.clone(),
         host_trust: host_trust.map(Arc::new),
         host_key_refusal,
     };
@@ -12172,6 +14488,7 @@ async fn initiate_connection(
             allow_prompt: allow_kbi,
             auth_failed: &jump_auth_failed,
             network_failed: &jump_network_failed,
+            tcp_keepalive: keepalives,
             attempt: &attempt,
             session_id: &session_id_clone,
             use_agent,
@@ -12253,7 +14570,7 @@ async fn initiate_connection(
                         emit_log("SOCKS5 Proxy tunnel established successfully.", "success");
                         // Socks5Stream derefs to the inner TcpStream, so the
                         // kernel keepalive applies to the real proxy socket.
-                        apply_tcp_keepalive(&stream);
+                        if keepalives { apply_tcp_keepalive(&stream); }
                         Ok(Box::new(stream))
                     }
                     Ok(Err(e)) => {
@@ -12289,7 +14606,7 @@ async fn initiate_connection(
                         // round-trip latency. Ignore failures — set_nodelay is
                         // best-effort; some platforms / virtual NICs reject it.
                         let _ = tcp_stream.set_nodelay(true);
-                        apply_tcp_keepalive(&tcp_stream);
+                        if keepalives { apply_tcp_keepalive(&tcp_stream); }
                         if !http_connect_host_ok(&host) {
                             let err_msg = format!("'{}' can't be asked of an HTTP proxy: a host has no spaces or control characters.", host.escape_debug());
                             emit_log(&format!("Error: {}", err_msg), "error");
@@ -12332,7 +14649,7 @@ async fn initiate_connection(
                         // See HTTP-proxy branch — SSH wants every packet on the
                         // wire immediately, no Nagle batching.
                         let _ = stream.set_nodelay(true);
-                        apply_tcp_keepalive(&stream);
+                        if keepalives { apply_tcp_keepalive(&stream); }
                         emit_log("Direct TCP Connection established successfully.", "success");
                         Ok(Box::new(stream))
                     }
@@ -12419,10 +14736,11 @@ async fn initiate_connection(
                     save_to: if server_id > 0 && key_data.is_none() { SaveTarget::for_server(&app, server_id) } else { None },
                     agent: AgentSlot::new(use_agent, identity_agent.clone(), identities.clone()),
                     session_unusable: std::sync::atomic::AtomicBool::new(false),
+                    server_time: std::sync::atomic::AtomicU64::new(0),
                 };
 
                 let (effective_user, user_prompted, login_cancelled) =
-                    match resolve_login_user(&saved_user, &host, SecretSlot::Username, &prompt_ctx).await {
+                    match prompt_ctx.login_step(resolve_login_user(&saved_user, &host, SecretSlot::Username, &prompt_ctx)).await.flatten() {
                         Some((name, typed)) => (name, typed, false),
                         None => (Zeroizing::new(String::new()), false, true),
                     };
@@ -12450,32 +14768,36 @@ async fn initiate_connection(
                     let key_label = key_name
                         .filter(|n| !n.trim().is_empty())
                         .unwrap_or_else(|| format!("{}@{}", effective_user.as_str(), host));
-                    authenticate_key_prompting(
-                        &mut session,
-                        &effective_user,
-                        &private_key,
-                        &key_label,
-                        passphrase.map(Zeroizing::new),
-                        SecretSlot::Passphrase,
-                        &prompt_ctx,
-                    )
-                    .await
+                    prompt_ctx
+                        .login_step(authenticate_key_prompting(
+                            &mut session,
+                            &effective_user,
+                            &private_key,
+                            &key_label,
+                            passphrase.map(Zeroizing::new),
+                            SecretSlot::Passphrase,
+                            &prompt_ctx,
+                        ))
+                        .await
+                        .unwrap_or(Err(russh::Error::ConnectionTimeout))
                 } else {
                     emit_log("Attempting Password Authentication...", "info");
                     // The failed-screen override (if any) is tried first, then
                     // the cache, then the saved password; with none of them the
                     // user is asked — unless the server doesn't take passwords,
                     // in which case keyboard-interactive below runs as before.
-                    authenticate_password_prompting(
-                        &mut session,
-                        &effective_user,
-                        &host,
-                        custom_password.map(Zeroizing::new),
-                        password.map(Zeroizing::new),
-                        SecretSlot::Password,
-                        &prompt_ctx,
-                    )
-                    .await
+                    prompt_ctx
+                        .login_step(authenticate_password_prompting(
+                            &mut session,
+                            &effective_user,
+                            &host,
+                            custom_password.map(Zeroizing::new),
+                            password.map(Zeroizing::new),
+                            SecretSlot::Password,
+                            &prompt_ctx,
+                        ))
+                        .await
+                        .unwrap_or(Err(russh::Error::ConnectionTimeout))
                 };
 
                 // Keyboard-interactive (2FA / verification-code) fallback. Many
@@ -12496,20 +14818,23 @@ async fn initiate_connection(
                     && !prompt_ctx.session_unusable.load(std::sync::atomic::Ordering::Relaxed)
                 {
                     let mut typed_password = None;
-                    if let Some(kbi_res) = run_keyboard_interactive(
-                        &mut session,
-                        &effective_user,
-                        &app,
-                        &session_id_clone,
-                        &connect_nonce,
-                        &kbi_txs_clone,
-                        &attempt,
-                        kbi_password.as_ref().map(|p| p.as_str()),
-                        prompt_ctx.save_offer().await,
-                        allow_kbi,
-                        &mut typed_password,
-                    )
-                    .await
+                    let save_offer = prompt_ctx.save_offer().await;
+                    if let Some(kbi_res) = prompt_ctx
+                        .login_step(run_keyboard_interactive(
+                            &mut session,
+                            &effective_user,
+                            &app,
+                            &session_id_clone,
+                            &connect_nonce,
+                            &kbi_txs_clone,
+                            &attempt,
+                            kbi_password.as_ref().map(|p| p.as_str()),
+                            save_offer,
+                            allow_kbi,
+                            &mut typed_password,
+                        ))
+                        .await
+                        .unwrap_or(Some(Err(russh::Error::ConnectionTimeout)))
                     {
                         auth_res = kbi_res;
                     }
@@ -12529,7 +14854,7 @@ async fn initiate_connection(
 
                 match auth_res {
                     Ok(true) => {
-                        let session_arc = Arc::new(Mutex::new(session));
+                        let session_arc = Arc::new(tokio::sync::RwLock::new(session));
                         // "Still wanted?" registration guard. The handshake can
                         // take up to ~15s (longer via proxy/jump). If, meanwhile,
                         // a reconnect for this key bumped the generation or a
@@ -12735,6 +15060,8 @@ async fn initiate_connection(
                         let state_specs_w = Arc::clone(&state_session_tunnel_specs);
                         let targets_w = Arc::clone(&session_forwarded_targets);
                         let last_heard_w = last_heard.clone();
+                        let server_goodbye_w = server_goodbye.clone();
+                        let attempt_w = attempt.clone();
                         let my_gen = connect_generation;
                         tauri::async_runtime::spawn(async move {
                             // Two-tier liveness check:
@@ -12778,6 +15105,26 @@ async fn initiate_connection(
                             // Set once this server has left a keepalive unanswered but answered
                             // a channel open: probe it that way from then on.
                             let mut ping_unanswered = false;
+                            // Why it was given up on, when it wasn't simply closed.
+                            let mut went_quiet = false;
+                            // For the Activity Log: without these a report of a
+                            // connection that keeps dropping can't be read. They
+                            // go to the tab, from its other connections too
+                            // (`via` names which one, `closed` marks its drop).
+                            // Not once a newer attempt (or a disconnect) has
+                            // replaced this one: they'd read as the newer one's.
+                            let log_event = format!("session-log-{}", base_session_id(&sid_w));
+                            let via = connection_label(&sid_w);
+                            let tell = |msg: &str, closed: bool| {
+                                if !attempt_w.is_current_now() {
+                                    return;
+                                }
+                                let _ = app_w.emit(
+                                    &log_event,
+                                    serde_json::json!({ "msg": msg, "type": "warn", "activity": true, "closed": closed, "via": via }),
+                                );
+                            };
+                            let say = |msg: &str| tell(msg, false);
                             loop {
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 tick = tick.wrapping_add(1);
@@ -12804,24 +15151,22 @@ async fn initiate_connection(
                                 };
 
                                 let is_closed = {
-                                    let h = handle_arc.lock().await;
+                                    let h = handle_arc.read().await;
                                     h.is_closed()
                                 };
 
                                 let mut dead = is_closed;
 
-                                if !dead && tick.is_multiple_of(probe_every) {
-                                    // Active probe: hold the handle lock long
-                                    // enough to start AND finish the round
-                                    // trip — concurrent commands wait, but
-                                    // that's fine, they would block on the
-                                    // same lock to open their own channel
-                                    // anyway. 10s timeout: generous enough
+                                if !dead && keepalives && tick.is_multiple_of(probe_every) {
+                                    // Active probe: a round trip on the
+                                    // shared handle (read-locked), so commands
+                                    // and tunnels open their own channels
+                                    // meanwhile. 10s timeout: generous enough
                                     // that a congested-but-alive link doesn't
                                     // strike out spuriously.
                                     let asked_at = ssh_manager::LastHeard::now();
-                                    let alive = {
-                                        let h = handle_arc.lock().await;
+                                    let (alive, closed) = {
+                                        let h = handle_arc.read().await;
                                         let answered = if ping_unanswered {
                                             probe_with_channel(&h).await
                                         } else {
@@ -12859,6 +15204,7 @@ async fn initiate_connection(
                                                     let up = probe_with_channel(&h).await;
                                                     if up {
                                                         ping_unanswered = true;
+                                                        say("This server doesn't answer SSH keepalives. Checking on it by opening a channel from now on.");
                                                     }
                                                     up
                                                 }
@@ -12868,15 +15214,25 @@ async fn initiate_connection(
                                         // timed out: anything the server sent
                                         // while we waited proves it's alive,
                                         // as long as the connection is open.
-                                        answered || (last_heard_w.heard_since(asked_at) && !h.is_closed())
+                                        let closed = h.is_closed();
+                                        (answered || (last_heard_w.heard_since(asked_at) && !closed), closed)
                                     };
                                     if alive {
                                         probe_strikes = 0;
+                                    } else if closed {
+                                        // Not left unanswered: the connection
+                                        // closed while the probe waited (a
+                                        // device that drops it on a keepalive,
+                                        // #299). There's no asking again.
+                                        say("The connection closed while waiting for an answer to a keepalive.");
+                                        dead = true;
                                     } else {
                                         probe_strikes += 1;
                                         if probe_strikes >= 2 {
                                             dead = true;
+                                            went_quiet = true;
                                         } else {
+                                            say("No answer to a keepalive. Asking once more.");
                                             // One strike: re-probe on the
                                             // next 2s tick instead of a
                                             // full interval away, so a
@@ -12900,7 +15256,9 @@ async fn initiate_connection(
                                 // transports have their own migration/restore paths,
                                 // and the primary handle is the correct transport for
                                 // the default (shared) topology. Spawned so a slow
-                                // bind retry never delays death detection.
+                                // bind retry never delays death detection. An R
+                                // rule's retry is a request to the server, so it is
+                                // traffic even with keepalives off.
                                 if !dead && tick.is_multiple_of(30) && !sid_w.contains("::") {
                                     let specs = state_specs_w.lock().await.get(&sid_w).cloned().unwrap_or_default();
                                     if specs.iter().any(|spec| !spec.stopped) {
@@ -12919,8 +15277,8 @@ async fn initiate_connection(
                                 if dead {
                                     // Re-check generation + verify OUR handle is
                                     // still the registered one before tearing
-                                    // anything down. A slow probe holds the handle
-                                    // lock up to 10s; during that window a manual
+                                    // anything down. A slow probe takes up to
+                                    // 10s; during that window a manual
                                     // reconnect / auto-retry can bump the
                                     // generation and register a fresh, healthy
                                     // connection. Without this guard we'd remove
@@ -12985,10 +15343,37 @@ async fn initiate_connection(
                                     // this dead handle and hammers upload-fail on every future
                                     // FS event until the app is quit.
                                     mirror::stop_all_for_session(&state_mirrors_w, &sid_w).await;
+                                    // The tab's dedicated `::sftp` / `::fwd`
+                                    // connections go with it: nothing rides
+                                    // them while it's down, and no reconnect
+                                    // may come to reap them (reconnecting off,
+                                    // or cancelled). Their watchers bow out
+                                    // without a word. Not if a newer attempt
+                                    // has started meanwhile: that one reaps
+                                    // them, and may have opened new ones.
+                                    if !sid_w.contains("::") && attempt_w.is_current().await {
+                                        let ssh = app_w.state::<SshState>();
+                                        teardown_connection_key(ssh.inner(), &state_mirrors_w, &format!("{sid_w}::sftp")).await;
+                                        teardown_connection_key(ssh.inner(), &state_mirrors_w, &format!("{sid_w}::fwd")).await;
+                                    }
+                                    let reason = match server_goodbye_w.take() {
+                                        Some(said) if !said.is_empty() => format!("The server closed the connection: {said}"),
+                                        Some(_) => "The server closed the connection".to_string(),
+                                        None if went_quiet => "No answer to two keepalives in a row".to_string(),
+                                        None => "Connection lost".to_string(),
+                                    };
+                                    // Another of the tab's connections: the tab
+                                    // only resets a dot or writes a line in a
+                                    // terminal for it, so the reason goes to its
+                                    // Activity Log here. The tab logs its own
+                                    // connection's when it hears the event below.
+                                    if via.is_some() {
+                                        tell(&reason, true);
+                                    }
                                     let _ = app_w.emit(
                                         &format!("session-disconnected-{}", sid_w),
                                         serde_json::json!({
-                                            "reason": "Connection lost"
+                                            "reason": reason
                                         }),
                                     );
                                     break;
@@ -13485,7 +15870,7 @@ mod shared_login_note_tests {
 async fn resolve_tunnel_transport(
     state: &SshState,
     session_id: &str,
-) -> Result<(Arc<tokio::sync::Mutex<russh::client::Handle<ssh_manager::ClientHandler>>>, tunnel::ForwardedTargets), String> {
+) -> Result<(Arc<tokio::sync::RwLock<russh::client::Handle<ssh_manager::ClientHandler>>>, tunnel::ForwardedTargets), String> {
     let fwd_key = format!("{}::fwd", session_id);
     let (primary, dedicated) = {
         let conns = state.connections.lock().await;
@@ -13518,7 +15903,7 @@ async fn resolve_tunnel_transport(
 async fn start_tunnel_specs_on(
     app: &tauri::AppHandle,
     sid: &str,
-    handle: &Arc<tokio::sync::Mutex<russh::client::Handle<ssh_manager::ClientHandler>>>,
+    handle: &Arc<tokio::sync::RwLock<russh::client::Handle<ssh_manager::ClientHandler>>>,
     targets: &tunnel::ForwardedTargets,
     tunnels: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, tunnel::ActiveTunnel>>>,
     specs_map: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, Vec<tunnel::TunnelSpec>>>>,
@@ -13948,11 +16333,11 @@ async fn list_mirrors(
 /// Native OS folder picker. Used by MirrorsPanel to fill in `local`.
 #[tauri::command]
 async fn pick_local_directory() -> Result<Option<String>, String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
-        return Err("Folder picker not available on Android.".into());
+        return Err("Folder picker not available on a phone or tablet.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let path = rfd::AsyncFileDialog::new().pick_folder().await;
         Ok(path.map(|p| p.path().to_string_lossy().into_owned()))
@@ -14143,9 +16528,10 @@ mod shell_sync_tests {
 /// asks through this tab's usual prompts (host key, password, 2FA). Then a
 /// loopback port of this node's own forwards to the RDP server for as long as
 /// the tab is open. The tab hears `connection-success-{id}` (`app`,
-/// `address`, `via`, `tracked`) or `connection-failed-{id}`; later
+/// `address`, `target`, `via`, `tracked`) or `connection-failed-{id}`; later
 /// `rdp-app-exited-{id}` when an RDP window it can follow closes, and
-/// `session-disconnected-{id}` when the SSH route drops.
+/// `session-disconnected-{id}` when the SSH route drops; first, `rdp-moved-{id}`
+/// (`was`, `now`) when what it shares stays off (`rdp::moved`).
 // A Tauri command: its arguments are the named fields the tab sends.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -14166,7 +16552,7 @@ async fn initiate_rdp(
     let options = options.unwrap_or_default().checked();
 
     // Android has no RDP app to hand it to; the built-in client comes later.
-    if cfg!(target_os = "android") {
+    if cfg!(mobile) {
         return Err("RDP servers open on a computer for now".into());
     }
 
@@ -14180,7 +16566,7 @@ async fn initiate_rdp(
     };
     let attempt = ssh_manager::ConnectAttempt::new(Arc::clone(&state.session_generation), session_id.clone(), generation);
 
-    let ((name, host, port, user, node_key, protocol, jump_id, jump_name), password, login_key) = {
+    let ((name, host, port, user, node_key, protocol, jump_id, jump_name), password, login_key, shared_profile) = {
         let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
         let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
         let row = conn.query_row(
@@ -14206,7 +16592,7 @@ async fn initiate_rdp(
             },
         )
         .map_err(|_| "Server not found".to_string())?;
-        (row, rdp_saved_password(conn, server_id), rdp_login_key(conn, server_id))
+        (row, rdp_saved_password(conn, server_id), rdp_login_key(conn, server_id), approvals::profile_is_shared(conn))
     };
     if protocol.as_deref() != Some("rdp") {
         return Err(format!("{name} isn't an RDP server"));
@@ -14216,6 +16602,21 @@ async fn initiate_rdp(
     rdp::check_host(&host)?;
     rdp::check_user(&user)?;
     let port = u16::try_from(port).ok().filter(|p| *p > 0).unwrap_or(rdp::DEFAULT_PORT);
+    let target = rdp::address(&host, port);
+    // What the forward is named by: where this node first went through an SSH
+    // server keeps its address, anywhere else gets another one.
+    let forward_key = match jump_id {
+        Some(jid) => {
+            let route = rdp::route(&host, port, jid);
+            let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+            let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+            rdp::forward_key(&node_key, &rdp_first_route(conn, &node_key, &route).unwrap_or_default(), &route)
+        }
+        None => node_key,
+    };
+    let shared_for = options.shared_for.clone();
+    let pin = rdp::pins_address(shared_profile, &shared_for);
+    let (options, moved) = options.for_target(&target, shared_profile);
 
     let fp_txs = Arc::clone(&state.fp_txs);
     let kbi_txs = Arc::clone(&state.kbi_txs);
@@ -14230,8 +16631,11 @@ async fn initiate_rdp(
                 let _ = app.emit(&format!("session-log-{session_id}"), serde_json::json!({"msg": msg, "type": ty}));
             }
         };
-        let target = rdp::address(&host, port);
         log(&format!("Opening the RDP server {target}..."), "info");
+        if moved {
+            log(&rdp::moved_note(&shared_for, &target), "warning");
+            let _ = app.emit(&format!("rdp-moved-{session_id}"), serde_json::json!({"was": shared_for, "now": target}));
+        }
 
         let (mut session, via) = match jump_id {
             None => (rdp::RdpSession::direct(server_id, target.clone(), user.clone(), options.clone()), None),
@@ -14250,6 +16654,7 @@ async fn initiate_rdp(
                     allow_prompt: true,
                     auth_failed: &auth_failed,
                     network_failed: &network_failed,
+                    tcp_keepalive: true,
                     attempt: &attempt,
                     session_id: &session_id,
                     use_agent,
@@ -14274,11 +16679,11 @@ async fn initiate_rdp(
                         }
                     }
                 };
-                match rdp::forward_through(chain, &rdp::listen_candidates(&node_key), host.clone(), port, closed).await {
+                match rdp::forward_through(chain, &rdp::listen_candidates(&forward_key), host.clone(), port, closed).await {
                     Ok((local, parts)) => {
                         let address = local.to_string();
                         log(&format!("Forwarding {address} to {target} through {via_name}."), "success");
-                        (rdp::RdpSession::forwarded(parts, server_id, address, user.clone(), options.clone()), Some(via_name))
+                        (rdp::RdpSession::forwarded(parts, server_id, address, target.clone(), user.clone(), options.clone()), Some(via_name))
                     }
                     Err(e) => {
                         log(&e, "error");
@@ -14316,7 +16721,7 @@ async fn initiate_rdp(
                 log(&format!("Opened {} for {address}. {login}", launcher.name), "success");
                 let _ = app.emit(
                     &format!("connection-success-{session_id}"),
-                    serde_json::json!({"app": launcher.name, "address": address, "via": via, "tracked": launcher.tracked, "password": launcher.secret}),
+                    serde_json::json!({"app": launcher.name, "address": address, "target": pin.then_some(&target), "via": via, "tracked": launcher.tracked, "password": launcher.secret}),
                 );
             }
             Err(e) => {
@@ -14352,6 +16757,15 @@ fn rdp_login_key(conn: &rusqlite::Connection, server_id: i32) -> Option<String> 
         |r| r.get::<_, String>(0),
     )
     .ok()
+}
+
+/// Where this device first reached an RDP node through an SSH server
+/// (`rdp::forward_key`). This device's own: never synced, so a row changed
+/// elsewhere can't change it.
+fn rdp_first_route(conn: &rusqlite::Connection, node: &str, route: &str) -> rusqlite::Result<String> {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS rdp_first_routes (node TEXT PRIMARY KEY, route TEXT NOT NULL)")?;
+    conn.execute("INSERT OR IGNORE INTO rdp_first_routes (node, route) VALUES (?1, ?2)", [node, route])?;
+    conn.query_row("SELECT route FROM rdp_first_routes WHERE node = ?1", [node], |r| r.get(0))
 }
 
 /// An RDP server's saved password, if it has one: its own, or its saved
@@ -14395,6 +16809,16 @@ mod rdp_saved_password_tests {
         assert_eq!(got(5), None);
         assert_eq!(got(6).as_deref(), Some("login-pw"), "no auth type is a saved login's");
         assert_eq!(got(99), None);
+    }
+
+    #[test]
+    fn a_node_keeps_its_first_route_on_this_device() {
+        use super::rdp_first_route;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        assert_eq!(rdp_first_route(&conn, "node", "a:3389 via 7").unwrap(), "a:3389 via 7", "first seen");
+        assert_eq!(rdp_first_route(&conn, "node", "b:3389 via 7").unwrap(), "a:3389 via 7", "moved: still the first");
+        assert_eq!(rdp_first_route(&conn, "node", "a:3389 via 7").unwrap(), "a:3389 via 7", "back again");
+        assert_eq!(rdp_first_route(&conn, "other", "b:3389 via 7").unwrap(), "b:3389 via 7", "each node its own");
     }
 
     #[test]
@@ -14506,6 +16930,8 @@ async fn rdp_builtin_open(
     // Files shared with the server: a folder or a drive (the tab's per-server
     // option, off unless the user turned it on for the server).
     share: Option<rdp_share::Share>,
+    // The server's address these options are for (see `rdp::moved`).
+    shared_for: Option<String>,
     // Ask for the password even when one is saved: the tab's last try with the
     // saved one was refused.
     ask_password: Option<bool>,
@@ -14527,10 +16953,10 @@ async fn rdp_builtin_open(
     };
     let attempt = ssh_manager::ConnectAttempt::new(Arc::clone(&state.session_generation), session_id.clone(), generation);
 
-    let (name, host, port, user, password, protocol, jump_id, jump_name) = {
+    let ((name, host, port, user, password, protocol, jump_id, jump_name), shared_profile) = {
         let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
         let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-        conn.query_row(
+        let row = conn.query_row(
             "SELECT s.name, s.host, s.port,
                     CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault' THEN c.username ELSE s.username END,
                     CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault' THEN c.password ELSE s.password END,
@@ -14553,7 +16979,8 @@ async fn rdp_builtin_open(
                 ))
             },
         )
-        .map_err(|_| "Server not found".to_string())?
+        .map_err(|_| "Server not found".to_string())?;
+        (row, approvals::profile_is_shared(conn))
     };
     if protocol.as_deref() != Some("rdp") {
         return Err(format!("{name} isn't an RDP server"));
@@ -14564,6 +16991,12 @@ async fn rdp_builtin_open(
     rdp::check_user(&user)?;
     let port = u16::try_from(port).ok().filter(|p| *p > 0).unwrap_or(rdp::DEFAULT_PORT);
     let (width, height) = rdp_client::clamp_size(width, height);
+    let target = rdp::address(&host, port);
+    let shared_for = shared_for.unwrap_or_default();
+    let shares = share.is_some() || allow_no_nla == Some(true) || clipboard == Some(true);
+    let moved = shares && rdp::moved(shared_profile, &shared_for, &target);
+    let pin = rdp::pins_address(shared_profile, &shared_for);
+    let (allow_no_nla, clipboard, share) = if moved { (None, None, None) } else { (allow_no_nla, clipboard, share) };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<rdp_client::Cmd>();
     rdp_clients.lock().await.insert(session_id.clone(), (generation, tx));
@@ -14587,10 +17020,13 @@ async fn rdp_builtin_open(
                 emit_connection_failed(&app, &attempt, &sid, serde_json::json!({"reason": reason})).await;
             }
         };
-        let target = rdp::address(&host, port);
         log(&format!("Opening the RDP server {target} in this tab..."), "info");
         if let Some(chosen) = graphics.describe() {
             log(&chosen, "info");
+        }
+        if moved {
+            log(&rdp::moved_note(&shared_for, &target), "warning");
+            let _ = app.emit(&format!("rdp-moved-{session_id}"), serde_json::json!({"was": shared_for, "now": target}));
         }
 
         // The password: saved, else asked for here (it goes nowhere else). Asked
@@ -14658,7 +17094,11 @@ async fn rdp_builtin_open(
                     }
                 };
                 let local = tcp.local_addr().unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
-                let _ = tcp.set_nodelay(true);
+                // No delay, and TCP keepalive as the VNC tab has: a link that
+                // goes silent (Wi-Fi gone, a NAT that forgot it) ends the
+                // session within about a minute instead of leaving a frozen
+                // picture that says "connected".
+                crate::tunnel::apply_tunnel_sockopts(&tcp);
                 // One stream type for both ways (the session wants Send + Sync).
                 let (ours, theirs) = tokio::io::duplex(256 * 1024);
                 let carrier = tokio::spawn(async move {
@@ -14681,6 +17121,7 @@ async fn rdp_builtin_open(
                     allow_prompt: true,
                     auth_failed: &auth_failed,
                     network_failed: &network_failed,
+                    tcp_keepalive: true,
                     attempt: &attempt,
                     session_id: &session_id,
                     use_agent,
@@ -14835,7 +17276,7 @@ async fn rdp_builtin_open(
                     let _ = app.emit(&format!("session-log-{sid}"), serde_json::json!({"msg": format!("Connected to {target} ({w}×{h})."), "type": "success"}));
                     let _ = app.emit(
                         &format!("connection-success-{sid}"),
-                        serde_json::json!({"builtin": true, "address": target, "width": w, "height": h, "shared": shared}),
+                        serde_json::json!({"builtin": true, "address": target, "target": pin.then_some(&target), "width": w, "height": h, "shared": shared}),
                     );
                 }
             }
@@ -14980,12 +17421,12 @@ fn screen_frame_sender(
     flow: std::sync::Arc<screen_flow::Flow>,
 ) -> impl Fn(Vec<u8>) -> bool {
     move |bytes: Vec<u8>| {
-        let len = bytes.len();
+        let cost = screen_flow::frame_cost(bytes.len());
         // Counted first: the page can answer before this call returns.
-        flow.sent(len);
+        flow.sent(cost);
         let sent = frames.send(tauri::ipc::InvokeResponseBody::Raw(bytes)).is_ok();
         if !sent {
-            flow.drawn(len as u64);
+            flow.drawn(cost as u64);
         }
         sent
     }
@@ -15006,13 +17447,6 @@ async fn rdp_builtin_close(rdp_clients: tauri::State<'_, RdpClients>, session_id
     }
     Ok(())
 }
-
-/// The rendering workarounds this process set for its own WebKit at startup
-/// (software GL, X11 instead of Wayland), unless the user had set them. A
-/// program it starts would inherit them: they're taken out again for an RDP
-/// app, which should run as if the user had started it.
-#[cfg(target_os = "linux")]
-static OWN_RENDER_ENV: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
 
 /// Removes `file`, the `.rdp` file with the saved password in it, once the
 /// RDP app started with it has read it: when it first waits for the user
@@ -15064,10 +17498,8 @@ fn launch_rdp_app(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    #[cfg(target_os = "linux")]
-    for name in OWN_RENDER_ENV.get().into_iter().flatten() {
-        cmd.env_remove(name);
-    }
+    // As if the user had started it: without this app's own WebKit workarounds.
+    child_env::clean(cmd.as_std_mut());
     let mut child = cmd.spawn().map_err(|e| format!("Couldn't start {}: {e}", launcher.name))?;
     #[cfg(windows)]
     if let (true, Some(file)) = (launcher.secret, &launcher.file) {
@@ -15126,21 +17558,22 @@ async fn rdp_open_again(
     let (launcher, windows) = {
         let mut map = rdp_sessions.lock().await;
         let session = map.get_mut(&session_id).ok_or("This RDP tab isn't open any more")?;
-        if let Some(options) = options {
-            session.options = options.checked();
-        }
         // The saved password as it is now: it may have changed since. Not when
         // the server's address or login changed since the tab opened: the tab
         // still goes to the old one, and that password isn't for it.
-        let password = {
+        let (password, shared_profile) = {
             let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
             let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-            if rdp_login_key(conn, session.server_id) == session.login {
+            let password = if rdp_login_key(conn, session.server_id) == session.login {
                 rdp_saved_password(conn, session.server_id)
             } else {
                 None
-            }
+            };
+            (password, approvals::profile_is_shared(conn))
         };
+        if let Some(options) = options {
+            session.options = options.checked().for_target(&session.target, shared_profile).0;
+        }
         let saved = password.as_deref().map(String::as_str);
         // Written again: another copy of the app may have cleared old files.
         let launcher = rdp::prepare(rdp::pick_app(rdp::find_on_path)?, &session_id, &session.address, &session.username, &session.options, saved)?;
@@ -15258,6 +17691,7 @@ async fn telnet_connect(
                     allow_prompt: true,
                     auth_failed: &auth_failed,
                     network_failed: &network_failed,
+                    tcp_keepalive: true,
                     attempt: &attempt,
                     session_id: &session_id,
                     use_agent,
@@ -15316,9 +17750,13 @@ async fn telnet_open_terminal(
     let conn = telnet_pending.lock().await.remove(&session_id).ok_or("Not connected")?;
     let (tx, rx) = tokio::sync::mpsc::channel::<TerminalCommand>(32);
     let (resize_tx, resize_rx) = tokio::sync::watch::channel(PtySize { cols, rows });
+    // What the page has drawn: what it hasn't stays bounded (ssh_manager::Outflow).
+    // Before the sender goes in: an old pump (a Reconnect on a live tab) ends
+    // when it loses its sender, and must know then that it was replaced.
+    let page = ssh_manager::page_start(&terminal_id);
     state.terminal_txs.lock().await.insert(terminal_id.clone(), tx);
     state.resize_txs.lock().await.insert(terminal_id.clone(), resize_tx);
-    tauri::async_runtime::spawn(telnet::run_pump(app, session_id, terminal_id, conn, rx, resize_rx));
+    tauri::async_runtime::spawn(telnet::run_pump(app, session_id, terminal_id, page, conn, rx, resize_rx));
     Ok(())
 }
 
@@ -15476,6 +17914,7 @@ async fn vnc_open(
                     allow_prompt: true,
                     auth_failed: &auth_failed,
                     network_failed: &network_failed,
+                    tcp_keepalive: true,
                     attempt: &attempt,
                     session_id: &session_id,
                     use_agent,
@@ -15531,10 +17970,16 @@ async fn vnc_open(
         let save_after_login: Arc<std::sync::Mutex<Option<zeroize::Zeroizing<String>>>> = Arc::default();
         // Where a ticked one goes: this server, in the profile open now.
         let save_target = if server_id > 0 { SaveTarget::for_server(&app, server_id) } else { None };
+        // VNC never proves who the server is: one that lets us in with no
+        // password, on a node that has one, may not be the same server.
+        let has_saved_password = !password.is_empty();
+        let password_asked = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let password = {
             let (app, kbi_txs, sid, target, keep) = (app.clone(), Arc::clone(&kbi_txs), session_id.clone(), target.clone(), Arc::clone(&save_after_login));
             let ask_again = ask_password.unwrap_or(false);
+            let asked = Arc::clone(&password_asked);
             async move {
+                asked.store(true, std::sync::atomic::Ordering::SeqCst);
                 if !password.is_empty() && !ask_again {
                     return Some(password);
                 }
@@ -15590,6 +18035,9 @@ async fn vnc_open(
                 }
                 if attempt.is_current_now() {
                     let _ = app.emit(&format!("session-log-{sid}"), serde_json::json!({"msg": format!("Connected to {target} ({w}×{h})."), "type": "success"}));
+                    if has_saved_password && !password_asked.load(std::sync::atomic::Ordering::SeqCst) {
+                        let _ = app.emit(&format!("session-log-{sid}"), serde_json::json!({"msg": "This server let us in without asking for the saved password.", "type": "warning"}));
+                    }
                     let _ = app.emit(&format!("connection-success-{sid}"), serde_json::json!({"address": target, "via": via, "width": w, "height": h}));
                 }
             }
@@ -15748,6 +18196,9 @@ async fn disconnect_session(
     // Same idea for any mirror that's still running — its watcher would
     // try to push uploads through a dead SSH handle otherwise.
     mirror::stop_all_for_session(&mirrors, &session_id).await;
+    // Running transfers hold their own SFTP session, so dropping the cached one
+    // below wouldn't reach them.
+    cancel_session_transfers(state.inner(), &session_id).await;
     // Drop SFTP first so the channel it holds is freed before we tear down the
     // underlying SSH handle. The tab is gone, so is its root (sudo) mode and
     // the in-memory sudo password.
@@ -15836,14 +18287,14 @@ async fn disconnect_session(
 // Android have no such shell, so the setting does nothing there and the
 // settings page doesn't offer it (see `local_shell`). The path is sent to the
 // server, so only a plain absolute one is taken (`is_safe_remote_exec_path`).
-#[cfg(all(unix, not(target_os = "android")))]
+#[cfg(all(unix, desktop))]
 fn local_default_shell() -> Option<String> {
     let shell = std::env::var("SHELL").ok()?;
     let shell = shell.trim();
     is_safe_remote_exec_path(shell).then(|| shell.to_string())
 }
 
-#[cfg(not(all(unix, not(target_os = "android"))))]
+#[cfg(not(all(unix, desktop)))]
 fn local_default_shell() -> Option<String> {
     None
 }
@@ -15899,14 +18350,13 @@ async fn open_terminal(app: tauri::AppHandle, state: tauri::State<'_, SshState>,
     // started on the server as a login shell in place of the account's own
     // (LOGIN_SHELL_SCRIPT), where the server can (server_runs_login_shell);
     // otherwise, and with the setting off, the account's own shell. Asked
-    // before the session is locked for the terminal's channel.
+    // before the terminal's channel is opened.
     let login_shell = match use_local_shell.then(local_default_shell).flatten() {
         Some(shell) if server_runs_login_shell(&session_arc, &shell).await => Some(shell),
         _ => None,
     };
 
-    let session = session_arc.lock().await;
-    let channel = session.channel_open_session().await.map_err(|e| e.to_string())?;
+    let channel = shell_sftp::open_session_channel(&session_arc).await?;
 
     // Request PTY
     channel.request_pty(false, "xterm-256color", cols, rows, 0, 0, &[]).await.map_err(|e| e.to_string())?;
@@ -15992,6 +18442,12 @@ async fn type_saved_password(
     tx.send(TerminalCommand::Data(password.as_bytes().to_vec()))
         .await
         .map_err(|_| "That terminal isn't open".to_string())
+}
+
+/// What a terminal's page drew of its output (ssh_manager::Outflow).
+#[tauri::command]
+async fn terminal_drawn(terminal_id: String, bytes: u64) {
+    ssh_manager::page_drew(&terminal_id, bytes);
 }
 
 #[tauri::command]
@@ -16317,10 +18773,7 @@ async fn run_info_script(
     };
 
     let start = std::time::Instant::now();
-    let channel = {
-        let session = session_arc.lock().await;
-        session.channel_open_session().await.map_err(|e| e.to_string())?
-    };
+    let channel = shell_sftp::open_session_channel(&session_arc).await?;
     channel.exec(true, script.as_bytes()).await.map_err(|e| e.to_string())?;
     let mut stream = channel.into_stream();
 
@@ -16573,10 +19026,7 @@ async fn run_exec_capture(
         connections.get(session_id).map(Arc::clone)
             .ok_or_else(|| "Session not connected".to_string())?
     };
-    let channel = {
-        let session = session_arc.lock().await;
-        session.channel_open_session().await.map_err(|e| e.to_string())?
-    };
+    let channel = shell_sftp::open_session_channel(&session_arc).await?;
     channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
     let mut stream = channel.into_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
@@ -16755,7 +19205,8 @@ struct SftpListResult {
 // sudo will allow exactly that command, so failures come back as precise
 // errors instead of a broken SFTP stream.
 
-type SessionHandleArc = Arc<tokio::sync::Mutex<russh::client::Handle<ssh_manager::ClientHandler>>>;
+/// A logged-in connection, only ever read-locked (see SshState::connections).
+type SessionHandleArc = Arc<tokio::sync::RwLock<russh::client::Handle<ssh_manager::ClientHandler>>>;
 
 const SUDO_NEED_PASSWORD: &str = "[SUDO] NEED_PASSWORD";
 const SUDO_WRONG_PASSWORD: &str = "[SUDO] WRONG_PASSWORD";
@@ -16831,10 +19282,7 @@ async fn exec_with_stdin_capture(
     timeout_secs: u64,
 ) -> Result<String, String> {
     use russh::ChannelMsg;
-    let mut channel = {
-        let session = session_arc.lock().await;
-        session.channel_open_session().await.map_err(|e| e.to_string())?
-    };
+    let mut channel = shell_sftp::open_session_channel(session_arc).await?;
     channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
     if let Some(input) = stdin {
         channel.data(input).await.map_err(|e| e.to_string())?;
@@ -16935,17 +19383,24 @@ async fn probe_sudo_files(session_arc: &SessionHandleArc, password: Option<&str>
 /// waits for the others and can run out of time while the transfer is still
 /// moving. With the default 10 s, a download (16 reads of up to 255 KiB = 4 MiB
 /// in flight) failed with "Timeout" on anything under ~3 Mbit/s, and an upload
-/// (16 writes of 32 KiB) under ~420 kbit/s. The same goes for a directory
+/// (then 16 writes of 32 KiB) under ~420 kbit/s. The same goes for a directory
 /// listing queued behind a running transfer.
 ///
 /// 240 s per request carries downloads down to ~140 kbit/s and uploads down to
-/// ~17 kbit/s, and keeps the 16 reads in flight that fast high-latency links
+/// ~35 kbit/s, and keeps the 16 reads in flight that fast high-latency links
 /// need. It doesn't make a dead connection hang: the session watcher closes
 /// the SFTP session when it gives up on the connection, and the requests still
 /// pending fail with it. The deadline is only for a server that stops
 /// answering on a connection that is still up.
+///
+/// An upload can't pass what is in flight per round trip: 32 writes of 32 KiB,
+/// 1 MiB, so 10 MB/s at 100 ms (half that with the default 16), however fast
+/// the line. OpenSSH keeps 64 out. More isn't free: a key typed on the same
+/// connection can wait behind all of it on a slow uplink (not with "Dedicated
+/// session" on), so this stays at half of that.
 pub(crate) fn sftp_client_config() -> russh_sftp::client::Config {
     russh_sftp::client::Config {
+        max_concurrent_writes: 32,
         request_timeout_secs: 240,
         ..Default::default()
     }
@@ -16996,7 +19451,7 @@ pub(crate) async fn start_sftp(
         let _ = channel.close().await;
         return Err(e);
     }
-    let handshake = russh_sftp::client::SftpSession::new_with_config(channel.into_stream(), sftp_client_config());
+    let handshake = russh_sftp::client::SftpSession::new_with_config(sftp_listing::counted(channel.into_stream()), sftp_client_config());
     match tokio::time::timeout(SFTP_START_TIMEOUT, handshake).await {
         Ok(Ok(sftp)) => Ok(sftp),
         Ok(Err(russh_sftp::client::error::Error::UnexpectedBehavior(_) | russh_sftp::client::error::Error::IO(_))) => {
@@ -17013,10 +19468,7 @@ pub(crate) async fn start_sftp(
 pub(crate) async fn open_sftp(
     session_arc: &SessionHandleArc,
 ) -> Result<(russh_sftp::client::SftpSession, bool), String> {
-    let channel = {
-        let session = session_arc.lock().await;
-        session.channel_open_session().await.map_err(|e| e.to_string())?
-    };
+    let channel = shell_sftp::open_session_channel(session_arc).await?;
     match start_sftp(channel).await {
         Ok(sftp) => Ok((sftp, false)),
         Err(e) if e == SFTP_REFUSED || e == SFTP_ENDED => {
@@ -17081,7 +19533,7 @@ mod start_sftp_tests {
 
 #[cfg(test)]
 mod sftp_config_tests {
-    use super::sftp_client_config;
+    use super::{sftp_client_config, DIR_FILES_AT_ONCE, DIR_FILE_ALONE_UP};
 
     /// What OpenSSH's sftp-server reports in limits@openssh.com as its
     /// maximum read length (256 KiB message minus 1 KiB of headroom).
@@ -17098,6 +19550,22 @@ mod sftp_config_tests {
         let upload_floor = writes_in_flight / cfg.request_timeout_secs;
         assert!(download_floor <= 150_000 / 8, "downloads need {download_floor} B/s");
         assert!(upload_floor <= 40_000 / 8, "uploads need {upload_floor} B/s");
+    }
+
+    // What sets an upload's speed on a far server: it can't pass this per round
+    // trip, whatever the line can do.
+    #[test]
+    fn an_upload_keeps_a_mebibyte_on_its_way() {
+        let cfg = sftp_client_config();
+        assert_eq!(cfg.max_concurrent_writes as u64 * cfg.max_write_packet_len as u64, 1 << 20);
+    }
+
+    // The small files of a folder, moving at once, ask no more of the deadline
+    // than one big file on its own.
+    #[test]
+    fn small_files_at_once_have_no_more_on_their_way_than_one_big_file() {
+        let cfg = sftp_client_config();
+        assert!(DIR_FILES_AT_ONCE as u64 * DIR_FILE_ALONE_UP <= cfg.max_concurrent_writes as u64 * cfg.max_write_packet_len as u64);
     }
 }
 
@@ -17117,10 +19585,7 @@ async fn open_elevated_sftp(
     }
     let sudo = if password.is_some() { "sudo -S -k -p ''" } else { "sudo -n" };
     let cmd = format!("echo {}; exec {} {}", ELEVATED_SFTP_READY, sudo, server_path);
-    let channel = {
-        let session = session_arc.lock().await;
-        session.channel_open_session().await.map_err(|e| e.to_string())?
-    };
+    let channel = shell_sftp::open_session_channel(session_arc).await?;
     channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
     let mut stream = channel.into_stream();
     if let Some(pw) = password {
@@ -17157,7 +19622,7 @@ async fn open_elevated_sftp(
     tokio::time::timeout(std::time::Duration::from_secs(20), wait_ready)
         .await
         .map_err(|_| format!("{}: timed out starting sftp-server via sudo", SUDO_FAILED))??;
-    russh_sftp::client::SftpSession::new_with_config(stream, sftp_client_config())
+    russh_sftp::client::SftpSession::new_with_config(sftp_listing::counted(stream), sftp_client_config())
         .await
         .map_err(|e| format!("{}: {}", SUDO_FAILED, e))
 }
@@ -17554,11 +20019,14 @@ async fn sftp_list_dir(
     let target_path = if path.is_empty() { ".".to_string() } else { path.clone() };
     let canonical_path = sftp.canonicalize(&target_path).await.map_err(|e| e.to_string())?;
     
-    let mut read_dir = sftp.read_dir(&canonical_path).await.map_err(|e| e.to_string())?;
+    let mut read_dir = sftp_listing::read_dir(&sftp, &canonical_path).await.map_err(|e| e.to_string())?;
     let mut entries = Vec::new();
     while let Some(entry) = read_dir.next() {
         let name = entry.file_name();
-        if name == "." || name == ".." {
+        // A name with `/` or NUL can't be a file's: no file system holds one
+        // and no honest server sends one. A hostile server sends `../x`, and
+        // the page joins the name onto the folder a download goes to.
+        if !sftp_listing::is_plain_name(&name) {
             continue;
         }
         // Every other name is listed as-is, even one this OS can't store
@@ -17713,7 +20181,7 @@ async fn sftp_remove_dir(
         return sftp.remove_dir(path).await.map_err(|e| e.to_string());
     };
 
-    let id = transfer_id();
+    let id = session_transfer_id(&session_id);
     let cancel = Arc::new(AtomicBool::new(false));
     let cancels_map = Arc::clone(&state.transfer_cancels);
     cancels_map.lock().await.insert(id.clone(), Arc::clone(&cancel));
@@ -17949,7 +20417,7 @@ async fn sftp_download_file(
         .and_then(|n| n.to_str())
         .unwrap_or("file")
         .to_string();
-    let id = transfer_id();
+    let id = session_transfer_id(&session_id);
     let event_name = format!("sftp-transfer-{}", session_id);
     let emit_progress = |bytes: u64, status: &str, error: Option<String>| {
         let _ = app.emit(
@@ -18047,6 +20515,760 @@ async fn sftp_download_file(
     Ok(())
 }
 
+/// How many files of a folder transfer move at once. One by one, each file's
+/// own round trips (open, close) came in a row, so a folder of small files took
+/// a round trip times its files: a thousand of them at 100 ms, about five
+/// minutes. A file's data is pipelined already. Over shell commands (a server
+/// without SFTP) the requests wait their turn anyway: one at a time there.
+const DIR_FILES_AT_ONCE: usize = 4;
+
+/// A file bigger than this moves alone. Each file keeps up to 16 reads or 32
+/// writes in flight on the one SFTP channel, and each request's time limit runs
+/// from when it was sent: big files at once would put every request behind the
+/// others' data, and on a slow link past its limit. Files up to these sizes
+/// at once have no more in flight than one file has when it moves by itself
+/// (16 reads of 255 KiB; 32 writes of 32 KiB, sftp_client_config).
+const DIR_FILE_ALONE_DOWN: u64 = 1 << 20;
+const DIR_FILE_ALONE_UP: u64 = 128 << 10;
+
+/// How one file of a folder transfer ended, when not well: stopped by a
+/// cancel, with what the user may need to hear, or failed.
+enum DirFileEnd {
+    Stopped(Option<String>),
+    Failed(String),
+}
+
+/// How a folder transfer's files went.
+enum DirFilesEnd {
+    Done,
+    /// A cancel cut it short; the stopped files' notes.
+    Stopped(Vec<String>),
+    /// The first failure, and the notes of files a cancel stopped after it.
+    Failed(String, Vec<String>),
+}
+
+/// One file of a folder transfer for run_dir_files.
+struct DirJob<Fut> {
+    /// Whether it moves alone (DIR_FILE_ALONE_*).
+    alone: bool,
+    /// Its path in lower case: names that differ only in case are one file on
+    /// a server (or a disk) that ignores case, so they never move at once.
+    key: String,
+    /// Its name in messages.
+    shown: String,
+    run: Fut,
+}
+
+/// Run a folder transfer's files, up to `at_once` at a time (a file that moves
+/// alone, alone), telling `report` every 100 ms. The first failure starts
+/// nothing new; the files in flight finish (stopping one part way could leave
+/// a file it overwrites cut short), then the failure is told. A cancel stops
+/// the files in flight.
+async fn run_dir_files<Fut>(
+    mut jobs: impl Iterator<Item = DirJob<Fut>>,
+    at_once: usize,
+    cancel: &std::sync::atomic::AtomicBool,
+    mut report: impl FnMut(),
+) -> DirFilesEnd
+where
+    Fut: std::future::Future<Output = Result<(), DirFileEnd>> + Send + 'static,
+{
+    use std::sync::atomic::Ordering;
+    let mut running = tokio::task::JoinSet::new();
+    // The files moving now, by task: key, name, alone.
+    let mut moving: std::collections::HashMap<tokio::task::Id, (String, String, bool)> = std::collections::HashMap::new();
+    let mut next: Option<DirJob<Fut>> = None;
+    let mut failure: Option<String> = None;
+    let mut notes = Vec::new();
+    let mut stopped = false;
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        while failure.is_none() && !cancel.load(Ordering::Relaxed) {
+            let Some(job) = next.take().or_else(|| jobs.next()) else { break };
+            let fits = moving.is_empty()
+                || (!job.alone
+                    && moving.len() < at_once.max(1)
+                    && !moving.values().any(|(key, _, alone)| *alone || *key == job.key));
+            if !fits {
+                next = Some(job);
+                break;
+            }
+            let DirJob { alone, key, shown, run } = job;
+            let task = running.spawn(run);
+            moving.insert(task.id(), (key, shown, alone));
+        }
+        if running.is_empty() {
+            break;
+        }
+        tokio::select! {
+            ended = running.join_next_with_id() => {
+                let (id, outcome) = match ended {
+                    Some(Ok((id, outcome))) => (id, Ok(outcome)),
+                    Some(Err(e)) => (e.id(), Err(e)),
+                    None => continue,
+                };
+                let shown = moving.remove(&id).map(|(_, shown, _)| shown).unwrap_or_default();
+                match outcome {
+                    Ok(Ok(())) => {}
+                    Ok(Err(DirFileEnd::Failed(msg))) => {
+                        failure.get_or_insert(msg);
+                    }
+                    Ok(Err(DirFileEnd::Stopped(note))) => {
+                        stopped = true;
+                        notes.extend(note);
+                    }
+                    Err(e) => {
+                        failure.get_or_insert(format!("{shown}: the transfer ended: {e}"));
+                    }
+                }
+            }
+            _ = tick.tick() => report(),
+        }
+    }
+    if let Some(msg) = failure {
+        return DirFilesEnd::Failed(msg, notes);
+    }
+    if stopped || next.is_some() || jobs.next().is_some() {
+        return DirFilesEnd::Stopped(notes);
+    }
+    DirFilesEnd::Done
+}
+
+#[cfg(test)]
+mod dir_files_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
+
+    /// What the fake files saw: each start with the files moving then, each end.
+    #[derive(Default)]
+    struct Seen {
+        live: StdMutex<Vec<&'static str>>,
+        starts: StdMutex<Vec<(&'static str, Vec<&'static str>)>>,
+        ends: StdMutex<Vec<&'static str>>,
+    }
+
+    /// A file that takes `ms`, then ends as `end` says ("ok", "fail", "panic"),
+    /// or stops when `cancel` is set (with a note).
+    fn file(name: &'static str, ms: u64, end: &'static str, seen: &Arc<Seen>, cancel: &Arc<AtomicBool>) -> impl std::future::Future<Output = Result<(), DirFileEnd>> + Send + 'static {
+        let (seen, cancel) = (Arc::clone(seen), Arc::clone(cancel));
+        async move {
+            {
+                let mut live = seen.live.lock().unwrap();
+                live.push(name);
+                seen.starts.lock().unwrap().push((name, live.clone()));
+            }
+            for _ in 0..ms / 10 {
+                if cancel.load(Ordering::Relaxed) {
+                    seen.live.lock().unwrap().retain(|n| *n != name);
+                    return Err(DirFileEnd::Stopped(Some(format!("{name} was cut"))));
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            seen.live.lock().unwrap().retain(|n| *n != name);
+            seen.ends.lock().unwrap().push(name);
+            match end {
+                "fail" => Err(DirFileEnd::Failed(format!("{name} broke"))),
+                "panic" => panic!("{name} panicked"),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    fn job<F>(name: &'static str, key: &str, alone: bool, run: F) -> DirJob<F> {
+        DirJob { alone, key: key.to_lowercase(), shown: name.to_string(), run }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_big_file_moves_alone_and_small_ones_four_at_once() {
+        let (seen, cancel) = (Arc::new(Seen::default()), Arc::new(AtomicBool::new(false)));
+        let names = ["s1", "s2", "s3", "s4", "s5", "big", "s6"];
+        let jobs: Vec<_> = names.iter().map(|&n| job(n, n, n == "big", file(n, 100, "ok", &seen, &cancel))).collect();
+        assert!(matches!(run_dir_files(jobs.into_iter(), 4, &cancel, || {}).await, DirFilesEnd::Done));
+        let starts = seen.starts.lock().unwrap();
+        assert_eq!(starts.len(), names.len(), "every file ran");
+        assert!(starts.iter().all(|(_, live)| live.len() <= 4), "at most four at once: {starts:?}");
+        assert!(starts.iter().any(|(_, live)| live.len() == 4), "four at once: {starts:?}");
+        let big = starts.iter().find(|(n, _)| *n == "big").unwrap();
+        assert_eq!(big.1, vec!["big"], "the big file started alone");
+        assert!(starts.iter().all(|(n, live)| *n == "big" || !live.contains(&"big")), "nothing started beside it: {starts:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn names_that_differ_only_in_case_never_move_at_once() {
+        let (seen, cancel) = (Arc::new(Seen::default()), Arc::new(AtomicBool::new(false)));
+        let jobs = vec![
+            job("a", "dir/Notes.txt", false, file("a", 100, "ok", &seen, &cancel)),
+            job("b", "dir/notes.TXT", false, file("b", 100, "ok", &seen, &cancel)),
+            job("c", "dir/other", false, file("c", 100, "ok", &seen, &cancel)),
+        ];
+        assert!(matches!(run_dir_files(jobs.into_iter(), 4, &cancel, || {}).await, DirFilesEnd::Done));
+        let starts = seen.starts.lock().unwrap();
+        assert!(starts.iter().all(|(_, live)| !(live.contains(&"a") && live.contains(&"b"))), "{starts:?}");
+        assert_eq!(starts.len(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failure_lets_the_files_in_flight_finish_and_starts_none() {
+        let (seen, cancel) = (Arc::new(Seen::default()), Arc::new(AtomicBool::new(false)));
+        let jobs = vec![
+            job("f1", "f1", false, file("f1", 50, "fail", &seen, &cancel)),
+            job("f2", "f2", false, file("f2", 200, "ok", &seen, &cancel)),
+            job("f3", "f3", false, file("f3", 200, "ok", &seen, &cancel)),
+            job("f4", "f4", false, file("f4", 200, "ok", &seen, &cancel)),
+            job("f5", "f5", false, file("f5", 200, "ok", &seen, &cancel)),
+        ];
+        match run_dir_files(jobs.into_iter(), 4, &cancel, || {}).await {
+            DirFilesEnd::Failed(msg, notes) => {
+                assert_eq!(msg, "f1 broke");
+                assert!(notes.is_empty());
+            }
+            _ => panic!("the failure is told"),
+        }
+        let ends = seen.ends.lock().unwrap();
+        for n in ["f2", "f3", "f4"] {
+            assert!(ends.contains(&n), "{n} in flight finished whole: {ends:?}");
+        }
+        assert!(!seen.starts.lock().unwrap().iter().any(|(n, _)| *n == "f5"), "nothing new after the failure");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancel_stops_the_files_in_flight() {
+        let (seen, cancel) = (Arc::new(Seen::default()), Arc::new(AtomicBool::new(false)));
+        let jobs: Vec<_> = ["c1", "c2", "c3"].iter().map(|&n| job(n, n, false, file(n, 1000, "ok", &seen, &cancel))).collect();
+        let stopper = Arc::clone(&cancel);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            stopper.store(true, Ordering::Relaxed);
+        });
+        match run_dir_files(jobs.into_iter(), 4, &cancel, || {}).await {
+            DirFilesEnd::Stopped(mut notes) => {
+                notes.sort();
+                assert_eq!(notes, ["c1 was cut", "c2 was cut", "c3 was cut"]);
+            }
+            _ => panic!("a cancel stops it"),
+        }
+        assert!(seen.ends.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_file_that_panics_is_named() {
+        let (seen, cancel) = (Arc::new(Seen::default()), Arc::new(AtomicBool::new(false)));
+        let jobs = vec![job("broken.txt", "broken.txt", false, file("x", 10, "panic", &seen, &cancel))];
+        match run_dir_files(jobs.into_iter(), 4, &cancel, || {}).await {
+            DirFilesEnd::Failed(msg, _) => assert!(msg.starts_with("broken.txt: the transfer ended"), "{msg}"),
+            _ => panic!("a panic is a failure"),
+        }
+    }
+}
+
+/// One file of a folder download (sftp_download_dir), into `local_root`: to a
+/// sibling temp renamed over its final name at the end (see
+/// sftp_download_file), so a failure or a cancel part way through a tree
+/// doesn't truncate a file already there.
+async fn download_dir_file(
+    sftp: Arc<russh_sftp::client::SftpSession>,
+    remote_file_path: String,
+    rel: String,
+    local_root: std::path::PathBuf,
+    transferred: Arc<std::sync::atomic::AtomicU64>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), DirFileEnd> {
+    use std::sync::atomic::Ordering;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // Normalise the relative path's separators for the local OS. On
+    // Unix this is a no-op; on Windows we replace `/` so create_dir_all
+    // produces real nested directories instead of one literal name
+    // containing slashes.
+    let rel_local = if cfg!(windows) { rel.replace('/', "\\") } else { rel.to_string() };
+    let dest = local_root.join(&rel_local);
+    // Defense in depth: every component of `rel` was checked with
+    // is_safe_dir_entry_name during the walk, so this can't fail for a
+    // well-behaved tree — but check before we create or open anything
+    // that the relative part is plain names only (no root, prefix or
+    // `..`), so the join can only land under the destination root.
+    let rel_is_plain = std::path::Path::new(&rel_local)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !rel_is_plain || !dest.starts_with(&local_root) {
+        return Err(DirFileEnd::Failed(format!("unsafe path escaped destination: {}", dest.display())));
+    }
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await
+            .map_err(|e| DirFileEnd::Failed(format!("mkdir {}: {}", parent.display(), e)))?;
+    }
+    let mut remote_file = sftp.open(&remote_file_path).await
+        .map_err(|e| DirFileEnd::Failed(format!("open {}: {}", remote_file_path, e)))?;
+    let temp = download_temp_path(&dest);
+    let mut local_file = tokio::fs::File::create(&temp).await
+        .map_err(|e| DirFileEnd::Failed(format!("create {}: {}", dest.display(), e)))?;
+    let mut buf = vec![0u8; 256 * 1024];
+    let copied: Result<(), DirFileEnd> = async {
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(DirFileEnd::Stopped(None));
+            }
+            let n = remote_file.read(&mut buf).await
+                .map_err(|e| DirFileEnd::Failed(format!("read {}: {}", remote_file_path, e)))?;
+            if n == 0 {
+                break;
+            }
+            local_file.write_all(&buf[..n]).await
+                .map_err(|e| DirFileEnd::Failed(format!("write {}: {}", dest.display(), e)))?;
+            transferred.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        // See sftp_download_file: a failed last write surfaces here.
+        local_file.flush().await
+            .map_err(|e| DirFileEnd::Failed(format!("flush {}: {}", dest.display(), e)))
+    }.await;
+    drop(local_file);
+    if let Err(end) = copied {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(end);
+    }
+    if let Err(e) = tokio::fs::rename(&temp, &dest).await {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(DirFileEnd::Failed(format!("finalize {}: {}", dest.display(), e)));
+    }
+    Ok(())
+}
+
+/// One file of a folder upload (sftp_upload_dir), to `remote_full`. A cancel
+/// ends it as a single file's cancel does (finish_cancelled_upload): only a
+/// file this upload made is deleted.
+async fn upload_dir_file(
+    sftp: Arc<russh_sftp::client::SftpSession>,
+    local_file_path: std::path::PathBuf,
+    remote_full: String,
+    shown: String,
+    transferred: Arc<std::sync::atomic::AtomicU64>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), DirFileEnd> {
+    use std::sync::atomic::Ordering;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let halted = || cancel.load(Ordering::Relaxed);
+    let mut local_file = tokio::fs::File::open(&local_file_path).await
+        .map_err(|e| DirFileEnd::Failed(format!("open {:?}: {}", local_file_path, e)))?;
+    // See sftp_upload_file: no truncating open after a cancel.
+    if halted() {
+        return Err(DirFileEnd::Stopped(None));
+    }
+    // Whether each file was there isn't asked (a round trip per file):
+    // EXCL alone tells a file this upload created.
+    let (mut remote_file, created) = open_upload_target(&sftp, &remote_full, false).await
+        .map_err(|e| DirFileEnd::Failed(format!("open remote {}: {}", remote_full, e)))?;
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        if halted() {
+            let note = finish_cancelled_upload(&sftp, remote_file, &remote_full, &shown, created).await;
+            return Err(DirFileEnd::Stopped(note));
+        }
+        let n = local_file.read(&mut buf).await
+            .map_err(|e| DirFileEnd::Failed(format!("read {:?}: {}", local_file_path, e)))?;
+        if n == 0 {
+            break;
+        }
+        remote_file.write_all(&buf[..n]).await
+            .map_err(|e| DirFileEnd::Failed(format!("write {}: {}", remote_full, e)))?;
+        transferred.fetch_add(n as u64, Ordering::Relaxed);
+    }
+    // See sftp_upload_file: a failed close must end the card too.
+    remote_file.shutdown().await
+        .map_err(|e| DirFileEnd::Failed(format!("close {}: {}", remote_full, e)))
+}
+
+/// What sftp_upload_dir sends: each file under `root` (its path, its path
+/// relative to `root` in POSIX form, its size), each folder (relative), and
+/// the total size. An explicit stack, so a deep tree can't overflow; on a
+/// blocking thread (the caller's spawn_blocking), as a big tree is many
+/// blocking reads. Err(None) is a cancel.
+#[allow(clippy::type_complexity)]
+fn walk_upload_tree(
+    root: &std::path::Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(Vec<(std::path::PathBuf, String, u64)>, Vec<String>, u64), Option<String>> {
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    let mut total_bytes: u64 = 0;
+    let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(None);
+        }
+        let read = std::fs::read_dir(&dir).map_err(|e| Some(format!("read_dir {:?}: {}", dir, e)))?;
+        for entry in read {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            let Ok(ft) = entry.file_type() else { continue };
+            let rel = path
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if ft.is_dir() {
+                dirs.push(rel);
+                stack.push(path);
+            } else if ft.is_file() {
+                let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+                total_bytes = total_bytes.saturating_add(size);
+                files.push((path, rel, size));
+            }
+            // Symlinks and other types skipped — same as sftp_download_dir.
+        }
+    }
+    Ok((files, dirs, total_bytes))
+}
+
+/// How many folders a folder download lists at once. A listing is at least
+/// four round trips, so one by one a tree of 3,000 folders (a node_modules) at
+/// 100 ms took 20 minutes before its first byte. Over shell commands one at a
+/// time: the requests wait their turn anyway.
+const DIR_LISTINGS_AT_ONCE: usize = 8;
+
+/// What sftp_download_dir moves.
+#[derive(Default)]
+struct DownloadTree {
+    /// Each file: its remote path, its path below the root, its size.
+    files: Vec<(String, String, u64)>,
+    total_bytes: u64,
+    /// Names left out, for the note on the finished card.
+    skipped_names: u64,
+}
+
+/// Walks the remote tree under `remote_root` into `tree`, `at_once` folders at
+/// a time, on an explicit stack of (folder, depth). Depth bounds how deep a
+/// hostile server can send us, and the file and byte caps how much `tree` can
+/// grow, so a broken or endless tree is refused instead of growing memory
+/// without bound. `report` hears the files found so far every 100 ms while
+/// that number grows. Err(None) is a cancel.
+async fn walk_download_tree(
+    sftp: &Arc<russh_sftp::client::SftpSession>,
+    remote_root: &str,
+    local_root: &std::path::Path,
+    at_once: usize,
+    cancel: &std::sync::atomic::AtomicBool,
+    tree: &mut DownloadTree,
+    mut report: impl FnMut(usize),
+) -> Result<(), Option<String>> {
+    use std::sync::atomic::Ordering;
+    let mut stack: Vec<(String, usize)> = vec![(remote_root.to_string(), 0)];
+    let mut path_bytes: usize = 0;
+    let mut told = 0;
+    let mut listing = tokio::task::JoinSet::new();
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let walked: Result<(), Option<String>> = async {
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(None);
+            }
+            while listing.len() < at_once.max(1) {
+                let Some((dir, depth)) = stack.pop() else { break };
+                if depth > DOWNLOAD_DIR_MAX_DEPTH {
+                    return Err(Some(format!("folder nesting is deeper than {} levels — refusing to download.", DOWNLOAD_DIR_MAX_DEPTH)));
+                }
+                let sftp = Arc::clone(sftp);
+                listing.spawn(async move {
+                    let read = sftp_listing::read_dir(&sftp, &dir).await;
+                    (dir, depth, read)
+                });
+            }
+            // The tick also brings a Cancel to a walk waiting on the server.
+            let ended = tokio::select! {
+                ended = listing.join_next() => ended,
+                _ = tick.tick() => {
+                    if tree.files.len() != told {
+                        told = tree.files.len();
+                        report(told);
+                    }
+                    continue;
+                }
+            };
+            let Some(ended) = ended else { return Ok(()) };
+            let (dir, depth, read) = ended.map_err(|e| Some(format!("read_dir: {e}")))?;
+            let read = read.map_err(|e| Some(format!("read_dir {}: {}", dir, e)))?;
+            for entry in read {
+                // A single directory can hold millions of entries; a Cancel (and
+                // the caps) must take effect inside the walk, not only between
+                // directories.
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(None);
+                }
+                if let Some(msg) = download_walk_too_big(tree.files.len() + stack.len(), tree.total_bytes, path_bytes) {
+                    return Err(Some(msg));
+                }
+                let name = entry.file_name();
+                if name == "." || name == ".." { continue; }
+                // Skip any entry whose name isn't a single plain component this OS
+                // can store. A hostile SFTP server can return `../../x` or `..\x`
+                // here; joining that onto local_root below would escape the chosen
+                // folder. Ordinary names Windows can't store (`a:b`) are skipped
+                // too — counted, so the user hears about them instead of a quietly
+                // incomplete copy. See is_safe_dir_entry_name.
+                if !is_safe_dir_entry_name(&name) {
+                    tree.skipped_names = tree.skipped_names.saturating_add(1);
+                    continue;
+                }
+                let full = format!("{}/{}", dir.trim_end_matches('/'), name);
+                let rel = full.strip_prefix(remote_root)
+                    .map(|s| s.trim_start_matches('/').to_string())
+                    .unwrap_or_else(|| name.clone());
+                // What the walk keeps is paths, built here from short names.
+                path_bytes = path_bytes.saturating_add(full.len() + rel.len());
+                if entry.file_type().is_dir() {
+                    // Each folder goes through the path policy, not just the top
+                    // one: a remote `.config/autostart` taken into the home folder
+                    // lands where the OS runs things at login. What it would refuse
+                    // is left out and counted, and the rest of the tree still comes.
+                    if check_local_path_policy(local_root.join(&rel)).is_err() {
+                        tree.skipped_names = tree.skipped_names.saturating_add(1);
+                        continue;
+                    }
+                    stack.push((full, depth + 1));
+                } else if entry.file_type().is_file() {
+                    let size = entry.metadata().size.unwrap_or(0);
+                    tree.total_bytes = tree.total_bytes.saturating_add(size);
+                    tree.files.push((full, rel, size));
+                }
+                // Symlinks and other types skipped — same conservative policy
+                // as the mirror module.
+            }
+        }
+    }
+    .await;
+    // What is still listing ends by itself, within the limits of a listing, and
+    // closes its folder on the server. Cut off, it would leave that open.
+    listing.detach_all();
+    walked
+}
+
+#[cfg(test)]
+mod download_walk_tests {
+    use super::*;
+    use russh_sftp::client::SftpSession;
+    use russh_sftp::protocol::{File, FileAttributes, Handle, Name, Status, StatusCode};
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// A server with `tree`, folder by folder. It answers one request at a
+    /// time, as a real one does, so what shows the listings overlapping is how
+    /// many folders are open at once.
+    struct Server {
+        tree: HashMap<String, Vec<File>>,
+        open: HashMap<String, (String, bool)>,
+        next: u32,
+        open_now: Arc<AtomicUsize>,
+        most_open: Arc<AtomicUsize>,
+        /// How long each listing's answer takes.
+        pause: Duration,
+        /// A folder whose listing is never answered.
+        stuck: Option<String>,
+    }
+
+    impl russh_sftp::server::Handler for Server {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> StatusCode {
+            StatusCode::OpUnsupported
+        }
+
+        async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, StatusCode> {
+            if !self.tree.contains_key(&path) {
+                return Err(StatusCode::NoSuchFile);
+            }
+            let open = self.open_now.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most_open.fetch_max(open, Ordering::SeqCst);
+            self.next += 1;
+            let handle = format!("h{}", self.next);
+            self.open.insert(handle.clone(), (path, false));
+            Ok(Handle { id, handle })
+        }
+
+        async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, StatusCode> {
+            let (path, sent) = self.open.get_mut(&handle).ok_or(StatusCode::Failure)?;
+            if *sent {
+                return Err(StatusCode::Eof);
+            }
+            *sent = true;
+            if self.stuck.as_deref() == Some(path.as_str()) {
+                std::future::pending::<()>().await;
+            }
+            tokio::time::sleep(self.pause).await;
+            Ok(Name { id, files: self.tree[path.as_str()].clone() })
+        }
+
+        async fn close(&mut self, id: u32, handle: String) -> Result<Status, StatusCode> {
+            self.open.remove(&handle);
+            self.open_now.fetch_sub(1, Ordering::SeqCst);
+            Ok(Status { id, status_code: StatusCode::Ok, error_message: "Ok".into(), language_tag: "en-US".into() })
+        }
+    }
+
+    fn with_mode(name: &str, mode: u32, size: u64) -> File {
+        File::new(name, FileAttributes { permissions: Some(mode), size: Some(size), ..Default::default() })
+    }
+
+    fn folder(name: &str) -> File {
+        with_mode(name, 0o040755, 0)
+    }
+
+    fn file(name: &str, size: u64) -> File {
+        with_mode(name, 0o100644, size)
+    }
+
+    /// `/top` with `folders` folders of two files each.
+    fn wide_tree(folders: usize) -> HashMap<String, Vec<File>> {
+        let mut tree = HashMap::new();
+        tree.insert("/top".to_string(), (0..folders).map(|i| folder(&format!("d{i}"))).collect());
+        for i in 0..folders {
+            tree.insert(format!("/top/d{i}"), vec![file("a", 10), file("b", 20)]);
+        }
+        tree
+    }
+
+    struct Lab {
+        sftp: Arc<SftpSession>,
+        most_open: Arc<AtomicUsize>,
+    }
+
+    async fn lab(tree: HashMap<String, Vec<File>>, pause: Duration, stuck: Option<&str>) -> Lab {
+        let most_open = Arc::new(AtomicUsize::new(0));
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let handler = Server {
+            tree,
+            open: HashMap::new(),
+            next: 0,
+            open_now: Arc::new(AtomicUsize::new(0)),
+            most_open: Arc::clone(&most_open),
+            pause,
+            stuck: stuck.map(str::to_string),
+        };
+        russh_sftp::server::run(server, handler).await;
+        Lab { sftp: Arc::new(SftpSession::new(client).await.unwrap()), most_open }
+    }
+
+    fn local_root() -> std::path::PathBuf {
+        std::env::temp_dir().join("sub-download-walk")
+    }
+
+    async fn walk(lab: &Lab, at_once: usize) -> DownloadTree {
+        let mut tree = DownloadTree::default();
+        let cancel = AtomicBool::new(false);
+        walk_download_tree(&lab.sftp, "/top", &local_root(), at_once, &cancel, &mut tree, |_| {}).await.unwrap();
+        tree
+    }
+
+    // One by one, each folder would be open alone, and 3,000 of them at 100 ms
+    // would take 20 minutes.
+    #[tokio::test]
+    async fn folders_are_listed_side_by_side_up_to_the_limit() {
+        let lab = lab(wide_tree(40), Duration::ZERO, None).await;
+        let tree = walk(&lab, DIR_LISTINGS_AT_ONCE).await;
+        assert_eq!(tree.files.len(), 80);
+        assert_eq!(tree.total_bytes, 40 * 30);
+        let most = lab.most_open.load(Ordering::SeqCst);
+        assert!((2..=DIR_LISTINGS_AT_ONCE).contains(&most), "{most} open at once");
+    }
+
+    // Over shell commands the requests wait their turn anyway.
+    #[tokio::test]
+    async fn one_at_a_time_is_one_at_a_time() {
+        let lab = lab(wide_tree(12), Duration::ZERO, None).await;
+        assert_eq!(walk(&lab, 1).await.files.len(), 24);
+        assert_eq!(lab.most_open.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn the_walk_finds_the_tree_and_leaves_out_what_it_should() {
+        let mut tree = HashMap::new();
+        tree.insert(
+            "/top".to_string(),
+            vec![
+                file("top.txt", 1),
+                folder("sub"),
+                with_mode("link", 0o120777, 7),
+                file("../escape", 100),
+                file("a/b", 100),
+            ],
+        );
+        tree.insert("/top/sub".to_string(), vec![folder("deep")]);
+        tree.insert("/top/sub/deep".to_string(), vec![file("x", 2)]);
+        let lab = lab(tree, Duration::ZERO, None).await;
+        let mut found = walk(&lab, 8).await;
+        found.files.sort();
+        assert_eq!(
+            found.files,
+            [
+                ("/top/sub/deep/x".to_string(), "sub/deep/x".to_string(), 2),
+                ("/top/top.txt".to_string(), "top.txt".to_string(), 1),
+            ]
+        );
+        assert_eq!(found.total_bytes, 3);
+        // The two names that aren't one step.
+        assert_eq!(found.skipped_names, 2);
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_will_not_list_ends_the_walk_with_its_name() {
+        let mut tree = wide_tree(3);
+        tree.get_mut("/top").unwrap().push(folder("gone"));
+        let lab = lab(tree, Duration::ZERO, None).await;
+        let mut found = DownloadTree::default();
+        let cancel = AtomicBool::new(false);
+        let err = walk_download_tree(&lab.sftp, "/top", &local_root(), 8, &cancel, &mut found, |_| {}).await.unwrap_err();
+        assert!(err.as_deref().is_some_and(|e| e.starts_with("read_dir /top/gone: ")), "{err:?}");
+    }
+
+    // A tree without end stops at the depth limit, with listings side by side
+    // as without.
+    #[tokio::test]
+    async fn the_depth_limit_holds() {
+        let mut tree = HashMap::new();
+        let mut path = "/top".to_string();
+        for _ in 0..=DOWNLOAD_DIR_MAX_DEPTH + 1 {
+            tree.insert(path.clone(), vec![folder("d"), file("f", 1)]);
+            path.push_str("/d");
+        }
+        let lab = lab(tree, Duration::ZERO, None).await;
+        let mut found = DownloadTree::default();
+        let cancel = AtomicBool::new(false);
+        let err = walk_download_tree(&lab.sftp, "/top", &local_root(), 8, &cancel, &mut found, |_| {}).await.unwrap_err();
+        assert!(err.as_deref().is_some_and(|e| e.contains("nesting is deeper")), "{err:?}");
+    }
+
+    // Cancel can't wait for a server that doesn't answer.
+    #[tokio::test]
+    async fn a_cancel_ends_a_walk_that_waits_on_the_server() {
+        let lab = lab(wide_tree(3), Duration::ZERO, Some("/top/d1")).await;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+        let mut found = DownloadTree::default();
+        let local = local_root();
+        let walked = walk_download_tree(&lab.sftp, "/top", &local, 8, &cancel, &mut found, |_| {});
+        let ended = tokio::time::timeout(Duration::from_secs(5), walked).await.expect("ended, not waiting for the server");
+        assert_eq!(ended, Err(None));
+    }
+
+    // The card shows the count going up while the listing goes on.
+    #[tokio::test]
+    async fn the_count_is_told_as_it_grows() {
+        let lab = lab(wide_tree(6), Duration::from_millis(40), None).await;
+        let mut found = DownloadTree::default();
+        let cancel = AtomicBool::new(false);
+        let mut told = Vec::new();
+        walk_download_tree(&lab.sftp, "/top", &local_root(), 1, &cancel, &mut found, |n| told.push(n)).await.unwrap();
+        assert_eq!(found.files.len(), 12);
+        assert!(!told.is_empty(), "nothing told");
+        assert!(told.windows(2).all(|pair| pair[0] < pair[1]), "{told:?}");
+    }
+}
+
 /// Recursive remote directory download. Walks the remote tree under
 /// `remote_path`, mirrors its structure into `local_path/{basename}`, and
 /// streams every file across with progress events aggregated under a SINGLE
@@ -18063,7 +21285,6 @@ async fn sftp_download_dir(
     overwrite: Option<bool>,
 ) -> Result<(), String> {
     use tauri::Emitter;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     // Destination is the PARENT directory. We'll create remote_path's
@@ -18123,7 +21344,7 @@ async fn sftp_download_dir(
         .to_string();
     let folder_name = if folder_name.is_empty() { "folder".to_string() } else { folder_name };
 
-    let id = transfer_id();
+    let id = session_transfer_id(&session_id);
     let event_name = format!("sftp-transfer-{}", session_id);
 
     // Register cancel flag early so the user can abort even during the
@@ -18163,83 +21384,36 @@ async fn sftp_download_dir(
 
     // Phase 1: enumerate. Collect every file under remote_path along with
     // its relative path (so we can preserve the tree on the local side) and
-    // its size (so the progress bar has a meaningful total). Tracked
-    // iteratively with an explicit stack so we don't blow the async-recursion
-    // budget on pathological trees.
+    // its size (so the progress bar has a meaningful total).
     let remote_root = remote_path.trim_end_matches('/').to_string();
-    let mut files: Vec<(String, String, u64)> = Vec::new(); // (remote, rel, size)
-    let mut total_bytes: u64 = 0;
-    let mut skipped_names: u64 = 0;
-    // (dir, depth). Depth bounds how deep a hostile server can send us, and
-    // the file/byte caps bound how much the list below can grow — so a broken
-    // or endless tree is refused instead of growing memory without bound.
-    let mut stack: Vec<(String, usize)> = vec![(remote_root.clone(), 0)];
-    let too_big = |files: usize, bytes: u64| {
-        if files > DOWNLOAD_DIR_MAX_FILES {
-            Some(format!("this folder has more than {} files — too many to download at once.", DOWNLOAD_DIR_MAX_FILES))
-        } else if bytes > DOWNLOAD_DIR_MAX_BYTES {
-            Some(format!("this folder is over {} GB — too large to download at once.", DOWNLOAD_DIR_MAX_BYTES / (1024 * 1024 * 1024)))
-        } else {
-            None
-        }
+    // The tree goes in {local_path}/{folder_name}/.
+    let local_root = std::path::PathBuf::from(&local_path).join(&folder_name);
+    let over_shell = state.sftp_shell.lock().await.contains(&session_id);
+    let listings = if over_shell { 1 } else { DIR_LISTINGS_AT_ONCE };
+    let mut tree = DownloadTree::default();
+    // No total yet: `listed` is what the card shows in place of a percentage.
+    let tell_found = |found: usize| {
+        let _ = app.emit(
+            &event_name,
+            serde_json::json!({
+                "id": id, "name": folder_name, "kind": "download",
+                "bytes": 0, "total": 0,
+                "status": "progress", "error": null, "listed": found,
+            }),
+        );
     };
-
-    while let Some((dir, depth)) = stack.pop() {
-        if cancel.load(Ordering::Relaxed) {
-            emit_progress(0, total_bytes, "cancelled", None);
+    match walk_download_tree(&sftp, &remote_root, &local_root, listings, &cancel, &mut tree, tell_found).await {
+        Ok(()) => {}
+        Err(None) => {
+            emit_progress(0, tree.total_bytes, "cancelled", None);
             return Err("cancelled".into());
         }
-        if depth > DOWNLOAD_DIR_MAX_DEPTH {
-            let msg = format!("folder nesting is deeper than {} levels — refusing to download.", DOWNLOAD_DIR_MAX_DEPTH);
-            emit_progress(0, total_bytes, "error", Some(msg.clone()));
+        Err(Some(msg)) => {
+            emit_progress(0, tree.total_bytes, "error", Some(msg.clone()));
             return Err(msg);
         }
-        let read = match sftp.read_dir(&dir).await {
-            Ok(r) => r,
-            Err(e) => {
-                emit_progress(0, total_bytes, "error", Some(format!("read_dir {}: {}", dir, e)));
-                return Err(format!("read_dir {}: {}", dir, e));
-            }
-        };
-        for entry in read {
-            // A single directory can hold millions of entries; a Cancel (and
-            // the caps) must take effect inside the walk, not only between
-            // directories.
-            if cancel.load(Ordering::Relaxed) {
-                emit_progress(0, total_bytes, "cancelled", None);
-                return Err("cancelled".into());
-            }
-            if let Some(msg) = too_big(files.len(), total_bytes) {
-                emit_progress(0, total_bytes, "error", Some(msg.clone()));
-                return Err(msg);
-            }
-            let name = entry.file_name();
-            if name == "." || name == ".." { continue; }
-            // Skip any entry whose name isn't a single plain component this OS
-            // can store. A hostile SFTP server can return `../../x` or `..\x`
-            // here; joining that onto local_root below would escape the chosen
-            // folder. Ordinary names Windows can't store (`a:b`) are skipped
-            // too — counted, so the user hears about them instead of a quietly
-            // incomplete copy. See is_safe_dir_entry_name.
-            if !is_safe_dir_entry_name(&name) {
-                skipped_names = skipped_names.saturating_add(1);
-                continue;
-            }
-            let full = format!("{}/{}", dir.trim_end_matches('/'), name);
-            if entry.file_type().is_dir() {
-                stack.push((full, depth + 1));
-            } else if entry.file_type().is_file() {
-                let size = entry.metadata().size.unwrap_or(0);
-                let rel = full.strip_prefix(&remote_root)
-                    .map(|s| s.trim_start_matches('/').to_string())
-                    .unwrap_or_else(|| name.clone());
-                total_bytes = total_bytes.saturating_add(size);
-                files.push((full, rel, size));
-            }
-            // Symlinks and other types skipped — same conservative policy
-            // as the mirror module.
-        }
     }
+    let DownloadTree { files, total_bytes, skipped_names } = tree;
 
     // Shown on the finished transfer card when the walk skipped names.
     let skipped_note = skipped_names_note(skipped_names);
@@ -18247,7 +21421,6 @@ async fn sftp_download_dir(
     if files.is_empty() {
         // Still create the (empty) destination folder so the UI sees the
         // shape — otherwise the user sees "done" with nothing to show for it.
-        let local_root = std::path::PathBuf::from(&local_path).join(&folder_name);
         let _ = tokio::fs::create_dir_all(&local_root).await;
         emit_progress(0, 0, "done", skipped_note);
         return Ok(());
@@ -18257,106 +21430,45 @@ async fn sftp_download_dir(
     // {local_path}/{folder_name}/... so multi-level files preserve their
     // structure. Create each parent directory lazily right before we open
     // the file.
-    let local_root = std::path::PathBuf::from(&local_path).join(&folder_name);
     if let Err(e) = tokio::fs::create_dir_all(&local_root).await {
         emit_progress(0, total_bytes, "error", Some(format!("create {}: {}", local_root.display(), e)));
         return Err(format!("create root: {}", e));
     }
 
-    let mut transferred: u64 = 0;
-    let mut last_report = std::time::Instant::now();
-    let mut buf = vec![0u8; 256 * 1024];
-
-    for (remote_file_path, rel, _size) in &files {
-        if cancel.load(Ordering::Relaxed) {
-            emit_progress(transferred, total_bytes, "cancelled", None);
-            return Err("cancelled".into());
+    let transferred = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let at_once = if over_shell { 1 } else { DIR_FILES_AT_ONCE };
+    let jobs = files.iter().map(|(remote_file_path, rel, size)| DirJob {
+        alone: *size > DIR_FILE_ALONE_DOWN,
+        // The local name: this disk may ignore case.
+        key: rel.to_lowercase(),
+        shown: rel.clone(),
+        run: download_dir_file(
+            Arc::clone(&sftp),
+            remote_file_path.clone(),
+            rel.clone(),
+            local_root.clone(),
+            Arc::clone(&transferred),
+            Arc::clone(&cancel),
+        ),
+    });
+    let ended = run_dir_files(jobs, at_once, &cancel, || {
+        emit_progress(transferred.load(Ordering::Relaxed), total_bytes, "progress", None)
+    }).await;
+    let got = transferred.load(Ordering::Relaxed);
+    match ended {
+        DirFilesEnd::Done => {
+            emit_progress(got, total_bytes, "done", skipped_note);
+            Ok(())
         }
-
-        // Normalise the relative path's separators for the local OS. On
-        // Unix this is a no-op; on Windows we replace `/` so create_dir_all
-        // produces real nested directories instead of one literal name
-        // containing slashes.
-        let rel_local = if cfg!(windows) { rel.replace('/', "\\") } else { rel.clone() };
-        let dest = local_root.join(&rel_local);
-        // Defense in depth: every component of `rel` was checked with
-        // is_safe_dir_entry_name during the walk, so this can't fail for a
-        // well-behaved tree — but check before we create or open anything
-        // that the relative part is plain names only (no root, prefix or
-        // `..`), so the join can only land under the destination root.
-        let rel_is_plain = std::path::Path::new(&rel_local)
-            .components()
-            .all(|c| matches!(c, std::path::Component::Normal(_)));
-        if !rel_is_plain || !dest.starts_with(&local_root) {
-            emit_progress(transferred, total_bytes, "error",
-                Some(format!("unsafe path escaped destination: {}", dest.display())));
-            return Err(format!("unsafe path escaped destination: {}", dest.display()));
+        DirFilesEnd::Stopped(_) => {
+            emit_progress(got, total_bytes, "cancelled", None);
+            Err("cancelled".into())
         }
-        if let Some(parent) = dest.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                emit_progress(transferred, total_bytes, "error",
-                    Some(format!("mkdir {}: {}", parent.display(), e)));
-                return Err(format!("mkdir {}: {}", parent.display(), e));
-            }
-        }
-
-        let mut remote_file = match sftp.open(remote_file_path).await {
-            Ok(f) => f,
-            Err(e) => {
-                emit_progress(transferred, total_bytes, "error",
-                    Some(format!("open {}: {}", remote_file_path, e)));
-                return Err(format!("open {}: {}", remote_file_path, e));
-            }
-        };
-        // Each file goes to a sibling temp and is renamed over its final name
-        // at the end (see sftp_download_file), so a failure or cancel part way
-        // through a tree doesn't truncate a file already there.
-        let temp = download_temp_path(&dest);
-        let mut local_file = match tokio::fs::File::create(&temp).await {
-            Ok(f) => f,
-            Err(e) => {
-                emit_progress(transferred, total_bytes, "error",
-                    Some(format!("create {}: {}", dest.display(), e)));
-                return Err(format!("create {}: {}", dest.display(), e));
-            }
-        };
-        let scrap = |tmp: &std::path::Path| { let tmp = tmp.to_path_buf(); async move { let _ = tokio::fs::remove_file(&tmp).await; } };
-
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                drop(local_file);
-                scrap(&temp).await;
-                emit_progress(transferred, total_bytes, "cancelled", None);
-                return Err("cancelled".into());
-            }
-            let n = match remote_file.read(&mut buf).await {
-                Ok(n) => n,
-                Err(e) => { drop(local_file); scrap(&temp).await; emit_progress(transferred, total_bytes, "error", Some(format!("read {}: {}", remote_file_path, e))); return Err(format!("read {}: {}", remote_file_path, e)); }
-            };
-            if n == 0 { break; }
-            if let Err(e) = local_file.write_all(&buf[..n]).await {
-                drop(local_file); scrap(&temp).await; emit_progress(transferred, total_bytes, "error", Some(format!("write {}: {}", dest.display(), e))); return Err(format!("write {}: {}", dest.display(), e));
-            }
-            transferred = transferred.saturating_add(n as u64);
-            if last_report.elapsed() >= std::time::Duration::from_millis(100) {
-                emit_progress(transferred, total_bytes, "progress", None);
-                last_report = std::time::Instant::now();
-            }
-        }
-        // See sftp_download_file: a failed last write surfaces here.
-        if let Err(e) = local_file.flush().await {
-            drop(local_file); scrap(&temp).await; emit_progress(transferred, total_bytes, "error", Some(format!("flush {}: {}", dest.display(), e))); return Err(format!("flush {}: {}", dest.display(), e));
-        }
-        drop(local_file);
-        if let Err(e) = tokio::fs::rename(&temp, &dest).await {
-            scrap(&temp).await;
-            emit_progress(transferred, total_bytes, "error", Some(format!("finalize {}: {}", dest.display(), e)));
-            return Err(format!("finalize {}: {}", dest.display(), e));
+        DirFilesEnd::Failed(msg, _) => {
+            emit_progress(got, total_bytes, "error", Some(msg.clone()));
+            Err(msg)
         }
     }
-
-    emit_progress(transferred, total_bytes, "done", skipped_note);
-    Ok(())
 }
 
 #[tauri::command]
@@ -18395,7 +21507,7 @@ async fn sftp_upload_file(
         .and_then(|n| n.to_str())
         .unwrap_or("file")
         .to_string();
-    let id = transfer_id();
+    let id = session_transfer_id(&session_id);
     let event_name = format!("sftp-transfer-{}", session_id);
     let emit_progress = |bytes: u64, status: &str, error: Option<String>| {
         let _ = app.emit(
@@ -18504,8 +21616,9 @@ async fn open_upload_target(
 
 /// Close the remote file of an upload cancelled mid-write and, when this
 /// upload created it, delete it, so no half-written copy stays on the
-/// server. Awaited (for up to 10 s) before the upload reports its cancel, so
-/// an upload of the same file started right after can't lose its file to
+/// server. Awaited (for up to 20 s: the writes on their way go first, 1 MiB,
+/// and that takes as long at 420 kbit/s) before the upload reports its cancel,
+/// so an upload of the same file started right after can't lose its file to
 /// this delete. Returns the card's note: what the cancel left on the server.
 /// `name` is how the note names the file.
 async fn finish_cancelled_upload(
@@ -18520,7 +21633,7 @@ async fn finish_cancelled_upload(
         let _ = remote_file.shutdown().await;
         if created { sftp.remove_file(remote_path).await.err() } else { None }
     };
-    let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), cleanup).await;
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(20), cleanup).await;
     if !created {
         return Some(format!("{name} on the server holds only the part sent before the cancel."));
     }
@@ -18546,7 +21659,6 @@ async fn sftp_upload_dir(
     overwrite: Option<bool>,
 ) -> Result<(), String> {
     use tauri::Emitter;
-    use tokio::io::AsyncWriteExt;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     // remote_path is the PARENT directory; we hang the basename of
@@ -18574,7 +21686,7 @@ async fn sftp_upload_dir(
         }
     }
 
-    let id = transfer_id();
+    let id = session_transfer_id(&session_id);
     let event_name = format!("sftp-transfer-{}", session_id);
 
     // Cancel flag registered before the slow enumeration so the user can
@@ -18612,73 +21724,83 @@ async fn sftp_upload_dir(
 
     emit_progress(0, 0, "progress", None);
 
-    // Phase 1: enumerate. Collect every local file under local_root along
-    // with its relative path (POSIX-style for the remote side) and size.
-    // Iterative walk with an explicit stack so we never overflow async
-    // recursion on pathological trees.
-    let mut files: Vec<(std::path::PathBuf, String, u64)> = Vec::new();
-    let mut dirs: Vec<String> = Vec::new(); // relative dir paths (POSIX) to mkdir on remote
-    let mut total_bytes: u64 = 0;
-    let mut stack: Vec<std::path::PathBuf> = vec![local_root.clone()];
-
-    while let Some(dir) = stack.pop() {
-        if cancel.load(Ordering::Relaxed) {
-            emit_progress(0, total_bytes, "cancelled", None);
+    // Phase 1: enumerate. Every local file under local_root with its relative
+    // path (POSIX-style for the remote side) and size, and every folder.
+    let walked = {
+        let (root, cancel) = (local_root.clone(), Arc::clone(&cancel));
+        tokio::task::spawn_blocking(move || walk_upload_tree(&root, &cancel)).await
+    };
+    let (files, mut dirs, total_bytes) = match walked {
+        Ok(Ok(walked)) => walked,
+        Ok(Err(None)) => {
+            emit_progress(0, 0, "cancelled", None);
             return Err("cancelled".into());
         }
-        let read = match std::fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(e) => {
-                emit_progress(0, total_bytes, "error", Some(format!("read_dir {:?}: {}", dir, e)));
-                return Err(format!("read_dir {:?}: {}", dir, e));
-            }
-        };
-        for entry in read {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            let path = entry.path();
-            let ft = match entry.file_type() {
-                Ok(ft) => ft,
-                Err(_) => continue,
-            };
-            let rel = path
-                .strip_prefix(&local_root)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
-            if ft.is_dir() {
-                dirs.push(rel);
-                stack.push(path);
-            } else if ft.is_file() {
-                let size = path.metadata().map(|m| m.len()).unwrap_or(0);
-                total_bytes = total_bytes.saturating_add(size);
-                files.push((path, rel, size));
-            }
-            // Symlinks and other types skipped — same as sftp_download_dir.
+        Ok(Err(Some(msg))) => {
+            emit_progress(0, 0, "error", Some(msg.clone()));
+            return Err(msg);
         }
-    }
+        Err(e) => {
+            emit_progress(0, 0, "error", Some(e.to_string()));
+            return Err(e.to_string());
+        }
+    };
+    let at_once = if state.sftp_shell.lock().await.contains(&session_id) { 1 } else { DIR_FILES_AT_ONCE };
 
-    // Phase 2: mkdir the destination folder, then each enumerated subdir.
-    // SFTP's mkdir is per-level; we already collected them in pre-order from
-    // the stack walk but order isn't guaranteed shallow-first, so re-sort
-    // by path depth to make sure parents are created before children.
+    // Phase 2: mkdir the destination folder, then each enumerated subdir, a
+    // level at a time (a parent before its children), a few at once.
     let _ = sftp.create_dir(&remote_root).await;
     dirs.sort_by_key(|d| d.matches('/').count());
-    for rel in &dirs {
+    for level in dirs.chunk_by(|a, b| a.matches('/').count() == b.matches('/').count()) {
         if cancel.load(Ordering::Relaxed) {
             emit_progress(0, total_bytes, "cancelled", None);
             return Err("cancelled".into());
         }
-        let full = format!("{}/{}", remote_root.trim_end_matches('/'), rel);
-        // Tolerate already-exists — a parallel mkdir or an earlier partial
-        // run shouldn't abort the whole upload.
-        if sftp.metadata(&full).await.is_err() {
-            if let Err(e) = sftp.create_dir(&full).await {
-                emit_progress(0, total_bytes, "error", Some(format!("mkdir {}: {}", full, e)));
-                return Err(format!("mkdir {}: {}", full, e));
+        let mut made = tokio::task::JoinSet::new();
+        let mut failure: Option<String> = None;
+        let mut level = level.iter();
+        loop {
+            while made.len() < at_once && failure.is_none() && !cancel.load(Ordering::Relaxed) {
+                let Some(rel) = level.next() else { break };
+                let full = format!("{}/{}", remote_root.trim_end_matches('/'), rel);
+                let sftp = Arc::clone(&sftp);
+                made.spawn(async move {
+                    // Tolerate already-exists — an earlier partial run
+                    // shouldn't abort the whole upload.
+                    if sftp.metadata(&full).await.is_ok() {
+                        return Ok(());
+                    }
+                    match sftp.create_dir(&full).await {
+                        Ok(()) => Ok(()),
+                        // There now after all: made meanwhile, or the same
+                        // folder by another case (Foo, foo) on a server that
+                        // ignores case.
+                        Err(e) => match sftp.metadata(&full).await {
+                            Ok(m) if m.is_dir() => Ok(()),
+                            _ => Err(format!("mkdir {}: {}", full, e)),
+                        },
+                    }
+                });
+            }
+            match made.join_next().await {
+                None => break,
+                Some(Ok(Ok(()))) => {}
+                Some(Ok(Err(msg))) => {
+                    failure.get_or_insert(msg);
+                }
+                Some(Err(e)) => {
+                    failure.get_or_insert(e.to_string());
+                }
             }
         }
+        if let Some(msg) = failure {
+            emit_progress(0, total_bytes, "error", Some(msg.clone()));
+            return Err(msg);
+        }
+    }
+    if cancel.load(Ordering::Relaxed) {
+        emit_progress(0, total_bytes, "cancelled", None);
+        return Err("cancelled".into());
     }
 
     if files.is_empty() {
@@ -18686,83 +21808,47 @@ async fn sftp_upload_dir(
         return Ok(());
     }
 
-    // Phase 3: stream each file up. Same chunked loop as sftp_upload_file,
-    // looped over the file list with a shared progress counter.
-    let mut transferred: u64 = 0;
-    let mut last_report = std::time::Instant::now();
-    let mut buf = vec![0u8; 256 * 1024];
-    use tokio::io::AsyncReadExt;
-
-    for (local_file_path, rel, _size) in &files {
-        if cancel.load(Ordering::Relaxed) {
-            emit_progress(transferred, total_bytes, "cancelled", None);
-            return Err("cancelled".into());
-        }
+    // Phase 3: the files, DIR_FILES_AT_ONCE at a time, with a shared progress
+    // counter. A cancel deletes only the files it was writing that this upload
+    // created; files already sent and the folders made for them stay.
+    let transferred = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let jobs = files.iter().map(|(local_file_path, rel, size)| {
         let remote_full = format!("{}/{}", remote_root.trim_end_matches('/'), rel);
-
-        let mut local_file = match tokio::fs::File::open(local_file_path).await {
-            Ok(f) => f,
-            Err(e) => {
-                emit_progress(transferred, total_bytes, "error",
-                    Some(format!("open {:?}: {}", local_file_path, e)));
-                return Err(format!("open {:?}: {}", local_file_path, e));
-            }
-        };
-        // See sftp_upload_file: no truncating open after a cancel.
-        if cancel.load(Ordering::Relaxed) {
-            emit_progress(transferred, total_bytes, "cancelled", None);
-            return Err("cancelled".into());
+        DirJob {
+            alone: *size > DIR_FILE_ALONE_UP,
+            // The server may ignore case.
+            key: remote_full.to_lowercase(),
+            shown: rel.clone(),
+            run: upload_dir_file(
+                Arc::clone(&sftp),
+                local_file_path.clone(),
+                remote_full,
+                format!("{}/{}", folder_name, rel),
+                Arc::clone(&transferred),
+                Arc::clone(&cancel),
+            ),
         }
-        // Whether each file was there isn't asked (a round trip per file):
-        // EXCL alone tells a file this upload created. A cancel deletes only
-        // the file it was writing; files already sent and the folders made
-        // for them stay.
-        let (mut remote_file, created) = match open_upload_target(&sftp, &remote_full, false).await {
-            Ok(opened) => opened,
-            Err(e) => {
-                emit_progress(transferred, total_bytes, "error",
-                    Some(format!("open remote {}: {}", remote_full, e)));
-                return Err(format!("open remote {}: {}", remote_full, e));
-            }
-        };
-
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                let shown = format!("{}/{}", folder_name, rel);
-                let note = finish_cancelled_upload(&sftp, remote_file, &remote_full, &shown, created).await;
-                emit_progress(transferred, total_bytes, "cancelled", note);
-                return Err("cancelled".into());
-            }
-            let n = local_file.read(&mut buf).await
-                .map_err(|e| {
-                    emit_progress(transferred, total_bytes, "error",
-                        Some(format!("read {:?}: {}", local_file_path, e)));
-                    format!("read {:?}: {}", local_file_path, e)
-                })?;
-            if n == 0 { break; }
-            remote_file.write_all(&buf[..n]).await
-                .map_err(|e| {
-                    emit_progress(transferred, total_bytes, "error",
-                        Some(format!("write {}: {}", remote_full, e)));
-                    format!("write {}: {}", remote_full, e)
-                })?;
-            transferred = transferred.saturating_add(n as u64);
-            if last_report.elapsed() >= std::time::Duration::from_millis(100) {
-                emit_progress(transferred, total_bytes, "progress", None);
-                last_report = std::time::Instant::now();
-            }
+    });
+    let ended = run_dir_files(jobs, at_once, &cancel, || {
+        emit_progress(transferred.load(Ordering::Relaxed), total_bytes, "progress", None)
+    }).await;
+    let sent = transferred.load(Ordering::Relaxed);
+    match ended {
+        DirFilesEnd::Done => {
+            emit_progress(sent, total_bytes, "done", None);
+            Ok(())
         }
-        // See sftp_upload_file: a failed close must end the card too.
-        remote_file.shutdown().await
-            .map_err(|e| {
-                emit_progress(transferred, total_bytes, "error",
-                    Some(format!("close {}: {}", remote_full, e)));
-                format!("shutdown {}: {}", remote_full, e)
-            })?;
+        DirFilesEnd::Stopped(notes) => {
+            emit_progress(sent, total_bytes, "cancelled", (!notes.is_empty()).then(|| notes.join(" ")));
+            Err("cancelled".into())
+        }
+        DirFilesEnd::Failed(msg, notes) => {
+            // A cancel after the failure may have cut files short: said too.
+            let msg = if notes.is_empty() { msg } else { format!("{msg} {}", notes.join(" ")) };
+            emit_progress(sent, total_bytes, "error", Some(msg.clone()));
+            Err(msg)
+        }
     }
-
-    emit_progress(transferred, total_bytes, "done", None);
-    Ok(())
 }
 
 /// Flip the cancel flag for an in-flight SFTP transfer. The download / upload
@@ -18779,6 +21865,23 @@ async fn sftp_cancel_transfer(
         flag.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// What the page goes by to move selected files side by side, the way a
+/// folder's files move (run_dir_files).
+#[derive(serde::Serialize)]
+struct SftpBatchLimits {
+    /// How many at once on this session.
+    at_once: usize,
+    /// Over these sizes a file moves alone (DIR_FILE_ALONE_*).
+    alone_up: u64,
+    alone_down: u64,
+}
+
+#[tauri::command]
+async fn sftp_batch_limits(state: tauri::State<'_, SshState>, session_id: String) -> Result<SftpBatchLimits, String> {
+    let at_once = if state.sftp_shell.lock().await.contains(&session_id) { 1 } else { DIR_FILES_AT_ONCE };
+    Ok(SftpBatchLimits { at_once, alone_up: DIR_FILE_ALONE_UP, alone_down: DIR_FILE_ALONE_DOWN })
 }
 
 /// Bucket the failure modes that can come out of an SSH connect / auth round.
@@ -18960,11 +22063,58 @@ fn transfer_id() -> String {
     format!("{}-{}", ts, seq)
 }
 
+/// A transfer's id. It starts with its session, so a session's transfers can
+/// be found in `transfer_cancels` (cancel_session_transfers): each holds its
+/// own SFTP session, and would go on after a Disconnect or a closed tab, with
+/// no card left to stop it from. `~` is in no session id (session_temp_name).
+fn session_transfer_id(session_id: &str) -> String {
+    format!("{}~{}", session_id, transfer_id())
+}
+
+/// Stop what `session_id` has moving, as its card's Cancel would. Not the
+/// sessions whose id only starts the same: `session-1` and `session-10`.
+async fn cancel_session_transfers(state: &SshState, session_id: &str) {
+    let prefix = format!("{}~", session_id);
+    for (id, flag) in state.transfer_cancels.lock().await.iter() {
+        if id.starts_with(&prefix) {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(test)]
+mod transfer_cancel_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test]
+    async fn a_disconnect_stops_that_sessions_transfers_only() {
+        let state = SshState::new();
+        let mine = session_transfer_id("session-1");
+        let longer = session_transfer_id("session-10");
+        let other = session_transfer_id("session-2");
+        assert_ne!(mine, session_transfer_id("session-1"), "ids stay unique");
+        let job = "pane-job-1".to_string();
+        let flags: Vec<_> = [&mine, &longer, &other, &job].iter().map(|_| Arc::new(AtomicBool::new(false))).collect();
+        {
+            let mut map = state.transfer_cancels.lock().await;
+            for (id, flag) in [&mine, &longer, &other, &job].iter().zip(&flags) {
+                map.insert(id.to_string(), Arc::clone(flag));
+            }
+        }
+        cancel_session_transfers(&state, "session-1").await;
+        let flipped: Vec<bool> = flags.iter().map(|f| f.load(Ordering::Relaxed)).collect();
+        assert_eq!(flipped, [true, false, false, false]);
+    }
+}
+
 /// Remove this run's temp root (live-edit / drag staging), and any left by a
 /// run that didn't get to. Called on exit, and on startup for the old ones.
-/// Only `submarine-<hex>` dirs older than a day are swept on startup: a newer
-/// one may belong to another copy of the app running right now (the user's
-/// installed app beside a test build, say), whose live files must not go.
+/// Only `submarine-<hex>` dirs older than a day are swept: a newer one may
+/// belong to another copy of the app running right now (the user's installed
+/// app beside a test build, say), whose live files must not go. So may an old
+/// one, as a root's time only moves when a session's folder comes or goes, so
+/// a copy also holds a lock in its root for as long as it runs.
 fn sweep_app_temp(include_own: bool) {
     if include_own {
         let _ = std::fs::remove_dir_all(app_temp_root());
@@ -18974,9 +22124,7 @@ fn sweep_app_temp(include_own: bool) {
     for e in entries.flatten() {
         let name = e.file_name();
         let Some(name) = name.to_str() else { continue };
-        // `submarine-<32 hex>`, the shape app_temp_root mints.
-        let is_ours = name.strip_prefix("submarine-").is_some_and(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()));
-        if !is_ours {
+        if !is_app_temp_name(name) {
             continue;
         }
         let old = e
@@ -18984,10 +22132,29 @@ fn sweep_app_temp(include_own: bool) {
             .and_then(|m| m.modified())
             .map(|t| t.elapsed().map(|age| age > day).unwrap_or(false))
             .unwrap_or(false);
-        if old {
+        if old && temp_root_left_behind(&e.path()) {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
+}
+
+/// `submarine-<hex>` in the shape app_temp_root mints: 24 digits, or 32 as the
+/// sweep has always looked for. Nothing else in temp is ours to delete.
+fn is_app_temp_name(name: &str) -> bool {
+    name.strip_prefix("submarine-")
+        .is_some_and(|h| (h.len() == 24 || h.len() == 32) && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// In each temp root: a lock the copy that made it holds for as long as it
+/// runs. A held lock, as for a profile (lock_profile), so it can't be left
+/// behind and needs no clock: the system lets go of it when the process ends,
+/// however it ends.
+const TEMP_ROOT_LOCK: &str = "in-use.lock";
+
+/// No running copy has this temp root: its lock could be taken. Anything else,
+/// a held lock or a folder that can't be looked into, is left alone.
+fn temp_root_left_behind(root: &std::path::Path) -> bool {
+    matches!(try_lock_file(&root.join(TEMP_ROOT_LOCK)), Ok(ProfileLock::New(_)))
 }
 
 /// The most a remote file read whole into memory may be: live-edit opens the
@@ -19002,6 +22169,22 @@ const SFTP_INLINE_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const DOWNLOAD_DIR_MAX_DEPTH: usize = 64;
 const DOWNLOAD_DIR_MAX_FILES: usize = 200_000;
 const DOWNLOAD_DIR_MAX_BYTES: u64 = 100 * 1024 * 1024 * 1024;
+/// What the walk may hold in paths. A deep folder of many files costs its whole
+/// path per file, far more than the names the server sent; 200,000 honest files
+/// come to well under this.
+const DOWNLOAD_DIR_MAX_PATH_BYTES: usize = 256 * 1024 * 1024;
+
+/// Why the walk of a folder download stops: `entries` are the files found and
+/// the folders waiting to be listed, as a tree of only folders must end too.
+fn download_walk_too_big(entries: usize, bytes: u64, path_bytes: usize) -> Option<String> {
+    if entries > DOWNLOAD_DIR_MAX_FILES || path_bytes > DOWNLOAD_DIR_MAX_PATH_BYTES {
+        Some(format!("this folder has more than {} files — too many to download at once.", DOWNLOAD_DIR_MAX_FILES))
+    } else if bytes > DOWNLOAD_DIR_MAX_BYTES {
+        Some(format!("this folder is over {} GB — too large to download at once.", DOWNLOAD_DIR_MAX_BYTES / (1024 * 1024 * 1024)))
+    } else {
+        None
+    }
+}
 
 /// A sibling temp name for `dest`, e.g. `foo.txt` → `foo.txt.sub-tmp-<id>`.
 /// A download writes here, then renames over `dest`, so a transfer that fails
@@ -19084,6 +22267,9 @@ fn app_temp_root() -> &'static std::path::PathBuf {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700));
         }
+        if let Ok(ProfileLock::New(lock)) = try_lock_file(&root.join(TEMP_ROOT_LOCK)) {
+            std::mem::forget(lock);
+        }
         root
     })
 }
@@ -19141,6 +22327,41 @@ mod ipc_path_tests {
         assert!(session_sftp_dir("session-5").unwrap().starts_with(app_temp_root()));
     }
 
+    // The sweep at startup has to know the folder a crashed run left: live-edit
+    // copies in it are often config files with secrets.
+    #[test]
+    fn the_startup_sweep_knows_the_temp_root_this_build_makes() {
+        let own = app_temp_root().file_name().unwrap().to_str().unwrap();
+        assert!(is_app_temp_name(own), "{own}");
+        assert!(is_app_temp_name(&format!("submarine-{}", "ab".repeat(16))));
+        for other in [
+            "submarine-",
+            "submarine-abc",
+            "submarine-liveedit-test-1234",
+            "submarine-pubcap-1234",
+            "Submarine-0123456789abcdef01234567",
+            "submarine-0123456789abcdef0123456z",
+            "other-0123456789abcdef01234567",
+        ] {
+            assert!(!is_app_temp_name(other), "{other}");
+        }
+    }
+
+    // The folder's own time says nothing about a copy open for days: the lock
+    // does, and a crash takes it away with the process.
+    #[test]
+    fn the_startup_sweep_leaves_a_running_copys_temp_root_alone() {
+        assert!(!temp_root_left_behind(app_temp_root()), "this copy holds its own");
+        let root = std::env::temp_dir().join(format!("submarine-rootlock-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(temp_root_left_behind(&root), "a root with no lock in it, from a build before the lock");
+        let held = try_lock_file(&root.join(TEMP_ROOT_LOCK)).unwrap();
+        assert!(!temp_root_left_behind(&root), "another copy, running");
+        drop(held);
+        assert!(temp_root_left_behind(&root), "that copy has ended");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // A key file has to be on this computer's drives: network-share, device
     // and `\\?\` paths are refused before anything is looked up.
     #[test]
@@ -19188,7 +22409,9 @@ fn safe_temp_leaf_name(remote_path: &str) -> Result<String, String> {
         .and_then(|n| n.to_str())
         .unwrap_or("");
     let bad = |c: char| matches!(c, '/' | '\\' | ':' | '\0');
-    if raw.is_empty() || raw == "." || raw == ".." || raw.contains(bad) {
+    // is_safe_dir_entry_name adds this OS's own rules: on Windows `COM3` or
+    // `PRN` would open a device, not a file in the temp dir.
+    if raw.is_empty() || raw == "." || raw == ".." || raw.contains(bad) || !is_safe_dir_entry_name(raw) {
         return Err(format!("refusing file with unsafe name: {:?}", raw));
     }
     Ok(raw.to_string())
@@ -19205,7 +22428,20 @@ fn live_edit_dir_name(remote_path: &str) -> String {
 
 #[cfg(test)]
 mod live_edit_tests {
-    use super::live_edit_dir_name;
+    use super::{live_edit_dir_name, safe_temp_leaf_name};
+
+    #[test]
+    fn a_temp_copy_gets_a_plain_file_name() {
+        assert_eq!(safe_temp_leaf_name("/srv/site/index.php").unwrap(), "index.php");
+        assert_eq!(safe_temp_leaf_name("/x/.bashrc").unwrap(), ".bashrc");
+        for bad in ["", "/", "/srv/..", "/srv/a:b", "/srv/x\0y"] {
+            assert!(safe_temp_leaf_name(bad).is_err(), "{bad:?}");
+        }
+        // A device on Windows, an ordinary (odd) name anywhere else.
+        for name in ["COM3", "PRN", "nul.txt", "AUX .c"] {
+            assert_eq!(safe_temp_leaf_name(&format!("/srv/{name}")).is_ok(), !cfg!(windows), "{name}");
+        }
+    }
 
     #[test]
     fn same_named_files_in_different_folders_get_different_copies() {
@@ -19355,16 +22591,16 @@ async fn sftp_open_remote_file(
     // intent-based "open with" model would need a Tauri plugin instead,
     // and saving back through SAF doesn't fit the temp-file pattern we
     // depend on. Refuse cleanly so the UI can surface a polite message.
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
         let _ = &temp_file_path;
-        return Err("Live edit in system editor is not available on Android.".into());
+        return Err("Live edit in system editor is not available on a phone or tablet.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let open_res = match opening {
             open_policy::Opening::Editor => open_policy::open_in_editor(&temp_file_path),
-            _ => open::that(&temp_file_path).map_err(|e| e.to_string()),
+            _ => child_env::open(&temp_file_path).map_err(|e| e.to_string()),
         };
         if let Err(e) = open_res {
             return Err(format!("Failed to open file: {}", e));
@@ -19443,10 +22679,9 @@ async fn sftp_open_remote_file(
                     };
 
                     // Open the SFTP subsystem, then IMMEDIATELY drop the
-                    // session mutex. Holding it across the whole write serialises
-                    // every open_terminal / cold-cache SFTP-bootstrap request on
-                    // the same session behind this one save — visible as a UI
-                    // freeze whenever the user Ctrl-S's a large remote file.
+                    // session handle's guard: nothing waits on it (it's shared
+                    // for reading), but the save shouldn't keep it longer than
+                    // the open it needs it for.
                     // An elevated tab (file ops as root via sudo) must save
                     // back the same way, or root-owned files can't be written.
                     let elevation = elevation_clone.lock().await.get(&session_id_clone).cloned();
@@ -19555,33 +22790,33 @@ async fn sftp_prepare_drag(
 
 #[tauri::command]
 async fn local_open_file(local_path: String) -> Result<(), String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
         let _ = local_path;
-        return Err("Open-with is not available on Android.".into());
+        return Err("Open-with is not available on a phone or tablet.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let safe = guard_local_path(&local_path, false)?;
-        open::that(&safe).map_err(|e| format!("Failed to open local file: {}", e))?;
+        child_env::open(&safe).map_err(|e| format!("Failed to open local file: {}", e))?;
         Ok(())
     }
 }
 
 #[tauri::command]
 async fn local_open_in_explorer(local_path: String) -> Result<(), String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
         let _ = local_path;
-        return Err("Open-in-Explorer is not available on Android.".into());
+        return Err("Open-in-Explorer is not available on a phone or tablet.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         let safe = guard_local_path(&local_path, false)?;
         if safe.is_dir() {
-            open::that(&safe).map_err(|e| format!("Failed to open folder: {}", e))?;
+            child_env::open(&safe).map_err(|e| format!("Failed to open folder: {}", e))?;
         } else if let Some(parent) = safe.parent() {
-            open::that(parent).map_err(|e| format!("Failed to open folder: {}", e))?;
+            child_env::open(parent).map_err(|e| format!("Failed to open folder: {}", e))?;
         }
         Ok(())
     }
@@ -19612,7 +22847,11 @@ async fn local_home_dir(app: tauri::AppHandle) -> Result<String, String> {
         if !dir.is_empty() { return Ok(dir); }
         return Err("Could not resolve home directory".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        return ios_documents_dir(&app).map(|d| d.to_string_lossy().into_owned());
+    }
+    #[cfg(desktop)]
     {
         let _ = app;
         directories::UserDirs::new()
@@ -19632,9 +22871,19 @@ async fn local_desktop_dir(app: tauri::AppHandle) -> Result<String, String> {
         if !dir.is_empty() { return Ok(dir); }
         return Err("Could not resolve default directory".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        return ios_documents_dir(&app).map(|d| d.to_string_lossy().into_owned());
+    }
+    #[cfg(desktop)]
     {
         let _ = app;
+        // The Mac App Store build runs in Apple's sandbox, which keeps the
+        // Desktop closed but lets the app use Downloads (its entitlements).
+        #[cfg(feature = "app-store")]
+        if let Some(d) = directories::UserDirs::new().and_then(|d| d.download_dir().and_then(|p| p.to_str()).map(String::from)) {
+            return Ok(d);
+        }
         // Falls back to the home directory if a Desktop folder isn't configured
         // for the user (rare on desktop OSes but possible on Linux without XDG).
         if let Some(dirs) = directories::UserDirs::new() {
@@ -19793,12 +23042,12 @@ struct ImportedHost {
 /// clear message rather than pretending to look somewhere.
 #[tauri::command]
 async fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
         let _ = path;
-        Err("Not available on Android — use export/import instead".into())
+        Err("Not available on a phone or tablet — use export/import instead".into())
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         // One in-progress Host block. We accumulate resolved fields as we
         // walk the file and emit one ImportedHost per alias when the block
@@ -20474,6 +23723,11 @@ pub(crate) fn is_safe_dir_entry_name(name: &str) -> bool {
 /// component this OS can store, and really be the last component of
 /// `local_path`. Everything before it is the user's own folder, so a `..` they
 /// typed there is fine — guard_local_path resolves it.
+///
+/// The steps before the last of `remote_path` count too. A listing gives clean
+/// paths, so a `.`, `..` or empty step means a "name" that was several steps:
+/// `a/../../x` ends in a harmless `x` while the folder part of `local_path`
+/// has picked up `a/../..`, the server's and not the user's.
 fn validate_download_target(local_path: &str, remote_path: &str) -> Result<(), String> {
     let name = remote_path.rsplit('/').next().unwrap_or("");
     if !is_safe_dir_entry_name(name) {
@@ -20481,6 +23735,10 @@ fn validate_download_target(local_path: &str, remote_path: &str) -> Result<(), S
             "\"{}\" can't be saved here: its name isn't a valid file name on this computer.",
             name
         ));
+    }
+    // A leading `/` is an absolute path, and some servers answer with two.
+    if remote_path.trim_start_matches('/').split('/').any(|step| step.is_empty() || step == "." || step == "..") {
+        return Err(format!("Refusing a download whose remote path has a \".\", \"..\" or empty step: {}", remote_path));
     }
     let last = std::path::Path::new(local_path).file_name().and_then(|n| n.to_str());
     if last != Some(name) {
@@ -20510,13 +23768,14 @@ fn check_download_dir_target(parent: &str, name: &str) -> Result<(), String> {
 }
 
 /// The note on a finished folder-download card when the walk skipped names
-/// this computer can't store (see is_safe_dir_entry_name).
+/// this computer can't store (see is_safe_dir_entry_name) or folders the path
+/// policy refuses.
 fn skipped_names_note(skipped: u64) -> Option<String> {
     match skipped {
         0 => None,
-        1 => Some("1 item skipped: its name isn't a valid file name on this computer".into()),
+        1 => Some("1 item skipped: its name or place isn't allowed on this computer".into()),
         n => Some(format!(
-            "{} items skipped: their names aren't valid file names on this computer",
+            "{} items skipped: their names or places aren't allowed on this computer",
             n
         )),
     }
@@ -20742,6 +24001,13 @@ fn check_local_path_policy(canonical: std::path::PathBuf) -> Result<std::path::P
     }
 
     Ok(canonical)
+}
+
+/// Whether a path on this computer is a folder (or a link to one). A drop from
+/// the file manager gives only paths, and a folder can't go the way a file does.
+#[tauri::command]
+async fn local_is_dir(path: String) -> Result<bool, String> {
+    tokio::fs::metadata(&path).await.map(|m| m.is_dir()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -21017,16 +24283,17 @@ async fn local_rename(from: String, to: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn select_local_folder() -> Result<Option<String>, String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
-        return Err("Folder picker not available on Android.".into());
+        return Err("Folder picker not available on a phone or tablet.".into());
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
-        let folder = rfd::FileDialog::new()
+        let folder = rfd::AsyncFileDialog::new()
             .set_title("Choose Local Directory")
-            .pick_folder();
-        Ok(folder.map(|p| p.to_string_lossy().to_string()))
+            .pick_folder()
+            .await;
+        Ok(folder.map(|p| p.path().to_string_lossy().to_string()))
     }
 }
 
@@ -21299,6 +24566,21 @@ mod local_browse_tests {
         let sub = listed.entries.iter().find(|e| e.is_dir).unwrap().path.clone();
         assert_eq!(local_list_dir(sub.clone()).await.unwrap().current_path, sub);
         assert!(guard_local_path_nofollow(&sub, true).is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_path_says_whether_it_is_a_folder() {
+        let dir = std::env::temp_dir().join(format!("submarine-is-dir-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f.txt");
+        std::fs::write(&file, b"x").unwrap();
+
+        assert_eq!(local_is_dir(dir.to_string_lossy().to_string()).await, Ok(true));
+        assert_eq!(local_is_dir(file.to_string_lossy().to_string()).await, Ok(false));
+        assert!(local_is_dir(dir.join("gone").to_string_lossy().to_string()).await.is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -21848,6 +25130,47 @@ async fn clipboard_read_text(app: tauri::AppHandle) -> Result<String, String> {
     }
 }
 
+/// How long `open_main_window` waits for an earlier run's WebView2 to let go.
+#[cfg(windows)]
+const MAIN_WINDOW_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// A webview creation that failed because the data folder is still in use
+/// (ERROR_BUSY): a run that was killed or crashed a moment ago leaves its
+/// WebView2 browser holding the folder for a second or so.
+#[cfg(windows)]
+fn webview_data_folder_busy(error: &str) -> bool {
+    error.contains("0x800700AA")
+}
+
+/// Opens the window the config describes, as Tauri would, waiting out an
+/// earlier run's WebView2. If there's still no window the app can't go on:
+/// a plain message says why, instead of a panic nobody sees.
+#[cfg(windows)]
+fn open_main_window(app: &tauri::App) {
+    let Some(config) = app.config().app.windows.first().cloned() else { return };
+    let started = std::time::Instant::now();
+    let error = loop {
+        match tauri::WebviewWindowBuilder::from_config(app.handle(), &config).and_then(|window| window.build()) {
+            Ok(_) => return,
+            Err(e) if webview_data_folder_busy(&e.to_string()) && started.elapsed() < MAIN_WINDOW_WAIT => {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+            Err(e) => break e.to_string(),
+        }
+    };
+    let why = if webview_data_folder_busy(&error) {
+        "Submarine's last run is still closing. Wait a few seconds and start it again."
+    } else {
+        error.as_str()
+    };
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Submarine")
+        .set_description(format!("Submarine couldn't open its window.\n\n{why}"))
+        .show();
+    std::process::exit(1);
+}
+
 /// Library entrypoint shared by both the desktop `bin/main.rs` shim and
 /// Tauri's Android entry-point macro. Everything that builds the
 /// `tauri::Builder`, registers plugins/state/commands, and finally calls
@@ -21912,9 +25235,8 @@ pub fn run() {
             std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
             own_render_env.push("LIBGL_ALWAYS_SOFTWARE");
         }
-        // Kept out of the programs this process starts (an RDP app): see
-        // OWN_RENDER_ENV.
-        let _ = OWN_RENDER_ENV.set(own_render_env);
+        // Kept out of the programs this process starts: see child_env.rs.
+        child_env::remember(own_render_env);
         // Sandbox the web process (bubblewrap) when this machine supports it.
         // The rendering flags above still reach it: WebKit's bwrap launcher
         // only sets/unsets a few specific variables, it never clears the
@@ -21930,15 +25252,21 @@ pub fn run() {
     // Without the folder nothing is touched. See portable.rs.
     let mut context = tauri::generate_context!();
     portable::apply(context.config_mut());
+    // Tauri panics when it can't create a window from the config, so on
+    // Windows `setup` below does that instead (see open_main_window).
+    #[cfg(windows)]
+    for window in &mut context.config_mut().app.windows {
+        window.create = false;
+    }
 
     let builder = tauri::Builder::default();
     // Save/restore the main window's last size + position to a JSON file
     // in app_data_dir. Keeps the user's preferred geometry across launches
     // without us having to wire setSize/setPosition by hand. Plain plugin —
     // it intercepts window events; no JS-facing commands to lock down.
-    // Mobile builds skip this entirely: Android decides window geometry,
-    // not us, and the plugin's crate isn't compiled into the Android target.
-    #[cfg(not(target_os = "android"))]
+    // Mobile builds skip this entirely: Android and iOS decide window
+    // geometry, not us, and the plugin's crate isn't compiled for them.
+    #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
     // Cross-platform URL opener — Android (Intent.ACTION_VIEW), Windows
     // (start), macOS (open), Linux (xdg-open). about.rs's open_external_url
@@ -21950,7 +25278,7 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder.plugin(android_bridge::init());
     let builder = builder
-        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None), profile_lock: StdMutex::new(None) })
+        .manage(DbState { conn: std::sync::Arc::new(StdMutex::new(None)), master_key: StdMutex::new(None), salt: StdMutex::new(None), db_path: StdMutex::new(None), active_profile: StdMutex::new(None), hlc: StdMutex::new(None), generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)), sync_cursor: StdMutex::new(None), profile_lock: StdMutex::new(None), closing: std::sync::Arc::new(tokio::sync::Mutex::new(())), saved_at: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NOT_SAVED)) })
         .manage(SshState::new())
         .manage(rdp::RdpSessions::default())
         .manage(telnet::Pending::default())
@@ -21978,11 +25306,28 @@ pub fn run() {
         // is the earliest hook we get an AppHandle, so initialise it there and
         // `manage` it for commands.
         .setup(|app| {
+            #[cfg(target_os = "ios")]
+            keep_app_data_out_of_backups(app.handle());
             let cloud_state = cloud::CloudState::new(&app.handle());
             app.manage(cloud_state);
             // .rdp files an earlier run left behind (issue #3).
             std::thread::spawn(rdp::clear_old_files);
+            #[cfg(windows)]
+            open_main_window(app);
             Ok(())
+        })
+        // Also the first load, when no profile is open and this does nothing.
+        .on_page_load(|webview, payload| {
+            if payload.event() != tauri::webview::PageLoadEvent::Started {
+                return;
+            }
+            // Taken here, before the new page can ask to open anything. If
+            // it's taken already, a teardown is running and sees to it all.
+            let app = webview.app_handle().clone();
+            let closing = std::sync::Arc::clone(&app.state::<DbState>().closing);
+            if let Ok(closing) = closing.try_lock_owned() {
+                tauri::async_runtime::spawn(close_after_reload(app, closing));
+            }
         })
         .invoke_handler(tauri::generate_handler![
             check_db_exists, setup_master_db, persist_vault,
@@ -22000,7 +25345,7 @@ pub fn run() {
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
-            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key, held_deletions_list, resolve_held_deletions,
+            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key, held_deletions_list, resolve_held_deletions, cloud_resume_profile, profile_copies, restore_profile_copy,
             set_editor_label,
             add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, set_server_protocol, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
@@ -22018,7 +25363,7 @@ pub fn run() {
             telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize, vnc_paste, vnc_shown, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
-            open_terminal, local_shell, write_terminal_data, type_saved_password, resize_terminal, close_terminal,
+            open_terminal, local_shell, write_terminal_data, type_saved_password, terminal_drawn, resize_terminal, close_terminal,
             ssh_info_probe_section, ssh_systemctl_action, ssh_kill_process,
             ssh_iptables_chain, ssh_nft_chain,
             docker::ssh_docker_container_action,
@@ -22039,13 +25384,13 @@ pub fn run() {
             docker::ssh_docker_prune,
             docker::open_container_terminal,
             select_local_folder, local_list_dir,
-            local_home_dir, local_desktop_dir, local_create_dir, local_remove, local_rename,
+            local_home_dir, local_desktop_dir, local_is_dir, local_create_dir, local_remove, local_rename,
             android_quick_dirs, android_default_local_dir,
             parse_ssh_config,
             parse_client_import,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner, sftp_stat,
-            sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_open_remote_file,
+            sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_batch_limits, sftp_open_remote_file,
             sftp_set_elevated, sftp_elevation_status, sftp_login_user, sftp_resolve_owners,
             archive::local_archive, archive::local_extract, archive::sftp_archive, archive::sftp_extract,
             local_open_file, local_open_in_explorer, sftp_prepare_drag,
@@ -22076,6 +25421,10 @@ pub fn run() {
                 let _ = _app.emit("app-shown", matches!(window_event, tauri::WindowEvent::Resumed));
             }
             if let tauri::RunEvent::Exit = event {
+                // What is only in memory goes to the vault: the commands typed
+                // since the last save (cmd_history_add doesn't save). With no
+                // profile open there is nothing to save, and this says so.
+                let _ = save_vault_internal(&_app.state::<DbState>());
                 // The decrypted copies this run staged go with it.
                 sweep_app_temp(true);
             }
@@ -22085,6 +25434,97 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open_db_state() -> DbState {
+        DbState {
+            conn: std::sync::Arc::new(StdMutex::new(Some(Connection::open_in_memory().unwrap()))),
+            master_key: StdMutex::new(Some(Zeroizing::new([7u8; 32]))),
+            salt: StdMutex::new(None),
+            db_path: StdMutex::new(None),
+            active_profile: StdMutex::new(Some("next".to_string())),
+            hlc: StdMutex::new(None),
+            generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            sync_cursor: StdMutex::new(None),
+            profile_lock: StdMutex::new(None),
+            closing: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            saved_at: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NOT_SAVED)),
+        }
+    }
+
+    // What a sync goes by to leave the file alone, and what a batch of commands
+    // leaves for the save at its end: it must never look saved before that.
+    #[tokio::test]
+    async fn what_the_file_lacks_is_known_until_a_save_of_any_kind() {
+        let dir = std::env::temp_dir().join(format!("submarine-unsaved-{}", transfer_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.submarine");
+        let state = open_db_state();
+        *state.salt.lock().unwrap() = Some([1u8; SALT_LEN]);
+        *state.db_path.lock().unwrap() = Some(path.clone());
+        let change = || {
+            let conn = state.conn.lock().unwrap();
+            conn.as_ref().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS t(v); INSERT INTO t VALUES(1)").unwrap();
+        };
+        assert!(state.has_unsaved_changes().unwrap(), "opened, not saved yet");
+
+        // In a batch the command leaves the file alone.
+        change();
+        save_unless_batched(&state, Some(false)).unwrap();
+        assert!(!path.exists());
+        assert!(state.has_unsaved_changes().unwrap());
+        // Any other command saves, and that takes the batch along.
+        save_unless_batched(&state, None).unwrap();
+        assert!(path.exists());
+        assert!(!state.has_unsaved_changes().unwrap());
+
+        // What is left for later without a batch, as typed commands are.
+        change();
+        assert!(state.has_unsaved_changes().unwrap());
+        save_vault_async(&state).await.unwrap();
+        assert!(!state.has_unsaved_changes().unwrap());
+
+        // Another opening knows nothing of what was saved before it.
+        state.bump_generation();
+        assert!(state.has_unsaved_changes().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A profile that has moved the generation on stays. And the name stays
+    /// either way: after a reload it may be what the new page has just picked.
+    #[test]
+    fn closing_a_profile_leaves_one_opened_meanwhile() {
+        let state = open_db_state();
+        let opened = state.generation_now();
+        state.bump_generation();
+        forget_open_profile(&state, opened).unwrap();
+        assert!(state.conn.lock().unwrap().is_some());
+        assert!(state.master_key.lock().unwrap().is_some());
+
+        // Nothing else opened: this one goes, and later commands can tell.
+        let current = state.generation_now();
+        forget_open_profile(&state, current).unwrap();
+        assert!(state.conn.lock().unwrap().is_none());
+        assert!(state.master_key.lock().unwrap().is_none());
+        assert_ne!(state.generation_now(), current);
+        assert_eq!(state.active_profile.lock().unwrap().as_deref(), Some("next"));
+    }
+
+    /// After a reload the teardown runs beside the new page. Opening a profile
+    /// waits for it (a teardown takes all it finds), and a second reload
+    /// doesn't start another.
+    #[tokio::test]
+    async fn opening_a_profile_waits_for_the_teardown_after_a_reload() {
+        use std::time::Duration;
+
+        let state = open_db_state();
+        let closing = std::sync::Arc::clone(&state.closing).try_lock_owned().unwrap();
+        assert!(std::sync::Arc::clone(&state.closing).try_lock_owned().is_err());
+        let open = state.teardown_finished();
+        tokio::pin!(open);
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut open).await.is_err(), "it has to wait");
+        drop(closing);
+        tokio::time::timeout(Duration::from_secs(5), open).await.expect("it goes on once the teardown is done");
+    }
 
     #[test]
     fn dir_entry_name_rejects_traversal_and_separators() {
@@ -22170,6 +25610,18 @@ mod tests {
         assert!(validate_download_target(&dest(""), "/srv/").is_err());
         assert!(validate_download_target(&dest(".."), "/srv/..").is_err());
 
+        // A "name" of several steps from a hostile listing: the last step
+        // alone looks fine, and the local path climbs out of the folder.
+        for name in ["../x", "/../x", "a/../../x", "../../.ssh/config", "./x", "a/./x", "a//x"] {
+            let remote = format!("/srv/{}", name);
+            assert!(validate_download_target(&dest(name), &remote).is_err(), "{name}");
+        }
+        // Clean paths from any corner of a server.
+        assert!(validate_download_target(&dest("x"), "/x").is_ok());
+        assert!(validate_download_target(&dest("x"), "//srv/x").is_ok());
+        assert!(validate_download_target(&dest("x"), "/C:/Users/me/x").is_ok());
+        assert!(validate_download_target(&dest("x"), "/srv/..a/a../.b/x").is_ok());
+
         // A name that climbs out on Windows is refused there; on POSIX it's
         // one literal (odd) file name that stays in the folder.
         let climb = "..\\..\\Startup\\x.bat";
@@ -22179,6 +25631,29 @@ mod tests {
         );
         #[cfg(windows)]
         assert!(validate_download_target(&dest("a:b"), "/srv/a:b").is_err());
+    }
+
+    // A server that lists only folders grows the list of folders to visit, not
+    // the list of files, and long paths cost more than many short ones.
+    #[test]
+    fn a_folder_download_walk_ends_on_any_of_its_limits() {
+        assert!(download_walk_too_big(DOWNLOAD_DIR_MAX_FILES, DOWNLOAD_DIR_MAX_BYTES, DOWNLOAD_DIR_MAX_PATH_BYTES).is_none());
+        assert!(download_walk_too_big(DOWNLOAD_DIR_MAX_FILES + 1, 0, 0).is_some());
+        assert!(download_walk_too_big(0, DOWNLOAD_DIR_MAX_BYTES + 1, 0).is_some());
+        assert!(download_walk_too_big(0, 0, DOWNLOAD_DIR_MAX_PATH_BYTES + 1).is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_a_busy_data_folder_is_waited_out() {
+        // As a killed run's successor reported it.
+        assert!(webview_data_folder_busy(
+            "failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x800700AA), message: \"The requested resource is in use.\" })"
+        ));
+        // WebView2 isn't installed.
+        assert!(!webview_data_folder_busy(
+            "failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x80070002), message: \"The system cannot find the file specified.\" })"
+        ));
     }
 
     #[test]

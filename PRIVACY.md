@@ -1,6 +1,6 @@
 # Privacy policy
 
-*Last updated: 27 October 2026.*
+*Last updated: 10 November 2026.*
 
 This policy covers the Submarine app (Windows, macOS, Linux and Android), the optional Submarine sync service that the app can use, and the website [submarine.sinaxhpm.com](https://submarine.sinaxhpm.com). It is also published, with translations, at [submarine.sinaxhpm.com/privacy/](https://submarine.sinaxhpm.com/privacy/).
 
@@ -17,7 +17,7 @@ Submarine is made by Sina Xhpm ([sinaxhpm.com](https://sinaxhpm.com)), who also 
 ## What stays on your device
 
 - **Your profiles** (servers, logins, SSH keys, tunnels, notes, commands, known host keys, and passwords you choose to save from a login prompt) are stored in the app's data folder. They are encrypted with AES-256-GCM, using a key made from your profile password with Argon2id. The profile password is never stored and never sent anywhere. There is no way to recover it: if you forget it, the profile cannot be opened.
-- **Quick unlock** (optional, off by default): if you turn on Windows Hello or an Android fingerprint, the profile's key is sealed to a key held by the system (the TPM or the Android Keystore). The system checks your fingerprint or PIN; the app never sees it.
+- **Quick unlock** (optional, off by default): if you turn on Windows Hello or an Android fingerprint, the profile's key is sealed to a key held by the system (the TPM or the Android Keystore). The system checks your fingerprint or PIN; the app never sees it. On Windows you can instead choose to open a profile automatically (also off by default): its key is then protected by Windows for your account, with no check at all, so anyone or any program using that Windows account can open it.
 - **Settings** such as the window position, the last-used profile name and the colour theme, and choices made for this device only (a remote desktop's speed and quality, whether it shares the clipboard, the folder or drive shared with an RDP server, and which servers always get a terminal with its own login) are stored in the app's own settings, not encrypted, and never synced.
 - **The clipboard** is read only when you paste. What you paste goes to the server you paste it into: a terminal, or a remote desktop's tab. With *Share the clipboard* on (the default for RDP and VNC servers), text copied on the remote desktop is put on this device's clipboard. Nothing from the clipboard is ever sent to us.
 - **Remote Desktop Connection (Windows)** gets a server's saved password in a short-lived .rdp file. The password in it is encrypted with Windows DPAPI for your Windows user, and the file is deleted once it has been read. If you let the RDP app remember a login itself, Windows keeps it, not Submarine.

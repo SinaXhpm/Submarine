@@ -4,15 +4,16 @@ import { listen } from "@tauri-apps/api/event";
 import { AlertTriangle, ClipboardPaste, ExternalLink, FlaskConical, FolderSymlink, Loader2, MonitorSmartphone, RotateCw, SlidersHorizontal, X } from "lucide-react";
 import { AuthPrompts } from "./AuthPrompts";
 import RemoteScreen, { type RemoteScreenHandle } from "./RemoteScreen";
-import { FilesPanel, LinkMark, LinkPanel, RdpSettingsPanel, ToolPanel, usePageShown, usePauseWhileHidden, type SharedNow } from "./ScreenTabTools";
+import { FilesPanel, LinkMark, LinkPanel, RdpSettingsPanel, ToolPanel, usePauseWhileHidden, type SharedNow } from "./ScreenTabTools";
+import { usePageShown } from "../hooks/usePageShown";
 import { readUseSshAgent } from "../util/sshAgent";
-import { IS_ANDROID, IS_WINDOWS } from "../util/platform";
+import { IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import type { LinkStats } from "../util/screenLink";
 import {
-  RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, RDP_PRESETS, describeRdpOptions, rdpGraphics, rdpNeedsReconnect, rdpShare, readRdpOptions, writeRdpOptions,
+  RDP_BUILTIN_EXPERIMENTAL, RDP_NO_NLA_PREFIX, RDP_PRESETS, describeRdpOptions, pinRdpAddress, rdpGraphics, rdpNeedsReconnect, rdpShare, readRdpOptions, writeRdpOptions,
   type RdpOptions,
 } from "../util/rdpOptions";
-import { type PasteKeys, pasteKeysOf, readLocalClipboard } from "../util/rdpClipboard";
+import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
 
 // An RDP server's tab (issue #3). By default Submarine opens the system's RDP
@@ -41,7 +42,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const [builtin, setBuiltin] = useState(() => readRdpOptions(session.serverUuid).app === "builtin");
   // "idle" on a phone until the built-in client is chosen: there's no RDP app.
   const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "failed" | "disconnected">(
-    IS_ANDROID && !builtin ? "idle" : "connecting",
+    IS_MOBILE && !builtin ? "idle" : "connecting",
   );
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [opened, setOpened] = useState<Opened | null>(null);
@@ -58,9 +59,14 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   // The built-in client shares the clipboard with the server (this server's
   // option, read when the tab connects).
   const [shareClipboard, setShareClipboard] = useState(false);
-  // Text the user copied on the server that couldn't go on this computer's
-  // clipboard by itself (a webview that wants a click for that): one click does.
+  // Text the user copied on the server that didn't go on this computer's
+  // clipboard by itself (the tab wasn't in front, or a webview that wants a
+  // click for that): one click does.
   const [serverCopy, setServerCopy] = useState<string | null>(null);
+  const inFront = useRef(false);
+  // The server isn't at the address this device's sharing was chosen for: it
+  // is off for this connection (`rdp::moved`).
+  const [moved, setMoved] = useState<{ was: string; now: string } | null>(null);
   // The built-in client's saved password was refused: the next connect asks for
   // it (with a "Save password" tick) instead of trying it again.
   const askPassword = useRef(false);
@@ -103,6 +109,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
     setAppClosed(null);
     setAppFailed(null);
     setReason("");
+    setMoved(null);
     const failed = (e: unknown) => {
       const why = String(e);
       pushLog({ msg: why, type: "error" });
@@ -129,8 +136,9 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         allowNoNla: options.allowNoNla,
         graphics: rdpGraphics(options),
         clipboard: options.clipboard,
-        // A phone shares no files: its backend has no drive to give.
-        share: IS_ANDROID ? null : rdpShare(options),
+        // A phone or tablet shares no files: its backend has no drive to give.
+        share: IS_MOBILE ? null : rdpShare(options),
+        sharedFor: options.sharedFor,
         askPassword: askPassword.current,
         frames: canvas.newChannel(),
       }).catch(failed);
@@ -181,6 +189,12 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         setOpened(e.payload as Opened);
         setShared((e.payload?.shared as SharedNow | null) ?? null);
         setStatus("connected");
+        pinRdpAddress(session.serverUuid, e.payload?.target);
+      }),
+      listen(`rdp-moved-${id}`, (e: any) => {
+        setMoved({ was: String(e.payload?.was ?? ""), now: String(e.payload?.now ?? "") });
+        setShareClipboard(false);
+        setUsedOptions(describeRdpOptions({ ...readRdpOptions(session.serverUuid), clipboard: false, drives: false }));
       }),
       // How the built-in client's link is doing, every 2 seconds.
       listen(`rdp-link-${id}`, (e: any) => setLink(e.payload as LinkStats)),
@@ -208,15 +222,11 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       }),
       // Text the user copied on the server, for this computer's clipboard.
       listen(`rdp-clipboard-${id}`, (e: any) => {
-        const text = String(e.payload?.text ?? "");
-        navigator.clipboard.writeText(text).then(
-          () => setServerCopy(null),
-          () => setServerCopy(text),
-        );
+        takeServerCopy(String(e.payload?.text ?? ""), inFront.current, setServerCopy);
       }),
     ]);
     // A phone connects once the built-in client is chosen in the tab.
-    subs.then(() => { if (!cancelled && (builtin || !IS_ANDROID)) connect(); });
+    subs.then(() => { if (!cancelled && (builtin || !IS_MOBILE)) connect(); });
     // The tab menu's Reconnect.
     const onReconnect = () => connect();
     window.addEventListener(`session-reconnect-${id}`, onReconnect);
@@ -335,6 +345,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   // or the window minimised), if the server can and the user lets it: a few
   // seconds on, and it comes back as soon as the tab does.
   const pageShown = usePageShown();
+  inFront.current = isActiveView && shown && pageShown;
   usePauseWhileHidden(builtin && status === "connected" && !(shown && pageShown) && opts.pauseHidden, "rdp_builtin_shown", session.id);
   // No link to show without a connection.
   useEffect(() => {
@@ -346,13 +357,36 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const broken = status === "failed" || status === "disconnected";
   // A server without NLA was refused before anything was sent: the tab offers
   // to allow it for this server on this device, and connects again.
-  const noNla = status === "failed" && reason.startsWith(RDP_NO_NLA_PREFIX) && !!session.serverUuid;
+  const noNla = status === "failed" && reason.startsWith(RDP_NO_NLA_PREFIX) && !!session.serverUuid && !moved;
   const allowWithoutNla = () => {
     if (!session.serverUuid) return;
     writeRdpOptions(session.serverUuid, { ...readRdpOptions(session.serverUuid), allowNoNla: true });
     pushLog({ msg: "Servers without NLA are allowed for this server now.", type: "warning" });
     connect();
   };
+
+  // The user allows what was shared for the server's new address: it goes to
+  // the server from a new connection on (for the RDP app, its next window).
+  const allowNewAddress = () => {
+    if (!session.serverUuid || !moved) return;
+    writeRdpOptions(session.serverUuid, { ...readRdpOptions(session.serverUuid), sharedFor: moved.now });
+    pushLog({ msg: `What this device shares with the server is allowed for ${moved.now} now.`, type: "warning" });
+    setMoved(null);
+    if (!builtin && status === "connected") void openAgain();
+    else connect();
+  };
+  const movedNote = (place: string) => moved && (
+    <div role="status" className={`shrink-0 px-3 py-1.5 flex items-center gap-2 bg-amber-500/10 text-[11.5px] text-amber-200 ${place}`}>
+      <AlertTriangle size={12} className="shrink-0" aria-hidden="true" />
+      <span className="min-w-0 break-words">This server moved from {moved.was} to {moved.now}, so the files, clipboard and login without NLA this device allowed are off.</span>
+      <button
+        onClick={allowNewAddress}
+        className="ml-auto shrink-0 h-6 px-2 rounded-md bg-amber-500/20 text-amber-100 hover:bg-amber-500/30 font-semibold"
+      >
+        Allow here
+      </button>
+    </div>
+  );
 
   const prompts = promptWaiting && (
     <div
@@ -406,7 +440,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
 
   // A phone: no RDP app to hand it to, so the built-in client is offered here,
   // and saved as this device's choice for the server once taken.
-  if (IS_ANDROID && !builtin) {
+  if (IS_MOBILE && !builtin) {
     const useBuiltin = () => {
       if (session.serverUuid) writeRdpOptions(session.serverUuid, { ...readRdpOptions(session.serverUuid), app: "builtin" });
       setStatus("connecting");
@@ -461,7 +495,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
             view the tab is a part of the window. */}
         <div className="shrink-0 h-9 px-2 sm:px-3 flex items-center gap-2 border-b border-white/5 bg-[#0e0e10] [container-type:inline-size]">
           <span className={`shrink-0 ${broken ? "text-red-400" : "text-primary"}`} aria-hidden="true">
-            {working ? <Loader2 size={14} className="animate-spin" /> : broken ? <AlertTriangle size={14} /> : <MonitorSmartphone size={14} />}
+            {working ? <Loader2 size={14} className="animate-spin-brief" /> : broken ? <AlertTriangle size={14} /> : <MonitorSmartphone size={14} />}
           </span>
           <span className="min-w-0 truncate text-[12px] font-semibold text-zinc-200" title={session.serverName}>{name}</span>
           <span className={`min-w-0 truncate text-[11px] ${broken ? "text-red-400/90" : "text-zinc-500"}`}>
@@ -480,8 +514,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
               </button>
             )}
             {connected && <LinkMark link={link} open={panel === "link"} onClick={() => togglePanel("link")} />}
-            {/* A phone shares no files: its backend has no drive to give. */}
-            {!IS_ANDROID && (
+            {/* A phone or tablet shares no files: its backend has no drive to give. */}
+            {!IS_MOBILE && (
               <button
                 onClick={() => togglePanel("files")}
                 aria-expanded={panel === "files"}
@@ -541,6 +575,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           </div>
         </div>
 
+        {movedNote("border-b border-white/5")}
         {connected && serverCopy !== null && (
           <div role="status" className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-white/5 bg-primary/10 text-[11.5px] text-zinc-200">
             <span className="min-w-0 truncate">Text was copied on the server ({serverCopy.length} characters).</span>
@@ -605,7 +640,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
             className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center ${broken ? "bg-red-500/10 text-red-400" : "bg-primary/10 text-primary"}`}
             aria-hidden="true"
           >
-            {working ? <Loader2 size={16} className="animate-spin" /> : broken ? <AlertTriangle size={16} /> : <MonitorSmartphone size={16} />}
+            {working ? <Loader2 size={16} className="animate-spin-brief" /> : broken ? <AlertTriangle size={16} /> : <MonitorSmartphone size={16} />}
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-zinc-100 truncate" title={session.serverName}>{name}</h2>
@@ -645,6 +680,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           </div>
         </div>
 
+        {movedNote("mb-3 sm:mb-4 rounded-xl")}
         {status === "connected" && opened && (
           <div className="mb-3 sm:mb-4 p-4 rounded-2xl border border-white/5 bg-[#121214] text-[12.5px] leading-relaxed text-zinc-300 space-y-1.5">
             <p>

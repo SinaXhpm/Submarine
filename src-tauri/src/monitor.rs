@@ -25,7 +25,7 @@ use russh::keys::PublicKeyOrCertificate;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncReadExt;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, Notify};
 
 // Defaults — overridable per-app via the `monitor_settings` table.
 pub const DEFAULT_INTERVAL_SECS: u64 = 5;
@@ -116,6 +116,8 @@ pub struct MonitorEntry {
     pub enabled_metrics: Arc<Mutex<Vec<String>>>,
     pub custom_metrics: Arc<Mutex<Vec<CustomMetric>>>,
     pub paused: Arc<Mutex<bool>>,
+    /// Told when `paused` goes off, for a poller that sleeps on it (`wait_while_paused`).
+    pub resumed: Notify,
     pub state: Arc<Mutex<MonitorState>>,
     /// Wrapped in `Mutex<Option<...>>` so the sender can be `take()`-en
     /// from any holder (the entry is shared via `Arc` between the map
@@ -254,6 +256,7 @@ pub async fn start_monitor(
         enabled_metrics: Arc::new(Mutex::new(enabled_metrics)),
         custom_metrics: Arc::new(Mutex::new(custom_metrics)),
         paused: Arc::new(Mutex::new(paused)),
+        resumed: Notify::new(),
         state: Arc::new(Mutex::new(MonitorState::default())),
         stop_tx: Mutex::new(Some(stop_tx)),
     });
@@ -313,6 +316,9 @@ pub async fn set_paused(map: MonitorMap, node_id: i32, paused: bool) -> Result<(
         .cloned()
         .ok_or_else(|| format!("Node {} is not being monitored", node_id))?;
     *entry.paused.lock().await = paused;
+    if !paused {
+        entry.resumed.notify_one();
+    }
     Ok(())
 }
 
@@ -383,6 +389,17 @@ async fn entry_status(entry: &MonitorEntry) -> MonitorInfo {
 // ---------------------------------------------------------------------------
 // Poller loop
 // ---------------------------------------------------------------------------
+
+/// A paused poller sleeps here until it is resumed (true) or stopped (false).
+/// On a signal and not a timer: a timer woke the CPU each second for each
+/// paused node, for as long as it was listed. A resume that comes just before
+/// this wait isn't lost, `notify_one` keeps it for the next `notified`.
+async fn wait_while_paused(entry: &MonitorEntry, stop_rx: &mut oneshot::Receiver<()>) -> bool {
+    tokio::select! {
+        _ = stop_rx => false,
+        _ = entry.resumed.notified() => true,
+    }
+}
 
 async fn run_poller(
     app: AppHandle,
@@ -497,10 +514,10 @@ async fn run_poller(
                 s.consecutive_failures = 0;
                 s.outage_since_ms = None;
             }
-            tokio::select! {
-                _ = &mut stop_rx => break,
-                _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+            if !wait_while_paused(&entry, &mut stop_rx).await {
+                break;
             }
+            continue;
         }
 
         // 2) Pull current settings (hot-applied each cycle).
@@ -753,6 +770,8 @@ async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Bo
             .await
             .map_err(|_| format!("SOCKS5 proxy {} timed out", proxy_addr))?
             .map_err(|e| format!("SOCKS5: {}", e))?;
+            // Socks5Stream derefs to the proxy socket (see monitor_client_config).
+            crate::apply_tcp_keepalive(&stream);
             Ok(Box::new(stream))
         }
         "http" => {
@@ -768,6 +787,7 @@ async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Bo
             .map_err(|_| format!("HTTP proxy {} timed out", proxy_addr))?
             .map_err(|e| format!("HTTP proxy TCP: {}", e))?;
             let _ = tcp.set_nodelay(true);
+            crate::apply_tcp_keepalive(&tcp);
             if !crate::http_connect_host_ok(&auth.host) {
                 return Err(format!("'{}' can't be asked of an HTTP proxy: a host has no spaces or control characters.", auth.host.escape_debug()));
             }
@@ -789,6 +809,7 @@ async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Bo
             .map_err(|_| format!("TCP connect to {}:{} timed out", auth.host, auth.port))?
             .map_err(|e| format!("TCP: {}", e))?;
             let _ = stream.set_nodelay(true);
+            crate::apply_tcp_keepalive(&stream);
             Ok(Box::new(stream))
         }
     }
@@ -829,7 +850,12 @@ fn classify_auth(auth: &NodeAuth) -> Result<(Option<(String, Option<String>)>, O
 /// and drops the legacy algorithms older servers need.
 fn monitor_client_config() -> client::Config {
     let mut config = client::Config::default();
-    config.keepalive_interval = Some(Duration::from_secs(30));
+    // No russh protocol keepalive, as for the interactive session
+    // (`crate::build_ssh_client_config`): before login completes it sends
+    // nothing and spun a CPU core while a slow server took its time over the
+    // login. Idle traffic is covered without it: the polls themselves, and OS
+    // TCP keepalive on the socket (open_transport) for long poll intervals.
+    config.keepalive_interval = None;
     // No keepalive-count disconnect (russh's default of 3 drops a quiet
     // connection after ~2 min of server silence): each poll has its own
     // timeout, and a failed poll drops the handle and reconnects.
@@ -918,8 +944,21 @@ async fn connect_for_monitor(
     let mut last_err: Option<String> = None;
     let mut accepted = false;
 
-    if let Some((pem, passphrase)) = key_pair.as_ref() {
-        match crate::decode_private_key(pem, passphrase.as_deref()) {
+    // A security key's file holds only a handle, and signing with it would end
+    // the session: only an ssh-agent can sign for it, and monitoring doesn't
+    // use one. Looked for before decoding too, so a missing passphrase isn't
+    // blamed.
+    let security_key = || {
+        format!(
+            "the SSH key for {}@{} is a security key, which monitoring can't use: only an ssh-agent can sign with it",
+            auth.username, auth.host,
+        )
+    };
+    if key_pair.as_ref().is_some_and(|(pem, _)| crate::agent_auth::security_key_file(pem).is_some()) {
+        last_err = Some(security_key());
+    } else if let Some((pem, passphrase)) = key_pair.as_ref() {
+        match crate::decode_private_key_blocking(pem, passphrase.as_deref()).await {
+            Ok(kp) if crate::agent_auth::is_security_key(&kp.algorithm()) => last_err = Some(security_key()),
             Ok(kp) => {
                 match crate::ssh_manager::authenticate_with_key(&mut session, &auth.username, kp)
                     .await
@@ -1242,7 +1281,9 @@ fn parse_probe(
                 snap.swap_free_kb = rest[1].parse().unwrap_or(0);
             }
             "LOAD" if !rest.is_empty() => {
-                snap.load1 = rest[0].parse().unwrap_or(0.0);
+                // f64 parses `nan` and `inf` too; JSON can't carry them, the
+                // page would get a null.
+                snap.load1 = rest[0].parse().ok().filter(|v: &f64| v.is_finite()).unwrap_or(0.0);
             }
             "DISK" if rest.len() >= 2 => {
                 snap.disk_total_kb = rest[0].parse().unwrap_or(0);
@@ -1396,7 +1437,8 @@ fn extract_number(s: &str) -> Option<f64> {
             }
         }
     }
-    if buf.is_empty() { None } else { buf.parse::<f64>().ok() }
+    // A run of 400 digits parses as infinity.
+    if buf.is_empty() { None } else { buf.parse::<f64>().ok().filter(|v| v.is_finite()) }
 }
 
 /// Apply a user-provided regex to the output and pull the first capture
@@ -1409,8 +1451,10 @@ fn apply_regex_number(pattern: &str, text: &str) -> Result<f64, String> {
     let re = regex::Regex::new(pattern).map_err(|e| format!("bad regex: {}", e))?;
     let caps = re.captures(text).ok_or("regex did not match")?;
     let m = caps.get(1).or_else(|| caps.get(0)).ok_or("no capture group")?;
-    m.as_str().trim().parse::<f64>()
-        .map_err(|e| format!("captured value not numeric: {}", e))
+    let v = m.as_str().trim().parse::<f64>()
+        .map_err(|e| format!("captured value not numeric: {}", e))?;
+    // `nan` and `inf` parse, but aren't a reading the page can show.
+    if v.is_finite() { Ok(v) } else { Err("captured value not numeric".into()) }
 }
 
 fn now_ms() -> u64 {
@@ -1423,7 +1467,10 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod probe_tests {
-    use super::{build_probe_script, parse_probe, CustomMetric, CUSTOM_BEGIN, CUSTOM_END};
+    use super::{
+        apply_regex_number, build_probe_script, compute_sample, extract_number, parse_probe, CustomMetric,
+        CUSTOM_BEGIN, CUSTOM_END,
+    };
 
     fn metric(id: &str, command: &str) -> CustomMetric {
         CustomMetric {
@@ -1536,6 +1583,48 @@ mod probe_tests {
         assert_eq!(snap.truncated_custom, None);
     }
 
+    /// What JSON has no way to write: serde sends it as null, and the page
+    /// took that for a number and crashed.
+    const NOT_FINITE: [&str; 5] = ["nan", "NaN", "inf", "-infinity", "1e999"];
+
+    #[test]
+    fn a_load_that_is_not_a_finite_number_reads_as_zero() {
+        for v in NOT_FINITE {
+            let snap = parse_probe(&format!("LOAD {v}\n"), "n", &[], false).unwrap();
+            assert_eq!(snap.load1, 0.0, "LOAD {v}");
+        }
+        let snap = parse_probe("LOAD 1.5\n", "n", &[], false).unwrap();
+        assert_eq!(snap.load1, 1.5);
+    }
+
+    #[test]
+    fn a_custom_number_must_be_finite() {
+        let digits = "9".repeat(400);
+        assert_eq!(extract_number(&digits), None);
+        assert_eq!(extract_number("load 1.25 0.5"), Some(1.25));
+        for v in NOT_FINITE {
+            assert!(apply_regex_number("(\\S+)", v).is_err(), "regex took {v}");
+        }
+        assert_eq!(apply_regex_number("(\\S+)", "1.5"), Ok(1.5));
+    }
+
+    #[test]
+    fn a_sample_never_holds_a_value_the_page_cannot_get() {
+        // Through the whole path, from the host's output to what is emitted.
+        let mut number = metric("num", "x");
+        number.parse = "number".into();
+        let mut regex = metric("re", "y");
+        regex.parse = "regex".into();
+        regex.regex = Some("(\\S+)".into());
+        let customs = [number, regex];
+        let text = format!("LOAD nan\n{}{}", block("k", 0, &"9".repeat(400)), block("k", 1, "inf"));
+        let snap = parse_probe(&text, "k", &customs, false).unwrap();
+        let sample = compute_sample(1, &snap, &None, &["load".to_string()], &customs);
+        assert!(sample.values.values().all(|v| v.is_finite()), "{:?}", sample.values);
+        assert!(sample.errors.contains_key("num") && sample.errors.contains_key("re"));
+        assert_eq!(serde_json::to_value(&sample).unwrap()["values"]["load"], serde_json::json!(0.0));
+    }
+
     #[test]
     fn a_trailing_comment_cannot_swallow_the_subshell() {
         // `cmd # note` on the same line as `)` would comment it out and break
@@ -1547,10 +1636,10 @@ mod probe_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{monitor_client_config, stop_all, within, MonitorEntry, MonitorMap, MonitorState};
+    use super::{monitor_client_config, set_paused, stop_all, wait_while_paused, within, MonitorEntry, MonitorMap, MonitorState};
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::{oneshot, Mutex};
+    use tokio::sync::{oneshot, Mutex, Notify};
 
     fn entry(id: i32, stop: oneshot::Sender<()>) -> Arc<MonitorEntry> {
         Arc::new(MonitorEntry {
@@ -1558,6 +1647,7 @@ mod tests {
             enabled_metrics: Arc::new(Mutex::new(Vec::new())),
             custom_metrics: Arc::new(Mutex::new(Vec::new())),
             paused: Arc::new(Mutex::new(false)),
+            resumed: Notify::new(),
             state: Arc::new(Mutex::new(MonitorState::default())),
             stop_tx: Mutex::new(Some(stop)),
         })
@@ -1586,6 +1676,31 @@ mod tests {
         }
         // Nothing left to stop: harmless.
         stop_all(map).await;
+    }
+
+    // A paused poller stays asleep for as long as it is paused, with no timer of
+    // its own to wake it, and goes on when resumed or stopped.
+    #[tokio::test(start_paused = true)]
+    async fn a_paused_poller_sleeps_until_it_is_resumed_or_stopped() {
+        let (tx, mut rx) = oneshot::channel::<()>();
+        let e = entry(1, tx);
+        let map: MonitorMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        map.lock().await.insert(1, Arc::clone(&e));
+        set_paused(Arc::clone(&map), 1, true).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(24 * 3600), wait_while_paused(&e, &mut rx)).await.is_err(),
+            "a day of pause, and it never woke"
+        );
+        // Resumed just before it goes to sleep: not lost.
+        set_paused(Arc::clone(&map), 1, false).await.unwrap();
+        assert!(wait_while_paused(&e, &mut rx).await, "resumed");
+        // Resumed while it sleeps.
+        let (woke, resume) = tokio::join!(wait_while_paused(&e, &mut rx), set_paused(Arc::clone(&map), 1, false));
+        resume.unwrap();
+        assert!(woke, "resumed");
+        // Stopped while it sleeps.
+        let stopped = tokio::join!(wait_while_paused(&e, &mut rx), stop_all(Arc::clone(&map))).0;
+        assert!(!stopped, "stopped");
     }
 
     #[tokio::test]

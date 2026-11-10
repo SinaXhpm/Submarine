@@ -840,6 +840,11 @@ const PruneView = ({ sessionId }: { sessionId: string }) => {
 
 // ============== Modals ==============
 
+// How much text a live log holds: past MAX it is cut back to KEPT, from the
+// front. Some thousands of lines, plenty of scroll-back for triage.
+const LIVE_LOG_MAX = 200_000;
+const LIVE_LOG_KEPT = 160_000;
+
 const ContainerDetailsModal = ({
   sessionId, container, onClose, onOpenContainerTerminal,
 }: {
@@ -863,8 +868,9 @@ const ContainerDetailsModal = ({
   const autoScrollRef = useRef(true);
   // Live-log chunks are coalesced through a one-per-frame rAF before hitting
   // React state: a chatty stream used to fire a setLogs per event, each
-  // re-rendering the whole (up to 1 MB) <pre> — O(n*chunks) work that froze the
-  // tab. Buffering here caps that to ~60 state updates/sec no matter the rate.
+  // re-rendering the whole <pre> — O(n*chunks) work that froze the tab.
+  // Buffering here caps that to ~60 state updates/sec no matter the rate, and
+  // LIVE_LOG_MAX keeps each of them short.
   const logBufRef = useRef("");
   const logRafRef = useRef<number | null>(null);
 
@@ -886,14 +892,28 @@ const ContainerDetailsModal = ({
 
   const startLive = async () => {
     if (live || liveStreamIdRef.current) return;
-    const sid = `${sessionId}-${name}-${Date.now()}`;
+    // Not the container's name: it can hold a dot (every Swarm task's does),
+    // and an event name can't.
+    const sid = `${sessionId}-${Date.now()}`;
     liveStreamIdRef.current = sid;
     setLive(true);
+    // Stop, or closing the dialog, can come at any await below: the backend
+    // knows this stream only once the start has returned, so until then this
+    // function is the one that has to end it.
+    const wanted = () => liveStreamIdRef.current === sid;
     // Pre-load current tail so the viewer isn't empty until something new
     // is written. The follow stream will append to whatever's there.
     if (!logs) await fetchLogs(logsTail);
+    if (!wanted()) return;
+    const unlisteners: (() => void)[] = [];
+    // Clean up listeners when live ends or modal closes.
+    const cleanup = () => {
+      unlisteners.forEach((u) => u());
+      if (logRafRef.current != null) { cancelAnimationFrame(logRafRef.current); logRafRef.current = null; }
+      logBufRef.current = "";
+    };
     try {
-      const unlistenLine = await listen<string>(`docker-logs-${sid}`, (e) => {
+      unlisteners.push(await listen<string>(`docker-logs-${sid}`, (e) => {
         // Buffer the chunk and flush at most once per animation frame, so a
         // firehose collapses to ~60 setLogs/sec instead of one per event.
         logBufRef.current += e.payload;
@@ -905,27 +925,28 @@ const ContainerDetailsModal = ({
             if (!chunk) return;
             setLogs(prev => {
               const next = prev + chunk;
-              // Trim from the front so memory doesn't explode in a long live
-              // tail. 1 MB of text is plenty of scroll-back for triage.
-              return next.length > 1_000_000 ? next.slice(next.length - 800_000) : next;
+              // Trim from the front: every update lays all of this text out
+              // again, so what a long live tail holds is what the page pays
+              // for, up to 60 times a second.
+              return next.length > LIVE_LOG_MAX ? next.slice(next.length - LIVE_LOG_KEPT) : next;
             });
           });
         }
-      });
-      const unlistenClose = await listen(`docker-logs-closed-${sid}`, () => {
+      }));
+      unlisteners.push(await listen(`docker-logs-closed-${sid}`, () => {
         setLive(false);
         liveStreamIdRef.current = null;
-      });
-      await invoke("ssh_docker_logs_start", { sessionId, streamId: sid, container: name, tail: 0 });
-      // Clean up listeners when live ends or modal closes.
-      const cleanup = () => {
-        unlistenLine();
-        unlistenClose();
-        if (logRafRef.current != null) { cancelAnimationFrame(logRafRef.current); logRafRef.current = null; }
-        logBufRef.current = "";
-      };
-      (liveStreamIdRef as any).cleanup = cleanup;
+      }));
+      if (wanted()) await invoke("ssh_docker_logs_start", { sessionId, streamId: sid, container: name, tail: 0 });
+      if (wanted()) {
+        (liveStreamIdRef as any).cleanup = cleanup;
+      } else {
+        await invoke("ssh_docker_logs_stop", { streamId: sid }).catch(() => {});
+        cleanup();
+      }
     } catch (e: any) {
+      cleanup();
+      if (!wanted()) return;
       setLogsError(typeof e === "string" ? e : (e?.message || "live start failed"));
       setLive(false);
       liveStreamIdRef.current = null;
@@ -934,12 +955,14 @@ const ContainerDetailsModal = ({
   const stopLive = async () => {
     const sid = liveStreamIdRef.current;
     if (!sid) { setLive(false); return; }
+    // First: a start still running has to see this before the stop below,
+    // which finds nothing to stop until that start has returned.
+    liveStreamIdRef.current = null;
     try { await invoke("ssh_docker_logs_stop", { streamId: sid }); } catch {}
     if ((liveStreamIdRef as any).cleanup) {
       try { (liveStreamIdRef as any).cleanup(); } catch {}
       delete (liveStreamIdRef as any).cleanup;
     }
-    liveStreamIdRef.current = null;
     setLive(false);
   };
 
@@ -959,7 +982,7 @@ const ContainerDetailsModal = ({
   }, [logs, live]);
 
   // ----- Inspect / Stats / Config (lazy on tab swap) -----
-  const [inspect, setInspect] = useState<{ loading: boolean; error: string | null; data: any | null }>({ loading: false, error: null, data: null });
+  const [inspect, setInspect] = useState<{ loading: boolean; error: string | null; data: any | null; text?: string }>({ loading: false, error: null, data: null });
   const [oneStats, setOneStats] = useState<{ loading: boolean; error: string | null; data: ContainerStats | null }>({ loading: false, error: null, data: null });
 
   const fetchInspect = async () => {
@@ -967,7 +990,10 @@ const ContainerDetailsModal = ({
     try {
       const r = await invoke<DockerTextResult>("ssh_docker_inspect", { sessionId, kind: "container", name });
       const parsed = JSON.parse(r.data);
-      setInspect({ loading: false, error: null, data: Array.isArray(parsed) ? parsed[0] : parsed });
+      const data = Array.isArray(parsed) ? parsed[0] : parsed;
+      // Written out here and not while rendering: JSON nested deep enough
+      // parses, then overflows the stack on the way back.
+      setInspect({ loading: false, error: null, data, text: JSON.stringify(data, null, 2) });
     } catch (e: any) {
       setInspect({ loading: false, error: typeof e === "string" ? e : (e?.message || "inspect failed"), data: null });
     }
@@ -1008,6 +1034,7 @@ const ContainerDetailsModal = ({
   useEffect(() => {
     return () => {
       const sid = liveStreamIdRef.current;
+      liveStreamIdRef.current = null;
       if (sid) { invoke("ssh_docker_logs_stop", { streamId: sid }).catch(() => {}); }
       if ((liveStreamIdRef as any).cleanup) { try { (liveStreamIdRef as any).cleanup(); } catch {} }
     };
@@ -1073,7 +1100,7 @@ const ContainerDetailsModal = ({
               >
                 {live ? <><Square size={11} /> Stop live</> : <><Play size={11} /> Go live</>}
               </button>
-              {live && <span className="text-[10px] text-emerald-400 font-mono animate-pulse">● streaming</span>}
+              {live && <span className="text-[10px] text-emerald-400 font-mono animate-pulse-brief">● streaming</span>}
               <button
                 onClick={() => { navigator.clipboard.writeText(logs).catch(() => {}); }}
                 className="ml-auto h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
@@ -1137,7 +1164,7 @@ const ContainerDetailsModal = ({
                 {inspect.loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} Refresh
               </button>
               <button
-                onClick={() => { if (inspect.data) navigator.clipboard.writeText(JSON.stringify(inspect.data, null, 2)).catch(() => {}); }}
+                onClick={() => { if (inspect.text) navigator.clipboard.writeText(inspect.text).catch(() => {}); }}
                 className="ml-auto h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
               >
                 <Copy size={11} /> Copy JSON
@@ -1145,7 +1172,7 @@ const ContainerDetailsModal = ({
             </div>
             {inspect.error && <ErrorBanner err={inspect.error} onRetry={() => { setInspect(s => ({ ...s, error: null })); fetchInspect(); }} />}
             <pre className="flex-1 min-h-[300px] bg-black/50 border border-white/5 rounded-lg p-2 text-[10.5px] font-mono text-zinc-200 whitespace-pre overflow-auto select-text">
-              {inspect.data ? JSON.stringify(inspect.data, null, 2) : (inspect.loading ? "Loading…" : "(no data)")}
+              {inspect.data ? inspect.text : (inspect.loading ? "Loading…" : "(no data)")}
             </pre>
           </div>
         )}
@@ -1154,17 +1181,25 @@ const ContainerDetailsModal = ({
   );
 };
 
+// `docker` on the server is a program the server chooses, so its JSON can have
+// any shape, and ConfigView reads it while rendering: a field of the wrong type
+// would take the whole session tab down. Everything shown goes through these.
+const asText = (v: unknown): string => (typeof v === "string" ? v : typeof v === "number" ? String(v) : "");
+const asList = (v: unknown): any[] => (Array.isArray(v) ? v : []);
+const asRecord = (v: unknown): Record<string, any> =>
+  v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, any>) : {};
+
 const ConfigView = ({ data }: { data: any }) => {
   // Pull common, useful fields out of the inspect JSON so the user doesn't
   // have to scroll a 10 KB blob to read their env or port bindings.
-  const config = data?.Config || {};
-  const host = data?.HostConfig || {};
-  const netSettings = data?.NetworkSettings || {};
-  const env: string[] = config.Env || [];
-  const mounts: any[] = data?.Mounts || [];
-  const portBindings: Record<string, any[] | null> = host.PortBindings || {};
-  const exposed: Record<string, any> = config.ExposedPorts || {};
-  const networks: Record<string, any> = netSettings.Networks || {};
+  const config = asRecord(data?.Config);
+  const host = asRecord(data?.HostConfig);
+  const netSettings = asRecord(data?.NetworkSettings);
+  const env: string[] = asList(config.Env).filter((kv) => typeof kv === "string");
+  const mounts = asList(data?.Mounts).map(asRecord);
+  const portBindings = asRecord(host.PortBindings);
+  const exposed = asRecord(config.ExposedPorts);
+  const networks = asRecord(netSettings.Networks);
 
   return (
     <>
@@ -1192,8 +1227,8 @@ const ConfigView = ({ data }: { data: any }) => {
           <div className="space-y-1">
             {mounts.map((m, i) => (
               <div key={i} className="bg-black/30 border border-white/5 rounded px-2 py-1 text-[10.5px] font-mono">
-                <div className="text-zinc-300 truncate"><span className="text-zinc-500">{m.Type}:</span> {m.Source || m.Name}</div>
-                <div className="text-zinc-400 truncate">→ {m.Destination} <span className="text-zinc-600">{m.Mode || (m.RW === false ? "ro" : "rw")}</span></div>
+                <div className="text-zinc-300 truncate"><span className="text-zinc-500">{asText(m.Type)}:</span> {asText(m.Source) || asText(m.Name)}</div>
+                <div className="text-zinc-400 truncate">→ {asText(m.Destination)} <span className="text-zinc-600">{asText(m.Mode) || (m.RW === false ? "ro" : "rw")}</span></div>
               </div>
             ))}
           </div>
@@ -1208,8 +1243,8 @@ const ConfigView = ({ data }: { data: any }) => {
             {Object.entries(portBindings).map(([proto, bindings]) => (
               <div key={proto} className="text-[11px] font-mono">
                 <span className="text-zinc-200">{proto}</span>
-                {bindings && bindings.length > 0 && (
-                  <span className="text-zinc-500"> → {bindings.map(b => `${b.HostIp || "0.0.0.0"}:${b.HostPort}`).join(", ")}</span>
+                {asList(bindings).length > 0 && (
+                  <span className="text-zinc-500"> → {asList(bindings).map(asRecord).map(b => `${asText(b.HostIp) || "0.0.0.0"}:${asText(b.HostPort)}`).join(", ")}</span>
                 )}
               </div>
             ))}
@@ -1226,7 +1261,7 @@ const ConfigView = ({ data }: { data: any }) => {
             {Object.entries(networks).map(([name, n]: any) => (
               <div key={name} className="bg-black/30 border border-white/5 rounded px-2 py-1 text-[10.5px] font-mono">
                 <div className="text-zinc-200">{name}</div>
-                <div className="text-zinc-500">{n.IPAddress || "—"} · gateway {n.Gateway || "—"}</div>
+                <div className="text-zinc-500">{asText(asRecord(n).IPAddress) || "—"} · gateway {asText(asRecord(n).Gateway) || "—"}</div>
               </div>
             ))}
           </div>

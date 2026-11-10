@@ -3,23 +3,33 @@
 //!
 //! In a shared profile, other people edit servers this device connects to. A
 //! few fields make the app act without a click: commands typed into the first
-//! terminal on connect (`run_on_connect`), connecting when the profile is
+//! terminal on connect (`run_on_connect`, and with `run_on_connect_every` into
+//! every new terminal too), connecting when the profile is
 //! unlocked (`autostart`), port forwards started on connect (`tunnels`), and
 //! the monitor's custom commands, run on every poll. A change to one of those
 //! that comes in through sync in a shared profile is held here until the user
 //! allows it, or changes that value themselves.
 //!
+//! The same goes for where a server connects to (`host`, `port`, `protocol`,
+//! its proxy and jump host): what was allowed for one address isn't allowed
+//! for another, so a move holds the move itself and all of the above again. A
+//! held move doesn't stop the server from connecting: opening it asks first
+//! (`hold_moved`).
+//!
 //! Held items are device-local: the table isn't synced, and nobody else's
 //! "allow" counts here. Personal profiles sync only between the user's own
 //! devices and never get an entry, and neither does anything that was already
-//! there when this was added: it keeps working as before.
+//! there when this was added: it keeps working as before. A profile file
+//! imported from elsewhere is the one exception: at its first unlock all of it
+//! is held (`hold_foreign`).
 //!
 //! An entry is (server uuid, item), the item being one of
 //!   `run_on_connect`, `autostart`, `tunnel:<type>|<local>|<remote>`,
-//!   `metric:<command>`.
+//!   `metric:<command>`, `moved:<where it went, in words>`.
 //!
 //! Deletions are held the same way when one sync would take out much of a
-//! shared profile at once, or an SSH key (see `hold_deletions`).
+//! shared profile at once, or an SSH key (see `hold_deletions`), and so is a
+//! record that empties a saved key or password (see `hold_wipe`).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -29,6 +39,8 @@ use crate::tunnel::TunnelSpec;
 
 pub const RUN_ON_CONNECT: &str = "run_on_connect";
 pub const AUTOSTART: &str = "autostart";
+/// What a held move's item starts with.
+pub const MOVED: &str = "moved:";
 
 /// The same guard the sync stamp triggers use: true unless the merge engine is
 /// applying remote records.
@@ -60,6 +72,7 @@ pub fn create_schema(conn: &Connection) -> Result<(), String> {
     let ddl = format!(
         "CREATE TABLE IF NOT EXISTS held_approvals (uuid TEXT NOT NULL, item TEXT NOT NULL, since INTEGER NOT NULL, PRIMARY KEY (uuid, item));
          CREATE TABLE IF NOT EXISTS held_deletions (uuid TEXT PRIMARY KEY, entity_type TEXT NOT NULL, updated_at TEXT NOT NULL, since INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS held_wipes (uuid TEXT PRIMARY KEY, entity_type TEXT NOT NULL, updated_at TEXT NOT NULL, blob TEXT NOT NULL, since INTEGER NOT NULL);
          DROP TRIGGER IF EXISTS servers_held_au;
          DROP TRIGGER IF EXISTS servers_held_ad;
          DROP TRIGGER IF EXISTS monitor_configs_held_au;
@@ -72,6 +85,10 @@ pub fn create_schema(conn: &Connection) -> Result<(), String> {
              AND (NEW.autostart IS NOT OLD.autostart OR COALESCE(NEW.autostart, 0) = 0);
            DELETE FROM held_approvals WHERE uuid = NEW.uuid AND item LIKE 'tunnel:%'
              AND item NOT IN ({NEW_TUNNEL_ITEMS});
+           DELETE FROM held_approvals WHERE uuid = NEW.uuid AND item LIKE '{MOVED}%'
+             AND (NEW.host IS NOT OLD.host OR NEW.port IS NOT OLD.port OR NEW.protocol IS NOT OLD.protocol
+                  OR NEW.proxy_type IS NOT OLD.proxy_type OR NEW.proxy_host IS NOT OLD.proxy_host OR NEW.proxy_port IS NOT OLD.proxy_port
+                  OR NEW.jump_host_id IS NOT OLD.jump_host_id);
          END;
          CREATE TRIGGER servers_held_ad AFTER DELETE ON servers FOR EACH ROW WHEN OLD.uuid IS NOT NULL
          BEGIN DELETE FROM held_approvals WHERE uuid = OLD.uuid; END;
@@ -103,21 +120,91 @@ pub fn profile_is_shared(conn: &Connection) -> bool {
         .is_ok()
 }
 
+/// This device's user can only view this shared profile: nothing they do here
+/// goes up. A role that's missing counts as that, as it does for the push
+/// (`sync_round`).
+pub fn is_viewer(conn: &Connection) -> bool {
+    profile_is_shared(conn)
+        && conn
+            .query_row("SELECT value FROM sync_meta WHERE key = 'share_role'", [], |r| r.get::<_, String>(0))
+            .map_or(true, |role| role == "user")
+}
+
 /// The tables whose records can carry something that runs by itself.
 pub fn watches(table: &str) -> bool {
     table == "servers" || table == "monitor_configs"
 }
 
 /// What a row would set off by itself, read just before and just after the
-/// merge engine applies a record to it.
+/// merge engine applies a record to it. `running` is the forwards in `tunnels`
+/// that aren't stopped.
 pub enum Snapshot {
-    Server { run_on_connect: String, autostart: bool, tunnels: BTreeSet<String> },
+    Server { run_on_connect: String, every: bool, autostart: bool, tunnels: BTreeSet<String>, running: BTreeSet<String>, target: Option<Target> },
     Monitor { server_uuid: Option<String>, metrics: BTreeSet<String> },
+}
+
+/// Where a server's connections go: what a move changes. `jump` is the jump
+/// host's uuid, `proxy` is empty with no proxy.
+#[derive(PartialEq)]
+pub struct Target {
+    protocol: String,
+    host: String,
+    port: i64,
+    proxy: String,
+    jump: Option<String>,
+}
+
+impl Target {
+    /// In words, as the review shows it.
+    fn words(&self, conn: &Connection) -> String {
+        let mut out = format!("{}:{}", self.host, self.port);
+        if self.protocol != "ssh" {
+            out += &format!(" ({})", self.protocol.to_uppercase());
+        }
+        if let Some(jump) = &self.jump {
+            let name: Option<String> = conn.query_row("SELECT name FROM servers WHERE uuid = ?1", [jump], |r| r.get(0)).ok();
+            out += &format!(" through {}", name.as_deref().unwrap_or("a jump host"));
+        }
+        if !self.proxy.is_empty() {
+            out += &format!(" through the proxy {}", self.proxy);
+        }
+        out
+    }
+}
+
+fn target(conn: &Connection, uuid: &str) -> Option<Target> {
+    conn.query_row(
+        "SELECT COALESCE(s.protocol, 'ssh'), COALESCE(s.host, ''), COALESCE(s.port, 0), COALESCE(s.proxy_type, 'none'), COALESCE(s.proxy_host, ''), COALESCE(s.proxy_port, 0), j.uuid
+           FROM servers s LEFT JOIN servers j ON j.id = s.jump_host_id WHERE s.uuid = ?1",
+        [uuid],
+        |r| {
+            let (kind, host, port): (String, String, i64) = (r.get(3)?, r.get(4)?, r.get(5)?);
+            Ok(Target {
+                protocol: r.get(0)?,
+                host: r.get(1)?,
+                port: r.get(2)?,
+                proxy: if kind.is_empty() || kind == "none" { String::new() } else { format!("{kind} {host}:{port}") },
+                jump: r.get(6)?,
+            })
+        },
+    )
+    .ok()
+}
+
+/// Where a server goes now, in words: what the review of a move shows.
+pub fn target_words(conn: &Connection, uuid: &str) -> Option<String> {
+    target(conn, uuid).map(|t| t.words(conn))
 }
 
 fn tunnel_items_of(json: &str) -> BTreeSet<String> {
     serde_json::from_str::<Vec<TunnelSpec>>(json)
         .map(|specs| specs.iter().map(tunnel_item).collect())
+        .unwrap_or_default()
+}
+
+fn running_tunnels_of(json: &str) -> BTreeSet<String> {
+    serde_json::from_str::<Vec<TunnelSpec>>(json)
+        .map(|specs| specs.iter().filter(|s| !s.stopped).map(tunnel_item).collect())
         .unwrap_or_default()
 }
 
@@ -135,6 +222,18 @@ fn metric_items_of(json: &str) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// The server's on-connect commands also go into every new terminal (#256).
+/// Read on its own, so a table without the column still gives the rest of
+/// the snapshot.
+fn every_terminal(conn: &Connection, uuid: &str) -> bool {
+    conn.query_row(
+        "SELECT COALESCE(run_on_connect_every, 0) FROM servers WHERE uuid = ?1",
+        [uuid],
+        |r| r.get::<_, i64>(0),
+    )
+    .is_ok_and(|n| n != 0)
+}
+
 pub fn snapshot(conn: &Connection, table: &str, uuid: &str) -> Option<Snapshot> {
     match table {
         "servers" => conn
@@ -148,8 +247,11 @@ pub fn snapshot(conn: &Connection, table: &str, uuid: &str) -> Option<Snapshot> 
             .flatten()
             .map(|(roc, auto, tunnels)| Snapshot::Server {
                 run_on_connect: roc,
+                every: every_terminal(conn, uuid),
                 autostart: auto != 0,
+                running: running_tunnels_of(&tunnels),
                 tunnels: tunnel_items_of(&tunnels),
+                target: target(conn, uuid),
             }),
         "monitor_configs" => conn
             .query_row(
@@ -191,22 +293,62 @@ fn release_missing(conn: &Connection, uuid: &str, prefix: &str, keep: &BTreeSet<
     Ok(())
 }
 
+/// Everything one server would set off by itself: a moved server's, whose
+/// allowed items were allowed for another address, and a foreign profile's.
+fn hold_everything(conn: &Connection, uuid: &str) -> Result<(), String> {
+    if let Some(Snapshot::Server { run_on_connect, autostart, tunnels, .. }) = snapshot(conn, "servers", uuid) {
+        if !run_on_connect.trim().is_empty() {
+            hold(conn, uuid, RUN_ON_CONNECT)?;
+        }
+        if autostart {
+            hold(conn, uuid, AUTOSTART)?;
+        }
+        for item in &tunnels {
+            hold(conn, uuid, item)?;
+        }
+    }
+    // One row by this app's schema, but a foreign file brings its own.
+    let customs: Vec<Option<String>> = conn
+        .prepare("SELECT mc.custom_metrics FROM monitor_configs mc JOIN servers s ON s.id = mc.node_id WHERE s.uuid = ?1")
+        .and_then(|mut stmt| stmt.query_map([uuid], |r| r.get(0))?.collect())
+        .map_err(|e| format!("[SYNC] HOLD: {e}"))?;
+    for item in customs.iter().flatten().flat_map(|json| metric_items_of(json)) {
+        hold(conn, uuid, &item)?;
+    }
+    Ok(())
+}
+
+/// A server that synced in with another address. The entry says where it went
+/// when last allowed: a second move keeps it, and a move back there lets it go.
+fn hold_moved(conn: &Connection, uuid: &str, was: &Target, now: &Target) -> Result<(), String> {
+    let entry = held_for(conn, uuid).into_iter().find(|i| i.starts_with(MOVED));
+    if entry.as_deref().and_then(|i| i.strip_prefix(MOVED)) == Some(now.words(conn).as_str()) {
+        return release(conn, uuid, &entry.unwrap_or_default());
+    }
+    if entry.is_none() {
+        hold(conn, uuid, &format!("{MOVED}{}", was.words(conn)))?;
+    }
+    hold_everything(conn, uuid)
+}
+
 /// After the merge engine applied a record (`before` is the row as it was, or
 /// None for a new row): hold whatever the record newly turned on, and drop
 /// held entries for what it turned off or removed. A record that changed
 /// nothing on these fields leaves everything as it was.
 pub fn hold_changes(conn: &Connection, table: &str, uuid: &str, before: Option<&Snapshot>) -> Result<(), String> {
     match (table, snapshot(conn, table, uuid)) {
-        ("servers", Some(Snapshot::Server { run_on_connect, autostart, tunnels })) => {
-            let (b_roc, b_auto, b_tunnels) = match before {
-                Some(Snapshot::Server { run_on_connect, autostart, tunnels }) => {
-                    (Some(run_on_connect.as_str()), *autostart, Some(tunnels))
+        ("servers", Some(Snapshot::Server { run_on_connect, every, autostart, tunnels, running, target })) => {
+            let (b_roc, b_every, b_auto, b_tunnels, b_running, b_target) = match before {
+                Some(Snapshot::Server { run_on_connect, every, autostart, tunnels, running, target }) => {
+                    (Some(run_on_connect.as_str()), *every, *autostart, Some(tunnels), Some(running), target.as_ref())
                 }
-                _ => (None, false, None),
+                _ => (None, false, false, None, None, None),
             };
+            // The same commands sent into every new terminal, not only the
+            // first, run more than what was allowed: held as a change too.
             if run_on_connect.trim().is_empty() {
                 release(conn, uuid, RUN_ON_CONNECT)?;
-            } else if b_roc != Some(run_on_connect.as_str()) {
+            } else if b_roc != Some(run_on_connect.as_str()) || (every && !b_every) {
                 hold(conn, uuid, RUN_ON_CONNECT)?;
             }
             if !autostart {
@@ -214,10 +356,17 @@ pub fn hold_changes(conn: &Connection, table: &str, uuid: &str, before: Option<&
             } else if !b_auto {
                 hold(conn, uuid, AUTOSTART)?;
             }
-            for item in tunnels.iter().filter(|t| b_tunnels.map_or(true, |b| !b.contains(*t))) {
+            // A forward the user stopped and a record turns back on runs again
+            // at the next connect: as new as one that wasn't there.
+            let turned_on = |t: &String| running.contains(t) && b_running.is_some_and(|b| !b.contains(t));
+            for item in tunnels.iter().filter(|t| b_tunnels.map_or(true, |b| !b.contains(*t)) || turned_on(t)) {
                 hold(conn, uuid, item)?;
             }
-            release_missing(conn, uuid, "tunnel:", &tunnels)
+            release_missing(conn, uuid, "tunnel:", &tunnels)?;
+            match (b_target, &target) {
+                (Some(was), Some(now)) if was != now => hold_moved(conn, uuid, was, now),
+                _ => Ok(()),
+            }
         }
         ("monitor_configs", Some(Snapshot::Monitor { server_uuid: Some(server_uuid), metrics })) => {
             let b_metrics = match before {
@@ -384,28 +533,81 @@ pub fn hold_deletions(conn: &Connection, tombstones: &[&crate::SyncRecord]) -> R
     Ok(skip)
 }
 
-/// A held deletion, for the user to decide on: what it would delete.
+/// A record that would empty a saved key or password here. Such a key is gone
+/// as surely as by a deletion, so in a shared profile the record waits for this
+/// device's user like an SSH key's deletion does, whole, so the user's yes can
+/// still apply it. The newest one for a row stays. The row stays until the
+/// user applies it, or keeps the row, which brings it back for everyone
+/// (`resolve_held_deletions`). A viewer has nothing to bring back and is never
+/// asked: see `apply_remote_inner`.
+pub fn hold_wipe(conn: &Connection, rec: &crate::SyncRecord) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO held_wipes (uuid, entity_type, updated_at, blob, since) VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
+         ON CONFLICT(uuid) DO UPDATE SET updated_at = excluded.updated_at, blob = excluded.blob
+         WHERE excluded.updated_at > held_wipes.updated_at",
+        params![rec.uuid, rec.entity_type, rec.updated_at, rec.blob.as_deref().unwrap_or("")],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("[SYNC] HELD_WIPE: {e}"))
+}
+
+/// A record for this row landed, or lost to what is here, so what was held
+/// from before it no longer has anything to do.
+pub fn release_wipe(conn: &Connection, rec: &crate::SyncRecord) -> Result<(), String> {
+    conn.execute("DELETE FROM held_wipes WHERE uuid = ?1 AND updated_at <= ?2", params![rec.uuid, rec.updated_at])
+        .map(|_| ())
+        .map_err(|e| format!("[SYNC] HELD_WIPE: {e}"))
+}
+
+/// `rec` is held already, or something newer for its row is.
+pub fn wipe_is_held(conn: &Connection, rec: &crate::SyncRecord) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM held_wipes WHERE uuid = ?1 AND updated_at >= ?2",
+        params![rec.uuid, rec.updated_at],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// The records held by `hold_wipe`, as they came.
+pub fn held_wipes(conn: &Connection) -> Vec<crate::SyncRecord> {
+    let Ok(mut stmt) = conn.prepare("SELECT uuid, entity_type, updated_at, blob FROM held_wipes") else {
+        return Vec::new();
+    };
+    stmt.query_map([], |r| {
+        Ok(crate::SyncRecord { uuid: r.get(0)?, entity_type: r.get(1)?, updated_at: r.get(2)?, deleted: false, blob: r.get(3)? })
+    })
+    .map(|rows| rows.filter_map(Result::ok).collect())
+    .unwrap_or_default()
+}
+
+/// A held deletion, for the user to decide on: what it would delete. With
+/// `emptied` set, a held record that would empty a key or password in it.
 #[derive(serde::Serialize)]
 pub struct HeldDeletion {
     pub uuid: String,
     pub entity_type: String,
     pub name: String,
+    pub emptied: bool,
 }
 
-/// The deletions held on this device, with the name of what each would
-/// delete. One whose row is gone already (deleted here meanwhile) isn't
-/// listed.
+/// What is held on this device, with the name of what each would take. One
+/// whose row is gone already (deleted here meanwhile) isn't listed.
 pub fn held_deletions(conn: &Connection) -> Vec<HeldDeletion> {
-    let Ok(mut stmt) = conn.prepare("SELECT uuid, entity_type FROM held_deletions ORDER BY entity_type, since") else {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT uuid, entity_type, 0, since FROM held_deletions
+         UNION ALL SELECT uuid, entity_type, 1, since FROM held_wipes
+         ORDER BY 2, 4",
+    ) else {
         return Vec::new();
     };
-    let held: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    let held: Vec<(String, String, bool)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .map(|rows| rows.filter_map(Result::ok).collect())
         .unwrap_or_default();
     held.into_iter()
-        .filter(|(_, t)| crate::SYNCED_TABLES.contains(&t.as_str()))
-        .filter_map(|(uuid, t)| {
+        .filter(|(_, t, _)| crate::SYNCED_TABLES.contains(&t.as_str()))
+        .filter_map(|(uuid, t, emptied)| {
             let name = match t.as_str() {
                 "commands" | "notes" => "title",
                 "monitor_configs" => "(SELECT s.name FROM servers s WHERE s.id = node_id)",
@@ -416,7 +618,7 @@ pub fn held_deletions(conn: &Connection) -> Vec<HeldDeletion> {
                 .optional()
                 .ok()?
                 .map(|n: Option<String>| n.unwrap_or_default());
-            name.map(|name| HeldDeletion { uuid, entity_type: t, name })
+            name.map(|name| HeldDeletion { uuid, entity_type: t, name, emptied })
         })
         .collect()
 }
@@ -428,8 +630,8 @@ pub fn server_uuid(conn: &Connection, server_id: i64) -> Option<String> {
         .flatten()
 }
 
-/// A copy of a server takes the held command and held forwards of the
-/// original with it. What is held is held wherever it goes: cloning a server
+/// A copy of a server takes the held command, held forwards and held move of
+/// the original with it. What is held is held wherever it goes: cloning a server
 /// whose command a co-member planted used to turn it into a row nobody had to
 /// allow, with the command typed on its first connect. (The clone's autostart is
 /// off, and monitor settings aren't copied, so those two kinds stay behind.)
@@ -437,10 +639,46 @@ pub fn copy_held(conn: &Connection, from_uuid: &str, to_uuid: &str) -> Result<us
     conn.execute(
         "INSERT OR IGNORE INTO held_approvals (uuid, item, since)
          SELECT ?2, item, since FROM held_approvals
-          WHERE uuid = ?1 AND (item = ?3 OR item LIKE 'tunnel:%')",
-        params![from_uuid, to_uuid, RUN_ON_CONNECT],
+          WHERE uuid = ?1 AND (item = ?3 OR item LIKE 'tunnel:%' OR item LIKE ?4)",
+        params![from_uuid, to_uuid, RUN_ON_CONNECT, format!("{MOVED}%")],
     )
     .map_err(|e| format!("[SYNC] HELD_COPY: {e}"))
+}
+
+// ---- A profile file from elsewhere --------------------------------------
+
+/// What a profile file from somewhere else may not bring along, taken out
+/// before anything else reads it. Whoever made the file wrote its whole
+/// database, not only its rows: a trigger of theirs could throw away what
+/// `hold_foreign` writes, a view could stand in for a table, and a held table
+/// of their shaping could refuse rows without a word (`hold` ignores a failed
+/// insert). This app's own triggers are made anew at every open, and it has no
+/// views.
+pub fn clear_foreign_schema(conn: &Connection) -> Result<(), String> {
+    let found: Vec<(String, String)> = conn
+        .prepare("SELECT type, name FROM sqlite_master WHERE type IN ('trigger', 'view')")
+        .and_then(|mut stmt| stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+        .map_err(|e| format!("[VAULT] FOREIGN_SCHEMA: {e}"))?;
+    for (kind, name) in found {
+        conn.execute_batch(&format!("DROP {kind} IF EXISTS \"{}\"", name.replace('"', "\"\"")))
+            .map_err(|e| format!("[VAULT] FOREIGN_SCHEMA: {e}"))?;
+    }
+    conn.execute_batch("DROP TABLE IF EXISTS held_approvals").map_err(|e| format!("[VAULT] FOREIGN_SCHEMA: {e}"))
+}
+
+/// A profile file from somewhere else, at its first unlock: nothing in it has
+/// been allowed on this device, so all it would set off by itself is held, and
+/// no host key it lists counts as checked. The servers then get the usual
+/// first-visit prompt.
+pub fn hold_foreign(conn: &Connection) -> Result<(), String> {
+    let uuids: Vec<String> = conn
+        .prepare("SELECT uuid FROM servers WHERE uuid IS NOT NULL")
+        .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+        .map_err(|e| format!("[VAULT] HOLD_FOREIGN: {e}"))?;
+    for uuid in &uuids {
+        hold_everything(conn, uuid)?;
+    }
+    conn.execute("DELETE FROM known_hosts", []).map(|_| ()).map_err(|e| format!("[VAULT] HOLD_FOREIGN: {e}"))
 }
 
 #[cfg(test)]
@@ -452,9 +690,10 @@ mod tests {
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, tunnels TEXT, autostart INTEGER NOT NULL DEFAULT 0,
-                                  run_on_connect TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0, uuid TEXT);
+            "CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, host TEXT, port INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, autostart INTEGER NOT NULL DEFAULT 0,
+                                  run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER NOT NULL DEFAULT 1, uuid TEXT);
+             CREATE TABLE known_hosts(id INTEGER PRIMARY KEY, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
              CREATE TABLE sync_flags(key TEXT PRIMARY KEY, val INTEGER NOT NULL);
              CREATE TABLE sync_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )
@@ -560,6 +799,47 @@ mod tests {
         assert!(held_for(&conn, "u1").contains(RUN_ON_CONNECT));
     }
 
+    /// What the merge engine does for a record that changes only whether the
+    /// commands go into every new terminal (#256).
+    fn merge_every(conn: &Connection, uuid: &str, every: bool) {
+        merging(conn, true);
+        let before = snapshot(conn, "servers", uuid);
+        conn.execute("UPDATE servers SET run_on_connect_every=?1 WHERE uuid=?2", params![every as i64, uuid]).unwrap();
+        hold_changes(conn, "servers", uuid, before.as_ref()).unwrap();
+        merging(conn, false);
+    }
+
+    #[test]
+    fn the_same_commands_turned_on_for_every_terminal_are_held() {
+        let conn = db();
+        // Allowed here: on this device, nothing held.
+        conn.execute("INSERT INTO servers(name, run_on_connect, uuid) VALUES('s', 'ls', 'u1')", []).unwrap();
+        // A co-member turns on "every new terminal": the commands would run
+        // in more terminals than were allowed.
+        merge_every(&conn, "u1", true);
+        assert!(held_for(&conn, "u1").contains(RUN_ON_CONNECT));
+        // Allowed, then turned off by them: nothing new to hold.
+        allow(&conn, "u1", &[]).unwrap();
+        merge_every(&conn, "u1", false);
+        assert!(held_for(&conn, "u1").is_empty());
+        // With no commands, the switch alone runs nothing.
+        conn.execute("UPDATE servers SET run_on_connect='' WHERE uuid='u1'", []).unwrap();
+        merge_every(&conn, "u1", true);
+        assert!(held_for(&conn, "u1").is_empty());
+        // A table from before the column still holds changed commands.
+        let old = Connection::open_in_memory().unwrap();
+        old.execute_batch(
+            "CREATE TABLE servers(id INTEGER PRIMARY KEY, name TEXT, host TEXT, port INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, autostart INTEGER NOT NULL DEFAULT 0,
+                                  run_on_connect TEXT NOT NULL DEFAULT '', jump_host_id INTEGER, protocol TEXT, uuid TEXT);
+             CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, custom_metrics TEXT, uuid TEXT);
+             CREATE TABLE sync_flags(key TEXT PRIMARY KEY, val INTEGER NOT NULL);",
+        )
+        .unwrap();
+        create_schema(&old).unwrap();
+        merge_server(&old, "u2", "curl x | sh", false, "[]");
+        assert!(held_for(&old, "u2").contains(RUN_ON_CONNECT));
+    }
+
     #[test]
     fn turning_things_off_or_removing_them_releases_them() {
         let conn = db();
@@ -663,5 +943,227 @@ mod tests {
         merge_server(&conn, "u1", "curl x | sh", true, "[]");
         conn.execute("DELETE FROM servers WHERE uuid='u1'", []).unwrap();
         assert!(held_for(&conn, "u1").is_empty());
+    }
+
+    const L8080_STOPPED: &str = r#"[{"type":"L","local":"127.0.0.1:8080","remote":"db:5432","stopped":true}]"#;
+
+    #[test]
+    fn a_stopped_forward_turned_back_on_is_held() {
+        let conn = db();
+        // Stopped by the user here: nothing held.
+        conn.execute("INSERT INTO servers(name, tunnels, uuid) VALUES('s', ?1, 'u1')", [L8080_STOPPED]).unwrap();
+        // A record that leaves it stopped changes nothing.
+        merge_server(&conn, "u1", "", false, L8080_STOPPED);
+        assert!(held_for(&conn, "u1").is_empty());
+        // A co-member turns it back on: held, so it still starts stopped.
+        merge_server(&conn, "u1", "", false, L8080);
+        assert_eq!(held_for(&conn, "u1").into_iter().collect::<Vec<_>>(), vec!["tunnel:L|127.0.0.1:8080|db:5432".to_string()]);
+        let mut specs: Vec<TunnelSpec> = serde_json::from_str(L8080).unwrap();
+        assert_eq!(hold_tunnels(&conn, Some("u1"), &mut specs), 1);
+        assert!(specs[0].stopped);
+        // Allowed, a record that doesn't change it holds nothing again.
+        allow(&conn, "u1", &[]).unwrap();
+        merge_server(&conn, "u1", "", false, L8080);
+        assert!(held_for(&conn, "u1").is_empty());
+        // And stopping one is nothing to hold.
+        merge_server(&conn, "u1", "", false, L8080_STOPPED);
+        assert!(held_for(&conn, "u1").is_empty());
+    }
+
+    /// What the merge engine does for a record that changes `set`.
+    fn merge_set(conn: &Connection, uuid: &str, set: &str) {
+        merging(conn, true);
+        let before = snapshot(conn, "servers", uuid);
+        conn.execute(&format!("UPDATE servers SET {set} WHERE uuid=?1"), [uuid]).unwrap();
+        hold_changes(conn, "servers", uuid, before.as_ref()).unwrap();
+        merging(conn, false);
+    }
+
+    /// `web`, set up and allowed on this device: nothing held. `jump` beside it.
+    fn with_allowed_server() -> Connection {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO servers(id, name, host, port, tunnels, autostart, run_on_connect, uuid) VALUES(1, 'web', 'old.example', 22, ?1, 1, 'ls', 'u1')",
+            [L8080],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO servers(id, name, host, port, uuid) VALUES(2, 'jump', 'j.example', 22, 'u2')", []).unwrap();
+        conn.execute(
+            "INSERT INTO monitor_configs(node_id, enabled_metrics, custom_metrics, uuid) VALUES(1, '[]', ?1, 'm1')",
+            [r#"[{"id":"a","name":"a","command":"uptime","parse":"text"}]"#],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn a_moved_server_holds_the_move_and_all_it_would_set_off() {
+        let conn = with_allowed_server();
+        merge_set(&conn, "u1", "host='new.example'");
+        let held: Vec<String> = held_for(&conn, "u1").into_iter().collect();
+        assert_eq!(held, vec!["autostart", "metric:uptime", "moved:old.example:22", "run_on_connect", "tunnel:L|127.0.0.1:8080|db:5432"]);
+        // It goes on working: the row has the new address, the review says both.
+        assert_eq!(target_words(&conn, "u1").as_deref(), Some("new.example:22"));
+        // The forward comes in stopped, and the monitor command stays out.
+        let mut specs: Vec<TunnelSpec> = serde_json::from_str(L8080).unwrap();
+        assert_eq!(hold_tunnels(&conn, Some("u1"), &mut specs), 1);
+    }
+
+    #[test]
+    fn all_that_decides_where_a_server_goes_counts_as_a_move() {
+        for (set, now) in [
+            ("port=2222", "old.example:2222"),
+            ("protocol='telnet'", "old.example:22 (TELNET)"),
+            ("proxy_type='socks5', proxy_host='p.example', proxy_port=1080", "old.example:22 through the proxy socks5 p.example:1080"),
+            ("jump_host_id=2", "old.example:22 through jump"),
+        ] {
+            let conn = with_allowed_server();
+            merge_set(&conn, "u1", set);
+            assert!(held_for(&conn, "u1").contains("moved:old.example:22"), "{set}");
+            assert_eq!(target_words(&conn, "u1").as_deref(), Some(now), "{set}");
+        }
+    }
+
+    #[test]
+    fn what_doesnt_change_where_a_server_goes_is_no_move() {
+        let conn = with_allowed_server();
+        // A rename; a proxy's address with no proxy in use; how "no proxy" and "SSH" are spelled.
+        for set in ["name='renamed'", "proxy_host='p.example', proxy_port=1080", "proxy_type='none'", "protocol='ssh'", "position=3"] {
+            merge_set(&conn, "u1", set);
+            assert!(held_for(&conn, "u1").is_empty(), "{set}");
+        }
+        // Renaming the jump host doesn't move what goes through it.
+        conn.execute("UPDATE servers SET jump_host_id=2 WHERE uuid='u1'", []).unwrap();
+        merge_set(&conn, "u2", "name='hop'");
+        assert!(held_for(&conn, "u1").is_empty());
+    }
+
+    #[test]
+    fn a_new_synced_server_has_nowhere_it_moved_from() {
+        let conn = db();
+        merge_server(&conn, "u1", "", false, "[]");
+        assert!(held_for(&conn, "u1").is_empty());
+    }
+
+    #[test]
+    fn a_second_move_keeps_the_allowed_address_and_a_move_back_lets_it_go() {
+        let conn = with_allowed_server();
+        merge_set(&conn, "u1", "host='b.example'");
+        merge_set(&conn, "u1", "host='c.example'");
+        let moved = |conn: &Connection| held_for(conn, "u1").into_iter().filter(|i| i.starts_with(MOVED)).collect::<Vec<_>>();
+        assert_eq!(moved(&conn), vec!["moved:old.example:22".to_string()]);
+        merge_set(&conn, "u1", "host='old.example'");
+        assert!(moved(&conn).is_empty());
+        // What was held on the way stays until the user allows it.
+        assert!(held_for(&conn, "u1").contains(RUN_ON_CONNECT));
+    }
+
+    #[test]
+    fn a_move_counts_again_after_it_was_allowed() {
+        let conn = with_allowed_server();
+        merge_set(&conn, "u1", "host='b.example'");
+        allow(&conn, "u1", &[]).unwrap();
+        assert!(held_for(&conn, "u1").is_empty());
+        merge_set(&conn, "u1", "host='c.example'");
+        let held = held_for(&conn, "u1");
+        assert!(held.contains("moved:b.example:22") && held.contains(RUN_ON_CONNECT), "{held:?}");
+    }
+
+    #[test]
+    fn moving_a_server_on_this_device_is_the_users_own_move() {
+        let conn = with_allowed_server();
+        merge_set(&conn, "u1", "host='new.example'");
+        // Saving the same address back (the form does) is not an OK.
+        conn.execute("UPDATE servers SET host='new.example', name='web' WHERE uuid='u1'", []).unwrap();
+        assert!(held_for(&conn, "u1").contains("moved:old.example:22"));
+        conn.execute("UPDATE servers SET host='mine.example' WHERE uuid='u1'", []).unwrap();
+        let held = held_for(&conn, "u1");
+        assert!(!held.iter().any(|i| i.starts_with(MOVED)), "{held:?}");
+        // The rest is a separate question.
+        assert!(held.contains(RUN_ON_CONNECT));
+    }
+
+    #[test]
+    fn a_copy_of_a_moved_server_is_held_as_moved() {
+        let conn = with_allowed_server();
+        merge_set(&conn, "u1", "host='new.example'");
+        conn.execute("INSERT INTO servers(name, host, port, uuid) VALUES('web (copy)', 'new.example', 22, 'u3')", []).unwrap();
+        copy_held(&conn, "u1", "u3").unwrap();
+        assert!(held_for(&conn, "u3").contains("moved:old.example:22"));
+    }
+
+    #[test]
+    fn a_foreign_profile_is_held_whole_and_trusts_no_host_key() {
+        let conn = with_allowed_server();
+        conn.execute("INSERT INTO known_hosts(host, port, fingerprint) VALUES('old.example', 22, 'SHA256:theirs')", []).unwrap();
+        conn.execute("INSERT INTO servers(id, name, host, port, uuid) VALUES(3, 'plain', 'p.example', 22, 'u3')", []).unwrap();
+        hold_foreign(&conn).unwrap();
+        let held: Vec<String> = held_for(&conn, "u1").into_iter().collect();
+        assert_eq!(held, vec!["autostart", "metric:uptime", "run_on_connect", "tunnel:L|127.0.0.1:8080|db:5432"]);
+        assert!(held_for(&conn, "u3").is_empty(), "nothing to hold on a plain server");
+        let keys: i64 = conn.query_row("SELECT COUNT(*) FROM known_hosts", [], |r| r.get(0)).unwrap();
+        assert_eq!(keys, 0);
+        // Held in a personal profile, the same as in a shared one.
+        assert!(!profile_is_shared(&conn));
+        assert_eq!(held_by_server(&conn).len(), 1);
+    }
+
+    #[test]
+    fn a_foreign_file_cant_bring_what_would_undo_the_holds() {
+        let conn = with_allowed_server();
+        conn.execute("INSERT INTO known_hosts(host, port, fingerprint) VALUES('old.example', 22, 'SHA256:theirs')", []).unwrap();
+        conn.execute_batch(
+            "DROP TABLE held_approvals;
+             CREATE TABLE held_approvals (uuid TEXT NOT NULL, item TEXT NOT NULL, since INTEGER NOT NULL, CHECK (0));
+             CREATE TRIGGER keep_hosts BEFORE DELETE ON known_hosts BEGIN SELECT RAISE(IGNORE); END;
+             CREATE VIEW \"odd\"\"name\" AS SELECT 1;",
+        )
+        .unwrap();
+        // Left as they came, nothing is held and every key stays.
+        hold_foreign(&conn).unwrap();
+        assert!(held_for(&conn, "u1").is_empty());
+        let keys = |conn: &Connection| conn.query_row("SELECT COUNT(*) FROM known_hosts", [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(keys(&conn), 1);
+
+        clear_foreign_schema(&conn).unwrap();
+        create_schema(&conn).unwrap();
+        hold_foreign(&conn).unwrap();
+        assert_eq!(held_for(&conn, "u1").len(), 4);
+        assert_eq!(keys(&conn), 0);
+        let strays: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'view' OR name = 'keep_hosts'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(strays, 0);
+        // The app's own triggers are back at work.
+        conn.execute("DELETE FROM servers WHERE uuid='u1'", []).unwrap();
+        assert!(held_for(&conn, "u1").is_empty());
+    }
+
+    #[test]
+    fn every_monitor_row_of_a_foreign_file_is_held() {
+        let conn = with_allowed_server();
+        conn.execute_batch(
+            r#"DROP TABLE monitor_configs;
+               CREATE TABLE monitor_configs(node_id INTEGER, custom_metrics TEXT);
+               INSERT INTO monitor_configs VALUES (1, '[]'), (1, '[{"id":"a","name":"a","command":"curl x | sh","parse":"text"}]');"#,
+        )
+        .unwrap();
+        hold_foreign(&conn).unwrap();
+        assert!(held_for(&conn, "u1").contains("metric:curl x | sh"));
+    }
+
+    #[test]
+    fn a_view_standing_in_for_the_held_table_goes_too() {
+        let conn = with_allowed_server();
+        conn.execute_batch(
+            "DROP TABLE held_approvals;
+             CREATE VIEW held_approvals AS SELECT 'x' AS uuid, 'y' AS item, 0 AS since WHERE 0;
+             CREATE TRIGGER swallow INSTEAD OF INSERT ON held_approvals BEGIN SELECT 1; END;",
+        )
+        .unwrap();
+        clear_foreign_schema(&conn).unwrap();
+        create_schema(&conn).unwrap();
+        hold_foreign(&conn).unwrap();
+        assert_eq!(held_for(&conn, "u1").len(), 4);
     }
 }

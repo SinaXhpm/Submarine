@@ -123,20 +123,41 @@ export interface TextPromptOptions {
   validate?: (v: string) => string | null;
 }
 
+// A form being closed with changes in it. Returned from useUnsavedPrompt():
+// save them, throw them away, or go back to the form ("cancel": Escape, a
+// click beside the dialog, its X).
+export type UnsavedChoice = "save" | "discard" | "cancel";
+
+export interface UnsavedPromptOptions {
+  title?: string;
+  message: string;
+  saveLabel?: string;
+  discardLabel?: string;
+  cancelLabel?: string;
+}
+
 const ConfirmContext = createContext<((opts: ConfirmOptions | string) => Promise<boolean>) | null>(null);
 const OverwriteContext = createContext<((opts: OverwritePromptOptions) => Promise<OverwriteChoice>) | null>(null);
 const TextPromptContext = createContext<((opts: TextPromptOptions) => Promise<string | null>) | null>(null);
+const UnsavedContext = createContext<((opts: UnsavedPromptOptions) => Promise<UnsavedChoice>) | null>(null);
 
 // A request for a prompt, waiting for its turn or on screen.
 type Pending =
   | { id: number; kind: "confirm"; opts: ConfirmOptions; resolve: Resolver }
   | { id: number; kind: "overwrite"; opts: OverwritePromptOptions; resolve: (c: OverwriteChoice) => void }
-  | { id: number; kind: "text"; opts: TextPromptOptions; resolve: (v: string | null) => void };
+  | { id: number; kind: "text"; opts: TextPromptOptions; resolve: (v: string | null) => void }
+  | { id: number; kind: "unsaved"; opts: UnsavedPromptOptions; resolve: (c: UnsavedChoice) => void };
 
 // How long a prompt that took another one's place ignores clicks and keys.
 // The second click of a double-click, or a second quick Enter, was aimed at
 // the prompt before it and must not answer this one too.
 const CHAIN_GRACE_MS = 500;
+
+// How long the unsaved-changes question ignores the pointer once it is up. It
+// comes up under the pointer of the click that asked for it (a click beside a
+// form), so the second click of a double-click, or a second quick tap, lands
+// on it, maybe on Discard. The keyboard answers at once.
+const UNSAVED_POINTER_GRACE_MS = 300;
 
 const sameConfirm = (a: ConfirmOptions, b: ConfirmOptions) =>
   a.title === b.title && a.message === b.message && a.okLabel === b.okLabel &&
@@ -167,6 +188,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   const state = active?.kind === "confirm" ? active : null;
   const owState = active?.kind === "overwrite" ? active : null;
   const tpState = active?.kind === "text" ? active : null;
+  const usState = active?.kind === "unsaved" ? active : null;
 
   // Refs to each modal's panel — the focus trap needs a DOM anchor to
   // determine "inside vs outside" for the Tab-cycle logic.
@@ -174,9 +196,11 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   const confirmPanelRef = useRef<HTMLDivElement | null>(null);
   const confirmOkRef = useRef<HTMLButtonElement | null>(null);
   const tpPanelRef = useRef<HTMLDivElement | null>(null);
+  const usPanelRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(owState?.id ?? null, owPanelRef);
   useFocusTrap(state?.id ?? null, confirmPanelRef);
   useFocusTrap(tpState?.id ?? null, tpPanelRef);
+  useFocusTrap(usState?.id ?? null, usPanelRef);
 
   // A text prompt starts from its own initial value, never from what was
   // typed into the one before it (which may have been a password).
@@ -217,6 +241,12 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
     });
   }, [enqueue]);
 
+  const unsavedPrompt = useCallback((opts: UnsavedPromptOptions) => {
+    return new Promise<UnsavedChoice>((resolve) => {
+      enqueue({ id: nextIdRef.current++, kind: "unsaved", opts, resolve });
+    });
+  }, [enqueue]);
+
   // Take the prompt on screen out of the line and bring up the next one.
   // False when `p` is not the one on screen any more (already answered), or
   // only just took another prompt's place (see CHAIN_GRACE_MS): the caller
@@ -239,6 +269,24 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   };
   const closeTextPrompt = (value: string | null) => {
     if (tpState && advance(tpState)) tpState.resolve(value);
+  };
+  const closeUnsaved = (choice: UnsavedChoice) => {
+    if (usState && advance(usState)) usState.resolve(choice);
+  };
+  // An answer by the pointer, unless the click came with the one that opened
+  // the question (see UNSAVED_POINTER_GRACE_MS): a later click of a
+  // double-click (`detail` counts them), or one just after the question came
+  // up, where a touch screen counts no clicks. A click made by the keyboard
+  // or by a script has no count and answers at once.
+  const usShownAtRef = useRef(0);
+  useLayoutEffect(() => {
+    if (usState) usShownAtRef.current = performance.now();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usState?.id]);
+  const clickUnsaved = (e: React.MouseEvent, choice: UnsavedChoice) => {
+    if (e.detail > 1) return;
+    if (e.detail === 1 && performance.now() - usShownAtRef.current < UNSAVED_POINTER_GRACE_MS) return;
+    closeUnsaved(choice);
   };
   const submitTextPrompt = () => {
     if (!tpState) return;
@@ -295,10 +343,30 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tpState]);
 
+  // Esc goes back to the form. Enter does what the focused button does, and
+  // Save has the focus at first: an Enter alone never throws changes away.
+  useEffect(() => {
+    if (!usState) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) closeUnsaved("cancel"); }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (e.repeat) return;
+        const focused = document.activeElement;
+        const choice = focused instanceof HTMLElement && usPanelRef.current?.contains(focused) ? focused.dataset.choice : undefined;
+        closeUnsaved(choice === "discard" || choice === "cancel" ? choice : "save");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usState]);
+
   return (
     <ConfirmContext.Provider value={confirm}>
      <OverwriteContext.Provider value={overwritePrompt}>
       <TextPromptContext.Provider value={textPrompt}>
+      <UnsavedContext.Provider value={unsavedPrompt}>
       {children}
       {/* Each dialog is keyed by its prompt, so one that follows another of
           the same kind is a new dialog (it animates in and its default
@@ -320,7 +388,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
                   {owState.opts.direction === "download" ? "Local file exists" : "Remote file exists"}
                 </span>
               </div>
-              <button aria-label="Close" onClick={() => closeOverwrite("cancel")} className="text-zinc-500 hover:text-white shrink-0">
+              <button aria-label="Close" onClick={() => closeOverwrite("cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
@@ -334,21 +402,21 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             </p>
             <div className="grid grid-cols-2 gap-2">
               <button onClick={() => closeOverwrite("overwrite")} data-default-focus
-                      className="h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
+                      className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
                 Overwrite
               </button>
               <button onClick={() => closeOverwrite("skip")}
-                      className="h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
+                      className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
                 Skip
               </button>
               {owState.opts.batchSize > 1 && (
                 <>
                   <button onClick={() => closeOverwrite("overwrite-all")}
-                          className="h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20">
+                          className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20">
                     Overwrite all
                   </button>
                   <button onClick={() => closeOverwrite("skip-all")}
-                          className="h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.03] border border-white/10 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200">
+                          className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.03] border border-white/10 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200">
                     Skip all
                   </button>
                 </>
@@ -381,22 +449,24 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
                   {state.opts.title || (state.opts.destructive ? "Confirm action" : "Are you sure?")}
                 </span>
               </div>
-              <button aria-label="Close" onClick={() => close(false)} className="text-zinc-500 hover:text-white shrink-0">
+              <button aria-label="Close" onClick={() => close(false)} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
-            <p className="text-[12px] text-zinc-300 leading-relaxed mb-4 whitespace-pre-wrap break-words">
+            {/* Scrolls: a Library command is shown whole, however long it is,
+                and the buttons have to stay on screen. */}
+            <p className="text-[12px] text-zinc-300 leading-relaxed mb-4 whitespace-pre-wrap break-words max-h-[60vh] overflow-y-auto custom-scrollbar">
               {state.opts.message}
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => close(false)}
                       data-default-focus={state.opts.safeDefault ? true : undefined}
-                      className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
+                      className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
                 {state.opts.cancelLabel || "Cancel"}
               </button>
               <button onClick={() => close(true)} ref={confirmOkRef}
                       data-default-focus={state.opts.safeDefault ? undefined : true}
-                      className={`px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider border ${
+                      className={`px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider border ${
                         state.opts.destructive
                           ? "bg-rose-500/15 border-rose-500/40 text-rose-300 hover:bg-rose-500/25"
                           : "bg-primary/15 border-primary/40 text-primary hover:bg-primary/25"
@@ -422,7 +492,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               <span id="text-prompt-modal-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
                 {tpState.opts.title || "Enter value"}
               </span>
-              <button aria-label="Close" onClick={() => closeTextPrompt(null)} className="text-zinc-500 hover:text-white shrink-0">
+              <button aria-label="Close" onClick={() => closeTextPrompt(null)} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
@@ -445,11 +515,11 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             )}
             <div className="flex justify-end gap-2 mt-2">
               <button onClick={() => closeTextPrompt(null)}
-                      className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
+                      className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
                 {tpState.opts.cancelLabel || "Cancel"}
               </button>
               <button onClick={submitTextPrompt}
-                      className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
+                      className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
                 {tpState.opts.okLabel || "OK"}
               </button>
             </div>
@@ -457,10 +527,65 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
         </div>,
         document.body
       )}
+      {/* Discard sits apart from Save, so a click that misses Save can't
+          throw the changes away. Clicks go through clickUnsaved: the one that
+          opened the question may have a second click right behind it. */}
+      {usState && createPortal(
+        <div key={usState.id}
+             className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+             onClick={(e) => clickUnsaved(e, "cancel")}>
+          <div ref={usPanelRef}
+               role="dialog"
+               aria-modal="true"
+               aria-labelledby="unsaved-modal-title"
+               aria-describedby="unsaved-modal-message"
+               onClick={(e) => e.stopPropagation()}
+               className="w-full max-w-[400px] bg-[#121214] border border-white/10 rounded-xl shadow-2xl p-4 font-mono text-[12px] animate-in zoom-in-95 fade-in duration-150">
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={14} className="text-amber-400" />
+                <span id="unsaved-modal-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
+                  {usState.opts.title || "Unsaved changes"}
+                </span>
+              </div>
+              <button aria-label="Close" data-choice="cancel" onClick={(e) => clickUnsaved(e, "cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
+                <X size={12} />
+              </button>
+            </div>
+            <p id="unsaved-modal-message" className="text-[12px] text-zinc-300 leading-relaxed mb-4 whitespace-pre-wrap break-words">
+              {usState.opts.message}
+            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button data-choice="discard" onClick={(e) => clickUnsaved(e, "discard")}
+                      className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20">
+                {usState.opts.discardLabel || "Discard"}
+              </button>
+              <div className="ml-auto flex gap-2">
+                <button data-choice="cancel" onClick={(e) => clickUnsaved(e, "cancel")}
+                        className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
+                  {usState.opts.cancelLabel || "Keep editing"}
+                </button>
+                <button data-choice="save" data-default-focus onClick={(e) => clickUnsaved(e, "save")}
+                        className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
+                  {usState.opts.saveLabel || "Save"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+      </UnsavedContext.Provider>
       </TextPromptContext.Provider>
      </OverwriteContext.Provider>
     </ConfirmContext.Provider>
   );
+};
+
+export const useUnsavedPrompt = () => {
+  const ctx = useContext(UnsavedContext);
+  if (!ctx) throw new Error("useUnsavedPrompt must be used within <ConfirmProvider>");
+  return ctx;
 };
 
 export const useTextPrompt = () => {

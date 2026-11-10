@@ -33,22 +33,35 @@ pub(crate) type ChannelFuture = Pin<Box<dyn Future<Output = Result<Channel<Msg>,
 /// Opens a fresh session channel on the connection.
 pub(crate) type OpenChannel = Arc<dyn Fn() -> ChannelFuture + Send + Sync>;
 
+/// How long a server gets to answer a channel open. russh waits with no limit
+/// of its own, and a server that answers keepalives but not this one would
+/// hang whatever asked, for good. A healthy server's answer can still take a
+/// while: on one connection it queues behind what was already sent, and a
+/// download keeps about 4 MiB on its way, 32 seconds at 1 Mbit/s.
+pub(crate) const CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// A new session channel on a connection, within `CHANNEL_OPEN_TIMEOUT`.
+pub(crate) async fn open_session_channel<H>(session: &tokio::sync::RwLock<russh::client::Handle<H>>) -> Result<Channel<Msg>, String>
+where
+    H: russh::client::Handler,
+{
+    let open = async {
+        let s = session.read().await;
+        s.channel_open_session().await.map_err(|e| e.to_string())
+    };
+    tokio::time::timeout(CHANNEL_OPEN_TIMEOUT, open)
+        .await
+        .map_err(|_| "the server didn't open a channel".to_string())?
+}
+
 /// An `OpenChannel` for a connection handle.
-pub(crate) fn opener<H>(session: Arc<tokio::sync::Mutex<russh::client::Handle<H>>>) -> OpenChannel
+pub(crate) fn opener<H>(session: Arc<tokio::sync::RwLock<russh::client::Handle<H>>>) -> OpenChannel
 where
     H: russh::client::Handler + 'static,
 {
     Arc::new(move || {
         let session = Arc::clone(&session);
-        Box::pin(async move {
-            let open = async {
-                let s = session.lock().await;
-                s.channel_open_session().await.map_err(|e| e.to_string())
-            };
-            tokio::time::timeout(Duration::from_secs(20), open)
-                .await
-                .map_err(|_| "the server didn't open a channel".to_string())?
-        })
+        Box::pin(async move { open_session_channel(&session).await })
     })
 }
 
@@ -102,11 +115,16 @@ const QUICK: Duration = Duration::from_secs(60);
 /// A folder listing, a rename across file systems.
 const SLOW: Duration = Duration::from_secs(150);
 /// A transfer with nothing moving. All of these stay under the SFTP client's
-/// own 240 s per request, so it gets an answer rather than a timeout.
+/// own 240 s per request, with QUICK before them for starting a command, so it
+/// gets an answer rather than a timeout.
 const IDLE: Duration = Duration::from_secs(150);
 
 /// The most a folder listing may print (about 300,000 entries).
 const LISTING_LIMIT: usize = 64 * 1024 * 1024;
+/// How many entries of a listing are read. One more than a listing may hold,
+/// so a folder over that limit is refused by the client, not cut short; junk
+/// that packs millions of tiny records into LISTING_LIMIT stops here.
+const LISTING_ENTRIES: usize = crate::sftp_listing::MAX_ENTRIES as usize + 1;
 /// Reads, writes and folders open at once.
 const MAX_HANDLES: usize = 256;
 /// How long a listing answers stat/lstat for what it listed: right after a
@@ -131,7 +149,7 @@ async fn start_with(open: OpenChannel, sudo: Sudo, portable: bool) -> Result<Sft
     russh_sftp::server::run(server_io, ShellSftp::new(remote, caps)).await;
     tokio::time::timeout(
         Duration::from_secs(20),
-        SftpSession::new_with_config(client_io, crate::sftp_client_config()),
+        SftpSession::new_with_config(crate::sftp_listing::counted(client_io), crate::sftp_client_config()),
     )
     .await
     .map_err(|_| "file access over shell commands didn't start".to_string())?
@@ -265,12 +283,14 @@ impl Remote {
             input.push(b'\n');
         }
         input.extend_from_slice(encode_script(&format!("{}{}", PRELUDE, script)).as_bytes());
+        let opening = Instant::now();
         let channel = (self.open)().await.map_err(|e| failure(format!("Couldn't run a command: {}", e)))?;
         let sent = async {
             channel.exec(true, self.command()).await?;
             channel.data(&input[..]).await
         };
-        let sent = match tokio::time::timeout(QUICK, sent).await {
+        // QUICK for all of it, the channel open too (see IDLE).
+        let sent = match tokio::time::timeout(QUICK.saturating_sub(opening.elapsed()), sent).await {
             Ok(r) => r.map_err(|e| e.to_string()),
             Err(_) => Err("the server took too long".to_string()),
         };
@@ -532,11 +552,13 @@ struct Entry {
 }
 
 /// GNU find listing: `%y ... %f\0` per entry, then `T %Y ... %f\0` with the
-/// target of each symlink (find -L).
+/// target of each symlink (find -L). The output is the server's, and its
+/// `find` can be anything: a name that isn't one plain step is left out.
 fn parse_find_listing(out: &[u8]) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
     let mut targets: HashMap<String, Option<FileAttributes>> = HashMap::new();
-    for rec in out.split(|b| *b == 0) {
+    // An entry and a link target each, at most.
+    for rec in out.split(|b| *b == 0).take(2 * LISTING_ENTRIES) {
         if rec.is_empty() {
             continue;
         }
@@ -550,8 +572,11 @@ fn parse_find_listing(out: &[u8]) -> Vec<Entry> {
             continue;
         }
         let f: Vec<&str> = rec.splitn(8, ' ').collect();
-        if f.len() < 8 || f[7].is_empty() || f[7] == "." || f[7] == ".." {
+        if f.len() < 8 || !crate::sftp_listing::is_plain_name(f[7]) {
             continue;
+        }
+        if entries.len() == LISTING_ENTRIES {
+            break;
         }
         if let Some(lstat) = parse_find_fields(&f[..7]) {
             entries.push(Entry { name: f[7].to_string(), lstat, target: None });
@@ -567,7 +592,7 @@ fn parse_find_listing(out: &[u8]) -> Vec<Entry> {
 
 /// Portable listing: `name\0ls -ldn line\0target line, N or nothing\0mtime\0`.
 fn parse_ls_listing(out: &[u8]) -> Vec<Entry> {
-    let fields: Vec<&[u8]> = out.split(|b| *b == 0).collect();
+    let fields: Vec<&[u8]> = out.split(|b| *b == 0).take(4 * LISTING_ENTRIES).collect();
     let mut entries = Vec::new();
     for rec in fields.chunks(4) {
         if rec.len() < 4 {
@@ -576,7 +601,7 @@ fn parse_ls_listing(out: &[u8]) -> Vec<Entry> {
         let name = String::from_utf8_lossy(rec[0]).into_owned();
         let mtime = String::from_utf8_lossy(rec[3]);
         let Some(lstat) = parse_ls(&String::from_utf8_lossy(rec[1]), &mtime) else { continue };
-        if name.is_empty() || name == "." || name == ".." {
+        if !crate::sftp_listing::is_plain_name(&name) {
             continue;
         }
         let target = if lstat.is_symlink() {
@@ -692,6 +717,14 @@ struct ReadStream {
     /// The handler took from the feed: room for more.
     taken: Arc<tokio::sync::Notify>,
     task: tokio::task::JoinHandle<()>,
+}
+
+impl ReadStream {
+    /// Where the file ends, once the stream has given out all of it.
+    fn end(&self) -> Option<u64> {
+        let f = self.feed.lock().unwrap();
+        (f.eof && f.buf.is_empty() && f.error.is_none()).then_some(self.pos)
+    }
 }
 
 impl Drop for ReadStream {
@@ -875,6 +908,11 @@ async fn read_range(
                 bytes = &bytes[drop_now..];
                 if !bytes.is_empty() {
                     got += bytes.len() as u64;
+                    // READ_AHEAD only counts between ranges: a server that
+                    // goes on past its end would grow the feed for good.
+                    if got + skip as u64 > RANGE_LEN {
+                        return Err(failure("The server sent more than the file range asked for"));
+                    }
                     feed.lock().unwrap().buf.extend(bytes);
                     added.notify_waiters();
                 }
@@ -1079,7 +1117,8 @@ async fn finish(reader: &mut ChannelReadHalf, o: &mut Output) {
 
 enum Open {
     Dir { path: String, entries: Vec<File>, next: usize },
-    Read { path: String, stream: Option<ReadStream> },
+    /// `end`: where the file was found to end.
+    Read { path: String, stream: Option<ReadStream>, end: Option<u64> },
     Write { path: String, stream: Option<WriteStream> },
 }
 
@@ -1264,7 +1303,7 @@ impl russh_sftp::server::Handler for ShellSftp {
             Open::Write { path: filename, stream: Some(stream) }
         } else {
             let stream = ReadStream::open(&self.remote, self.caps, &filename, 0).await?;
-            Open::Read { path: filename, stream: Some(stream) }
+            Open::Read { path: filename, stream: Some(stream), end: None }
         };
         Ok(Handle { id, handle: self.add_handle(open)? })
     }
@@ -1285,9 +1324,21 @@ impl russh_sftp::server::Handler for ShellSftp {
     async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<Data, StatusReply> {
         let len = (len as usize).clamp(1, 255 * 1024);
         let remote = &self.remote;
-        let Some(Open::Read { path, stream }) = self.handles.get_mut(&handle) else {
+        let Some(Open::Read { path, stream, end }) = self.handles.get_mut(&handle) else {
             return Err(failure("Invalid handle"));
         };
+        // At or past where the file was found to end: the end, at once. A
+        // client asks ahead, so a few reads per file come past the end, and
+        // each would start the reading command again on the server only to
+        // find nothing; with requests answered one at a time, whatever came
+        // after them (an upload alongside) waited for all those commands,
+        // past the client's time limit on a busy server.
+        if let Some(e) = stream.as_ref().and_then(ReadStream::end) {
+            *end = Some(end.map_or(e, |x| x.min(e)));
+        }
+        if end.is_some_and(|e| offset >= e) {
+            return Err(StatusCode::Eof.into());
+        }
         // Another offset than where the stream is: start over from there.
         if stream.as_ref().is_none_or(|s| s.pos != offset) {
             drop(stream.take());
@@ -1481,6 +1532,32 @@ impl russh_sftp::server::Handler for ShellSftp {
 mod tests {
     use super::*;
 
+    /// A server that answers keepalives but not this: whatever asked is told
+    /// so, rather than waiting for good.
+    #[tokio::test(start_paused = true)]
+    async fn a_channel_open_that_gets_no_answer_is_given_up_on() {
+        use crate::ssh_test_server::{connect, TestServer};
+        let session = connect(TestServer::not_answering_opens(), |_| {}, russh::client::Config::default())
+            .await
+            .expect("in-process SSH connection");
+        let session = tokio::sync::RwLock::new(session);
+        let start = tokio::time::Instant::now();
+        let opened = tokio::time::timeout(CHANNEL_OPEN_TIMEOUT * 2, open_session_channel(&session))
+            .await
+            .expect("it gives up on its own");
+        assert_eq!(opened.err().as_deref(), Some("the server didn't open a channel"));
+        assert!(start.elapsed() >= CHANNEL_OPEN_TIMEOUT);
+    }
+
+    /// Starting a command, its channel open included, then the longest wait for
+    /// it: the SFTP client has to hear of the outcome before its own limit.
+    #[test]
+    fn a_command_answers_before_the_sftp_client_gives_up() {
+        assert!(CHANNEL_OPEN_TIMEOUT < QUICK);
+        let limit = Duration::from_secs(crate::sftp_client_config().request_timeout_secs);
+        assert!(QUICK + SLOW.max(IDLE) < limit);
+    }
+
     #[test]
     fn the_runner_survives_any_login_shell() {
         // Inside its single quotes: no quote, backslash or `!` (tcsh history).
@@ -1614,6 +1691,53 @@ mod tests {
         assert!(e[2].lstat.is_symlink() && e[2].target.is_none() && e[2].lstat.mtime.is_none());
     }
 
+    // The output comes from the server: a "name" of several steps is no name.
+    #[test]
+    fn listings_keep_only_plain_names() {
+        let out = b"f 644 1 0 0 0 0 fine\0\
+                    f 644 1 0 0 0 0 ../x\0\
+                    f 644 1 0 0 0 0 /../x\0\
+                    f 644 1 0 0 0 0 a/../../x\0\
+                    f 644 1 0 0 0 0 ..\0";
+        let e = parse_find_listing(out);
+        assert_eq!(e.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["fine"]);
+        let line = "-rw-r--r-- 1 0 0 1 Oct 15 10:13 ./x";
+        let mut out = Vec::new();
+        for name in ["fine", "../x", "/../x", "a/../../x", "."] {
+            out.extend_from_slice(format!("{name}\0{line}\0\0\0").as_bytes());
+        }
+        let e = parse_ls_listing(&out);
+        assert_eq!(e.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["fine"]);
+    }
+
+    // Junk that packs a huge number of tiny records into one listing stops
+    // one past the limit: enough for the client to refuse it, and no more.
+    #[test]
+    fn listings_stop_one_past_the_limit() {
+        let out = b"f 1 1 1 1 1 1 n\0".repeat(LISTING_ENTRIES + 10);
+        assert_eq!(parse_find_listing(&out).len(), LISTING_ENTRIES);
+        let out = b"n\0-rw-r--r-- 1 0 0 1 Oct 15 10:13 ./n\0\0\0".repeat(LISTING_ENTRIES + 10);
+        assert_eq!(parse_ls_listing(&out).len(), LISTING_ENTRIES);
+    }
+
+    // A server that answers one range with more than the range keeps sending:
+    // the read stops there, and the feed doesn't grow without end.
+    #[tokio::test]
+    async fn a_range_that_goes_on_past_its_end_is_cut_off() {
+        use crate::ssh_test_server::{connect, TestServer};
+        let mut start = MARKER.to_vec();
+        start.push(b'R');
+        let server = TestServer::flooding_every_exec(start);
+        let session = connect(server, |_| {}, crate::build_ssh_client_config()).await.expect("ssh");
+        let remote = Remote::new(opener(Arc::new(tokio::sync::RwLock::new(session))), Sudo::No);
+        let feed = std::sync::Mutex::new(Feed::default());
+        let added = tokio::sync::Notify::new();
+        let read = read_range(&remote, Caps { dd: true, ..Caps::default() }, "/x", 0, 0, 0, &feed, &added);
+        let result = tokio::time::timeout(Duration::from_secs(60), read).await.expect("cut off");
+        assert_eq!(result.unwrap_err().error_message.as_deref(), Some("The server sent more than the file range asked for"));
+        assert!(feed.lock().unwrap().buf.len() as u64 <= RANGE_LEN);
+    }
+
     #[test]
     fn errors_say_what_the_system_said() {
         let r = from_stderr(b"rmdir: failed to remove '/tmp/x': Directory not empty\n");
@@ -1668,6 +1792,7 @@ mod over_ssh {
         sftp: SftpSession,
         dir: PathBuf,
         running: Arc<AtomicUsize>,
+        started: Arc<AtomicUsize>,
         bin: Option<PathBuf>,
     }
 
@@ -1746,10 +1871,11 @@ mod over_ssh {
             keep_running_on_close: keep_running,
         });
         let running = Arc::clone(&server.running);
+        let started = Arc::clone(&server.started);
         let session = connect(server, |_| {}, crate::build_ssh_client_config()).await.expect("ssh");
-        let open = opener(Arc::new(tokio::sync::Mutex::new(session)));
+        let open = opener(Arc::new(tokio::sync::RwLock::new(session)));
         let sftp = start_with(open, Sudo::No, !matches!(mode, Mode::Gnu)).await.expect("sftp over shell");
-        Some(Lab { sftp, dir, running, bin })
+        Some(Lab { sftp, dir, running, started, bin })
     }
 
     async fn each_mode<F, Fut>(f: F)
@@ -2186,7 +2312,7 @@ mod over_ssh {
         let server = TestServer::with_shell(ShellOpts { path: Some(path), cwd: Some(bin.clone()), ..Default::default() });
         let session = connect(server, |_| {}, crate::build_ssh_client_config()).await.expect("ssh");
         let remote = Remote::new(
-            opener(Arc::new(tokio::sync::Mutex::new(session))),
+            opener(Arc::new(tokio::sync::RwLock::new(session))),
             Sudo::Password(Zeroizing::new("pw".to_string())),
         );
         for _ in 0..4 {
@@ -2228,6 +2354,34 @@ mod over_ssh {
             let (up, down) = tokio::join!(put(&l.sftp, &p3, &three), get(&l.sftp, &p1));
             up.unwrap();
             assert!(down.unwrap() == one && std::fs::read(&p3).unwrap() == three, "{mode:?}");
+        })
+        .await;
+    }
+
+    /// Reads at or past a file's end are answered without a command on the
+    /// server: a client reads ahead past the end of every file, and each read
+    /// at a new offset used to start the reading command again.
+    #[tokio::test]
+    async fn reads_past_the_end_start_nothing() {
+        each_mode(|l, mode| async move {
+            let data = bytes(300_000, 4);
+            std::fs::write(l.dir.join("f"), &data).unwrap();
+            let mut f = l.sftp.open(l.path("f")).await.unwrap();
+            let mut got = Vec::new();
+            f.read_to_end(&mut got).await.unwrap();
+            assert!(got == data, "{mode:?}");
+            let before = l.started.load(Ordering::SeqCst);
+            for offset in [300_000u64, 400_000, 1_000_000, 300_000, 5_000_000] {
+                f.seek(std::io::SeekFrom::Start(offset)).await.unwrap();
+                let mut buf = [0u8; 1024];
+                assert_eq!(f.read(&mut buf).await.unwrap(), 0, "{mode:?}: at {offset}");
+            }
+            assert_eq!(l.started.load(Ordering::SeqCst), before, "{mode:?}: commands started for reads past the end");
+            // A read before the end still reads.
+            f.seek(std::io::SeekFrom::Start(299_000)).await.unwrap();
+            let mut tail = Vec::new();
+            f.read_to_end(&mut tail).await.unwrap();
+            assert!(tail == data[299_000..], "{mode:?}");
         })
         .await;
     }

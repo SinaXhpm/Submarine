@@ -16,16 +16,54 @@ import {
 import { localDir, localJoin, pathCrumbs } from "../fs/localPath";
 import { COMPARE_LABEL, CompareMark, compareListings } from "../fs/compare";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
-import { IS_ANDROID } from "../util/platform";
+import { IS_ANDROID, IS_IOS, IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import { nameFilterMatcher } from "../util/nameFilter";
 import { BOOKMARKS_MAX, readBookmarks, writeBookmarks } from "../util/sftpBookmarks";
 
 // Batch overwrite state shared across items in a single download/upload run.
-// Once the user picks "Overwrite all" or "Skip all" the kind is sticky and we
-// stop prompting; "ask" means we prompt on each individual conflict. Mutated
-// in place inside the helper so the loop sees updates immediately.
-type OverwriteBatchKind = "ask" | "overwrite-all" | "skip-all";
-interface OverwriteBatch { kind: OverwriteBatchKind; }
+// Once the user picks "Overwrite all", "Skip all" or Cancel the kind is sticky
+// and we stop prompting; "ask" means we prompt on each individual conflict.
+// Mutated in place inside the helper so the loop sees updates immediately.
+// `asking` is the question on screen, for those side by side to wait for.
+type OverwriteBatchKind = "ask" | "overwrite-all" | "skip-all" | "cancel";
+interface OverwriteBatch { kind: OverwriteBatchKind; asking?: Promise<unknown>; }
+
+// What the backend allows a selection on this session (`sftp_batch_limits`).
+interface BatchLimits { at_once: number; alone_up: number; alone_down: number; }
+const ONE_BY_ONE: BatchLimits = { at_once: 1, alone_up: 0, alone_down: 0 };
+
+// Which of a selection move alone, as the backend moves a folder's files. A
+// folder has its own pool, a link's size says nothing of what it leads to, a
+// big file would put the others' requests behind its data, and names that
+// differ only in case are one file on a disk or server that ignores case.
+function aloneInBatch(items: FileEntry[], limit: number) {
+  const names = new Map<string, number>();
+  for (const e of items) names.set(e.name.toLowerCase(), (names.get(e.name.toLowerCase()) ?? 0) + 1);
+  return (e: FileEntry) => e.isDir || !!e.isSymlink || e.size > limit || names.get(e.name.toLowerCase())! > 1;
+}
+
+// `move` each item in turn, up to `atOnce` at a time: selected files one by one
+// cost a few round trips each, in a row. An item that `alone` picks out waits
+// for those moving and has the line to itself. Once `stopped` says so nothing
+// new starts; what is moving finishes. `move` must not throw.
+async function moveInTurn<T>(
+  items: T[],
+  atOnce: number,
+  alone: (item: T) => boolean,
+  stopped: () => boolean,
+  move: (item: T) => Promise<void>,
+): Promise<void> {
+  const moving = new Set<Promise<void>>();
+  for (const item of items) {
+    const solo = alone(item);
+    while (moving.size > 0 && (solo || moving.size >= atOnce)) await Promise.race(moving);
+    if (stopped()) break;
+    const turn: Promise<void> = move(item).finally(() => { moving.delete(turn); });
+    moving.add(turn);
+    if (solo) await turn;
+  }
+  await Promise.all(moving);
+}
 
 // Run a single transfer that may trip the backend's `EXISTS:<path>` sentinel.
 // First attempt is always with overwrite=false unless the batch state already
@@ -49,12 +87,17 @@ async function transferWithOverwriteCheck(
   } catch (err: any) {
     const msg = String(err);
     if (!msg.startsWith("EXISTS:")) throw err;
-    if (batch.kind === "skip-all") return "skipped";
-    const choice = await overwritePrompt({ name, direction, batchSize });
+    // One question at a time, and the answer before may settle this one too.
+    const answer = (batch.asking ?? Promise.resolve()).then(async (): Promise<OverwriteChoice> => {
+      if (batch.kind !== "ask") return batch.kind;
+      const choice = await overwritePrompt({ name, direction, batchSize });
+      if (choice !== "overwrite" && choice !== "skip") batch.kind = choice;
+      return choice;
+    });
+    batch.asking = answer.catch(() => {});
+    const choice = await answer;
     if (choice === "cancel") return "cancelled";
-    if (choice === "skip") return "skipped";
-    if (choice === "skip-all") { batch.kind = "skip-all"; return "skipped"; }
-    if (choice === "overwrite-all") batch.kind = "overwrite-all";
+    if (choice === "skip" || choice === "skip-all") return "skipped";
     await invokeFn(true);
     return "done";
   }
@@ -273,6 +316,8 @@ export interface FilePanelHandle {
   currentDir: () => string;
   /** Send `items` of this pane into `dir` of the other one: a download from the remote pane, an upload from the local one. */
   sendTo: (items: FileEntry[], dir: string) => Promise<void>;
+  /** Go to `path` without a message when it can't be listed: false then (the pane stays where it was). */
+  goTo: (path: string) => Promise<boolean>;
 }
 
 const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
@@ -508,12 +553,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // `reveal`: a row to select in the new folder if it is there (going up
   // selects the folder just left).
   // `fallback`: another path to list if this one can't be (see the path box).
-  const fetch = async (path: string, reveal?: string, fallback?: string) => {
+  // `quiet`: no message when it can't be listed (the caller says it its way).
+  // True when this listing is the one shown.
+  const fetch = async (path: string, reveal?: string, fallback?: string, quiet = false): Promise<boolean> => {
     const seq = ++listSeqRef.current;
     setLoading(true);
     try {
       const result = await provider.list(path);
-      if (seq !== listSeqRef.current) return;
+      if (seq !== listSeqRef.current) return false;
       const present = new Set(result.entries.map((e) => e.path));
       setEntries(result.entries);
       setViaShell(!!result.viaShell);
@@ -540,15 +587,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       }
       onPathChange?.(result.currentPath);
       pushRecent(result.currentPath);
+      return true;
     } catch (err: any) {
-      if (seq !== listSeqRef.current) return;
+      if (seq !== listSeqRef.current) return false;
       if (fallback !== undefined && fallback !== path) {
         // Its `finally` sees a newer listing under way and leaves the
         // spinner to that one.
-        fetch(fallback, reveal);
-        return;
+        return fetch(fallback, reveal);
       }
-      notify(`List failed: ${err}`, "error");
+      if (!quiet) notify(`List failed: ${err}`, "error");
+      return false;
     } finally {
       if (seq === listSeqRef.current) setLoading(false);
     }
@@ -592,12 +640,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   }, [provider]);
 
   // `sendTo` goes through a ref that every render points at its own
-  // upload/download, so the handle (made once) never runs a stale one.
+  // upload/download, so the handle (made once) never runs a stale one;
+  // `goTo` the same for the listing.
   const sendToRef = useRef<(items: FileEntry[], dir: string) => Promise<void>>(async () => {});
+  const fetchRef = useRef(fetch);
+  fetchRef.current = fetch;
   useImperativeHandle(ref, () => ({
-    refresh: () => fetch(currentPathRef.current),
+    refresh: async () => { await fetch(currentPathRef.current); },
     currentDir: () => currentPathRef.current,
     sendTo: (items, dir) => sendToRef.current(items, dir),
+    goTo: (path) => fetchRef.current(path, undefined, undefined, true),
   }), []);
 
   const goUp = () => fetch(provider.parentPath(currentPath), currentPath);
@@ -862,28 +914,41 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       async (event) => {
         const { paths, position } = event.payload || ({} as any);
         if (!paths?.length || !paneRef.current) return;
-        const hit = document.elementFromPoint(position.x, position.y);
+        // Physical pixels on Windows; elementFromPoint takes CSS pixels, which
+        // is what macOS and Linux report. At another scale than 100% this
+        // tested a point further out: the other pane, or another server's.
+        const scale = IS_WINDOWS ? window.devicePixelRatio : 1;
+        const hit = document.elementFromPoint(position.x / scale, position.y / scale);
         if (!hit || !paneRef.current.contains(hit)) return;
         setDragOver(false);
         const dir = currentPathRef.current;
         const batch: OverwriteBatch = { kind: "ask" };
+        let count = 0;
         let cancelled = false;
         for (const p of paths) {
           if (cancelled) break;
           const name = p.split(/[\\/]/).pop() || "file";
           notify(`Uploading ${name}...`, "info");
           try {
-            const remote = dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
+            // A folder goes as in uploadItems: it is given the folder it goes
+            // into. As a file, Unix opens it, and the remote file is created
+            // or emptied before the first read fails.
+            const isDir = await invoke<boolean>("local_is_dir", { path: p }).catch(() => false);
+            const cmd = isDir ? "sftp_upload_dir" : "sftp_upload_file";
+            const remote = isDir ? dir : dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
             const res = await transferWithOverwriteCheck(
-              (ow) => invoke("sftp_upload_file", { sessionId, localPath: p, remotePath: remote, overwrite: ow }),
+              (ow) => invoke(cmd, { sessionId, localPath: p, remotePath: remote, overwrite: ow }),
               name, "upload", paths.length, batch, overwritePrompt
             );
-            if (res === "done") notify(`Uploaded ${name}`, "success");
-            if (res === "cancelled") { cancelled = true; notify("Upload batch cancelled", "info"); }
+            if (res === "done") { count++; notify(`Uploaded ${name}`, "success"); }
+            if (res === "cancelled") { cancelled = true; }
           } catch (err: any) {
+            // Stopped from its card: the rest of the batch stops with it.
+            if (String(err) === "cancelled") { cancelled = true; break; }
             notify(`Upload failed: ${err}`, "error");
           }
         }
+        if (cancelled) notify(count > 0 ? `Upload stopped after ${count} of ${paths.length} items` : "Upload batch cancelled", "info");
         await fetch(dir);
       }
     ).then((fn) => { unlisten = fn; });
@@ -913,13 +978,22 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     setModal({ type: "properties", entry, v1: mode.toString(8).padStart(3, "0"), v2: uid?.toString(), orig: { mode, uid } });
   };
 
+  // The dialog stays up until the server answers: a second Enter on a slow
+  // link would run the rename or mkdir again, and report a failure over one
+  // that worked.
+  const submittingRef = useRef(false);
   const submitModal = async () => {
-    if (!modal) return;
+    if (!modal || submittingRef.current) return;
+    submittingRef.current = true;
     const { type, entry, v1, v2 } = modal;
     if (type === "archive") {
       // The dialog stays open when the name is refused; the job itself runs
       // on after it closes.
-      if (await startArchive(modal.items ?? [], v1 || "", (v2 || "zip") as ArchiveFormat)) setModal(null);
+      try {
+        if (await startArchive(modal.items ?? [], v1 || "", (v2 || "zip") as ArchiveFormat)) setModal(null);
+      } finally {
+        submittingRef.current = false;
+      }
       return;
     }
     try {
@@ -997,6 +1071,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     } catch (err: any) {
       notify(`Failed: ${err}`, "error");
     } finally {
+      submittingRef.current = false;
       setModal(null);
     }
   };
@@ -1256,9 +1331,12 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       // blocks it, app-scoped external files). Users can navigate from
       // there if they want a different subfolder.
       try {
+        // iOS: the app's Documents folder (Files › On My iPhone › Submarine).
         dest = IS_ANDROID
           ? ((await invoke<string>("android_default_local_dir")) || undefined)
-          : ((await invoke<string | null>("select_local_folder")) || undefined);
+          : IS_IOS
+            ? ((await invoke<string>("local_home_dir")) || undefined)
+            : ((await invoke<string | null>("select_local_folder")) || undefined);
       } catch (err: any) { notify(`Pick folder failed: ${err}`, "error"); return; }
       if (!dest) return;
     }
@@ -1273,8 +1351,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const batch: OverwriteBatch = { kind: "ask" };
     let count = 0;
     let cancelled = false;
-    for (const e of items) {
-      if (cancelled) break;
+    const limits = await invoke<BatchLimits>("sftp_batch_limits", { sessionId }).catch(() => ONE_BY_ONE);
+    await moveInTurn(items, limits.at_once, aloneInBatch(items, limits.alone_down), () => cancelled, async (e) => {
       try {
         // A folder is given the folder it goes into (the backend adds its
         // name), a file the full path it is saved as.
@@ -1287,14 +1365,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (res === "done") count++;
         if (res === "cancelled") { cancelled = true; }
       } catch (err: any) {
+        // Stopped from its card: the rest of the batch stops with it.
+        if (String(err) === "cancelled") { cancelled = true; return; }
         notify(`Download failed for ${e.name}: ${err}`, "error");
       }
-    }
-    if (count > 0) {
+    });
+    if (count > 0) onTransferred?.();
+    if (cancelled) {
+      notify(count > 0 ? `Download stopped after ${count} of ${items.length} items` : "Download batch cancelled", "info");
+    } else if (count > 0) {
       notify(items.length === 1 ? `Downloaded ${items[0].name}` : `Downloaded ${count} of ${items.length} items`, "success");
-      onTransferred?.();
-    } else if (cancelled) {
-      notify("Download batch cancelled", "info");
     }
   };
 
@@ -1318,8 +1398,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const batch: OverwriteBatch = { kind: "ask" };
     let count = 0;
     let cancelled = false;
-    for (const e of items) {
-      if (cancelled) break;
+    const limits = await invoke<BatchLimits>("sftp_batch_limits", { sessionId }).catch(() => ONE_BY_ONE);
+    await moveInTurn(items, limits.at_once, aloneInBatch(items, limits.alone_up), () => cancelled, async (e) => {
       try {
         // For files we pass the remote target as a full file path; for dirs
         // we pass the remote PARENT and sftp_upload_dir hangs the source
@@ -1333,14 +1413,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (res === "done") count++;
         if (res === "cancelled") { cancelled = true; }
       } catch (err: any) {
+        // Stopped from its card: the rest of the batch stops with it.
+        if (String(err) === "cancelled") { cancelled = true; return; }
         notify(`Upload failed for ${e.name}: ${err}`, "error");
       }
-    }
-    if (count > 0) {
+    });
+    if (count > 0) onTransferred?.();
+    if (cancelled) {
+      notify(count > 0 ? `Upload stopped after ${count} of ${items.length} items` : "Upload batch cancelled", "info");
+    } else if (count > 0) {
       notify(items.length === 1 ? `Uploaded ${items[0].name}` : `Uploaded ${count} of ${items.length} items`, "success");
-      onTransferred?.();
-    } else if (cancelled) {
-      notify("Upload batch cancelled", "info");
     }
   };
   sendToRef.current = (items, dir) => (provider.id === "remote" ? downloadItems(items, dir) : uploadItems(items, dir));
@@ -1394,7 +1476,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     // save); local → open in the OS default app. Both are desktop-only — on
     // Android opening a file is a no-op (there's no OS default editor to hand
     // off to).
-    if (IS_ANDROID) return;
+    if (IS_MOBILE) return;
     if (provider.id === "remote") liveEditEntry(entry);
     else openLocalEntry(entry);
   };
@@ -1443,7 +1525,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   // ---- sorting ----------------------------------------------------------------
 
-  const sortedEntries = (() => {
+  // Kept between renders, and so are the rows: the pane renders for many things
+  // that leave the list as it is (a key in the path box, the divider of the tool
+  // panel), and sorting and building thousands of rows for each of them took
+  // the thread from the terminal beside it.
+  const sortedEntries = useMemo(() => {
     const sorted = [...entries].sort((a, b) => {
       if (a.isDir !== b.isDir) return b.isDir ? 1 : -1;
       let va: any, vb: any;
@@ -1461,7 +1547,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const matches = nameFilterMatcher(nameFilter);
     const named = matches ? sorted.filter(e => matches(e.name)) : sorted;
     return compareMarks && hideSame ? named.filter((e) => e.isDir || compareMarks.has(e.path)) : named;
-  })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries, sort, nameFilter, compareMarks, hideSame, owners]);
   const filteredOut = nameFilter.trim() || (compareMarks && hideSame) ? entries.length - sortedEntries.length : 0;
 
   // As wide as the folder's longest name needs (see NAME_MIN). Measured on
@@ -1726,6 +1813,101 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     : column === "owner" ? ownerName(entry)
     : formatRights(entry.isDir, entry.permissions, entry.isSymlink);
 
+  // The rows, kept between renders with sortedEntries above: `columnsFit`
+  // stands for shownColumns and movedColumns, new arrays on each render. What a
+  // row does when used goes through rowActions, as it depends on far more than
+  // the row shows, and has to see the pane as it is by then.
+  const rowActions = useRef({ handleRowMouseDown, openMenu, onRowClick, openEntry });
+  rowActions.current = { handleRowMouseDown, openMenu, onRowClick, openEntry };
+  const rows = useMemo(() => sortedEntries.map((entry) => {
+    const isSel = selected.has(entry.path);
+    const isCursor = entry.path === cursor;
+    const moved = movedColumns.map((c) => columnText(c, entry)).filter(Boolean).join(" · ");
+    const mark = compareMarks?.get(entry.path);
+    return (
+    <div
+      key={entry.path}
+      onMouseDown={(e) => rowActions.current.handleRowMouseDown(e, entry)}
+      onContextMenu={(e) => rowActions.current.openMenu(e, entry)}
+      onClick={(e) => rowActions.current.onRowClick(e, entry, sortedEntries)}
+      onDoubleClick={() => rowActions.current.openEntry(entry)}
+      data-fs-row-path={entry.path}
+      data-fs-row-isdir={entry.isDir ? "1" : "0"}
+      data-fs-row-selected={isSel ? "1" : "0"}
+      style={{ gridTemplateColumns }}
+      className={`group grid gap-x-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center scroll-mt-8 ${
+        barUp ? "scroll-mb-16" : ""
+      } ${
+        isSel
+          ? "bg-indigo-500/15 border-indigo-400 text-indigo-100"
+          : mark
+            ? `${COMPARE_ROW[mark]} text-zinc-200 hover:bg-white/5 hover:text-white`
+            : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
+      } ${keyNav && isCursor ? "ring-1 ring-inset ring-indigo-400/60" : ""}`}
+      title={mark ? COMPARE_LABEL[mark] : undefined}
+      data-fs-compare={mark}
+    >
+      {/* Selection mode only. A click anywhere on the row does what
+          a click on its box would. */}
+      {inMode && (
+        <span className="flex items-center justify-center">
+          {isSel
+            ? <CheckSquare size={12} className="text-indigo-300" />
+            : <Square size={12} className="text-zinc-500 group-hover:text-zinc-300" />}
+        </span>
+      )}
+      <div className="flex items-center gap-2 min-w-0 pr-1">
+        <span
+          className="relative inline-flex shrink-0"
+          title={entry.isSymlink ? (entry.brokenLink ? "Broken link: target is missing or not accessible" : "Symbolic link") : undefined}
+        >
+          {entry.isDir
+            ? <Folder size={12} className="text-indigo-300" />
+            : <File size={12} className={entry.brokenLink ? "text-rose-400/70" : "text-zinc-500"} />}
+          {entry.isSymlink && (
+            <Link2
+              size={8}
+              className={`absolute -bottom-1 -right-1.5 rounded-sm bg-zinc-950 ${entry.brokenLink ? "text-rose-400" : "text-sky-300"}`}
+            />
+          )}
+        </span>
+        <div title={entry.name} className={`min-w-0 flex-1 truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
+        {mark && <span className="sr-only">{COMPARE_LABEL[mark]}</span>}
+      </div>
+      {shownColumns.map((c) => (
+        <div key={c} className={`truncate ${COLUMN_CELL[c]}`} title={c === "owner" ? columnText(c, entry) : undefined}>{columnText(c, entry)}</div>
+      ))}
+      {/* The row's menu, for a pointer without a right button. Shown
+          on hover, on the selected rows and on the keyboard's row
+          (always on Android, which has no hover). */}
+      <button
+        type="button"
+        tabIndex={-1}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => rowActions.current.openMenu(e, entry)}
+        title="Options"
+        aria-label="Options"
+        className={`flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-white/10 hover:!opacity-100 ${
+          IS_MOBILE || isSel || isCursor ? "opacity-60" : "opacity-0 group-hover:opacity-60"
+        }`}
+      >
+        <MoreVertical size={11} />
+      </button>
+      {/* What the columns that gave way show: a line of its own
+          under the name, as wide as the row. */}
+      {moved && (
+        <div
+          style={{ gridColumn: `${inMode ? 2 : 1} / -1` }}
+          className="row-start-2 pl-5 truncate text-[10px] text-zinc-500"
+        >
+          {moved}
+        </div>
+      )}
+    </div>
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [sortedEntries, selected, cursor, keyNav, inMode, barUp, gridTemplateColumns, columnsFit, compareMarks, owners]);
+
   return (
     <div
       ref={paneRef}
@@ -1796,7 +1978,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 Shell
               </span>
             )}
-            {provider.id === "local" && (
+            {/* iOS has no folder picker: the pane stays in the app's own folders. */}
+            {provider.id === "local" && !IS_IOS && (
               <button
                 onClick={async () => {
                   if (IS_ANDROID) {
@@ -2103,7 +2286,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           <div className="flex-1" />
           {isRemote && (
             <button
-              onClick={() => downloadItems(selectedEntries)}
+              // The second click of a double click: not a second batch.
+              onClick={(ev) => { if (ev.detail < 2) downloadItems(selectedEntries); }}
               title={getOppositeDir?.()
                 ? `Download to ${getOppositeDir!()}`
                 : "Pick a destination folder…"}
@@ -2114,7 +2298,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           )}
           {!isRemote && (
             <button
-              onClick={() => uploadItems(selectedEntries)}
+              onClick={(ev) => { if (ev.detail < 2) uploadItems(selectedEntries); }}
               title={getOppositeDir?.()
                 ? `Upload to ${getOppositeDir!()}`
                 : "Open a remote directory first…"}
@@ -2211,93 +2395,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 : filteredOut ? "Every file here looks the same on the other side" : "Empty"}
             </div>
           ) : (
-            sortedEntries.map((entry) => {
-              const isSel = selected.has(entry.path);
-              const isCursor = entry.path === cursor;
-              const moved = movedColumns.map((c) => columnText(c, entry)).filter(Boolean).join(" · ");
-              const mark = compareMarks?.get(entry.path);
-              return (
-              <div
-                key={entry.path}
-                onMouseDown={(e) => handleRowMouseDown(e, entry)}
-                onContextMenu={(e) => openMenu(e, entry)}
-                onClick={(e) => onRowClick(e, entry, sortedEntries)}
-                onDoubleClick={() => openEntry(entry)}
-                data-fs-row-path={entry.path}
-                data-fs-row-isdir={entry.isDir ? "1" : "0"}
-                data-fs-row-selected={isSel ? "1" : "0"}
-                style={{ gridTemplateColumns }}
-                className={`group grid gap-x-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center scroll-mt-8 ${
-                  selectedEntries.length > 0 ? "scroll-mb-16" : ""
-                } ${
-                  isSel
-                    ? "bg-indigo-500/15 border-indigo-400 text-indigo-100"
-                    : mark
-                      ? `${COMPARE_ROW[mark]} text-zinc-200 hover:bg-white/5 hover:text-white`
-                      : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
-                } ${keyNav && isCursor ? "ring-1 ring-inset ring-indigo-400/60" : ""}`}
-                title={mark ? COMPARE_LABEL[mark] : undefined}
-                data-fs-compare={mark}
-              >
-                {/* Selection mode only. A click anywhere on the row does what
-                    a click on its box would. */}
-                {inMode && (
-                  <span className="flex items-center justify-center">
-                    {isSel
-                      ? <CheckSquare size={12} className="text-indigo-300" />
-                      : <Square size={12} className="text-zinc-500 group-hover:text-zinc-300" />}
-                  </span>
-                )}
-                <div className="flex items-center gap-2 min-w-0 pr-1">
-                  <span
-                    className="relative inline-flex shrink-0"
-                    title={entry.isSymlink ? (entry.brokenLink ? "Broken link: target is missing or not accessible" : "Symbolic link") : undefined}
-                  >
-                    {entry.isDir
-                      ? <Folder size={12} className="text-indigo-300" />
-                      : <File size={12} className={entry.brokenLink ? "text-rose-400/70" : "text-zinc-500"} />}
-                    {entry.isSymlink && (
-                      <Link2
-                        size={8}
-                        className={`absolute -bottom-1 -right-1.5 rounded-sm bg-zinc-950 ${entry.brokenLink ? "text-rose-400" : "text-sky-300"}`}
-                      />
-                    )}
-                  </span>
-                  <div title={entry.name} className={`min-w-0 flex-1 truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
-                  {mark && <span className="sr-only">{COMPARE_LABEL[mark]}</span>}
-                </div>
-                {shownColumns.map((c) => (
-                  <div key={c} className={`truncate ${COLUMN_CELL[c]}`} title={c === "owner" ? columnText(c, entry) : undefined}>{columnText(c, entry)}</div>
-                ))}
-                {/* The row's menu, for a pointer without a right button. Shown
-                    on hover, on the selected rows and on the keyboard's row
-                    (always on Android, which has no hover). */}
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => openMenu(e, entry)}
-                  title="Options"
-                  aria-label="Options"
-                  className={`flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-white/10 hover:!opacity-100 ${
-                    IS_ANDROID || isSel || isCursor ? "opacity-60" : "opacity-0 group-hover:opacity-60"
-                  }`}
-                >
-                  <MoreVertical size={11} />
-                </button>
-                {/* What the columns that gave way show: a line of its own
-                    under the name, as wide as the row. */}
-                {moved && (
-                  <div
-                    style={{ gridColumn: `${inMode ? 2 : 1} / -1` }}
-                    className="row-start-2 pl-5 truncate text-[10px] text-zinc-500"
-                  >
-                    {moved}
-                  </div>
-                )}
-              </div>
-              );
-            })
+            rows
           )}
         </div>
       </div>
@@ -2323,7 +2421,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               <Folder size={11} className="text-indigo-400" /><span>Open</span>
             </button>
           )}
-          {!multi && !contextMenu.entry.isDir && !isRemote && !IS_ANDROID && (
+          {!multi && !contextMenu.entry.isDir && !isRemote && !IS_MOBILE && (
             <button onClick={() => { setContextMenu(null); openLocalEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <ExternalLink size={11} className="text-indigo-400" /><span>Open</span>
@@ -2348,14 +2446,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               filesystem watcher. Android has none of those in a form we
               can bridge, so the backend command returns an error there
               — hide the menu item entirely rather than surface it. */}
-          {isRemote && !multi && !contextMenu.entry.isDir && !IS_ANDROID && (
+          {isRemote && !multi && !contextMenu.entry.isDir && !IS_MOBILE && (
             <button onClick={() => { setContextMenu(null); liveEditEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <ExternalLink size={11} className="text-indigo-400" /><span>Edit (auto-upload)</span>
             </button>
           )}
 
-          {!isRemote && !multi && !IS_ANDROID && (
+          {!isRemote && !multi && !IS_MOBILE && (
             <button onClick={() => { setContextMenu(null); revealLocalEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <FolderSearch size={11} className="text-emerald-300" /><span>Reveal in Explorer</span>

@@ -20,7 +20,7 @@ import { useSlideOverFocus } from "./ui/slideOverFocus";
 import { RenameInput } from "./ui/renameInput";
 import { forgetServerBookmarks } from "./util/sftpBookmarks";
 import { useIsNarrow } from "./hooks/useViewport";
-import { IS_ANDROID } from "./util/platform";
+import { IS_MOBILE } from "./util/platform";
 import { FONT_FAMILY_KEY, FONT_SIZE_KEY, readFontFamily, readFontSize } from "./util/terminalFont";
 import { SCROLLBACK_KEY, readScrollback } from "./util/terminalScrollback";
 import {
@@ -29,9 +29,10 @@ import {
 } from "./util/terminalTheme";
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
+import { AUTO_RECONNECT_KEY, DEFAULT_SESSION_KEEP, SEND_KEEPALIVES_KEY, forgetSessionKeep, readAutoReconnectDefault, readSendKeepalivesDefault, readSessionKeep, writeSessionKeep } from "./util/sessionKeep";
 import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
-import { DEFAULT_RDP_OPTIONS, readRdpOptions, writeRdpOptions } from "./util/rdpOptions";
-import { DEFAULT_VNC_OPTIONS, readVncOptions, writeVncOptions } from "./util/vncOptions";
+import { DEFAULT_RDP_OPTIONS, forgetRdpOptions, readRdpOptions, writeRdpOptions } from "./util/rdpOptions";
+import { DEFAULT_VNC_OPTIONS, forgetVncOptions, readVncOptions, writeVncOptions } from "./util/vncOptions";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
 import { folderTree } from "./util/folderTree";
@@ -47,10 +48,20 @@ import RdpSessionView from "./components/RdpSessionView";
 import TelnetSessionView from "./components/TelnetSessionView";
 import VncSessionView from "./components/VncSessionView";
 import MonitoringPanel from "./components/MonitoringPanel";
-import { ErrorBoundary } from "./ui/ErrorBoundary";
-import { parseObjectList } from "./util/serverJson";
+import { ErrorBoundary, Guarded } from "./ui/ErrorBoundary";
+import { FormError, unsavedQuestion, useUnsavedGuard } from "./ui/slideOverForm";
+import { normalizeMirror, normalizeTunnel, parseObjectList } from "./util/serverJson";
 
 const appWindow = getCurrentWindow();
+
+// How long Lock waits for the open tabs to disconnect: a stuck mirror holds a
+// disconnect for 2 s (mirror.rs), and an ordinary one takes moments.
+const LOGOUT_DISCONNECT_LIMIT_MS = 3000;
+// The login and key forms with nothing in them.
+const EMPTY_CRED = { id: null, name: "", auth_type: "password", username: "", password: "", key_id: null };
+const EMPTY_KEY = { id: null, name: "", public_key: "", private_key: "", passphrase: "" };
+// How long a slide-over takes to slide out (their duration-500).
+const SLIDE_OUT_MS = 500;
 
 // Sessions can be either DB-backed (saved node, `serverId > 0`) or quick
 // connect (one-shot, `serverId === 0` and `quickAuth` populated). SessionView
@@ -58,7 +69,7 @@ const appWindow = getCurrentWindow();
 // looking up the DB row.
 // `serverUuid` is the saved server's sync id, which keys this device's own
 // per-server settings (the Shell button, see util/shellSync.ts).
-type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; protocol?: "ssh" | "rdp" | "telnet" | "vnc"; mirrors?: string; runOnConnect?: string; runOnConnectHeld?: boolean; quickAuth?: QuickAuth | null };
+type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; protocol?: "ssh" | "rdp" | "telnet" | "vnc"; mirrors?: string; runOnConnect?: string; runOnConnectEvery?: boolean; runOnConnectHeld?: boolean; quickAuth?: QuickAuth | null };
 
 const hexToRgb = (hex: string) => {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -157,6 +168,11 @@ function DesktopApp() {
       return { ...prev, [sid]: terms };
     });
     setSessionActiveTerm(prev => (prev[sid] === activeTermId ? prev : { ...prev, [sid]: activeTermId }));
+    // A terminal that closed leaves no tile behind, with nothing to show.
+    setWallItems(prev => {
+      const next = prev.filter(i => i.sessionId !== sid || terms.some(t => t.id === i.terminalId));
+      return next.length === prev.length ? prev : next;
+    });
   }, []);
   const wallHasTerminal = (terminalId: string) => wallItems.some(i => i.terminalId === terminalId);
   const pinTerminalToWall = (sid: string, terminalId: string) => {
@@ -265,10 +281,10 @@ function DesktopApp() {
   const [libraryTab, setLibraryTab] = useState<"commands" | "notes">("commands");
 
   const [isCredPanelOpen, setIsCredPanelOpen] = useState(false);
-  const [editCredData, setEditCredData] = useState<any>({ id: null, name: "", auth_type: "password", username: "", password: "", key_id: null });
-  
+  const [editCredData, setEditCredData] = useState<any>(EMPTY_CRED);
+
   const [isKeyPanelOpen, setIsKeyPanelOpen] = useState(false);
-  const [editKeyData, setEditKeyData] = useState<any>({ id: null, name: "", public_key: "", private_key: "", passphrase: "" });
+  const [editKeyData, setEditKeyData] = useState<any>(EMPTY_KEY);
   const [formError, setFormError] = useState("");
   const commandPanelRef = useSlideOverFocus(isCommandPanelOpen);
   const notePanelRef = useSlideOverFocus(isNotePanelOpen);
@@ -285,6 +301,8 @@ function DesktopApp() {
     protocol: "ssh" as "ssh" | "rdp" | "telnet" | "vnc",
     // An RDP server's window and sharing on this device (util/rdpOptions).
     rdpOptions: { ...DEFAULT_RDP_OPTIONS },
+    // An SSH server's keepalives and reconnecting on this device (util/sessionKeep).
+    sessionKeep: { ...DEFAULT_SESSION_KEEP },
     // A VNC server's speed and quality on this device (util/vncOptions).
     vncOptions: { ...DEFAULT_VNC_OPTIONS },
     name: "", host: "", port: 22, username: "", password: "",
@@ -302,8 +320,10 @@ function DesktopApp() {
     // panel renders a placeholder when blank.
     notes: "" as string,
     // Commands auto-typed into the FIRST terminal on the INITIAL connect only
-    // (never on reconnect or extra shells). Newline-separated. Empty = off.
+    // (never on reconnect). Newline-separated. Empty = off.
     runOnConnect: "" as string,
+    // Also typed once into every new terminal of the server (#256).
+    runOnConnectEvery: false,
     // ProxyJump: id (as a string, like credentialId/folderId) of another node
     // to bounce through. Empty = connect directly. parseInt'd to a number (or
     // null) at save time.
@@ -326,6 +346,25 @@ function DesktopApp() {
   const isMobile = useIsNarrow();
 
   const [newNode, setNewNode] = useState(defaultNode);
+  // A closed panel stays mounted, its fields hidden: what it held goes once it
+  // has slid out, or a revealed password, key or passphrase would stay in the
+  // page after it was put away.
+  useEffect(() => {
+    if (isPanelOpen) return;
+    const t = setTimeout(() => setNewNode(defaultNode), SLIDE_OUT_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPanelOpen]);
+  useEffect(() => {
+    if (isCredPanelOpen) return;
+    const t = setTimeout(() => setEditCredData(EMPTY_CRED), SLIDE_OUT_MS);
+    return () => clearTimeout(t);
+  }, [isCredPanelOpen]);
+  useEffect(() => {
+    if (isKeyPanelOpen) return;
+    const t = setTimeout(() => setEditKeyData(EMPTY_KEY), SLIDE_OUT_MS);
+    return () => clearTimeout(t);
+  }, [isKeyPanelOpen]);
   const [appSettings, setAppSettings] = useState({
     primaryColor: localStorage.getItem('submarine-primary-color') || '#60a5fa',
     backgroundColor: localStorage.getItem('submarine-bg-color') || '#0a0a0c',
@@ -347,6 +386,10 @@ function DesktopApp() {
     // On by default: logins may use keys from an ssh-agent on this computer.
     // See util/sshAgent.
     useSshAgent: readUseSshAgent(),
+    // On by default: idle sessions send keepalives, and a dropped one logs back
+    // in by itself. See util/sessionKeep.
+    sendKeepalives: readSendKeepalivesDefault(),
+    autoReconnect: readAutoReconnectDefault(),
     // On by default: connections use what ~/.ssh/config says about a host.
     // See util/sshConfig.
     useSshConfig: readUseSshConfig(),
@@ -375,6 +418,8 @@ function DesktopApp() {
     localStorage.setItem(MIN_CONTRAST_KEY, appSettings.terminalMinContrast ? 'on' : 'off');
     localStorage.setItem(USE_LOCAL_SHELL_KEY, appSettings.useLocalShell ? 'on' : 'off');
     localStorage.setItem(USE_SSH_AGENT_KEY, appSettings.useSshAgent ? 'on' : 'off');
+    localStorage.setItem(SEND_KEEPALIVES_KEY, appSettings.sendKeepalives === false ? 'off' : 'on');
+    localStorage.setItem(AUTO_RECONNECT_KEY, appSettings.autoReconnect === false ? 'off' : 'on');
     localStorage.setItem(USE_SSH_CONFIG_KEY, appSettings.useSshConfig ? 'on' : 'off');
     invoke("set_use_ssh_config", { enabled: appSettings.useSshConfig }).catch(() => {});
     localStorage.setItem('submarine-auto-sync', appSettings.autoSync ? 'on' : 'off');
@@ -444,14 +489,20 @@ function DesktopApp() {
     setLogs(prev => [...prev.slice(-99), { id, msg, type, time: new Date().toLocaleTimeString() }]);
   }, []);
 
-  // A sync that deleted rows (deleted on another device, or by whoever sent
-  // the server's answer) says so, and where the profile as it was is kept.
-  const logRemoved = useCallback((report: { removed?: number; backup?: string | null }) => {
-    const n = report.removed ?? 0;
-    if (n <= 0) return;
+  // A sync that deleted rows or emptied a saved key or password (done on
+  // another device, or by whoever sent the server's answer) says so, and where
+  // the profile as it was is kept. Renaming that file back isn't enough: the
+  // next sync would do the same again, so the way back is the picker's.
+  const logRemoved = useCallback((report: { removed?: number; emptied?: number; backup?: string | null }) => {
+    const removed = report.removed ?? 0;
+    const emptied = report.emptied ?? 0;
+    if (removed <= 0 && emptied <= 0) return;
     addLog(
-      `Sync removed ${n} item${n === 1 ? "" : "s"} from this profile (deleted elsewhere).` +
-        (report.backup ? ` The profile as it was is kept next to its file as ${report.backup}.` : ""),
+      [
+        removed > 0 && `Sync removed ${removed} item${removed === 1 ? "" : "s"} from this profile (deleted elsewhere).`,
+        emptied > 0 && `Sync emptied a saved key or password in ${emptied} item${emptied === 1 ? "" : "s"} (done elsewhere).`,
+        report.backup && `The profile as it was is kept as ${report.backup}. To go back to it, lock the profile and use its ⋯ menu.`,
+      ].filter(Boolean).join(" "),
       "info",
     );
   }, [addLog]);
@@ -513,16 +564,21 @@ function DesktopApp() {
   };
 
   // What a shared profile waits on the user for: a new key, as a fingerprint
-  // (until it's accepted a sync only pulls, see note_share_key), and
-  // deletions someone else's sync would have made here (see HeldDeletions).
+  // (until it's accepted a sync only pulls, see note_share_key), a grant the
+  // sync couldn't open ("locked" while sharing is, "checking" until a sync has
+  // tried it since, "unreadable" if that didn't open it; see note_share_grant),
+  // and deletions someone else's sync would have made here (see HeldDeletions).
   const [shareKeyChange, setShareKeyChange] = useState<string | null>(null);
+  const [shareGrant, setShareGrant] = useState<"locked" | "checking" | "unreadable" | null>(null);
   const [heldDeletions, setHeldDeletions] = useState<HeldDeletion[]>([]);
   const refreshSharedState = useCallback(async () => {
     try {
-      const s = await invoke<{ current: string | null; pending: string | null }>("share_key_state");
+      const s = await invoke<{ current: string | null; pending: string | null; grant_unread: boolean; grant_refused: boolean; identity_unlocked: boolean }>("share_key_state");
       setShareKeyChange(s.pending);
+      setShareGrant(!s.grant_unread ? null : s.grant_refused ? "unreadable" : s.identity_unlocked ? "checking" : "locked");
     } catch {
       setShareKeyChange(null);
+      setShareGrant(null);
     }
     try {
       setHeldDeletions(await invoke<HeldDeletion[]>("held_deletions_list"));
@@ -538,14 +594,14 @@ function DesktopApp() {
   const handleCloudSync = useCallback(async () => {
     setCloudSyncing(true);
     try {
-      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; backup?: string | null }>("sync_now");
+      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; emptied?: number; backup?: string | null }>("sync_now");
       await refreshAll();
       refreshSharedState();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
       addLog(`Cloud sync complete — pushed ${report.pushed}, pulled ${report.pulled}.`, "success");
       logRemoved(report);
       if (report.key_change) {
-        addLog("This shared profile's key has changed. Your changes aren't uploaded until you accept the new key (Servers → Review).", "info");
+        addLog("This shared profile's key has changed. Your changes aren't uploaded until you deal with the notice in Servers.", "info");
       }
     } catch (e) {
       const msg = String(e);
@@ -578,13 +634,14 @@ function DesktopApp() {
   // What a shared profile still waits on from an earlier session shows on unlock.
   useEffect(() => {
     if (isUnlocked) refreshSharedState();
-    else { setShareKeyChange(null); setHeldDeletions([]); }
+    else { setShareKeyChange(null); setShareGrant(null); setHeldDeletions([]); }
   }, [isUnlocked, refreshSharedState]);
   // The user compared the new key's fingerprint with the owner's: use it, and
-  // sync, which uploads again.
-  const acceptShareKey = useCallback(async () => {
+  // sync, which uploads again. `fingerprint` is the one they saw: the backend
+  // refuses if another key has come in since.
+  const acceptShareKey = useCallback(async (fingerprint: string) => {
     try {
-      await invoke("accept_share_key");
+      await invoke("accept_share_key", { fingerprint });
       addLog("This shared profile now uses its new key.", "success");
     } catch (e) {
       addLog(`Couldn't switch to the new key: ${e}`, "error");
@@ -613,7 +670,7 @@ function DesktopApp() {
     autoSyncBusy.current = true;
     setCloudSyncing(true);
     try {
-      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; backup?: string | null }>("sync_now");
+      const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; emptied?: number; backup?: string | null }>("sync_now");
       if (report.pulled > 0) await refreshAllRef.current();
       refreshSharedState();
       setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
@@ -640,7 +697,7 @@ function DesktopApp() {
     try {
       const n = await invoke<number>("resolve_held_deletions", { deleteThem });
       const s = n === 1 ? "" : "s";
-      addLog(deleteThem ? `Deleted ${n} item${s} here too.` : `Kept ${n} item${s}.`, "success");
+      addLog(deleteThem ? `Done here too: ${n} item${s}.` : `Kept ${n} item${s}.`, "success");
     } catch (e) {
       addLog(`HELD_DELETIONS: ${e}`, "error");
     }
@@ -716,10 +773,21 @@ function DesktopApp() {
     };
   }, [isUnlocked, appSettings.autoSync, appSettings.syncIntervalMin, quietSync]);
 
+  // What this device keeps for a server and the sync doesn't: it goes with the server.
+  const forgetServer = (s: { id: number; uuid?: string | null }) => {
+    if (activeProfile) forgetServerBookmarks(activeProfile, s.id);
+    if (s.uuid) {
+      forgetRdpOptions(s.uuid);
+      forgetSessionKeep(s.uuid);
+      forgetVncOptions(s.uuid);
+    }
+  };
+
   const removeServer = async (id: number) => {
+    const server = (servers || []).find((s: any) => s.id === id);
     try {
       await invoke("delete_server", { id });
-      if (activeProfile) forgetServerBookmarks(activeProfile, id);
+      forgetServer(server || { id });
       refreshServers();
       bumpSync();
       addLog("Server removed.", "info");
@@ -731,10 +799,10 @@ function DesktopApp() {
     // which servers go, for the same per-server cleanup removeServer does.
     const tree = folderTree(folders);
     const inside = tree.subtreeOf(id);
-    const gone: number[] = (servers || []).filter((s: any) => inside.has(tree.serverFolder(s) as number)).map((s: any) => s.id);
+    const gone: any[] = (servers || []).filter((s: any) => inside.has(tree.serverFolder(s) as number));
     try {
       await invoke("delete_folder", { id });
-      if (activeProfile) gone.forEach((sid) => forgetServerBookmarks(activeProfile, sid));
+      gone.forEach(forgetServer);
       await Promise.all([refreshFolders(), refreshServers()]);
       bumpSync();
       addLog("Folder removed.", "info");
@@ -831,6 +899,10 @@ function DesktopApp() {
         serverName: s.name,
         mirrors: s.mirrors,
         serverUuid: s.uuid ?? null,
+        // As when it's opened by hand (openServer).
+        runOnConnect: s.run_on_connect || "",
+        runOnConnectEvery: !!s.run_on_connect_every,
+        runOnConnectHeld: (s.held || []).includes("run_on_connect"),
       }));
       setSessions((prev: any[]) => {
         const seen = new Set(prev.map((p) => p.id));
@@ -846,6 +918,34 @@ function DesktopApp() {
 
   const confirm = useConfirm();
   const textPrompt = useTextPrompt();
+
+  // A shared profile's grant changed while sharing was locked, so the sync
+  // can't tell whether its key did: unlock sharing, and sync, which opens the
+  // grant. A key that did change then waits for the user's OK as usual. The
+  // same passphrase as ever, so no rule for it here but that it's there.
+  const unlockSharing = async () => {
+    const pass = await textPrompt({
+      title: "Unlock sharing",
+      message:
+        "This shared profile's key may have changed. Enter your sharing passphrase to check. " +
+        "Until then this device can't read what's new, and your changes aren't uploaded. The passphrase never leaves this device.",
+      placeholder: "Sharing passphrase",
+      password: true,
+      okLabel: "Unlock",
+      validate: (v) => (v.length < 1 ? "Enter your sharing passphrase" : null),
+    });
+    if (!pass) return;
+    try {
+      await invoke("setup_identity", { encPassphrase: pass });
+      addLog("Sharing unlocked.", "success");
+    } catch (e) {
+      addLog(`Couldn't unlock sharing: ${String(e).replace(/^\[[A-Z_]+\]\s*/, "")}`, "error");
+      return;
+    }
+    await handleCloudSync();
+    // Also when that sync failed: sharing is unlocked either way.
+    await refreshSharedState();
+  };
 
   // Window-close guard. Keep `sessions` mirrored into a ref so the close
   // handler (which is registered ONCE inside useEffect, capturing snapshot
@@ -881,6 +981,25 @@ function DesktopApp() {
     }).then((fn) => { unlisten = fn; });
     return () => { if (unlisten) unlisten(); };
   }, [confirm]);
+  // Commands typed since the last save are only in memory. The backend saves
+  // them on exit; a phone's app has no exit to speak of, swiped away in the
+  // background it just ends, so they are saved as it goes there.
+  useEffect(() => {
+    if (!IS_MOBILE) return;
+    const off = listen<boolean>("app-shown", (e) => {
+      if (!e.payload) invoke("persist_vault").catch(() => {});
+    });
+    return () => { off.then((f) => f()); };
+  }, []);
+
+  // A Library panel saves what is being typed as it closes, and at a Lock that
+  // comes after the profile has closed, too late. So the open panels are asked
+  // first: each adds the promise of its save to the list (false: it couldn't).
+  const saveDrafts = async () => {
+    const saves: Promise<boolean>[] = [];
+    window.dispatchEvent(new CustomEvent("submarine-save-drafts", { detail: saves }));
+    return (await Promise.all(saves)).every(Boolean);
+  };
 
   // Lock the current profile and return to the picker. Confirms first when
   // there are open SSH sessions because they will be torn down — accidental
@@ -895,14 +1014,46 @@ function DesktopApp() {
         destructive: true,
       });
       if (!ok) return;
-      // Best-effort: tell the backend to clean up each session. We don't
-      // bail if one fails — `close_profile` will drop the DB anyway, and
-      // the OS will eventually reap the sockets.
-      for (const s of sessions) {
-        try { await invoke("disconnect_session", { sessionId: s.id }); }
-        catch (e) { console.error("disconnect on logout failed:", e); }
-      }
     }
+    if (!(await saveDrafts())) {
+      const lockAnyway = await confirm({
+        title: "Lock without saving?",
+        message: "What you were typing in the Library couldn't be saved.\n\nIf you lock now, it is lost.",
+        okLabel: "Lock anyway",
+        cancelLabel: "Stay",
+        destructive: true,
+        safeDefault: true,
+      });
+      if (!lockAnyway) return;
+    }
+    // The last save, before anything is torn down. If it fails (a stick
+    // pulled, a full disk), what changed since the last good save is only in
+    // memory, and locking throws that away: the user's call.
+    try { await invoke("persist_vault"); }
+    catch (e) {
+      const lockAnyway = await confirm({
+        title: "Lock without saving?",
+        message: `This profile couldn't be saved: ${e}\n\nIf you lock it now, everything changed since the last good save is lost.`,
+        okLabel: "Lock anyway",
+        cancelLabel: "Stay",
+        destructive: true,
+        safeDefault: true,
+      });
+      if (!lockAnyway) return;
+    }
+    // Best-effort: tell the backend to clean up each session. We don't
+    // bail if one fails — `close_profile` will drop the DB anyway, and
+    // the OS will eventually reap the sockets. All at once and with a
+    // limit: one tab stuck on a server that stopped answering must not
+    // keep the profile open, with its key in memory, while the screen
+    // still waits for the lock.
+    const disconnects = sessions.map((s) =>
+      invoke("disconnect_session", { sessionId: s.id })
+        .catch((e) => console.error("disconnect on logout failed:", e)));
+    await Promise.race([
+      Promise.all(disconnects),
+      new Promise((done) => setTimeout(done, LOGOUT_DISCONNECT_LIMIT_MS)),
+    ]);
     try { await invoke("close_profile"); }
     catch (e) { addLog(`LOGOUT_EXCEPTION: ${e}`, "error"); }
 
@@ -913,15 +1064,45 @@ function DesktopApp() {
     setSessions([]);
     setTabNames({});
     setActiveView("nodes");
-    setServers([]); setCredentials([]); setSshKeys([]); setFolders([]); setCommands([]);
+    setServers([]); setCredentials([]); setSshKeys([]); setFolders([]); setCommands([]); setNotes([]);
+    // The next profile numbers its servers from 1 too, so anything kept by
+    // session id would land on its sessions: an armed broadcast most of all.
+    broadcast.disable();
+    broadcast.selectNone();
+    setWallItems([]);
+    setMergedSessionIds([]);
+    setSessionStatuses({});
+    setSessionTerminals({});
+    setSessionActiveTerm({});
+    setPromptSessions(new Set());
+    setLastSyncLabel(null);
+    setActiveFolderId(null);
+    // And no revealed secret stays behind in a form.
+    setNewNode(defaultNode);
+    setEditCredData(EMPTY_CRED);
+    setEditKeyData(EMPTY_KEY);
     addLog("Profile locked.", "info");
   };
 
-  const openServer = (server: any) => {
+  const openServer = async (server: any) => {
     const sessionId = `session-${server.id}`;
     const existing = sessions.find(s => s.id === sessionId);
     if (!existing) {
-      setSessions([...sessions, {
+      // Someone moved this server and this device hasn't allowed it: it still
+      // connects, but not unasked. Cancel has the focus, as for held commands.
+      const moved: string | undefined = (server.held || []).find((i: string) => i.startsWith("moved:"));
+      if (moved) {
+        const ok = await confirm({
+          title: "Connect to the new address?",
+          message: `${server.name} now connects to ${server.moved_to || "a new address"}. It connected to ${moved.slice("moved:".length)}, and this device hasn't allowed the change.`,
+          okLabel: "Allow and connect",
+          cancelLabel: "Not now",
+          safeDefault: true,
+        });
+        if (!ok) return;
+        await allowHeld(server.id, [moved]);
+      }
+      setSessions((prev: Session[]) => prev.some((s) => s.id === sessionId) ? prev : [...prev, {
         id: sessionId,
         serverId: server.id,
         serverName: server.name,
@@ -933,8 +1114,10 @@ function DesktopApp() {
         serverUuid: server.uuid ?? null,
         // Commands to auto-run once on the first terminal (see SessionView).
         runOnConnect: server.run_on_connect || "",
-        // Set or changed by someone this profile is shared with, not allowed
-        // here yet: SessionView asks before typing them.
+        // And once into each new terminal of the tab (#256).
+        runOnConnectEvery: !!server.run_on_connect_every,
+        // Set or changed elsewhere, not allowed here yet: SessionView asks
+        // before typing them.
         runOnConnectHeld: (server.held || []).includes("run_on_connect"),
       }]);
     }
@@ -970,7 +1153,11 @@ function DesktopApp() {
       .catch((e) => addLog(`QUICK_NODE_SAVE_FAILED: ${e}`, "error"));
   };
 
-  const handleEditNode = async (server: any) => {
+  const handleEditNode = async (row: any) => {
+    // The form fills from the table, not from the list on screen: the Ports,
+    // Mirror and Library panels write the row themselves, and Save writes all
+    // of it back.
+    const server = (await invoke<any[]>("get_servers").catch(() => null))?.find((s) => s.id === row.id) ?? row;
     // Servers come back from get_servers with `has_password` (boolean) but
     // no plaintext. Reveal the secret only when the user opens the edit
     // sheet — that way the password never sits in renderer memory during
@@ -988,6 +1175,7 @@ function DesktopApp() {
       id: server.id,
       protocol: ["rdp", "telnet", "vnc"].includes(server.protocol) ? server.protocol : "ssh",
       rdpOptions: readRdpOptions(server.uuid),
+      sessionKeep: readSessionKeep(server.uuid),
       vncOptions: readVncOptions(server.uuid),
       name: server.name || "",
       host: server.host || "",
@@ -1001,12 +1189,13 @@ function DesktopApp() {
       proxyType: server.proxy_type || "none",
       proxyHost: server.proxy_host || "",
       proxyPort: server.proxy_port || 1080,
-      tunnels: parseObjectList(server.tunnels),
+      tunnels: parseObjectList(server.tunnels).map(normalizeTunnel),
       autostart: !!server.autostart,
-      mirrors: parseObjectList(server.mirrors),
+      mirrors: parseObjectList(server.mirrors).map(normalizeMirror),
       color: server.color ?? null,
       notes: server.notes || "",
       runOnConnect: server.run_on_connect || "",
+      runOnConnectEvery: !!server.run_on_connect_every,
       jumpHostId: server.jump_host_id?.toString() || "",
       // Attribution (read-only display): who last edited + the HLC stamp.
       editedBy: server.edited_by ?? null,
@@ -1018,6 +1207,153 @@ function DesktopApp() {
     });
     setIsPanelOpen(true);
   };
+
+  // The Library and Logins forms. A close with changes in a form (a click
+  // beside it, or its X) asks first, as the server form does
+  // (ui/slideOverForm). A close clears the error line, which the forms share.
+  const closeCommandPanel = () => { setIsCommandPanelOpen(false); setFormError(""); };
+  const saveCommand = async () => {
+    if (!editCommandData.title || !editCommandData.content) {
+      setFormError("Title and Content are required.");
+      addLog("Title and Content are required.", "error");
+      return;
+    }
+    const scope = editCommandData.scope;
+    if (scope && !scope.servers.length && !scope.folders.length) {
+      setFormError("Tick at least one server or folder, or choose All servers.");
+      return;
+    }
+    try {
+      if (editCommandData.id) {
+        await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content });
+        await invoke("set_command_scope", { id: editCommandData.id, scope: scopeToJson(scope) });
+      } else {
+        await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope) });
+      }
+      closeCommandPanel();
+      refreshCommands();
+      bumpSync();
+      addLog("Command saved.", "success");
+    } catch (e) {
+      setFormError(`Failed to save command: ${e}`);
+      addLog(`COMMAND_SAVE_ERROR: ${e}`, "error");
+    }
+  };
+  const commandForm = useUnsavedGuard({
+    open: isCommandPanelOpen,
+    value: editCommandData,
+    close: closeCommandPanel,
+    save: saveCommand,
+    question: (opened) => unsavedQuestion("command", !opened.id, opened.title),
+  });
+
+  const closeNotePanel = () => { setIsNotePanelOpen(false); setFormError(""); };
+  const saveNote = async () => {
+    if (!editNoteData.title.trim() && !editNoteData.body.trim()) {
+      setFormError("Add a title or some content first.");
+      return;
+    }
+    try {
+      const action = editNoteData.id
+        ? invoke("edit_note", { id: editNoteData.id, title: editNoteData.title, body: editNoteData.body })
+        : invoke("add_note", { title: editNoteData.title, body: editNoteData.body });
+      await action;
+      closeNotePanel();
+      refreshNotes();
+      bumpSync();
+      addLog("Note saved.", "success");
+    } catch (e) {
+      setFormError(`Failed to save note: ${e}`);
+      addLog(`NOTE_SAVE_ERROR: ${e}`, "error");
+    }
+  };
+  const noteForm = useUnsavedGuard({
+    open: isNotePanelOpen,
+    value: editNoteData,
+    close: closeNotePanel,
+    save: saveNote,
+    question: (opened) => unsavedQuestion("note", !opened.id, opened.title),
+  });
+
+  const closeCredPanel = () => { setIsCredPanelOpen(false); setFormError(""); };
+  const saveCred = async () => {
+    if (!editCredData.name) {
+      setFormError("Name is required.");
+      addLog("Name is required.", "error");
+      return;
+    }
+    if (editCredData.auth_type === "key" && !editCredData.key_id) {
+      setFormError("Please select a linked SSH Private Key.");
+      addLog("Please select a linked SSH Private Key.", "error");
+      return;
+    }
+    try {
+      const payload = {
+        name: editCredData.name,
+        authType: editCredData.auth_type || "password",
+        // Blank = asked when connecting (issue #54).
+        username: editCredData.username?.trim() ?? "",
+        password: editCredData.auth_type === "key" ? null : (editCredData.password || null),
+        keyId: editCredData.auth_type === "key" ? (editCredData.key_id ? parseInt(editCredData.key_id.toString()) : null) : null
+      };
+      const action = editCredData.id
+        ? invoke("edit_credential", { id: editCredData.id, ...payload })
+        : invoke("add_credential", payload);
+      await action;
+      closeCredPanel();
+      refreshCredentials();
+      bumpSync();
+      addLog("Credential saved.", "success");
+    } catch (e) {
+      setFormError(`Failed to save credential: ${e}`);
+      addLog(`CRED_SAVE_ERROR: ${e}`, "error");
+    }
+  };
+  // The revealed password is part of what the form opened with: only while
+  // it is open, as in the form itself.
+  const credForm = useUnsavedGuard({
+    open: isCredPanelOpen,
+    value: editCredData,
+    close: closeCredPanel,
+    save: saveCred,
+    question: (opened) => unsavedQuestion("login", !opened.id, opened.name),
+  });
+
+  const closeKeyPanel = () => { setIsKeyPanelOpen(false); setFormError(""); };
+  const saveKey = async () => {
+    if (!editKeyData.name || !editKeyData.private_key) {
+      setFormError("Name and Private Key are required.");
+      addLog("Name and Private Key are required.", "error");
+      return;
+    }
+    try {
+      const payload = {
+        name: editKeyData.name,
+        publicKey: editKeyData.public_key,
+        privateKey: editKeyData.private_key,
+        passphrase: editKeyData.passphrase || null
+      };
+      const action = editKeyData.id
+        ? invoke("edit_ssh_key", { id: editKeyData.id, ...payload })
+        : invoke("add_ssh_key", payload);
+      await action;
+      closeKeyPanel();
+      refreshSshKeys();
+      bumpSync();
+      addLog("SSH Key saved.", "success");
+    } catch (e) {
+      setFormError(`Failed to save SSH Key: ${e}`);
+      addLog(`KEY_SAVE_ERROR: ${e}`, "error");
+    }
+  };
+  // The same for the private key and passphrase.
+  const keyForm = useUnsavedGuard({
+    open: isKeyPanelOpen,
+    value: editKeyData,
+    close: closeKeyPanel,
+    save: saveKey,
+    question: (opened) => unsavedQuestion("SSH key", !opened.id, opened.name),
+  });
 
   // Render helper, NOT a component — it is invoked as `{TitleBar()}` below,
   // never as `<TitleBar />`. Rendering it as a JSX element would give it a
@@ -1040,7 +1376,7 @@ function DesktopApp() {
         // since those mark themselves with `no-drag`. Android's window
         // can't be maximized.
         const target = e.target as HTMLElement;
-        if (IS_ANDROID || target.closest('.no-drag')) return;
+        if (IS_MOBILE || target.closest('.no-drag')) return;
         toggleMaximize();
       }}
       className="h-10 bg-[#0d0d10] border-b border-white/5 flex items-center justify-between px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0"
@@ -1069,7 +1405,7 @@ function DesktopApp() {
             <button
               type="button"
               onClick={() => setMobileSessionPickerOpen(v => !v)}
-              className={`w-full h-7 px-3 rounded-full flex items-center gap-2 border transition-all ${
+              className={`relative w-full h-7 px-3 rounded-full flex items-center gap-2 border transition-all before:absolute before:inset-x-0 before:-top-1 before:-bottom-2 before:content-[''] ${
                 activeView.startsWith('session-') || activeView === 'wall'
                   ? 'bg-primary/15 text-primary border-primary/40 shadow-inner'
                   : 'bg-white/[0.06] text-zinc-300 border-white/10'
@@ -1082,9 +1418,9 @@ function DesktopApp() {
                 const cur = sessions.find(s => s.id === activeView);
                 const st = cur ? (sessionStatuses[cur.id] ?? 'connecting') : null;
                 const dotTone =
-                  cur && promptSessions.has(cur.id) ? 'bg-primary animate-pulse' :
+                  cur && promptSessions.has(cur.id) ? 'bg-primary animate-pulse-brief' :
                   st === 'connected'    ? 'bg-emerald-400' :
-                  st === 'connecting'   ? 'bg-amber-400 animate-pulse' :
+                  st === 'connecting'   ? 'bg-amber-400 animate-pulse-brief' :
                   st === 'failed'       ? 'bg-rose-500' :
                   st === 'disconnected' ? 'bg-rose-500' :
                                           'bg-zinc-500';
@@ -1118,9 +1454,9 @@ function DesktopApp() {
                   {sessions.map(s => {
                     const st = sessionStatuses[s.id] ?? 'connecting';
                     const dot =
-                      promptSessions.has(s.id) ? 'bg-primary animate-pulse' :
+                      promptSessions.has(s.id) ? 'bg-primary animate-pulse-brief' :
                       st === 'connected'    ? 'bg-emerald-400' :
-                      st === 'connecting'   ? 'bg-amber-400 animate-pulse' :
+                      st === 'connecting'   ? 'bg-amber-400 animate-pulse-brief' :
                       st === 'idle'         ? 'bg-zinc-500' :
                       'bg-rose-500';
                     const isActive = activeView === s.id;
@@ -1131,7 +1467,7 @@ function DesktopApp() {
                           role="option"
                           aria-selected={isActive}
                           onClick={() => { setActiveView(s.id); setMobileSessionPickerOpen(false); }}
-                          className={`flex-1 flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-all ${
+                          className={`flex-1 flex items-center gap-2 px-2.5 py-3 sm:py-2 rounded-lg text-left transition-all ${
                             isActive
                               ? 'bg-primary/15 text-primary'
                               : isMerged
@@ -1191,7 +1527,7 @@ function DesktopApp() {
                             setActiveView(prev => (prev === sid ? 'nodes' : prev));
                           }}
                           title="Close session"
-                          className="h-8 w-8 shrink-0 rounded-lg flex items-center justify-center text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] transition-all"
+                          className="h-10 w-10 sm:h-8 sm:w-8 shrink-0 rounded-lg flex items-center justify-center text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] transition-all"
                         >
                           <X size={13} />
                         </button>
@@ -1209,7 +1545,7 @@ function DesktopApp() {
                       setActiveView('wall');
                       setMobileSessionPickerOpen(false);
                     }}
-                    className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-all ${
+                    className={`w-full flex items-center gap-2 px-2.5 py-3 sm:py-2 rounded-lg text-left transition-all ${
                       activeView === 'wall'
                         ? 'bg-primary/15 text-primary'
                         : 'text-zinc-200 hover:bg-white/[0.06]'
@@ -1248,9 +1584,9 @@ function DesktopApp() {
           // status: the dot pulses in the accent colour until it's answered.
           const waiting = promptSessions.has(s.id);
           const dotTone =
-            waiting               ? "bg-primary animate-pulse" :
+            waiting               ? "bg-primary animate-pulse-brief" :
             st === "connected"    ? "bg-emerald-400" :
-            st === "connecting"   ? "bg-amber-400 animate-pulse" :
+            st === "connecting"   ? "bg-amber-400 animate-pulse-brief" :
             st === "failed"       ? "bg-rose-500" :
             st === "disconnected" ? "bg-rose-500" :
                                     "bg-zinc-500";
@@ -1386,7 +1722,7 @@ function DesktopApp() {
                   if (sessionStatuses[s.id] === "connected") {
                     const ok = await confirm({
                       title: "Close this session?",
-                      message: "The SSH connection will be dropped.",
+                      message: "The connection will be dropped.",
                       okLabel: "Close",
                       destructive: true,
                     });
@@ -1432,7 +1768,7 @@ function DesktopApp() {
               ? `Wall · ${wallItems.length} pinned terminal${wallItems.length === 1 ? '' : 's'}`
               : "Wall — pinboard for terminals across servers"}
             aria-label="Wall pinboard"
-            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all ${
+            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all max-sm:before:absolute max-sm:before:-inset-1.5 max-sm:before:content-[''] ${
               activeView === "wall"
                 ? "bg-primary/15 border border-primary/40 text-primary shadow-inner shadow-primary/10"
                 : "bg-white/[0.06] border border-white/10 text-zinc-400 hover:bg-white/[0.1] hover:text-white"
@@ -1467,13 +1803,13 @@ function DesktopApp() {
               ? `Broadcasting to ${broadcast.targetSessionIds.size} session${broadcast.targetSessionIds.size === 1 ? "" : "s"}`
               : "Broadcast input to multiple sessions"}
             aria-label="Broadcast input"
-            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all ${
+            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all max-sm:before:absolute max-sm:before:-inset-1.5 max-sm:before:content-[''] ${
               broadcast.enabled
                 ? "bg-orange-500/15 border border-orange-400/40 text-orange-300 shadow-inner shadow-orange-400/10"
                 : "bg-white/[0.06] border border-white/10 text-zinc-400 hover:bg-white/[0.1] hover:text-white"
             }`}
           >
-            <Radio size={12} className={broadcast.enabled ? "animate-pulse" : ""} />
+            <Radio size={12} className={broadcast.enabled ? "animate-pulse-brief" : ""} />
             {broadcast.enabled && broadcast.targetSessionIds.size > 0 && (
               <span
                 className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-orange-500 text-[9px] font-bold text-black flex items-center justify-center leading-none"
@@ -1576,7 +1912,7 @@ function DesktopApp() {
           no minimise or maximise affordance to surface — so the phone never
           shows the cluster, not even turned sideways, when it is as wide as a
           desktop window. */}
-      {!IS_ANDROID && (
+      {!IS_MOBILE && (
         <div className="flex items-center h-full gap-1 no-drag">
           <button
             onClick={() => appWindow.minimize()}
@@ -1607,6 +1943,10 @@ function DesktopApp() {
         const targetIsActive = activeView === targetId;
         const currentMerges = targetIsActive ? mergedSessionIds : [];
         const others = sessions.filter(s => s.id !== targetId);
+        // The saved server behind the tab, for Edit server. None for a quick
+        // connect (server 0), or once the server has been deleted.
+        const targetServerId = sessions.find(s => s.id === targetId)?.serverId ?? 0;
+        const targetServer = targetServerId > 0 ? servers.find(sv => sv.id === targetServerId) : undefined;
         return (
         <>
           <div className="fixed inset-0 z-[60]" onClick={() => { setTabMenu(null); setTabRename(null); }} onContextMenu={(e) => { e.preventDefault(); setTabMenu(null); setTabRename(null); }} />
@@ -1635,6 +1975,15 @@ function DesktopApp() {
                 className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
                 onClick={() => setTabRename(targetId)}
               >Rename tab</button>
+            )}
+            {targetServer && (
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
+                onClick={() => {
+                  setTabMenu(null);
+                  void handleEditNode(targetServer);
+                }}
+              >Edit server</button>
             )}
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
@@ -1788,7 +2137,7 @@ function DesktopApp() {
     </div>
   );
 
-  // h-full (not h-screen) so the layout tracks --vv-h from main.tsx —
+  // h-full (not h-screen) so the layout tracks #root's height from main.tsx —
   // when the Android soft keyboard opens the visualViewport shrinks and the
   // whole flex chain cascades above the keyboard instead of anchoring to
   // the un-shrunken layout viewport.
@@ -1810,6 +2159,7 @@ function DesktopApp() {
 
           <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-transparent relative">
             {activeView === "nodes" && (
+              <ErrorBoundary label="Servers">
               <NodeGrid
                 servers={servers}
                 folders={folders}
@@ -1832,6 +2182,8 @@ function DesktopApp() {
                 onAllowHeld={allowHeld}
                 keyChange={shareKeyChange}
                 onAcceptKey={acceptShareKey}
+                shareGrant={shareGrant}
+                onUnlockSharing={unlockSharing}
                 heldDeletions={heldDeletions}
                 onResolveDeletions={resolveHeldDeletions}
                 onRemoveServer={removeServer}
@@ -1852,31 +2204,37 @@ function DesktopApp() {
                 }}
                 isMobile={isMobile}
               />
+              </ErrorBoundary>
             )}
 
             {activeView === "profile" && (
-              <ProfilePanel
-                onSync={handleCloudSync}
-                syncing={cloudSyncing}
-                lastSyncLabel={lastSyncLabel}
-                autoSync={appSettings.autoSync}
-                syncIntervalMin={appSettings.syncIntervalMin}
-                onSetInterval={(m: number) => setAppSettings((s: any) => ({ ...s, syncIntervalMin: m }))}
-                onToggleAutoSync={() => setAppSettings((s: any) => ({ ...s, autoSync: !s.autoSync }))}
-              />
+              <ErrorBoundary label="Profile">
+                <ProfilePanel
+                  onSync={handleCloudSync}
+                  syncing={cloudSyncing}
+                  lastSyncLabel={lastSyncLabel}
+                  autoSync={appSettings.autoSync}
+                  syncIntervalMin={appSettings.syncIntervalMin}
+                  onSetInterval={(m: number) => setAppSettings((s: any) => ({ ...s, syncIntervalMin: m }))}
+                  onToggleAutoSync={() => setAppSettings((s: any) => ({ ...s, autoSync: !s.autoSync }))}
+                />
+              </ErrorBoundary>
             )}
 
             {activeView === "settings" && (
-              <SettingsPanel
-                settings={appSettings}
-                setSettings={setAppSettings}
-                servers={servers}
-                isMobile={isMobile}
-                onOpenLogs={() => setActiveView("logs")}
-              />
+              <ErrorBoundary label="Settings">
+                <SettingsPanel
+                  settings={appSettings}
+                  setSettings={setAppSettings}
+                  servers={servers}
+                  isMobile={isMobile}
+                  onOpenLogs={() => setActiveView("logs")}
+                />
+              </ErrorBoundary>
             )}
 
             {activeView === "vault" && (
+              <ErrorBoundary label="Logins"><Guarded render={() => (
               <div className="flex-1 flex flex-col p-4 sm:p-8 space-y-6 sm:space-y-8 animate-in overflow-y-auto custom-scrollbar">
                 <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 border-b border-zinc-700 pb-5 sm:pb-6 shrink-0">
                   <div className="min-w-0">
@@ -1885,14 +2243,14 @@ function DesktopApp() {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button
-                      onClick={() => { setEditCredData({ id: null, name: "", auth_type: "password", username: "", password: "", key_id: null }); setIsCredPanelOpen(true); }}
+                      onClick={() => { setEditCredData(EMPTY_CRED); setIsCredPanelOpen(true); }}
                       title="Add Password"
                       className="h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[12px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-zinc-800 transition-all flex items-center gap-1.5"
                     >
                       <Plus size={14} /> <span className="hidden sm:inline">Add Password</span><span className="sm:hidden">Password</span>
                     </button>
                     <button
-                      onClick={() => { setEditKeyData({ id: null, name: "", public_key: "", private_key: "", passphrase: "" }); setIsKeyPanelOpen(true); }}
+                      onClick={() => { setEditKeyData(EMPTY_KEY); setIsKeyPanelOpen(true); }}
                       title="Add Key"
                       className="h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[12px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-zinc-800 transition-all flex items-center gap-1.5"
                     >
@@ -1909,7 +2267,7 @@ function DesktopApp() {
                           okLabel: "Generate",
                           validate: (v) => v.length === 0 ? "Name is required" : null,
                         });
-                        if (name) invoke("generate_ssh_key", { name }).then(() => refreshSshKeys());
+                        if (name) invoke("generate_ssh_key", { name }).then(() => refreshSshKeys()).catch((e) => addLog(`KEY_GENERATE_ERROR: ${e}`, "error"));
                       }}
                       title="Generate Key"
                       className="h-9 px-2.5 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5"
@@ -1947,7 +2305,7 @@ function DesktopApp() {
                                 <button aria-label={`Delete ${c.name}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete saved password?", message: `“${c.name}” will be removed. Servers using this login will lose it.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_credential", { id: c.id }).then(() => { refreshCredentials(); bumpSync(); });
+                                  invoke("delete_credential", { id: c.id }).then(() => { refreshCredentials(); bumpSync(); }).catch((e) => addLog(`CRED_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -1996,7 +2354,7 @@ function DesktopApp() {
                                 <button aria-label={`Delete ${k.name}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete SSH key?", message: `“${k.name}” will be removed. This key cannot be recovered.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_ssh_key", { id: k.id }).then(() => { refreshSshKeys(); bumpSync(); });
+                                  invoke("delete_ssh_key", { id: k.id }).then(() => { refreshSshKeys(); bumpSync(); }).catch((e) => addLog(`KEY_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -2015,6 +2373,7 @@ function DesktopApp() {
                   </section>
                 </div>
               </div>
+              )} /></ErrorBoundary>
             )}
 
             {/* Sessions live in an absolute layer that overlays the rest of
@@ -2053,13 +2412,13 @@ function DesktopApp() {
               // or Tab could land in a terminal nobody can see and send what
               // is typed next to its server.
               return (
-                <div inert={viewIsSession ? undefined : ""} className={`absolute inset-0 flex flex-col overflow-hidden ${!viewIsSession ? 'opacity-0 pointer-events-none' : ''}`}>
+                <div inert={viewIsSession ? undefined : ""} className={`${viewIsSession ? 'absolute inset-0' : 'out-of-view'} flex flex-col overflow-hidden`}>
                   <div className="flex-1 relative bg-black/40">
                     {sessions.map(sess => {
                       const idx = visibleIds.indexOf(sess.id);
                       const isVisible = idx >= 0;
                       const isFocused = activeView === sess.id;
-                      const style: React.CSSProperties = isVisible
+                      const style: React.CSSProperties | undefined = isVisible
                         ? {
                             position: 'absolute',
                             top: 0,
@@ -2067,12 +2426,7 @@ function DesktopApp() {
                             left: `${(idx * 100) / visibleIds.length}%`,
                             width: `${100 / visibleIds.length}%`,
                           }
-                        : {
-                            position: 'absolute',
-                            inset: 0,
-                            opacity: 0,
-                            pointerEvents: 'none',
-                          };
+                        : undefined;
                       return (
                         <div
                           key={sess.id}
@@ -2095,9 +2449,11 @@ function DesktopApp() {
                           // layout collapses to 0 height and the terminal
                           // + tool panels never draw.
                           className={`flex flex-col overflow-hidden ${
-                            isVisible && isTiled
-                              ? `border ${isFocused ? 'border-primary/40 shadow-[inset_0_0_0_1px_rgba(var(--primary),0.15)]' : 'border-white/[0.05]'}`
-                              : ''
+                            !isVisible
+                              ? 'out-of-view'
+                              : isTiled
+                                ? `border ${isFocused ? 'border-primary/40 shadow-[inset_0_0_0_1px_rgba(var(--primary),0.15)]' : 'border-white/[0.05]'}`
+                                : ''
                           }`}
                         >
                           {/* Merged (non-focused) tile header. Only the
@@ -2174,6 +2530,7 @@ function DesktopApp() {
                                 onClose={getCloseHandler(sess.id)}
                                 onStatusChange={handleSessionStatus}
                                 isActiveView={isFocused}
+                                shown={isVisible && viewIsSession}
                                 onPromptChange={handlePromptChange}
                               />
                             ) : (
@@ -2187,6 +2544,7 @@ function DesktopApp() {
                               onTerminalsChange={handleTerminalsChange}
                               chromeless={isVisible && isTiled && !isFocused}
                               isActiveView={isFocused}
+                              shown={isVisible && viewIsSession}
                               onPromptChange={handlePromptChange}
                             />
                             )}
@@ -2301,7 +2659,7 @@ function DesktopApp() {
                         const st = sessionStatuses[item.sessionId] ?? 'connecting';
                         const dotTone =
                           st === 'connected'    ? 'bg-emerald-400' :
-                          st === 'connecting'   ? 'bg-amber-400 animate-pulse' :
+                          st === 'connecting'   ? 'bg-amber-400 animate-pulse-brief' :
                                                   'bg-rose-500';
                         return (
                           <div
@@ -2343,15 +2701,17 @@ function DesktopApp() {
                                 drop the session. */}
                             {sessionStatuses[item.sessionId] === 'connected' ? (
                               <div className="flex-1 min-h-0 relative">
-                                <TerminalView
-                                  sessionId={item.sessionId}
-                                  terminalId={item.terminalId}
-                                  attachOnly
-                                  disabled={false}
-                                  isActive={true}
-                                  serverId={sess.serverId}
-                                  serverName={sess.serverName}
-                                />
+                                <ErrorBoundary label={tabLabel(sess)}>
+                                  <TerminalView
+                                    sessionId={item.sessionId}
+                                    terminalId={item.terminalId}
+                                    attachOnly
+                                    disabled={false}
+                                    isActive={true}
+                                    serverId={sess.serverId}
+                                    serverName={sess.serverName}
+                                  />
+                                </ErrorBoundary>
                               </div>
                             ) : (
                               <div className="flex-1 flex items-center justify-center text-zinc-500 text-[10.5px] font-medium uppercase tracking-wider">
@@ -2462,7 +2822,7 @@ function DesktopApp() {
                 on narrow viewports and puts both lists under one search
                 box. The sub-tab state (`libraryTab`) is kept at the parent
                 so it survives navigation elsewhere and back. */}
-            {activeView === "library" && (() => {
+            {activeView === "library" && <ErrorBoundary label="Library"><Guarded render={() => {
               const q = libraryQuery.trim().toLowerCase();
               const filteredCommands = q
                 ? commands.filter(c =>
@@ -2572,7 +2932,7 @@ function DesktopApp() {
                                 <button aria-label={`Delete ${cmd.title}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete command?", message: `“${cmd.title}” will be removed.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_command", { id: cmd.id }).then(() => { refreshCommands(); bumpSync(); });
+                                  invoke("delete_command", { id: cmd.id }).then(() => { refreshCommands(); bumpSync(); }).catch((e) => addLog(`COMMAND_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -2605,7 +2965,7 @@ function DesktopApp() {
                                 <button aria-label={`Delete ${n.title || "Untitled"}`} onClick={async () => {
                                   const ok = await confirm({ title: "Delete note?", message: `“${n.title || "Untitled"}” will be removed.`, destructive: true });
                                   if (!ok) return;
-                                  invoke("delete_note", { id: n.id }).then(() => { refreshNotes(); bumpSync(); });
+                                  invoke("delete_note", { id: n.id }).then(() => { refreshNotes(); bumpSync(); }).catch((e) => addLog(`NOTE_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                               </div>
                             </div>
@@ -2620,7 +2980,7 @@ function DesktopApp() {
                   )}
                 </div>
               );
-            })()}
+            }} /></ErrorBoundary>}
 
             {/* Monitor is mounted permanently and just CSS-hidden when not
                 active. Unmounting would tear down the sample/history ring
@@ -2629,7 +2989,9 @@ function DesktopApp() {
                 mounted preserves the live data; the backend pollers were
                 always running, only the UI side was losing state. */}
             <div className={`flex-1 flex flex-col overflow-hidden ${activeView === "monitor" ? "" : "hidden"}`}>
-              <MonitoringPanel servers={servers} refreshServers={refreshServers} addLog={addLog} />
+              <ErrorBoundary label="Monitor">
+                <MonitoringPanel servers={servers} refreshServers={refreshServers} addLog={addLog} active={activeView === "monitor"} />
+              </ErrorBoundary>
             </div>
 
             {/* Compare workspace — pick any subset of open sessions and
@@ -2649,6 +3011,7 @@ function DesktopApp() {
                 lengths — the whole point of compare mode is uniform
                 side-by-side. */}
             {activeView === "logs" && (
+              <ErrorBoundary label="Activity"><Guarded render={() => (
               <div className="flex-1 flex flex-col p-3 sm:p-8 space-y-3 sm:space-y-6 animate-in overflow-hidden">
                 <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-3 border-b border-zinc-700 pb-3 sm:pb-6 shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
@@ -2704,12 +3067,14 @@ function DesktopApp() {
                   )}
                 </div>
               </div>
+              )} /></ErrorBoundary>
             )}
 
           </main>
         </div>
       )}
 
+      <ErrorBoundary overlay label="Server form" onReset={() => { setIsPanelOpen(false); setFormError(""); }}>
       <AddNodePanel
         isOpen={isPanelOpen} onClose={() => { setIsPanelOpen(false); setFormError(""); }}
         newNode={newNode} setNewNode={setNewNode}
@@ -2796,9 +3161,10 @@ function DesktopApp() {
               // would overwrite the DB value.
               preservePassword: !!newNode.id && !newNode.password_dirty,
             };
+            // These writes share one save, at the end: each writes the whole vault.
             const action = newNode.id
-              ? invoke<void>("edit_server", { id: newNode.id, ...payload }).then(() => newNode.id!)
-              : invoke<number>("add_server", payload);
+              ? invoke<void>("edit_server", { id: newNode.id, ...payload, persist: false }).then(() => newNode.id!)
+              : invoke<number>("add_server", { ...payload, persist: false });
 
             const savedId = await action;
             // Notes live on the server row but go through their own command
@@ -2806,37 +3172,52 @@ function DesktopApp() {
             // through every add/edit_server signature. Empty string is valid
             // — clears any previous note.
             try {
-              await invoke("set_server_notes", { id: savedId, notes: newNode.notes || "" });
+              await invoke("set_server_notes", { id: savedId, notes: newNode.notes || "", persist: false });
             } catch (e) {
               addLog(`SAVE_NOTES_FAILED: ${e}`, "error");
             }
             // Same separate-write pattern for the on-connect commands.
             try {
-              await invoke("set_server_run_on_connect", { id: savedId, value: newNode.runOnConnect || "" });
+              await invoke("set_server_run_on_connect", { id: savedId, value: newNode.runOnConnect || "", every: !!newNode.runOnConnectEvery, persist: false });
             } catch (e) {
               addLog(`SAVE_RUN_ON_CONNECT_FAILED: ${e}`, "error");
             }
             // ProxyJump target — same separate-write pattern. Empty string
             // means "no jump host" → store NULL.
             try {
-              await invoke("set_server_jump_host", { id: savedId, value: newNode.jumpHostId ? parseInt(newNode.jumpHostId) : null });
+              await invoke("set_server_jump_host", { id: savedId, value: newNode.jumpHostId ? parseInt(newNode.jumpHostId) : null, persist: false });
             } catch (e) {
               addLog(`SAVE_JUMP_HOST_FAILED: ${e}`, "error");
             }
             // SSH, RDP, telnet or VNC: the same separate-write pattern.
             try {
-              await invoke("set_server_protocol", { id: savedId, value: isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : null });
+              await invoke("set_server_protocol", { id: savedId, value: isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : null, persist: false });
             } catch (e) {
               addLog(`SAVE_PROTOCOL_FAILED: ${e}`, "error");
             }
+            await invoke("persist_vault");
             // An RDP server's options are this device's own, kept by its sync
             // id (a new server has one once it's saved).
             if (isRdp) {
               try {
                 const uuid = (await invoke<any[]>("get_servers")).find((s) => s.id === savedId)?.uuid;
-                if (uuid) writeRdpOptions(uuid, newNode.rdpOptions || DEFAULT_RDP_OPTIONS);
+                // Moved here by the user, not by someone else in a shared
+                // profile: what it shares goes with it.
+                const before = servers.find((s) => s.id === newNode.id);
+                const moved = !!before && (before.host !== newNode.host || Number(before.port) !== Number(newNode.port));
+                const options = newNode.rdpOptions || DEFAULT_RDP_OPTIONS;
+                if (uuid) writeRdpOptions(uuid, moved ? { ...options, sharedFor: "" } : options);
               } catch (e) {
                 addLog(`SAVE_RDP_OPTIONS_FAILED: ${e}`, "error");
+              }
+            }
+            // An SSH server's keepalives and reconnecting: the same, this device's own.
+            if (!isRdp && !isVnc && !isTelnet) {
+              try {
+                const uuid = (await invoke<any[]>("get_servers")).find((s) => s.id === savedId)?.uuid;
+                if (uuid) writeSessionKeep(uuid, newNode.sessionKeep || DEFAULT_SESSION_KEEP);
+              } catch (e) {
+                addLog(`SAVE_SESSION_KEEP_FAILED: ${e}`, "error");
               }
             }
             // A VNC server's speed and quality: the same, this device's own.
@@ -2852,6 +3233,14 @@ function DesktopApp() {
             setFormError("");
             refreshServers();
             bumpSync();
+            // A tab open on this server shows its new name (Edit server is in
+            // the tab's own menu). A tab given a name of its own keeps it.
+            if (newNode.id) {
+              const name = newNode.name;
+              setSessions(prev => prev.some(s => s.serverId === savedId && s.serverName !== name)
+                ? prev.map(s => (s.serverId === savedId ? { ...s, serverName: name } : s))
+                : prev);
+            }
             // If we just edited a node whose session is live, re-apply its saved
             // forwarding rules now so a changed/added tunnel comes up without a
             // manual reconnect. The backend cleared the stale tunnel cache when
@@ -2872,29 +3261,33 @@ function DesktopApp() {
         servers={servers}
         isMobile={isMobile}
       />
+      </ErrorBoundary>
 
-      <QuickConnectModal
-        isOpen={isQuickConnectOpen}
-        onClose={() => setIsQuickConnectOpen(false)}
-        onConnect={openQuickConnect}
-      />
+      <ErrorBoundary overlay label="Quick connect" onReset={() => setIsQuickConnectOpen(false)}>
+        <QuickConnectModal
+          isOpen={isQuickConnectOpen}
+          onClose={() => setIsQuickConnectOpen(false)}
+          onConnect={openQuickConnect}
+        />
+      </ErrorBoundary>
 
 
       {/* The slide-overs stay mounted while closed (to slide out): inert
           then, so Tab can't reach their fields. */}
-      <div inert={isCommandPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCommandPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsCommandPanelOpen(false)}>
+      <ErrorBoundary overlay label="Command form" onReset={() => setIsCommandPanelOpen(false)}><Guarded render={() => (
+      <div inert={isCommandPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCommandPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...commandForm.backdropProps}>
         <div ref={commandPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCommandPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <TerminalSquare size={18} className="text-primary" />
               {editCommandData.id ? "Edit command" : "New command"}
             </h2>
-            <button aria-label="Close" onClick={() => { setIsCommandPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label="Close" onClick={() => void commandForm.requestClose()} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
           <div className="p-6 flex-1 overflow-y-auto space-y-6">
-            {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+            <FormError message={formError} active={isCommandPanelOpen} />
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Title</label>
               <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. Update packages" value={editCommandData.title} onChange={e => setEditCommandData({ ...editCommandData, title: e.target.value })} />
@@ -2913,34 +3306,8 @@ function DesktopApp() {
             />
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">
-            <button 
-              onClick={async () => {
-                if (!editCommandData.title || !editCommandData.content) {
-                  addLog("Title and Content are required.", "error");
-                  return;
-                }
-                const scope = editCommandData.scope;
-                if (scope && !scope.servers.length && !scope.folders.length) {
-                  setFormError("Tick at least one server or folder, or choose All servers.");
-                  return;
-                }
-                try {
-                  if (editCommandData.id) {
-                    await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content });
-                    await invoke("set_command_scope", { id: editCommandData.id, scope: scopeToJson(scope) });
-                  } else {
-                    await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope) });
-                  }
-                  setFormError("");
-                  setIsCommandPanelOpen(false);
-                  refreshCommands();
-                  bumpSync();
-                  addLog("Command saved.", "success");
-                } catch (e) {
-                  setFormError(`Failed to save command: ${e}`);
-                  addLog(`COMMAND_SAVE_ERROR: ${e}`, "error");
-                }
-              }} 
+            <button
+              onClick={() => void commandForm.save()}
               className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] shadow-[0_0_15px_rgba(var(--primary),0.2)] flex items-center justify-center gap-2"
             >
               Save
@@ -2948,20 +3315,22 @@ function DesktopApp() {
           </div>
         </div>
       </div>
+      )} /></ErrorBoundary>
 
-      <div inert={isNotePanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isNotePanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsNotePanelOpen(false)}>
+      <ErrorBoundary overlay label="Note form" onReset={() => setIsNotePanelOpen(false)}><Guarded render={() => (
+      <div inert={isNotePanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isNotePanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...noteForm.backdropProps}>
         <div ref={notePanelRef} tabIndex={-1} className={`w-full max-w-[480px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isNotePanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <StickyNote size={18} className="text-primary" />
               {editNoteData.id ? "Edit note" : "New note"}
             </h2>
-            <button aria-label="Close" onClick={() => { setIsNotePanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label="Close" onClick={() => void noteForm.requestClose()} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
           <div className="p-6 flex-1 overflow-y-auto space-y-6 flex flex-col">
-            {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+            <FormError message={formError} active={isNotePanelOpen} />
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Title</label>
               <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. Production credentials reminder" value={editNoteData.title} onChange={e => setEditNoteData({ ...editNoteData, title: e.target.value })} />
@@ -2973,25 +3342,7 @@ function DesktopApp() {
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">
             <button
-              onClick={async () => {
-                if (!editNoteData.title.trim() && !editNoteData.body.trim()) {
-                  setFormError("Add a title or some content first.");
-                  return;
-                }
-                try {
-                  const action = editNoteData.id
-                    ? invoke("edit_note", { id: editNoteData.id, title: editNoteData.title, body: editNoteData.body })
-                    : invoke("add_note", { title: editNoteData.title, body: editNoteData.body });
-                  await action;
-                  setIsNotePanelOpen(false);
-                  refreshNotes();
-                  bumpSync();
-                  addLog("Note saved.", "success");
-                } catch (e) {
-                  setFormError(`Failed to save note: ${e}`);
-                  addLog(`NOTE_SAVE_ERROR: ${e}`, "error");
-                }
-              }}
+              onClick={() => void noteForm.save()}
               className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] shadow-[0_0_15px_rgba(var(--primary),0.2)] flex items-center justify-center gap-2"
             >
               Save
@@ -2999,20 +3350,22 @@ function DesktopApp() {
           </div>
         </div>
       </div>
+      )} /></ErrorBoundary>
 
-      <div inert={isCredPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCredPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsCredPanelOpen(false)}>
+      <ErrorBoundary overlay label="Login form" onReset={() => setIsCredPanelOpen(false)}><Guarded render={() => (
+      <div inert={isCredPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCredPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...credForm.backdropProps}>
         <div ref={credPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCredPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <Shield size={18} className="text-primary" />
               {editCredData.id ? "Edit login" : "New login"}
             </h2>
-            <button aria-label="Close" onClick={() => { setIsCredPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label="Close" onClick={() => void credForm.requestClose()} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
           <div className="p-6 flex-1 overflow-y-auto space-y-6">
-            {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+            <FormError message={formError} active={isCredPanelOpen} />
             <div className="space-y-1.5">
               <label className="text-[12px] font-bold text-zinc-400 ml-1">Name</label>
               <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. Work server" value={editCredData.name} onChange={e => setEditCredData({ ...editCredData, name: e.target.value })} />
@@ -3061,40 +3414,8 @@ function DesktopApp() {
             )}
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">
-            <button 
-              onClick={async () => {
-                if (!editCredData.name) {
-                  setFormError("Name is required.");
-                  addLog("Name is required.", "error");
-                  return;
-                }
-                if (editCredData.auth_type === "key" && !editCredData.key_id) {
-                  setFormError("Please select a linked SSH Private Key.");
-                  addLog("Please select a linked SSH Private Key.", "error");
-                  return;
-                }
-                try {
-                  const payload = {
-                    name: editCredData.name,
-                    authType: editCredData.auth_type || "password",
-                    // Blank = asked when connecting (issue #54).
-                    username: editCredData.username?.trim() ?? "",
-                    password: editCredData.auth_type === "key" ? null : (editCredData.password || null),
-                    keyId: editCredData.auth_type === "key" ? (editCredData.key_id ? parseInt(editCredData.key_id.toString()) : null) : null
-                  };
-                  const action = editCredData.id 
-                    ? invoke("edit_credential", { id: editCredData.id, ...payload })
-                    : invoke("add_credential", payload);
-                  await action;
-                  setIsCredPanelOpen(false);
-                  refreshCredentials();
-                  bumpSync();
-                  addLog("Credential saved.", "success");
-                } catch (e) {
-                  setFormError(`Failed to save credential: ${e}`);
-                  addLog(`CRED_SAVE_ERROR: ${e}`, "error");
-                }
-              }} 
+            <button
+              onClick={() => void credForm.save()}
               className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
             >
               Save
@@ -3102,20 +3423,22 @@ function DesktopApp() {
           </div>
         </div>
       </div>
+      )} /></ErrorBoundary>
 
-      <div inert={isKeyPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isKeyPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsKeyPanelOpen(false)}>
+      <ErrorBoundary overlay label="Key form" onReset={() => setIsKeyPanelOpen(false)}><Guarded render={() => (
+      <div inert={isKeyPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isKeyPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...keyForm.backdropProps}>
         <div ref={keyPanelRef} tabIndex={-1} className={`w-full max-w-[450px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isKeyPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <Key size={18} className="text-primary" />
               {editKeyData.id ? "Edit SSH key" : "New SSH key"}
             </h2>
-            <button aria-label="Close" onClick={() => { setIsKeyPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label="Close" onClick={() => void keyForm.requestClose()} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
           <div className="p-6 flex-1 overflow-y-auto space-y-6">
-            {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+            <FormError message={formError} active={isKeyPanelOpen} />
             {/* Reading the key out of ~/.ssh beats making the user cat it in a
                 terminal and paste two multi-line blobs. Fields are filled in
                 rather than saved outright — the name is a guess from the
@@ -3179,32 +3502,8 @@ function DesktopApp() {
             </div>
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">
-            <button 
-              onClick={async () => {
-                if (!editKeyData.name || !editKeyData.private_key) {
-                  addLog("Name and Private Key are required.", "error");
-                  return;
-                }
-                try {
-                  const payload = {
-                    name: editKeyData.name,
-                    publicKey: editKeyData.public_key,
-                    privateKey: editKeyData.private_key,
-                    passphrase: editKeyData.passphrase || null
-                  };
-                  const action = editKeyData.id 
-                    ? invoke("edit_ssh_key", { id: editKeyData.id, ...payload })
-                    : invoke("add_ssh_key", payload);
-                  await action;
-                  setIsKeyPanelOpen(false);
-                  refreshSshKeys();
-                  bumpSync();
-                  addLog("SSH Key saved.", "success");
-                } catch (e) {
-                  setFormError(`Failed to save SSH Key: ${e}`);
-                  addLog(`KEY_SAVE_ERROR: ${e}`, "error");
-                }
-              }} 
+            <button
+              onClick={() => void keyForm.save()}
               className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
             >
               Save
@@ -3212,6 +3511,7 @@ function DesktopApp() {
           </div>
         </div>
       </div>
+      )} /></ErrorBoundary>
     </div>
   );
 }

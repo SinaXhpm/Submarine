@@ -5,7 +5,8 @@ import {
   Plus, X, RefreshCw, AlertTriangle, FolderUp, ArrowRight, Square,
   FolderOpen, FileText, Trash2, Pause, Play, Check
 } from "lucide-react";
-import { IS_ANDROID } from "../util/platform";
+import { IS_ANDROID, IS_MOBILE } from "../util/platform";
+import { normalizeMirror, serverRowChanged } from "../util/serverJson";
 
 // One-way local → remote folder mirror panel. Lives next to SFTP / Tunnels /
 // CMDS inside a session. The configured mirror pairs are stored on the node
@@ -103,8 +104,7 @@ function MirrorLiveStatus({ live }: { live: MirrorStatus }) {
       </div>
       {live.state === "initial-sync" && live.transfer_total > 0 && (
         <div className="h-1 bg-white/5 rounded overflow-hidden">
-          <div className="h-full bg-indigo-500 transition-[width] duration-150"
-               style={{ width: `${pct}%` }} />
+          <div className="h-full bg-indigo-500" style={{ width: `${pct}%` }} />
         </div>
       )}
     </div>
@@ -128,7 +128,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
   // mirror that the user just re-saved with updated excludes / conflict mode.
   const allSavedMirrors = (() => {
     const k = (m: MirrorSpec) => `${m.local}|${m.remote}`;
-    const out: MirrorSpec[] = [...configuredMirrors];
+    const out: MirrorSpec[] = configuredMirrors.map(normalizeMirror);
     for (const m of extraSaved) {
       const idx = out.findIndex(x => k(x) === k(m));
       if (idx >= 0) out[idx] = m; else out.push(m);
@@ -253,6 +253,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       if (serverId > 0) {
         try {
           await invoke("add_mirror_to_server", { serverId, mirror: pending.spec });
+          serverRowChanged();
           setExtraSaved(prev => {
             const k = (m: MirrorSpec) => `${m.local}|${m.remote}`;
             const without = prev.filter(m => k(m) !== k(pending.spec));
@@ -278,6 +279,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
   };
 
   const stopMirror = async (id: string) => {
+    setError(null);
     try { await invoke("stop_mirror", { mirrorId: id }); }
     catch (e: any) { setError(String(e)); }
   };
@@ -323,6 +325,15 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
         </button>
       </div>
 
+      {/* Here and not in the form below: Start on a saved mirror, Stop and the
+          save after a start all fail with that form closed. */}
+      {error && (
+        <div className="shrink-0 px-3 py-1.5 border-b border-white/5 bg-[#0f0f12] text-[10.5px] text-rose-400 font-mono flex items-start gap-1.5">
+          <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 break-words">{error}</span>
+        </div>
+      )}
+
       {/* Ad-hoc new mirror form */}
       {adding && !pending && (
         <div className="shrink-0 p-3 border-b border-white/5 bg-[#0f0f12] space-y-2">
@@ -332,7 +343,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                 the text input; the placeholder guides users to a sensible
                 writable location on external storage. Platform detection
                 lives in util/platform to keep one source of truth. */}
-            {!IS_ANDROID && (
+            {!IS_MOBILE && (
               <button
                 onClick={pickLocal}
                 className="h-7 px-2 rounded bg-white/[0.04] border border-white/10 hover:bg-white/10 text-zinc-300 text-[11px] flex items-center gap-1.5 shrink-0"
@@ -346,7 +357,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               onChange={(e) => setDraft({ ...draft, local: e.target.value })}
               placeholder={IS_ANDROID
                 ? "/storage/emulated/0/… (type path)"
-                : "/local/path (or browse)"}
+                : IS_MOBILE ? "/local/path (type path)" : "/local/path (or browse)"}
               className="flex-1 min-w-0 h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono text-zinc-200"
             />
           </div>
@@ -397,12 +408,6 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               {working ? "…" : "Continue"}
             </button>
           </div>
-          {error && (
-            <div className="text-[10.5px] text-rose-400 font-mono flex items-start gap-1.5">
-              <AlertTriangle size={11} className="mt-0.5 shrink-0" />
-              <span className="break-words">{error}</span>
-            </div>
-          )}
         </div>
       )}
 

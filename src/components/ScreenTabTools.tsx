@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Signal, SignalHigh, SignalLow, SignalMedium, SignalZero, X } from "lucide-react";
 import { SwitchRow } from "./FormRows";
 import { RdpShareFields, RdpSpeedFields } from "./RdpOptionFields";
@@ -181,7 +180,7 @@ export function RdpSettingsPanel({ o, set, reconnect }: { o: RdpOptions; set: (p
       <RdpSpeedFields o={o} set={set} />
       <SwitchRow
         label="Share the clipboard"
-        hint="Text you copy on the server comes to this device; this device's goes to the server when you paste it there."
+        hint="Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there."
         checked={o.clipboard}
         onChange={(clipboard) => set({ clipboard })}
       />
@@ -197,7 +196,7 @@ export function VncSettingsPanel({ o, set, reconnect }: { o: VncOptions; set: (p
       <VncSpeedFields o={o} set={set} />
       <SwitchRow
         label="Share the clipboard"
-        hint="Text you copy on the server comes to this device; this device's goes to the server when you paste it there. Plain ASCII text only, such as links and commands."
+        hint="Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there. Plain ASCII text only, such as links and commands."
         checked={o.clipboard}
         onChange={(clipboard) => set({ clipboard })}
       />
@@ -210,24 +209,6 @@ export function VncSettingsPanel({ o, set, reconnect }: { o: VncOptions; set: (p
 // How long the tab is hidden before the picture pauses: a quick look at
 // another tab changes nothing.
 const PAUSE_AFTER_MS = 3000;
-
-/** Whether the page is on screen: not minimised or behind another window's
- *  tab, and on a phone, the app not in the background. */
-export function usePageShown(): boolean {
-  const [pageShown, setPageShown] = useState(() => document.visibilityState !== "hidden");
-  useEffect(() => {
-    const onChange = () => setPageShown(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", onChange);
-    // A phone's app in the background: its WebView still says it is visible,
-    // so the backend tells (lib.rs, from Android's onPause and onResume).
-    const off = listen<boolean>("app-shown", (e) => setPageShown(!!e.payload));
-    return () => {
-      document.removeEventListener("visibilitychange", onChange);
-      off.then((f) => f());
-    };
-  }, []);
-  return pageShown;
-}
 
 /** While `pause` holds for PAUSE_AFTER_MS, the session is told the tab is
  *  hidden (`command`, shown: false); as soon as it doesn't, that it is shown. */
