@@ -13,7 +13,7 @@ const REPO_URL = "https://github.com/SinaXhpm/Submarine";
 const RELEASES_URL = `${REPO_URL}/releases`;
 const ISSUES_URL = `${REPO_URL}/issues`;
 const ECHOES = "https://echoes.sinaxhpm.com";
-const POLICY_DATE = "2026-10-27";
+const POLICY_DATE = "2026-11-10";
 
 // ---- facts (one place; the pages only refer to them) --------------------
 // Checked against the code at the commit: Argon2 settings (src-tauri/src/lib.rs

@@ -16,7 +16,7 @@ const en = JSON.parse(fs.readFileSync(path.join(DIR, "en.json"), "utf8"));
 const KEEP = {
   submarine: ["Submarine", "SSH", "SFTP", "RDP", "VNC", "Telnet", "GitHub", "Argon2id", "AES-256-GCM", "SHA256SUMS", "MIT",
     "Cloud sync", "Delete account…", "Delete from cloud…", "Check for updates", "Forgot password?", "X-Auth-Token", "cloud_token.json",
-    "Save password", "Share the clipboard", "Open in: Submarine's tab", "Less data", "Ctrl+Shift+F", "Ctrl+Shift+R", "DPAPI", "Windows Hello", "IronRDP", "Echoes"],
+    "Save password", "Share the clipboard", "Open in: Submarine's tab", "Less data", "Ctrl+Shift+F", "Ctrl+Shift+R", "DPAPI", "Windows Hello", "IronRDP", "Echoes", "TestFlight"],
   echoes: ["Echoes", "App Store", "GitHub", "MIT", "Submarine", "cURL", "Doctor", "String Lab", "TLS Inspector", "Telegram", "Cloudflare",
     "v2rayNG", "Hiddify", "Xray", "PRIVACY.md"],
 }[site] || [];
