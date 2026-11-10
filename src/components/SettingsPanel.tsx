@@ -80,7 +80,8 @@ function SshAgentSetting({ settings, setSettings }: any) {
             Log in with keys held by an ssh-agent on this computer: Pageant, the Windows OpenSSH
             agent and agents that use its pipe (such as 1Password), the agent in SSH_AUTH_SOCK, or
             the one IdentityAgent names in ~/.ssh/config.
-            Smartcards and hardware keys work through it. It's used only when a server has no saved
+            Keys on smartcards and hardware tokens can be used through an agent that supports them.
+            It's used only when a server has no saved
             password or key, its key's passphrase isn't saved, or the server turns its key down.
             Turn off to use only what's saved for each server.
           </p>
