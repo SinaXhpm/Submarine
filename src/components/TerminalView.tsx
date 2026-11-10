@@ -168,6 +168,9 @@ const writePieces = (data: Uint8Array): Uint8Array[] => {
 
 // How long the cursor goes on blinking after the last key, click or focus.
 const CURSOR_BLINK_IDLE_MS = 10_000;
+// At the shell, a key starts a blink again that a program stopped, though not
+// more often than this (see markUsed).
+const BLINK_RESTART_MS = 1_000;
 
 const TerminalView = ({
   sessionId,
@@ -986,8 +989,22 @@ const TerminalView = ({
     // and GNOME stop a caret blinking. xterm's DOM renderer blinks with a CSS
     // animation the browser redraws at every frame: a focused terminal left
     // alone cost about 5% of a CPU core for it.
+    //
+    // A program can stop the blink too: nano, vim and other full-screen
+    // programs send "no blink" (DECRST 12) with every screen update. A key
+    // used to turn it back on each time. That made two option changes a key,
+    // and xterm takes each as a new look: every row redrawn, its style sheets
+    // written again, the glyph widths it measured forgotten. Held keys then
+    // backed up behind the redraws (#305). So in a full-screen program (the
+    // alternate screen) its choice stands, and the blink comes back when it
+    // ends. At the shell a key starts it again as before, though not more
+    // often than BLINK_RESTART_MS, for a program that runs there and sends
+    // the same (vim with t_ti unset).
     let lastUse = Date.now();
     let blinkTimer: number | null = null;
+    // The blink was stopped by blinkCheck, not by a program.
+    let stoppedIdle = false;
+    let programRestart = 0;
     const blinkCheck = () => {
       const left = lastUse + CURSOR_BLINK_IDLE_MS - Date.now();
       if (left > 0) {
@@ -995,14 +1012,35 @@ const TerminalView = ({
         return;
       }
       blinkTimer = null;
-      term.options.cursorBlink = false;
+      if (term.options.cursorBlink) {
+        term.options.cursorBlink = false;
+        stoppedIdle = true;
+      }
     };
     const markUsed = () => {
       lastUse = Date.now();
-      if (!term.options.cursorBlink) term.options.cursorBlink = true;
+      if (term.options.cursorBlink) {
+        stoppedIdle = false;
+      } else if (stoppedIdle) {
+        stoppedIdle = false;
+        term.options.cursorBlink = true;
+      } else if (term.buffer.active.type === 'normal' && lastUse - programRestart >= BLINK_RESTART_MS) {
+        programRestart = lastUse;
+        term.options.cursorBlink = true;
+      }
       if (blinkTimer === null) blinkTimer = window.setTimeout(blinkCheck, CURSOR_BLINK_IDLE_MS);
     };
     markUsed();
+    // A full-screen program that stopped the blink ends without starting it
+    // again: back at the shell the cursor blinks, unless nobody is there.
+    const blinkAfterProgram = term.buffer.onBufferChange((buffer) => {
+      if (buffer.type !== 'normal' || term.options.cursorBlink || stoppedIdle) return;
+      if (Date.now() - lastUse >= CURSOR_BLINK_IDLE_MS) {
+        stoppedIdle = true;
+        return;
+      }
+      term.options.cursorBlink = true;
+    });
     const blinkTextarea = term.textarea;
     const blinkHost = terminalRef.current;
     blinkTextarea?.addEventListener('focus', markUsed);
@@ -1672,6 +1710,7 @@ const TerminalView = ({
     return () => {
       fontDisposed = true;
       if (blinkTimer !== null) window.clearTimeout(blinkTimer);
+      blinkAfterProgram.dispose();
       blinkTextarea?.removeEventListener('focus', markUsed);
       blinkHost.removeEventListener('mousedown', markUsed);
       window.removeEventListener('submarine-settings-changed', handleSettingsChange);
