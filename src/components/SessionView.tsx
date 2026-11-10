@@ -313,7 +313,7 @@ const ToolTitleBar = ({ title, shortTitle, toggle, follow, mirror, extra, onClos
           </button>
         )}
         {extra}
-        <button onClick={onClose} aria-label="Close" className="text-zinc-500 hover:text-white transition-colors shrink-0">
+        <button onClick={onClose} aria-label="Close" className="p-[13px] -m-[13px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white transition-colors shrink-0">
           <X size={14} />
         </button>
       </div>
@@ -1852,7 +1852,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 requestTerminalFocus();
               }}
               title={t.container ? `Container: ${t.container.name}` : undefined}
-              className={`h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-8 sm:pr-8' : ''} rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${
+              className={`h-10 sm:h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-8 sm:pr-8' : ''} rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${
                 isFocusedHalf
                   ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner'
                   : isSplitPartner
@@ -1898,7 +1898,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   }
                 }}
                 aria-label="Close terminal"
-                className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 hover:bg-white/5 hover:text-red-400 text-zinc-500 transition-all"
+                className="absolute right-0 sm:right-1 top-1/2 -translate-y-1/2 w-8 h-10 sm:w-5 sm:h-5 flex items-center justify-center rounded opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 hover:bg-white/5 hover:text-red-400 text-zinc-500 transition-all"
               >
                 <X size={12} />
               </button>
@@ -1947,7 +1947,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               aria-expanded={!!plusMenu}
               aria-label="More terminal options"
               title="More terminal options"
-              className="h-10 w-7 sm:h-8 sm:w-5 rounded-r-lg border-l border-dashed border-white/10 flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all"
+              className="h-10 w-9 sm:h-8 sm:w-5 rounded-r-lg border-l border-dashed border-white/10 flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all"
             >
               <ChevronDown size={12} />
             </button>
@@ -2592,7 +2592,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 truncate">Server Info</span>
               <div className="flex items-center gap-2 shrink-0">
                 {fullToggle}
-                <button onClick={() => setActiveTool(null)} aria-label="Close" className="text-zinc-500 hover:text-white transition-colors">
+                <button onClick={() => setActiveTool(null)} aria-label="Close" className="p-[13px] -m-[13px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white transition-colors">
                   <X size={14} />
                 </button>
               </div>
@@ -2658,7 +2658,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   onClick={closeShellSync}
                   disabled={shellSyncPushing}
                   aria-label="Close"
-                  className="shrink-0 text-zinc-500 hover:text-white transition-colors disabled:opacity-40"
+                  className="shrink-0 p-[13px] -m-[13px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white transition-colors disabled:opacity-40"
                 >
                   <X size={14} />
                 </button>
