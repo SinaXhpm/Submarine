@@ -920,6 +920,13 @@ const TerminalView = ({
       drawBoldTextInBrightColors: readBoldBright(),
       minimumContrastRatio: readMinContrast() ? READABLE_CONTRAST : 1,
       allowProposedApi: true,
+      // Inside a program that takes the mouse (vi with mouse=a, mc, htop) a
+      // plain drag goes to the program, and xterm selects on Shift+drag
+      // instead, as PuTTY does. A Mac has no such key by default: this turns
+      // on Option+drag there, as in Terminal.app and iTerm2. The Option key
+      // keeps typing its characters (macOptionIsMeta stays off), so nothing
+      // else changes. Read on macOS only; other platforms ignore it.
+      macOptionClickForcesSelection: true,
       // OSC 8 hyperlinks a program on the server prints. What they show can
       // differ from where they go, so the real target is shown first, and
       // only an http(s) link opens, in the system browser (open_external_url
