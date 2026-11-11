@@ -18,6 +18,7 @@ import {
   parseWindowsTerminalScheme, schemeToWindowsTerminalJson,
 } from "../util/terminalTheme";
 import { IS_ANDROID, IS_MOBILE } from "../util/platform";
+import { LANGUAGES, languageSetting, setLanguageSetting, systemLanguage, useT } from "../i18n";
 
 // Where this install keeps its data (see src-tauri/src/portable.rs). `portable`
 // means a `submarine-data` folder next to the executable is in use; `warning`
@@ -702,6 +703,34 @@ function ShellConfigSyncSettings({ servers }: { servers: any[] }) {
   );
 }
 
+// Settings → Language (src/i18n): the system's language when the app has it,
+// English otherwise, or a fixed choice. Per device, like the rest here.
+function LanguageSetting() {
+  const t = useT();
+  const sys = LANGUAGES.find((l) => l.id === systemLanguage());
+  return (
+    <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-zinc-100">{t("Language")}</div>
+          <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
+            {t("The app's own text. Messages from a server, and from the connection, stay as they are.")}
+          </p>
+        </div>
+        <select
+          aria-label={t("Language")}
+          value={languageSetting()}
+          onChange={(e) => setLanguageSetting(e.target.value as any)}
+          className="shrink-0 bg-black border border-white/10 rounded-lg px-2 py-1.5 text-[12px] text-zinc-200 focus:border-primary/50 outline-none"
+        >
+          <option value="system">{t("Same as the system ({name})", { name: sys?.name ?? "English" })}</option>
+          {LANGUAGES.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+        </select>
+      </div>
+    </div>
+  );
+}
+
 const SettingsPanel = ({ settings, setSettings, onOpenLogs, servers = [] }: any) => {
   const accentColors = [
     { name: 'Light Blue', value: '#60a5fa' },
@@ -745,6 +774,10 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, servers = [] }: any)
           a 2-col grid rows them up so a short card leaves a tall empty gap beside
           it. Column flow packs them, and break-inside-avoid keeps a card whole. */}
       <div className="columns-1 md:columns-2 gap-4 sm:gap-8">
+        <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+          <LanguageSetting />
+        </section>
+
         {/* Appearance Section */}
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
           <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
