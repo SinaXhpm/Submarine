@@ -8,6 +8,7 @@ import {
 import { IS_ANDROID, IS_MOBILE } from "../util/platform";
 import { normalizeMirror, serverRowChanged } from "../util/serverJson";
 import { tk, tx, useT } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // One-way local → remote folder mirror panel. Lives next to SFTP / Tunnels /
 // CMDS inside a session. The configured mirror pairs are stored on the node
@@ -464,7 +465,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                     {downloadModified === 1
                       ? tx("{count} file marked {mod} will be {overwritten} with the remote copy.", { count: downloadModified, mod: <span className="font-mono">↓ {t("mod")}</span>, overwritten: <b>{t("overwritten locally")}</b> })
                       : tx("{count} files marked {mod} will be {overwritten} with the remote copy.", { count: downloadModified, mod: <span className="font-mono">↓ {t("mod")}</span>, overwritten: <b>{t("overwritten locally")}</b> })}
-                    {" "}{tx("If you edit any of these during the sync, your changes can be lost silently — there's no re-compare between scan and transfer. Save / close editors first, or change conflict mode (currently {mode}).", { mode: <span className="font-mono">{conflictMode}</span> })}
+                    {sentenceGap()}{tx("If you edit any of these during the sync, your changes can be lost silently — there's no re-compare between scan and transfer. Save / close editors first, or change conflict mode (currently {mode}).", { mode: <span className="font-mono">{conflictMode}</span> })}
                   </>
                 ) : (
                   <>

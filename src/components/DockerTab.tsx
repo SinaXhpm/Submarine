@@ -500,7 +500,7 @@ const ContainersView = ({
                 </div>
                 {result && (
                   <div className={`mt-1.5 text-[10px] px-2 py-1 rounded ${result.ok ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20" : "bg-red-500/10 text-red-300 border border-red-500/20"}`}>
-                    <span className="font-bold uppercase tracking-wider mr-1">{result.ok ? t("OK") : t("Error")}</span>
+                    <span className="font-bold uppercase tracking-wider mr-1">{result.ok ? t("OK|status") : t("Error")}</span>
                     <span className="font-mono whitespace-pre-wrap break-words">{result.msg}</span>
                   </div>
                 )}
@@ -841,7 +841,7 @@ const PruneView = ({ sessionId }: { sessionId: string }) => {
             </div>
             {r && (
               <div className={`mt-1.5 text-[10px] px-2 py-1 rounded font-mono whitespace-pre-wrap break-words ${r.ok ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20" : "bg-red-500/10 text-red-300 border border-red-500/20"}`}>
-                <span className="font-bold uppercase tracking-wider mr-1 not-italic">{r.ok ? t("OK") : t("Error")}</span>
+                <span className="font-bold uppercase tracking-wider mr-1 not-italic">{r.ok ? t("OK|status") : t("Error")}</span>
                 {r.msg}
               </div>
             )}

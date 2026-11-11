@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Search, X, History } from "lucide-react";
-import { t, tx, useT } from "../i18n";
+import { t, tx, useLanguage, useT } from "../i18n";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Command History Search — Ctrl+Shift+R (Cmd+Shift+R on macOS) overlay
@@ -50,6 +50,7 @@ const relTime = (ts: number): string => {
 
 const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Props) => {
   const t = useT();
+  const language = useLanguage();
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState<CmdHistoryEntry[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -136,7 +137,7 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
     if (error) return t("Error: {error}", { error });
     if (query) return t('No commands match "{query}".', { query });
     return t("Nothing here yet. Commands you run in a terminal will appear in this list.");
-  }, [error, query]);
+  }, [error, query, language]);
 
   if (!isOpen) return null;
 

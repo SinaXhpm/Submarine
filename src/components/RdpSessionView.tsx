@@ -16,6 +16,7 @@ import {
 import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
 import { useT, tx } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // An RDP server's tab (issue #3). By default Submarine opens the system's RDP
 // app (through a forward on the node's own loopback address while the node
@@ -693,7 +694,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
             {usedOptions && <p className="text-zinc-400">{usedOptions}</p>}
             <p className="text-zinc-500">
               {opened.password ? t("It got the saved password.") : t("It asks for the RDP password itself.")}
-              {opened.via ? " " + t("The connection stays open while this tab does; closing the tab ends it.") : ""}
+              {opened.via ? sentenceGap() + t("The connection stays open while this tab does; closing the tab ends it.") : ""}
             </p>
             {appFailed && (
               <div className="pt-1 text-red-300/90">

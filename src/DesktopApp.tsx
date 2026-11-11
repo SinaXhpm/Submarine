@@ -52,6 +52,7 @@ import { ErrorBoundary, Guarded } from "./ui/ErrorBoundary";
 import { FormError, unsavedQuestion, useUnsavedGuard } from "./ui/slideOverForm";
 import { normalizeMirror, normalizeTunnel, parseObjectList } from "./util/serverJson";
 import { tk, tn, tx, useT } from "./i18n";
+import { joinSentences } from "./util/sentences";
 
 const appWindow = getCurrentWindow();
 
@@ -513,7 +514,7 @@ function DesktopApp() {
         removed > 0 && tn(removed, "Sync removed {count} item from this profile (deleted elsewhere).", "Sync removed {count} items from this profile (deleted elsewhere)."),
         emptied > 0 && tn(emptied, "Sync emptied a saved key or password in {count} item (done elsewhere).", "Sync emptied a saved key or password in {count} items (done elsewhere)."),
         report.backup && t("The profile as it was is kept as {backup}. To go back to it, lock the profile and use its ⋯ menu.", { backup: report.backup }),
-      ].filter(Boolean).join(" "),
+      ].reduce<string>((all, s) => (s ? joinSentences(all, s) : all), ""),
       "info",
     );
   }, [addLog]);

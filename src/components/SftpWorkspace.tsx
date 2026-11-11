@@ -13,6 +13,7 @@ import { useTauriListen } from "../hooks/useTauriListen";
 import { bookmarksKey } from "../util/sftpBookmarks";
 import { FOLLOW_SETUP, type ShellFolderState } from "../util/shellFolder";
 import { t, tk, tn, useT } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // Root (sudo) mode for the remote pane — see `sftp_set_elevated` in lib.rs.
 type ElevationStatus = { elevated: boolean; passwordless: boolean };
@@ -255,7 +256,7 @@ function FollowSetup({ onCopy }: { onCopy: (line: string) => void }) {
     <div className="px-1 flex flex-col gap-1 text-[10px] leading-snug text-zinc-400">
       <span>
         {t("The terminal hasn't said which folder it is in. Add this line to {file}, then open a new terminal.", { file: setup.file })}
-        {setup.note ? ` ${setup.note}` : ""}
+        {setup.note ? sentenceGap() + t(setup.note) : ""}
       </span>
       <div className="flex items-center gap-1">
         {FOLLOW_SETUP.map((s, i) => (

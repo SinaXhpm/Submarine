@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Fingerprint, Unlock } from "lucide-react";
 import { useTextPrompt } from "../ui/confirm";
 import { tk, useT } from "../i18n";
+import { joinSentences } from "../util/sentences";
 
 // Quick unlock (#166, quick_unlock.rs): this profile opens with Windows Hello
 // or the fingerprint on this device. Off until turned on here, which takes
@@ -42,9 +43,9 @@ export default function QuickUnlockCard({ profile, card, label }: { profile: str
     const password = await textPrompt({
       title: auto ? t(AUTO_TITLE) : unlockWith,
       message: auto
-        ? t("Enter this profile's password once. Then it opens by itself when Submarine starts, with no password, PIN, face or fingerprint. Anyone or any program using this Windows account can open it, so use this only on a computer that's yours alone. Its key stays encrypted for this account. After Lock it takes the password again until Submarine restarts.") + (on === method ? " " + t("This replaces Windows Hello for this profile.") : "")
+        ? joinSentences(t("Enter this profile's password once. Then it opens by itself when Submarine starts, with no password, PIN, face or fingerprint. Anyone or any program using this Windows account can open it, so use this only on a computer that's yours alone. Its key stays encrypted for this account. After Lock it takes the password again until Submarine restarts."), on === method && t("This replaces Windows Hello for this profile."))
         : hello
-          ? t("Enter this profile's password once. Then it opens on this computer with your Windows Hello PIN, face or finger, and Windows asks you to confirm now.") + (on === AUTO ? " " + t("This replaces opening automatically.") : "")
+          ? joinSentences(t("Enter this profile's password once. Then it opens on this computer with your Windows Hello PIN, face or finger, and Windows asks you to confirm now."), on === AUTO && t("This replaces opening automatically."))
           : t("Enter this profile's password once. Then it opens on this phone with a fingerprint, and the phone asks for one now."),
       placeholder: t("Profile password"),
       password: true,

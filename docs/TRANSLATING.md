@@ -19,7 +19,8 @@ operating system are not translated; they are shown as they arrive.
    `systemLanguage()` there if the system's language should pick it by itself.
    The name in `LANGUAGES` is in the language itself (`Deutsch`, not `German`).
 3. Run `npm run i18n` again. It reports what is missing, lines the code no
-   longer uses, and placeholders that differ. Then `npm run build`.
+   longer uses, and placeholders that differ. `npm run i18n -- --strict` also
+   fails while a text is missing. Then `npm run build`.
 
 ## The lines
 
@@ -57,4 +58,7 @@ operating system are not translated; they are shown as they arrive.
   element ids and `data-*` values, CSS classes, log lines for the console,
   command text for a server, URLs, and names of things (fonts, colour schemes
   by their own names, languages).
-- Run `npm run i18n` before a pull request; CI runs it too.
+- Run `npm run i18n` after changing texts, and commit `src/i18n/en.json`
+  with them. A new text shows in English in the other languages until it is
+  translated; the script lists those. It fails on a line the code no longer
+  uses (remove it from the language files) and on placeholders that differ.

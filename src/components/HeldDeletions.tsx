@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Trash2, X } from "lucide-react";
 import { useFocusTrap } from "../ui/confirm";
 import { tk, useT } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // Deletions a shared profile's sync would have made here, held until this
 // device's user decides (src-tauri/src/approvals.rs, hold_deletions): one
@@ -80,7 +81,7 @@ export function HeldDeletions({ items, onResolve, onClose }: {
           {anyEmptied
             ? t("Someone you share this profile with deleted these, or emptied a saved key or password in them. They're still here as they were: do the same here, or keep them.")
             : t("Someone you share this profile with deleted these in one go. They're still here: delete them here too, or keep them.")}
-          {" "}
+          {sentenceGap()}
           {t("Kept items come back for everyone, or, if you can only view this profile, stay on this device.")}
         </p>
         <div className="flex-1 overflow-y-auto custom-scrollbar px-4 pb-2 space-y-3">

@@ -9,6 +9,7 @@ import QuickUnlockCard from "./QuickUnlockCard";
 import { RoleBadge, roleBlurb } from "./shareRoles";
 import { hostOf } from "./SyncServerSetting";
 import { t, tk, tn, tx, useT } from "../i18n";
+import { joinSentences } from "../util/sentences";
 
 interface RecentEdit { name: string; edited_by: string; updated_at: string; }
 interface SyncDiff { in_sync: number; needs_push: number; needs_pull: number; out_of_sync_nodes: string[]; }
@@ -86,7 +87,7 @@ const leftOutText = (l: LeftOut[]) =>
 const firstSeenText = (emails: string[]) =>
   t("The new key also went to {emails}, with no earlier key on record here to check. If you don't know someone on that list, remove them.", { emails: emails.join(", ") });
 const keyResultText = (r: KeyResult) =>
-  [r.left_out.length > 0 && leftOutText(r.left_out), r.first_seen.length > 0 && firstSeenText(r.first_seen)].filter(Boolean).join(" ");
+  joinSentences(r.left_out.length > 0 && leftOutText(r.left_out), r.first_seen.length > 0 && firstSeenText(r.first_seen));
 
 type Props = {
   onSync: () => Promise<void> | void;
@@ -252,7 +253,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
       setKeyRetry(false);
       await refresh();
       loadStats(); // the removal synced
-      if (keyResultText(r)) fail(t("{email} removed.", { email: m.email }) + " " + keyResultText(r));
+      if (keyResultText(r)) fail(joinSentences(t("{email} removed.", { email: m.email }), keyResultText(r)));
       else flash(t("{email} removed.", { email: m.email }));
     } catch (e) {
       // Out of the share, but the key wasn't replaced: offer to finish it.
@@ -271,7 +272,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
       setKeyRetry(false);
       await refresh();
       loadStats();
-      if (keyResultText(r)) fail(t("Key replaced.") + " " + keyResultText(r));
+      if (keyResultText(r)) fail(joinSentences(t("Key replaced."), keyResultText(r)));
       else flash(t("Key replaced."));
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
