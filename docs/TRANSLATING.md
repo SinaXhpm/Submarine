@@ -15,9 +15,10 @@ operating system are not translated; they are shown as they arrive.
    BCP 47 tag (`zh-CN`, `de`, `pt-BR`), and translate the values. Leave the
    keys as they are. A value you can't translate yet can stay empty: it shows
    in English.
-2. Add the language to `LANGUAGES` and `DICTS` in `src/i18n/index.ts`, and to
-   `systemLanguage()` there if the system's language should pick it by itself.
-   The name in `LANGUAGES` is in the language itself (`Deutsch`, not `German`).
+2. Add the language to `LanguageId`, `LANGUAGES` and `LOADERS` in
+   `src/i18n/index.ts`, and to `BY_BASE` there so a system set to it picks it
+   by itself. The name in `LANGUAGES` is in the language itself (`Deutsch`, not
+   `German`). Each language's file is loaded only when it is used.
 3. Run `npm run i18n` again. It reports what is missing, lines the code no
    longer uses, and placeholders that differ. `npm run i18n -- --strict` also
    fails while a text is missing. Then `npm run build`.
@@ -29,10 +30,22 @@ operating system are not translated; they are shown as they arrive.
 - Some keys end in a context after a bar, `"Open|a verb"`, where one English
   text needs two translations. Translate the text before the bar; the context
   only tells you which meaning it is.
-- Counts come in two English forms, `"{count} file"` and `"{count} files"`,
-  picked by the language's plural rules. A language with one form (Chinese)
-  translates both the same way; a language with more forms (Russian, Arabic)
-  gets only "one" and "other" for now.
+- Counts come in two English forms, `"{count} file"` and `"{count} files"`.
+  The first is used for exactly one. A language with one form (Chinese,
+  Japanese, Korean) translates both the same way. A language with more forms
+  translates the second with its form for 5 and adds a line for each other
+  form, the English key followed by `|few`, `|many`, `|one` or `|two`:
+
+  ```json
+  "{count} files": "{count} файлов",
+  "{count} files|few": "{count} файла",
+  "{count} files|one": "{count} файл"
+  ```
+
+  Which forms a language has comes from `Intl.PluralRules`; `npm run i18n`
+  lists every `few` and `two` line that is missing. A `|one` line is for the
+  counts other than 1 that take the singular (21 in Russian), when the English
+  singular has no `{count}`.
 - Keep product and protocol names (Submarine, SSH, SFTP, RDP, VNC, Docker,
   ssh-agent), file paths such as `~/.ssh/config`, key names (`Ctrl+Shift+C`)
   and command names as they are.
