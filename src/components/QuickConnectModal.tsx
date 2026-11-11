@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Zap, X, AlertTriangle, KeyRound, Lock } from "lucide-react";
 import PasswordField from "./PasswordField";
+import { useT } from "../i18n";
 
 // Quick Connect: the auth bundle lives in component state, gets passed to
 // DesktopApp via onConnect, and the resulting session carries it through to
@@ -25,6 +26,7 @@ interface Props {
 }
 
 const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
+  const t = useT();
   const [host, setHost] = useState("");
   const [port, setPort] = useState<number>(22);
   const [username, setUsername] = useState("root");
@@ -46,9 +48,9 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
 
   const connect = () => {
     setErr(null);
-    if (!host.trim()) { setErr("Host is required"); return; }
-    if (!port || port < 1 || port > 65535) { setErr("Port must be 1–65535"); return; }
-    if (authMode === "key" && !privateKey.trim()) { setErr("Private key body is required"); return; }
+    if (!host.trim()) { setErr(t("Host is required")); return; }
+    if (!port || port < 1 || port > 65535) { setErr(t("Port must be 1–65535")); return; }
+    if (authMode === "key" && !privateKey.trim()) { setErr(t("Private key body is required")); return; }
 
     // A blank username (issue #54) and an empty password (issue #30) are both
     // asked for when connecting; an empty "Login as" answer means root.
@@ -70,9 +72,9 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
         {/* Header */}
         <div className="shrink-0 px-4 py-3 border-b border-white/5 flex items-center justify-between">
           <span className="text-[12px] font-bold uppercase tracking-widest text-white flex items-center gap-2">
-            <Zap size={13} className="text-primary" /> Quick Connect
+            <Zap size={13} className="text-primary" /> {t("Quick Connect")}
           </span>
-          <button aria-label="Close" onClick={close} className="text-zinc-400 hover:text-white"><X size={16} /></button>
+          <button aria-label={t("Close")} onClick={close} className="text-zinc-400 hover:text-white"><X size={16} /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-3">
@@ -85,17 +87,17 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
           {/* Host + port */}
           <div className="grid grid-cols-4 gap-2">
             <div className="col-span-3 space-y-1">
-              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">Host</label>
+              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Host")}</label>
               <input
                 value={host}
                 onChange={(e) => setHost(e.target.value)}
-                placeholder="192.168.1.1 or example.com"
+                placeholder={t("192.168.1.1 or example.com")}
                 className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-zinc-50 outline-none focus:border-primary/50"
                 autoFocus
               />
             </div>
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">Port</label>
+              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Port")}</label>
               <input
                 type="number"
                 value={port}
@@ -107,11 +109,11 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
 
           {/* Username */}
           <div className="space-y-1">
-            <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">Username</label>
+            <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Username")}</label>
             <input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="Ask when connecting"
+              placeholder={t("Ask when connecting")}
               className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-zinc-50 outline-none focus:border-primary/50"
             />
           </div>
@@ -127,7 +129,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                     : "text-zinc-400 hover:text-zinc-100"
                 }`}
               >
-                <Lock size={11} /> Password
+                <Lock size={11} /> {t("Password")}
               </button>
               <button
                 onClick={() => setAuthMode("key")}
@@ -137,14 +139,14 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                     : "text-zinc-400 hover:text-zinc-100"
                 }`}
               >
-                <KeyRound size={11} /> SSH Key
+                <KeyRound size={11} /> {t("SSH Key")}
               </button>
             </div>
           </div>
 
           {authMode === "password" ? (
             <div className="space-y-1 animate-in fade-in">
-              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">Password</label>
+              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Password")}</label>
               <PasswordField
                 value={password}
                 onChange={setPassword}
@@ -152,12 +154,12 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                 onKeyDown={(e: any) => e.key === "Enter" && connect()}
                 className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-primary outline-none focus:border-primary/50"
               />
-              <p className="text-[10px] text-zinc-500 ml-0.5">Leave empty to be asked when connecting.</p>
+              <p className="text-[10px] text-zinc-500 ml-0.5">{t("Leave empty to be asked when connecting.")}</p>
             </div>
           ) : (
             <div className="space-y-2 animate-in fade-in">
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">Private Key (PEM)</label>
+                <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Private Key (PEM)")}</label>
                 <textarea
                   value={privateKey}
                   onChange={(e) => setPrivateKey(e.target.value)}
@@ -167,20 +169,20 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">Passphrase (if any)</label>
+                <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Passphrase (if any)")}</label>
                 <PasswordField
                   value={passphrase}
                   onChange={setPassphrase}
-                  placeholder="leave empty if unencrypted"
+                  placeholder={t("leave empty if unencrypted")}
                   className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-zinc-50 outline-none focus:border-primary/50"
                 />
-                <p className="text-[10px] text-zinc-500 ml-0.5">For an encrypted key, leave empty to be asked when connecting.</p>
+                <p className="text-[10px] text-zinc-500 ml-0.5">{t("For an encrypted key, leave empty to be asked when connecting.")}</p>
               </div>
             </div>
           )}
 
           <p className="text-[10.5px] text-zinc-400 leading-snug pt-1">
-            This host is saved as a node in your root directory for reuse. Edit or remove it anytime from the node grid.
+            {t("This host is saved as a node in your root directory for reuse. Edit or remove it anytime from the node grid.")}
           </p>
         </div>
 
@@ -190,10 +192,10 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
             onClick={connect}
             className="flex-1 h-10 rounded-lg text-[11.5px] font-bold uppercase tracking-wider bg-primary text-black hover:shadow-[0_0_20px_rgba(var(--primary),0.3)] flex items-center justify-center gap-2"
           >
-            <Zap size={14} /> Connect
+            <Zap size={14} /> {t("Connect")}
           </button>
           <button onClick={close} className="h-10 px-4 rounded-lg text-[11.5px] font-bold uppercase tracking-wider bg-white/5 text-zinc-200 border border-white/10 hover:bg-white/10">
-            Cancel
+            {t("Cancel")}
           </button>
         </div>
       </div>

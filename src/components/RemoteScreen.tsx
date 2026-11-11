@@ -3,6 +3,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { Keyboard, Loader2 } from "lucide-react";
 import { IS_MOBILE } from "../util/platform";
 import { codeForKey, scancodeFor } from "../util/scancodes";
+import { useT } from "../i18n";
 
 // The screen of a remote desktop in its tab (VNC, vnc_client.rs) and its
 // mouse and keyboard. The backend sends frames over a channel: [1, w, h] when
@@ -65,6 +66,7 @@ type Props = {
 
 const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
   ({ sessionId, active, connected, inputCommand, resizeCommand, scale = 1 }, ref) => {
+    const t = useT();
     const boxRef = useRef<HTMLDivElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const imeRef = useRef<HTMLTextAreaElement | null>(null);
@@ -479,7 +481,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
         <canvas
           ref={canvasRef}
           tabIndex={0}
-          aria-label="Remote desktop"
+          aria-label={t("Remote desktop")}
           className="outline-none touch-none"
           style={fit ? { width: fit.w, height: fit.h, transform: view.z === 1 ? undefined : `translate(${view.x}px, ${view.y}px) scale(${view.z})`, transformOrigin: "center" } : { display: "none" }}
           onMouseMove={onMouseMove}
@@ -498,14 +500,14 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
         {connected && !painted && (
           <div className="absolute inset-0 flex items-center justify-center gap-2 text-[12px] text-zinc-500 pointer-events-none" role="status">
             <Loader2 size={14} className="animate-spin-brief" />
-            Waiting for the desktop…
+            {t("Waiting for the desktop…")}
           </div>
         )}
         {IS_MOBILE && connected && (
           <>
             <textarea
               ref={imeRef}
-              aria-label="Type on the remote desktop"
+              aria-label={t("Type on the remote desktop")}
               defaultValue=" "
               autoCapitalize="off"
               autoCorrect="off"
@@ -536,7 +538,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
                   window.setTimeout(() => t.focus(), 60);
                 }
               }}
-              aria-label="Show the keyboard"
+              aria-label={t("Show the keyboard")}
               className="absolute right-3 bottom-3 w-11 h-11 rounded-full bg-zinc-800/90 border border-white/10 text-zinc-200 flex items-center justify-center shadow-lg"
             >
               <Keyboard size={18} />

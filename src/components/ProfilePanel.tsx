@@ -8,6 +8,7 @@ import { useConfirm, useTextPrompt } from "../ui/confirm";
 import QuickUnlockCard from "./QuickUnlockCard";
 import { RoleBadge, roleBlurb } from "./shareRoles";
 import { hostOf } from "./SyncServerSetting";
+import { t, tk, tn, tx, useT } from "../i18n";
 
 interface RecentEdit { name: string; edited_by: string; updated_at: string; }
 interface SyncDiff { in_sync: number; needs_push: number; needs_pull: number; out_of_sync_nodes: string[]; }
@@ -23,10 +24,10 @@ function hlcAgo(stamp: string): string {
   const ms = parseInt(stamp.slice(0, 15), 10);
   if (!Number.isFinite(ms) || ms <= 0) return "";
   const s = Math.floor((Date.now() - ms) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
+  if (s < 60) return t("just now");
+  if (s < 3600) return t("{count}m ago", { count: Math.floor(s / 60) });
+  if (s < 86400) return t("{count}h ago", { count: Math.floor(s / 3600) });
+  return t("{count}d ago", { count: Math.floor(s / 86400) });
 }
 
 function fmtBytes(n: number): string {
@@ -69,19 +70,21 @@ interface LeftOut { email: string; reason: string; }
 // key with no key of theirs on record here to check against.
 interface KeyResult { left_out: LeftOut[]; first_seen: string[]; }
 const LEFT_OUT_WHY: Record<string, string> = {
-  key_changed: "their sharing key changed since you invited them",
-  other_account: "the server answered for another account",
-  no_key: "they have no sharing key on the server",
-  weak_key: "their sharing key can't be used",
-  upload_failed: "the upload failed",
+  key_changed: tk("their sharing key changed since you invited them"),
+  other_account: tk("the server answered for another account"),
+  no_key: tk("they have no sharing key on the server"),
+  weak_key: tk("their sharing key can't be used"),
+  upload_failed: tk("the upload failed"),
 };
+const leftOutWhy = (reason: string) => { const why = LEFT_OUT_WHY[reason]; return why ? t(why) : reason; };
 const leftOutText = (l: LeftOut[]) =>
-  "These people didn't get the new key, so they can't see changes from now on until you invite them again: " +
-  l.map((x) => `${x.email} (${LEFT_OUT_WHY[x.reason] ?? x.reason})`).join(", ") + ".";
+  t("These people didn't get the new key, so they can't see changes from now on until you invite them again: {people}.", {
+    people: l.map((x) => t("{email} ({why})", { email: x.email, why: leftOutWhy(x.reason) })).join(", "),
+  });
 // The member list comes from the server, so a name it added would get the key
 // too. This device can't tell, but the owner can.
 const firstSeenText = (emails: string[]) =>
-  `The new key also went to ${emails.join(", ")}, with no earlier key on record here to check. If you don't know someone on that list, remove them.`;
+  t("The new key also went to {emails}, with no earlier key on record here to check. If you don't know someone on that list, remove them.", { emails: emails.join(", ") });
 const keyResultText = (r: KeyResult) =>
   [r.left_out.length > 0 && leftOutText(r.left_out), r.first_seen.length > 0 && firstSeenText(r.first_seen)].filter(Boolean).join(" ");
 
@@ -96,6 +99,7 @@ type Props = {
 };
 
 export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync, syncIntervalMin, onSetInterval, onToggleAutoSync }: Props) {
+  const t = useT();
   const confirm = useConfirm();
   const textPrompt = useTextPrompt();
 
@@ -160,12 +164,10 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
   // copy only, so the confirm spells out exactly what goes and what stays.
   const forcePush = async () => {
     if (!(await confirm({
-      title: "Replace the cloud copy?",
+      title: t("Replace the cloud copy?"),
       message:
-        "Everything currently in the cloud for this profile is deleted, then this device uploads its own copy in full.\n\n" +
-        "Nothing on this device changes. But any item that exists ONLY in the cloud — including the ones this device can't read — is gone for good, " +
-        "and other devices will take this copy as the truth the next time they sync.",
-      okLabel: "Replace cloud copy",
+        t("Everything currently in the cloud for this profile is deleted, then this device uploads its own copy in full.\n\nNothing on this device changes. But any item that exists ONLY in the cloud — including the ones this device can't read — is gone for good, and other devices will take this copy as the truth the next time they sync."),
+      okLabel: t("Replace cloud copy"),
       destructive: true,
     }))) return;
     setBusy(true); setErr(null);
@@ -173,7 +175,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
       const rep = await invoke<{ pushed: number; pulled: number }>("force_push_profile");
       setStuck(false);
       prevPull.current = null;
-      flash(`Cloud copy replaced — uploaded ${rep.pushed} item${rep.pushed === 1 ? "" : "s"}.`);
+      flash(tn(rep.pushed, "Cloud copy replaced — uploaded {count} item.", "Cloud copy replaced — uploaded {count} items."));
       await loadStats();
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
@@ -188,20 +190,19 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
     setSt(cur);
     if (cur.identity_unlocked) return true;
     const pass = await textPrompt({
-      title: "Unlock sharing",
+      title: t("Unlock sharing"),
       message:
-        "Sharing has its own passphrase — it protects the key that shared profiles are locked to. " +
-        "Enter yours, or pick one now if this is your first share. It never leaves this device.",
-      placeholder: "Sharing passphrase (min 8)",
+        t("Sharing has its own passphrase — it protects the key that shared profiles are locked to. Enter yours, or pick one now if this is your first share. It never leaves this device."),
+      placeholder: t("Sharing passphrase (min 8)"),
       password: true,
-      okLabel: "Continue",
-      validate: (v) => (v.length < 8 ? "At least 8 characters" : null),
+      okLabel: t("Continue"),
+      validate: (v) => (v.length < 8 ? t("At least 8 characters") : null),
     });
     if (!pass) return false;
     await invoke("setup_identity", { encPassphrase: pass });
     await refresh();
     return true;
-  }, [textPrompt, refresh]);
+  }, [textPrompt, refresh, t]);
 
   const startSharing = async () => {
     setBusy(true); setErr(null);
@@ -211,20 +212,20 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
       // what invitees see when the invitation shows up for them.
       await invoke<{ share_id: string }>("share_current_profile", { name: st?.profile ?? "profile" });
       await refresh();
-      flash("This profile is shared. Invite people below.");
+      flash(t("This profile is shared. Invite people below."));
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
 
   const invite = async () => {
     const e = email.trim().toLowerCase();
-    if (!e.includes("@")) { fail("Enter a valid email address."); return; }
+    if (!e.includes("@")) { fail(t("Enter a valid email address.")); return; }
     setBusy(true); setErr(null);
     try {
       if (!(await ensureIdentity())) return;
       await invoke("invite_to_share", { shareId: st!.share_id, email: e, role });
       setEmail("");
       await refresh();
-      flash(`Invited ${e} as ${role === "user" ? "Viewer" : "Editor"}.`);
+      flash(role === "user" ? t("Invited {email} as Viewer.", { email: e }) : t("Invited {email} as Editor.", { email: e }));
     } catch (er) { fail(er); } finally { setBusy(false); }
   };
 
@@ -238,9 +239,9 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
 
   const revoke = async (m: MemberInfo) => {
     if (!(await confirm({
-      title: "Remove access?",
-      message: `${m.email} loses access to "${st?.profile}" immediately. Any copy already on their device stays there — this stops them receiving future changes.`,
-      okLabel: "Remove",
+      title: t("Remove access?"),
+      message: t("{email} loses access to \"{name}\" immediately. Any copy already on their device stays there — this stops them receiving future changes.", { email: m.email, name: st?.profile ?? "" }),
+      okLabel: t("Remove"),
       destructive: true,
     }))) return;
     setBusy(true);
@@ -251,8 +252,8 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
       setKeyRetry(false);
       await refresh();
       loadStats(); // the removal synced
-      if (keyResultText(r)) fail(`${m.email} removed. ${keyResultText(r)}`);
-      else flash(`${m.email} removed.`);
+      if (keyResultText(r)) fail(t("{email} removed.", { email: m.email }) + " " + keyResultText(r));
+      else flash(t("{email} removed.", { email: m.email }));
     } catch (e) {
       // Out of the share, but the key wasn't replaced: offer to finish it.
       if (String(e).includes("REVOKED_BUT_KEY_NOT_ROTATED")) setKeyRetry(true);
@@ -270,26 +271,26 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
       setKeyRetry(false);
       await refresh();
       loadStats();
-      if (keyResultText(r)) fail(`Key replaced. ${keyResultText(r)}`);
-      else flash("Key replaced.");
+      if (keyResultText(r)) fail(t("Key replaced.") + " " + keyResultText(r));
+      else flash(t("Key replaced."));
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
 
   const stopSharing = async () => {
     const owner = st?.role === "owner";
     if (!(await confirm({
-      title: owner ? "Stop sharing this profile?" : "Leave this shared profile?",
+      title: owner ? t("Stop sharing this profile?") : t("Leave this shared profile?"),
       message: owner
-        ? `Everyone you invited loses access to "${st?.profile}" immediately. Your own copy stays on this device.`
-        : `You stop receiving changes to "${st?.profile}". The copy on this device stays, and becomes yours alone.`,
-      okLabel: owner ? "Stop sharing" : "Leave",
+        ? t("Everyone you invited loses access to \"{name}\" immediately. Your own copy stays on this device.", { name: st?.profile ?? "" })
+        : t("You stop receiving changes to \"{name}\". The copy on this device stays, and becomes yours alone.", { name: st?.profile ?? "" }),
+      okLabel: owner ? t("Stop sharing") : t("Leave"),
       destructive: true,
     }))) return;
     setBusy(true);
     try {
       await invoke("stop_sharing");
       await refresh();
-      flash(owner ? "Sharing stopped — this profile is private again." : "You left the share.");
+      flash(owner ? t("Sharing stopped — this profile is private again.") : t("You left the share."));
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
 
@@ -310,17 +311,16 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
     if (!st || !otherServer) return;
     const from = hostOf(otherServer), to = hostOf(st.current_server);
     if (!(await confirm({
-      title: `Sync this profile with ${to}?`,
+      title: t("Sync this profile with {to}?", { to }),
       message:
-        `It syncs with ${from} now. From now on it syncs with ${to} instead, and the next sync uploads it there in full.\n\n` +
-        `Its copy on ${from} isn't changed or deleted.`,
-      okLabel: `Sync with ${to}`,
+        t("It syncs with {from} now. From now on it syncs with {to} instead, and the next sync uploads it there in full.\n\nIts copy on {from} isn't changed or deleted.", { from, to }),
+      okLabel: t("Sync with {to}", { to }),
     }))) return;
     setBusy(true); setErr(null);
     try {
       await invoke("move_profile_to_current_server");
       await refresh();
-      flash(`This profile now syncs with ${to}.`);
+      flash(t("This profile now syncs with {to}.", { to }));
       if (signedIn) await doSync();
     } catch (e) { fail(e); } finally { setBusy(false); }
   };
@@ -350,8 +350,8 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
           </div>
           <p className="hidden sm:block text-[13px] text-zinc-400">
             {shared
-              ? isOwner ? "You share this profile. Manage who gets in, below." : "Shared with you by someone else."
-              : "This profile lives only on your devices."}
+              ? isOwner ? t("You share this profile. Manage who gets in, below.") : t("Shared with you by someone else.")
+              : t("This profile lives only on your devices.")}
           </p>
         </div>
       </header>
@@ -360,7 +360,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
         <div className="px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-200 text-[12px] flex items-start gap-2">
           <AlertTriangle size={13} className="mt-0.5 shrink-0" />
           <span className="flex-1 break-words">{err}</span>
-          <button aria-label="Dismiss" onClick={() => setErr(null)} className="text-rose-300/70 hover:text-white"><X size={12} /></button>
+          <button aria-label={t("Dismiss")} onClick={() => setErr(null)} className="text-rose-300/70 hover:text-white"><X size={12} /></button>
         </div>
       )}
       {ok && !err && (
@@ -374,7 +374,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
 
       {/* ---- Cloud + sync ---- */}
       <section className={card}>
-        <div className={label}>Cloud</div>
+        <div className={label}>{t("Cloud")}</div>
         <div className="flex items-center gap-2 flex-wrap">
           {signedIn ? (
             <>
@@ -385,14 +385,14 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
             <>
               <CloudOff size={14} className="text-zinc-500 shrink-0" />
               <span className="text-[12.5px] text-zinc-400">
-                Not signed in — lock this profile and sign in from the Cloud button on the picker.
+                {t("Not signed in — lock this profile and sign in from the Cloud button on the picker.")}
               </span>
             </>
           )}
         </div>
         {st?.custom_server && !otherServer && (
           <div className="text-[11px] text-zinc-500">
-            Sync server: <span className="font-mono text-zinc-400">{hostOf(st.current_server)}</span>
+            {tx("Sync server: {host}", { host: <span className="font-mono text-zinc-400">{hostOf(st.current_server)}</span> })}
           </div>
         )}
         {otherServer && st && (
@@ -400,11 +400,13 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
             <div className="flex items-start gap-2">
               <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-300" />
               <span className="flex-1 break-words">
-                This profile syncs with <span className="font-mono">{hostOf(otherServer)}</span>, not with{" "}
-                <span className="font-mono">{hostOf(st.current_server)}</span>, so it doesn't sync now.{" "}
+                {tx("This profile syncs with {other}, not with {current}, so it doesn't sync now.", {
+                  other: <span className="font-mono">{hostOf(otherServer)}</span>,
+                  current: <span className="font-mono">{hostOf(st.current_server)}</span>,
+                })}{" "}
                 {shared
-                  ? "A shared profile stays on the server it was shared on: switch the sync server back to sync it."
-                  : "Switch the sync server back, or move this profile to the server in use."}
+                  ? t("A shared profile stays on the server it was shared on: switch the sync server back to sync it.")
+                  : t("Switch the sync server back, or move this profile to the server in use.")}
               </span>
             </div>
             {!shared && (
@@ -413,7 +415,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                 disabled={busy}
                 className="h-8 px-3 rounded-lg bg-amber-500/20 border border-amber-400/30 text-amber-100 text-[12px] font-bold hover:bg-amber-500/30 disabled:opacity-40"
               >
-                Sync with {hostOf(st.current_server)}
+                {t("Sync with {to}", { to: hostOf(st.current_server) })}
               </button>
             )}
           </div>
@@ -423,8 +425,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
             <div className="flex items-start gap-2">
               <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-300" />
               <span className="flex-1 break-words">
-                You deleted this profile from the cloud on this device, so it doesn't sync now. Upload it again if you
-                want it back there.
+                {t("You deleted this profile from the cloud on this device, so it doesn't sync now. Upload it again if you want it back there.")}
               </span>
             </div>
             {signedIn && (
@@ -433,7 +434,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                 disabled={busy}
                 className="h-8 px-3 rounded-lg bg-amber-500/20 border border-amber-400/30 text-amber-100 text-[12px] font-bold hover:bg-amber-500/30 disabled:opacity-40"
               >
-                Upload it again
+                {t("Upload it again")}
               </button>
             )}
           </div>
@@ -447,26 +448,26 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                 className="h-9 px-3 rounded-lg bg-primary text-black text-[12.5px] font-bold disabled:opacity-40 flex items-center gap-2"
               >
                 <RefreshCw size={13} className={syncing ? "animate-spin" : ""} />
-                {syncing ? "Syncing…" : "Sync now"}
+                {syncing ? t("Syncing…") : t("Sync now")}
               </button>
-              <span className="text-[11px] text-zinc-500">{lastSyncLabel ?? "Not synced yet this session."}</span>
+              <span className="text-[11px] text-zinc-500">{lastSyncLabel ?? t("Not synced yet this session.")}</span>
             </div>
             <div className="flex items-center gap-2 flex-wrap text-[11.5px]">
               {autoSync ? (
                 <>
                   <span className="flex items-center gap-1.5 text-emerald-300/90">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-brief" />
-                    Auto-sync is on — your changes are saved to the cloud automatically.
+                    {t("Auto-sync is on — your changes are saved to the cloud automatically.")}
                   </span>
-                  <button onClick={onToggleAutoSync} className="text-zinc-400 hover:text-zinc-200 underline underline-offset-2 shrink-0">Turn off</button>
+                  <button onClick={onToggleAutoSync} className="text-zinc-400 hover:text-zinc-200 underline underline-offset-2 shrink-0">{t("Turn off")}</button>
                 </>
               ) : (
                 <>
                   <span className="flex items-center gap-1.5 text-zinc-400">
                     <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" />
-                    Auto-sync is off — changes sync only when you press Sync now.
+                    {t("Auto-sync is off — changes sync only when you press Sync now.")}
                   </span>
-                  <button onClick={onToggleAutoSync} className="text-primary hover:opacity-80 underline underline-offset-2 shrink-0">Turn on</button>
+                  <button onClick={onToggleAutoSync} className="text-primary hover:opacity-80 underline underline-offset-2 shrink-0">{t("Turn on")}</button>
                 </>
               )}
             </div>
@@ -475,7 +476,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                 modifies, and it's the answer to "is this thing even running?" */}
             {autoSync && (
               <div className="border-t border-white/5 pt-3 flex items-center gap-2 flex-wrap">
-                <span className="text-[11.5px] text-zinc-400">Check for others' changes every</span>
+                <span className="text-[11.5px] text-zinc-400">{t("Check for others' changes every")}</span>
                 <div className="flex items-center gap-1">
                   {[1, 2, 5, 10, 15, 30].map((m) => (
                     <button
@@ -487,7 +488,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                           : "bg-zinc-900/60 text-zinc-400 hover:text-zinc-200 border border-white/5"
                       }`}
                     >
-                      {m}m
+                      {t("{count}m", { count: m })}
                     </button>
                   ))}
                 </div>
@@ -499,7 +500,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
               if (pending === 0) {
                 return (
                   <div className="flex items-center gap-1.5 text-[11.5px] text-emerald-300/90">
-                    <CheckCircle2 size={12} /> Everything is in sync with the cloud.
+                    <CheckCircle2 size={12} /> {t("Everything is in sync with the cloud.")}
                   </div>
                 );
               }
@@ -507,15 +508,15 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                 <div className="text-[11.5px] text-amber-200/90 space-y-1">
                   <div className="flex items-center gap-1.5">
                     <AlertTriangle size={12} />
-                    {d.needs_push > 0 && <span>{d.needs_push} to send</span>}
+                    {d.needs_push > 0 && <span>{t("{count} to send", { count: d.needs_push })}</span>}
                     {d.needs_push > 0 && d.needs_pull > 0 && <span className="text-zinc-500">·</span>}
-                    {d.needs_pull > 0 && <span>{d.needs_pull} to receive</span>}
-                    <span className="text-zinc-500">— run Sync now.</span>
+                    {d.needs_pull > 0 && <span>{t("{count} to receive", { count: d.needs_pull })}</span>}
+                    <span className="text-zinc-500">{t("— run Sync now.")}</span>
                   </div>
                   {d.out_of_sync_nodes.length > 0 && (
                     <div className="text-[10.5px] text-zinc-500 pl-[18px]">
-                      Nodes: {d.out_of_sync_nodes.slice(0, 8).join(", ")}
-                      {d.out_of_sync_nodes.length > 8 ? ` +${d.out_of_sync_nodes.length - 8} more` : ""}
+                      {t("Nodes: {list}", { list: d.out_of_sync_nodes.slice(0, 8).join(", ") })}
+                      {d.out_of_sync_nodes.length > 8 ? " " + t("+{count} more", { count: d.out_of_sync_nodes.length - 8 }) : ""}
                     </div>
                   )}
                   {/* Only offered once syncing has demonstrably stopped helping.
@@ -525,16 +526,14 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                   {stuck && (
                     <div className="pl-[18px] pt-1 space-y-1">
                       <div className="text-[10.5px] text-zinc-500 leading-relaxed">
-                        Still {d.needs_pull} to receive after syncing. These are almost certainly
-                        items this device can't read — pushed by another copy of this profile that had its
-                        own key. Syncing will never clear them.
+                        {t("Still {count} to receive after syncing. These are almost certainly items this device can't read — pushed by another copy of this profile that had its own key. Syncing will never clear them.", { count: d.needs_pull })}
                       </div>
                       <button
                         onClick={forcePush}
                         disabled={busy || syncing}
                         className="text-[11px] text-amber-300 hover:text-amber-200 underline underline-offset-2 disabled:opacity-40"
                       >
-                        Replace the cloud copy with this device
+                        {t("Replace the cloud copy with this device")}
                       </button>
                     </div>
                   )}
@@ -550,24 +549,24 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
         <section className={card}>
           <div className="flex items-center justify-between gap-2">
             <div className={`${label} flex items-center gap-1.5`}>
-              <History size={12} /> Recent activity
+              <History size={12} /> {t("Recent activity")}
             </div>
-            <div className="flex items-center gap-1.5 text-[10.5px] text-zinc-500" title="Encrypted vault size on this device">
+            <div className="flex items-center gap-1.5 text-[10.5px] text-zinc-500" title={t("Encrypted vault size on this device")}>
               <HardDrive size={11} />
               {fmtBytes(stats.vault_bytes)}
               <span className="text-zinc-600">·</span>
-              {stats.total_records} items
+              {t("{count} items", { count: stats.total_records })}
             </div>
           </div>
           {stats.recent_edits.length === 0 ? (
-            <p className="text-[11.5px] text-zinc-500 italic">No nodes yet.</p>
+            <p className="text-[11.5px] text-zinc-500 italic">{t("No nodes yet.")}</p>
           ) : (
             <div className="space-y-1">
               {stats.recent_edits.map((e, i) => (
                 <div key={i} className="flex items-center gap-2 py-1 text-[12px]">
                   <span className="text-zinc-200 truncate flex-1">{e.name}</span>
                   <span className="text-[10.5px] text-zinc-500 font-mono truncate max-w-[45%]">
-                    {e.edited_by || "unattributed"}
+                    {e.edited_by || t("unattributed")}
                   </span>
                   <span className="text-[10.5px] text-zinc-600 shrink-0 w-16 text-right">{hlcAgo(e.updated_at)}</span>
                 </div>
@@ -577,7 +576,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
           {stats.vault_bytes > 5 * 1024 * 1024 && (
             <div className="flex items-start gap-1.5 text-[10.5px] text-amber-300/80 pt-1 border-t border-white/5">
               <AlertTriangle size={11} className="mt-0.5 shrink-0" />
-              <span>This profile is getting large. Very heavy profiles sync and open more slowly — consider splitting rarely-used nodes into a separate profile.</span>
+              <span>{t("This profile is getting large. Very heavy profiles sync and open more slowly — consider splitting rarely-used nodes into a separate profile.")}</span>
             </div>
           )}
         </section>
@@ -586,18 +585,16 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
       {/* ---- Access ---- */}
       <section className={card}>
         <div className="flex items-center justify-between gap-2">
-          <div className={label}>Access</div>
-          <span className="text-[10px] text-zinc-500">end-to-end encrypted</span>
+          <div className={label}>{t("Access")}</div>
+          <span className="text-[10px] text-zinc-500">{t("end-to-end encrypted")}</span>
         </div>
 
         {!signedIn ? (
-          <p className="text-[12px] text-zinc-500">Sharing needs a cloud account.</p>
+          <p className="text-[12px] text-zinc-500">{t("Sharing needs a cloud account.")}</p>
         ) : !shared ? (
           <>
             <p className="text-[12px] text-zinc-400 leading-relaxed">
-              Share this profile to let other people use its servers and logins. You choose what each
-              person can do, and you can take access back at any time. The server can't read the servers
-              and logins in it; it sees the profile's name and who it is shared with.
+              {t("Share this profile to let other people use its servers and logins. You choose what each person can do, and you can take access back at any time. The server can't read the servers and logins in it; it sees the profile's name and who it is shared with.")}
             </p>
             <button
               onClick={startSharing}
@@ -605,7 +602,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
               className="h-9 px-3 rounded-lg bg-primary text-black text-[12.5px] font-bold disabled:opacity-40 flex items-center gap-2"
             >
               {busy ? <Loader2 size={13} className="animate-spin" /> : <Share2 size={13} />}
-              Share this profile
+              {t("Share this profile")}
             </button>
           </>
         ) : (
@@ -618,7 +615,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && invite()}
-                    placeholder="Invite by email…"
+                    placeholder={t("Invite by email…")}
                     className="flex-1 min-w-[160px] h-9 px-3 bg-black/40 border border-white/10 rounded-lg text-[12.5px] text-zinc-100 outline-none focus:border-primary/50 placeholder:text-zinc-600"
                   />
                   <div className="flex bg-black/30 border border-white/10 rounded-lg p-0.5">
@@ -626,13 +623,13 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                       onClick={() => setRole("editor")}
                       className={`h-8 px-2.5 rounded-md text-[11px] font-bold flex items-center gap-1 ${role === "editor" ? "bg-sky-500/20 text-sky-200" : "text-zinc-400"}`}
                     >
-                      <Pencil size={10} /> Editor
+                      <Pencil size={10} /> {t("Editor")}
                     </button>
                     <button
                       onClick={() => setRole("user")}
                       className={`h-8 px-2.5 rounded-md text-[11px] font-bold flex items-center gap-1 ${role === "user" ? "bg-white/10 text-zinc-100" : "text-zinc-400"}`}
                     >
-                      <Eye size={10} /> Viewer
+                      <Eye size={10} /> {t("Viewer")}
                     </button>
                   </div>
                   <button
@@ -640,10 +637,10 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                     disabled={busy}
                     className="h-9 px-3 rounded-lg bg-primary text-black text-[12px] font-bold disabled:opacity-40 flex items-center gap-1.5"
                   >
-                    {busy ? <Loader2 size={12} className="animate-spin" /> : <UserPlus size={12} />} Invite
+                    {busy ? <Loader2 size={12} className="animate-spin" /> : <UserPlus size={12} />} {t("Invite")}
                   </button>
                 </div>
-                <p className="text-[10.5px] text-zinc-500">{roleBlurb[role]}</p>
+                <p className="text-[10.5px] text-zinc-500">{t(roleBlurb[role])}</p>
               </div>
             )}
 
@@ -651,21 +648,21 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
             <div className="pt-1 space-y-1">
               {members === null ? (
                 <div className="text-[11.5px] text-zinc-500 flex items-center gap-1.5">
-                  <Loader2 size={11} className="animate-spin" /> Loading people…
+                  <Loader2 size={11} className="animate-spin" /> {t("Loading people…")}
                 </div>
               ) : members.length === 0 ? (
                 <div className="text-[11.5px] text-zinc-500 italic flex items-center gap-1.5">
-                  <Users size={12} /> Nobody else yet.
+                  <Users size={12} /> {t("Nobody else yet.")}
                 </div>
               ) : (
                 members.map((m) => (
                   <div key={m.user_id} className="flex items-center gap-2 py-1 text-[12px]">
                     <span className="text-zinc-200 truncate flex-1 font-mono">
                       {m.email}
-                      {m.email === st?.email && <span className="text-zinc-500 not-italic"> (you)</span>}
+                      {m.email === st?.email && <span className="text-zinc-500 not-italic"> {t("(you)")}</span>}
                     </span>
                     {m.status === "pending" && (
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-amber-300/80">invited</span>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-amber-300/80">{t("invited")}</span>
                     )}
                     <RoleBadge role={m.role} />
                     {isOwner && m.role !== "owner" && (
@@ -673,15 +670,15 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                         <button
                           onClick={() => changeRole(m.user_id, m.role === "user" ? "editor" : "user")}
                           disabled={busy}
-                          title={m.role === "user" ? "Let them make changes" : "Make read-only"}
+                          title={m.role === "user" ? t("Let them make changes") : t("Make read-only")}
                           className="h-6 px-1.5 rounded bg-white/5 border border-white/10 text-zinc-400 hover:text-zinc-100 text-[10px] disabled:opacity-40"
                         >
-                          {m.role === "user" ? "↑ Editor" : "↓ Viewer"}
+                          {m.role === "user" ? t("↑ Editor") : t("↓ Viewer")}
                         </button>
                         <button
                           onClick={() => revoke(m)}
                           disabled={busy}
-                          title="Remove access"
+                          title={t("Remove access")}
                           className="h-6 w-6 grid place-items-center rounded bg-white/5 border border-white/10 text-zinc-400 hover:text-rose-300 hover:bg-rose-500/10 disabled:opacity-40"
                         >
                           <X size={11} />
@@ -695,27 +692,26 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
 
             {keys?.current && (
               <p className="text-[10.5px] text-zinc-500 leading-relaxed">
-                Key fingerprint <span className="font-mono text-zinc-300">{keys.current}</span>.{" "}
+                {tx("Key fingerprint {key}.", { key: <span className="font-mono text-zinc-300">{keys.current}</span> })}{" "}
                 {isOwner
-                  ? "When you remove someone, the key is replaced, and members compare the new one with this."
-                  : "If the key changes, compare the new one with the owner's."}
+                  ? t("When you remove someone, the key is replaced, and members compare the new one with this.")
+                  : t("If the key changes, compare the new one with the owner's.")}
               </p>
             )}
             {keys?.pending && (
               <p className="text-[11px] text-amber-200/90 leading-relaxed">
-                A new key (<span className="font-mono">{keys.pending}</span>) is waiting for your OK in Servers. Until
-                you accept it, your changes aren't uploaded.
+                {tx("A new key ({key}) is waiting for your OK in Servers. Until you accept it, your changes aren't uploaded.", { key: <span className="font-mono">{keys.pending}</span> })}
               </p>
             )}
             {isOwner && keyRetry && (
               <div className="flex items-center gap-2 text-[11px] text-amber-200/90">
-                <span className="flex-1">The key wasn't replaced, so whoever you removed still holds it.</span>
+                <span className="flex-1">{t("The key wasn't replaced, so whoever you removed still holds it.")}</span>
                 <button
                   onClick={replaceKey}
                   disabled={busy}
                   className="h-7 px-2.5 rounded bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20 text-[11px] font-bold disabled:opacity-40 flex items-center gap-1.5"
                 >
-                  {busy ? <Loader2 size={11} className="animate-spin" /> : <KeyRound size={11} />} Replace the key
+                  {busy ? <Loader2 size={11} className="animate-spin" /> : <KeyRound size={11} />} {t("Replace the key")}
                 </button>
               </div>
             )}
@@ -726,7 +722,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
                 disabled={busy}
                 className="h-8 px-3 rounded-lg bg-white/5 border border-white/10 text-zinc-300 hover:text-rose-300 hover:bg-rose-500/10 text-[11.5px] font-bold flex items-center gap-1.5 disabled:opacity-40"
               >
-                <ShieldOff size={12} /> {isOwner ? "Stop sharing" : "Leave this profile"}
+                <ShieldOff size={12} /> {isOwner ? t("Stop sharing") : t("Leave this profile")}
               </button>
             </div>
           </>

@@ -11,6 +11,7 @@ import type { LinkStats } from "../util/screenLink";
 import { VNC_PRESETS, readVncOptions, vncNeedsReconnect, writeVncOptions, type VncOptions } from "../util/vncOptions";
 import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
+import { useT, tk } from "../i18n";
 
 // A VNC server's tab: the server's screen in the tab itself (vnc_client.rs),
 // straight to it or through the node's SSH server, whose host-key and login
@@ -23,10 +24,11 @@ type Status = "connecting" | "connected" | "failed" | "disconnected";
 // How vnc_client.rs (explain) says the server refused the password.
 const PASSWORD_REFUSED = /refused the password|said: Authentication failed/i;
 
-const NOT_ENCRYPTED = "VNC isn't encrypted: the screen and what is typed cross the network as they are. Through an SSH server, it's private up to that server.";
+const NOT_ENCRYPTED = tk("VNC isn't encrypted: the screen and what is typed cross the network as they are. Through an SSH server, it's private up to that server.");
 
 // `shown`: the tab is on screen (alone, or in a split), not behind another view.
 export default function VncSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
+  const t = useT();
   const [status, setStatus] = useState<Status>("connecting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [reason, setReason] = useState("");
@@ -86,7 +88,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       setStatus("failed");
     };
     const screen = screenRef.current;
-    if (!screen) return failed("The tab isn't ready yet. Try again.");
+    if (!screen) return failed(t("The tab isn't ready yet. Try again."));
     const options = readVncOptions(session.serverUuid);
     // The panels show what this session has, and the resolution is sized for at once.
     setOpts(options);
@@ -107,7 +109,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
     setShareClipboard(options.clipboard);
     setServerCopy(null);
     setPasteNote(null);
-  }, [session.id, session.serverId, session.serverUuid, pushLog]);
+  }, [session.id, session.serverId, session.serverUuid, pushLog, t]);
 
   // Listen first, then connect: a result that comes back at once must find
   // its listener (see #167).
@@ -146,7 +148,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
         setStatus("connected");
       }),
       listen(`connection-failed-${id}`, (e: any) => {
-        const why = String(e.payload?.reason ?? "The connection failed.");
+        const why = String(e.payload?.reason ?? t("The connection failed."));
         askPassword.current = false;
         setReason(why);
         setStatus("failed");
@@ -158,7 +160,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
         }
       }),
       listen(`session-disconnected-${id}`, (e: any) => {
-        setReason(String(e.payload?.reason ?? "The connection closed."));
+        setReason(String(e.payload?.reason ?? t("The connection closed.")));
         setStatus("disconnected");
       }),
       listen(`vnc-link-${id}`, (e: any) => setLink(e.payload as LinkStats)),
@@ -169,7 +171,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
         // The server sends its clipboard as Latin-1; the VNC library reads it as
         // UTF-8, so a character beyond ASCII arrives as a replacement mark.
         if (text.includes("\uFFFD")) {
-          pushLog({ msg: "Some characters of the server's copy didn't come through: a VNC clipboard carries plain ASCII text only.", type: "warning" });
+          pushLog({ msg: t("Some characters of the server's copy didn't come through: a VNC clipboard carries plain ASCII text only."), type: "warning" });
         }
       }),
     ]);
@@ -183,7 +185,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       subs.then((fns) => fns.forEach((f) => f()));
       invoke("disconnect_session", { sessionId: id }).catch(console.error);
     };
-  }, [session.id, connect, pushLog]);
+  }, [session.id, connect, pushLog, t]);
 
   const handleFingerprintResponse = async (accepted: boolean) => {
     const nonce = fingerprintPrompt?.nonce;
@@ -219,7 +221,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
     try {
       text = await readLocalClipboard();
     } catch (e) {
-      pushLog({ msg: `This device's clipboard couldn't be read: ${e}`, type: "warning" });
+      pushLog({ msg: t("This device's clipboard couldn't be read: {error}", { error: String(e) }), type: "warning" });
       sendKey();
       return;
     }
@@ -295,77 +297,77 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
         {connected && via === "" && (
           <span
             className="shrink-0 inline-flex items-center gap-1 h-5 px-1.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300 text-[10px] font-bold uppercase tracking-wider"
-            title={NOT_ENCRYPTED}
+            title={t(NOT_ENCRYPTED)}
           >
             <ShieldAlert size={10} aria-hidden="true" />
-            <span className="hidden [@container(min-width:560px)]:inline">Not encrypted</span>
+            <span className="hidden [@container(min-width:560px)]:inline">{t("Not encrypted")}</span>
           </span>
         )}
         <span className={`min-w-0 truncate text-[11px] ${broken ? "text-red-400/90" : "text-zinc-500"}`}>
-          {working ? "Connecting…" : status === "failed" ? "Connection failed" : status === "disconnected" ? "Disconnected" : via ? `VNC · through ${via}` : "VNC"}
+          {working ? t("Connecting…") : status === "failed" ? t("Connection failed") : status === "disconnected" ? t("Disconnected") : via ? t("VNC · through {via}", { via }) : "VNC"}
         </span>
         <div className="ml-auto shrink-0 flex items-center gap-1.5">
           {connected && shareClipboard && (
             <button
               onClick={() => void pasteToServer("ctrlv", false)}
-              title="Paste this device's clipboard into the server"
-              aria-label="Paste this device's clipboard into the server"
+              title={t("Paste this device's clipboard into the server")}
+              aria-label={t("Paste this device's clipboard into the server")}
               className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-white/5 text-zinc-300 hover:text-zinc-100 text-[11px] font-semibold transition-colors"
             >
-              <ClipboardPaste size={12} aria-hidden="true" /><span className="hidden [@container(min-width:560px)]:inline">Paste</span>
+              <ClipboardPaste size={12} aria-hidden="true" /><span className="hidden [@container(min-width:560px)]:inline">{t("Paste")}</span>
             </button>
           )}
           {connected && <LinkMark link={link} open={panel === "link"} onClick={() => togglePanel("link")} />}
           <button
             onClick={() => togglePanel("settings")}
             aria-expanded={panel === "settings"}
-            title="Speed and quality"
-            aria-label="Speed and quality"
+            title={t("Speed and quality")}
+            aria-label={t("Speed and quality")}
             className={`h-7 px-2 flex items-center gap-1.5 rounded-md text-[11px] font-semibold transition-colors ${panel === "settings" ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-400 hover:text-zinc-200"}`}
           >
-            <SlidersHorizontal size={12} aria-hidden="true" /><span className="hidden [@container(min-width:700px)]:inline">Settings</span>
+            <SlidersHorizontal size={12} aria-hidden="true" /><span className="hidden [@container(min-width:700px)]:inline">{t("Settings")}</span>
           </button>
           {connected && (
             <button
               onClick={() => setShowLog((v) => !v)}
               aria-pressed={showLog}
-              title={showLog ? "Hide the log" : "Show the log"}
+              title={showLog ? t("Hide the log") : t("Show the log")}
               className={`h-7 px-2 rounded-md text-[11px] font-semibold transition-colors ${showLog ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-400 hover:text-zinc-200"}`}
             >
-              Log
+              {t("Log")}
             </button>
           )}
           {broken && (
             <button
               onClick={connect}
-              title="Reconnect"
-              aria-label="Reconnect"
+              title={t("Reconnect")}
+              aria-label={t("Reconnect")}
               className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary/20 text-[11px] font-semibold transition-colors"
             >
-              <RotateCw size={12} /><span className="hidden [@container(min-width:560px)]:inline">Reconnect</span>
+              <RotateCw size={12} /><span className="hidden [@container(min-width:560px)]:inline">{t("Reconnect")}</span>
             </button>
           )}
           <button
             onClick={onClose}
-            title="Close session"
-            aria-label="Close session"
+            title={t("Close session")}
+            aria-label={t("Close session")}
             className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-white/5 text-zinc-300 hover:bg-red-500/15 hover:text-red-300 text-[11px] font-semibold transition-colors"
           >
-            <X size={12} /><span className="hidden [@container(min-width:560px)]:inline">Close</span>
+            <X size={12} /><span className="hidden [@container(min-width:560px)]:inline">{t("Close")}</span>
           </button>
         </div>
       </div>
 
       {connected && serverCopy !== null && (
         <div role="status" className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-white/5 bg-primary/10 text-[11.5px] text-zinc-200">
-          <span className="min-w-0 truncate">Text was copied on the server ({serverCopy.length} characters).</span>
+          <span className="min-w-0 truncate">{t("Text was copied on the server ({count} characters).", { count: serverCopy.length })}</span>
           <button
             onClick={() => navigator.clipboard.writeText(serverCopy).then(() => setServerCopy(null), () => {})}
             className="shrink-0 h-6 px-2 rounded-md bg-primary/20 text-primary hover:bg-primary/30 font-semibold"
           >
-            Copy it here
+            {t("Copy it here")}
           </button>
-          <button onClick={() => setServerCopy(null)} aria-label="Dismiss" className="ml-auto shrink-0 text-zinc-500 hover:text-zinc-300">
+          <button onClick={() => setServerCopy(null)} aria-label={t("Dismiss")} className="ml-auto shrink-0 text-zinc-500 hover:text-zinc-300">
             <X size={12} />
           </button>
         </div>
@@ -373,7 +375,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       {connected && pasteNote !== null && (
         <div role="status" className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-white/5 bg-amber-500/10 text-[11.5px] text-amber-200">
           <span className="min-w-0">{pasteNote}</span>
-          <button onClick={() => setPasteNote(null)} aria-label="Dismiss" className="ml-auto shrink-0 text-zinc-500 hover:text-zinc-300">
+          <button onClick={() => setPasteNote(null)} aria-label={t("Dismiss")} className="ml-auto shrink-0 text-zinc-500 hover:text-zinc-300">
             <X size={12} />
           </button>
         </div>
@@ -413,12 +415,12 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
 
       {/* Outside the screen: a paste key in a panel isn't the server's. */}
       {panel === "link" && (
-        <ToolPanel title="Connection" onClose={() => setPanel(null)}>
+        <ToolPanel title={t("Connection")} onClose={() => setPanel(null)}>
           <LinkPanel link={link} onLessData={lessData} />
         </ToolPanel>
       )}
       {panel === "settings" && (
-        <ToolPanel title="Speed and quality" onClose={() => setPanel(null)}>
+        <ToolPanel title={t("Speed and quality")} onClose={() => setPanel(null)}>
           <VncSettingsPanel o={opts} set={setOpt} reconnect={reconnectForOpts} />
         </ToolPanel>
       )}
@@ -426,7 +428,7 @@ export default function VncSessionView({ session, displayName, onClose, onStatus
       {promptWaiting && (
         <div
           role="dialog"
-          aria-label={`Connection prompt for ${session.serverName}`}
+          aria-label={t("Connection prompt for {name}", { name: session.serverName })}
           className="absolute inset-0 z-40 flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto"
         >
           <div className="max-w-2xl w-full mt-6 sm:mt-12">

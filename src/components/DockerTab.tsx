@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { ScrollableTabs } from "./ScrollableTabs";
 import { useConfirm } from "../ui/confirm";
+import { t, tk, tn, tx, useT } from "../i18n";
 
 interface DockerTabProps {
   sessionId: string;
@@ -124,22 +125,27 @@ function parseComposeText(raw: string): ComposeProject[] {
 function describeError(err: string, ctx?: string): { title: string; hint?: string } {
   const e = (err || "").toLowerCase();
   if (e.includes("session is not connected") || e.includes("session not connected")) {
-    return { title: "Session is disconnected", hint: "Reconnect to fetch fresh data." };
+    return { title: t("Session is disconnected"), hint: t("Reconnect to fetch fresh data.") };
   }
   if (e.includes("timed out") || e.includes("timeout")) {
-    return { title: "Server didn't respond in time", hint: "Docker may be hung. Try again or check the daemon." };
+    return { title: t("Server didn't respond in time"), hint: t("Docker may be hung. Try again or check the daemon.") };
   }
   if (e.includes("cannot connect to the docker daemon")) {
-    return { title: "Cannot reach the Docker daemon", hint: "Add the SSH user to the `docker` group or grant NOPASSWD sudo." };
+    return { title: t("Cannot reach the Docker daemon"), hint: t("Add the SSH user to the `docker` group or grant NOPASSWD sudo.") };
   }
   if (e.includes("permission denied")) {
-    return { title: "Permission denied", hint: ctx === "exec" ? "Container's shell or docker socket can't be accessed." : "Configure NOPASSWD sudo on the host for `docker`." };
+    return { title: t("Permission denied"), hint: ctx === "exec" ? t("Container's shell or docker socket can't be accessed.") : t("Configure NOPASSWD sudo on the host for `docker`.") };
   }
-  if (e.includes("no such container")) return { title: "Container no longer exists", hint: "It may have been removed since the list was fetched. Refresh." };
-  if (e.includes("no such image")) return { title: "Image not found" };
-  if (e.includes("no shell found in container")) return { title: "No shell in container", hint: "Distroless or scratch image — interactive exec not possible." };
-  return { title: err || "Action failed" };
+  if (e.includes("no such container")) return { title: t("Container no longer exists"), hint: t("It may have been removed since the list was fetched. Refresh.") };
+  if (e.includes("no such image")) return { title: t("Image not found") };
+  if (e.includes("no shell found in container")) return { title: t("No shell in container"), hint: t("Distroless or scratch image — interactive exec not possible.") };
+  return { title: err || t("Action failed") };
 }
+
+// The confirm question names the action in the user's language.
+const ACTION_LABELS: Record<string, string> = {
+  start: tk("Start"), pause: tk("Pause"), stop: tk("Stop"), restart: tk("Restart"),
+};
 
 // Mobile-first sizing: h-9 (36 px) keeps the tap target above 32 px on
 // phones; the explicit `min-w-[44px]` on icon-only variants guards the
@@ -155,6 +161,7 @@ interface TabState<T> { loaded: boolean; loading: boolean; error: string | null;
 function fresh<T>(): TabState<T> { return { loaded: false, loading: false, error: null, data: null }; }
 
 const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabProps) => {
+  const t = useT();
   const [tab, setTab] = useState<SubTab>("containers");
 
   const [containers, setContainers] = useState<TabState<Container[]>>(fresh);
@@ -174,7 +181,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
       // user explicitly asked for a quick first paint. Stats only loads
       // when the user opens a container's Stats tab.
       const r = await invoke<DockerTextResult>("ssh_docker_containers", { sessionId });
-      if (!r.success) throw new Error(r.data || "container list failed");
+      if (!r.success) throw new Error(r.data || t("container list failed"));
       const data = parseFields<Container>(r.data, ["ID", "Image", "Names", "Status", "State", "Ports"], o => ({
         id: o.ID || "",
         image: o.Image || "",
@@ -186,7 +193,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
       }));
       setContainers({ loaded: true, loading: false, error: null, data });
     } catch (e: any) {
-      setContainers(s => ({ ...s, loading: false, error: typeof e === "string" ? e : (e?.message || "failed") }));
+      setContainers(s => ({ ...s, loading: false, error: typeof e === "string" ? e : (e?.message || t("failed")) }));
     }
   };
 
@@ -194,7 +201,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
     setImages(s => ({ ...s, loading: true, error: null }));
     try {
       const r = await invoke<DockerTextResult>("ssh_docker_images_list", { sessionId });
-      if (!r.success) throw new Error(r.data || "image list failed");
+      if (!r.success) throw new Error(r.data || t("image list failed"));
       const data = parseFields<ImageRow>(r.data, ["Repository", "Tag", "ID", "Size", "CreatedSince"], o => ({
         repo: o.Repository || "<none>",
         tag: o.Tag || "<none>",
@@ -204,7 +211,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
       }));
       setImages({ loaded: true, loading: false, error: null, data });
     } catch (e: any) {
-      setImages(s => ({ ...s, loading: false, error: typeof e === "string" ? e : (e?.message || "failed") }));
+      setImages(s => ({ ...s, loading: false, error: typeof e === "string" ? e : (e?.message || t("failed")) }));
     }
   };
 
@@ -212,7 +219,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
     setVolumes(s => ({ ...s, loading: true, error: null }));
     try {
       const r = await invoke<DockerTextResult>("ssh_docker_volumes_list", { sessionId });
-      if (!r.success) throw new Error(r.data || "volume list failed");
+      if (!r.success) throw new Error(r.data || t("volume list failed"));
       const data = parseFields<VolumeRow>(r.data, ["Name", "Driver", "Mountpoint"], o => ({
         name: o.Name || "",
         driver: o.Driver || "",
@@ -220,7 +227,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
       }));
       setVolumes({ loaded: true, loading: false, error: null, data });
     } catch (e: any) {
-      setVolumes(s => ({ ...s, loading: false, error: typeof e === "string" ? e : (e?.message || "failed") }));
+      setVolumes(s => ({ ...s, loading: false, error: typeof e === "string" ? e : (e?.message || t("failed")) }));
     }
   };
 
@@ -228,7 +235,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
     setNetworks(s => ({ ...s, loading: true, error: null }));
     try {
       const r = await invoke<DockerTextResult>("ssh_docker_networks", { sessionId });
-      if (!r.success) throw new Error(r.data || "network list failed");
+      if (!r.success) throw new Error(r.data || t("network list failed"));
       const data = parseFields<NetworkRow>(r.data, ["ID", "Name", "Driver", "Scope"], o => ({
         id: o.ID || "",
         name: o.Name || "",
@@ -237,7 +244,7 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
       }));
       setNetworks({ loaded: true, loading: false, error: null, data });
     } catch (e: any) {
-      setNetworks(s => ({ ...s, loading: false, error: typeof e === "string" ? e : (e?.message || "failed") }));
+      setNetworks(s => ({ ...s, loading: false, error: typeof e === "string" ? e : (e?.message || t("failed")) }));
     }
   };
 
@@ -246,12 +253,12 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
     setComposeContainers(s => ({ ...s, loading: true, error: null }));
     try {
       const r = await invoke<DockerTextResult>("ssh_docker_compose_per_container", { sessionId });
-      if (!r.success) throw new Error(r.data || "compose query failed");
+      if (!r.success) throw new Error(r.data || t("compose query failed"));
       setComposeRaw(r.data);
       const data = parseComposeContainers(r.data);
       setComposeContainers({ loaded: true, loading: false, error: null, data });
     } catch (e: any) {
-      setComposeContainers(s => ({ ...s, loading: false, error: typeof e === "string" ? e : (e?.message || "failed") }));
+      setComposeContainers(s => ({ ...s, loading: false, error: typeof e === "string" ? e : (e?.message || t("failed")) }));
     }
   };
 
@@ -287,28 +294,28 @@ const DockerTab = ({ sessionId, disabled, onOpenContainerTerminal }: DockerTabPr
         trailing={tab !== "prune" ? (
           <button
             onClick={refreshActive}
-            title="Refresh this tab"
+            title={t("Refresh this tab")}
             className="h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white flex items-center gap-1.5 transition-all"
           >
-            <RefreshCw size={11} /> Refresh
+            <RefreshCw size={11} /> {t("Refresh")}
           </button>
         ) : undefined}
         select={{
           value: tab,
           options: [
-            { value: "containers", label: "Containers" },
-            { value: "resources", label: "Resources" },
-            { value: "compose", label: "Compose" },
-            { value: "prune", label: "Prune" },
+            { value: "containers", label: t("Containers") },
+            { value: "resources", label: t("Resources") },
+            { value: "compose", label: t("Compose") },
+            { value: "prune", label: t("Prune") },
           ],
           onChange: setTab,
-          label: "Docker view",
+          label: t("Docker view"),
         }}
       >
-        <SubBtn active={tab === "containers"} onClick={() => setTab("containers")} icon={<ContainerIcon size={11} />}>Containers</SubBtn>
-        <SubBtn active={tab === "resources"}  onClick={() => setTab("resources")}  icon={<Database size={11} />}>Resources</SubBtn>
-        <SubBtn active={tab === "compose"}    onClick={() => setTab("compose")}    icon={<FileText size={11} />}>Compose</SubBtn>
-        <SubBtn active={tab === "prune"}      onClick={() => setTab("prune")}      icon={<Trash2 size={11} />}>Prune</SubBtn>
+        <SubBtn active={tab === "containers"} onClick={() => setTab("containers")} icon={<ContainerIcon size={11} />}>{t("Containers")}</SubBtn>
+        <SubBtn active={tab === "resources"}  onClick={() => setTab("resources")}  icon={<Database size={11} />}>{t("Resources")}</SubBtn>
+        <SubBtn active={tab === "compose"}    onClick={() => setTab("compose")}    icon={<FileText size={11} />}>{t("Compose")}</SubBtn>
+        <SubBtn active={tab === "prune"}      onClick={() => setTab("prune")}      icon={<Trash2 size={11} />}>{t("Prune")}</SubBtn>
       </ScrollableTabs>
 
       {tab === "containers" && (
@@ -373,12 +380,13 @@ const ContainersView = ({
   onOpenContainerTerminal: (name: string, useSudo: boolean) => void;
 }) => {
   const [filter, setFilter] = useState("");
+  const t = useT();
   const [stateFilter, setStateFilter] = useState<"all" | "running" | "stopped">("running");
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [lastResult, setLastResult] = useState<Record<string, { ok: boolean; msg: string; sudo: boolean } | undefined>>({});
   const confirm = useConfirm();
 
-  if (state.loading && !state.data) return <Spinner label="Loading containers…" />;
+  if (state.loading && !state.data) return <Spinner label={t("Loading containers…")} />;
   if (state.error) return <ErrorBanner err={state.error} />;
   if (!state.data) return null;
 
@@ -399,7 +407,7 @@ const ContainersView = ({
   };
 
   const doAction = async (c: Container, action: string, needsConfirm = false) => {
-    if (needsConfirm && !(await confirm({ message: `${action.toUpperCase()} ${c.names}?`, destructive: true }))) return;
+    if (needsConfirm && !(await confirm({ message: t("{action} {name}?", { action: t(ACTION_LABELS[action] ?? action).toUpperCase(), name: c.names }), destructive: true }))) return;
     setBusy(b => ({ ...b, [c.id]: action }));
     setLastResult(r => ({ ...r, [c.id]: undefined }));
     try {
@@ -412,13 +420,13 @@ const ContainersView = ({
         ...prev,
         [c.id]: {
           ok: r.success,
-          msg: r.success ? `${action} ok${r.used_sudo ? " (via sudo)" : ""}` : (r.output || `${action} failed`),
+          msg: r.success ? (r.used_sudo ? t("{action} ok (via sudo)", { action }) : t("{action} ok", { action })) : (r.output || t("{action} failed", { action })),
           sudo: r.used_sudo,
         },
       }));
       if (r.success) setTimeout(onRefresh, 600);
     } catch (e: any) {
-      setLastResult(prev => ({ ...prev, [c.id]: { ok: false, msg: typeof e === "string" ? e : (e?.message || "failed"), sudo: false } }));
+      setLastResult(prev => ({ ...prev, [c.id]: { ok: false, msg: typeof e === "string" ? e : (e?.message || t("failed")), sudo: false } }));
     } finally {
       setBusy(b => { const n = { ...b }; delete n[c.id]; return n; });
     }
@@ -427,16 +435,16 @@ const ContainersView = ({
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-1.5 flex-wrap">
-        <CountPill active={stateFilter === "running"} tone="green"   count={counts.running} onClick={() => setStateFilter("running")}>running</CountPill>
-        <CountPill active={stateFilter === "stopped"} tone="zinc"    count={counts.stopped} onClick={() => setStateFilter("stopped")}>stopped</CountPill>
-        <CountPill active={stateFilter === "all"}     tone="primary" count={counts.all}     onClick={() => setStateFilter("all")}>all</CountPill>
+        <CountPill active={stateFilter === "running"} tone="green"   count={counts.running} onClick={() => setStateFilter("running")}>{t("running")}</CountPill>
+        <CountPill active={stateFilter === "stopped"} tone="zinc"    count={counts.stopped} onClick={() => setStateFilter("stopped")}>{t("stopped")}</CountPill>
+        <CountPill active={stateFilter === "all"}     tone="primary" count={counts.all}     onClick={() => setStateFilter("all")}>{t("all")}</CountPill>
         <div className="ml-auto">
-          <FilterInput value={filter} onChange={setFilter} placeholder="Name / image / id" />
+          <FilterInput value={filter} onChange={setFilter} placeholder={t("Name / image / id")} />
         </div>
       </div>
 
       {filtered.length === 0 ? (
-        <Empty>{state.data.length === 0 ? "No containers." : "No matches."}</Empty>
+        <Empty>{state.data.length === 0 ? t("No containers.") : t("No matches.")}</Empty>
       ) : (
         <div className="space-y-1.5">
           {filtered.map((c) => {
@@ -451,11 +459,11 @@ const ContainersView = ({
                       <button
                         onClick={() => onOpenDetails(c)}
                         className="text-[11px] font-mono font-bold text-white truncate hover:text-primary transition-colors"
-                        title="Open container details"
+                        title={t("Open container details")}
                       >
                         {c.names || c.id.slice(0, 12)}
                       </button>
-                      <StatusBadge tone={isRunning ? "green" : "zinc"}>{c.state || (isRunning ? "running" : "stopped")}</StatusBadge>
+                      <StatusBadge tone={isRunning ? "green" : "zinc"}>{c.state || (isRunning ? t("running") : t("stopped"))}</StatusBadge>
                     </div>
                     <div className="text-[10px] text-zinc-500 font-mono mt-0.5 truncate">{c.image}</div>
                     <div className="text-[10px] text-zinc-500 mt-0.5 truncate">{c.status}</div>
@@ -463,36 +471,36 @@ const ContainersView = ({
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     {!isRunning && (
-                      <ActionBtn title="Start" disabled={!!busyAction} tone="green" onClick={() => doAction(c, "start")}>
+                      <ActionBtn title={t("Start")} disabled={!!busyAction} tone="green" onClick={() => doAction(c, "start")}>
                         {busyAction === "start" ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
                       </ActionBtn>
                     )}
                     {isRunning && (
                       <>
-                        <ActionBtn title="Pause" disabled={!!busyAction} onClick={() => doAction(c, "pause")}>
+                        <ActionBtn title={t("Pause")} disabled={!!busyAction} onClick={() => doAction(c, "pause")}>
                           {busyAction === "pause" ? <Loader2 size={11} className="animate-spin" /> : <Pause size={11} />}
                         </ActionBtn>
-                        <ActionBtn title="Stop" disabled={!!busyAction} tone="amber" onClick={() => doAction(c, "stop", true)}>
+                        <ActionBtn title={t("Stop")} disabled={!!busyAction} tone="amber" onClick={() => doAction(c, "stop", true)}>
                           {busyAction === "stop" ? <Loader2 size={11} className="animate-spin" /> : <Square size={11} />}
                         </ActionBtn>
                       </>
                     )}
-                    <ActionBtn title="Restart" disabled={!!busyAction} tone="primary" onClick={() => doAction(c, "restart", true)}>
+                    <ActionBtn title={t("Restart")} disabled={!!busyAction} tone="primary" onClick={() => doAction(c, "restart", true)}>
                       {busyAction === "restart" ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
                     </ActionBtn>
                     {isRunning && (
-                      <ActionBtn title="Open terminal in container" onClick={() => onOpenContainerTerminal(c.names || c.id, false)}>
+                      <ActionBtn title={t("Open terminal in container")} onClick={() => onOpenContainerTerminal(c.names || c.id, false)}>
                         <Terminal size={11} />
                       </ActionBtn>
                     )}
-                    <ActionBtn title="Details (logs / inspect / stats)" onClick={() => onOpenDetails(c)}>
+                    <ActionBtn title={t("Details (logs / inspect / stats)")} onClick={() => onOpenDetails(c)}>
                       <Eye size={11} />
                     </ActionBtn>
                   </div>
                 </div>
                 {result && (
                   <div className={`mt-1.5 text-[10px] px-2 py-1 rounded ${result.ok ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20" : "bg-red-500/10 text-red-300 border border-red-500/20"}`}>
-                    <span className="font-bold uppercase tracking-wider mr-1">{result.ok ? "OK" : "Error"}</span>
+                    <span className="font-bold uppercase tracking-wider mr-1">{result.ok ? t("OK") : t("Error")}</span>
                     <span className="font-mono whitespace-pre-wrap break-words">{result.msg}</span>
                   </div>
                 )}
@@ -506,9 +514,10 @@ const ContainersView = ({
 };
 
 const ImagesView = ({ state }: { state: TabState<ImageRow[]> }) => {
+  const t = useT();
   const [showAll, setShowAll] = useState(false);
   const [filter, setFilter] = useState("");
-  if (state.loading && !state.data) return <Spinner label="Loading images…" />;
+  if (state.loading && !state.data) return <Spinner label={t("Loading images…")} />;
   if (state.error) return <ErrorBanner err={state.error} />;
   if (!state.data) return null;
   const filtered = filter.trim()
@@ -518,10 +527,10 @@ const ImagesView = ({ state }: { state: TabState<ImageRow[]> }) => {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">{filtered.length} images</span>
-        <FilterInput value={filter} onChange={setFilter} placeholder="repo:tag" />
+        <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">{t("{count} images", { count: filtered.length })}</span>
+        <FilterInput value={filter} onChange={setFilter} placeholder={t("repo:tag")} />
       </div>
-      {filtered.length === 0 ? <Empty>No images.</Empty> : (
+      {filtered.length === 0 ? <Empty>{t("No images.")}</Empty> : (
         <div className="space-y-1">
           {visible.map((img, i) => (
             <div key={i} className="bg-black/30 border border-white/5 rounded px-2 py-1.5 flex items-center justify-between gap-2">
@@ -534,7 +543,7 @@ const ImagesView = ({ state }: { state: TabState<ImageRow[]> }) => {
           ))}
           {filtered.length > 30 && (
             <button onClick={() => setShowAll(s => !s)} className="w-full h-7 rounded-md border border-white/10 text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:bg-white/5 hover:text-white">
-              {showAll ? "Show fewer" : `Show all ${filtered.length}`}
+              {showAll ? t("Show fewer") : t("Show all {count}", { count: filtered.length })}
             </button>
           )}
         </div>
@@ -544,9 +553,10 @@ const ImagesView = ({ state }: { state: TabState<ImageRow[]> }) => {
 };
 
 const VolumesView = ({ state }: { state: TabState<VolumeRow[]> }) => {
+  const t = useT();
   const [showAll, setShowAll] = useState(false);
   const [filter, setFilter] = useState("");
-  if (state.loading && !state.data) return <Spinner label="Loading volumes…" />;
+  if (state.loading && !state.data) return <Spinner label={t("Loading volumes…")} />;
   if (state.error) return <ErrorBanner err={state.error} />;
   if (!state.data) return null;
   const filtered = filter.trim()
@@ -556,10 +566,10 @@ const VolumesView = ({ state }: { state: TabState<VolumeRow[]> }) => {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">{filtered.length} volumes</span>
-        <FilterInput value={filter} onChange={setFilter} placeholder="Name" />
+        <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">{t("{count} volumes", { count: filtered.length })}</span>
+        <FilterInput value={filter} onChange={setFilter} placeholder={t("Name")} />
       </div>
-      {filtered.length === 0 ? <Empty>No volumes.</Empty> : (
+      {filtered.length === 0 ? <Empty>{t("No volumes.")}</Empty> : (
         <div className="space-y-1">
           {visible.map((v, i) => (
             <div key={i} className="bg-black/30 border border-white/5 rounded px-2 py-1.5">
@@ -569,7 +579,7 @@ const VolumesView = ({ state }: { state: TabState<VolumeRow[]> }) => {
           ))}
           {filtered.length > 30 && (
             <button onClick={() => setShowAll(s => !s)} className="w-full h-7 rounded-md border border-white/10 text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:bg-white/5 hover:text-white">
-              {showAll ? "Show fewer" : `Show all ${filtered.length}`}
+              {showAll ? t("Show fewer") : t("Show all {count}", { count: filtered.length })}
             </button>
           )}
         </div>
@@ -579,19 +589,20 @@ const VolumesView = ({ state }: { state: TabState<VolumeRow[]> }) => {
 };
 
 const NetworksView = ({ state }: { state: TabState<NetworkRow[]> }) => {
-  if (state.loading && !state.data) return <Spinner label="Loading networks…" />;
+  const t = useT();
+  if (state.loading && !state.data) return <Spinner label={t("Loading networks…")} />;
   if (state.error) return <ErrorBanner err={state.error} />;
   if (!state.data) return null;
   return (
     <div className="space-y-1">
-      <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">{state.data.length} networks</span>
-      {state.data.length === 0 ? <Empty>No networks.</Empty> : (
+      <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">{t("{count} networks", { count: state.data.length })}</span>
+      {state.data.length === 0 ? <Empty>{t("No networks.")}</Empty> : (
         <div className="space-y-1 mt-1">
           {state.data.map((n, i) => (
             <div key={i} className="bg-black/30 border border-white/5 rounded px-2 py-1.5 flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="text-[11px] font-mono font-bold text-white truncate">{n.name}</div>
-                <div className="text-[10px] text-zinc-500 font-mono truncate">{n.driver} · scope:{n.scope}</div>
+                <div className="text-[10px] text-zinc-500 font-mono truncate">{t("{driver} · scope:{scope}", { driver: n.driver, scope: n.scope })}</div>
               </div>
               <span className="shrink-0 text-[9px] font-mono text-zinc-600">{n.id.slice(0, 12)}</span>
             </div>
@@ -609,8 +620,9 @@ const ComposeView = ({
   rawFallback: string;
   onOpen: (c: ComposeContainer) => void;
 }) => {
+  const t = useT();
   const [filter, setFilter] = useState("");
-  if (state.loading && !state.data) return <Spinner label="Reading container compose labels…" />;
+  if (state.loading && !state.data) return <Spinner label={t("Reading container compose labels…")} />;
   if (state.error) return <ErrorBanner err={state.error} />;
   if (!state.data) return null;
 
@@ -637,16 +649,16 @@ const ComposeView = ({
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[10px] text-zinc-500">
-          {state.data.length} container{state.data.length === 1 ? "" : "s"} started by compose
+          {tn(state.data.length, "{count} container started by compose", "{count} containers started by compose")}
         </span>
-        <FilterInput value={filter} onChange={setFilter} placeholder="Name / project / service" />
+        <FilterInput value={filter} onChange={setFilter} placeholder={t("Name / project / service")} />
       </div>
 
       {filtered.length === 0 ? (
         <>
-          <Empty>{state.data.length === 0 ? "No containers carry compose labels — nothing here was started by docker compose." : "No matches."}</Empty>
+          <Empty>{state.data.length === 0 ? t("No containers carry compose labels — nothing here was started by docker compose.") : t("No matches.")}</Empty>
           {state.data.length === 0 && hasRaw && (
-            <Card title="Raw docker output">
+            <Card title={t("Raw docker output")}>
               <pre className="text-[10.5px] font-mono text-zinc-300 whitespace-pre overflow-x-auto select-text bg-black/50 border border-white/5 rounded p-2 max-h-[200px] overflow-y-auto">{rawFallback}</pre>
             </Card>
           )}
@@ -663,7 +675,7 @@ const ComposeView = ({
                 <div className="px-3 py-2 border-b border-white/5 bg-white/[0.02]">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] font-mono font-bold text-white truncate">{project}</span>
-                    <span className="text-[9px] uppercase tracking-wider text-zinc-500">{conts.length} container{conts.length === 1 ? "" : "s"}</span>
+                    <span className="text-[9px] uppercase tracking-wider text-zinc-500">{tn(conts.length, "{count} container", "{count} containers")}</span>
                   </div>
                   {files.map((f, i) => (
                     <div key={i} className="text-[10px] font-mono text-zinc-500/80 mt-0.5 truncate select-text" title={f}>{f}</div>
@@ -675,16 +687,16 @@ const ComposeView = ({
                       key={i}
                       onClick={() => onOpen(c)}
                       disabled={!c.configFile}
-                      title={c.configFile ? "View docker-compose.yml" : "No compose file path on this container's labels"}
+                      title={c.configFile ? t("View docker-compose.yml") : t("No compose file path on this container's labels")}
                       className="w-full text-left px-3 py-2 hover:bg-primary/5 disabled:opacity-50 disabled:cursor-not-allowed transition-all group flex items-center justify-between gap-2"
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="text-[11px] font-mono text-white truncate">{c.containerName}</span>
                           {c.service && (
-                            <span className="text-[9px] text-zinc-500 font-mono">· svc:{c.service}</span>
+                            <span className="text-[9px] text-zinc-500 font-mono">{t("· svc:{service}", { service: c.service })}</span>
                           )}
-                          <StatusBadge tone={c.state === "running" ? "green" : "zinc"}>{c.state || "unknown"}</StatusBadge>
+                          <StatusBadge tone={c.state === "running" ? "green" : "zinc"}>{c.state || t("unknown")}</StatusBadge>
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -718,6 +730,7 @@ const ResourcesView = ({
   fetchVolumes: () => void;
   fetchNetworks: () => void;
 }) => {
+  const t = useT();
   const [kind, setKind] = useState<ResourceKind>("images");
 
   useEffect(() => {
@@ -730,9 +743,9 @@ const ResourcesView = ({
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-1.5">
-        <KindPill active={kind === "images"}   onClick={() => setKind("images")}   icon={<ImageIcon size={11} />} count={images.data?.length}>Images</KindPill>
-        <KindPill active={kind === "volumes"}  onClick={() => setKind("volumes")}  icon={<Database size={11} />}  count={volumes.data?.length}>Volumes</KindPill>
-        <KindPill active={kind === "networks"} onClick={() => setKind("networks")} icon={<NetIcon size={11} />}   count={networks.data?.length}>Networks</KindPill>
+        <KindPill active={kind === "images"}   onClick={() => setKind("images")}   icon={<ImageIcon size={11} />} count={images.data?.length}>{t("Images")}</KindPill>
+        <KindPill active={kind === "volumes"}  onClick={() => setKind("volumes")}  icon={<Database size={11} />}  count={volumes.data?.length}>{t("Volumes")}</KindPill>
+        <KindPill active={kind === "networks"} onClick={() => setKind("networks")} icon={<NetIcon size={11} />}   count={networks.data?.length}>{t("Networks")}</KindPill>
       </div>
       {kind === "images"   && <ImagesView state={images} />}
       {kind === "volumes"  && <VolumesView state={volumes} />}
@@ -764,20 +777,21 @@ const KindPill = ({
 );
 
 const PruneView = ({ sessionId }: { sessionId: string }) => {
+  const t = useT();
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<Record<string, { ok: boolean; msg: string; sudo: boolean }>>({});
   const confirm = useConfirm();
 
   const scopes: { key: string; label: string; description: string; warning?: string }[] = [
-    { key: "containers", label: "Stopped Containers", description: "Removes containers that are not running. Safe — restartable containers are unaffected." },
-    { key: "images",     label: "Dangling Images",    description: "Removes images with no tag and no container referencing them. Tagged images are untouched." },
-    { key: "networks",   label: "Unused Networks",    description: "Removes user-created networks no container is attached to. Default bridge/host/none are untouched." },
-    { key: "builder",    label: "Build Cache",        description: "Clears Docker BuildKit cache. Future builds re-download / rebuild base layers." },
-    { key: "system",     label: "Everything (safe)",  description: "Runs all of the above. Does NOT touch named volumes or tagged images.", warning: "Combines all safe prune scopes in one go." },
+    { key: "containers", label: t("Stopped Containers"), description: t("Removes containers that are not running. Safe — restartable containers are unaffected.") },
+    { key: "images",     label: t("Dangling Images"),    description: t("Removes images with no tag and no container referencing them. Tagged images are untouched.") },
+    { key: "networks",   label: t("Unused Networks"),    description: t("Removes user-created networks no container is attached to. Default bridge/host/none are untouched.") },
+    { key: "builder",    label: t("Build Cache"),        description: t("Clears Docker BuildKit cache. Future builds re-download / rebuild base layers.") },
+    { key: "system",     label: t("Everything (safe)"),  description: t("Runs all of the above. Does NOT touch named volumes or tagged images."), warning: t("Combines all safe prune scopes in one go.") },
   ];
 
   const run = async (scope: string, label: string) => {
-    if (!(await confirm({ title: `Run prune for ${label}?`, message: "This is irreversible.", destructive: true }))) return;
+    if (!(await confirm({ title: t("Run prune for {label}?", { label }), message: t("This is irreversible."), destructive: true }))) return;
     setBusy(scope);
     setResult(r => ({ ...r, [scope]: undefined as any }));
     try {
@@ -786,12 +800,12 @@ const PruneView = ({ sessionId }: { sessionId: string }) => {
         ...prev,
         [scope]: {
           ok: r.success,
-          msg: r.output || (r.success ? "Done" : "Failed"),
+          msg: r.output || (r.success ? t("Done") : t("Failed")),
           sudo: r.used_sudo,
         },
       }));
     } catch (e: any) {
-      setResult(prev => ({ ...prev, [scope]: { ok: false, msg: typeof e === "string" ? e : (e?.message || "failed"), sudo: false } }));
+      setResult(prev => ({ ...prev, [scope]: { ok: false, msg: typeof e === "string" ? e : (e?.message || t("failed")), sudo: false } }));
     } finally {
       setBusy(null);
     }
@@ -802,8 +816,8 @@ const PruneView = ({ sessionId }: { sessionId: string }) => {
       <div className="px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-500/20 text-amber-300 text-[10.5px] flex items-start gap-2">
         <ShieldAlert size={14} className="mt-0.5 shrink-0" />
         <div>
-          <div className="font-bold uppercase tracking-wider">Safe prune only</div>
-          <div className="text-amber-200/80 mt-0.5">Submarine never runs <code className="font-mono px-1">prune -a</code> or <code className="font-mono px-1">--volumes</code>. Named volumes and tagged images are always preserved.</div>
+          <div className="font-bold uppercase tracking-wider">{t("Safe prune only")}</div>
+          <div className="text-amber-200/80 mt-0.5">{tx("Submarine never runs {pruneAll} or {volumes}. Named volumes and tagged images are always preserved.", { pruneAll: <code className="font-mono px-1">prune -a</code>, volumes: <code className="font-mono px-1">--volumes</code> })}</div>
         </div>
       </div>
       {scopes.map(s => {
@@ -822,12 +836,12 @@ const PruneView = ({ sessionId }: { sessionId: string }) => {
                 className="shrink-0 h-7 px-2.5 rounded-md text-[10px] font-bold uppercase tracking-wider text-rose-300 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 transition-all"
               >
                 {busy === s.key ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
-                Prune
+                {t("Prune")}
               </button>
             </div>
             {r && (
               <div className={`mt-1.5 text-[10px] px-2 py-1 rounded font-mono whitespace-pre-wrap break-words ${r.ok ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20" : "bg-red-500/10 text-red-300 border border-red-500/20"}`}>
-                <span className="font-bold uppercase tracking-wider mr-1 not-italic">{r.ok ? "OK" : "Error"}</span>
+                <span className="font-bold uppercase tracking-wider mr-1 not-italic">{r.ok ? t("OK") : t("Error")}</span>
                 {r.msg}
               </div>
             )}
@@ -853,6 +867,7 @@ const ContainerDetailsModal = ({
   onClose: () => void;
   onOpenContainerTerminal: (name: string, useSudo: boolean) => void;
 }) => {
+  const t = useT();
   const name = container.names || container.id;
   type DetailTab = "logs" | "inspect" | "stats" | "config";
   const [tab, setTab] = useState<DetailTab>("logs");
@@ -886,7 +901,7 @@ const ContainerDetailsModal = ({
         }
       });
     } catch (e: any) {
-      setLogsError(typeof e === "string" ? e : (e?.message || "logs failed"));
+      setLogsError(typeof e === "string" ? e : (e?.message || t("logs failed")));
     } finally { setLogsLoading(false); }
   };
 
@@ -947,7 +962,7 @@ const ContainerDetailsModal = ({
     } catch (e: any) {
       cleanup();
       if (!wanted()) return;
-      setLogsError(typeof e === "string" ? e : (e?.message || "live start failed"));
+      setLogsError(typeof e === "string" ? e : (e?.message || t("live start failed")));
       setLive(false);
       liveStreamIdRef.current = null;
     }
@@ -995,7 +1010,7 @@ const ContainerDetailsModal = ({
       // parses, then overflows the stack on the way back.
       setInspect({ loading: false, error: null, data, text: JSON.stringify(data, null, 2) });
     } catch (e: any) {
-      setInspect({ loading: false, error: typeof e === "string" ? e : (e?.message || "inspect failed"), data: null });
+      setInspect({ loading: false, error: typeof e === "string" ? e : (e?.message || t("inspect failed")), data: null });
     }
   };
 
@@ -1018,7 +1033,7 @@ const ContainerDetailsModal = ({
       const found = rows.find(s => s.name === name) || rows[0];
       setOneStats({ loading: false, error: null, data: found || null });
     } catch (e: any) {
-      setOneStats({ loading: false, error: typeof e === "string" ? e : (e?.message || "stats failed"), data: null });
+      setOneStats({ loading: false, error: typeof e === "string" ? e : (e?.message || t("stats failed")), data: null });
     }
   };
 
@@ -1042,12 +1057,12 @@ const ContainerDetailsModal = ({
   }, []);
 
   return (
-    <ModalShell title={`Container · ${name}`} onClose={onClose} actions={
+    <ModalShell title={t("Container · {name}", { name })} onClose={onClose} actions={
       <button
         onClick={() => onOpenContainerTerminal(name, false)}
         className="h-7 px-2.5 rounded-md text-[10px] font-bold uppercase tracking-wider text-sky-200 bg-sky-500/15 border border-sky-500/30 hover:bg-sky-500/25 flex items-center gap-1.5 transition-all"
       >
-        <Terminal size={11} /> Open Terminal
+        <Terminal size={11} /> {t("Open Terminal")}
       </button>
     }>
       <div className="px-3 pt-2 pb-1 bg-black/20 border-b border-white/5 shrink-0">
@@ -1055,19 +1070,19 @@ const ContainerDetailsModal = ({
           select={{
             value: tab,
             options: [
-              { value: "logs", label: "Logs" },
-              { value: "stats", label: "Stats" },
-              { value: "config", label: "Env · Mounts · Ports" },
-              { value: "inspect", label: "Inspect" },
+              { value: "logs", label: t("Logs") },
+              { value: "stats", label: t("Stats") },
+              { value: "config", label: t("Env · Mounts · Ports") },
+              { value: "inspect", label: t("Inspect") },
             ],
             onChange: setTab,
-            label: "Container view",
+            label: t("Container view"),
           }}
         >
-          <SubBtn active={tab === "logs"}    onClick={() => setTab("logs")}    icon={<FileText size={11} />}>Logs</SubBtn>
-          <SubBtn active={tab === "stats"}   onClick={() => setTab("stats")}   icon={<Activity size={11} />}>Stats</SubBtn>
-          <SubBtn active={tab === "config"}  onClick={() => setTab("config")}  icon={<Box size={11} />}>Env · Mounts · Ports</SubBtn>
-          <SubBtn active={tab === "inspect"} onClick={() => setTab("inspect")} icon={<Eye size={11} />}>Inspect</SubBtn>
+          <SubBtn active={tab === "logs"}    onClick={() => setTab("logs")}    icon={<FileText size={11} />}>{t("Logs")}</SubBtn>
+          <SubBtn active={tab === "stats"}   onClick={() => setTab("stats")}   icon={<Activity size={11} />}>{t("Stats")}</SubBtn>
+          <SubBtn active={tab === "config"}  onClick={() => setTab("config")}  icon={<Box size={11} />}>{t("Env · Mounts · Ports")}</SubBtn>
+          <SubBtn active={tab === "inspect"} onClick={() => setTab("inspect")} icon={<Eye size={11} />}>{t("Inspect")}</SubBtn>
         </ScrollableTabs>
       </div>
 
@@ -1080,32 +1095,32 @@ const ContainerDetailsModal = ({
                 onChange={(e) => setLogsTail(parseInt(e.target.value, 10))}
                 className="h-7 px-2 bg-black/40 border border-white/10 rounded text-[10px] text-zinc-200 font-mono focus:border-primary/50 outline-none"
               >
-                <option value={100}>Tail 100</option>
-                <option value={500}>Tail 500</option>
-                <option value={2000}>Tail 2 000</option>
-                <option value={5000}>Tail 5 000</option>
-                <option value={20000}>Tail 20 000</option>
-                <option value={50000}>Tail 50 000</option>
+                <option value={100}>{t("Tail {count}", { count: "100" })}</option>
+                <option value={500}>{t("Tail {count}", { count: "500" })}</option>
+                <option value={2000}>{t("Tail {count}", { count: "2 000" })}</option>
+                <option value={5000}>{t("Tail {count}", { count: "5 000" })}</option>
+                <option value={20000}>{t("Tail {count}", { count: "20 000" })}</option>
+                <option value={50000}>{t("Tail {count}", { count: "50 000" })}</option>
               </select>
               <button
                 onClick={() => fetchLogs(logsTail)}
                 disabled={logsLoading || live}
                 className="h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
               >
-                {logsLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} Reload
+                {logsLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} {t("Reload")}
               </button>
               <button
                 onClick={live ? stopLive : startLive}
                 className={`h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all ${live ? "bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25" : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"}`}
               >
-                {live ? <><Square size={11} /> Stop live</> : <><Play size={11} /> Go live</>}
+                {live ? <><Square size={11} /> {t("Stop live")}</> : <><Play size={11} /> {t("Go live")}</>}
               </button>
-              {live && <span className="text-[10px] text-emerald-400 font-mono animate-pulse-brief">● streaming</span>}
+              {live && <span className="text-[10px] text-emerald-400 font-mono animate-pulse-brief">{t("● streaming")}</span>}
               <button
                 onClick={() => { navigator.clipboard.writeText(logs).catch(() => {}); }}
                 className="ml-auto h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
               >
-                <Copy size={11} /> Copy
+                <Copy size={11} /> {t("Copy")}
               </button>
             </div>
             {logsError && <ErrorBanner err={logsError} onRetry={() => { setLogsError(null); fetchLogs(logsTail); }} />}
@@ -1114,40 +1129,40 @@ const ContainerDetailsModal = ({
               onScroll={onLogsScroll}
               className="flex-1 min-h-[280px] bg-black/50 border border-white/5 rounded-lg p-2 text-[10.5px] font-mono text-zinc-200 whitespace-pre overflow-auto select-text"
             >
-              {logs || (logsLoading ? "Loading…" : "(no log output)")}
+              {logs || (logsLoading ? t("Loading…") : t("(no log output)"))}
             </pre>
           </div>
         )}
 
         {tab === "stats" && (
           <div className="space-y-2">
-            {oneStats.loading && <Spinner label="Reading stats…" />}
+            {oneStats.loading && <Spinner label={t("Reading stats…")} />}
             {oneStats.error && <ErrorBanner err={oneStats.error} />}
             {oneStats.data && (
               <div className="grid grid-cols-1 [@media(min-width:560px)]:grid-cols-2 gap-2">
-                <StatTile label="CPU" value={oneStats.data.cpuPerc} />
-                <StatTile label="Memory" value={`${oneStats.data.memPerc}`} sub={oneStats.data.memUsage} />
-                <StatTile label="Net I/O" value={oneStats.data.netIO} />
-                <StatTile label="Block I/O" value={oneStats.data.blockIO} />
-                <StatTile label="PIDs" value={oneStats.data.pids} />
+                <StatTile label={t("CPU")} value={oneStats.data.cpuPerc} />
+                <StatTile label={t("Memory")} value={`${oneStats.data.memPerc}`} sub={oneStats.data.memUsage} />
+                <StatTile label={t("Net I/O")} value={oneStats.data.netIO} />
+                <StatTile label={t("Block I/O")} value={oneStats.data.blockIO} />
+                <StatTile label={t("PIDs")} value={oneStats.data.pids} />
               </div>
             )}
             {!oneStats.loading && !oneStats.data && !oneStats.error && (
-              <Empty>Stats unavailable. Container may be stopped.</Empty>
+              <Empty>{t("Stats unavailable. Container may be stopped.")}</Empty>
             )}
             <button
               onClick={fetchOneStats}
               disabled={oneStats.loading}
               className="h-7 px-2.5 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 flex items-center gap-1.5"
             >
-              {oneStats.loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} Refresh
+              {oneStats.loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} {t("Refresh")}
             </button>
           </div>
         )}
 
         {tab === "config" && (
           <div className="space-y-3">
-            {inspect.loading && <Spinner label="Reading config…" />}
+            {inspect.loading && <Spinner label={t("Reading config…")} />}
             {inspect.error && <ErrorBanner err={inspect.error} onRetry={() => { setInspect(s => ({ ...s, error: null })); fetchInspect(); }} />}
             {inspect.data && <ConfigView data={inspect.data} />}
           </div>
@@ -1161,18 +1176,18 @@ const ContainerDetailsModal = ({
                 disabled={inspect.loading}
                 className="h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 flex items-center gap-1.5"
               >
-                {inspect.loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} Refresh
+                {inspect.loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} {t("Refresh")}
               </button>
               <button
                 onClick={() => { if (inspect.text) navigator.clipboard.writeText(inspect.text).catch(() => {}); }}
                 className="ml-auto h-7 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
               >
-                <Copy size={11} /> Copy JSON
+                <Copy size={11} /> {t("Copy JSON")}
               </button>
             </div>
             {inspect.error && <ErrorBanner err={inspect.error} onRetry={() => { setInspect(s => ({ ...s, error: null })); fetchInspect(); }} />}
             <pre className="flex-1 min-h-[300px] bg-black/50 border border-white/5 rounded-lg p-2 text-[10.5px] font-mono text-zinc-200 whitespace-pre overflow-auto select-text">
-              {inspect.data ? inspect.text : (inspect.loading ? "Loading…" : "(no data)")}
+              {inspect.data ? inspect.text : (inspect.loading ? t("Loading…") : t("(no data)"))}
             </pre>
           </div>
         )}
@@ -1190,6 +1205,7 @@ const asRecord = (v: unknown): Record<string, any> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, any>) : {};
 
 const ConfigView = ({ data }: { data: any }) => {
+  const t = useT();
   // Pull common, useful fields out of the inspect JSON so the user doesn't
   // have to scroll a 10 KB blob to read their env or port bindings.
   const config = asRecord(data?.Config);
@@ -1203,8 +1219,8 @@ const ConfigView = ({ data }: { data: any }) => {
 
   return (
     <>
-      <Card title={`Environment (${env.length})`}>
-        {env.length === 0 ? <Empty>No env vars set.</Empty> : (
+      <Card title={t("Environment ({count})", { count: env.length })}>
+        {env.length === 0 ? <Empty>{t("No env vars set.")}</Empty> : (
           <div className="space-y-0.5">
             {env.map((kv, i) => {
               const eq = kv.indexOf("=");
@@ -1222,8 +1238,8 @@ const ConfigView = ({ data }: { data: any }) => {
         )}
       </Card>
 
-      <Card title={`Mounts (${mounts.length})`}>
-        {mounts.length === 0 ? <Empty>No mounts.</Empty> : (
+      <Card title={t("Mounts ({count})", { count: mounts.length })}>
+        {mounts.length === 0 ? <Empty>{t("No mounts.")}</Empty> : (
           <div className="space-y-1">
             {mounts.map((m, i) => (
               <div key={i} className="bg-black/30 border border-white/5 rounded px-2 py-1 text-[10.5px] font-mono">
@@ -1235,9 +1251,9 @@ const ConfigView = ({ data }: { data: any }) => {
         )}
       </Card>
 
-      <Card title="Ports">
+      <Card title={t("Ports")}>
         {Object.keys(portBindings).length === 0 && Object.keys(exposed).length === 0 ? (
-          <Empty>No ports.</Empty>
+          <Empty>{t("No ports.")}</Empty>
         ) : (
           <div className="space-y-0.5">
             {Object.entries(portBindings).map(([proto, bindings]) => (
@@ -1249,19 +1265,19 @@ const ConfigView = ({ data }: { data: any }) => {
               </div>
             ))}
             {Object.keys(exposed).filter(p => !(p in portBindings)).map(p => (
-              <div key={p} className="text-[11px] font-mono text-zinc-500">{p} <span className="text-zinc-600 italic">(exposed only)</span></div>
+              <div key={p} className="text-[11px] font-mono text-zinc-500">{p} <span className="text-zinc-600 italic">{t("(exposed only)")}</span></div>
             ))}
           </div>
         )}
       </Card>
 
-      <Card title={`Networks (${Object.keys(networks).length})`}>
-        {Object.keys(networks).length === 0 ? <Empty>Not connected to any network.</Empty> : (
+      <Card title={t("Networks ({count})", { count: Object.keys(networks).length })}>
+        {Object.keys(networks).length === 0 ? <Empty>{t("Not connected to any network.")}</Empty> : (
           <div className="space-y-1">
             {Object.entries(networks).map(([name, n]: any) => (
               <div key={name} className="bg-black/30 border border-white/5 rounded px-2 py-1 text-[10.5px] font-mono">
                 <div className="text-zinc-200">{name}</div>
-                <div className="text-zinc-500">{asText(asRecord(n).IPAddress) || "—"} · gateway {asText(asRecord(n).Gateway) || "—"}</div>
+                <div className="text-zinc-500">{t("{ip} · gateway {gateway}", { ip: asText(asRecord(n).IPAddress) || "—", gateway: asText(asRecord(n).Gateway) || "—" })}</div>
               </div>
             ))}
           </div>
@@ -1284,6 +1300,7 @@ const ComposeViewerModal = ({
   container: ComposeContainer;
   onClose: () => void;
 }) => {
+  const t = useT();
   const filePath = container.configFile;
   const [yaml, setYaml] = useState<{ loading: boolean; error: string | null; data: string | null }>({ loading: false, error: null, data: null });
   const [copied, setCopied] = useState(false);
@@ -1293,10 +1310,10 @@ const ComposeViewerModal = ({
     setYaml(s => ({ ...s, loading: true, error: null }));
     try {
       const r = await invoke<DockerTextResult>("ssh_docker_compose_view", { sessionId, composeFile: filePath });
-      if (!r.success) throw new Error(r.data || "compose view failed");
+      if (!r.success) throw new Error(r.data || t("compose view failed"));
       setYaml({ loading: false, error: null, data: r.data });
     } catch (e: any) {
-      setYaml({ loading: false, error: typeof e === "string" ? e : (e?.message || "view failed"), data: null });
+      setYaml({ loading: false, error: typeof e === "string" ? e : (e?.message || t("view failed")), data: null });
     }
   };
 
@@ -1310,19 +1327,19 @@ const ComposeViewerModal = ({
   };
 
   return (
-    <ModalShell title={`compose.yaml · ${container.containerName}`} onClose={onClose}>
+    <ModalShell title={t("compose.yaml · {name}", { name: container.containerName })} onClose={onClose}>
       <div className="px-3 py-2 border-b border-white/5 bg-black/20 shrink-0 space-y-1">
         <div className="flex items-center gap-2">
-          <span className="text-[9px] uppercase tracking-wider text-zinc-500 font-bold shrink-0">Container</span>
+          <span className="text-[9px] uppercase tracking-wider text-zinc-500 font-bold shrink-0">{t("Container")}</span>
           <code className="text-[10.5px] font-mono text-zinc-200 truncate select-text">{container.containerName}</code>
-          <span className="text-[9px] text-zinc-500 ml-2 shrink-0">project: <span className="text-zinc-300 font-mono">{container.project}</span></span>
-          {container.service && <span className="text-[9px] text-zinc-500 ml-1 shrink-0">· service: <span className="text-zinc-300 font-mono">{container.service}</span></span>}
+          <span className="text-[9px] text-zinc-500 ml-2 shrink-0">{tx("project: {project}", { project: <span className="text-zinc-300 font-mono">{container.project}</span> })}</span>
+          {container.service && <span className="text-[9px] text-zinc-500 ml-1 shrink-0">{tx("· service: {service}", { service: <span className="text-zinc-300 font-mono">{container.service}</span> })}</span>}
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[9px] uppercase tracking-wider text-zinc-500 font-bold shrink-0">File</span>
-          <code className="text-[10.5px] font-mono text-zinc-200 truncate select-text flex-1 min-w-0">{filePath || "(no compose file label)"}</code>
+          <span className="text-[9px] uppercase tracking-wider text-zinc-500 font-bold shrink-0">{t("File")}</span>
+          <code className="text-[10.5px] font-mono text-zinc-200 truncate select-text flex-1 min-w-0">{filePath || t("(no compose file label)")}</code>
           {filePath && (
-            <button onClick={copyPath} title="Copy path" className="shrink-0 p-1 rounded text-zinc-500 hover:text-white hover:bg-white/5">
+            <button onClick={copyPath} title={t("Copy path")} className="shrink-0 p-1 rounded text-zinc-500 hover:text-white hover:bg-white/5">
               {copied ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
             </button>
           )}
@@ -1331,21 +1348,21 @@ const ComposeViewerModal = ({
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-3 select-text">
         {!filePath ? (
-          <Empty>No compose file path on this container's labels.</Empty>
+          <Empty>{t("No compose file path on this container's labels.")}</Empty>
         ) : (
           <Card title="compose.yaml" actions={
             yaml.data && (
               <button onClick={() => { navigator.clipboard.writeText(yaml.data!).catch(() => {}); }}
                 className="h-6 px-2 rounded text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white hover:bg-white/5 flex items-center gap-1">
-                <Copy size={10} /> Copy
+                <Copy size={10} /> {t("Copy")}
               </button>
             )
           }>
             <div className="px-2 py-1 mb-2 rounded bg-amber-500/5 border border-amber-500/20 text-amber-300 text-[10px] flex items-start gap-1.5">
               <AlertTriangle size={11} className="mt-0.5 shrink-0" />
-              <span>This file may contain secrets (DB passwords, API keys). View-only — Submarine never edits compose files.</span>
+              <span>{t("This file may contain secrets (DB passwords, API keys). View-only — Submarine never edits compose files.")}</span>
             </div>
-            {yaml.loading && <Spinner label="Reading compose file…" />}
+            {yaml.loading && <Spinner label={t("Reading compose file…")} />}
             {yaml.error && <ErrorBanner err={yaml.error} />}
             {yaml.data && (
               <pre className="bg-black/50 border border-white/5 rounded-lg p-2 text-[10.5px] font-mono text-zinc-200 whitespace-pre overflow-auto max-h-[60vh] select-text">
@@ -1457,6 +1474,7 @@ const Spinner = ({ label }: { label: string }) => (
 );
 
 const ErrorBanner = ({ err, onRetry }: { err: string; onRetry?: () => void }) => {
+  const t = useT();
   const e = describeError(err);
   return (
     <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/20 text-red-300 text-[11px]">
@@ -1471,7 +1489,7 @@ const ErrorBanner = ({ err, onRetry }: { err: string; onRetry?: () => void }) =>
           onClick={onRetry}
           className="shrink-0 h-6 px-2 rounded-md text-[10px] font-bold uppercase tracking-wider text-red-200 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 flex items-center gap-1"
         >
-          <RefreshCw size={10} /> Retry
+          <RefreshCw size={10} /> {t("Retry")}
         </button>
       )}
     </div>
@@ -1482,28 +1500,31 @@ const Empty = ({ children }: { children: React.ReactNode }) => (
   <div className="text-[11px] text-zinc-500 italic">{children}</div>
 );
 
-const ModalShell = ({ title, onClose, actions, children }: { title: string; onClose: () => void; actions?: React.ReactNode; children: React.ReactNode }) => (
-  // On phones we go full-bleed: no outer padding, no rounded corners, no
-  // border — the modal IS the screen. From sm: up we revert to a centered
-  // card with the soft-edge look. Saves the ~24 px of viewport that a
-  // floating card eats on a 360 px screen.
-  <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex sm:items-center sm:justify-center sm:p-3 animate-in fade-in" onClick={onClose}>
-    <div onClick={(e) => e.stopPropagation()} className="bg-[#0c0c0e] sm:border sm:border-white/10 sm:rounded-xl w-full sm:max-w-3xl h-full sm:h-[80vh] flex flex-col overflow-hidden shadow-2xl">
-      <div className="shrink-0 h-11 sm:h-10 px-3 flex items-center justify-between border-b border-white/5 bg-white/[0.02]">
-        <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-300 truncate select-text">{title}</span>
-        <div className="flex items-center gap-2 shrink-0">
-          {actions}
-          {/* h-9 w-9 = 36 px touch target on phone, vs the old icon
-              which was a 14 px icon with no padding zone — easy to miss
-              with a thumb. */}
-          <button aria-label="Close" onClick={onClose} className="h-9 w-9 sm:h-7 sm:w-7 flex items-center justify-center rounded-md text-zinc-500 hover:text-white hover:bg-white/5">
-            <X size={16} />
-          </button>
+const ModalShell = ({ title, onClose, actions, children }: { title: string; onClose: () => void; actions?: React.ReactNode; children: React.ReactNode }) => {
+  const t = useT();
+  return (
+    // On phones we go full-bleed: no outer padding, no rounded corners, no
+    // border — the modal IS the screen. From sm: up we revert to a centered
+    // card with the soft-edge look. Saves the ~24 px of viewport that a
+    // floating card eats on a 360 px screen.
+    <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex sm:items-center sm:justify-center sm:p-3 animate-in fade-in" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-[#0c0c0e] sm:border sm:border-white/10 sm:rounded-xl w-full sm:max-w-3xl h-full sm:h-[80vh] flex flex-col overflow-hidden shadow-2xl">
+        <div className="shrink-0 h-11 sm:h-10 px-3 flex items-center justify-between border-b border-white/5 bg-white/[0.02]">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-300 truncate select-text">{title}</span>
+          <div className="flex items-center gap-2 shrink-0">
+            {actions}
+            {/* h-9 w-9 = 36 px touch target on phone, vs the old icon
+                which was a 14 px icon with no padding zone — easy to miss
+                with a thumb. */}
+            <button aria-label={t("Close")} onClick={onClose} className="h-9 w-9 sm:h-7 sm:w-7 flex items-center justify-center rounded-md text-zinc-500 hover:text-white hover:bg-white/5">
+              <X size={16} />
+            </button>
+          </div>
         </div>
+        {children}
       </div>
-      {children}
     </div>
-  </div>
-);
+  );
+};
 
 export default DockerTab;

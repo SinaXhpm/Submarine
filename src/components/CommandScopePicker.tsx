@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Folder, Server } from "lucide-react";
 import { CommandScope } from "../util/commandScope";
 import { folderTree } from "../util/folderTree";
+import { useT } from "../i18n";
 
 // Which servers a command is for (#22): all of them, or the folders and
 // servers ticked here. A folder takes in what's inside it, sub-folders too.
@@ -18,6 +19,7 @@ export default function CommandScopePicker({
   servers: any[];
   folders: any[];
 }) {
+  const t = useT();
   const [someOnly, setSomeOnly] = useState(!!scope);
   const [query, setQuery] = useState("");
   const tree = useMemo(() => folderTree(folders), [folders]);
@@ -53,11 +55,11 @@ export default function CommandScopePicker({
   );
   return (
     <div className="space-y-2">
-      <label className="text-[12px] font-bold text-zinc-400 ml-1">For</label>
-      <div role="radiogroup" aria-label="Which servers" className="grid grid-cols-2 gap-2">
+      <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("For")}</label>
+      <div role="radiogroup" aria-label={t("Which servers")} className="grid grid-cols-2 gap-2">
         {[
-          { on: !someOnly, label: "All servers", pick: () => { setSomeOnly(false); onChange(null); } },
-          { on: someOnly, label: "Some servers", pick: () => { setSomeOnly(true); onChange(scope ?? { servers: [], folders: [] }); } },
+          { on: !someOnly, label: t("All servers"), pick: () => { setSomeOnly(false); onChange(null); } },
+          { on: someOnly, label: t("Some servers"), pick: () => { setSomeOnly(true); onChange(scope ?? { servers: [], folders: [] }); } },
         ].map((o) => (
           <button
             key={o.label}
@@ -77,8 +79,8 @@ export default function CommandScopePicker({
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Find a server or folder"
-            aria-label="Find a server or folder"
+            placeholder={t("Find a server or folder")}
+            aria-label={t("Find a server or folder")}
             className="w-full h-8 bg-transparent border-b border-white/10 px-3 text-[12px] text-white outline-none"
           />
           <div className="max-h-56 overflow-y-auto p-1 text-[12.5px]">
@@ -101,15 +103,15 @@ export default function CommandScopePicker({
               );
             })}
             {folderRows.length === 0 && serverRows.length === 0 && (
-              <div className="px-2 py-2 text-[11.5px] text-zinc-500">No saved servers yet.</div>
+              <div className="px-2 py-2 text-[11.5px] text-zinc-500">{t("No saved servers yet.")}</div>
             )}
           </div>
         </div>
       )}
       <p className="text-[11px] text-zinc-500 leading-relaxed ml-1">
         {someOnly
-          ? "In a session, the Library shows this command only for the servers ticked here and those in the ticked folders."
-          : "Shown in every session's Library."}
+          ? t("In a session, the Library shows this command only for the servers ticked here and those in the ticked folders.")
+          : t("Shown in every session's Library.")}
       </p>
     </div>
   );

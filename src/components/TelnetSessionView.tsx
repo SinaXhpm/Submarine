@@ -5,6 +5,7 @@ import { AlertTriangle, Loader2, RotateCw, ScrollText, ShieldAlert, TerminalSqua
 import { AuthPrompts } from "./AuthPrompts";
 import TerminalView from "./TerminalView";
 import { readUseSshAgent } from "../util/sshAgent";
+import { tk, useT } from "../i18n";
 
 // A telnet server's tab (#179). It connects — straight to the server, or
 // through the node's SSH server, asking that server's host-key and login
@@ -16,9 +17,10 @@ import { readUseSshAgent } from "../util/sshAgent";
 type LogLine = { msg: string; type: string; time: string };
 type Status = "connecting" | "connected" | "failed" | "disconnected";
 
-const NOT_ENCRYPTED = "Telnet isn't encrypted: what is typed here, passwords too, crosses the network as plain text.";
+const NOT_ENCRYPTED = tk("Telnet isn't encrypted: what is typed here, passwords too, crosses the network as plain text.");
 
 export default function TelnetSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
+  const t = useT();
   const [status, setStatus] = useState<Status>("connecting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [reason, setReason] = useState("");
@@ -57,7 +59,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
   const connect = useCallback(() => {
     setStatus("connecting");
     setReason("");
-    pushLog({ msg: NOT_ENCRYPTED, type: "warning" });
+    pushLog({ msg: t(NOT_ENCRYPTED), type: "warning" });
     invoke("telnet_connect", { sessionId: session.id, serverId: session.serverId, useSshAgent: readUseSshAgent() }).catch((e) => {
       const why = String(e);
       pushLog({ msg: why, type: "error" });
@@ -103,12 +105,12 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
         setFocusTick((t) => t + 1);
       }),
       listen(`connection-failed-${id}`, (e: any) => {
-        setReason(String(e.payload?.reason ?? "The connection failed."));
+        setReason(String(e.payload?.reason ?? t("The connection failed.")));
         setStatus("failed");
       }),
       // The server or the route ended it (with why), or a Disconnect.
       listen(`session-disconnected-${id}`, (e: any) => {
-        const why = String(e.payload?.reason ?? "The connection closed.");
+        const why = String(e.payload?.reason ?? t("The connection closed."));
         pushLog({ msg: why, type: "error" });
         setReason(why);
         setStatus("disconnected");
@@ -117,7 +119,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
       // comes as session-disconnected right after.
       listen(`terminal-closed-${terminalId}`, () => {
         setStatus((s) => (s === "connected" ? "disconnected" : s));
-        setReason((r) => r || "Disconnected.");
+        setReason((r) => r || t("Disconnected."));
       }),
     ]);
     subs.then(() => { if (!cancelled) connect(); });
@@ -150,13 +152,13 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
   const working = status === "connecting";
   const broken = status === "failed" || status === "disconnected";
   const statusText = working
-    ? "Connecting…"
+    ? t("Connecting…")
     : status === "failed"
-      ? "Connection failed"
+      ? t("Connection failed")
       : status === "disconnected"
-        ? "Disconnected"
+        ? t("Disconnected")
         : via
-          ? `Telnet · through ${via}`
+          ? t("Telnet · through {via}", { via })
           : "Telnet";
 
   const logList = (
@@ -185,39 +187,39 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
         <span className="text-[12px] font-semibold text-zinc-100 truncate" title={session.serverName}>{name}</span>
         <span
           className="shrink-0 inline-flex items-center gap-1 h-5 px-1.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300 text-[10px] font-bold uppercase tracking-wider"
-          title={NOT_ENCRYPTED}
+          title={t(NOT_ENCRYPTED)}
         >
           <ShieldAlert size={10} aria-hidden="true" />
-          <span className="hidden sm:inline">Not encrypted</span>
+          <span className="hidden sm:inline">{t("Not encrypted")}</span>
         </span>
         <span className={`min-w-0 flex-1 truncate text-[11px] ${broken ? "text-red-400/90" : "text-zinc-500"}`}>{statusText}</span>
         {epoch >= 0 && (
           <button
             onClick={() => setShowLog((v) => !v)}
             aria-pressed={showLog}
-            title="The connection log"
+            title={t("The connection log")}
             className={`h-7 px-2 flex items-center gap-1.5 rounded-lg text-xs font-semibold transition-colors ${showLog ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-300 hover:bg-white/10"}`}
           >
-            <ScrollText size={13} /><span className="hidden sm:inline">Log</span>
+            <ScrollText size={13} /><span className="hidden sm:inline">{t("Log")}</span>
           </button>
         )}
         {broken && (
           <button
             onClick={connect}
-            title="Reconnect"
-            aria-label="Reconnect"
+            title={t("Reconnect")}
+            aria-label={t("Reconnect")}
             className="h-7 px-2 flex items-center gap-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 text-xs font-semibold transition-colors"
           >
-            <RotateCw size={13} /><span className="hidden sm:inline">Reconnect</span>
+            <RotateCw size={13} /><span className="hidden sm:inline">{t("Reconnect")}</span>
           </button>
         )}
         <button
           onClick={onClose}
-          title="Close session"
-          aria-label="Close session"
+          title={t("Close session")}
+          aria-label={t("Close session")}
           className="h-7 px-2 flex items-center gap-1.5 rounded-lg bg-white/5 text-zinc-300 hover:bg-red-500/15 hover:text-red-300 text-xs font-semibold transition-colors"
         >
-          <X size={13} /><span className="hidden sm:inline">Close</span>
+          <X size={13} /><span className="hidden sm:inline">{t("Close")}</span>
         </button>
       </div>
 
@@ -259,7 +261,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
       {promptWaiting && (
         <div
           role="dialog"
-          aria-label={`Connection prompt for ${session.serverName}`}
+          aria-label={t("Connection prompt for {name}", { name: session.serverName })}
           className="absolute inset-0 z-40 flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto"
         >
           <div className="max-w-2xl w-full mt-6 sm:mt-12">

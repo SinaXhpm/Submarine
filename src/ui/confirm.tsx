@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, X } from "lucide-react";
+import { useT } from "../i18n";
 
 // Focus trap for our modal portals. When a prompt opens (`openId` is its id,
 // null while that kind of prompt is closed), remember the element that had
@@ -175,6 +176,7 @@ const ignoreLaterClicks = (e: React.MouseEvent) => {
 };
 
 export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => {
+  const t = useT();
   // Every request, of any kind, waits in one line, and only the first in line
   // is on screen. There used to be one slot per kind, which went wrong two
   // ways:
@@ -397,17 +399,17 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               <div className="flex items-center gap-2">
                 <AlertTriangle size={14} className="text-amber-400" />
                 <span id="overwrite-modal-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
-                  {owState.opts.direction === "download" ? "Local file exists" : "Remote file exists"}
+                  {owState.opts.direction === "download" ? t("Local file exists") : t("Remote file exists")}
                 </span>
               </div>
-              <button aria-label="Close" onClick={() => closeOverwrite("cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
+              <button aria-label={t("Close")}onClick={() => closeOverwrite("cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
             <p className="text-[12px] text-zinc-300 leading-relaxed mb-1 whitespace-pre-wrap break-words">
               {owState.opts.direction === "download"
-                ? "A file with this name already exists at the destination:"
-                : "A file with this name already exists on the remote:"}
+                ? t("A file with this name already exists at the destination:")
+                : t("A file with this name already exists on the remote:")}
             </p>
             <p className="text-[12px] text-amber-300 leading-relaxed mb-4 break-all">
               {owState.opts.name}
@@ -415,21 +417,21 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             <div className="grid grid-cols-2 gap-2">
               <button onClick={() => closeOverwrite("overwrite")} data-default-focus
                       className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
-                Overwrite
+                {t("Overwrite")}
               </button>
               <button onClick={() => closeOverwrite("skip")}
                       className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
-                Skip
+                {t("Skip")}
               </button>
               {owState.opts.batchSize > 1 && (
                 <>
                   <button onClick={() => closeOverwrite("overwrite-all")}
                           className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20">
-                    Overwrite all
+                    {t("Overwrite all")}
                   </button>
                   <button onClick={() => closeOverwrite("skip-all")}
                           className="h-10 sm:h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.03] border border-white/10 text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200">
-                    Skip all
+                    {t("Skip all")}
                   </button>
                 </>
               )}
@@ -437,7 +439,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             <div className="mt-3 flex justify-end">
               <button onClick={() => closeOverwrite("cancel")}
                       className="px-3 h-7 rounded text-[10px] font-bold uppercase tracking-wider bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20">
-                Cancel batch
+                {t("Cancel batch")}
               </button>
             </div>
           </div>
@@ -459,10 +461,10 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               <div className="flex items-center gap-2">
                 <AlertTriangle size={14} className={state.opts.destructive ? "text-rose-400" : "text-amber-400"} />
                 <span id="confirm-modal-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
-                  {state.opts.title || (state.opts.destructive ? "Confirm action" : "Are you sure?")}
+                  {state.opts.title || (state.opts.destructive ? t("Confirm action") : t("Are you sure?"))}
                 </span>
               </div>
-              <button aria-label="Close" onClick={() => close(false)} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
+              <button aria-label={t("Close")}onClick={() => close(false)} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
@@ -475,7 +477,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               <button onClick={() => close(false)}
                       data-default-focus={state.opts.safeDefault ? true : undefined}
                       className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
-                {state.opts.cancelLabel || "Cancel"}
+                {state.opts.cancelLabel || t("Cancel")}
               </button>
               <button onClick={() => close(true)} ref={confirmOkRef}
                       data-default-focus={state.opts.safeDefault ? undefined : true}
@@ -484,7 +486,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
                           ? "bg-rose-500/15 border-rose-500/40 text-rose-300 hover:bg-rose-500/25"
                           : "bg-primary/15 border-primary/40 text-primary hover:bg-primary/25"
                       }`}>
-                {state.opts.okLabel || (state.opts.destructive ? "Delete" : "OK")}
+                {state.opts.okLabel || (state.opts.destructive ? t("Delete") : t("OK"))}
               </button>
             </div>
           </div>
@@ -504,9 +506,9 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
                className="w-full max-w-[400px] bg-[#121214] border border-white/10 rounded-xl shadow-2xl p-4 font-mono text-[12px] animate-in zoom-in-95 fade-in duration-150">
             <div className="flex items-start justify-between gap-3 mb-3">
               <span id="text-prompt-modal-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
-                {tpState.opts.title || "Enter value"}
+                {tpState.opts.title || t("Enter value")}
               </span>
-              <button aria-label="Close" onClick={() => closeTextPrompt(null)} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
+              <button aria-label={t("Close")}onClick={() => closeTextPrompt(null)} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
@@ -530,11 +532,11 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             <div className="flex justify-end gap-2 mt-2">
               <button onClick={() => closeTextPrompt(null)}
                       className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
-                {tpState.opts.cancelLabel || "Cancel"}
+                {tpState.opts.cancelLabel || t("Cancel")}
               </button>
               <button onClick={submitTextPrompt}
                       className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
-                {tpState.opts.okLabel || "OK"}
+                {tpState.opts.okLabel || t("OK")}
               </button>
             </div>
           </div>
@@ -559,10 +561,10 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
               <div className="flex items-center gap-2">
                 <AlertTriangle size={14} className="text-amber-400" />
                 <span id="unsaved-modal-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
-                  {usState.opts.title || "Unsaved changes"}
+                  {usState.opts.title || t("Unsaved changes")}
                 </span>
               </div>
-              <button aria-label="Close" data-choice="cancel" onClick={(e) => clickUnsaved(e, "cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
+              <button aria-label={t("Close")}data-choice="cancel" onClick={(e) => clickUnsaved(e, "cancel")} className="p-[14px] -m-[14px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white shrink-0">
                 <X size={12} />
               </button>
             </div>
@@ -572,16 +574,16 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             <div className="flex flex-wrap items-center justify-between gap-2">
               <button data-choice="discard" onClick={(e) => clickUnsaved(e, "discard")}
                       className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20">
-                {usState.opts.discardLabel || "Discard"}
+                {usState.opts.discardLabel || t("Discard")}
               </button>
               <div className="ml-auto flex gap-2">
                 <button data-choice="cancel" onClick={(e) => clickUnsaved(e, "cancel")}
                         className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white">
-                  {usState.opts.cancelLabel || "Keep editing"}
+                  {usState.opts.cancelLabel || t("Keep editing")}
                 </button>
                 <button data-choice="save" data-default-focus onClick={(e) => clickUnsaved(e, "save")}
                         className="px-3 h-10 sm:h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25">
-                  {usState.opts.saveLabel || "Save"}
+                  {usState.opts.saveLabel || t("Save")}
                 </button>
               </div>
             </div>

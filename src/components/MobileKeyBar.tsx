@@ -16,6 +16,7 @@
 
 import { useSyncExternalStore } from "react";
 import { ChevronUp } from "lucide-react";
+import { useT } from "../i18n";
 
 export type ModKey = "ctrl" | "alt" | "shift";
 export type ModState = "off" | "armed" | "locked";
@@ -50,6 +51,7 @@ interface MobileKeyBarProps {
 }
 
 export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: MobileKeyBarProps) {
+  const t = useT();
   const wantsSecondRow = useSyncExternalStore(subscribeSecondRow, () => secondRowOpen);
   // A modifier that's on stays in sight, so closing the row can't hide it.
   const showSecondRow = wantsSecondRow || modifiers.alt !== "off" || modifiers.shift !== "off";
@@ -70,7 +72,7 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
         onMouseDown={(e) => e.preventDefault()}
         onTouchStart={(e) => e.preventDefault()}
         aria-pressed={s !== "off"}
-        title={s === "locked" ? `${label} locked — tap to release` : s === "armed" ? `${label} armed — next key combines, or tap to lock` : `Tap to arm ${label}`}
+        title={s === "locked" ? t("{label} locked — tap to release", { label }) : s === "armed" ? t("{label} armed — next key combines, or tap to lock", { label }) : t("Tap to arm {label}", { label })}
         className={`flex-1 min-w-0 h-9 rounded-md text-[clamp(9px,2.9vw,10.5px)] font-bold uppercase border transition-colors ${tone}`}
       >
         {label}
@@ -115,28 +117,28 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
         <div className="flex gap-1">
           <ModBtn m="alt"   label="Alt"   />
           <ModBtn m="shift" label="Shift" />
-          <KeyBtn symbol label="|" onClick={() => onSpecialKey("|")} title="Pipe (|)" />
-          <KeyBtn symbol label="~" onClick={() => onSpecialKey("~")} title="Tilde (~)" />
-          <KeyBtn symbol label="/" onClick={() => onSpecialKey("/")} title="Slash (/)" />
-          <KeyBtn symbol label="-" onClick={() => onSpecialKey("-")} title="Dash (-)" />
+          <KeyBtn symbol label="|" onClick={() => onSpecialKey("|")} title={t("Pipe (|)")} />
+          <KeyBtn symbol label="~" onClick={() => onSpecialKey("~")} title={t("Tilde (~)")} />
+          <KeyBtn symbol label="/" onClick={() => onSpecialKey("/")} title={t("Slash (/)")} />
+          <KeyBtn symbol label="-" onClick={() => onSpecialKey("-")} title={t("Dash (-)")} />
         </div>
       )}
       <div className="flex gap-1">
         <ModBtn m="ctrl" label="Ctrl" />
-        <KeyBtn label="Esc" onClick={() => onSpecialKey("esc")} title="Send Escape (0x1b)" />
-        <KeyBtn label="Tab" onClick={() => onSpecialKey("tab")} title="Send Tab (or back-tab when Shift armed)" />
-        <KeyBtn symbol label="←" onClick={() => onSpecialKey("left")} title="Left arrow" />
-        <KeyBtn symbol label="↑" onClick={() => onSpecialKey("up")} title="Up arrow" />
-        <KeyBtn symbol label="↓" onClick={() => onSpecialKey("down")} title="Down arrow" />
-        <KeyBtn symbol label="→" onClick={() => onSpecialKey("right")} title="Right arrow" />
+        <KeyBtn label="Esc" onClick={() => onSpecialKey("esc")} title={t("Send Escape (0x1b)")} />
+        <KeyBtn label="Tab" onClick={() => onSpecialKey("tab")} title={t("Send Tab (or back-tab when Shift armed)")} />
+        <KeyBtn symbol label="←" onClick={() => onSpecialKey("left")} title={t("Left arrow")} />
+        <KeyBtn symbol label="↑" onClick={() => onSpecialKey("up")} title={t("Up arrow")} />
+        <KeyBtn symbol label="↓" onClick={() => onSpecialKey("down")} title={t("Down arrow")} />
+        <KeyBtn symbol label="→" onClick={() => onSpecialKey("right")} title={t("Right arrow")} />
         <button
           type="button"
           onClick={() => setSecondRowOpen(!wantsSecondRow)}
           onMouseDown={(e) => e.preventDefault()}
           onTouchStart={(e) => e.preventDefault()}
           aria-expanded={showSecondRow}
-          title={showSecondRow ? "Fewer keys" : "More keys"}
-          aria-label={showSecondRow ? "Fewer keys" : "More keys"}
+          title={showSecondRow ? t("Fewer keys") : t("More keys")}
+          aria-label={showSecondRow ? t("Fewer keys") : t("More keys")}
           className="flex-1 min-w-0 h-9 rounded-md flex items-center justify-center text-zinc-500 active:bg-white/10"
         >
           <ChevronUp size={18} className={`transition-transform ${showSecondRow ? "rotate-180" : ""}`} />

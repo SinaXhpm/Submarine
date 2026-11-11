@@ -37,8 +37,8 @@ const litValue = (m, i) => unescape(m[i] ?? m[i + 1] ?? m[i + 2] ?? "");
 const CALL = new RegExp(String.raw`\b(t|tk|tx)\(\s*` + LIT, "g");
 const CALL_N = new RegExp(String.raw`\btn\(\s*[^,]+?,\s*` + LIT + String.raw`\s*,\s*` + LIT, "g");
 // A t()/tx()/tn() whose first text argument isn't a literal.
-const NON_LITERAL = /\b(t|tx)\(\s*(?!["'`])[^)]/g;
-const NON_LITERAL_N = /\btn\(\s*[^,]+?,\s*(?!["'`])[^)]/g;
+const NON_LITERAL = /\b(t|tx)\(\s*(?![\s"'`])[^)]/g;
+const NON_LITERAL_N = /\btn\(\s*[^,]+?,\s*(?![\s"'`])[^)]/g;
 
 const keys = new Map(); // text → first place
 const dynamic = [];
