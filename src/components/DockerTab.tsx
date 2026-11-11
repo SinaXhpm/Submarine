@@ -146,6 +146,17 @@ function describeError(err: string, ctx?: string): { title: string; hint?: strin
 const ACTION_LABELS: Record<string, string> = {
   start: tk("Start"), pause: tk("Pause"), stop: tk("Stop"), restart: tk("Restart"),
 };
+// An action's result as a whole line per action, so a translation needn't put
+// the English command word into its own sentence.
+const ACTION_OK: Record<string, string> = {
+  start: tk("start ok"), pause: tk("pause ok"), stop: tk("stop ok"), restart: tk("restart ok"),
+};
+const ACTION_OK_SUDO: Record<string, string> = {
+  start: tk("start ok (via sudo)"), pause: tk("pause ok (via sudo)"), stop: tk("stop ok (via sudo)"), restart: tk("restart ok (via sudo)"),
+};
+const ACTION_FAILED: Record<string, string> = {
+  start: tk("start failed"), pause: tk("pause failed"), stop: tk("stop failed"), restart: tk("restart failed"),
+};
 
 // Mobile-first sizing: h-9 (36 px) keeps the tap target above 32 px on
 // phones; the explicit `min-w-[44px]` on icon-only variants guards the
@@ -420,7 +431,11 @@ const ContainersView = ({
         ...prev,
         [c.id]: {
           ok: r.success,
-          msg: r.success ? (r.used_sudo ? t("{action} ok (via sudo)", { action }) : t("{action} ok", { action })) : (r.output || t("{action} failed", { action })),
+          msg: r.success
+            ? (r.used_sudo
+              ? (ACTION_OK_SUDO[action] ? t(ACTION_OK_SUDO[action]) : t("{action} ok (via sudo)", { action }))
+              : (ACTION_OK[action] ? t(ACTION_OK[action]) : t("{action} ok", { action })))
+            : (r.output || (ACTION_FAILED[action] ? t(ACTION_FAILED[action]) : t("{action} failed", { action }))),
           sudo: r.used_sudo,
         },
       }));

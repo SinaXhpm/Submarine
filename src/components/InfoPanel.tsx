@@ -13,6 +13,17 @@ import CopyValue from "./CopyValue";
 import { usePageShown } from "../hooks/usePageShown";
 import { t, tk, tn, tx, useT } from "../i18n";
 
+// A service action's result as a whole line per action, so a translation
+// needn't put the English command word into its own sentence.
+const SERVICE_OK: Record<string, string> = { start: tk("start succeeded"), stop: tk("stop succeeded"), restart: tk("restart succeeded") };
+const SERVICE_OK_SUDO: Record<string, string> = {
+  start: tk("start succeeded (via sudo)"), stop: tk("stop succeeded (via sudo)"), restart: tk("restart succeeded (via sudo)"),
+};
+const SERVICE_FAILED_EXIT: Record<string, string> = {
+  start: tk("start failed (exit {code})"), stop: tk("stop failed (exit {code})"), restart: tk("restart failed (exit {code})"),
+};
+const SERVICE_FAILED: Record<string, string> = { start: tk("start failed"), stop: tk("stop failed"), restart: tk("restart failed") };
+
 interface InfoPanelProps {
   sessionId: string;
   disabled?: boolean;
@@ -1898,8 +1909,8 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
         [unit]: {
           ok: r.success,
           msg: r.success
-            ? (r.used_sudo ? t("{action} succeeded (via sudo)", { action }) : t("{action} succeeded", { action }))
-            : (r.stdout || t("{action} failed (exit {code})", { action, code: r.exit_code })),
+            ? t(r.used_sudo ? SERVICE_OK_SUDO[action] : SERVICE_OK[action])
+            : (r.stdout || t(SERVICE_FAILED_EXIT[action], { code: r.exit_code })),
           sudo: r.used_sudo,
         },
       }));
@@ -1909,7 +1920,7 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
         setTimeout(onRefresh, 800);
       }
     } catch (e: any) {
-      const msg = typeof e === "string" ? e : (e?.message || t("{action} failed", { action }));
+      const msg = typeof e === "string" ? e : (e?.message || t(SERVICE_FAILED[action]));
       setLastResult(prev => ({ ...prev, [unit]: { ok: false, msg, sudo: false } }));
     } finally {
       setBusy(b => ({ ...b, [unit]: false }));
