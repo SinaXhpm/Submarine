@@ -42,8 +42,8 @@
     "noTracking": "Bu web sitesi çerez, analitik ya da üçüncü taraf betik kullanmaz."
   },
   "home": {
-    "title": "Submarine – Windows, macOS, Linux ve Android için ücretsiz SSH, SFTP, RDP, VNC ve Telnet istemcisi",
-    "description": "Submarine, ücretsiz ve açık kaynaklı bir uzaktan erişim uygulamasıdır: SSH terminali, iki panelli SFTP, port yönlendirme, uzak masaüstü (RDP, VNC) ve Telnet tek pencerede. Sunucularınız, parolalarınız ve anahtarlarınız cihazlarınızda şifreli olarak kalır.",
+    "title": "Submarine – ücretsiz SSH, SFTP, RDP, VNC ve Telnet istemcisi",
+    "description": "Ücretsiz ve açık kaynaklı SSH, SFTP, RDP, VNC ve Telnet istemcisi. Windows, macOS, Linux ve Android için. Sunucu, parola ve anahtarlarınız şifreli kalır.",
     "hero": {
       "pillTag": "0.4",
       "pill": "Ortak pano ve hız seçenekleriyle uzak masaüstleri",
@@ -405,8 +405,8 @@
     }
   },
   "security": {
-    "title": "Submarine verilerinizi nasıl korur ve bunu nasıl doğrulayabilirsiniz",
-    "description": "Submarine'in neyi nasıl şifrelediği, eşitleme sunucusunun neyi görüp neyi göremediği, bir uzak masaüstünün cihazınızdan neler aldığı, kötü niyetli bir sunucunun yine de neler yapabileceği ve her iddiayı açık kaynak kodda adım adım doğrulamanın yolları.",
+    "title": "Submarine verilerinizi nasıl korur, bunu nasıl doğrularsınız",
+    "description": "Submarine neyi nasıl şifreler, eşitleme sunucusu neyi görüp neyi göremez, kötü niyetli bir sunucu yine de ne yapabilir ve her iddia kodda nasıl doğrulanır.",
     "heading": "Verileriniz nasıl korunuyor",
     "lede": "Sizden bize güvenmenizi istemiyoruz. Bu sayfa tam olarak neyin şifrelendiğini, sunucumuzun neyi görüp neyi göremediğini ve her iddiayı kendiniz nasıl doğrulayabileceğinizi açıklıyor.",
     "summaryTitle": "Bir dakikada özet",
@@ -649,7 +649,7 @@
   },
   "privacy": {
     "title": "Gizlilik politikası – Submarine",
-    "description": "Submarine uygulamasının ve isteğe bağlı eşitleme hizmetinin neleri sakladığı, neleri okuyup neleri okuyamadığı, bunları ne kadar süre tuttuğu ve nasıl silebileceğiniz.",
+    "description": "Submarine uygulamasının ve isteğe bağlı eşitleme hizmetinin neleri sakladığı, neyi okuyup neyi okuyamadığı, ne kadar süre tuttuğu ve nasıl silebileceğiniz.",
     "heading": "Gizlilik politikası",
     "intro": "Bu politika; Submarine uygulamasını (Windows, macOS, Linux, Android ve iOS), uygulamanın kullanabildiği isteğe bağlı Submarine eşitleme hizmetini ve bu web sitesini kapsar.",
     "shortTitle": "Kısaca",

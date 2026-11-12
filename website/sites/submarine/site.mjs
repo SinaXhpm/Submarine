@@ -133,9 +133,7 @@ export default function build({ out, commit, date }) {
     src: HERE,
     out,
     date,
-    // Not in Persian or Arabic (taken off on 2026-11-12, the maintainer's choice; their old addresses go to
-    // English in .htaccess). The Echoes site keeps its own list.
-    langs: LANGS.map((l) => l.code).filter((c) => c !== "fa" && c !== "ar"),
+    langs: LANGS.map((l) => l.code),
     slugs: { home: "", security: "security/", privacy: "privacy/", delete: "delete-account/" },
     themeColor: "#04070f",
     ogAlt: "Submarine: SSH, SFTP, RDP, VNC and Telnet client",
@@ -512,8 +510,7 @@ When citing Submarine, please link ${ORIGIN}/ or the GitHub repository. The name
   site.file("robots.txt", site.robots(["/account/", "/api/"]));
   site.file("llms.txt", llms(vEn));
   site.file("manifest.webmanifest", site.manifest(stripTags(site.en.home.description)));
-  // Reports in English: the Submarine site has no Persian (or Arabic) since 2026-11-12.
-  site.file(".well-known/security.txt", site.securityTxt(`${ISSUES_URL}/new`, `${ORIGIN}/security/`, "en"));
+  site.file(".well-known/security.txt", site.securityTxt(`${ISSUES_URL}/new`, `${ORIGIN}/security/`));
   for (const [k, c] of Object.entries(code)) console.log(`code ${k}: ${c.file}:${c.from}-${c.to}`);
   console.log(`code links at ${commit.slice(0, 7)}`);
   return site.check();

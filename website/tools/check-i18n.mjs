@@ -17,7 +17,7 @@ const KEEP = {
   submarine: ["Submarine", "SSH", "SFTP", "RDP", "VNC", "Telnet", "GitHub", "Argon2id", "AES-256-GCM", "SHA256SUMS", "MIT",
     "X-Auth-Token", "cloud_token.json", "Ctrl+Shift+F", "Ctrl+Shift+R", "DPAPI", "Windows Hello", "IronRDP", "Echoes", "TestFlight"],
   echoes: ["Echoes", "App Store", "GitHub", "MIT", "Submarine", "cURL", "Doctor", "String Lab", "TLS Inspector", "Telegram", "Cloudflare",
-    "v2rayNG", "Hiddify", "Xray", "PRIVACY.md"],
+    "v2rayNG", "Hiddify", "Xray", "PRIVACY.md", "Port Scanner", "Check Host", "Web Server", "Start sharing"],
 }[site] || [];
 // Keys whose text is a name in the app: the same in every language.
 const FIXED = {

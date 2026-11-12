@@ -5,14 +5,14 @@ Two static sites, built from this folder:
 - [submarine.sinaxhpm.com](https://submarine.sinaxhpm.com) (`sites/submarine/`): what Submarine is, how it protects your data, the privacy policy and the account deletion page.
 - [echoes.sinaxhpm.com](https://echoes.sinaxhpm.com) (`sites/echoes/`): Echoes, the network toolkit by the same author (its source is [SinaXhpm/Echoes](https://github.com/SinaXhpm/Echoes)), and its privacy policy, which follows that repository's PRIVACY.md word for word.
 
-The Submarine site is in English and 9 translations (no Persian or Arabic since November 2026), the Echoes site in English and 11. Static HTML with one style sheet and one small script (plus the delete form on the Submarine site); fonts are served from the site itself; no cookies, no analytics, no third-party requests. The servers send a strict Content-Security-Policy (`script-src 'self'; style-src 'self'`), so the pages have no inline script or style.
+Both sites are in English and 9 translations (no Persian or Arabic since November 2026: their old addresses go to the English pages). Static HTML with one style sheet and one small script (plus the delete form on the Submarine site); fonts are served from the site itself; no cookies, no analytics, no third-party requests. The servers send a strict Content-Security-Policy (`script-src 'self'; style-src 'self'`), so the pages have no inline script or style.
 
 ## Layout
 
 ```
 build.mjs            the command: builds one site or both into dist/<site>/
 engine.mjs           what both sites share: languages, strings, safe text, hashed assets, page frame, sitemap, checks
-shared/              site.css, site.js, icons.mjs, fonts/ (Inter, Vazirmatn, JetBrains Mono; OFL, licences next to them)
+shared/              site.css, site.js, icons.mjs, fonts/ (Inter, JetBrains Mono; OFL, licences next to them)
 sites/<site>/        site.mjs (the pages), i18n/<lang>.json (the strings), img/ (pictures), og.html (the link picture)
 tools/               images.sh, check-i18n.mjs, serve.mjs, shoot.mjs, delete-e2e.mjs
 ```
@@ -44,7 +44,7 @@ msedge --headless=new --window-size=1200,630 --screenshot=<site>/img/og.png file
 
 ```sh
 node website/tools/check-i18n.mjs submarine zh es fr de ru pt-br ja tr hi         # translations against English and the app's own words
-node website/tools/check-i18n.mjs echoes fa ar zh es fr de ru pt-br ja tr hi
+node website/tools/check-i18n.mjs echoes zh es fr de ru pt-br ja tr hi
 node website/tools/serve.mjs 8790 submarine                                      # serves dist/<site> with the production headers
 node website/tools/shoot.mjs http://127.0.0.1:8790 out / /de/ /security/          # pictures + console/CSP errors (Edge or Chrome)
 ```

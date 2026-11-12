@@ -14,10 +14,10 @@ export const SHARED = path.join(HERE, "shared");
 export const AUTHOR = { "@type": "Person", name: "Sina Xhpm", url: "https://sinaxhpm.com" };
 
 // ---- languages --------------------------------------------------------------
+// No Persian or Arabic (taken off both sites in November 2026, the maintainer's choice; each site's .htaccess sends
+// their old addresses to the English pages).
 export const LANGS = [
   { code: "en", dir: "ltr", html: "en", hreflang: "en", locale: "en", og: "en_US", name: "English" },
-  { code: "fa", dir: "rtl", html: "fa", hreflang: "fa", locale: "fa", og: "fa_IR", name: "فارسی" },
-  { code: "ar", dir: "rtl", html: "ar", hreflang: "ar", locale: "ar-u-nu-latn", og: "ar_AR", name: "العربية" },
   { code: "zh", dir: "ltr", html: "zh-Hans", hreflang: "zh-Hans", locale: "zh-Hans", og: "zh_CN", name: "简体中文" },
   { code: "es", dir: "ltr", html: "es", hreflang: "es", locale: "es", og: "es_ES", name: "Español" },
   { code: "fr", dir: "ltr", html: "fr", hreflang: "fr", locale: "fr", og: "fr_FR", name: "Français" },
@@ -52,7 +52,8 @@ export function rich(s, vals, where) {
   if ((out.match(/</g) || []).length !== (out.match(/>/g) || []).length) throw new Error(`broken tag in ${where}`);
   return out;
 }
-export const plain = (s, vals, where) => esc(stripTags(fill(s, vals, where)));
+// The text without its tags, for a page's title and description (the page head escapes them where they go).
+export const plain = (s, vals, where) => stripTags(fill(s, vals, where));
 export const json = (o) => JSON.stringify(o).replace(/</g, "\\u003c");
 
 // The language's strings, English where it has none; arrays are taken whole
@@ -162,9 +163,10 @@ export class Site {
   head(lang, page, title, description, ld, { index = true } = {}) {
     const p = this.pagePath(lang, page);
     const og = this.abs(this.assets["og/og.png"]);
-    const fontPre = lang.dir === "rtl" ? "assets/fonts/vazirmatn-arabic-wght-normal.woff2" : "assets/fonts/inter-latin-wght-normal.woff2";
     const alternates = index ? this.built.map((l) => `<link rel="alternate" hreflang="${l.hreflang}" href="${this.abs(this.pagePath(l, page))}">`).join("\n")
-      + `\n<link rel="alternate" hreflang="x-default" href="${this.abs(this.pagePath(LANGS[0], page))}">` : '<meta name="robots" content="noindex">';
+      + `\n<link rel="alternate" hreflang="x-default" href="${this.abs(this.pagePath(LANGS[0], page))}">` : "";
+    // A page to index may have its pictures shown large in search results.
+    const robots = index ? "max-image-preview:large" : "noindex";
     return `<!doctype html>
 <html lang="${lang.html}" dir="${lang.dir}" data-close="${esc(this.str[lang.code].common.close)}">
 <head>
@@ -172,10 +174,10 @@ export class Site {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(description)}">
-${index ? `<link rel="canonical" href="${this.abs(p)}">\n` : ""}${alternates}
+${index ? `<link rel="canonical" href="${this.abs(p)}">\n${alternates}\n` : ""}<meta name="robots" content="${robots}">
 <meta name="theme-color" content="${this.themeColor}">
 <meta name="color-scheme" content="dark">
-<link rel="preload" href="${this.assets[fontPre]}" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="${this.assets["assets/fonts/inter-latin-wght-normal.woff2"]}" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="${this.assets["assets/site.css"]}">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" href="${this.assets["assets/icon-192.png"]}" type="image/png" sizes="192x192">
@@ -196,6 +198,7 @@ ${this.built.filter((l) => l !== lang).map((l) => `<meta property="og:locale:alt
 <meta name="twitter:title" content="${esc(title)}">
 <meta name="twitter:description" content="${esc(description)}">
 <meta name="twitter:image" content="${og}">
+<meta name="twitter:image:alt" content="${esc(this.ogAlt)}">
 ${ld ? `<script type="application/ld+json">${json(ld)}</script>\n` : ""}<script src="${this.assets["assets/site.js"]}" defer></script>
 </head>`;
   }
@@ -304,13 +307,13 @@ Sitemap: ${this.origin}/sitemap.xml
 `;
   }
 
-  securityTxt(contact, policy, languages = "en, fa") {
+  securityTxt(contact, policy) {
     const expires = new Date(Date.parse(`${this.date}T00:00:00Z`) + 365 * 864e5).toISOString();
     return `# Found a security problem in ${this.name}? Please open an issue that only says
 # you found one (no details), and a private channel will be set up with you.
 Contact: ${contact}
 Expires: ${expires}
-Preferred-Languages: ${languages}
+Preferred-Languages: en
 Canonical: ${this.origin}/.well-known/security.txt
 Policy: ${policy}
 `;
@@ -354,6 +357,7 @@ Policy: ${policy}
       const left = text.match(/\{[A-Za-z]\w*\}/g);
       if (left) problems.push(`${rel}: unfilled ${[...new Set(left)].join(" ")}`);
       if (/<img(?![^>]*\balt=)/.test(html)) problems.push(`${rel}: an image without alt`);
+      if (/&amp;(amp|quot|lt|gt|#\d+);/.test(html)) problems.push(`${rel}: text escaped twice`);
       if (/\sstyle="/.test(html) || /<style/.test(html)) problems.push(`${rel}: an inline style (blocked by the CSP)`);
       if (/<script(?![^>]*\b(src=|type="application\/(ld\+)?json"))/.test(html)) problems.push(`${rel}: an inline script (blocked by the CSP)`);
       if (/\son[a-z]+="/.test(html)) problems.push(`${rel}: an inline event handler (blocked by the CSP)`);

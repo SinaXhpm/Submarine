@@ -42,8 +42,8 @@
     "noTracking": "Diese Website setzt keine Cookies, keine Nutzungsanalyse und keine Skripte von Drittanbietern ein."
   },
   "home": {
-    "title": "Submarine – kostenloser SSH-, SFTP-, RDP-, VNC- und Telnet-Client für Windows, macOS, Linux und Android",
-    "description": "Submarine ist eine kostenlose Open-Source-App für den Fernzugriff: SSH-Terminal, zweispaltiges SFTP, Port-Weiterleitung, Remote-Desktops (RDP, VNC) und Telnet in einem Fenster. Ihre Server, Passwörter und Schlüssel bleiben verschlüsselt auf Ihren Geräten.",
+    "title": "Submarine – kostenloser SSH/SFTP-Client mit RDP, VNC, Telnet",
+    "description": "Open-Source-SSH/SFTP-Client mit RDP, VNC und Telnet, gratis für Windows, macOS, Linux und Android. Server, Passwörter und Schlüssel bleiben verschlüsselt.",
     "hero": {
       "pillTag": "0.4",
       "pill": "Remote-Desktops mit gemeinsamer Zwischenablage und wählbarer Geschwindigkeit",
@@ -405,8 +405,8 @@
     }
   },
   "security": {
-    "title": "Wie Submarine Ihre Daten schützt – und wie Sie das prüfen können",
-    "description": "Was Submarine verschlüsselt und wie, was der Sync-Server sehen kann und was nicht, was ein Remote-Desktop von Ihrem Gerät bekommt, was ein böswilliger Server trotzdem tun könnte – und wie Sie jede Aussage Schritt für Schritt im Open-Source-Code prüfen können.",
+    "title": "Wie Submarine Ihre Daten schützt – und wie Sie das prüfen",
+    "description": "Was Submarine wie verschlüsselt, was der Sync-Server sehen kann und was nicht, was ein böswilliger Server noch tun könnte und wie Sie alles im Code prüfen.",
     "heading": "So werden Ihre Daten geschützt",
     "lede": "Wir bitten Sie nicht, uns zu vertrauen. Diese Seite erklärt genau, was verschlüsselt wird, was unser Server sehen kann und was nicht, und wie Sie jede Aussage selbst prüfen können.",
     "summaryTitle": "Das Wichtigste in einer Minute",

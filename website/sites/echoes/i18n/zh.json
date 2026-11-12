@@ -40,8 +40,8 @@
     "noTracking": "本网站不使用 Cookie、统计分析或第三方脚本。"
   },
   "home": {
-    "title": "Echoes – 适用于 iPhone、iPad、Mac、Windows、Linux 和 Android 的免费网络工具",
-    "description": "Echoes 把 20 个网络工具放进一个免费、开源的应用：能告诉你网站为什么打不开的 Doctor、ping、traceroute、测速、端口扫描器、DNS 和 WHOIS、cURL、TLS 检查工具、SSH、在线状态监控，以及与任何浏览器之间的文件共享。无需账户，没有广告，不跟踪。",
+    "title": "Echoes – 免费网络工具：ping、网速测试、端口扫描",
+    "description": "20 个免费网络工具：ping、traceroute、网速测试、端口扫描、DNS、WHOIS、SSL 检查和 SSH。支持 iPhone、iPad、Mac、Windows、Linux 和 Android。",
     "hero": {
       "pillTag": "新",
       "pill": "现已登陆 App Store，支持 iPhone、iPad 和 Mac",
@@ -141,7 +141,7 @@
             {
               "id": "scanner",
               "title": "Port Scanner",
-              "text": "TCP 和 UDP 扫描，带服务识别。"
+              "text": "你网络中的设备、开放的 TCP 和 UDP 端口及其服务。"
             },
             {
               "id": "checkhost",
@@ -151,7 +151,7 @@
             {
               "id": "monitor",
               "title": "Monitor",
-              "text": "在线状态检查、到期提醒和 Telegram 通知。"
+              "text": "在线状态检查和到期提醒，支持提示音和 Telegram 通知。"
             },
             {
               "id": "network",
@@ -177,7 +177,7 @@
             {
               "id": "tls",
               "title": "TLS Inspector",
-              "text": "证书、到期时间、TLS 版本和加密套件。"
+              "text": "SSL 证书、到期时间、TLS 版本和加密套件。"
             },
             {
               "id": "ipinfo",
@@ -203,7 +203,7 @@
             {
               "id": "ssh",
               "title": "SSH",
-              "text": "终端、文件、端口转发和服务器健康状况。"
+              "text": "终端、SFTP 文件、端口转发和服务器健康状况。"
             },
             {
               "id": "socket",
@@ -278,7 +278,7 @@
           "text": "监控你的服务器和网站，在某一个宕机或恢复时通知你。",
           "points": [
             "Ping、TCP 和 HTTP 检查，每项检查都有自己的间隔。",
-            "通过你自己的机器人在 Telegram 中发送提醒。",
+            "网站宕机或恢复时发出提示音，并通过你自己的机器人在 Telegram 中发送提醒。",
             "在证书或域名到期之前发出警告。",
             "检查页面是否包含（或不包含）某段文字。"
           ],
@@ -310,7 +310,7 @@
         },
         {
           "id": "tls",
-          "title": "检查任何网站的证书",
+          "title": "检查任何网站的 SSL 证书",
           "text": "先给出明确的结论，再列出所有细节。",
           "points": [
             "单独测试每个 TLS 版本，并显示加密套件和 ALPN。",
@@ -367,11 +367,11 @@
     "devices": {
       "kicker": "所有设备",
       "title": "一个应用，<em>用在你的所有设备上</em>",
-      "lede": "iPhone、iPad、Mac、Windows、Linux 和 Android 上都是同样的工具，来自同一套代码，并为每种屏幕设计了各自的布局。",
+      "lede": "iPhone、iPad、Mac、Windows、Linux 和 Android 上都是同样的工具，来自同一套代码，并为每种屏幕设计了各自的布局，可选深色或浅色主题。",
       "altIphone": "iPhone 上的 Echoes：工具菜单",
       "altIpad": "iPad 上的 Echoes：Doctor",
       "altAndroid": "Android 手机上的 Echoes：测速",
-      "note": "少数工具受系统限制。在 iPhone 和 iPad 上，服务器、监控和扫描只在 Echoes 显示在屏幕上时运行；Wi-Fi 分析器仅在 Windows 和 Linux 上提供。"
+      "note": "少数工具受系统限制。在 iPhone 和 iPad 上，服务器、监控和扫描在 Echoes 显示在屏幕上时运行，你回到应用后，它们会自动恢复运行；Wi-Fi 分析器仅在 Windows 和 Linux 上提供。"
     },
     "privacy": {
       "kicker": "隐私",
@@ -504,6 +504,22 @@
           "a": "从 App Store 获取：iPhone 和 iPad（iOS 和 iPadOS 15 或更高版本）以及 Mac（macOS 12 或更高版本）；从 GitHub 获取：Windows 10 和 11、Linux、Android 6.0 或更高版本，以及 macOS。"
         },
         {
+          "q": "网站打不开是什么原因？",
+          "a": "打开 <a href=\"#doctor\">Doctor</a>，输入网站地址。它会检查你的网络、DNS、连接、TLS 和 HTTP，并与国外服务器的检查结果对比，然后告诉你原因是 DNS 被篡改、SNI 过滤、IP 被封锁、网站被换成了过滤页面，还是网站本身对所有人都打不开。"
+        },
+        {
+          "q": "怎么判断网站是所有人都打不开，还是只有我打不开？",
+          "a": "在 Check Host 中运行 HTTP 或 ping 检查：它会同时从多个国家测试该网站。Doctor 的检查中也包括这一项。"
+        },
+        {
+          "q": "同一 Wi-Fi 下，手机和电脑之间怎么互传文件？",
+          "a": "在 Web Server 中按下 <em>Start sharing</em>，再用另一台设备扫描二维码。那台设备的浏览器会打开一个页面，你可以在上面双向发送文字和文件：通过 HTTPS 传输，由 PIN 保护，无需账户，也不经过云端。"
+        },
+        {
+          "q": "怎么检查端口是否开放？",
+          "a": "对于你自己的网络或你管理的服务器，请使用 Port Scanner。要从外部测试，请在 Check Host 中运行 TCP 检查，它会从世界各地的服务器尝试连接该端口。"
+        },
+        {
           "q": "需要管理员权限吗？",
           "a": "不需要。在系统不允许普通（ICMP）ping 的地方，Echoes 会自动改用 UDP。"
         },
@@ -521,7 +537,7 @@
         },
         {
           "q": "在 iPhone 和 iPad 上有什么不同？",
-          "a": "iOS 只允许应用在后台短暂运行，所以服务器、监控和扫描在 Echoes 显示在屏幕上时运行，Echoes 也会为此保持屏幕常亮。少数需要系统网络详情的工具（例如 Wi-Fi 分析器）在 iPhone 和 iPad 上没有。"
+          "a": "iOS 只允许应用在后台短暂运行，所以服务器、监控和扫描在 Echoes 显示在屏幕上时运行，Echoes 也会为此保持屏幕常亮。你回到应用后，它们会自动恢复运行。少数需要系统网络详情的工具（例如 Wi-Fi 分析器）在 iPhone 和 iPad 上没有。"
         }
       ]
     }

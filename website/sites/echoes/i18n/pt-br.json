@@ -40,8 +40,8 @@
     "noTracking": "Este site não usa cookies, análise de uso nem scripts de terceiros."
   },
   "home": {
-    "title": "Echoes – ferramentas de rede gratuitas para iPhone, iPad, Mac, Windows, Linux e Android",
-    "description": "O Echoes reúne 20 ferramentas de rede em um só app gratuito e de código aberto: o Doctor, que diz por que um site não abre, ping, traceroute, teste de velocidade, scanner de portas, DNS e WHOIS, cURL, um verificador de TLS, SSH, um monitor de disponibilidade e compartilhamento de arquivos com qualquer navegador. Sem conta, sem anúncios, sem rastreamento.",
+    "title": "Echoes – ferramentas de rede grátis: ping, scanner de portas",
+    "description": "20 ferramentas de rede grátis: ping, traceroute, teste de velocidade, port scanner, DNS, WHOIS, SSL e SSH. No iPhone, iPad, Mac, Windows, Linux e Android.",
     "hero": {
       "pillTag": "Novo",
       "pill": "Agora na App Store para iPhone, iPad e Mac",
@@ -141,7 +141,7 @@
             {
               "id": "scanner",
               "title": "Port Scanner",
-              "text": "Varreduras TCP e UDP com detecção de serviços."
+              "text": "Os dispositivos da sua rede, as portas TCP e UDP abertas e os respectivos serviços."
             },
             {
               "id": "checkhost",
@@ -151,7 +151,7 @@
             {
               "id": "monitor",
               "title": "Monitor",
-              "text": "Verificações de disponibilidade, avisos de expiração e alertas no Telegram."
+              "text": "Verificações de disponibilidade e avisos de expiração, com alertas sonoros e no Telegram."
             },
             {
               "id": "network",
@@ -177,7 +177,7 @@
             {
               "id": "tls",
               "title": "TLS Inspector",
-              "text": "Certificados, expiração, versões de TLS e cifras."
+              "text": "Certificados SSL, expiração, versões de TLS e cifras."
             },
             {
               "id": "ipinfo",
@@ -203,7 +203,7 @@
             {
               "id": "ssh",
               "title": "SSH",
-              "text": "Terminal, arquivos, encaminhamento de portas e saúde do servidor."
+              "text": "Terminal, arquivos via SFTP, encaminhamento de portas e saúde do servidor."
             },
             {
               "id": "socket",
@@ -278,7 +278,7 @@
           "text": "Monitora os seus servidores e sites e avisa quando um deles cai ou volta.",
           "points": [
             "Verificações de ping, TCP e HTTP, cada uma com o seu próprio intervalo.",
-            "Alertas no Telegram, por um bot seu.",
+            "Um som quando um site cai ou volta, e alertas no Telegram, por um bot seu.",
             "Avisos antes que um certificado ou um domínio expire.",
             "Verifica se uma página contém ou não um determinado texto."
           ],
@@ -310,7 +310,7 @@
         },
         {
           "id": "tls",
-          "title": "Verifique o certificado de qualquer site",
+          "title": "Verifique o certificado SSL de qualquer site",
           "text": "Primeiro um veredito claro, depois todos os detalhes.",
           "points": [
             "Cada versão de TLS testada separadamente, com a cifra e o ALPN.",
@@ -367,11 +367,11 @@
     "devices": {
       "kicker": "Todos os dispositivos",
       "title": "Um só app, <em>em todos os seus dispositivos</em>",
-      "lede": "As mesmas ferramentas no iPhone, iPad, Mac, Windows, Linux e Android, a partir de um único código-fonte, com layouts feitos para cada tela.",
+      "lede": "As mesmas ferramentas no iPhone, iPad, Mac, Windows, Linux e Android, a partir de um único código-fonte, com layouts feitos para cada tela e com tema escuro ou claro.",
       "altIphone": "O Echoes em um iPhone: o menu com as ferramentas",
       "altIpad": "O Echoes em um iPad: o Doctor",
       "altAndroid": "O Echoes em um celular Android: o teste de velocidade",
-      "note": "Algumas ferramentas dependem do sistema. No iPhone e no iPad, os servidores, o monitor e as varreduras só funcionam enquanto o Echoes está na tela, e o analisador de Wi-Fi existe só no Windows e no Linux."
+      "note": "Algumas ferramentas dependem do sistema. No iPhone e no iPad, os servidores, o monitor e as varreduras funcionam enquanto o Echoes está na tela e recomeçam quando você volta ao app, e o analisador de Wi-Fi existe só no Windows e no Linux."
     },
     "privacy": {
       "kicker": "Privado",
@@ -504,6 +504,22 @@
           "a": "iPhone e iPad (iOS e iPadOS 15 ou posterior) e Mac (macOS 12 ou posterior), pela App Store; Windows 10 e 11, Linux, Android 6.0 ou posterior e macOS, pelo GitHub."
         },
         {
+          "q": "Por que um site não abre para mim?",
+          "a": "Abra o <a href=\"#doctor\">Doctor</a> e digite o site. Ele verifica a sua rede, o DNS, a conexão, o TLS e o HTTP, compara com servidores no exterior e depois diz se é adulteração de DNS, filtragem por SNI, um IP bloqueado, uma página de bloqueio ou um site que está fora do ar para todos."
+        },
+        {
+          "q": "Como saber se um site está fora do ar para todos ou só para mim?",
+          "a": "Execute no Check Host uma verificação de HTTP ou de ping: ela testa o site a partir de vários países ao mesmo tempo. O Doctor também faz isso, como uma das suas verificações."
+        },
+        {
+          "q": "Como compartilhar arquivos entre o celular e o PC na mesma rede Wi-Fi?",
+          "a": "Aperte <em>Start sharing</em> no Web Server e escaneie o QR code com o outro dispositivo. Uma página se abre no navegador dele, e nela você pode enviar texto e arquivos nos dois sentidos, por HTTPS e com proteção por PIN, sem conta nem nuvem."
+        },
+        {
+          "q": "Como verificar se uma porta está aberta?",
+          "a": "Use o Port Scanner na sua própria rede ou em um servidor que você administra. Para testar de fora, use o Check Host com uma verificação TCP, que tenta se conectar à porta a partir de servidores no mundo todo."
+        },
+        {
           "q": "Preciso de permissões de administrador?",
           "a": "Não. Onde o sistema não permite o ping normal (ICMP), o Echoes passa a usar UDP sozinho."
         },
@@ -521,7 +537,7 @@
         },
         {
           "q": "O que muda no iPhone e no iPad?",
-          "a": "O iOS só deixa os apps funcionarem em segundo plano por pouco tempo, então os servidores, o monitor e as varreduras funcionam enquanto o Echoes está na tela, e ele mantém a tela ligada para isso. Algumas ferramentas que precisam dos detalhes de rede do sistema, como o analisador de Wi-Fi, não estão disponíveis."
+          "a": "O iOS só deixa os apps funcionarem em segundo plano por pouco tempo, então os servidores, o monitor e as varreduras funcionam enquanto o Echoes está na tela, e ele mantém a tela ligada para isso. Eles recomeçam quando você volta ao app. Algumas ferramentas que precisam dos detalhes de rede do sistema, como o analisador de Wi-Fi, não estão disponíveis."
         }
       ]
     }

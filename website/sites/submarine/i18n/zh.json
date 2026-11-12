@@ -42,8 +42,8 @@
     "noTracking": "本网站不使用 Cookie、统计分析或第三方脚本。"
   },
   "home": {
-    "title": "Submarine – 适用于 Windows、macOS、Linux 和 Android 的免费 SSH、SFTP、RDP、VNC 和 Telnet 客户端",
-    "description": "Submarine 是一款免费、开源的远程访问应用：SSH 终端、双栏 SFTP、端口转发、远程桌面（RDP、VNC）和 Telnet，都在一个窗口里。你的服务器、密码和密钥以加密形式保存在你的设备上。",
+    "title": "Submarine – 免费 SSH、SFTP、RDP、VNC、Telnet 客户端",
+    "description": "免费开源 SSH/SFTP 客户端，支持 RDP、VNC、Telnet，Windows、macOS、Linux、Android 通用。服务器、密码和密钥均加密。",
     "hero": {
       "pillTag": "0.4",
       "pill": "远程桌面，支持共享剪贴板和速度选项",
@@ -406,7 +406,7 @@
   },
   "security": {
     "title": "Submarine 如何保护你的数据，以及如何验证",
-    "description": "Submarine 加密哪些内容、如何加密，同步服务器能看到和不能看到什么，远程桌面会从你的设备获得什么，恶意服务器仍然可能做什么，以及对照开源代码逐步验证每一项说法的方法。",
+    "description": "Submarine 加密哪些内容、如何加密，同步服务器能看到和不能看到什么，恶意服务器仍然可能做什么，以及如何在代码中验证每一项说法。",
     "heading": "你的数据如何受到保护",
     "lede": "我们不要求你信任我们。本页准确说明哪些内容被加密、我们的服务器能看到和不能看到什么，以及你如何亲自验证每一项说法。",
     "summaryTitle": "一分钟了解",

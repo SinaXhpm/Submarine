@@ -40,8 +40,8 @@
     "noTracking": "This website uses no cookies, no analytics and no third-party scripts."
   },
   "home": {
-    "title": "Echoes – free network tools for iPhone, iPad, Mac, Windows, Linux and Android",
-    "description": "Echoes puts 20 network tools in one free, open-source app: a Doctor that tells you why a site won't open, ping, traceroute, a speed test, a port scanner, DNS and WHOIS, cURL, a TLS checker, SSH, an uptime monitor and file sharing with any browser. No account, no ads, no tracking.",
+    "title": "Echoes – free network tools: ping, speed test, port scanner",
+    "description": "20 free network tools: ping, traceroute, speed test, port scanner, DNS, WHOIS, SSL check and SSH. For iPhone, iPad, Mac, Windows, Linux and Android.",
     "hero": {
       "pillTag": "New",
       "pill": "Now on the App Store for iPhone, iPad and Mac",
@@ -141,7 +141,7 @@
             {
               "id": "scanner",
               "title": "Port Scanner",
-              "text": "TCP and UDP scans with service detection."
+              "text": "The devices on your network, open TCP and UDP ports, and their services."
             },
             {
               "id": "checkhost",
@@ -151,7 +151,7 @@
             {
               "id": "monitor",
               "title": "Monitor",
-              "text": "Uptime checks, expiry warnings and Telegram alerts."
+              "text": "Uptime checks and expiry warnings, with sound and Telegram alerts."
             },
             {
               "id": "network",
@@ -177,7 +177,7 @@
             {
               "id": "tls",
               "title": "TLS Inspector",
-              "text": "Certificates, expiry, TLS versions and ciphers."
+              "text": "SSL certificates, expiry, TLS versions and ciphers."
             },
             {
               "id": "ipinfo",
@@ -203,7 +203,7 @@
             {
               "id": "ssh",
               "title": "SSH",
-              "text": "Terminal, files, port forwarding and server health."
+              "text": "Terminal, SFTP files, port forwarding and server health."
             },
             {
               "id": "socket",
@@ -278,7 +278,7 @@
           "text": "Watches your servers and websites, and tells you when one goes down or comes back.",
           "points": [
             "Ping, TCP and HTTP checks, each with its own interval.",
-            "Alerts in Telegram, from a bot of your own.",
+            "A sound when a site goes down or comes back, and alerts in Telegram from a bot of your own.",
             "Warnings before a certificate or a domain runs out.",
             "Checks that a page does or doesn't contain some text."
           ],
@@ -310,7 +310,7 @@
         },
         {
           "id": "tls",
-          "title": "Check any website's certificate",
+          "title": "Check any website's SSL certificate",
           "text": "A clear verdict first, then all the details.",
           "points": [
             "Each TLS version tested on its own, with the cipher and ALPN.",
@@ -367,11 +367,11 @@
     "devices": {
       "kicker": "Every device",
       "title": "One app, <em>on all your devices</em>",
-      "lede": "The same tools on iPhone, iPad, Mac, Windows, Linux and Android, from one codebase, with layouts made for each screen.",
+      "lede": "The same tools on iPhone, iPad, Mac, Windows, Linux and Android, from one codebase, with layouts made for each screen and a dark or light theme.",
       "altIphone": "Echoes on an iPhone: the menu with the tools",
       "altIpad": "Echoes on an iPad: the Doctor",
       "altAndroid": "Echoes on an Android phone: the speed test",
-      "note": "A few tools depend on the system. On iPhone and iPad, servers, the monitor and scans run only while Echoes is on screen, and the Wi-Fi analyzer is on Windows and Linux only."
+      "note": "A few tools depend on the system. On iPhone and iPad, servers, the monitor and scans run while Echoes is on screen and pick up again when you come back, and the Wi-Fi analyzer is on Windows and Linux only."
     },
     "privacy": {
       "kicker": "Private",
@@ -504,6 +504,22 @@
           "a": "iPhone and iPad (iOS and iPadOS 15 or later) and Mac (macOS 12 or later) from the App Store; Windows 10 and 11, Linux, Android 6.0 or later and macOS from GitHub."
         },
         {
+          "q": "Why won't a website open for me?",
+          "a": "Open the <a href=\"#doctor\">Doctor</a> and enter the site. It checks your network, DNS, the connection, TLS and HTTP, and compares with servers abroad, then tells you whether it's DNS tampering, SNI filtering, a blocked IP, a filter page, or a site that is down for everyone."
+        },
+        {
+          "q": "How do I check if a website is down for everyone or just me?",
+          "a": "Run a Check Host HTTP or ping check: it tests the site from many countries at once. The Doctor also does this as one of its checks."
+        },
+        {
+          "q": "How do I share files between my phone and PC on the same Wi-Fi?",
+          "a": "Press <em>Start sharing</em> in the Web Server and scan the QR code with the other device. A page opens in its browser where you can send text and files both ways, over HTTPS behind a PIN, with no account or cloud."
+        },
+        {
+          "q": "How do I check if a port is open?",
+          "a": "Use the Port Scanner for your own network or a server you manage. To test from outside, use Check Host with a TCP check, which tries the port from servers around the world."
+        },
+        {
           "q": "Do I need admin rights?",
           "a": "No. Where the system doesn't allow normal (ICMP) ping, Echoes switches to UDP by itself."
         },
@@ -521,7 +537,7 @@
         },
         {
           "q": "How is it different on iPhone and iPad?",
-          "a": "iOS lets apps work in the background only briefly, so servers, the monitor and scans run while Echoes is on screen, and it keeps the screen on for them. A few tools that need the system's network details, such as the Wi-Fi analyzer, are not there."
+          "a": "iOS lets apps work in the background only briefly, so servers, the monitor and scans run while Echoes is on screen, and it keeps the screen on for them. They pick up again when you come back. A few tools that need the system's network details, such as the Wi-Fi analyzer, are not there."
         }
       ]
     }

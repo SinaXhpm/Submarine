@@ -42,8 +42,8 @@
     "noTracking": "Ce site n’utilise aucun cookie, aucun outil de mesure d’audience et aucun script tiers."
   },
   "home": {
-    "title": "Submarine – client SSH, SFTP, RDP, VNC et Telnet gratuit pour Windows, macOS, Linux et Android",
-    "description": "Submarine est une application d’accès à distance gratuite et open source : terminal SSH, SFTP à deux panneaux, redirection de ports, bureaux à distance (RDP, VNC) et Telnet dans une seule fenêtre. Vos serveurs, mots de passe et clés restent chiffrés sur vos appareils.",
+    "title": "Submarine – client SSH/SFTP gratuit avec RDP, VNC et Telnet",
+    "description": "Client SSH/SFTP gratuit et open source avec RDP, VNC et Telnet, sur Windows, macOS, Linux et Android. Vos serveurs, mots de passe et clés restent chiffrés.",
     "hero": {
       "pillTag": "0.4",
       "pill": "Bureaux à distance avec presse-papiers partagé et réglages de vitesse",
@@ -405,8 +405,8 @@
     }
   },
   "security": {
-    "title": "Comment Submarine protège vos données, et comment le vérifier",
-    "description": "Ce que Submarine chiffre et comment, ce que le serveur de synchronisation peut voir et ne peut pas voir, ce qu’un bureau à distance reçoit de votre appareil, ce qu’un serveur malveillant pourrait encore faire, et comment vérifier pas à pas chaque affirmation dans le code open source.",
+    "title": "Comment Submarine protège vos données et comment le vérifier",
+    "description": "Ce que Submarine chiffre et comment, ce que le serveur voit ou non, ce qu’un serveur malveillant pourrait encore faire et comment le vérifier dans le code.",
     "heading": "Comment vos données sont protégées",
     "lede": "Nous ne vous demandons pas de nous faire confiance. Cette page explique exactement ce qui est chiffré, ce que notre serveur peut voir et ne peut pas voir, et comment vérifier vous-même chaque affirmation.",
     "summaryTitle": "En une minute",
@@ -455,7 +455,7 @@
           "Chaque profil est un fichier. Il contient une petite base de données avec vos serveurs, identifiants, clés SSH, notes et réglages. La base de données entière est compressée, puis chiffrée avec AES-256-GCM. Un nouveau nonce aléatoire est utilisé à chaque enregistrement du fichier, et le fichier est d’abord écrit dans une copie temporaire : un plantage ne peut donc pas laisser derrière lui un fichier à moitié écrit.",
           "La clé est calculée à partir du mot de passe de votre profil par Argon2id, avec {argonMem} de mémoire, {argonPasses} passes et {argonLanes} voies, et un sel aléatoire propre à chaque profil. Ces paramètres sont fixés dans l’application : un fichier modifié ne peut donc pas les affaiblir.",
           "Le mot de passe n’est jamais écrit sur le disque ni envoyé nulle part. Une fois la clé calculée, la copie du mot de passe dans le cœur de l’application est effacée, et la clé est effacée quand vous verrouillez le profil. Le verrouillage ferme aussi toutes les connexions, et annule une connexion qui est encore en train de s’établir. Si vous oubliez le mot de passe, le profil ne peut pas être ouvert. Il n’y a pas de réinitialisation possible, car rien qui pourrait l’ouvrir n’est conservé nulle part.",
-          "Le déverrouillage rapide est facultatif et désactivé par défaut. Sous Windows, il utilise Windows Hello et le TPM ; sous Android, le capteur d’empreintes digitales et l’Android Keystore. Le système conserve la clé du profil, jamais votre mot de passe, et cette clé n’est jamais synchronisée. Sous Android, la sauvegarde dans le cloud effectuée par le système est désactivée pour les données de l’application. Windows propose aussi un réglage séparé, désactivé par défaut, qui ouvre un profil automatiquement : sa clé est alors protégée par Windows pour votre compte, sans aucune vérification, si bien que toute personne ou tout programme utilisant ce compte Windows peut l’ouvrir.",
+          "Le déverrouillage rapide est facultatif et désactivé par défaut. Sous Windows, il utilise Windows Hello et le TPM ; sous Android, le capteur d’empreintes digitales et l’Android Keystore. Le système conserve la clé du profil, jamais votre mot de passe, et cette clé n’est jamais synchronisée. Sous Android, la sauvegarde dans le cloud effectuée par le système est désactivée pour les données de l’application. Windows propose aussi un réglage séparé, désactivé par défaut, qui ouvre un profil automatiquement : sa clé est alors protégée par Windows pour votre compte, sans aucune vérification, si bien que toute personne ou tout programme utilisant ce compte Windows peut l’ouvrir.",
           "Sous Windows, quand Connexion Bureau à distance ouvre un serveur qui a un mot de passe enregistré, l’application lui transmet ce mot de passe dans un fichier .rdp à courte durée de vie. Le mot de passe qu’il contient est chiffré avec Windows DPAPI pour votre utilisateur Windows, et le fichier est supprimé dès que Connexion Bureau à distance l’a lu (au plus tard après 30 secondes ; un fichier laissé par un plantage est supprimé au démarrage suivant)."
         ],
         "code": [
@@ -649,7 +649,7 @@
   },
   "privacy": {
     "title": "Politique de confidentialité – Submarine",
-    "description": "Ce que conservent l’application Submarine et son service de synchronisation facultatif, ce qu’ils peuvent lire et ne peuvent pas lire, combien de temps ces données sont conservées, et comment les supprimer.",
+    "description": "Ce que conservent Submarine et son service de synchronisation facultatif, et pour combien de temps, ce qu’ils peuvent lire ou non, et comment le supprimer.",
     "heading": "Politique de confidentialité",
     "intro": "Cette politique s’applique à l’application Submarine (Windows, macOS, Linux, Android et iOS), au service de synchronisation facultatif de Submarine, que l’application peut utiliser, et à ce site web.",
     "shortTitle": "En bref",
@@ -672,7 +672,7 @@
         "title": "Ce qui reste sur votre appareil",
         "list": [
           "<strong>Vos profils</strong> (serveurs, identifiants, clés SSH, tunnels, notes, commandes, clés d’hôtes connues, et mots de passe que vous choisissez d’enregistrer depuis une fenêtre de connexion) sont stockés dans le dossier de données de l’application. Ils sont chiffrés avec AES-256-GCM, au moyen d’une clé calculée à partir du mot de passe de votre profil avec Argon2id. Le mot de passe du profil n’est jamais enregistré et n’est jamais envoyé nulle part. Il n’existe aucun moyen de le récupérer : si vous l’oubliez, le profil ne peut pas être ouvert.",
-          "<strong>Le déverrouillage rapide</strong> (facultatif, désactivé par défaut) : si vous activez Windows Hello ou une empreinte digitale sur Android, la clé du profil est scellée avec une clé détenue par le système (le TPM ou l’Android Keystore). Le système vérifie votre empreinte digitale ou votre code PIN ; l’application ne les voit jamais. Sous Windows, vous pouvez à la place choisir qu’un profil s’ouvre automatiquement (désactivé par défaut lui aussi) : sa clé est alors protégée par Windows pour votre compte, sans aucune vérification, si bien que toute personne ou tout programme utilisant ce compte Windows peut l’ouvrir.",
+          "<strong>Le déverrouillage rapide</strong> (facultatif, désactivé par défaut) : si vous activez Windows Hello ou une empreinte digitale sur Android, la clé du profil est scellée avec une clé détenue par le système (le TPM ou l’Android Keystore). Le système vérifie votre empreinte digitale ou votre code PIN ; l’application ne les voit jamais. Sous Windows, vous pouvez à la place choisir qu’un profil s’ouvre automatiquement (désactivé par défaut lui aussi) : sa clé est alors protégée par Windows pour votre compte, sans aucune vérification, si bien que toute personne ou tout programme utilisant ce compte Windows peut l’ouvrir.",
           "<strong>Les réglages</strong>, comme la position de la fenêtre, le nom du dernier profil utilisé et le thème de couleurs, ainsi que les choix faits pour cet appareil uniquement (la vitesse et la qualité d’un bureau à distance, le partage ou non du presse-papiers, le dossier ou le lecteur partagé avec un serveur RDP, et les serveurs pour lesquels un terminal s’ouvre toujours avec son propre identifiant), sont stockés dans les réglages propres à l’application, sans chiffrement, et ne sont jamais synchronisés.",
           "<strong>Le presse-papiers</strong> n’est lu que lorsque vous collez. Ce que vous collez va au serveur dans lequel vous le collez : un terminal, ou l’onglet d’un bureau à distance. Avec <em>Partager le presse-papiers</em> activé (par défaut pour les serveurs RDP et VNC), le texte copié sur le bureau à distance est placé dans le presse-papiers de cet appareil. Rien de ce qui se trouve dans le presse-papiers ne nous est jamais envoyé.",
           "<strong>Connexion Bureau à distance (Windows)</strong> reçoit le mot de passe enregistré d’un serveur dans un fichier .rdp à courte durée de vie. Le mot de passe qu’il contient est chiffré avec Windows DPAPI pour votre utilisateur Windows, et le fichier est supprimé une fois lu. Si vous laissez l’application RDP mémoriser elle-même un identifiant, c’est Windows qui le conserve, pas Submarine.",

@@ -40,8 +40,8 @@
     "noTracking": "Bu web sitesi çerez, analitik ya da üçüncü taraf betik kullanmaz."
   },
   "home": {
-    "title": "Echoes – iPhone, iPad, Mac, Windows, Linux ve Android için ücretsiz ağ araçları",
-    "description": "Echoes, 20 ağ aracını ücretsiz ve açık kaynaklı tek bir uygulamada toplar: bir sitenin neden açılmadığını söyleyen Doctor, ping, traceroute, hız testi, port tarayıcı, DNS ve WHOIS, cURL, TLS denetleyicisi, SSH, uptime izleme ve herhangi bir tarayıcıyla dosya paylaşımı. Hesap yok, reklam yok, takip yok.",
+    "title": "Echoes – ücretsiz ağ araçları: ping, hız testi, port tarama",
+    "description": "20 ücretsiz ağ aracı: ping, traceroute, hız testi, port tarayıcı, DNS, WHOIS, SSL kontrolü ve SSH. iPhone, iPad, Mac, Windows, Linux ve Android için.",
     "hero": {
       "pillTag": "Yeni",
       "pill": "Artık iPhone, iPad ve Mac için App Store'da",
@@ -141,7 +141,7 @@
             {
               "id": "scanner",
               "title": "Port Scanner",
-              "text": "Servis algılamalı TCP ve UDP taramaları."
+              "text": "Ağınızdaki cihazlar, açık TCP ve UDP portları ile bunların servisleri."
             },
             {
               "id": "checkhost",
@@ -151,7 +151,7 @@
             {
               "id": "monitor",
               "title": "Monitor",
-              "text": "Uptime denetimleri, süre dolumu uyarıları ve Telegram bildirimleri."
+              "text": "Uptime denetimleri ve süre dolumu uyarıları, sesli ve Telegram bildirimleriyle."
             },
             {
               "id": "network",
@@ -177,7 +177,7 @@
             {
               "id": "tls",
               "title": "TLS Inspector",
-              "text": "Sertifikalar, geçerlilik süreleri, TLS sürümleri ve şifre takımları."
+              "text": "SSL sertifikaları, geçerlilik süreleri, TLS sürümleri ve şifre takımları."
             },
             {
               "id": "ipinfo",
@@ -203,7 +203,7 @@
             {
               "id": "ssh",
               "title": "SSH",
-              "text": "Terminal, dosyalar, port yönlendirme ve sunucu sağlığı."
+              "text": "Terminal, SFTP üzerinden dosyalar, port yönlendirme ve sunucu sağlığı."
             },
             {
               "id": "socket",
@@ -278,7 +278,7 @@
           "text": "Sunucularınızı ve web sitelerinizi izler; biri çöktüğünde ya da yeniden çalışmaya başladığında size haber verir.",
           "points": [
             "Her biri kendi aralığıyla çalışan ping, TCP ve HTTP denetimleri.",
-            "Kendi botunuzdan Telegram'da uyarılar.",
+            "Bir site çöktüğünde ya da yeniden çalışmaya başladığında sesli uyarı ve kendi botunuzdan Telegram'da bildirimler.",
             "Bir sertifikanın ya da alan adının süresi dolmadan önce uyarılar.",
             "Bir sayfanın belirli bir metni içerip içermediğinin denetimi."
           ],
@@ -310,7 +310,7 @@
         },
         {
           "id": "tls",
-          "title": "Herhangi bir web sitesinin sertifikasını denetleyin",
+          "title": "Herhangi bir web sitesinin SSL sertifikasını denetleyin",
           "text": "Önce net bir sonuç, sonra tüm ayrıntılar.",
           "points": [
             "Her TLS sürümü, şifre takımı ve ALPN ile birlikte ayrı ayrı test edilir.",
@@ -367,11 +367,11 @@
     "devices": {
       "kicker": "Her cihaz",
       "title": "Tek uygulama, <em>tüm cihazlarınızda</em>",
-      "lede": "iPhone, iPad, Mac, Windows, Linux ve Android'de aynı araçlar; tek bir kod tabanından, her ekran için hazırlanmış düzenlerle.",
+      "lede": "iPhone, iPad, Mac, Windows, Linux ve Android'de aynı araçlar; tek bir kod tabanından, her ekran için hazırlanmış düzenlerle ve koyu ya da açık temayla.",
       "altIphone": "iPhone'da Echoes: araçların bulunduğu menü",
       "altIpad": "iPad'de Echoes: Doctor",
       "altAndroid": "Android telefonda Echoes: hız testi",
-      "note": "Birkaç araç sisteme bağlıdır. iPhone ve iPad'de sunucular, izleme ve taramalar yalnızca Echoes ekrandayken çalışır; Wi-Fi analiz aracı ise yalnızca Windows ve Linux'ta vardır."
+      "note": "Birkaç araç sisteme bağlıdır. iPhone ve iPad'de sunucular, izleme ve taramalar Echoes ekrandayken çalışır ve uygulamaya döndüğünüzde yeniden başlar; Wi-Fi analiz aracı ise yalnızca Windows ve Linux'ta vardır."
     },
     "privacy": {
       "kicker": "Gizlilik",
@@ -504,6 +504,22 @@
           "a": "App Store'dan iPhone ve iPad (iOS ve iPadOS 15 veya üzeri) ile Mac (macOS 12 veya üzeri); GitHub'dan Windows 10 ve 11, Linux, Android 6.0 veya üzeri ve macOS."
         },
         {
+          "q": "Bir site neden bende açılmıyor?",
+          "a": "<a href=\"#doctor\">Doctor</a> aracını açın ve siteyi girin. Doctor ağınızı, DNS'yi, bağlantıyı, TLS'yi ve HTTP'yi denetler, yurt dışındaki sunucularla karşılaştırır, ardından sorunun sahte DNS yanıtları mı, SNI filtrelemesi mi, engellenmiş bir IP adresi mi, bir engelleme sayfası mı yoksa herkes için çökmüş bir site mi olduğunu söyler."
+        },
+        {
+          "q": "Bir sitenin herkes için mi yoksa yalnızca benim için mi çöktüğünü nasıl anlarım?",
+          "a": "Check Host aracında bir HTTP ya da ping denetimi çalıştırın: Bu denetim siteyi aynı anda birçok ülkeden test eder. Doctor da bunu denetimlerinden biri olarak yapar."
+        },
+        {
+          "q": "Aynı Wi-Fi ağındaki telefonum ile bilgisayarım arasında nasıl dosya paylaşırım?",
+          "a": "Web Server aracında <em>Start sharing</em> düğmesine basın ve QR kodunu diğer cihazla okutun. O cihazın tarayıcısında bir sayfa açılır; bu sayfadan HTTPS üzerinden ve bir PIN arkasında, hesap ya da bulut olmadan karşılıklı metin ve dosya gönderebilirsiniz."
+        },
+        {
+          "q": "Bir portun açık olup olmadığını nasıl anlarım?",
+          "a": "Kendi ağınız ya da yönettiğiniz bir sunucu için Port Scanner aracını kullanın. Dışarıdan test etmek için Check Host aracında bir TCP denetimi çalıştırın; bu denetim porta dünyanın dört bir yanındaki sunuculardan bağlanmayı dener."
+        },
+        {
           "q": "Yönetici hakları gerekiyor mu?",
           "a": "Hayır. Sistemin normal (ICMP) ping'e izin vermediği yerlerde Echoes kendiliğinden UDP'ye geçer."
         },
@@ -521,7 +537,7 @@
         },
         {
           "q": "iPhone ve iPad'de ne farklı?",
-          "a": "iOS, uygulamaların arka planda yalnızca kısa bir süre çalışmasına izin verir; bu yüzden sunucular, izleme ve taramalar Echoes ekrandayken çalışır ve Echoes bunlar için ekranı açık tutar. Wi-Fi analiz aracı gibi sistemin ağ ayrıntılarına ihtiyaç duyan birkaç araç burada yoktur."
+          "a": "iOS, uygulamaların arka planda yalnızca kısa bir süre çalışmasına izin verir; bu yüzden sunucular, izleme ve taramalar Echoes ekrandayken çalışır ve Echoes bunlar için ekranı açık tutar. Uygulamaya döndüğünüzde yeniden başlarlar. Wi-Fi analiz aracı gibi sistemin ağ ayrıntılarına ihtiyaç duyan birkaç araç burada yoktur."
         }
       ]
     }

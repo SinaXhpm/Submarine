@@ -42,8 +42,8 @@
     "noTracking": "This website uses no cookies, no analytics and no third-party scripts."
   },
   "home": {
-    "title": "Submarine – free SSH, SFTP, RDP, VNC and Telnet client for Windows, macOS, Linux and Android",
-    "description": "Submarine is a free, open-source remote access app: SSH terminal, two-pane SFTP, port forwarding, remote desktops (RDP, VNC) and Telnet in one window. Your servers, passwords and keys stay encrypted on your devices.",
+    "title": "Submarine – free SSH & SFTP client with RDP, VNC and Telnet",
+    "description": "Free, open-source SSH and SFTP client with RDP, VNC and Telnet, for Windows, macOS, Linux and Android. Your servers, passwords and keys stay encrypted.",
     "hero": {
       "pillTag": "0.4",
       "pill": "Remote desktops with a shared clipboard and speed choices",
@@ -406,7 +406,7 @@
   },
   "security": {
     "title": "How Submarine protects your data, and how to check it",
-    "description": "What Submarine encrypts and how, what the sync server can and cannot see, what a remote desktop gets from your device, what a hostile server could still do, and step-by-step ways to check every claim in the open-source code.",
+    "description": "What Submarine encrypts and how, what the sync server can and cannot see, what a hostile server could still do, and how to check each claim in the code.",
     "heading": "How your data is protected",
     "lede": "We don't ask you to trust us. This page explains exactly what is encrypted, what our server can and cannot see, and how you can check every claim yourself.",
     "summaryTitle": "In one minute",
