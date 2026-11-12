@@ -2,6 +2,7 @@
 // SFTP panel's "Follow". Shells say it with OSC 7, `file://<host><path>` (fish 4
 // on its own; bash and zsh with a line in their start-up file, which the panel
 // shows), or kitty's `kitty-shell-cwd://`, or iTerm2's OSC 1337 `CurrentDir=`.
+import { tk } from "../i18n";
 
 export type ShellFolder = { path: string; host: string };
 
@@ -55,5 +56,5 @@ export function nextShellFolder(prev: ShellFolderState | undefined, path: string
 export const FOLLOW_SETUP: { shell: string; file: string; line: string; note?: string }[] = [
   { shell: "bash", file: "~/.bashrc", line: "PROMPT_COMMAND='printf \"\\033]7;file://%s%s\\007\" \"$HOSTNAME\" \"$PWD\"'\"${PROMPT_COMMAND:+; $PROMPT_COMMAND}\"" },
   { shell: "zsh", file: "~/.zshrc", line: "autoload -Uz add-zsh-hook; _osc7_cwd() { printf '\\033]7;file://%s%s\\007' \"$HOST\" \"$PWD\"; }; add-zsh-hook precmd _osc7_cwd" },
-  { shell: "fish", file: "~/.config/fish/config.fish", line: "function _osc7_cwd --on-event fish_prompt; printf '\\e]7;file://%s%s\\a' $hostname $PWD; end", note: "fish 4 and later report it on their own." },
+  { shell: "fish", file: "~/.config/fish/config.fish", line: "function _osc7_cwd --on-event fish_prompt; printf '\\e]7;file://%s%s\\a' $hostname $PWD; end", note: tk("fish 4 and later report it on their own.") },
 ];

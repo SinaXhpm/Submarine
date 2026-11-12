@@ -19,6 +19,8 @@ export default {
       animation: {
         "spin-brief": "spin 1s linear 12",
         "pulse-brief": "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) 5",
+        // One reconnect attempt's spinner: turns for at most half a minute.
+        "spin-attempt": "spin 1.2s linear 25",
       },
     },
   },

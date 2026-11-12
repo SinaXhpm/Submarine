@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { BUNDLED_FONTS, fontFamilyCss } from "../util/terminalFont";
 import { loadInstalledFonts, SystemFont } from "../util/systemFonts";
+import { useT } from "../i18n";
 
 type Row = { key: string; family: string; label: string; monospace?: boolean };
 
@@ -26,6 +27,7 @@ export default function FontPicker({
   onCommit: (v: string) => void;
   placeholder?: string;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   // Filter only by what the user typed after opening, not by the current
   // value — opening the list should show everything.
@@ -79,7 +81,7 @@ export default function FontPicker({
   // usually a handful among a hundred or more — then everything else.
   const installedMono = installedRows.filter((r) => r.monospace);
   const installedProp = installedRows.filter((r) => !r.monospace);
-  const defaultRow: Row | null = !q ? { key: "default", family: "", label: "Default (system monospace)" } : null;
+  const defaultRow: Row | null = !q ? { key: "default", family: "", label: t("Default (system monospace)") } : null;
   const rows: Row[] = [...(defaultRow ? [defaultRow] : []), ...builtInRows, ...installedMono, ...installedProp];
 
   const close = (keepTyped: boolean) => {
@@ -179,7 +181,7 @@ export default function FontPicker({
         <button
           type="button"
           tabIndex={-1}
-          aria-label={open ? "Close font list" : "Open font list"}
+          aria-label={open ? t("Close font list") : t("Open font list")}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => (open ? close(true) : setOpen(true))}
           className="absolute right-1 top-1 w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white"
@@ -197,34 +199,34 @@ export default function FontPicker({
         >
           {defaultRow && renderRow(defaultRow, index++)}
 
-          <div className="px-3 pt-2 pb-1 text-[10px] font-black text-zinc-500 uppercase tracking-wider">Built-in</div>
+          <div className="px-3 pt-2 pb-1 text-[10px] font-black text-zinc-500 uppercase tracking-wider">{t("Built-in")}</div>
           {builtInRows.length ? builtInRows.map((r) => renderRow(r, index++)) : (
-            <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">No match</div>
+            <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">{t("No match")}</div>
           )}
 
           <div className="my-1.5 border-t border-white/10" role="separator" />
 
           <div className="px-3 pt-1 pb-1 text-[10px] font-black text-zinc-500 uppercase tracking-wider">
-            Installed on this device{installedOnly.length ? ` · ${installedOnly.length}` : ""}
+            {t("Installed on this device")}{installedOnly.length ? ` · ${installedOnly.length}` : ""}
           </div>
           {installed === null && !loadError && (
-            <div className="px-3 py-1.5 text-[11.5px] text-zinc-500">Reading installed fonts…</div>
+            <div className="px-3 py-1.5 text-[11.5px] text-zinc-500">{t("Reading installed fonts…")}</div>
           )}
           {loadError && (
-            <div className="px-3 py-1.5 text-[11.5px] text-amber-400/90">Couldn't read the installed fonts.</div>
+            <div className="px-3 py-1.5 text-[11.5px] text-amber-400/90">{t("Couldn't read the installed fonts.")}</div>
           )}
           {installed && installed.length === 0 && (
             <div className="px-3 py-1.5 text-[11.5px] text-zinc-500">
-              Installed fonts can't be listed on this device — the built-in fonts above work everywhere.
+              {t("Installed fonts can't be listed on this device — the built-in fonts above work everywhere.")}
             </div>
           )}
           {installedOnly.length > 0 && !installedRows.length && (
-            <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">No match</div>
+            <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">{t("No match")}</div>
           )}
           {installedMono.map((r) => renderRow(r, index++))}
           {installedProp.length > 0 && (
             <div className="px-3 pt-2.5 pb-1 text-[10px] font-semibold text-zinc-600">
-              Proportional — columns may not line up in a terminal
+              {t("Proportional — columns may not line up in a terminal")}
             </div>
           )}
           {installedProp.map((r) => renderRow(r, index++))}

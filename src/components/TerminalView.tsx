@@ -21,6 +21,7 @@ import { readSendKeepalives } from '../util/sessionKeep';
 import { IS_MOBILE, IS_LINUX } from '../util/platform';
 import { useConfirm } from '../ui/confirm';
 import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
+import { tn, useT } from '../i18n';
 
 // Does the recent remote OUTPUT look like a no-echo password / passphrase
 // prompt? Used to skip command-history capture so typed secrets (sudo, su,
@@ -176,6 +177,7 @@ const TerminalView = ({
   sessionId,
   terminalId,
   disabled = false,
+  reconnecting = false,
   isActive = true,
   shown = isActive,
   isActiveView = false,
@@ -195,6 +197,9 @@ const TerminalView = ({
   sessionId: string;
   terminalId: string;
   disabled?: boolean;
+  /// The session is being reconnected: the read-only badge says so, with a
+  /// dot that pulses for a few seconds of each attempt.
+  reconnecting?: boolean;
   /// Attach-only mode: the PTY behind this terminal is owned by
   /// another TerminalView instance (typically the one inside the
   /// session tab). This instance ONLY listens to output events and
@@ -269,6 +274,7 @@ const TerminalView = ({
   /// every prompt; the parent keeps what changed.
   onFolder?: (terminalId: string, path: string, host: string) => void;
 }) => {
+  const t = useT();
   // The connection this terminal's shell runs on: its tab's, or its own
   // (`ownLogin`), `<tab>::term-<terminal>`, which the backend takes as the
   // tab's for what was typed there (a password asked for, a host key).
@@ -291,9 +297,9 @@ const TerminalView = ({
     cancelOwnRef.current = cancel;
     const offs = await Promise.all([
       listen(`connection-success-${ownConn}`, () => settle(true)),
-      listen(`connection-failed-${ownConn}`, (e: any) => settle(String(e.payload?.reason ?? 'the login failed'))),
+      listen(`connection-failed-${ownConn}`, (e: any) => settle(String(e.payload?.reason ?? t('the login failed')))),
     ]);
-    const timer = setTimeout(() => settle('no answer within 60 seconds'), 60000);
+    const timer = setTimeout(() => settle(t('no answer within 60 seconds')), 60000);
     if (!cancelled) {
       invoke('initiate_connection', {
         sessionId: ownConn,
@@ -312,7 +318,7 @@ const TerminalView = ({
     if (cancelOwnRef.current === cancel) cancelOwnRef.current = null;
     if (result === null) return null;
     if (result === true) return ownConn;
-    term.writeln(`\x1b[33mThis terminal couldn't log in on its own (${result}); it uses the tab's connection.\x1b[0m`);
+    term.writeln(`\x1b[33m${t("This terminal couldn't log in on its own ({reason}); it uses the tab's connection.", { reason: result })}\x1b[0m`);
     invoke('disconnect_session', { sessionId: ownConn }).catch(() => {});
     return sessionId;
   };
@@ -596,7 +602,7 @@ const TerminalView = ({
     // what it asks is still answered.
     const reset = {};
     staleModesRef.current = reset;
-    term.write('\r\n\x1b[33m── reconnected ──\x1b[0m\r\n' + RESET_INPUT_MODES, () => {
+    term.write('\r\n\x1b[33m' + t('── reconnected ──') + '\x1b[0m\r\n' + RESET_INPUT_MODES, () => {
       if (staleModesRef.current === reset) staleModesRef.current = null;
     });
     // Attach-only viewers piggyback on someone else's PTY, so they
@@ -616,6 +622,20 @@ const TerminalView = ({
       releaseInput(true);
       resendPtySize(terminalId, term.cols, term.rows);
     };
+    // A shell that couldn't open again because the link dropped once more
+    // while it was opening (the session is down again, the banner above is
+    // already trying) says nothing: a red "failed" line here read as if the
+    // reconnecting had stopped. The next reconnect writes its own divider.
+    // Known by the error (russh's "Disconnected", the backend's "Session not
+    // connected": the session's watcher reports that drop too, sometimes
+    // seconds later) or by the session being down already; the open's error
+    // and the session's "disconnected" come in either order, so it looks a
+    // moment later.
+    const failed = (e: unknown, text: string) => {
+      releaseInput(false);
+      if (/^Disconnected\b|Session not connected/i.test(String(e))) return;
+      setTimeout(() => { if (!disabledRef.current && xtermRef.current === term) term.writeln(`\x1b[31m${text}\x1b[0m`); }, 500);
+    };
     const ce = containerExecRef.current;
     if (telnet) {
       invoke('telnet_open_terminal', {
@@ -623,10 +643,7 @@ const TerminalView = ({
         terminalId,
         cols: term.cols || 80,
         rows: term.rows || 24,
-      }).then(syncSize, e => {
-        releaseInput(false);
-        term.writeln(`\x1b[31mReconnect failed: ${e}\x1b[0m`);
-      });
+      }).then(syncSize, e => failed(e, t('Reconnect failed: {error}', { error: String(e) })));
     } else if (ce) {
       invoke('open_container_terminal', {
         sessionId,
@@ -635,10 +652,7 @@ const TerminalView = ({
         cols: term.cols || 80,
         rows: term.rows || 24,
         useSudo: ce.useSudo,
-      }).then(syncSize, e => {
-        releaseInput(false);
-        term.writeln(`\x1b[31mReconnect into container failed: ${e}\x1b[0m`);
-      });
+      }).then(syncSize, e => failed(e, t('Reconnect into container failed: {error}', { error: String(e) })));
     } else {
       // A terminal with a login of its own logs in again first.
       (ownLogin ? connectOwn(term) : Promise.resolve(sessionId))
@@ -653,10 +667,8 @@ const TerminalView = ({
             useLocalShell: readUseLocalShell(),
           }).then(() => true);
         })
-        .then((opened) => { if (opened) syncSize(); else releaseInput(false); }, e => {
-          releaseInput(false);
-          term.writeln(`\x1b[31mReconnect failed: ${e}\x1b[0m`);
-        });
+        .then((opened) => { if (opened) syncSize(); else releaseInput(false); },
+          e => failed(e, t('Reconnect failed: {error}', { error: String(e) })));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionEpoch]);
@@ -674,7 +686,7 @@ const TerminalView = ({
       // This side closed it (the terminal, its tab, a failed login): no news.
       if (e.payload?.user_initiated) return;
       shellConnRef.current = sessionId;
-      xtermRef.current?.write("\r\n\x1b[33m── this terminal's own login closed; reconnect the tab to log in again ──\x1b[0m\r\n");
+      xtermRef.current?.write("\r\n\x1b[33m" + t("── this terminal's own login closed; reconnect the tab to log in again ──") + "\x1b[0m\r\n");
     });
     return () => { off.then((f) => f()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -685,7 +697,7 @@ const TerminalView = ({
   useEffect(() => {
     const off = listen(`terminal-closed-${terminalId}`, (e: any) => {
       if (!e.payload?.shell_ended) return;
-      xtermRef.current?.write("\r\n\x1b[33m── this shell has ended; + opens a new terminal ──\x1b[0m\r\n");
+      xtermRef.current?.write("\r\n\x1b[33m" + t("── this shell has ended; + opens a new terminal ──") + "\x1b[0m\r\n");
     });
     return () => { off.then((f) => f()); };
   }, [terminalId]);
@@ -870,7 +882,7 @@ const TerminalView = ({
       const server = serverId > 0 ? servers.find((s) => s.id === serverId) : undefined;
       const items: SavedPassword[] = [];
       if (server?.has_password) {
-        items.push({ label: "This server's password", detail: server.username || server.name, serverId: server.id });
+        items.push({ label: t("This server's password"), detail: server.username || server.name, serverId: server.id });
       }
       // Its own saved login first, then the others.
       const withPassword = logins.filter((c) => c.has_password);
@@ -878,13 +890,13 @@ const TerminalView = ({
       for (const c of withPassword) {
         items.push({
           label: c.name,
-          detail: c.id === server?.credential_id ? `${c.username} · this server's login` : c.username,
+          detail: c.id === server?.credential_id ? t("{username} · this server's login", { username: c.username }) : c.username,
           credentialId: c.id,
         });
       }
       setPasswordMenu(items);
     } catch (e) {
-      notify(`Couldn't read the saved passwords: ${String(e)}`, 'err');
+      notify(t("Couldn't read the saved passwords: {error}", { error: String(e) }), 'err');
     }
   };
   const typeSavedPassword = async (p: SavedPassword) => {
@@ -920,6 +932,13 @@ const TerminalView = ({
       drawBoldTextInBrightColors: readBoldBright(),
       minimumContrastRatio: readMinContrast() ? READABLE_CONTRAST : 1,
       allowProposedApi: true,
+      // Inside a program that takes the mouse (vi with mouse=a, mc, htop) a
+      // plain drag goes to the program, and xterm selects on Shift+drag
+      // instead, as PuTTY does. A Mac has no such key by default: this turns
+      // on Option+drag there, as in Terminal.app and iTerm2. The Option key
+      // keeps typing its characters (macOptionIsMeta stays off), so nothing
+      // else changes. Read on macOS only; other platforms ignore it.
+      macOptionClickForcesSelection: true,
       // OSC 8 hyperlinks a program on the server prints. What they show can
       // differ from where they go, so the real target is shown first, and
       // only an http(s) link opens, in the system browser (open_external_url
@@ -936,16 +955,16 @@ const TerminalView = ({
             // screen; the host line still says where it goes.
             const shown = uri.length > 300 ? `${uri.slice(0, 300)}…` : uri;
             const ok = await confirmRef.current({
-              title: 'Open this link?',
-              message: `A program in this terminal links to:\n\n${shown}\n\nIt opens in your browser, at ${host}.`,
-              okLabel: 'Open',
+              title: t('Open this link?'),
+              message: t('A program in this terminal links to:\n\n{link}\n\nIt opens in your browser, at {host}.', { link: shown, host }),
+              okLabel: t('Open'),
               safeDefault: true,
             });
             if (!ok) return;
             try {
               await invoke('open_external_url', { url: uri });
             } catch (e) {
-              notify(`Couldn't open the link: ${String(e)}`, 'err');
+              notify(t("Couldn't open the link: {error}", { error: String(e) }), 'err');
             }
           })();
         },
@@ -1089,7 +1108,7 @@ const TerminalView = ({
             rows: term.rows || 24,
           }).then(syncSize, e => {
             releaseInput(false);
-            term.writeln(`\x1b[31mFailed to open terminal: ${e}\x1b[0m`);
+            term.writeln(`\x1b[31m${t('Failed to open terminal: {error}', { error: String(e) })}\x1b[0m`);
           });
         } else if (containerExec) {
           invoke('open_container_terminal', {
@@ -1101,7 +1120,7 @@ const TerminalView = ({
             useSudo: containerExec.useSudo,
           }).then(syncSize, e => {
             releaseInput(false);
-            term.writeln(`\x1b[31mFailed to attach to container: ${e}\x1b[0m`);
+            term.writeln(`\x1b[31m${t('Failed to attach to container: {error}', { error: String(e) })}\x1b[0m`);
           });
         } else {
           // A terminal with a login of its own logs in first.
@@ -1126,7 +1145,7 @@ const TerminalView = ({
             window.dispatchEvent(new CustomEvent('submarine-terminal-opened', { detail: terminalId }));
           }, e => {
             releaseInput(false);
-            term.writeln(`\x1b[31mFailed to open terminal: ${e}\x1b[0m`);
+            term.writeln(`\x1b[31m${t('Failed to open terminal: {error}', { error: String(e) })}\x1b[0m`);
           });
         }
       }
@@ -1332,7 +1351,7 @@ const TerminalView = ({
       const text = buildSelectedText().replace(/\n+$/, '');
       if (!text) return;
       const ok = await writeClipboard(text);
-      if (ok) notify('Copied');
+      if (ok) notify(t('Copied'));
     };
     // Copy-on-select must fire wherever the mouse is RELEASED — not only inside
     // the terminal. A user who drags a selection and lets go past the terminal's
@@ -1378,7 +1397,7 @@ const TerminalView = ({
       if (disabledRef.current || !raw) return;
       // No escape sequence or other control character gets through (see pasteText.ts).
       const text = withoutPasteControls(raw);
-      if (text !== raw) notify('Control characters left out of the paste');
+      if (text !== raw) notify(t('Control characters left out of the paste'));
       if (!text) return;
       // More than one line into a program that hasn't turned bracketed-paste
       // mode on (an older bash, a plain sh): each line would run the moment it
@@ -1389,9 +1408,9 @@ const TerminalView = ({
       if (lines.length > 1 && !term.modes.bracketedPasteMode) {
         const preview = lines.slice(0, 4).map((l) => (l.length > 70 ? `${l.slice(0, 70)}…` : l)).join('\n');
         const ok = await confirmRef.current({
-          title: `Paste ${lines.length} lines?`,
-          message: `The program here doesn't take a paste as one block, so each line runs as soon as it lands:\n\n${preview}${lines.length > 4 ? `\n… and ${lines.length - 4} more` : ''}`,
-          okLabel: 'Paste',
+          title: tn(lines.length, 'Paste {count} line?', 'Paste {count} lines?'),
+          message: t("The program here doesn't take a paste as one block, so each line runs as soon as it lands:\n\n{preview}", { preview }) + (lines.length > 4 ? `\n${t('… and {count} more', { count: lines.length - 4 })}` : ''),
+          okLabel: t('Paste'),
           safeDefault: true,
         });
         if (!ok) return;
@@ -1413,13 +1432,13 @@ const TerminalView = ({
       } finally {
         pastingRef.current = false;
       }
-      if (toast) notify('Pasted');
+      if (toast) notify(t('Pasted'));
     };
     const pasteClipboard = async (toast: boolean) => {
       if (disabledRef.current) return;
       let text = '';
       try { text = await readClipboardText(); }
-      catch { notify('Clipboard read denied', 'err'); return; }
+      catch { notify(t('Clipboard read denied'), 'err'); return; }
       await pasteText(text, toast);
     };
     // Ctrl+V, Ctrl+Shift+V, Shift+Insert and a phone's paste menu would reach
@@ -1801,13 +1820,13 @@ const TerminalView = ({
               }
               e.stopPropagation();
             }}
-            placeholder="Find"
+            placeholder={t('Find')}
             className="bg-transparent outline-none text-[12px] text-zinc-100 placeholder:text-zinc-500 w-40 px-1"
           />
           <button
             type="button"
             onClick={() => runFind('prev')}
-            title="Previous match (Shift+Enter)"
+            title={t('Previous match (Shift+Enter)')}
             className="px-1.5 py-0.5 text-[11px] text-zinc-300 hover:text-white hover:bg-white/5 rounded"
           >
             {'↑'}
@@ -1815,7 +1834,7 @@ const TerminalView = ({
           <button
             type="button"
             onClick={() => runFind('next')}
-            title="Next match (Enter)"
+            title={t('Next match (Enter)')}
             className="px-1.5 py-0.5 text-[11px] text-zinc-300 hover:text-white hover:bg-white/5 rounded"
           >
             {'↓'}
@@ -1823,7 +1842,7 @@ const TerminalView = ({
           <button
             type="button"
             onClick={() => { setQuery(''); closeSearch(); }}
-            title="Close (Esc)"
+            title={t('Close (Esc)')}
             className="px-1.5 py-0.5 text-[11px] text-zinc-400 hover:text-white hover:bg-white/5 rounded"
           >
             {'✕'}
@@ -1837,22 +1856,22 @@ const TerminalView = ({
             onClick={() => (passwordMenu ? setPasswordMenu(null) : void openPasswordMenu())}
             aria-haspopup="menu"
             aria-expanded={!!passwordMenu}
-            title="Type a saved password at this prompt (no Enter)"
+            title={t('Type a saved password at this prompt (no Enter)')}
             className="flex items-center gap-1.5 rounded-md bg-zinc-800 border border-white/10 px-2 py-1 shadow-lg text-[11px] text-zinc-200 hover:text-white hover:border-primary/40"
           >
             <KeyRound size={12} className="text-primary shrink-0" />
-            <span className="whitespace-nowrap">Saved password</span>
+            <span className="whitespace-nowrap">{t('Saved password')}</span>
           </button>
           {passwordMenu && (
             <div
               role="menu"
-              aria-label="Saved passwords"
+              aria-label={t('Saved passwords')}
               onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setPasswordMenu(null); xtermRef.current?.focus(); } }}
               className="w-64 max-w-full max-h-60 overflow-y-auto rounded-md bg-zinc-900 border border-white/10 shadow-xl p-1"
             >
               {passwordMenu.length === 0 ? (
                 <div className="px-2 py-1.5 text-[11px] text-zinc-400">
-                  No saved passwords. Save one with the server or under Logins.
+                  {t('No saved passwords. Save one with the server or under Logins.')}
                 </div>
               ) : passwordMenu.map((p) => (
                 <button
@@ -1924,13 +1943,22 @@ const TerminalView = ({
           select-drag that starts under it. */}
       {/* One line: centred like this it only gets half the width, and wrapped
           it covered two lines of the terminal on a phone, where the banner
-          above already says the session is down. */}
+          above already says the session is down. Solid colours (the tint
+          over a dark ground), so the text under it doesn't show through. */}
       {disabled && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
-          <span className="whitespace-nowrap px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border bg-rose-500/15 border-rose-500/30 text-rose-300 shadow-lg">
-            <span className="sm:hidden">Read-only</span>
-            <span className="hidden sm:inline">Disconnected — buffer is read-only</span>
-          </span>
+          {reconnecting ? (
+            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border bg-[#2c1f0b] border-amber-500/30 text-amber-200 shadow-lg flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-300 animate-pulse-brief" aria-hidden="true" />
+              <span className="sm:hidden">{t('Reconnecting…')}</span>
+              <span className="hidden sm:inline">{t('Reconnecting… buffer is read-only')}</span>
+            </span>
+          ) : (
+            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border bg-[#2c1117] border-rose-500/30 text-rose-300 shadow-lg">
+              <span className="sm:hidden">{t('Read-only')}</span>
+              <span className="hidden sm:inline">{t('Disconnected — buffer is read-only')}</span>
+            </span>
+          )}
         </div>
       )}
     </div>

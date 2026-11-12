@@ -3,15 +3,17 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle, ArrowBigUp, ArrowRight, ArrowUpCircle, Check, CheckCircle2, Cloud, CloudOff, Download,
-  Eye, EyeOff, Fingerprint, Github, HardDrive, History, Loader2, MoreHorizontal, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X,
+  Eye, EyeOff, Fingerprint, Github, HardDrive, History, Loader2, MessageSquare, MoreHorizontal, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X,
 } from "lucide-react";
 import CloudPanel from "./CloudPanel";
 import { CloudConfigView, hostOf } from "./SyncServerSetting";
 import logoUrl from "../assets/logo.png";
 import { IS_ANDROID, IS_IOS, IS_MOBILE } from "../util/platform";
 import { PRIVACY_URL } from "../util/links";
+import { openFeedback } from "./Feedback";
 import { useTextPrompt, useConfirm } from "../ui/confirm";
 import { forgetProfileBookmarks } from "../util/sftpBookmarks";
+import { t, tn, tx, useT } from "../i18n";
 
 // Vault file header (lib.rs VAULT_MAGIC / VAULT_VERSION) — checked up front on
 // Android imports so a wrong file fails before the user picks a name.
@@ -92,16 +94,16 @@ const copyDate = (unix: number) =>
 const RESERVED_NAME = /^(CON|PRN|AUX|NUL|COM\d|LPT\d)$/i;
 const nameProblem = (name: string, local: string[], cloud: string[]): string | null => {
   if (!name) return null;
-  if (!/^[A-Za-z0-9_-]+$/.test(name)) return "Use letters, numbers, - and _ only.";
-  if (name.length > 32) return "Use 32 characters at most.";
-  if (RESERVED_NAME.test(name)) return `"${name}" is a reserved name on Windows.`;
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return t("Use letters, numbers, - and _ only.");
+  if (name.length > 32) return t("Use 32 characters at most.");
+  if (RESERVED_NAME.test(name)) return t("\"{name}\" is a reserved name on Windows.", { name });
   const key = name.toLowerCase();
   const here = local.find((p) => p.toLowerCase() === key);
-  if (here) return `There's already a profile named "${here}".`;
+  if (here) return t("There's already a profile named \"{name}\".", { name: here });
   // A new profile is a different one, even under the same name: it would sit
   // in the list as if it were the cloud one.
   const there = cloud.find((p) => p.toLowerCase() === key);
-  if (there) return `"${there}" is in your cloud. Get it from the list, or pick another name.`;
+  if (there) return t("\"{name}\" is in your cloud. Get it from the list, or pick another name.", { name: there });
   return null;
 };
 
@@ -159,6 +161,7 @@ interface Props {
 }
 
 const ProfileSelectPage = ({ onUnlocked }: Props) => {
+  const t = useT();
   const [profiles, setProfiles] = useState<string[]>([]);
   // The first load only: a later reload keeps the list on screen.
   const [loading, setLoading] = useState(true);
@@ -272,18 +275,18 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
           setCloudProfiles(cps.filter((c) => c.live_records > 0));
         } catch (e) {
           setCloudProfiles([]);
-          if (manual) setError(`Couldn't load your cloud profiles: ${cleanErr(e)}`);
+          if (manual) setError(t("Couldn't load your cloud profiles: {error}", { error: cleanErr(e) }));
         }
       } else {
         setCloudProfiles([]);
       }
     } catch (e) {
       // The panel can still be opened to retry.
-      if (manual) setError(`Couldn't reach the cloud: ${cleanErr(e)}`);
+      if (manual) setError(t("Couldn't reach the cloud: {error}", { error: cleanErr(e) }));
     } finally {
       if (manual) setRefreshing(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => { refreshCloud(); }, [refreshCloud]);
 
@@ -302,7 +305,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   const [linkError, setLinkError] = useState("");
   const openLink = (url: string) => {
     setLinkError("");
-    invoke("open_external_url", { url }).catch((e) => setLinkError(`Couldn't open the link: ${cleanErr(e)}`));
+    invoke("open_external_url", { url }).catch((e) => setLinkError(t("Couldn't open the link: {error}", { error: cleanErr(e) })));
   };
 
   const openReleaseNotes = () => {
@@ -373,8 +376,8 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
-  const quickLabel = quick?.method === "android-biometric" ? "Unlock with fingerprint"
-    : quick?.method === "windows-auto" ? "Open on this Windows account" : "Unlock with Windows Hello";
+  const quickLabel = quick?.method === "android-biometric" ? t("Unlock with fingerprint")
+    : quick?.method === "windows-auto" ? t("Open on this Windows account") : t("Unlock with Windows Hello");
   // `auto`: nobody asked for this one, so a key that isn't on this device
   // (a portable folder on another PC) isn't worth an error.
   const quickUnlock = async (name: string, auto = false) => {
@@ -391,7 +394,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       }
       if (raw.includes("[QUICK_UNLOCK] STALE")) {
         setQuick(null);
-        if (!auto) setUnlockError("Quick unlock no longer fits this profile here. Unlock with the password, then turn it on again.");
+        if (!auto) setUnlockError(t("Quick unlock no longer fits this profile here. Unlock with the password, then turn it on again."));
       } else {
         setUnlockError(cleanErr(e));
       }
@@ -460,7 +463,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       await invoke("setup_master_db", { password });
     } catch (e) {
       const raw = String(e);
-      setUnlockError(raw.toLowerCase().includes("decrypt") ? "Wrong password." : cleanErr(e));
+      setUnlockError(raw.toLowerCase().includes("decrypt") ? t("Wrong password.") : cleanErr(e));
       setPending(null);
       shake(unlockFieldRef.current);
       // Selected, so the next try types over it.
@@ -480,7 +483,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   // The create form's checks, live. Length counts characters the way the
   // backend does (code points, not UTF-16 units).
   const nameIssue = nameProblem(newName.trim(), profiles, cloudProfiles.map((c) => c.name));
-  const nameHint = nameIssue ?? (triedCreate && !newName.trim() ? "Give the profile a name." : null);
+  const nameHint = nameIssue ?? (triedCreate && !newName.trim() ? t("Give the profile a name.") : null);
   const longEnough = [...newPassword].length >= 8;
   const matches = newConfirmPassword.length > 0 && newPassword === newConfirmPassword;
   const createReady = !!newName.trim() && !nameIssue && longEnough && matches;
@@ -524,7 +527,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       // name: the system picker doesn't say where it is), null if the user
       // cancelled the save dialog. We only surface a toast in the success case.
       const saved = await invoke<string | null>("export_profile", { name });
-      if (saved) setInfo(IS_ANDROID ? `Saved as ${saved}` : IS_IOS ? `Saved as ${saved} in Files › Submarine` : `Exported to ${saved}`);
+      if (saved) setInfo(IS_ANDROID ? t("Saved as {file}", { file: saved }) : IS_IOS ? t("Saved as {file} in Files › Submarine", { file: saved }) : t("Exported to {path}", { path: saved }));
     } catch (e) {
       setError(cleanErr(e));
     } finally {
@@ -566,13 +569,13 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     setError(null); setInfo(null);
     try {
       if (file.size > VAULT_FILE_MAX_BYTES) {
-        setError("That file is too large to be a Submarine profile.");
+        setError(t("That file is too large to be a Submarine profile."));
         return;
       }
       const bytes = new Uint8Array(await file.arrayBuffer());
       // Same quick header check the backend does, for instant feedback.
       if (bytes.length < 5 || String.fromCharCode(...bytes.subarray(0, 4)) !== VAULT_MAGIC || bytes[4] !== VAULT_VERSION) {
-        setError("That file isn't a Submarine profile.");
+        setError(t("That file isn't a Submarine profile."));
         return;
       }
       const suggested = file.name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 32) || "imported";
@@ -602,7 +605,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       }
       setImportStaged(null);
       closeCreate();
-      setInfo(`Imported as "${name}". Open it with its original password.`);
+      setInfo(t("Imported as \"{name}\". Open it with its original password.", { name }));
       await reload();
       setSelected(name);
     } catch (e) {
@@ -620,12 +623,12 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     if (busy) return;
     const inCloud = cloudProfiles.some((c) => c.name.toLowerCase() === name.toLowerCase());
     const ok = await confirm({
-      title: "Remove from this device",
+      title: t("Remove from this device"),
       message: inCloud
-        ? `Remove "${name}" from this device?\n\nThe encrypted file here is deleted. Your cloud has a profile of this name: if it's this one, you can Get it again anytime with its password.`
-        : `Remove "${name}" from this device?\n\nThe encrypted file here is deleted. This profile is not in your cloud, so it will be gone for good.`,
+        ? t("Remove \"{name}\" from this device?\n\nThe encrypted file here is deleted. Your cloud has a profile of this name: if it's this one, you can Get it again anytime with its password.", { name })
+        : t("Remove \"{name}\" from this device?\n\nThe encrypted file here is deleted. This profile is not in your cloud, so it will be gone for good.", { name }),
       destructive: true,
-      okLabel: "Remove",
+      okLabel: t("Remove"),
     });
     if (!ok) return;
     setPending("work"); setError(null); setInfo(null);
@@ -647,16 +650,16 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   const deleteFromCloud = async (row: Row) => {
     if (!row.cloud || busy) return;
     const ok = await confirm({
-      title: "Delete from cloud",
-      message: `Delete "${row.name}" from your cloud?\n\nThis erases its synced copy and its restore key from the cloud, and can't be undone. Copies on your devices are NOT touched.\n\nThis device won't upload it again until you say so in the profile's Profile panel. Any other device that has it puts it back at its next sync, so remove it there first.`,
+      title: t("Delete from cloud"),
+      message: t("Delete \"{name}\" from your cloud?\n\nThis erases its synced copy and its restore key from the cloud, and can't be undone. Copies on your devices are NOT touched.\n\nThis device won't upload it again until you say so in the profile's Profile panel. Any other device that has it puts it back at its next sync, so remove it there first.", { name: row.name }),
       destructive: true,
-      okLabel: "Delete from cloud",
+      okLabel: t("Delete from cloud"),
     });
     if (!ok) return;
     setPending("work"); setError(null); setInfo(null);
     try {
       const n = await invoke<number>("cloud_delete_profile", { profile: row.cloud.profile });
-      setInfo(`Removed "${row.name}" from the cloud (${n} record${n === 1 ? "" : "s"}).`);
+      setInfo(tn(n, "Removed \"{name}\" from the cloud ({count} record).", "Removed \"{name}\" from the cloud ({count} records).", { name: row.name }));
       // A cloud-only row is gone with it: open a local one instead.
       if (!row.local) setSelected((prev) => (prev === row.name ? pickFrom(profiles, "") : prev));
       await refreshCloud();
@@ -675,13 +678,13 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     if (busy) return;
     setError(null); setInfo(null);
     const pw = await textPrompt({
-      title: `Get "${c.name}"`,
-      message: "Enter THIS profile's password — the same one you open it with. It unlocks the cloud copy and protects the copy saved on this device.",
-      placeholder: "Profile password",
+      title: t("Get \"{name}\"", { name: c.name }),
+      message: t("Enter THIS profile's password — the same one you open it with. It unlocks the cloud copy and protects the copy saved on this device."),
+      placeholder: t("Profile password"),
       password: true,
       keepWhitespace: true,
-      okLabel: "Get it",
-      validate: (v: string) => (v.length < 1 ? "Enter the password" : null),
+      okLabel: t("Get it"),
+      validate: (v: string) => (v.length < 1 ? t("Enter the password") : null),
     });
     if (pw === null) return;
     setPending("get");
@@ -689,7 +692,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
       const rep = await invoke<{ pushed: number; pulled: number }>("restore_personal_profile", {
         cloudProfile: c.profile, localName: c.name, vaultPassword: pw,
       });
-      setInfo(`"${c.name}" is now on this device — pulled ${rep.pulled} item${rep.pulled === 1 ? "" : "s"}. Open it below with the same password.`);
+      setInfo(tn(rep.pulled, "\"{name}\" is now on this device — pulled {count} item. Open it below with the same password.", "\"{name}\" is now on this device — pulled {count} items. Open it below with the same password.", { name: c.name }));
       await reload();
       setSelected(c.name);
       refreshCloud();
@@ -708,15 +711,15 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     if (busy) return;
     const when = copyDate(copy.when);
     const ok = await confirm({
-      title: "Put this copy back?",
-      message: `Go back to "${name}" as it was on ${when}?\n\nWhat a sync deleted or emptied since then comes back here and, at the next sync, on your other devices too. What the profile holds now is kept as another copy.`,
-      okLabel: "Put it back",
+      title: t("Put this copy back?"),
+      message: t("Go back to \"{name}\" as it was on {when}?\n\nWhat a sync deleted or emptied since then comes back here and, at the next sync, on your other devices too. What the profile holds now is kept as another copy.", { name, when }),
+      okLabel: t("Put it back"),
     });
     if (!ok) return;
     setPending("work"); setError(null); setInfo(null);
     try {
       await invoke("restore_profile_copy", { name, file: copy.file });
-      setInfo(`"${name}" is back as it was on ${when}. Open it with its password.`);
+      setInfo(t("\"{name}\" is back as it was on {when}. Open it with its password.", { name, when }));
     } catch (e) {
       setError(cleanErr(e));
     } finally {
@@ -734,16 +737,16 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   const menuItems = (row: Row): MenuItem[] => {
     const items: MenuItem[] = [];
     if (row.local) {
-      items.push({ label: "Export…", icon: <Download size={14} />, onSelect: () => exportProfile(row.name) });
+      items.push({ label: t("Export…"), icon: <Download size={14} />, onSelect: () => exportProfile(row.name) });
       for (const copy of menu?.copies ?? []) {
-        items.push({ label: `Put back the copy of ${copyDate(copy.when)}…`, icon: <History size={14} />, onSelect: () => putBack(row.name, copy) });
+        items.push({ label: t("Put back the copy of {when}…", { when: copyDate(copy.when) }), icon: <History size={14} />, onSelect: () => putBack(row.name, copy) });
       }
-      items.push({ label: "Remove from this device…", icon: <Trash2 size={14} />, danger: true, onSelect: () => removeLocal(row.name) });
+      items.push({ label: t("Remove from this device…"), icon: <Trash2 size={14} />, danger: true, onSelect: () => removeLocal(row.name) });
     } else if (row.cloud) {
       const c = row.cloud;
-      items.push({ label: "Get on this device…", icon: <Download size={14} />, onSelect: () => bringDown(c) });
+      items.push({ label: t("Get on this device…"), icon: <Download size={14} />, onSelect: () => bringDown(c) });
     }
-    if (row.cloud) items.push({ label: "Delete from cloud…", icon: <CloudOff size={14} />, danger: true, onSelect: () => deleteFromCloud(row) });
+    if (row.cloud) items.push({ label: t("Delete from cloud…"), icon: <CloudOff size={14} />, danger: true, onSelect: () => deleteFromCloud(row) });
     return items;
   };
   const menuRow = menu ? rows.find((r) => r.name === menu.name) : undefined;
@@ -756,11 +759,11 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
 
   // What the footer's update item shows for each outcome of the manual check.
   const checkItem = {
-    idle: { label: "Check for updates", icon: <RefreshCw size={12} />, tone: undefined },
-    checking: { label: "Checking…", icon: <RefreshCw size={12} className="animate-spin" />, tone: undefined },
-    latest: { label: "Up to date", icon: <CheckCircle2 size={12} />, tone: "text-emerald-400/90 hover:text-emerald-300" },
-    none: { label: "No releases yet", icon: <RefreshCw size={12} />, tone: undefined },
-    error: { label: "Couldn't check", icon: <AlertTriangle size={12} />, tone: "text-amber-400/90 hover:text-amber-300" },
+    idle: { label: t("Check for updates"), icon: <RefreshCw size={12} />, tone: undefined },
+    checking: { label: t("Checking…"), icon: <RefreshCw size={12} className="animate-spin" />, tone: undefined },
+    latest: { label: t("Up to date"), icon: <CheckCircle2 size={12} />, tone: "text-emerald-400/90 hover:text-emerald-300" },
+    none: { label: t("No releases yet"), icon: <RefreshCw size={12} />, tone: undefined },
+    error: { label: t("Couldn't check"), icon: <AlertTriangle size={12} />, tone: "text-amber-400/90 hover:text-amber-300" },
   }[check];
 
   return (
@@ -793,7 +796,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
           />
           <h1 className="mt-3 text-[22px] font-semibold leading-none tracking-tight text-white">Submarine</h1>
           <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.26em] text-primary/80">
-            Run Silent, Run Deep
+            {t("Run Silent, Run Deep")}
           </p>
         </header>
 
@@ -812,17 +815,17 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
             className="mb-3 rounded-2xl border border-primary/25 bg-primary/[0.05] p-4 animate-in"
           >
             <div className="flex items-center gap-2 text-[13.5px] font-semibold text-zinc-100">
-              <Upload size={15} className="shrink-0 text-primary" /> Import a profile
+              <Upload size={15} className="shrink-0 text-primary" /> {t("Import a profile")}
             </div>
             <p className="mt-1 break-words text-[12px] leading-snug text-zinc-400">
-              From {importStaged.file}. Pick a name for it; its password stays the same.
+              {t("From {file}. Pick a name for it; its password stays the same.", { file: importStaged.file })}
             </p>
             <input
               ref={importNameRef}
               value={importStaged.name}
               onChange={(e) => { const name = e.target.value; setImportStaged((s) => s && { ...s, name }); }}
-              placeholder="Profile name"
-              aria-label="Name for the imported profile"
+              placeholder={t("Profile name")}
+              aria-label={t("Name for the imported profile")}
               aria-invalid={importIssue ? true : undefined}
               autoComplete="off"
               autoCapitalize="none"
@@ -838,17 +841,17 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                 disabled={busy || !importStaged.name.trim() || !!importIssue}
                 className={`${PRIMARY_BTN} h-10 flex-1 text-[13px]`}
               >
-                {pending === "import" ? <><Loader2 size={14} className="animate-spin" /> Importing…</> : "Import"}
+                {pending === "import" ? <><Loader2 size={14} className="animate-spin" /> {t("Importing…")}</> : t("Import")}
               </button>
               <button type="button" onClick={cancelImport} disabled={pending === "import"} className={`${GHOST_BTN} px-4`}>
-                Cancel
+                {t("Cancel")}
               </button>
             </div>
           </form>
         )}
 
         {loading ? (
-          <div aria-busy="true" aria-label="Loading profiles" className={CARD}>
+          <div aria-busy="true" aria-label={t("Loading profiles")} className={CARD}>
             <div className="flex items-center gap-3 px-3 py-3 animate-pulse">
               <span className="h-9 w-9 shrink-0 rounded-xl bg-white/[0.06]" />
               <span className="flex-1 space-y-2">
@@ -868,10 +871,10 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
             className={`${CARD} p-4 animate-in`}
           >
             <h2 className="text-[16px] font-semibold tracking-tight text-zinc-50">
-              {firstRun ? "Create your first profile" : "New profile"}
+              {firstRun ? t("Create your first profile") : t("New profile")}
             </h2>
             <p className="mt-1 text-[12px] leading-snug text-zinc-400">
-              Encrypted with a password that can't be recovered.
+              {t("Encrypted with a password that can't be recovered.")}
             </p>
             <div className="mt-4 space-y-2.5">
               <div>
@@ -880,8 +883,8 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                   value={newName}
                   onChange={(e) => { setNewName(e.target.value); setCreateError(null); }}
                   onKeyDown={(e) => advance(e, newPasswordRef)}
-                  placeholder="Profile name"
-                  aria-label="Profile name"
+                  placeholder={t("Profile name")}
+                  aria-label={t("Profile name")}
                   aria-invalid={nameHint ? true : undefined}
                   aria-describedby={nameHint ? "new-name-hint" : undefined}
                   autoComplete="off"
@@ -899,7 +902,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                 value={newPassword}
                 onChange={(v) => { setNewPassword(v); setCreateError(null); }}
                 onKeyDown={(e) => advance(e, confirmRef)}
-                placeholder="Password"
+                placeholder={t("Password")}
                 autoComplete="new-password"
                 enterKeyHint="next"
                 compact
@@ -909,7 +912,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                 ref={confirmRef}
                 value={newConfirmPassword}
                 onChange={(v) => { setNewConfirmPassword(v); setCreateError(null); }}
-                placeholder="Confirm password"
+                placeholder={t("Confirm password")}
                 autoComplete="new-password"
                 enterKeyHint="go"
                 compact
@@ -917,19 +920,19 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
               />
             </div>
             <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-[12px]">
-              <Rule ok={longEnough} strict={triedCreate}>At least 8 characters</Rule>
-              <Rule ok={matches} strict={triedCreate}>Both passwords match</Rule>
+              <Rule ok={longEnough} strict={triedCreate}>{t("At least 8 characters")}</Rule>
+              <Rule ok={matches} strict={triedCreate}>{t("Both passwords match")}</Rule>
             </ul>
             <div aria-live="polite">
-              {createError ? <Hint tone="error">{createError}</Hint> : capsLock ? <Hint tone="warn">Caps Lock is on</Hint> : null}
+              {createError ? <Hint tone="error">{createError}</Hint> : capsLock ? <Hint tone="warn">{t("Caps Lock is on")}</Hint> : null}
             </div>
             <button type="submit" disabled={busy} className={`${PRIMARY_BTN} mt-4 h-11 w-full text-[14px]`}>
-              {pending === "create" ? <><Loader2 size={15} className="animate-spin" /> Creating…</> : "Create profile"}
+              {pending === "create" ? <><Loader2 size={15} className="animate-spin" /> {t("Creating…")}</> : t("Create profile")}
             </button>
             <div className="mt-2 flex items-center justify-center gap-1 text-[12.5px]">
               {!firstRun && (
                 <>
-                  <button type="button" onClick={closeCreate} disabled={busy} className={LINK_BTN}>Cancel</button>
+                  <button type="button" onClick={closeCreate} disabled={busy} className={LINK_BTN}>{t("Cancel")}</button>
                   <span aria-hidden className="text-zinc-700">·</span>
                 </>
               )}
@@ -937,25 +940,25 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                 type="button"
                 onClick={startImport}
                 disabled={busy}
-                title="Import an exported .submarine file"
+                title={t("Import an exported .submarine file")}
                 className={LINK_BTN}
               >
-                <Upload size={13} /> Import a file
+                <Upload size={13} /> {t("Import a file")}
               </button>
             </div>
           </form>
         ) : (
           /* ---- Your profiles (local + cloud, one list) ---- */
-          <section aria-label="Your profiles">
+          <section aria-label={t("Your profiles")}>
             <div className="mb-2 flex h-7 items-center justify-between pl-1">
-              <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Your profiles</h2>
+              <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">{t("Your profiles")}</h2>
               {cloudStatus.signed_in && (
                 <button
                   type="button"
                   onClick={() => refreshCloud(true)}
                   disabled={busy || refreshing}
-                  title="Refresh from cloud"
-                  aria-label="Refresh from cloud"
+                  title={t("Refresh from cloud")}
+                  aria-label={t("Refresh from cloud")}
                   className="grid h-7 w-7 place-items-center rounded-lg text-zinc-500 transition-colors hover:bg-white/[0.05] hover:text-primary disabled:opacity-40"
                 >
                   <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
@@ -1006,8 +1009,8 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                         disabled={busy}
                         aria-haspopup="menu"
                         aria-expanded={menu?.name === row.name}
-                        aria-label={`Actions for ${row.name}`}
-                        title="More actions"
+                        aria-label={t("Actions for {name}", { name: row.name })}
+                        title={t("More actions")}
                         className="mr-2 grid h-9 w-9 shrink-0 place-items-center rounded-lg text-zinc-500 outline-none transition-colors hover:bg-white/[0.07] hover:text-zinc-100 focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-40"
                       >
                         <MoreHorizontal size={17} />
@@ -1032,7 +1035,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                                 setPassword(""); setUnlockError(null);
                               }
                             }}
-                            placeholder="Password"
+                            placeholder={t("Password")}
                             autoComplete="current-password"
                             enterKeyHint="go"
                             invalid={!!unlockError}
@@ -1044,12 +1047,12 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                             disabled={busy || !password}
                             className={`${PRIMARY_BTN} h-11 shrink-0 px-4 text-[13.5px]`}
                           >
-                            Unlock
+                            {t("Unlock")}
                             {pending === "unlock" ? <Loader2 size={15} className="animate-spin" /> : <ArrowRight size={15} />}
                           </button>
                         </div>
                         <div id="unlock-hint" aria-live="polite">
-                          {unlockError ? <Hint tone="error">{unlockError}</Hint> : capsLock ? <Hint tone="warn">Caps Lock is on</Hint> : null}
+                          {unlockError ? <Hint tone="error">{unlockError}</Hint> : capsLock ? <Hint tone="warn">{t("Caps Lock is on")}</Hint> : null}
                         </div>
                         {quick?.name === row.name && (
                           <button
@@ -1066,7 +1069,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                     ) : (
                       <div className="space-y-2.5 px-3 pb-3">
                         <p className="text-[12px] leading-snug text-zinc-400">
-                          Not on this device yet. Get it with this profile's password.
+                          {t("Not on this device yet. Get it with this profile's password.")}
                         </p>
                         <button
                           type="button"
@@ -1074,7 +1077,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                           disabled={busy}
                           className="flex h-10 w-full items-center justify-center gap-1.5 rounded-xl border border-primary/30 bg-primary/10 text-[13px] font-semibold text-primary transition-colors hover:bg-primary hover:text-black disabled:pointer-events-none disabled:opacity-40"
                         >
-                          {pending === "get" ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Get on this device
+                          {pending === "get" ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} {t("Get on this device")}
                         </button>
                       </div>
                     ))}
@@ -1085,16 +1088,16 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
 
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button type="button" onClick={openCreate} disabled={busy} className={GHOST_BTN}>
-                <Plus size={14} /> New profile
+                <Plus size={14} /> {t("New profile")}
               </button>
               <button
                 type="button"
                 onClick={startImport}
                 disabled={busy}
-                title="Import an exported .submarine file"
+                title={t("Import an exported .submarine file")}
                 className={GHOST_BTN}
               >
-                <Upload size={14} /> Import
+                <Upload size={14} /> {t("Import")}
               </button>
             </div>
           </section>
@@ -1106,19 +1109,22 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
 
         {/* GitHub, the update check and the running version side by side,
             with a live "new version" notice underneath when one is available
-            (the check steps aside then — the notice says it all). */}
+            (the check steps aside then — the notice says it all). A copy
+            its store updates (Flatpak) has no check. */}
         <footer className="mt-4 flex flex-col items-center gap-2.5">
           <div aria-live="polite" className="flex flex-wrap items-center justify-center gap-1 text-[11.5px]">
-            <FooterButton onClick={openRepo} title="Open Submarine on GitHub" icon={<Github size={12} />} label="GitHub" />
+            <FooterButton onClick={openRepo} title={t("Open Submarine on GitHub")} icon={<Github size={12} />} label="GitHub" />
             <FooterDot />
-            <FooterButton onClick={() => openLink(PRIVACY_URL)} title="What Submarine stores and sends: the privacy policy" icon={<ShieldCheck size={12} />} label="Privacy" />
+            <FooterButton onClick={() => openLink(PRIVACY_URL)} title={t("What Submarine stores and sends: the privacy policy")} icon={<ShieldCheck size={12} />} label={t("Privacy")} />
+            <FooterDot />
+            <FooterButton onClick={() => openFeedback()} title={t("Send a message to the developer")} icon={<MessageSquare size={12} />} label={t("Feedback")} />
             {!update && appInfo?.updates !== false && (
               <>
                 <FooterDot />
                 <FooterButton
                   onClick={checkForUpdates}
                   disabled={check === "checking"}
-                  title={check === "error" ? `Couldn't reach GitHub: ${checkError}` : "Look for a newer release on GitHub"}
+                  title={check === "error" ? t("Couldn't reach GitHub: {error}", { error: checkError }) : t("Look for a newer release on GitHub")}
                   icon={checkItem.icon}
                   label={checkItem.label}
                   tone={checkItem.tone}
@@ -1136,14 +1142,14 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
               hover the tooltip. */}
           {(linkError || (check === "error" && checkError)) && (
             <p role="status" className="max-w-[320px] text-center text-[10.5px] leading-snug text-amber-400/80 break-words">
-              {linkError || `Couldn't reach GitHub: ${checkError}`}
+              {linkError || t("Couldn't reach GitHub: {error}", { error: checkError })}
             </p>
           )}
           {update?.has_update && update.latest && (
             <button
               type="button"
               onClick={openReleaseNotes}
-              title="Open the release notes on GitHub"
+              title={t("Open the release notes on GitHub")}
               className="group flex items-center gap-1.5 text-[10.5px] text-primary/90 hover:text-primary animate-in fade-in slide-in-from-bottom-1 duration-700"
             >
               {/* pulsing dot — the "something new" signal */}
@@ -1152,7 +1158,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
                 <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
               </span>
               <ArrowUpCircle size={11} className="shrink-0" />
-              <span>New version <span className="font-mono font-semibold">v{update.latest}</span> available</span>
+              <span>{tx("New version {version} available", { version: <span className="font-mono font-semibold">v{update.latest}</span> })}</span>
               <span className="opacity-60 transition-transform group-hover:translate-x-0.5">→</span>
             </button>
           )}
@@ -1161,7 +1167,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
 
       {menu && menuRow && (
         <RowMenu
-          label={`Actions for ${menuRow.name}`}
+          label={t("Actions for {name}", { name: menuRow.name })}
           items={menuItems(menuRow)}
           place={menu.place}
           onClose={closeMenu}
@@ -1215,24 +1221,25 @@ const Avatar = ({ name, local }: { name: string; local: boolean }) => (
 
 // Where a profile lives, under its name.
 const RowStatus = ({ row }: { row: Row }) => {
+  const t = useT();
   if (!row.local) {
     const n = row.cloud?.live_records ?? 0;
     return (
       <span className="flex items-center gap-1 text-[11.5px] leading-4 text-primary/80">
         <Cloud size={11} className="shrink-0" />
-        <span className="truncate">In your cloud · {n} item{n === 1 ? "" : "s"}</span>
+        <span className="truncate">{tn(n, "In your cloud · {count} item", "In your cloud · {count} items")}</span>
       </span>
     );
   }
   return (
     <span className="flex items-center gap-1 text-[11.5px] leading-4 text-zinc-500">
       <HardDrive size={11} className="shrink-0" />
-      <span className="truncate">On this device</span>
+      <span className="truncate">{t("On this device")}</span>
       {row.cloud && (
         <>
           <span aria-hidden className="text-zinc-700">·</span>
           <Cloud size={11} className="shrink-0 text-emerald-400/80" />
-          <span className="text-emerald-400/80">Synced</span>
+          <span className="text-emerald-400/80">{t("Synced")}</span>
         </>
       )}
     </span>
@@ -1259,6 +1266,7 @@ interface PasswordInputProps {
 // (no-native-reveal): the box has one already.
 const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(
   ({ value, onChange, placeholder, autoComplete, enterKeyHint, compact, invalid = false, readOnly, describedBy, onKeyDown }, ref) => {
+    const t = useT();
     const [shown, setShown] = useState(false);
     return (
       // min-w-0: an <input> won't shrink below its intrinsic ~20ch width by
@@ -1287,9 +1295,9 @@ const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(
           onClick={() => setShown((s) => !s)}
           // Keeps the focus, and the caret, in the box.
           onMouseDown={(e) => e.preventDefault()}
-          aria-label="Show password"
+          aria-label={t("Show password")}
           aria-pressed={shown}
-          title={shown ? "Hide password" : "Show password"}
+          title={shown ? t("Hide password") : t("Show password")}
           className="absolute right-1.5 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-zinc-500 transition-colors hover:bg-white/[0.06] hover:text-zinc-200"
         >
           {shown ? <EyeOff size={15} /> : <Eye size={15} />}
@@ -1315,44 +1323,50 @@ const Hint = ({ id, tone, children }: { id?: string; tone: "error" | "warn"; chi
 
 // A password rule, ticked once it's met. Grey until a Create click, then red
 // if still missing.
-const Rule = ({ ok, strict, children }: { ok: boolean; strict: boolean; children: React.ReactNode }) => (
-  <li className={`flex items-center gap-2 transition-colors ${ok ? "text-emerald-400" : strict ? "text-rose-300" : "text-zinc-500"}`}>
-    <span
-      aria-hidden
-      className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border transition-colors ${
-        ok ? "border-emerald-400/60 bg-emerald-400/15" : strict ? "border-rose-400/50" : "border-zinc-600"
-      }`}
-    >
-      {ok && <Check size={10} strokeWidth={3} />}
-    </span>
-    <span className="sr-only">{ok ? "Done: " : "Needed: "}</span>
-    {children}
-  </li>
-);
+const Rule = ({ ok, strict, children }: { ok: boolean; strict: boolean; children: React.ReactNode }) => {
+  const t = useT();
+  return (
+    <li className={`flex items-center gap-2 transition-colors ${ok ? "text-emerald-400" : strict ? "text-rose-300" : "text-zinc-500"}`}>
+      <span
+        aria-hidden
+        className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border transition-colors ${
+          ok ? "border-emerald-400/60 bg-emerald-400/15" : strict ? "border-rose-400/50" : "border-zinc-600"
+        }`}
+      >
+        {ok && <Check size={10} strokeWidth={3} />}
+      </span>
+      <span className="sr-only">{ok ? t("Done: ") : t("Needed: ")}</span>
+      {children}
+    </li>
+  );
+};
 
 // The page's message about the last action, with a close button. Selectable,
 // so an export path can be copied.
-const Banner = ({ tone, children, onClose }: { tone: "error" | "info"; children: React.ReactNode; onClose: () => void }) => (
-  <div
-    role={tone === "error" ? "alert" : "status"}
-    className={`mb-3 flex items-start gap-2.5 rounded-xl border px-3 py-2.5 text-[12.5px] leading-snug animate-in ${
-      tone === "error" ? "border-rose-500/25 bg-rose-500/[0.08] text-rose-100" : "border-emerald-500/25 bg-emerald-500/[0.08] text-emerald-50"
-    }`}
-  >
-    {tone === "error"
-      ? <AlertTriangle size={14} className="mt-px shrink-0 text-rose-300" />
-      : <CheckCircle2 size={14} className="mt-px shrink-0 text-emerald-300" />}
-    <span className="min-w-0 flex-1 break-words select-text">{children}</span>
-    <button
-      type="button"
-      onClick={onClose}
-      aria-label="Dismiss"
-      className="-mr-1 -mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md opacity-60 transition-opacity hover:bg-white/10 hover:opacity-100"
+const Banner = ({ tone, children, onClose }: { tone: "error" | "info"; children: React.ReactNode; onClose: () => void }) => {
+  const t = useT();
+  return (
+    <div
+      role={tone === "error" ? "alert" : "status"}
+      className={`mb-3 flex items-start gap-2.5 rounded-xl border px-3 py-2.5 text-[12.5px] leading-snug animate-in ${
+        tone === "error" ? "border-rose-500/25 bg-rose-500/[0.08] text-rose-100" : "border-emerald-500/25 bg-emerald-500/[0.08] text-emerald-50"
+      }`}
     >
-      <X size={13} />
-    </button>
-  </div>
-);
+      {tone === "error"
+        ? <AlertTriangle size={14} className="mt-px shrink-0 text-rose-300" />
+        : <CheckCircle2 size={14} className="mt-px shrink-0 text-emerald-300" />}
+      <span className="min-w-0 flex-1 break-words select-text">{children}</span>
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label={t("Dismiss")}
+        className="-mr-1 -mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md opacity-60 transition-opacity hover:bg-white/10 hover:opacity-100"
+      >
+        <X size={13} />
+      </button>
+    </div>
+  );
+};
 
 interface MenuItem { label: string; icon: React.ReactNode; onSelect: () => void; danger?: boolean; }
 // Where a menu opens: under (or, short of room, over) the span top..bottom,
@@ -1478,19 +1492,20 @@ const CloudBar = ({
   firstRun: boolean;
   onManage: () => void;
 }) => {
+  const t = useT();
   // Signed-out: a light link rather than another full-width button — the
   // user hasn't asked for cloud yet, so it shouldn't compete with the
   // profiles. On a first run it's how a returning user finds theirs.
   if (!status.signed_in) {
     return (
       <div className="mt-4 flex flex-col items-center gap-0.5">
-        {firstRun && <span className="text-[12px] text-zinc-500">Already have profiles in the cloud?</span>}
+        {firstRun && <span className="text-[12px] text-zinc-500">{t("Already have profiles in the cloud?")}</span>}
         <button
           type="button"
           onClick={onManage}
           className="flex h-9 items-center gap-2 rounded-full px-4 text-[12.5px] text-zinc-400 transition-colors hover:bg-primary/[0.07] hover:text-primary"
         >
-          <Cloud size={14} /> Connect cloud sync
+          <Cloud size={14} /> {t("Connect cloud sync")}
         </button>
       </div>
     );
@@ -1503,16 +1518,16 @@ const CloudBar = ({
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12.5px] text-zinc-200">{status.email}</span>
-        <span className="block truncate text-[11px] text-zinc-500">{host ? `Signed in · ${host}` : "Signed in"}</span>
+        <span className="block truncate text-[11px] text-zinc-500">{host ? t("Signed in · {host}", { host }) : t("Signed in")}</span>
       </span>
       <button
         type="button"
         onClick={onManage}
         disabled={busy}
-        title="Manage cloud account"
+        title={t("Manage cloud account")}
         className="h-8 shrink-0 rounded-lg px-3 text-[12px] font-medium text-zinc-300 transition-colors hover:bg-white/[0.07] hover:text-white disabled:opacity-40"
       >
-        Manage
+        {t("Manage")}
       </button>
     </div>
   );

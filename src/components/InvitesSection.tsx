@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Users, Check, Loader2, Download, AlertTriangle, X } from "lucide-react";
 import { useTextPrompt } from "../ui/confirm";
 import { RoleBadge } from "./shareRoles";
+import { useT } from "../i18n";
 
 // Profiles OTHER people shared with you, shown in the Cloud panel (which the
 // profile picker owns). This is the only half of sharing that can't live inside
@@ -15,6 +16,7 @@ interface ShareInfo { share_id: string; name: string; role: string; status: stri
 type Props = { onLocalProfilesChanged: () => void };
 
 export default function InvitesSection({ onLocalProfilesChanged }: Props) {
+  const t = useT();
   const textPrompt = useTextPrompt();
   const [shares, setShares] = useState<ShareInfo[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -42,20 +44,19 @@ export default function InvitesSection({ onLocalProfilesChanged }: Props) {
     const s = await invoke<{ unlocked: boolean; exists_on_server: boolean }>("identity_status");
     if (s.unlocked) return true;
     const pass = await textPrompt({
-      title: "Unlock sharing",
+      title: t("Unlock sharing"),
       message:
-        "Sharing has its own passphrase — it protects the key these profiles are locked to. " +
-        "Enter yours, or pick one now if this is your first time. It never leaves this device.",
-      placeholder: "Sharing passphrase (min 8)",
+        t("Sharing has its own passphrase — it protects the key these profiles are locked to. Enter yours, or pick one now if this is your first time. It never leaves this device."),
+      placeholder: t("Sharing passphrase (min 8)"),
       password: true,
-      okLabel: "Continue",
-      validate: (v) => (v.length < 8 ? "At least 8 characters" : null),
+      okLabel: t("Continue"),
+      validate: (v) => (v.length < 8 ? t("At least 8 characters") : null),
     });
     if (!pass) return false;
     await invoke("setup_identity", { encPassphrase: pass });
     await load();
     return true;
-  }, [textPrompt, load]);
+  }, [textPrompt, load, t]);
 
   if (shares.length === 0 && !err && !ok) return null;
 
@@ -63,14 +64,14 @@ export default function InvitesSection({ onLocalProfilesChanged }: Props) {
     <div className="mt-4 pt-4 border-t border-white/5 space-y-2">
       <div className="flex items-center gap-2 text-zinc-300">
         <Users size={14} className="text-indigo-300" />
-        <span className="text-[12.5px] font-bold uppercase tracking-wider">Shared with you</span>
+        <span className="text-[12.5px] font-bold uppercase tracking-wider">{t("Shared with you")}</span>
       </div>
 
       {err && (
         <div className="px-3 py-2 rounded bg-rose-500/10 border border-rose-500/30 text-rose-200 text-[11.5px] flex items-start gap-2">
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span className="flex-1 break-words">{err}</span>
-          <button aria-label="Dismiss" onClick={() => setErr(null)} className="text-rose-300/70 hover:text-white"><X size={11} /></button>
+          <button aria-label={t("Dismiss")} onClick={() => setErr(null)} className="text-rose-300/70 hover:text-white"><X size={11} /></button>
         </div>
       )}
       {ok && !err && (
@@ -101,6 +102,7 @@ function InviteRow({ share, ensureIdentity, onDone, onError, onOk }: {
   onError: (e: unknown) => void;
   onOk: (m: string) => void;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(share.name);
   const [pw, setPw] = useState("");
@@ -109,7 +111,7 @@ function InviteRow({ share, ensureIdentity, onDone, onError, onOk }: {
   const pending = share.status === "pending";
 
   const take = async () => {
-    if (pw.length < 8) { onError("Local password must be at least 8 characters."); return; }
+    if (pw.length < 8) { onError(t("Local password must be at least 8 characters.")); return; }
     setBusy(true);
     try {
       if (!(await ensureIdentity())) return;
@@ -117,7 +119,7 @@ function InviteRow({ share, ensureIdentity, onDone, onError, onOk }: {
       const rep = await invoke<{ pushed: number; pulled: number }>("import_shared_profile", {
         shareId: share.share_id, localName: name.trim(), vaultPassword: pw,
       });
-      onOk(`"${name.trim()}" is ready — pulled ${rep.pulled} item(s). Open it from the profile list.`);
+      onOk(t("\"{name}\" is ready — pulled {count} item(s). Open it from the profile list.", { name: name.trim(), count: rep.pulled }));
       setOpen(false); setPw("");
       onDone();
     } catch (e) { onError(e); } finally { setBusy(false); }
@@ -129,26 +131,25 @@ function InviteRow({ share, ensureIdentity, onDone, onError, onOk }: {
         <Users size={13} className="text-indigo-300 shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="text-[12.5px] text-zinc-100 font-semibold truncate">{share.name}</div>
-          <div className="text-[10.5px] text-zinc-500 truncate">from {share.owner_email}</div>
+          <div className="text-[10.5px] text-zinc-500 truncate">{t("from {email}", { email: share.owner_email })}</div>
         </div>
         <RoleBadge role={share.role} />
         <button
           onClick={() => setOpen((o) => !o)}
           className="h-7 px-2.5 rounded-lg bg-primary text-black text-[11px] font-bold flex items-center gap-1"
         >
-          {pending ? <><Check size={12} /> Accept</> : <><Download size={12} /> Set up here</>}
+          {pending ? <><Check size={12} /> {t("Accept")}</> : <><Download size={12} /> {t("Set up here")}</>}
         </button>
       </div>
       {open && (
         <div className="mt-2 pt-2 border-t border-white/5 space-y-2">
           <p className="text-[10.5px] text-zinc-500 leading-relaxed">
-            This makes a copy on this device. The password below is yours alone — it locks the copy on
-            this machine and has nothing to do with {share.owner_email}'s password.
+            {t("This makes a copy on this device. The password below is yours alone — it locks the copy on this machine and has nothing to do with {email}'s password.", { email: share.owner_email })}
           </p>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Name it on this device"
+            placeholder={t("Name it on this device")}
             className="w-full h-8 px-2.5 bg-black/40 border border-white/10 rounded-lg text-[12px] text-zinc-100 outline-none focus:border-primary/50"
           />
           <input
@@ -156,7 +157,7 @@ function InviteRow({ share, ensureIdentity, onDone, onError, onOk }: {
             value={pw}
             onChange={(e) => setPw(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && take()}
-            placeholder="Password for this copy (min 8)"
+            placeholder={t("Password for this copy (min 8)")}
             className="w-full h-8 px-2.5 bg-black/40 border border-white/10 rounded-lg text-[12px] text-zinc-100 outline-none focus:border-primary/50 placeholder:text-zinc-600"
           />
           <div className="flex gap-2">
@@ -165,13 +166,13 @@ function InviteRow({ share, ensureIdentity, onDone, onError, onOk }: {
               disabled={busy}
               className="h-8 px-3 rounded-lg bg-primary text-black text-[11.5px] font-bold disabled:opacity-40 flex items-center gap-1.5"
             >
-              {busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Set up
+              {busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} {t("Set up")}
             </button>
             <button
               onClick={() => setOpen(false)}
               className="h-8 px-3 rounded-lg bg-white/5 border border-white/10 text-zinc-300 text-[11.5px] font-bold"
             >
-              Cancel
+              {t("Cancel")}
             </button>
           </div>
         </div>

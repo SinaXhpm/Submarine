@@ -5,6 +5,7 @@
 // files. A server's address is synced, though, so there what is shared stays
 // with the address it was chosen for (`sharedFor`). The RDP tab hands them to
 // the backend (src-tauri/src/rdp.rs).
+import { t, tk } from "../i18n";
 
 export interface RdpOptions {
   /** Where it opens: in this computer's RDP app, or in its Submarine tab (the
@@ -74,9 +75,9 @@ export const DEFAULT_RDP_OPTIONS: RdpOptions = {
  *  mounted on). */
 export function rdpShareChoices(windows: boolean): { value: RdpShareKind; label: string }[] {
   return [
-    { value: "off", label: "Nothing" },
-    { value: "folder", label: "A folder" },
-    ...(windows ? [{ value: "drive" as const, label: "A whole drive" }] : []),
+    { value: "off", label: tk("Nothing") },
+    { value: "folder", label: tk("A folder") },
+    ...(windows ? [{ value: "drive" as const, label: tk("A whole drive") }] : []),
   ];
 }
 
@@ -87,25 +88,25 @@ export function rdpShare(o: RdpOptions): { kind: "folder" | "drive"; path: strin
 
 /** The choices of the built-in client's speed and quality, as the form lists them. */
 export const RDP_COLOR_CHOICES: { value: RdpColors; label: string }[] = [
-  { value: 32, label: "True colour (32-bit)" },
-  { value: 24, label: "24-bit" },
-  { value: 16, label: "High colour (16-bit)" },
+  { value: 32, label: tk("True colour (32-bit)") },
+  { value: 24, label: tk("24-bit") },
+  { value: 16, label: tk("High colour (16-bit)") },
 ];
 export const RDP_EFFECT_CHOICES: { value: RdpEffects; label: string }[] = [
-  { value: "standard", label: "Standard" },
-  { value: "minimal", label: "Minimal (fastest)" },
-  { value: "full", label: "Full (all effects)" },
+  { value: "standard", label: tk("Standard") },
+  { value: "minimal", label: tk("Minimal (fastest)") },
+  { value: "full", label: tk("Full (all effects)") },
 ];
 export const RDP_NETWORK_CHOICES: { value: RdpNetwork; label: string }[] = [
-  { value: "lan", label: "Fast (local network)" },
-  { value: "broadband", label: "Broadband" },
-  { value: "slow", label: "Slow (mobile, or far away)" },
+  { value: "lan", label: tk("Fast (local network)") },
+  { value: "broadband", label: tk("Broadband") },
+  { value: "slow", label: tk("Slow (mobile, or far away)") },
 ];
 
 export const RDP_RESOLUTION_CHOICES: { value: RdpResolution; label: string }[] = [
-  { value: 1, label: "Full (sharpest)" },
-  { value: 0.75, label: "Three quarters" },
-  { value: 0.5, label: "Half (least to send)" },
+  { value: 1, label: tk("Full (sharpest)") },
+  { value: 0.75, label: tk("Three quarters") },
+  { value: 0.5, label: tk("Half (least to send)") },
 ];
 
 /** What the built-in client is told about the picture: only the speed and quality. */
@@ -127,9 +128,9 @@ export function rdpNeedsReconnect(used: RdpOptions, now: RdpOptions): boolean {
 export type RdpPreset = "best" | "balanced" | "light";
 type PresetChoices = Pick<RdpOptions, "colors" | "effects" | "network" | "resolution">;
 export const RDP_PRESETS: { value: RdpPreset; label: string; set: PresetChoices }[] = [
-  { value: "best", label: "Best picture", set: { colors: 32, effects: "full", network: "lan", resolution: 1 } },
-  { value: "balanced", label: "Balanced", set: { colors: 32, effects: "standard", network: "lan", resolution: 1 } },
-  { value: "light", label: "Less data", set: { colors: 16, effects: "minimal", network: "slow", resolution: 0.75 } },
+  { value: "best", label: tk("Best picture"), set: { colors: 32, effects: "full", network: "lan", resolution: 1 } },
+  { value: "balanced", label: tk("Balanced"), set: { colors: 32, effects: "standard", network: "lan", resolution: 1 } },
+  { value: "light", label: tk("Less data"), set: { colors: 16, effects: "minimal", network: "slow", resolution: 0.75 } },
 ];
 
 /** The preset the choices are, if they are one. */
@@ -145,7 +146,7 @@ export const RDP_NO_NLA_PREFIX = "This server doesn't use NLA";
 
 /** What the tab and the form say about the built-in client. */
 export const RDP_BUILTIN_EXPERIMENTAL =
-  "Experimental: the built-in RDP client is built from an IronRDP commit, not an official IronRDP release, and may be unstable.";
+  tk("Experimental: the built-in RDP client is built from an IronRDP commit, not an official IronRDP release, and may be unstable.");
 
 export const RDP_WINDOW_SIZES: [number, number][] = [
   [1280, 720],
@@ -223,8 +224,8 @@ export function forgetRdpOptions(uuid: string): void {
 /** One line for the RDP tab: "Full screen · clipboard shared · files not shared". */
 export function describeRdpOptions(o: RdpOptions): string {
   return [
-    o.fullScreen ? "Full screen" : `Window ${o.width}×${o.height}`,
-    o.clipboard ? "clipboard shared" : "clipboard not shared",
-    o.drives ? "files shared" : "files not shared",
+    o.fullScreen ? t("Full screen") : t("Window {width}×{height}", { width: o.width, height: o.height }),
+    o.clipboard ? t("clipboard shared") : t("clipboard not shared"),
+    o.drives ? t("files shared") : t("files not shared"),
   ].join(" · ");
 }

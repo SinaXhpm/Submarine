@@ -1,12 +1,43 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useUnsavedPrompt, type UnsavedPromptOptions } from "./confirm";
+import { t, tk } from "../i18n";
 
 // The question for a form closed with changes in it. A new item is offered for
-// saving as a whole; one that exists is named as it was saved.
-export const unsavedQuestion = (what: string, isNew: boolean, savedName?: string | null): UnsavedPromptOptions => {
-  if (isNew) return { title: `Save this ${what}?`, message: `This new ${what} isn't saved yet. Save it or discard it?` };
+// saving as a whole; one that exists is named as it was saved. Whole sentences
+// per kind, so a translation can give each noun its own grammar.
+export type UnsavedKind = "server" | "command" | "note" | "login" | "key";
+
+const NEW_TITLE: Record<UnsavedKind, string> = {
+  server: tk("Save this server?"),
+  command: tk("Save this command?"),
+  note: tk("Save this note?"),
+  login: tk("Save this login?"),
+  key: tk("Save this SSH key?"),
+};
+const NEW_MESSAGE: Record<UnsavedKind, string> = {
+  server: tk("This new server isn't saved yet. Save it or discard it?"),
+  command: tk("This new command isn't saved yet. Save it or discard it?"),
+  note: tk("This new note isn't saved yet. Save it or discard it?"),
+  login: tk("This new login isn't saved yet. Save it or discard it?"),
+  key: tk("This new SSH key isn't saved yet. Save it or discard it?"),
+};
+const CHANGED_MESSAGE: Record<UnsavedKind, string> = {
+  server: tk("You changed this server. Save the changes or discard them?"),
+  command: tk("You changed this command. Save the changes or discard them?"),
+  note: tk("You changed this note. Save the changes or discard them?"),
+  login: tk("You changed this login. Save the changes or discard them?"),
+  key: tk("You changed this SSH key. Save the changes or discard them?"),
+};
+
+export const unsavedQuestion = (kind: UnsavedKind, isNew: boolean, savedName?: string | null): UnsavedPromptOptions => {
+  if (isNew) return { title: t(NEW_TITLE[kind]), message: t(NEW_MESSAGE[kind]) };
   const name = String(savedName ?? "").trim();
-  return { title: "Save changes?", message: `You changed ${name ? `"${name}"` : `this ${what}`}. Save the changes or discard them?` };
+  return {
+    title: t("Save changes?"),
+    message: name
+      ? t("You changed \"{name}\". Save the changes or discard them?", { name })
+      : t(CHANGED_MESSAGE[kind]),
+  };
 };
 
 interface UnsavedGuardOptions<T> {

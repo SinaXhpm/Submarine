@@ -3,6 +3,7 @@
 // rdpOptions.ts: a phone on a mobile network wants other choices than a
 // desktop on the same LAN as the server. The VNC tab hands them to the backend
 // (src-tauri/src/vnc_client.rs, `Options`).
+import { tk } from "../i18n";
 
 export interface VncOptions {
   /** Which way the server packs the screen. Automatic suits most links. */
@@ -36,26 +37,26 @@ export const DEFAULT_VNC_OPTIONS: VncOptions = { encoding: "auto", colors: 32, m
 
 /** The choices as the form lists them. */
 export const VNC_ENCODING_CHOICES: { value: VncEncoding; label: string }[] = [
-  { value: "auto", label: "Automatic" },
-  { value: "tight", label: "Tight (full colour only)" },
-  { value: "zrle", label: "ZRLE (any colour depth)" },
-  { value: "raw", label: "Raw (fast network only)" },
+  { value: "auto", label: tk("Automatic") },
+  { value: "tight", label: tk("Tight (full colour only)") },
+  { value: "zrle", label: tk("ZRLE (any colour depth)") },
+  { value: "raw", label: tk("Raw (fast network only)") },
 ];
 export const VNC_COLOR_CHOICES: { value: VncColors; label: string }[] = [
-  { value: 32, label: "Full colour (32-bit)" },
-  { value: 16, label: "65,536 colours (16-bit)" },
-  { value: 8, label: "256 colours (8-bit)" },
+  { value: 32, label: tk("Full colour (32-bit)") },
+  { value: 16, label: tk("65,536 colours (16-bit)") },
+  { value: 8, label: tk("256 colours (8-bit)") },
 ];
 export const VNC_FPS_CHOICES: { value: VncMaxFps; label: string }[] = [
-  { value: 60, label: "No limit" },
-  { value: 30, label: "30 a second" },
-  { value: 15, label: "15 a second" },
-  { value: 5, label: "5 a second" },
+  { value: 60, label: tk("No limit") },
+  { value: 30, label: tk("30 a second") },
+  { value: 15, label: tk("15 a second") },
+  { value: 5, label: tk("5 a second") },
 ];
 export const VNC_RESOLUTION_CHOICES: { value: VncResolution; label: string }[] = [
-  { value: 1, label: "Full (sharpest)" },
-  { value: 0.75, label: "Three quarters" },
-  { value: 0.5, label: "Half (least to send)" },
+  { value: 1, label: tk("Full (sharpest)") },
+  { value: 0.75, label: tk("Three quarters") },
+  { value: 0.5, label: tk("Half (least to send)") },
 ];
 
 /** Speed and quality in one go (the clipboard and the pause are left as they
@@ -63,9 +64,9 @@ export const VNC_RESOLUTION_CHOICES: { value: VncResolution; label: string }[] =
 export type VncPreset = "standard" | "light" | "least";
 type PresetChoices = Pick<VncOptions, "encoding" | "colors" | "maxFps" | "resolution">;
 export const VNC_PRESETS: { value: VncPreset; label: string; set: PresetChoices }[] = [
-  { value: "standard", label: "Standard", set: { encoding: "auto", colors: 32, maxFps: 60, resolution: 1 } },
-  { value: "light", label: "Less data", set: { encoding: "auto", colors: 16, maxFps: 15, resolution: 0.75 } },
-  { value: "least", label: "Least data", set: { encoding: "auto", colors: 8, maxFps: 5, resolution: 0.5 } },
+  { value: "standard", label: tk("Standard"), set: { encoding: "auto", colors: 32, maxFps: 60, resolution: 1 } },
+  { value: "light", label: tk("Less data"), set: { encoding: "auto", colors: 16, maxFps: 15, resolution: 0.75 } },
+  { value: "least", label: tk("Least data"), set: { encoding: "auto", colors: 8, maxFps: 5, resolution: 0.5 } },
 ];
 
 /** The preset the choices are, if they are one. */

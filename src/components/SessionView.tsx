@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { TerminalSquare, Folder, FolderUp, FolderSync, Network, AlertTriangle, Check, X, Play, Library, Info, Container, Plus, ChevronDown, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, CircleSlash, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud, LogIn } from "lucide-react";
 import TerminalView from "./TerminalView";
+import { ANIMATED_ATTEMPTS, AttemptDots, Elapsed, ReconnectBar, ReconnectIcon, StageSteps, connectStage } from "./ReconnectStatus";
 import { AuthPrompts } from "./AuthPrompts";
 import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
 import { readAutoReconnect, readSendKeepalives } from "../util/sessionKeep";
@@ -22,6 +23,7 @@ import { useSlideOverFocus } from "../ui/slideOverFocus";
 import { useConfirm } from "../ui/confirm";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { parseObjectList } from "../util/serverJson";
+import { tk, tn, tx, useT } from "../i18n";
 
 // What the shell-config push commands answer (mirror.rs' ShellSync* types).
 type ShellSyncShells = { remote_shell: string; local_shell: string; shell_mismatch: boolean };
@@ -35,10 +37,10 @@ type ShellSyncPushResult = { pushed: number; bytes: number; failed: { remote: st
 type ToolDock = "right" | "left" | "bottom" | "top";
 const TOOL_DOCK_KEY = "submarine-tool-dock";
 const DOCK_OPTIONS: { id: ToolDock; label: string; Icon: typeof PanelRight }[] = [
-  { id: "right", label: "Right of the terminal", Icon: PanelRight },
-  { id: "left", label: "Left of the terminal", Icon: PanelLeft },
-  { id: "bottom", label: "Below the terminal", Icon: PanelBottom },
-  { id: "top", label: "Above the terminal", Icon: PanelTop },
+  { id: "right", label: tk("Right of the terminal"), Icon: PanelRight },
+  { id: "left", label: tk("Left of the terminal"), Icon: PanelLeft },
+  { id: "bottom", label: tk("Below the terminal"), Icon: PanelBottom },
+  { id: "top", label: tk("Above the terminal"), Icon: PanelTop },
 ];
 // The panel is the last element in the DOM; reversing the flex direction
 // moves it without remounting the terminals.
@@ -79,17 +81,20 @@ const paneBox = ({ start, size }: SplitPane, orientation: "h" | "v"): React.CSSP
 
 // Title-bar button of a tool panel: give the panel the terminal's room, or
 // bring the terminal back. The terminal keeps running either way.
-const FullToggle = ({ full, onToggle }: { full: boolean; onToggle: () => void }) => (
-  <button
-    onClick={onToggle}
-    aria-pressed={full}
-    aria-label="Full screen"
-    title={full ? "Show the terminal again" : "Full screen: hide the terminal and give this panel all the room"}
-    className={`shrink-0 transition-colors ${full ? "text-primary hover:text-white" : "text-zinc-500 hover:text-white"}`}
-  >
-    {full ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-  </button>
-);
+const FullToggle = ({ full, onToggle }: { full: boolean; onToggle: () => void }) => {
+  const t = useT();
+  return (
+    <button
+      onClick={onToggle}
+      aria-pressed={full}
+      aria-label={t("Full screen")}
+      title={full ? t("Show the terminal again") : t("Full screen: hide the terminal and give this panel all the room")}
+      className={`shrink-0 transition-colors ${full ? "text-primary hover:text-white" : "text-zinc-500 hover:text-white"}`}
+    >
+      {full ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+    </button>
+  );
+};
 
 // Compact "run this tab on its own dedicated SSH connection" toggle, shown in
 // the SFTP and Port-Forwarding tab headers. The status dot reflects the live
@@ -111,6 +116,7 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
   hint: string;
   onReconnect?: () => void;
 }) => {
+  const t = useT();
   // The label's box while its guide shows; null while it is hidden.
   const [guideAt, setGuideAt] = useState<{ left: number; top: number; bottom: number } | null>(null);
   const showGuide = (label: HTMLElement) => {
@@ -130,8 +136,8 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
         onFocus={(e) => { if (e.target.matches(':focus-visible')) showGuide(e.currentTarget); }}
         onBlur={() => setGuideAt(null)}
       >
-        <input type="checkbox" className="w-3 h-3 accent-primary" checked={on} aria-label="Dedicated session" onChange={(e) => onToggle(e.target.checked)} />
-        <span className="uppercase tracking-wider font-bold">Dedicated</span>
+        <input type="checkbox" className="w-3 h-3 accent-primary" checked={on} aria-label={t("Dedicated session")} onChange={(e) => onToggle(e.target.checked)} />
+        <span className="uppercase tracking-wider font-bold">{t("Dedicated")}</span>
         {on && status !== 'off' && (
           <span
             className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -154,13 +160,13 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
           }}
           className="fixed z-[9999] pointer-events-none bg-[#15151a] border border-white/10 rounded-lg shadow-2xl px-3 py-2 text-[11px] leading-snug text-zinc-300"
         >
-          <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-zinc-100">Dedicated session</div>
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-zinc-100">{t("Dedicated session")}</div>
           <p>{hint}</p>
-          <p className="mt-1 text-zinc-400">When it is off, or that connection can't be opened, the terminal's connection is used.</p>
+          <p className="mt-1 text-zinc-400">{t("When it is off, or that connection can't be opened, the terminal's connection is used.")}</p>
           <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-zinc-400">
-            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />connected</span>
-            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-amber-400" />connecting</span>
-            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-red-400" />failed</span>
+            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />{t("connected")}</span>
+            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-amber-400" />{t("connecting")}</span>
+            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-red-400" />{t("failed")}</span>
           </p>
         </div>,
         document.body
@@ -172,7 +178,7 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
       {on && onReconnect && (status === 'ready' || status === 'failed') && (
         <button
           onClick={onReconnect}
-          title="Reconnect the dedicated session"
+          title={t("Reconnect the dedicated session")}
           className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10 transition-colors"
         >
           <RotateCw size={10} />
@@ -228,6 +234,7 @@ const ToolTitleBar = ({ title, shortTitle, toggle, follow, mirror, extra, onClos
   extra: React.ReactNode;
   onClose: () => void;
 }) => {
+  const t = useT();
   const barRef = useRef<HTMLDivElement | null>(null);
   const toggleRef = useRef<HTMLSpanElement | null>(null);
   const buttonsRef = useRef<HTMLDivElement | null>(null);
@@ -279,10 +286,10 @@ const ToolTitleBar = ({ title, shortTitle, toggle, follow, mirror, extra, onClos
           <button
             onClick={follow.onToggle}
             aria-pressed={follow.on}
-            aria-label="Follow terminal folder"
+            aria-label={t("Follow terminal folder")}
             title={follow.on
-              ? "Following the terminal: the remote files go to the folder the terminal is in. Click to stop."
-              : "Follow the terminal: the remote files go to the folder the terminal is in"}
+              ? t("Following the terminal: the remote files go to the folder the terminal is in. Click to stop.")
+              : t("Follow the terminal: the remote files go to the folder the terminal is in")}
             className={`h-6 px-2 rounded border flex items-center gap-1.5 ${TITLE_BAR_TEXT} transition-all ${
               follow.on
                 ? 'text-primary bg-primary/10 border-primary/30'
@@ -290,7 +297,7 @@ const ToolTitleBar = ({ title, shortTitle, toggle, follow, mirror, extra, onClos
             }`}
           >
             <FolderSync size={12} className="shrink-0" />
-            {fit.words && <span>Follow</span>}
+            {fit.words && <span>{t("Follow")}</span>}
           </button>
         )}
         {mirror && (
@@ -298,10 +305,10 @@ const ToolTitleBar = ({ title, shortTitle, toggle, follow, mirror, extra, onClos
             onClick={mirror.onToggle}
             disabled={mirror.disabled}
             aria-pressed={mirror.on}
-            aria-label="Mirror"
+            aria-label={t("Mirror")}
             title={mirror.disabled
-              ? "Mirror needs a saved server"
-              : mirror.on ? "Back to the files" : "Mirror: keep a local folder copied to this server"}
+              ? t("Mirror needs a saved server")
+              : mirror.on ? t("Back to the files") : t("Mirror: keep a local folder copied to this server")}
             className={`h-6 px-2 rounded border flex items-center gap-1.5 ${TITLE_BAR_TEXT} transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
               mirror.on
                 ? 'text-primary bg-primary/10 border-primary/30'
@@ -309,19 +316,19 @@ const ToolTitleBar = ({ title, shortTitle, toggle, follow, mirror, extra, onClos
             }`}
           >
             <FolderUp size={12} className="shrink-0" />
-            {fit.words && <span>Mirror</span>}
+            {fit.words && <span>{t("Mirror")}</span>}
           </button>
         )}
         {extra}
-        <button onClick={onClose} aria-label="Close" className="p-[13px] -m-[13px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white transition-colors shrink-0">
+        <button onClick={onClose} aria-label={t("Close")} className="p-[13px] -m-[13px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white transition-colors shrink-0">
           <X size={14} />
         </button>
       </div>
       <div aria-hidden className="absolute left-0 top-0 invisible pointer-events-none whitespace-nowrap flex gap-4">
         <span ref={fullTitleRef} className={TITLE_BAR_TEXT}>{title}</span>
         <span ref={shortTitleRef} className={TITLE_BAR_TEXT}>{shortTitle}</span>
-        {follow && <span ref={followWordRef} className={TITLE_BAR_TEXT}>Follow</span>}
-        {mirror && <span ref={mirrorWordRef} className={TITLE_BAR_TEXT}>Mirror</span>}
+        {follow && <span ref={followWordRef} className={TITLE_BAR_TEXT}>{t("Follow")}</span>}
+        {mirror && <span ref={mirrorWordRef} className={TITLE_BAR_TEXT}>{t("Mirror")}</span>}
       </div>
     </div>
   );
@@ -403,6 +410,7 @@ function writeFollow(on: boolean) {
 // profile's name, for what is kept per server on this device. `sessionShown`:
 // this session is on screen, not behind another one or another view.
 const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onStatusChange, chromeless = false, onTerminalsChange, isActiveView = false, shown: sessionShown = true, onPromptChange }: any) => {
+  const t = useT();
   const [status, setStatus] = useState<'connecting' | 'connected' | 'failed' | 'disconnected'>('connecting');
 
   // Bubble every status change up to the parent so the session-tab strip
@@ -852,7 +860,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     setShellSyncShells(null);
     setShellSyncPairs(pairs);
     if (pairs.length === 0) {
-      setShellSyncError("Nothing to push yet: add files in Settings → Shell config sync.");
+      setShellSyncError(t("Nothing to push yet: add files in Settings → Shell config sync."));
       return;
     }
     setShellSyncBusy(true);
@@ -879,13 +887,19 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     setShellSyncError(null);
     try {
       const result = await invoke<ShellSyncPushResult>("shell_sync_push", { sessionId: session.id, pairs: shellSyncPairs });
-      const files = `${result.pushed} file${result.pushed === 1 ? "" : "s"} (${fmtBytes(result.bytes)})`;
-      const kept = result.backup ? `; the files it replaced are in ${result.backup}` : "";
+      const files = tn(result.pushed, "{count} file ({size})", "{count} files ({size})", { size: fmtBytes(result.bytes) });
+      const server = session.serverName;
+      const backup = result.backup ?? "";
       if (result.failed.length === 0) {
-        addLog(`Shell config: pushed ${files} to ${session.serverName}${kept}.`, "success");
+        addLog(result.backup
+          ? t("Shell config: pushed {files} to {server}; the files it replaced are in {backup}.", { files, server, backup })
+          : t("Shell config: pushed {files} to {server}.", { files, server }), "success");
         setShellSyncOpen(false);
       } else {
-        addLog(`Shell config: pushed ${files} to ${session.serverName}, ${result.failed.length} failed${kept}.`, "warn");
+        const failed = result.failed.length;
+        addLog(result.backup
+          ? t("Shell config: pushed {files} to {server}, {failed} failed; the files it replaced are in {backup}.", { files, server, failed, backup })
+          : t("Shell config: pushed {files} to {server}, {failed} failed.", { files, server, failed }), "warn");
         setShellSyncResult(result);
       }
     } catch (e: any) {
@@ -1127,7 +1141,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // `initiate_connection` refused before any connecting (the server was
   // deleted, say): no failure event follows, so don't sit on "Connecting…".
   const connectRefused = (e: unknown) => {
-    pushLog({ msg: `Failed to initiate: ${e}`, type: 'error' });
+    pushLog({ msg: t("Failed to initiate: {error}", { error: String(e) }), type: 'error' });
     setDisconnectReason(String(e));
     setStatus('failed');
     cancelReconnect();
@@ -1147,8 +1161,10 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       // unanswered, or another of the tab's connections that dropped (`via`
       // names it; the tab's own drop is logged below).
       if (line?.activity) {
-        const tag = line.closed ? "SSH_DISCONNECTED" : "SSH_KEEPALIVE";
-        addLog(`${tag} [${session.serverName}${line.via ? `, ${line.via}` : ""}]: ${line.msg}`, "warn");
+        const where = `${session.serverName}${line.via ? `, ${line.via}` : ""}`;
+        addLog(line.closed
+          ? t("SSH_DISCONNECTED [{where}]: {message}", { where, message: line.msg })
+          : t("SSH_KEEPALIVE [{where}]: {message}", { where, message: line.msg }), "warn");
       }
     });
 
@@ -1297,16 +1313,19 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           // These commands were set or changed elsewhere (a co-member, an
           // imported file) and this device hasn't allowed them: ask, never type
           // them unasked. Cancel has the focus, so a stray Enter is a no.
+          const dialogParams = { server: session.serverName, commands: cmds.trimEnd() };
           confirmRef.current({
-            title: "Run the on-connect commands?",
-            message: `These commands were set elsewhere to run when you connect to ${session.serverName}, and this device hasn't allowed them:\n\n${cmds.trimEnd()}\n\nThey would be typed into your terminal on that server${session.runOnConnectEvery ? ", and into each new terminal you open there" : ""}.`,
-            okLabel: "Allow and run",
-            cancelLabel: "Not now",
+            title: t("Run the on-connect commands?"),
+            message: session.runOnConnectEvery
+              ? t("These commands were set elsewhere to run when you connect to {server}, and this device hasn't allowed them:\n\n{commands}\n\nThey would be typed into your terminal on that server, and into each new terminal you open there.", dialogParams)
+              : t("These commands were set elsewhere to run when you connect to {server}, and this device hasn't allowed them:\n\n{commands}\n\nThey would be typed into your terminal on that server.", dialogParams),
+            okLabel: t("Allow and run"),
+            cancelLabel: t("Not now"),
             safeDefault: true,
           }).then(async (ok) => {
             if (!ok) {
               onConnectAllowedRef.current = false;
-              addLog(`On-connect commands for ${session.serverName} not run: they are waiting for your OK.`, "info");
+              addLog(t("On-connect commands for {server} not run: they are waiting for your OK.", { server: session.serverName }), "info");
               return;
             }
             try {
@@ -1314,7 +1333,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               window.dispatchEvent(new Event("submarine-held-changed"));
             } catch (e) {
               onConnectAllowedRef.current = false;
-              addLog(`ALLOW_FAILED: ${e}`, "error");
+              addLog(t("ALLOW_FAILED: {error}", { error: String(e) }), "error");
               return;
             }
             typeThem();
@@ -1343,13 +1362,13 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     });
 
     const unlistenFailed = listen(`connection-failed-${session.id}`, (event: any) => {
-      pushLog({ msg: `Connection failed: ${event.payload?.reason}`, type: 'error' });
+      pushLog({ msg: t("Connection failed: {reason}", { reason: String(event.payload?.reason) }), type: 'error' });
       const isAuth = !!event.payload?.is_auth_error;
       setStatus('failed');
       setDisconnectReason(String(event.payload?.reason ?? ""));
       setIsAuthError(isAuth);
       resetSecondaryStatus();
-      addLog(`SSH_CONNECTION_FAILED [${session.serverName}]: ${event.payload?.reason}`, "error");
+      addLog(t("SSH_CONNECTION_FAILED [{server}]: {reason}", { server: session.serverName, reason: String(event.payload?.reason) }), "error");
       // Try again in a few seconds — the first connect too — when waiting can
       // help: a timeout, a refusal, a link that broke. A rejected login, a
       // host key that wasn't approved (its prompt would come straight back)
@@ -1368,12 +1387,12 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     // disabled until the user reconnects or closes the tab. Kick off
     // auto-reconnect immediately; the banner shows the countdown.
     const unlistenDisconnected = listen(`session-disconnected-${session.id}`, (event: any) => {
-      const reason = event.payload?.reason || "Connection lost";
+      const reason = event.payload?.reason || t("Connection lost");
       const userInitiated = !!event.payload?.user_initiated;
       setStatus('disconnected');
       setDisconnectReason(reason);
       resetSecondaryStatus();
-      addLog(`SSH_DISCONNECTED [${session.serverName}]: ${reason}`, "error");
+      addLog(t("SSH_DISCONNECTED [{where}]: {message}", { where: session.serverName, message: reason }), "error");
       // User-initiated disconnect (right-click → Disconnect) should NOT
       // bounce straight into auto-reconnect — the user explicitly asked
       // for the session to be dead. The "Reconnect" banner button is
@@ -1442,7 +1461,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       setNextReconnectAt(null);
       setStatus('connecting');
       // Seen in the connect view while a first connect is being retried.
-      pushLog({ msg: `Trying again (attempt ${attempt})…`, type: 'info' });
+      pushLog({ msg: t("Trying again (attempt {attempt})…", { attempt }), type: 'info' });
       primarySeparateRef.current = separateFwdRef.current;
       invoke("initiate_connection", {
         sessionId: session.id,
@@ -1649,7 +1668,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   const promptOverlay = (
     <div
       role="dialog"
-      aria-label={`Connection prompt for ${session.serverName}`}
+      aria-label={t("Connection prompt for {server}", { server: session.serverName })}
       className="absolute inset-0 z-40 flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto"
     >
       <div className="max-w-2xl w-full mt-6 sm:mt-12">
@@ -1663,8 +1682,8 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   const retryPassword = (
     <input
       type="password"
-      aria-label="Password"
-      placeholder="Try another password — press Enter to reconnect"
+      aria-label={t("Password")}
+      placeholder={t("Try another password — press Enter to reconnect")}
       className="h-8 w-full bg-[#1a1a1e] rounded-lg px-3 text-xs text-white border border-white/10 outline-none focus:border-primary/50"
       value={customPassword}
       onChange={e => setCustomPassword(e.target.value)}
@@ -1718,43 +1737,60 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               <p className={`text-[11px] mt-0.5 truncate ${status === 'failed' ? 'text-red-400/90' : 'text-zinc-500'}`}>
                 {status === 'connecting'
                   ? (reconnectAttempt > 0
-                    ? <><span className="sm:hidden">Trying again · #{reconnectAttempt}</span><span className="hidden sm:inline">Trying again · attempt {reconnectAttempt}</span></>
-                    : 'Connecting…')
+                    ? <><span className="sm:hidden">{t("Trying again · #{attempt}", { attempt: reconnectAttempt })}</span><span className="hidden sm:inline">{t("Trying again · attempt {attempt}", { attempt: reconnectAttempt })}</span></>
+                    : t("Connecting…"))
                   : retryWaiting
-                    ? <><span className="sm:hidden">Failed · retry in {retryIn}s</span><span className="hidden sm:inline">Connection failed · trying again in {retryIn}s</span></>
-                    : 'Connection failed'}
+                    ? <><span className="sm:hidden">{tx("Failed · retry in {seconds}s", { seconds: retryIn })}</span><span className="hidden sm:inline">{tx("Connection failed · trying again in {seconds}s", { seconds: retryIn })}</span></>
+                    : t("Connection failed")}
               </p>
             </div>
             <div className="shrink-0 flex items-center gap-2">
               {retryWaiting && (
                 <button
                   onClick={cancelReconnect}
-                  title="Stop trying again"
-                  aria-label="Stop trying again"
+                  title={t("Stop trying again")}
+                  aria-label={t("Stop trying again")}
                   className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white text-xs font-semibold transition-colors"
                 >
-                  <CircleSlash size={13} /><span className="hidden sm:inline">Cancel</span>
+                  <CircleSlash size={13} /><span className="hidden sm:inline">{t("Cancel")}</span>
                 </button>
               )}
               {status === 'failed' && (
                 <button
                   onClick={reconnect}
-                  title="Reconnect"
-                  aria-label="Reconnect"
+                  title={t("Reconnect")}
+                  aria-label={t("Reconnect")}
                   className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 text-xs font-semibold transition-colors"
                 >
-                  <RotateCw size={13} /><span className="hidden sm:inline">Reconnect</span>
+                  <RotateCw size={13} /><span className="hidden sm:inline">{t("Reconnect")}</span>
                 </button>
               )}
               <button
                 onClick={onClose}
-                title="Close session"
-                aria-label="Close session"
+                title={t("Close session")}
+                aria-label={t("Close session")}
                 className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-white/5 text-zinc-300 hover:bg-red-500/15 hover:text-red-300 text-xs font-semibold transition-colors"
               >
-                <X size={13} /><span className="hidden sm:inline">Close</span>
+                <X size={13} /><span className="hidden sm:inline">{t("Close")}</span>
               </button>
             </div>
+          </div>
+
+          {/* The steps of the attempt (reaching the server, the handshake,
+              logging in), lit up as the connect log reports them, and a bar
+              that sweeps while it runs and fills up to the next try. */}
+          <div className="mb-3 sm:mb-4 space-y-2 text-primary">
+            <div className="flex items-center gap-3">
+              <StageSteps stage={connectStage(logs)} running={status === 'connecting'} animate={sessionShown} compact={isCompact} />
+              {reconnectAttempt > 0 && <span className="ml-auto text-zinc-500"><AttemptDots attempt={reconnectAttempt} running={status === 'connecting'} animate={sessionShown} /></span>}
+            </div>
+            <ReconnectBar
+              key={`${reconnectAttempt}-${status}-${nextReconnectAt ?? 0}`}
+              running={status === 'connecting'}
+              until={retryWaiting ? nextReconnectAt : null}
+              total={RECONNECT_INTERVAL_MS}
+              animate={sessionShown && reconnectAttempt <= ANIMATED_ATTEMPTS}
+            />
           </div>
 
           {/* Auth failed. Its own row, so it never squeezes the header. */}
@@ -1824,16 +1860,16 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 mr-1 sm:mr-4 mask-fade-right"
           onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY; }}
         >
-        {terminals.map(t => {
+        {terminals.map(term => {
           // Highlight every terminal currently participating in the split
           // — the keyboard-focused one gets the primary tint, the others
           // a softer accent, so the pairing is obvious at a glance.
-          const isFocusedHalf = activeTab === t.id;
-          const isSplitPartner = !!(splitTerminals.includes(t.id) && !isFocusedHalf);
+          const isFocusedHalf = activeTab === term.id;
+          const isSplitPartner = !!(splitTerminals.includes(term.id) && !isFocusedHalf);
           return (
-          <div key={t.id} className="group relative flex items-center"
-            onContextMenu={(e) => { e.preventDefault(); setTermMenu({ x: e.clientX, y: e.clientY, termId: t.id }); }}
-            onDoubleClick={(e) => { setTermMenu({ x: e.clientX, y: e.clientY, termId: t.id }); setTermRename(t.id); }}
+          <div key={term.id} className="group relative flex items-center"
+            onContextMenu={(e) => { e.preventDefault(); setTermMenu({ x: e.clientX, y: e.clientY, termId: term.id }); }}
+            onDoubleClick={(e) => { setTermMenu({ x: e.clientX, y: e.clientY, termId: term.id }); setTermRename(term.id); }}
           >
             <button
               onClick={() => {
@@ -1841,29 +1877,29 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 // exits split mode entirely — split is scoped to the
                 // panes it was built with; jumping elsewhere means the
                 // user wants a plain full-pane view.
-                if (splitTerminals.length >= 2 && !splitTerminals.includes(t.id)) {
+                if (splitTerminals.length >= 2 && !splitTerminals.includes(term.id)) {
                   setSplitTerminals([]);
                   setSplitRatios([]);
                 }
-                setActiveTab(t.id);
+                setActiveTab(term.id);
                 // Land the caret in the terminal even when the active one
                 // didn't change (re-clicking the current tab, or focus was in
                 // a tool pane / another input) — issue #51.
                 requestTerminalFocus();
               }}
-              title={t.container ? `Container: ${t.container.name}` : undefined}
+              title={term.container ? t("Container: {name}", { name: term.container.name }) : undefined}
               className={`h-10 sm:h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-8 sm:pr-8' : ''} rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${
                 isFocusedHalf
                   ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner'
                   : isSplitPartner
                     ? 'bg-primary/[0.04] text-primary/70 border border-primary/10'
                     : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'
-              } ${t.container ? 'ring-1 ring-sky-400/30' : ''}`}
+              } ${term.container ? 'ring-1 ring-sky-400/30' : ''}`}
             >
-              {t.container
+              {term.container
                 ? <Container size={14} className="text-sky-300" />
                 : <TerminalSquare size={14} />}
-              {t.title}
+              {term.title}
               {isSplitPartner && (
                 <SplitSquareHorizontal size={10} className="text-primary/60" />
               )}
@@ -1872,19 +1908,19 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  setTerminals(prev => prev.filter(x => x.id !== t.id));
+                  setTerminals(prev => prev.filter(x => x.id !== term.id));
                   // The active one goes: a pane of the split takes over if
                   // there is one, it's on screen already.
-                  if (activeTab === t.id) {
-                    const next = splitTerminals.find(id => id !== t.id) ?? terminals.find(x => x.id !== t.id)?.id;
+                  if (activeTab === term.id) {
+                    const next = splitTerminals.find(id => id !== term.id) ?? terminals.find(x => x.id !== term.id)?.id;
                     if (next) setActiveTab(next);
                   }
                   // Closing a terminal that's participating in the split
                   // has to drop it from splitTerminals AND splitRatios or
                   // the layout keeps a hole for a torn-down partner.
-                  if (splitTerminals.includes(t.id)) {
-                    const idx = splitTerminals.indexOf(t.id);
-                    const nextTerms = splitTerminals.filter(id => id !== t.id);
+                  if (splitTerminals.includes(term.id)) {
+                    const idx = splitTerminals.indexOf(term.id);
+                    const nextTerms = splitTerminals.filter(id => id !== term.id);
                     const nextRatios = splitRatios.filter((_, i) => i !== idx);
                     // Falling below 2 members collapses back to the plain
                     // absolute-overlap layout.
@@ -1897,7 +1933,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                     }
                   }
                 }}
-                aria-label="Close terminal"
+                aria-label={t("Close terminal")}
                 className="absolute right-0 sm:right-1 top-1/2 -translate-y-1/2 w-8 h-10 sm:w-5 sm:h-5 flex items-center justify-center rounded opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 hover:bg-white/5 hover:text-red-400 text-zinc-500 transition-all"
               >
                 <X size={12} />
@@ -1925,15 +1961,15 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 openPlusMenu(false);
               }}
               className="h-10 w-10 sm:h-8 sm:w-8 rounded-l-lg flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all relative"
-              title="New terminal"
-              aria-label="New terminal"
+              title={t("New terminal")}
+              aria-label={t("New terminal")}
             >
               <Plus size={14} />
               {splitTerminals.length >= 2 && (
                 <span
                   className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-[9px] font-bold text-black flex items-center justify-center leading-none"
                   aria-hidden="true"
-                  title={`Split active (${splitTerminals.length} panes)`}
+                  title={tn(splitTerminals.length, "Split active ({count} pane)", "Split active ({count} panes)")}
                 >
                   {splitTerminals.length}
                 </span>
@@ -1945,8 +1981,8 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               onClick={(e) => openPlusMenu(e.detail === 0)}
               aria-haspopup="menu"
               aria-expanded={!!plusMenu}
-              aria-label="More terminal options"
-              title="More terminal options"
+              aria-label={t("More terminal options")}
+              title={t("More terminal options")}
               className="h-10 w-9 sm:h-8 sm:w-5 rounded-r-lg border-l border-dashed border-white/10 flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-white transition-all"
             >
               <ChevronDown size={12} />
@@ -1960,10 +1996,10 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             stays in the tooltip either way. */}
         <div className="flex items-center gap-1 shrink-0 sm:border-l border-white/5 sm:pl-3 pl-1">
           {([
-            { id: 'sftp',    icon: Folder,  label: 'SFTP',    hint: 'SFTP — file browser' },
-            { id: 'tunnels', icon: Network, label: 'Ports',   hint: 'Ports — port forwarding' },
-            { id: 'cmds',    icon: Library, label: 'Library', hint: 'Library — commands & notes' },
-            { id: 'info',    icon: Info,    label: 'Info',    hint: 'Info — server overview' },
+            { id: 'sftp',    icon: Folder,  label: t("SFTP"),    hint: t("SFTP — file browser") },
+            { id: 'tunnels', icon: Network, label: t("Ports"),   hint: t("Ports — port forwarding") },
+            { id: 'cmds',    icon: Library, label: t("Library"), hint: t("Library — commands & notes") },
+            { id: 'info',    icon: Info,    label: t("Info"),    hint: t("Info — server overview") },
           ] as const).map(({ id, icon: Icon, label, hint }) => {
             const on = activeTool === id;
             return (
@@ -1996,12 +2032,12 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             <button
               onClick={openShellSync}
               disabled={status !== 'connected'}
-              title="Push shell config: your files from Settings → Shell config sync, to this server"
-              aria-label="Push shell config"
+              title={t("Push shell config: your files from Settings → Shell config sync, to this server")}
+              aria-label={t("Push shell config")}
               className="h-10 sm:h-8 px-2.5 rounded-lg flex items-center gap-1.5 transition-all text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white disabled:opacity-40 disabled:pointer-events-none"
             >
               <UploadCloud size={14} className="shrink-0" />
-              <span className="hidden md:inline text-[11px] font-semibold tracking-tight">Shell</span>
+              <span className="hidden md:inline text-[11px] font-semibold tracking-tight">{t("Shell")}</span>
             </button>
           )}
           {/* Where the tool pane sits around the terminal. Compact windows
@@ -2012,8 +2048,8 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 const r = e.currentTarget.getBoundingClientRect();
                 setDockMenu({ x: r.right, y: r.bottom + 4 });
               }}
-              title="Panel position"
-              aria-label="Panel position"
+              title={t("Panel position")}
+              aria-label={t("Panel position")}
               aria-haspopup="menu"
               className="h-10 sm:h-8 px-2 rounded-lg flex items-center text-zinc-400 border border-transparent hover:bg-white/[0.08] hover:border-white/20 hover:text-white transition-all"
             >
@@ -2040,7 +2076,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           <div
             ref={plusMenuRef}
             role="menu"
-            aria-label="Terminal options"
+            aria-label={t("Terminal options")}
             onKeyDown={(e) => {
               const items = Array.from(plusMenuRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? []);
               const i = items.indexOf(document.activeElement as HTMLElement);
@@ -2075,7 +2111,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-200 hover:text-white text-left"
                 >
                   {splitOrientation === "h" ? <Columns size={13} className="text-primary/70" /> : <Rows size={13} className="text-primary/70" />}
-                  <span className="flex-1">{splitTerminals.length >= 2 ? `Add pane (${splitTerminals.length + 1}-way split)` : "Split with new pane"}</span>
+                  <span className="flex-1">{splitTerminals.length >= 2 ? t("Add pane ({count}-way split)", { count: splitTerminals.length + 1 }) : t("Split with new pane")}</span>
                 </button>
                 <button
                   role="menuitem"
@@ -2087,7 +2123,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-300 hover:text-white text-left"
                 >
                   {splitOrientation === "h" ? <Rows size={13} className="text-zinc-500" /> : <Columns size={13} className="text-zinc-500" />}
-                  <span className="flex-1">Flip orientation ({splitOrientation === "h" ? "→ vertical" : "→ horizontal"})</span>
+                  <span className="flex-1">{splitOrientation === "h" ? t("Flip orientation (→ vertical)") : t("Flip orientation (→ horizontal)")}</span>
                 </button>
                 {splitTerminals.length >= 2 && (
                   <button
@@ -2102,7 +2138,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                     className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-300 hover:text-white text-left"
                   >
                     <X size={13} className="text-zinc-500" />
-                    <span className="flex-1">Exit split (keep terminals)</span>
+                    <span className="flex-1">{t("Exit split (keep terminals)")}</span>
                   </button>
                 )}
               </>
@@ -2123,7 +2159,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-200 hover:text-white text-left"
                 >
                   <LogIn size={13} className="text-primary/70" />
-                  <span className="flex-1">New terminal with its own login</span>
+                  <span className="flex-1">{t("New terminal with its own login")}</span>
                 </button>
                 {session.serverUuid && (
                   <button
@@ -2136,11 +2172,11 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                       setOwnLoginDefault(on);
                       closePlusMenu();
                     }}
-                    title="Each new terminal logs in to the server again, as a new connection would, instead of sharing this tab's connection. For servers that tie rights to the login (CA Access Control, for one). Kept on this device."
+                    title={t("Each new terminal logs in to the server again, as a new connection would, instead of sharing this tab's connection. For servers that tie rights to the login (CA Access Control, for one). Kept on this device.")}
                     className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] focus-visible:bg-white/[0.06] outline-none text-zinc-300 hover:text-white text-left"
                   >
                     {ownLoginDefault ? <Check size={13} className="text-primary" /> : <span className="w-[13px] shrink-0" />}
-                    <span className="flex-1">Always for this server</span>
+                    <span className="flex-1">{t("Always for this server")}</span>
                   </button>
                 )}
             </>
@@ -2171,7 +2207,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             {termRename === termMenu.termId ? (
               <RenameInput
                 initialValue={terminals.find(t => t.id === termMenu.termId)?.title ?? ""}
-                placeholder="Tab name (empty: the first one)"
+                placeholder={t("Tab name (empty: the first one)")}
                 onCommit={(v) => { renameTerminal(termMenu.termId, v); setTermMenu(null); }}
                 onCancel={() => setTermRename(null)}
               />
@@ -2180,7 +2216,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 onClick={() => setTermRename(termMenu.termId)}
                 className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
               >
-                <span className="flex-1">Rename tab</span>
+                <span className="flex-1">{t("Rename tab")}</span>
               </button>
             )}
           </div>
@@ -2197,11 +2233,11 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           />
           <div
             role="menu"
-            aria-label="Panel position"
+            aria-label={t("Panel position")}
             style={{ left: Math.max(8, Math.min(dockMenu.x - 210, window.innerWidth - 218)), top: Math.min(dockMenu.y, window.innerHeight - 170) }}
             className="fixed z-[9999] w-[210px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
           >
-            <div className="px-3 pt-1 pb-1.5 text-[9.5px] font-bold uppercase tracking-wider text-zinc-500">Panel position</div>
+            <div className="px-3 pt-1 pb-1.5 text-[9.5px] font-bold uppercase tracking-wider text-zinc-500">{t("Panel position")}</div>
             {DOCK_OPTIONS.map(({ id, label, Icon }) => (
               <button
                 key={id}
@@ -2211,7 +2247,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
               >
                 <Icon size={13} className={toolDock === id ? "text-primary" : "text-zinc-500"} />
-                <span className="flex-1">{label}</span>
+                <span className="flex-1">{t(label)}</span>
                 {toolDock === id && <Check size={12} className="text-primary" />}
               </button>
             ))}
@@ -2241,48 +2277,74 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           // The tooltip's heading has no seconds: a tooltip doesn't follow
           // the countdown.
           const heading =
-            isAttempting ? `Reconnecting · attempt ${reconnectAttempt}` :
-            isWaiting    ? `Auto-reconnect · attempt ${reconnectAttempt}` :
-            gaveUp       ? "Reconnect failed" :
-                           "Session disconnected";
-          const shownHeading = isWaiting ? <>Auto-reconnect in {secs}s · attempt {reconnectAttempt}</> : heading;
+            isAttempting ? t("Reconnecting · attempt {attempt}", { attempt: reconnectAttempt }) :
+            isWaiting    ? t("Auto-reconnect · attempt {attempt}", { attempt: reconnectAttempt }) :
+            gaveUp       ? t("Reconnect failed") :
+                           t("Session disconnected");
+          const shownHeading = isWaiting ? tx("Auto-reconnect in {seconds}s · attempt {attempt}", { seconds: secs, attempt: reconnectAttempt }) : heading;
           // A phone's banner stays one line: the short form of the heading
           // (cut with … if even that doesn't fit, never wrapped), no reason,
           // and icon buttons. The wide one is unchanged.
           const shortHeading =
-            isAttempting ? `Reconnecting · #${reconnectAttempt}` :
-            isWaiting    ? <>Retry in {secs}s · #{reconnectAttempt}</> :
-            gaveUp       ? "Reconnect failed" :
-                           "Disconnected";
+            isAttempting ? t("Reconnecting · #{attempt}", { attempt: reconnectAttempt }) :
+            isWaiting    ? tx("Retry in {seconds}s · #{attempt}", { seconds: secs, attempt: reconnectAttempt }) :
+            gaveUp       ? t("Reconnect failed") :
+                           t("Disconnected");
           const btn = "h-8 min-w-8 sm:h-auto sm:min-h-6 px-2 sm:px-3 sm:py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5";
+          // While it is trying: the steps of the attempt, the attempts so far,
+          // the time this one has taken, and a bar that sweeps or fills. The
+          // motion stops after the first attempts of a long outage, and for a
+          // session that isn't on screen; the numbers go on changing.
+          const trying = isAttempting || isWaiting;
+          const animate = sessionShown && reconnectAttempt <= ANIMATED_ATTEMPTS;
+          // Before the first attempt the log's last attempt is the connect
+          // that worked, all steps done: no steps until one runs or fails.
+          const stage = connectStage(logs);
+          const showSteps = (trying || (gaveUp && everConnected)) && (isAttempting || stage < 3);
           return (
             <div className={`shrink-0 border-b animate-in fade-in ${tone}`}>
               <div className="px-3 sm:px-4 py-1.5 sm:py-2 flex items-center gap-2 sm:gap-3">
-                <AlertTriangle size={14} className="shrink-0" />
+                {trying ? <ReconnectIcon running={isAttempting} animate={animate} /> : <AlertTriangle size={14} className="shrink-0" />}
                 <div
                   className="min-w-0 flex-1 truncate text-[11px] font-bold sm:uppercase sm:tracking-wider"
-                  title={disconnectReason ? `${heading} — ${disconnectReason}` : heading}
+                  title={disconnectReason ? t("{heading} — {reason}", { heading, reason: disconnectReason }) : heading}
                 >
                   <span className="sm:hidden">{shortHeading}</span>
                   <span className="hidden sm:inline">{shownHeading}</span>
+                  {isAttempting && <span className="opacity-70 font-normal tracking-normal"> · <Elapsed key={reconnectAttempt} /></span>}
                   {disconnectReason && (
                     <span className="hidden sm:inline opacity-70 normal-case font-normal tracking-normal"> — {disconnectReason}</span>
                   )}
                 </div>
+                {trying && <span className="hidden sm:flex"><AttemptDots attempt={reconnectAttempt} running={isAttempting} animate={animate} /></span>}
                 <div className="shrink-0 flex items-center gap-1.5 sm:gap-2">
                   {isWaiting && (
-                    <button onClick={cancelReconnect} aria-label="Cancel" title="Stop reconnecting" className={`${btn} bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white`}>
-                      <CircleSlash size={13} className="sm:hidden" /><span className="hidden sm:inline">Cancel</span>
+                    <button onClick={cancelReconnect} aria-label={t("Cancel")} title={t("Stop reconnecting")} className={`${btn} bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white`}>
+                      <CircleSlash size={13} className="sm:hidden" /><span className="hidden sm:inline">{t("Cancel")}</span>
                     </button>
                   )}
-                  <button onClick={reconnect} aria-label={isWaiting ? "Now" : "Reconnect"} title={isWaiting ? "Reconnect now" : "Reconnect"} className={`${btn} bg-primary/10 text-primary hover:bg-primary/20`}>
-                    <Play size={12} /><span className="hidden sm:inline">{isWaiting ? "Now" : "Reconnect"}</span>
+                  <button onClick={reconnect} aria-label={isWaiting ? t("Now") : t("Reconnect")} title={isWaiting ? t("Reconnect now") : t("Reconnect")} className={`${btn} bg-primary/10 text-primary hover:bg-primary/20`}>
+                    <Play size={12} /><span className="hidden sm:inline">{isWaiting ? t("Now") : t("Reconnect")}</span>
                   </button>
-                  <button onClick={onClose} aria-label="Close session" title="Close session" className={`${btn} bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white`}>
-                    <X size={13} className="sm:hidden" /><span className="hidden sm:inline">Close</span>
+                  <button onClick={onClose} aria-label={t("Close session")} title={t("Close session")} className={`${btn} bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white`}>
+                    <X size={13} className="sm:hidden" /><span className="hidden sm:inline">{t("Close")}</span>
                   </button>
                 </div>
               </div>
+              {showSteps && (
+                <div className="px-3 sm:px-4 pb-1.5 sm:pb-2 -mt-0.5">
+                  <StageSteps stage={stage} running={isAttempting} animate={animate} compact={isCompact} />
+                </div>
+              )}
+              {trying && (
+                <ReconnectBar
+                  key={`${reconnectAttempt}-${isAttempting ? 'run' : 'wait'}-${nextReconnectAt ?? 0}`}
+                  running={isAttempting}
+                  until={isWaiting ? nextReconnectAt : null}
+                  total={RECONNECT_INTERVAL_MS}
+                  animate={animate}
+                />
+              )}
               {/* Why it stopped, on a phone too since nothing will retry it,
                   and the password box when the login was refused. For a drop
                   that stays down it's the phone's only: a wide banner has the
@@ -2335,21 +2397,21 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               shell and wipes its scrollback. Only each terminal's box differs:
               a pane has its place in the area, the rest wait out of view, at
               the size of all of it. */}
-          {terminals.map(t => {
-            const slot = splitOn ? splitTerminals.indexOf(t.id) : -1;
+          {terminals.map(term => {
+            const slot = splitOn ? splitTerminals.indexOf(term.id) : -1;
             const inSplit = slot >= 0;
-            const isFocused = activeTab === t.id;
+            const isFocused = activeTab === term.id;
             const inView = splitOn ? inSplit : isFocused;
             const shown = inView && !(activeTool && toolAlone);
             return (
               <div
-                key={t.id}
+                key={term.id}
                 // A background tab stays mounted (its shell keeps running) but
                 // inert, so Tab can't land in a terminal that isn't shown.
                 inert={inView ? undefined : ""}
                 style={inSplit ? paneBox(panes[slot], splitOrientation) : undefined}
-                onMouseDown={inSplit ? () => setActiveTab(t.id) : undefined}
-                onTouchStart={inSplit ? () => setActiveTab(t.id) : undefined}
+                onMouseDown={inSplit ? () => setActiveTab(term.id) : undefined}
+                onTouchStart={inSplit ? () => setActiveTab(term.id) : undefined}
                 className={`absolute ${
                   inSplit
                     ? `z-10 border ${
@@ -2362,21 +2424,22 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               >
                 <TerminalView
                   sessionId={session.id}
-                  terminalId={t.id}
+                  terminalId={term.id}
                   disabled={status !== 'connected'}
+                  reconnecting={reconnectAttempt > 0 && (status === 'connecting' || nextReconnectAt !== null)}
                   isActive={shown && isFocused}
                   shown={shown && sessionShown}
                   isActiveView={isActiveView}
                   focusSignal={focusTick}
                   keepFocusRef={closedFromKeyboardRef}
-                  containerExec={t.container ? { container: t.container.name, useSudo: t.container.useSudo } : undefined}
+                  containerExec={term.container ? { container: term.container.name, useSudo: term.container.useSudo } : undefined}
                   connectionEpoch={connectionEpoch}
                   serverId={session.serverId}
                   serverName={session.serverName}
                   serverUuid={session.serverUuid}
-                  ownLogin={t.ownLogin}
+                  ownLogin={term.ownLogin}
                   quickAuth={session.quickAuth}
-                  onFolder={t.container ? undefined : onTerminalFolder}
+                  onFolder={term.container ? undefined : onTerminalFolder}
                 />
                 {/* Per-pane detach affordance — pulls the pane out of
                     the split without killing the underlying terminal.
@@ -2387,18 +2450,18 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      setSplitTerminals(prev => prev.filter(id => id !== t.id));
+                      setSplitTerminals(prev => prev.filter(id => id !== term.id));
                       setSplitRatios(prev => prev.filter((_, i) => i !== slot));
                       // If the focused pane left the split, hand focus
                       // to whichever pane is left (or fall back to the
                       // orphan terminal itself).
                       if (isFocused) {
-                        const remaining = splitTerminals.filter(id => id !== t.id);
-                        setActiveTab(remaining[0] ?? t.id);
+                        const remaining = splitTerminals.filter(id => id !== term.id);
+                        setActiveTab(remaining[0] ?? term.id);
                       }
                       requestTerminalFocus();
                     }}
-                    title="Remove this pane from the split (keeps the terminal)"
+                    title={t("Remove this pane from the split (keeps the terminal)")}
                     className="absolute top-1 right-1 z-30 h-5 w-5 rounded flex items-center justify-center bg-black/40 border border-white/10 text-zinc-400 hover:text-white hover:bg-black/60 opacity-0 hover:opacity-100 group-hover/pane:opacity-100 focus-visible:opacity-100 transition-opacity"
                   >
                     <X size={11} />
@@ -2465,7 +2528,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                       e.stopPropagation();
                       setSplitOrientation(o => o === "h" ? "v" : "h");
                     }}
-                    title="Drag to resize · double-click resets · right-click flips orientation"
+                    title={t("Drag to resize · double-click resets · right-click flips orientation")}
                     style={splitOrientation === "h" ? { left: edge } : { top: edge }}
                     className={`absolute pointer-events-auto bg-white/5 hover:bg-primary/40 transition-colors ${
                       splitOrientation === "h"
@@ -2486,7 +2549,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             className={`shrink-0 bg-white/5 hover:bg-primary/40 transition-colors ${
               dockTopBottom ? 'h-1 cursor-row-resize' : 'w-1 cursor-col-resize'
             }`}
-            title="Drag to resize"
+            title={t("Drag to resize")}
           />
         )}
 
@@ -2510,14 +2573,14 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           {activeTool === 'sftp' && (
             <div className="flex-1 flex flex-col overflow-hidden">
               <ToolTitleBar
-                title="SFTP File Browser"
-                shortTitle="SFTP"
+                title={t("SFTP File Browser")}
+                shortTitle={t("SFTP")}
                 toggle={
                   <SepToggle
                     on={separateSftp}
                     onToggle={toggleSeparateSftp}
                     status={sepDot(separateSftp, sftpConnStatus)}
-                    hint="SFTP runs on its own SSH connection, so large transfers don't slow the terminal down."
+                    hint={t("SFTP runs on its own SSH connection, so large transfers don't slow the terminal down.")}
                     onReconnect={reconnectSftpConn}
                   />
                 }
@@ -2530,7 +2593,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 extra={fullToggle}
                 onClose={() => setActiveTool(null)}
               />
-              <ErrorBoundary label="SFTP" onReset={() => setActiveTool(null)}>
+              <ErrorBoundary label={t("SFTP")} onReset={() => setActiveTool(null)}>
                 <div className="flex-1 overflow-hidden relative">
                   <SftpWorkspace
                     sessionId={session.id}
@@ -2549,21 +2612,21 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           {activeTool === 'tunnels' && (
             <div className="flex-1 flex flex-col overflow-hidden">
               <ToolTitleBar
-                title="Port Forwarding"
-                shortTitle="Ports"
+                title={t("Port Forwarding")}
+                shortTitle={t("Ports")}
                 toggle={
                   <SepToggle
                     on={separateFwd}
                     onToggle={toggleSeparateFwd}
                     status={sepDot(separateFwd, fwdConnStatus)}
-                    hint="Port forwards run on their own SSH connection, so heavy traffic doesn't slow the terminal down."
+                    hint={t("Port forwards run on their own SSH connection, so heavy traffic doesn't slow the terminal down.")}
                     onReconnect={reconnectFwdConn}
                   />
                 }
                 extra={fullToggle}
                 onClose={() => setActiveTool(null)}
               />
-              <ErrorBoundary label="Ports" onReset={() => setActiveTool(null)}>
+              <ErrorBoundary label={t("Ports")} onReset={() => setActiveTool(null)}>
                 <div className="flex-1 overflow-hidden relative">
                   <TunnelsPanel sessionId={session.id} serverId={session.serverId} disabled={status !== 'connected'} />
                 </div>
@@ -2572,7 +2635,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           )}
 
           {activeTool === 'cmds' && (
-            <ErrorBoundary label="Library" onReset={() => setActiveTool(null)}>
+            <ErrorBoundary label={t("Library")} onReset={() => setActiveTool(null)}>
               <CmdsPanel
                 activeTab={activeTab}
                 onClose={() => setActiveTool(null)}
@@ -2589,15 +2652,15 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               fresh remount would re-fire the probe every tab swap. */}
           <div className={`flex-1 flex flex-col overflow-hidden ${activeTool === 'info' ? '' : 'hidden'}`}>
             <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 truncate">Server Info</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 truncate">{t("Server Info")}</span>
               <div className="flex items-center gap-2 shrink-0">
                 {fullToggle}
-                <button onClick={() => setActiveTool(null)} aria-label="Close" className="p-[13px] -m-[13px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white transition-colors">
+                <button onClick={() => setActiveTool(null)} aria-label={t("Close")} className="p-[13px] -m-[13px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white transition-colors">
                   <X size={14} />
                 </button>
               </div>
             </div>
-            <ErrorBoundary label="Info" onReset={() => setActiveTool(null)}>
+            <ErrorBoundary label={t("Info")} onReset={() => setActiveTool(null)}>
               <InfoPanel
                 sessionId={session.id}
                 disabled={status !== 'connected'}
@@ -2619,16 +2682,16 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
         const replaces = pushes.some((e) => e.action !== "new");
         const badge = (e: ShellSyncEntry): [string, string] => {
           switch (e.action) {
-            case "new": return ["new", "text-emerald-400"];
-            case "update": return ["update", "text-amber-400"];
-            case "server-newer": return ["newer on the server", "text-rose-400"];
-            case "skip-private": return [`not pushed: ${e.reason ?? "private"}`, "text-zinc-500"];
-            case "skip-link": return ["a link there: left alone", "text-zinc-500"];
-            case "skip-folder": return ["a folder there: left alone", "text-zinc-500"];
-            default: return ["not a file there: left alone", "text-zinc-500"];
+            case "new": return [t("new"), "text-emerald-400"];
+            case "update": return [t("update"), "text-amber-400"];
+            case "server-newer": return [t("newer on the server"), "text-rose-400"];
+            case "skip-private": return [t("not pushed: {reason}", { reason: e.reason ?? t("private") }), "text-zinc-500"];
+            case "skip-link": return [t("a link there: left alone"), "text-zinc-500"];
+            case "skip-folder": return [t("a folder there: left alone"), "text-zinc-500"];
+            default: return [t("not a file there: left alone"), "text-zinc-500"];
           }
         };
-        const remoteShell = shellSyncShells?.remote_shell.split("/").pop() || "another shell";
+        const remoteShell = shellSyncShells?.remote_shell.split("/").pop() || t("another shell");
         return (
           <div
             role="dialog"
@@ -2651,13 +2714,13 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 <div className="flex items-center gap-2 min-w-0">
                   <UploadCloud size={15} className="text-primary shrink-0" />
                   <h3 id={`shell-sync-title-${session.id}`} className="text-sm font-semibold text-zinc-100 truncate">
-                    Push shell config → {session.serverName}
+                    {t("Push shell config → {server}", { server: session.serverName })}
                   </h3>
                 </div>
                 <button
                   onClick={closeShellSync}
                   disabled={shellSyncPushing}
-                  aria-label="Close"
+                  aria-label={t("Close")}
                   className="shrink-0 p-[13px] -m-[13px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white transition-colors disabled:opacity-40"
                 >
                   <X size={14} />
@@ -2667,7 +2730,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               <div className="px-5 py-4 space-y-3 max-h-[60vh] overflow-y-auto">
                 {shellSyncBusy && !shellSyncReport && (
                   <div className="flex items-center gap-2 text-sm text-zinc-400 py-4">
-                    <Loader2 size={14} className="animate-spin" /> Checking what would change…
+                    <Loader2 size={14} className="animate-spin" /> {t("Checking what would change…")}
                   </div>
                 )}
 
@@ -2682,9 +2745,11 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   <div className="flex items-start gap-2 text-[12px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2.5">
                     <AlertTriangle size={14} className="shrink-0 mt-0.5" />
                     <span>
-                      This computer's shell is <strong>{shellSyncShells.local_shell}</strong>, but this account
-                      logs into <strong>{remoteShell}</strong> on the server: files for {shellSyncShells.local_shell} are
-                      only read there once the account's shell changes, or with Settings → Use my default shell.
+                      {tx("This computer's shell is {local}, but this account logs into {remote} on the server: files for {shell} are only read there once the account's shell changes, or with Settings → Use my default shell.", {
+                        local: <strong>{shellSyncShells.local_shell}</strong>,
+                        remote: <strong>{remoteShell}</strong>,
+                        shell: shellSyncShells.local_shell,
+                      })}
                     </span>
                   </div>
                 )}
@@ -2692,7 +2757,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 {shellSyncResult && (
                   <div className="space-y-2">
                     <p className="text-[12px] text-zinc-300">
-                      Pushed {shellSyncResult.pushed} file{shellSyncResult.pushed === 1 ? "" : "s"}. These failed:
+                      {tn(shellSyncResult.pushed, "Pushed {count} file. These failed:", "Pushed {count} files. These failed:")}
                     </p>
                     <div className="rounded-lg border border-red-500/20 divide-y divide-white/5 overflow-hidden">
                       {shellSyncResult.failed.map((f, i) => (
@@ -2703,21 +2768,20 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                       ))}
                     </div>
                     {shellSyncResult.backup && (
-                      <p className="text-[11px] text-zinc-500">The files it replaced are in {shellSyncResult.backup} on the server.</p>
+                      <p className="text-[11px] text-zinc-500">{t("The files it replaced are in {backup} on the server.", { backup: shellSyncResult.backup })}</p>
                     )}
                   </div>
                 )}
 
                 {shellSyncReport && !shellSyncResult && (
                   entries.length === 0 ? (
-                    <p className="text-sm text-zinc-400 py-2">Everything is up to date: nothing to push.</p>
+                    <p className="text-sm text-zinc-400 py-2">{t("Everything is up to date: nothing to push.")}</p>
                   ) : (
                     <>
                       <p className="text-[11px] text-zinc-500">
                         {pushes.length === 0
-                          ? "Nothing to push"
-                          : `${pushes.length} file${pushes.length === 1 ? "" : "s"} · ${fmtBytes(shellSyncReport.total_bytes)}`}
-                        {" "}· into {shellSyncReport.home} on the server
+                          ? t("Nothing to push · into {home} on the server", { home: shellSyncReport.home })
+                          : tn(pushes.length, "{count} file · {size} · into {home} on the server", "{count} files · {size} · into {home} on the server", { size: fmtBytes(shellSyncReport.total_bytes), home: shellSyncReport.home })}
                       </p>
                       <div className="rounded-lg border border-white/10 divide-y divide-white/5 overflow-hidden">
                         {entries.map((e, i) => {
@@ -2734,7 +2798,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                               </div>
                               {e.crlf && (
                                 <p className="mt-0.5 text-[11px] text-amber-300">
-                                  Windows line endings: a shell on the server reads the extra \r as part of each line.
+                                  {t("Windows line endings: a shell on the server reads the extra \\r as part of each line.")}
                                 </p>
                               )}
                             </div>
@@ -2743,7 +2807,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                       </div>
                       {replaces && (
                         <p className="text-[11px] text-zinc-500">
-                          A file it replaces is moved to ~/.submarine-trash on the server first and keeps its permissions.
+                          {t("A file it replaces is moved to ~/.submarine-trash on the server first and keeps its permissions.")}
                         </p>
                       )}
                     </>
@@ -2757,7 +2821,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   disabled={shellSyncPushing}
                   className="h-8 px-3 rounded-lg text-xs font-semibold text-zinc-300 hover:bg-white/5 transition-colors disabled:opacity-40"
                 >
-                  {shellSyncResult ? "Close" : "Cancel"}
+                  {shellSyncResult ? t("Close") : t("Cancel")}
                 </button>
                 {!shellSyncResult && (
                   <button
@@ -2766,7 +2830,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                     className="h-8 px-3 rounded-lg text-xs font-semibold bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:pointer-events-none flex items-center gap-1.5"
                   >
                     {shellSyncPushing ? <Loader2 size={13} className="animate-spin" /> : <UploadCloud size={13} />}
-                    Push
+                    {t("Push")}
                   </button>
                 )}
               </div>
