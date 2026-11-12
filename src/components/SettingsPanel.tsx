@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Settings, Palette, RefreshCw, List, Cloud, Minus, Plus, ArrowRight, X, KeyRound, EyeOff, ExternalLink } from "lucide-react";
+import { Settings, Palette, RefreshCw, List, Cloud, Minus, Plus, ArrowRight, X, KeyRound, EyeOff, ExternalLink, MessageSquare } from "lucide-react";
+import { openFeedback } from "./Feedback";
 import {
   MAX_FONT_SIZE, MIN_FONT_SIZE, clampFontSize, fontFamilyCss,
   isFontAvailable, primaryFontName, sanitizeFontFamily,
@@ -686,14 +687,19 @@ function ShellConfigSyncSettings({ servers }: { servers: any[] }) {
 
 // Settings → Language (src/i18n): the system's language when the app has it,
 // English otherwise, or a fixed choice. Per device, like the rest here. Below
-// it, a word to native speakers: the translations were made with AI, and a
-// link opens a GitHub issue to fix one, titled with the language in use.
+// it, a word to native speakers: the translations were made with AI. "Suggest
+// a fix" opens Send feedback with the language on the message's first line;
+// a GitHub issue, titled with the language, is the other way.
 function LanguageSetting() {
   const t = useT();
   const lang = useLanguage();
   const sys = LANGUAGES.find((l) => l.id === systemLanguage());
   const [linkError, setLinkError] = useState("");
   const suggest = () => {
+    const name = LANGUAGES.find((l) => l.id === lang)?.name ?? lang;
+    openFeedback({ prefill: `${t("Language")}: ${name} (${lang})\n\n` });
+  };
+  const githubIssue = () => {
     setLinkError("");
     invoke("open_external_url", { url: translationIssueUrl(lang) })
       .catch((e) => setLinkError(t("Couldn't open the link: {error}", { error: String(e) })));
@@ -721,14 +727,24 @@ function LanguageSetting() {
         <p className="min-w-0 flex-1 basis-64 text-[12px] text-zinc-400 leading-relaxed">
           {t("The translations were made with AI. If you see a wrong word, or know a better one in your language, please tell us.")}
         </p>
-        <button
-          type="button"
-          onClick={suggest}
-          className="shrink-0 inline-flex items-center gap-1.5 min-h-[40px] sm:min-h-0 px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[12px] text-zinc-200 hover:bg-white/10 hover:text-white transition-colors"
-        >
-          <ExternalLink size={12} aria-hidden="true" />
-          {t("Suggest a fix")}
-        </button>
+        <div className="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <button
+            type="button"
+            onClick={suggest}
+            className="inline-flex items-center gap-1.5 min-h-[40px] sm:min-h-0 px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[12px] text-zinc-200 hover:bg-white/10 hover:text-white transition-colors"
+          >
+            <MessageSquare size={12} aria-hidden="true" />
+            {t("Suggest a fix")}
+          </button>
+          <button
+            type="button"
+            onClick={githubIssue}
+            className="inline-flex items-center gap-1 min-h-[40px] sm:min-h-0 text-[11.5px] text-zinc-500 hover:text-zinc-200 transition-colors"
+          >
+            <ExternalLink size={11} aria-hidden="true" />
+            {t("or open a GitHub issue")}
+          </button>
+        </div>
         {linkError && <p role="alert" className="basis-full text-[11px] text-red-300">{linkError}</p>}
       </div>
     </div>
@@ -926,6 +942,25 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, servers = [] }: any)
             </div>
           </section>
         )}
+
+        {/* Help & feedback: a message to the developer (components/Feedback.tsx). */}
+        <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+            <MessageSquare size={14} /> {t("Help & feedback")}
+          </div>
+          <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              {t("Found a problem, have an idea, or know a better word for a translation? Send a message to the developer. Only what you type is sent.")}
+            </p>
+            <button
+              type="button"
+              onClick={() => openFeedback()}
+              className="px-4 min-h-[40px] h-10 sm:h-9 sm:min-h-0 bg-primary/10 border border-primary/30 text-primary rounded-xl text-xs font-bold uppercase hover:bg-primary hover:text-zinc-950 transition-all w-full flex items-center justify-center gap-2"
+            >
+              <MessageSquare size={14} /> {t("Send feedback")}
+            </button>
+          </div>
+        </section>
 
         {/* Cloud Section */}
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">

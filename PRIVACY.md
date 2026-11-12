@@ -1,12 +1,13 @@
 # Privacy policy
 
-*Last updated: 21 October 2026.*
+*Last updated: 12 November 2026.*
 
 This policy covers the Submarine app (Windows, macOS, Linux, Android and iOS), the optional Submarine sync service that the app can use, and the website [submarine.sinaxhpm.com](https://submarine.sinaxhpm.com). It is also published, with translations, at [submarine.sinaxhpm.com/privacy/](https://submarine.sinaxhpm.com/privacy/).
 
 **In short**
 
 - Your servers, passwords, SSH keys and notes stay on your device, encrypted with a key made from your profile password. The app has no analytics, no advertising, no tracking and no crash reporting.
+- A message you send with *Send feedback* reaches the developer with only what you typed in it.
 - Cloud sync is optional. If you turn it on, the sync server keeps your account's email address and your profiles in encrypted form. It cannot read what is inside them.
 - You can delete your account, and everything the server holds for it, from inside the app or on the website.
 
@@ -27,6 +28,7 @@ Submarine is made by Sina Xhpm ([sinaxhpm.com](https://sinaxhpm.com)), who also 
 - **Your own servers.** The app connects only to the hosts you add or open, using SSH, SFTP, Telnet, VNC or RDP, through any proxy or jump host you set up. What you type and transfer goes to that server, not to us. Plain Telnet and plain VNC are not encrypted, and the app says so.
 - **The sync service**, only if you sign in to cloud sync (see below). You can point the app at a server of your own instead; then that server's operator handles the data.
 - **GitHub**, to look for a newer version (desktop and Android apps only: the iOS app is updated by the App Store and does not do this). When the profile list opens, and when you press "Check for updates", the app asks GitHub's public list of releases (`api.github.com`) whether a newer version exists. The request carries the app's name and version (`submarine-app/x.y.z`) and nothing else; GitHub sees your IP address, as with any web request.
+- **The developer's server, when you send feedback** (see below), and only then.
 - **Links** you click open in your system browser.
 
 Nothing else leaves your device. The app contains no third-party analytics, advertising or tracking code.
@@ -52,6 +54,18 @@ The service sits behind Cloudflare, which handles the HTTPS connection for it an
 
 We do not sell your data, share it with advertisers, use it for advertising, analytics or profiling, or combine it with anything else.
 
+## Feedback you send from the app
+
+*Send feedback* (in Settings, on the profile list, and *Suggest a fix* under Language) sends a message to the developer. It is sent only when you press *Send*, and it contains only what you typed in the form:
+
+- your message;
+- a name, if you give one;
+- an email address, if you give one, used only to answer that message.
+
+Nothing else is added: no logs, no list of your servers, no app version or system details, no account and no device ID. The message goes over HTTPS to the same server as cloud sync (`submarine.sinaxhpm.com`), also when you sync with a server of your own, and through Cloudflare like every request to it. The server uses your IP address against floods and does not keep it with the message: it goes into the rate-limit counters (kept for 7 days), and, only if more messages than allowed come from it, into the log of account events (kept for 90 days).
+
+The developer reads the messages. They are kept for 180 days and then deleted automatically; one can be deleted sooner on request. After sending, the app shows the message's report number: quote it to have that message deleted (see Contact). Messages are not shared with anyone and are not used for anything but reading and answering them.
+
 ## This website
 
 The website uses no cookies, no analytics, no advertising and no third-party scripts or fonts. Like any website, Cloudflare and the hosting provider process your IP address, the page you ask for and your browser's details in order to deliver the page, and the hosting provider keeps standard server logs for a limited time.
@@ -63,6 +77,7 @@ If you delete your account on the website, what you type is sent only to the syn
 - **Delete your account** in the app (version 0.4 and later): *Cloud sync → (signed in) → Delete account…*, or on the website's [delete account page](https://submarine.sinaxhpm.com/delete-account/). You confirm with your account password. This removes, at once: the cloud copies of all your profiles, your sharing key, every profile you shared (the people you shared it with lose access), your membership in other people's shares, your sessions, and the log entries of your account. Records you wrote into someone else's shared profile stay with that profile, with no writer named. Profiles on your devices are not touched.
 - **Log lines written after that** (the deletion itself, which carries no email, and any later sign-in attempt for that email) stay for up to 90 days. Backups taken around updates of the server software are kept only briefly.
 - **Remove one profile's cloud copy** in the app: the profile's menu on the profile list, *Delete from cloud…*.
+- **Delete a feedback message** before its 180 days: contact us with its report number.
 - **Delete what is on a device** by removing the app (for the Windows portable version, the folder next to the program).
 - If you use an older version, or can't open the app any more, contact us (below) and we will delete the account when you can show that it is yours.
 
