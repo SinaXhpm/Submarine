@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { TerminalSquare, Folder, FolderUp, FolderSync, Network, AlertTriangle, Check, X, Play, Library, Info, Container, Plus, ChevronDown, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, CircleSlash, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud, LogIn } from "lucide-react";
 import TerminalView from "./TerminalView";
+import { ANIMATED_ATTEMPTS, AttemptDots, Elapsed, ReconnectBar, ReconnectIcon, StageSteps, connectStage } from "./ReconnectStatus";
 import { AuthPrompts } from "./AuthPrompts";
 import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
 import { readAutoReconnect, readSendKeepalives } from "../util/sessionKeep";
@@ -1775,6 +1776,23 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             </div>
           </div>
 
+          {/* The steps of the attempt (reaching the server, the handshake,
+              logging in), lit up as the connect log reports them, and a bar
+              that sweeps while it runs and fills up to the next try. */}
+          <div className="mb-3 sm:mb-4 space-y-2 text-primary">
+            <div className="flex items-center gap-3">
+              <StageSteps stage={connectStage(logs)} running={status === 'connecting'} animate={sessionShown} compact={isCompact} />
+              {reconnectAttempt > 0 && <span className="ml-auto text-zinc-500"><AttemptDots attempt={reconnectAttempt} running={status === 'connecting'} animate={sessionShown} /></span>}
+            </div>
+            <ReconnectBar
+              key={`${reconnectAttempt}-${status}-${nextReconnectAt ?? 0}`}
+              running={status === 'connecting'}
+              until={retryWaiting ? nextReconnectAt : null}
+              total={RECONNECT_INTERVAL_MS}
+              animate={sessionShown && reconnectAttempt <= ANIMATED_ATTEMPTS}
+            />
+          </div>
+
           {/* Auth failed. Its own row, so it never squeezes the header. */}
           {status === 'failed' && isAuthError && <div className="mb-3 sm:mb-4">{retryPassword}</div>}
 
@@ -2273,20 +2291,32 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             gaveUp       ? t("Reconnect failed") :
                            t("Disconnected");
           const btn = "h-8 min-w-8 sm:h-auto sm:min-h-6 px-2 sm:px-3 sm:py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5";
+          // While it is trying: the steps of the attempt, the attempts so far,
+          // the time this one has taken, and a bar that sweeps or fills. The
+          // motion stops after the first attempts of a long outage, and for a
+          // session that isn't on screen; the numbers go on changing.
+          const trying = isAttempting || isWaiting;
+          const animate = sessionShown && reconnectAttempt <= ANIMATED_ATTEMPTS;
+          // Before the first attempt the log's last attempt is the connect
+          // that worked, all steps done: no steps until one runs or fails.
+          const stage = connectStage(logs);
+          const showSteps = (trying || (gaveUp && everConnected)) && (isAttempting || stage < 3);
           return (
             <div className={`shrink-0 border-b animate-in fade-in ${tone}`}>
               <div className="px-3 sm:px-4 py-1.5 sm:py-2 flex items-center gap-2 sm:gap-3">
-                <AlertTriangle size={14} className="shrink-0" />
+                {trying ? <ReconnectIcon running={isAttempting} animate={animate} /> : <AlertTriangle size={14} className="shrink-0" />}
                 <div
                   className="min-w-0 flex-1 truncate text-[11px] font-bold sm:uppercase sm:tracking-wider"
                   title={disconnectReason ? t("{heading} — {reason}", { heading, reason: disconnectReason }) : heading}
                 >
                   <span className="sm:hidden">{shortHeading}</span>
                   <span className="hidden sm:inline">{shownHeading}</span>
+                  {isAttempting && <span className="opacity-70 font-normal tracking-normal"> · <Elapsed key={reconnectAttempt} /></span>}
                   {disconnectReason && (
                     <span className="hidden sm:inline opacity-70 normal-case font-normal tracking-normal"> — {disconnectReason}</span>
                   )}
                 </div>
+                {trying && <span className="hidden sm:flex"><AttemptDots attempt={reconnectAttempt} running={isAttempting} animate={animate} /></span>}
                 <div className="shrink-0 flex items-center gap-1.5 sm:gap-2">
                   {isWaiting && (
                     <button onClick={cancelReconnect} aria-label={t("Cancel")} title={t("Stop reconnecting")} className={`${btn} bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white`}>
@@ -2301,6 +2331,20 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   </button>
                 </div>
               </div>
+              {showSteps && (
+                <div className="px-3 sm:px-4 pb-1.5 sm:pb-2 -mt-0.5">
+                  <StageSteps stage={stage} running={isAttempting} animate={animate} compact={isCompact} />
+                </div>
+              )}
+              {trying && (
+                <ReconnectBar
+                  key={`${reconnectAttempt}-${isAttempting ? 'run' : 'wait'}-${nextReconnectAt ?? 0}`}
+                  running={isAttempting}
+                  until={isWaiting ? nextReconnectAt : null}
+                  total={RECONNECT_INTERVAL_MS}
+                  animate={animate}
+                />
+              )}
               {/* Why it stopped, on a phone too since nothing will retry it,
                   and the password box when the login was refused. For a drop
                   that stays down it's the phone's only: a wide banner has the
@@ -2382,6 +2426,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   sessionId={session.id}
                   terminalId={term.id}
                   disabled={status !== 'connected'}
+                  reconnecting={reconnectAttempt > 0 && (status === 'connecting' || nextReconnectAt !== null)}
                   isActive={shown && isFocused}
                   shown={shown && sessionShown}
                   isActiveView={isActiveView}

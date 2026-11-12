@@ -106,6 +106,34 @@ select optgroup {
   animation: animate-in 0.3s ease-out forwards;
 }
 
+/* Reconnecting (components/ReconnectStatus.tsx): transforms and opacity only,
+   each for one attempt or one wait. When the system asks for less motion
+   nothing turns or sweeps: the bar fades in and out instead. */
+@keyframes reconnect-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+@keyframes reconnect-fill {
+  from { transform: scaleX(var(--fill-from, 0)); }
+  to { transform: scaleX(1); }
+}
+@keyframes reconnect-breathe {
+  from { opacity: 0.15; }
+  to { opacity: 0.6; }
+}
+.reconnect-sweep {
+  animation: reconnect-sweep 1.4s ease-in-out 20;
+}
+.reconnect-breathe {
+  animation: reconnect-breathe 1.2s ease-in-out 24 alternate;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reconnect-sweep,
+  .animate-spin-attempt {
+    animation: none;
+  }
+}
+
 /* `to` intentionally omits `transform` so the element settles back to
    `transform: none` after the animation. A lingering transform (even
    translateY(0)) creates a containing block that breaks `position: fixed`
