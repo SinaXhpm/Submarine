@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Settings, Palette, RefreshCw, List, Cloud, Minus, Plus, ArrowRight, X, KeyRound, EyeOff } from "lucide-react";
+import { Settings, Palette, RefreshCw, List, Cloud, Minus, Plus, ArrowRight, X, KeyRound, EyeOff, ExternalLink } from "lucide-react";
 import {
   MAX_FONT_SIZE, MIN_FONT_SIZE, clampFontSize, fontFamilyCss,
   isFontAvailable, primaryFontName, sanitizeFontFamily,
@@ -18,7 +18,8 @@ import {
   parseWindowsTerminalScheme, schemeToWindowsTerminalJson,
 } from "../util/terminalTheme";
 import { IS_ANDROID, IS_MOBILE } from "../util/platform";
-import { LANGUAGES, languageSetting, setLanguageSetting, systemLanguage, tk, tx, useT } from "../i18n";
+import { LANGUAGES, languageSetting, setLanguageSetting, systemLanguage, tk, tx, useLanguage, useT } from "../i18n";
+import { translationIssueUrl } from "../util/links";
 
 // Where this install keeps its data (see src-tauri/src/portable.rs). `portable`
 // means a `submarine-data` folder next to the executable is in use; `warning`
@@ -684,10 +685,19 @@ function ShellConfigSyncSettings({ servers }: { servers: any[] }) {
 }
 
 // Settings → Language (src/i18n): the system's language when the app has it,
-// English otherwise, or a fixed choice. Per device, like the rest here.
+// English otherwise, or a fixed choice. Per device, like the rest here. Below
+// it, a word to native speakers: the translations were made with AI, and a
+// link opens a GitHub issue to fix one, titled with the language in use.
 function LanguageSetting() {
   const t = useT();
+  const lang = useLanguage();
   const sys = LANGUAGES.find((l) => l.id === systemLanguage());
+  const [linkError, setLinkError] = useState("");
+  const suggest = () => {
+    setLinkError("");
+    invoke("open_external_url", { url: translationIssueUrl(lang) })
+      .catch((e) => setLinkError(t("Couldn't open the link: {error}", { error: String(e) })));
+  };
   return (
     <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 shadow-xl">
       <div className="flex items-center justify-between gap-4">
@@ -706,6 +716,20 @@ function LanguageSetting() {
           <option value="system">{t("Same as the system ({name})", { name: sys?.name ?? "English" })}</option>
           {LANGUAGES.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
+      </div>
+      <div className="mt-4 pt-4 border-t border-white/5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <p className="min-w-0 flex-1 basis-64 text-[12px] text-zinc-400 leading-relaxed">
+          {t("The translations were made with AI. If you see a wrong word, or know a better one in your language, please tell us.")}
+        </p>
+        <button
+          type="button"
+          onClick={suggest}
+          className="shrink-0 inline-flex items-center gap-1.5 min-h-[40px] sm:min-h-0 px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[12px] text-zinc-200 hover:bg-white/10 hover:text-white transition-colors"
+        >
+          <ExternalLink size={12} aria-hidden="true" />
+          {t("Suggest a fix")}
+        </button>
+        {linkError && <p role="alert" className="basis-full text-[11px] text-red-300">{linkError}</p>}
       </div>
     </div>
   );
