@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Server, AlertTriangle, ChevronRight } from "lucide-react";
 import { useConfirm } from "../ui/confirm";
+import { tk, useT } from "../i18n";
 
 // Self-hosting: which server cloud sync uses, and an optional proxy. Shown at
 // the end of the Cloud panel, one line until "Change". The backend checks and
@@ -33,12 +34,13 @@ interface Props {
 }
 
 const PROXY_MODES: { mode: ProxyMode; label: string }[] = [
-  { mode: "system", label: "System" },
-  { mode: "direct", label: "None" },
-  { mode: "manual", label: "Manual" },
+  { mode: "system", label: tk("System") },
+  { mode: "direct", label: tk("None") },
+  { mode: "manual", label: tk("Manual") },
 ];
 
 const SyncServerSetting = ({ view, signedIn, onChanged }: Props) => {
+  const t = useT();
   const confirm = useConfirm();
   const [editing, setEditing] = useState(false);
   const [server, setServer] = useState("");
@@ -69,23 +71,25 @@ const SyncServerSetting = ({ view, signedIn, onChanged }: Props) => {
       try {
         await invoke<number>("cloud_test_connection", { server: custom, proxy });
       } catch (e) {
-        setError(`${hostOf(custom)} didn't answer: ${String(e)}`);
+        setError(t("{host} didn't answer: {error}", { host: hostOf(custom), error: String(e) }));
         setBusy(false);
         return;
       }
       setBusy(false);
     }
-    const signOut = changing && signedIn ? "\n\nThis signs you out on this device. Your profiles keep syncing with the server they sync with now." : "";
+    const signOut = changing && signedIn;
     if (changing && custom) {
       if (!(await confirm({
-        title: `Use ${hostOf(custom)}?`,
-        message: `Your email and password go to ${hostOf(custom)} when you sign in, and your profiles' encrypted data when they sync. Only use a server you trust.${signOut}`,
-        okLabel: "Use this server",
+        title: t("Use {host}?", { host: hostOf(custom) }),
+        message: signOut
+          ? t("Your email and password go to {host} when you sign in, and your profiles' encrypted data when they sync. Only use a server you trust.\n\nThis signs you out on this device. Your profiles keep syncing with the server they sync with now.", { host: hostOf(custom) })
+          : t("Your email and password go to {host} when you sign in, and your profiles' encrypted data when they sync. Only use a server you trust.", { host: hostOf(custom) }),
+        okLabel: t("Use this server"),
       }))) return;
     } else if (signOut && !(await confirm({
-      title: "Use the default server?",
-      message: signOut.trim(),
-      okLabel: "Use the default",
+      title: t("Use the default server?"),
+      message: t("This signs you out on this device. Your profiles keep syncing with the server they sync with now."),
+      okLabel: t("Use the default"),
     }))) return;
     setBusy(true);
     try {
@@ -101,7 +105,7 @@ const SyncServerSetting = ({ view, signedIn, onChanged }: Props) => {
 
   const input =
     "w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] font-mono text-zinc-50 placeholder:text-zinc-600 outline-none focus:border-primary/50 disabled:opacity-50";
-  const proxyLabel = proxy.mode === "manual" ? (proxy.url ? hostOf(proxy.url) : "Manual") : PROXY_MODES.find((m) => m.mode === proxy.mode)!.label;
+  const proxyLabel = proxy.mode === "manual" ? (proxy.url ? hostOf(proxy.url) : t("Manual")) : t(PROXY_MODES.find((m) => m.mode === proxy.mode)!.label);
 
   return (
     <div className="mt-2 pt-3 border-t border-white/5 text-[11.5px] text-zinc-500 space-y-2">
@@ -114,13 +118,13 @@ const SyncServerSetting = ({ view, signedIn, onChanged }: Props) => {
       {!editing ? (
         <div className="flex items-center gap-2 min-w-0">
           <Server size={12} className="shrink-0" />
-          <span className="shrink-0">Sync server:</span>
+          <span className="shrink-0">{t("Sync server:")}</span>
           <span className={`font-mono truncate ${view.is_custom ? "text-primary" : "text-zinc-400"}`} title={view.server}>
             {hostOf(view.server)}
           </span>
-          {view.is_custom && <span className="text-zinc-600 shrink-0">(custom)</span>}
+          {view.is_custom && <span className="text-zinc-600 shrink-0">{t("(custom)")}</span>}
           <button onClick={startEdit} className="ml-auto shrink-0 hover:text-primary">
-            Change
+            {t("Change")}
           </button>
         </div>
       ) : (
@@ -129,13 +133,13 @@ const SyncServerSetting = ({ view, signedIn, onChanged }: Props) => {
             value={server}
             onChange={(e) => setServer(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !busy && save(server)}
-            placeholder={`${hostOf(view.default_server)} (default)`}
+            placeholder={t("{host} (default)", { host: hostOf(view.default_server) })}
             disabled={busy}
             className={input}
-            aria-label="Sync server URL"
+            aria-label={t("Sync server URL")}
             autoFocus
           />
-          <p className="text-zinc-600">Empty for the default. Use https:// (http:// only for localhost).</p>
+          <p className="text-zinc-600">{t("Empty for the default. Use https:// (http:// only for localhost).")}</p>
 
           <button
             type="button"
@@ -144,11 +148,11 @@ const SyncServerSetting = ({ view, signedIn, onChanged }: Props) => {
             className="flex items-center gap-1 hover:text-zinc-300"
           >
             <ChevronRight size={12} className={`transition-transform ${proxyOpen ? "rotate-90" : ""}`} />
-            Proxy: {proxyLabel}
+            {t("Proxy: {mode}", { mode: proxyLabel })}
           </button>
           {proxyOpen && (
             <div className="pl-4 space-y-2">
-              <div role="radiogroup" aria-label="Proxy" className="grid grid-cols-3 gap-1">
+              <div role="radiogroup" aria-label={t("Proxy")} className="grid grid-cols-3 gap-1">
                 {PROXY_MODES.map((m) => (
                   <button
                     key={m.mode}
@@ -163,7 +167,7 @@ const SyncServerSetting = ({ view, signedIn, onChanged }: Props) => {
                         : "bg-white/[0.04] border-white/10 text-zinc-400 hover:bg-white/[0.08]"
                     }`}
                   >
-                    {m.label}
+                    {t(m.label)}
                   </button>
                 ))}
               </div>
@@ -171,10 +175,10 @@ const SyncServerSetting = ({ view, signedIn, onChanged }: Props) => {
                 <input
                   value={proxy.url}
                   onChange={(e) => setProxy({ ...proxy, url: e.target.value })}
-                  placeholder="socks5h://127.0.0.1:1080 or http://user:pw@proxy:3128"
+                  placeholder={t("socks5h://127.0.0.1:1080 or http://user:pw@proxy:3128")}
                   disabled={busy}
                   className={input}
-                  aria-label="Proxy address"
+                  aria-label={t("Proxy address")}
                 />
               )}
             </div>
@@ -184,7 +188,7 @@ const SyncServerSetting = ({ view, signedIn, onChanged }: Props) => {
           <div className="flex items-center gap-2 justify-end">
             {view.is_custom && (
               <button onClick={() => save("")} disabled={busy} className="mr-auto hover:text-primary disabled:opacity-50">
-                Reset to default
+                {t("Reset to default")}
               </button>
             )}
             <button
@@ -192,14 +196,14 @@ const SyncServerSetting = ({ view, signedIn, onChanged }: Props) => {
               disabled={busy}
               className="h-7 px-3 rounded bg-white/5 border border-white/10 text-zinc-300 hover:bg-white/10 disabled:opacity-50"
             >
-              Cancel
+              {t("Cancel")}
             </button>
             <button
               onClick={() => save(server)}
               disabled={busy}
               className="h-7 px-3 rounded bg-primary text-black font-bold disabled:opacity-50"
             >
-              {busy ? "Checking…" : "Save"}
+              {busy ? t("Checking…") : t("Save")}
             </button>
           </div>
         </div>

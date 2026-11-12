@@ -11,6 +11,18 @@ import { ScrollableTabs } from "./ScrollableTabs";
 import { useConfirm } from "../ui/confirm";
 import CopyValue from "./CopyValue";
 import { usePageShown } from "../hooks/usePageShown";
+import { t, tk, tn, tx, useT } from "../i18n";
+
+// A service action's result as a whole line per action, so a translation
+// needn't put the English command word into its own sentence.
+const SERVICE_OK: Record<string, string> = { start: tk("start succeeded"), stop: tk("stop succeeded"), restart: tk("restart succeeded") };
+const SERVICE_OK_SUDO: Record<string, string> = {
+  start: tk("start succeeded (via sudo)"), stop: tk("stop succeeded (via sudo)"), restart: tk("restart succeeded (via sudo)"),
+};
+const SERVICE_FAILED_EXIT: Record<string, string> = {
+  start: tk("start failed (exit {code})"), stop: tk("stop failed (exit {code})"), restart: tk("restart failed (exit {code})"),
+};
+const SERVICE_FAILED: Record<string, string> = { start: tk("start failed"), stop: tk("stop failed"), restart: tk("restart failed") };
 
 interface InfoPanelProps {
   sessionId: string;
@@ -47,12 +59,12 @@ interface SystemctlResult {
 
 type SubTab = "overview" | "network" | "ports" | "processes" | "services" | "docker";
 const TABS: { id: SubTab; label: string; icon: any }[] = [
-  { id: "overview", label: "System",  icon: Server },
-  { id: "network",  label: "Network", icon: NetIcon },
-  { id: "ports",    label: "Ports",   icon: Plug },
-  { id: "processes", label: "Processes", icon: Activity },
-  { id: "services", label: "Services", icon: Cog },
-  { id: "docker",   label: "Docker",  icon: Box },
+  { id: "overview", label: tk("System"),  icon: Server },
+  { id: "network",  label: tk("Network"), icon: NetIcon },
+  { id: "ports",    label: tk("Ports"),   icon: Plug },
+  { id: "processes", label: tk("Processes"), icon: Activity },
+  { id: "services", label: tk("Services"), icon: Cog },
+  { id: "docker",   label: tk("Docker"),  icon: Box },
 ];
 
 // Visible caps. Servers with hundreds of veth/dummy interfaces (think a
@@ -798,15 +810,15 @@ function parseServices(raw: string): { available: boolean; rows: ServiceRow[] } 
 function describeError(err: string): { title: string; hint?: string } {
   const e = err.toLowerCase();
   if (e.includes("session is not connected") || e.includes("session not connected")) {
-    return { title: "Session is disconnected", hint: "Reconnect to fetch fresh data." };
+    return { title: t("Session is disconnected"), hint: t("Reconnect to fetch fresh data.") };
   }
   if (e.includes("timed out") || e.includes("timeout")) {
-    return { title: "Server didn't respond in time", hint: "It may be under load. Try again, or run the command in the terminal." };
+    return { title: t("Server didn't respond in time"), hint: t("It may be under load. Try again, or run the command in the terminal.") };
   }
   if (e.includes("permission denied") || e.includes("not authorized") || e.includes("interactive authentication")) {
-    return { title: "Permission denied", hint: "This action needs root. Configure NOPASSWD sudo or run as root." };
+    return { title: t("Permission denied"), hint: t("This action needs root. Configure NOPASSWD sudo or run as root.") };
   }
-  return { title: err || "Probe failed" };
+  return { title: err || t("Probe failed") };
 }
 
 // ---------- TAB STATE ----------
@@ -830,6 +842,7 @@ const subTabIdle = "text-zinc-400 bg-white/[0.04] border border-white/10 hover:b
 const subTabActive = "bg-primary/10 text-primary border border-primary/20 shadow-inner";
 
 const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTerminal }: InfoPanelProps) => {
+  const t = useT();
   const [tab, setTab] = useState<SubTab>("overview");
 
   const [overview, setOverview] = useState<TabState<OverviewData>>(freshTab);
@@ -893,7 +906,7 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
       });
     } catch (e: any) {
       if (tokenRef.current[which as ProbeSubTab] !== myToken) return;
-      const msg = typeof e === "string" ? e : (e?.message || "Probe failed");
+      const msg = typeof e === "string" ? e : (e?.message || t("Probe failed"));
       setter((prev: TabState<any>) => ({ ...prev, loading: false, error: msg }));
     }
   };
@@ -946,20 +959,20 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
       <ScrollableTabs
         select={{
           value: tab,
-          options: TABS.map(t => ({ value: t.id, label: t.label })),
+          options: TABS.map(tb => ({ value: tb.id, label: t(tb.label) })),
           onChange: setTab,
-          label: "Section",
+          label: t("Section"),
         }}
       >
-        {TABS.map(t => {
-          const Icon = t.icon;
+        {TABS.map(tb => {
+          const Icon = tb.icon;
           return (
             <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`${subTabBase} ${tab === t.id ? subTabActive : subTabIdle}`}
+              key={tb.id}
+              onClick={() => setTab(tb.id)}
+              className={`${subTabBase} ${tab === tb.id ? subTabActive : subTabIdle}`}
             >
-              <Icon size={12} /> {t.label}
+              <Icon size={12} /> {t(tb.label)}
             </button>
           );
         })}
@@ -968,8 +981,10 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
   );
 
   const fmtMeta = activeState.meta
-    ? `Probed in ${activeState.meta.exec_ms} ms${activeState.meta.truncated ? " · output truncated" : ""}`
-    : activeState.loading ? "Probing…" : activeState.loaded ? "" : "Pending";
+    ? (activeState.meta.truncated
+        ? t("Probed in {ms} ms · output truncated", { ms: activeState.meta.exec_ms })
+        : t("Probed in {ms} ms", { ms: activeState.meta.exec_ms }))
+    : activeState.loading ? t("Probing…") : activeState.loaded ? "" : t("Pending");
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -979,11 +994,11 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
           <button
             onClick={() => fetchSection(tab)}
             disabled={activeState.loading || disabled}
-            title="Refresh this tab"
+            title={t("Refresh this tab")}
             className="h-9 sm:h-7 px-3 sm:px-2.5 rounded-md flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           >
             {activeState.loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-            <span>Refresh</span>
+            <span>{t("Refresh")}</span>
           </button>
         )}
       </div>
@@ -993,7 +1008,7 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
       <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3 select-text">
         {disabled && (
           <BannerIcon tone="amber" icon={<AlertTriangle size={14} />}>
-            Session is not connected. Reconnect to fetch server info.
+            {t("Session is not connected. Reconnect to fetch server info.")}
           </BannerIcon>
         )}
 
@@ -1013,7 +1028,7 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
 
         {activeState.loading && !activeState.data && (
           <div className="flex items-center gap-2 text-zinc-400 text-[11px]">
-            <Loader2 size={14} className="animate-spin" /> Probing {tab}…
+            <Loader2 size={14} className="animate-spin" /> {t("Probing {section}…", { section: tab })}
           </div>
         )}
 
@@ -1052,23 +1067,24 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
 // height, and the Disks card's body scrolls internally past a few entries so it
 // doesn't shove Memory off-screen on short windows.
 const OverviewTab = ({ data }: { data: OverviewData }) => {
-  const cpuTxt = data.cpuCount ? `${data.cpuCount} core${data.cpuCount === 1 ? "" : "s"}` : "—";
+  const t = useT();
+  const cpuTxt = data.cpuCount ? tn(data.cpuCount, "{count} core", "{count} cores") : "—";
   return (
     <div className="min-h-full flex flex-col gap-4 [container-type:inline-size]">
       {/* Row 1: Identity | Runtime */}
       <div className="grid gap-4 grid-cols-1 [@container(min-width:480px)]:grid-cols-2 items-stretch">
-        <InfoCard title="Identity" icon={<Server size={12} />} className="h-full" bodyClassName="!p-4 space-y-1">
-          <KV label="Hostname" value={data.hostname || "—"} copyable />
-          <KV label="OS" value={data.os || "—"} copyable />
-          <KV label="Kernel" value={data.uname || "—"} copyable />
+        <InfoCard title={t("Identity")} icon={<Server size={12} />} className="h-full" bodyClassName="!p-4 space-y-1">
+          <KV label={t("Hostname")} value={data.hostname || "—"} copyable />
+          <KV label={t("OS")} value={data.os || "—"} copyable />
+          <KV label={t("Kernel")} value={data.uname || "—"} copyable />
         </InfoCard>
 
-        <InfoCard title="Runtime" icon={<Clock size={12} />} className="h-full" bodyClassName="!p-4 space-y-1">
-          <KV label="Uptime" value={data.uptime} icon={<Clock size={11} />} />
+        <InfoCard title={t("Runtime")} icon={<Clock size={12} />} className="h-full" bodyClassName="!p-4 space-y-1">
+          <KV label={t("Uptime")} value={data.uptime} icon={<Clock size={11} />} />
           {data.load && (
-            <KV label="Load avg (1m · 5m · 15m)" value={`${data.load.l1.toFixed(2)} · ${data.load.l5.toFixed(2)} · ${data.load.l15.toFixed(2)}`} icon={<Activity size={11} />} />
+            <KV label={t("Load avg (1m · 5m · 15m)")} value={`${data.load.l1.toFixed(2)} · ${data.load.l5.toFixed(2)} · ${data.load.l15.toFixed(2)}`} icon={<Activity size={11} />} />
           )}
-          <KV label="CPU" value={cpuTxt} icon={<Cpu size={11} />} />
+          <KV label={t("CPU")} value={cpuTxt} icon={<Cpu size={11} />} />
         </InfoCard>
       </div>
 
@@ -1077,17 +1093,17 @@ const OverviewTab = ({ data }: { data: OverviewData }) => {
           internally so Memory isn't squashed when there are many disks. */}
       <div className="grid gap-4 grid-cols-1 [@container(min-width:480px)]:grid-cols-2 items-stretch flex-1 min-h-0">
         {data.mem ? (
-          <InfoCard title="Memory" icon={<MemoryStick size={12} />} className="h-full" bodyClassName="!p-4 space-y-3">
-            <Meter label="RAM" used={data.mem.usedMem} total={data.mem.totalMem} />
+          <InfoCard title={t("Memory")} icon={<MemoryStick size={12} />} className="h-full" bodyClassName="!p-4 space-y-3">
+            <Meter label={t("RAM")} used={data.mem.usedMem} total={data.mem.totalMem} />
             {data.mem.totalSwap > 0 && (
-              <Meter label="Swap" used={data.mem.usedSwap} total={data.mem.totalSwap} />
+              <Meter label={t("Swap")} used={data.mem.usedSwap} total={data.mem.totalSwap} />
             )}
           </InfoCard>
         ) : <div />}
 
         {data.disks.length > 0 ? (
           <InfoCard
-            title={`Disks · ${data.disks.length}`}
+            title={t("Disks · {count}", { count: data.disks.length })}
             icon={<HardDrive size={12} />}
             className="h-full flex flex-col min-h-0"
             bodyClassName="!p-4 flex-1 min-h-0 overflow-y-auto custom-scrollbar space-y-3"
@@ -1116,6 +1132,7 @@ const OverviewTab = ({ data }: { data: OverviewData }) => {
 };
 
 const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData }) => {
+  const t = useT();
   const [showAllNics, setShowAllNics] = useState(false);
   const [filter, setFilter] = useState("");
   const filtered = useMemo(() => {
@@ -1133,14 +1150,14 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
   return (
     <div className="space-y-3">
       <InfoCard
-        title={`Interfaces · ${upCount} up / ${data.nics.length} total`}
+        title={t("Interfaces · {up} up / {total} total", { up: upCount, total: data.nics.length })}
         icon={<Wifi size={12} />}
         toolbar={
-          <FilterInput value={filter} onChange={setFilter} placeholder="Filter by name / IP / MAC" />
+          <FilterInput value={filter} onChange={setFilter} placeholder={t("Filter by name / IP / MAC")} />
         }
       >
         {filtered.length === 0 ? (
-          <Empty>No NICs match.</Empty>
+          <Empty>{t("No NICs match.")}</Empty>
         ) : (
           <div className="grid grid-cols-1 [@media(min-width:560px)]:grid-cols-2 gap-2">
             {visible.map(n => (
@@ -1151,10 +1168,10 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
                 </div>
                 <div className="text-[10px] text-zinc-500 font-mono mb-1 flex items-center gap-1 min-w-0">
                   <span className="truncate min-w-0">{n.mac ? <CopyValue value={n.mac}>{n.mac}</CopyValue> : "—"}</span>
-                  <span className="shrink-0">· MTU {n.mtu || "—"}</span>
+                  <span className="shrink-0">{t("· MTU {mtu}", { mtu: n.mtu || "—" })}</span>
                 </div>
                 {n.addrs.length === 0 ? (
-                  <div className="text-[10px] text-zinc-600 italic">no addresses</div>
+                  <div className="text-[10px] text-zinc-600 italic">{t("no addresses")}</div>
                 ) : (
                   <div className="space-y-0.5">
                     {n.addrs.map((a, i) => (
@@ -1182,30 +1199,30 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
             onClick={() => setShowAllNics(s => !s)}
             className="mt-2 w-full h-8 rounded-lg border border-white/10 text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:bg-white/5 hover:text-white transition-all"
           >
-            {showAllNics ? "Show fewer" : `Show all ${filtered.length}`}
+            {showAllNics ? t("Show fewer") : t("Show all {count}", { count: filtered.length })}
           </button>
         )}
       </InfoCard>
 
       {data.routes.length > 0 && (
-        <InfoCard title={`Routes (${data.routes.length})`} icon={<NetIcon size={12} />}>
+        <InfoCard title={t("Routes ({count})", { count: data.routes.length })} icon={<NetIcon size={12} />}>
           <div className="space-y-1">
             {data.routes.slice(0, 30).map((r, i) => (
               <div key={i} className="flex items-center gap-2 text-[11px] font-mono px-2 py-1 rounded bg-black/30 border border-white/5">
                 <span className="text-zinc-200 truncate min-w-0 flex-1">{r.dst}</span>
-                {r.via && <span className="text-zinc-500 shrink-0">via {r.via}</span>}
+                {r.via && <span className="text-zinc-500 shrink-0">{t("via {gateway}", { gateway: r.via })}</span>}
                 {r.dev && <span className="text-primary/80 shrink-0">{r.dev}</span>}
               </div>
             ))}
             {data.routes.length > 30 && (
-              <div className="text-[10px] text-zinc-500 italic px-2 pt-1">+{data.routes.length - 30} more</div>
+              <div className="text-[10px] text-zinc-500 italic px-2 pt-1">{t("+{count} more", { count: data.routes.length - 30 })}</div>
             )}
           </div>
         </InfoCard>
       )}
 
       {data.dns.servers.length > 0 && (
-        <InfoCard title={`DNS Servers (${data.dns.servers.length})`} icon={<Globe size={12} />}>
+        <InfoCard title={t("DNS Servers ({count})", { count: data.dns.servers.length })} icon={<Globe size={12} />}>
           <div className="space-y-1">
             {data.dns.servers.map((s, i) => (
               <div key={i} className="flex items-center gap-2 text-[11px] font-mono px-2 py-1 rounded bg-black/30 border border-white/5">
@@ -1214,14 +1231,14 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
                   <CopyValue value={s}>{s}</CopyValue>
                 </span>
                 {data.dns.stub && s.startsWith("127.") && (
-                  <span className="text-[9px] uppercase tracking-wider text-amber-400/80 shrink-0">stub</span>
+                  <span className="text-[9px] uppercase tracking-wider text-amber-400/80 shrink-0">{t("stub")}</span>
                 )}
               </div>
             ))}
           </div>
           {data.dns.stub && data.dns.servers.some(s => !s.startsWith("127.")) && (
             <div className="text-[10px] text-zinc-500 italic mt-2 px-1">
-              Resolved through the local systemd-resolved stub (127.0.0.53).
+              {t("Resolved through the local systemd-resolved stub (127.0.0.53).")}
             </div>
           )}
         </InfoCard>
@@ -1242,15 +1259,21 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
 
 interface FirewallCardProps { sessionId: string; fw: FirewallData; }
 const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
+  const t = useT();
   const [openChains, setOpenChains] = useState<Record<string, boolean>>({});
   const [chainRules, setChainRules] = useState<Record<string, { loading: boolean; error: string | null; text: string | null }>>({});
   const [filter, setFilter] = useState("");
 
   if (fw.engine === "none") {
     return (
-      <InfoCard title="Firewall" icon={<Shield size={12} />}>
+      <InfoCard title={t("Firewall")} icon={<Shield size={12} />}>
         <BannerIcon tone="zinc" icon={<AlertCircle size={14} />}>
-          No firewall tool (<code className="font-mono px-1">firewalld</code>, <code className="font-mono px-1">ufw</code>, <code className="font-mono px-1">iptables</code>, or <code className="font-mono px-1">nft</code>) is active on this host.
+          {tx("No firewall tool ({firewalld}, {ufw}, {iptables}, or {nft}) is active on this host.", {
+            firewalld: <code className="font-mono px-1">firewalld</code>,
+            ufw: <code className="font-mono px-1">ufw</code>,
+            iptables: <code className="font-mono px-1">iptables</code>,
+            nft: <code className="font-mono px-1">nft</code>,
+          })}
         </BannerIcon>
       </InfoCard>
     );
@@ -1262,27 +1285,27 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
     const zones = fw.zones ?? [];
     return (
       <InfoCard
-        title={`Firewall · firewalld · ${zones.length} zone${zones.length === 1 ? "" : "s"}`}
+        title={tn(zones.length, "Firewall · firewalld · {count} zone", "Firewall · firewalld · {count} zones")}
         icon={<Shield size={12} />}
         actions={fw.usedSudo ? <StatusBadge tone="zinc">sudo</StatusBadge> : undefined}
       >
         {zones.length === 0 ? (
-          <Empty>No active zones reported.</Empty>
+          <Empty>{t("No active zones reported.")}</Empty>
         ) : (
           <div className="space-y-1.5">
             {zones.map((z) => (
               <div key={z.name} className="bg-black/30 border border-white/5 rounded-lg px-2.5 py-2">
                 <div className="flex items-center gap-2 mb-1.5">
                   <span className="text-[11px] font-mono font-bold text-white truncate">{z.name}</span>
-                  {z.isDefault && <StatusBadge tone="green">default</StatusBadge>}
+                  {z.isDefault && <StatusBadge tone="green">{t("default")}</StatusBadge>}
                   {z.interfaces.length > 0 && (
                     <span className="text-[9.5px] text-zinc-500 font-mono truncate">{z.interfaces.join(", ")}</span>
                   )}
                 </div>
                 <div className="space-y-1">
-                  {([["services", z.services], ["ports", z.ports]] as const).map(([label, items]) => (
+                  {([[tk("services"), z.services], [tk("ports"), z.ports]] as const).map(([label, items]) => (
                     <div key={label} className="flex items-start gap-2">
-                      <span className="text-[9px] text-zinc-500 uppercase tracking-wide w-12 shrink-0 pt-1">{label}</span>
+                      <span className="text-[9px] text-zinc-500 uppercase tracking-wide w-12 shrink-0 pt-1">{t(label)}</span>
                       {items.length ? (
                         <div className="flex flex-wrap gap-1">
                           {items.map((it) => (
@@ -1290,7 +1313,7 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
                           ))}
                         </div>
                       ) : (
-                        <span className="text-[10px] text-zinc-600 italic pt-0.5">none</span>
+                        <span className="text-[10px] text-zinc-600 italic pt-0.5">{t("none")}</span>
                       )}
                     </div>
                   ))}
@@ -1308,11 +1331,11 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
   if (fw.engine === "ufw") {
     return (
       <InfoCard
-        title="Firewall · ufw"
+        title={t("Firewall · ufw")}
         icon={<Shield size={12} />}
         actions={
           <>
-            <StatusBadge tone="green">active</StatusBadge>
+            <StatusBadge tone="green">{t("active")}</StatusBadge>
             {fw.usedSudo && <StatusBadge tone="zinc">sudo</StatusBadge>}
           </>
         }
@@ -1322,7 +1345,7 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
             <pre className="text-[10.5px] font-mono text-zinc-300 px-2.5 py-1.5 select-text whitespace-pre">{fw.ufwText}</pre>
           </div>
         ) : (
-          <Empty>No rules reported.</Empty>
+          <Empty>{t("No rules reported.")}</Empty>
         )}
       </InfoCard>
     );
@@ -1330,12 +1353,15 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
   if (fw.denied) {
     return (
       <InfoCard
-        title={`Firewall · ${fw.engine}`}
+        title={t("Firewall · {engine}", { engine: fw.engine })}
         icon={<Shield size={12} />}
-        actions={<StatusBadge tone="amber">denied</StatusBadge>}
+        actions={<StatusBadge tone="amber">{t("denied")}</StatusBadge>}
       >
         <BannerIcon tone="amber" icon={<ShieldAlert size={14} />}>
-          Couldn't read <code className="font-mono px-1">{fw.engine}</code> rules — needs root and passwordless sudo isn't configured. Reconnect as root or grant <code className="font-mono px-1">NOPASSWD</code> sudo for this command.
+          {tx("Couldn't read {engine} rules — needs root and passwordless sudo isn't configured. Reconnect as root or grant {nopasswd} sudo for this command.", {
+            engine: <code className="font-mono px-1">{fw.engine}</code>,
+            nopasswd: <code className="font-mono px-1">NOPASSWD</code>,
+          })}
         </BannerIcon>
       </InfoCard>
     );
@@ -1359,7 +1385,7 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
         : await invoke<string>("ssh_nft_chain", { sessionId, family: c.family, table: c.table, chain: c.name });
       setChainRules(prev => ({ ...prev, [k]: { loading: false, error: null, text } }));
     } catch (e: any) {
-      const msg = typeof e === "string" ? e : (e?.message || "chain fetch failed");
+      const msg = typeof e === "string" ? e : (e?.message || t("chain fetch failed"));
       setChainRules(prev => ({ ...prev, [k]: { loading: false, error: msg, text: null } }));
     }
   };
@@ -1384,13 +1410,13 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
 
   return (
     <InfoCard
-      title={`Firewall · ${label} · ${chains.length} chains · ${totalRules} rules`}
+      title={t("Firewall · {engine} · {chains} chains · {rules} rules", { engine: label, chains: chains.length, rules: totalRules })}
       icon={<Shield size={12} />}
       actions={fw.usedSudo ? <StatusBadge tone="zinc">sudo</StatusBadge> : undefined}
-      toolbar={<FilterInput value={filter} onChange={setFilter} placeholder="Filter chains" />}
+      toolbar={<FilterInput value={filter} onChange={setFilter} placeholder={t("Filter chains")} />}
     >
       {visibleChains.length === 0 ? (
-        <Empty>{chains.length === 0 ? "No chains reported." : "No chains match."}</Empty>
+        <Empty>{chains.length === 0 ? t("No chains reported.") : t("No chains match.")}</Empty>
       ) : (
         <div className="space-y-1.5">
           {visibleChains.map((c) => {
@@ -1422,22 +1448,22 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
                   <span className="text-[9.5px] text-zinc-500 shrink-0 font-mono">{loc}</span>
                   {c.policy && c.policy !== "-" && <StatusBadge tone={polTone as any}>{c.policy}</StatusBadge>}
                   <span className="text-[9.5px] text-zinc-500 ml-auto shrink-0">
-                    {c.count} rule{c.count === 1 ? "" : "s"}
+                    {tn(c.count, "{count} rule", "{count} rules")}
                   </span>
                 </button>
                 {open && (
                   c.count === 0 ? (
-                    <div className="px-3 py-2 text-[10px] text-zinc-600 italic border-t border-white/5">empty</div>
+                    <div className="px-3 py-2 text-[10px] text-zinc-600 italic border-t border-white/5">{t("empty")}</div>
                   ) : detail?.loading ? (
                     <div className="px-3 py-2 text-[10px] text-zinc-500 border-t border-white/5 flex items-center gap-2">
-                      <Loader2 size={11} className="animate-spin" /> Loading…
+                      <Loader2 size={11} className="animate-spin" /> {t("Loading…")}
                     </div>
                   ) : detail?.error ? (
                     <div className="px-3 py-2 text-[10px] text-red-300 border-t border-white/5 font-mono">{detail.error}</div>
                   ) : detail?.text != null ? (
                     <div className="border-t border-white/5 max-h-[40vh] overflow-auto custom-scrollbar">
                       <pre className="text-[10.5px] font-mono text-zinc-300 px-2.5 py-1.5 select-text whitespace-pre">
-                        {detail.text.trim() || <span className="text-zinc-600 italic">empty</span>}
+                        {detail.text.trim() || <span className="text-zinc-600 italic">{t("empty")}</span>}
                       </pre>
                     </div>
                   ) : null
@@ -1462,6 +1488,7 @@ const ChevronRightIcon = ({ open }: { open: boolean }) => (
 );
 
 const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: string; onRefresh: () => void }) => {
+  const t = useT();
   const [filter, setFilter] = useState("");
   const [protoFilter, setProtoFilter] = useState<"all" | "tcp" | "udp">("all");
   const [killing, setKilling] = useState<Record<string, boolean>>({});
@@ -1470,20 +1497,22 @@ const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: 
 
   const killProc = async (pid: string, name: string) => {
     const ok = await confirm({
-      title: `Kill PID ${pid}?`,
-      message: `Send SIGTERM to ${name || "this process"} — it will stop listening on its port.`,
+      title: t("Kill PID {pid}?", { pid }),
+      message: name
+        ? t("Send SIGTERM to {name} — it will stop listening on its port.", { name })
+        : t("Send SIGTERM to this process — it will stop listening on its port."),
       destructive: true,
-      okLabel: "Kill",
+      okLabel: t("Kill"),
     });
     if (!ok) return;
     setKilling(k => ({ ...k, [pid]: true }));
     setKillError(null);
     try {
       const r = await invoke<SystemctlResult>("ssh_kill_process", { sessionId, pid: parseInt(pid, 10), signal: "TERM" });
-      if (!r.success) setKillError(`PID ${pid}: ${r.stdout || `kill exited ${r.exit_code}`}`);
+      if (!r.success) setKillError(t("PID {pid}: {error}", { pid, error: r.stdout || t("kill exited {code}", { code: r.exit_code }) }));
       else setTimeout(onRefresh, 500);
     } catch (e: any) {
-      setKillError(`PID ${pid}: ${typeof e === "string" ? e : (e?.message || "kill failed")}`);
+      setKillError(t("PID {pid}: {error}", { pid, error: typeof e === "string" ? e : (e?.message || t("kill failed")) }));
     } finally {
       setKilling(k => ({ ...k, [pid]: false }));
     }
@@ -1511,7 +1540,11 @@ const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: 
   if (!data.available) {
     return (
       <BannerIcon tone="amber" icon={<AlertTriangle size={14} />}>
-        Neither <code className="font-mono px-1">ss</code> nor <code className="font-mono px-1">netstat</code> is available. Install <code className="font-mono px-1">iproute2</code> on the host to enable this tab.
+        {tx("Neither {ss} nor {netstat} is available. Install {iproute2} on the host to enable this tab.", {
+          ss: <code className="font-mono px-1">ss</code>,
+          netstat: <code className="font-mono px-1">netstat</code>,
+          iproute2: <code className="font-mono px-1">iproute2</code>,
+        })}
       </BannerIcon>
     );
   }
@@ -1520,7 +1553,7 @@ const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: 
     <div className="space-y-3">
       {data.partiallyHidden && (
         <BannerIcon tone="amber" icon={<ShieldAlert size={14} />}>
-          Some process names are hidden because your user doesn't own them. Reconnect as root or grant NOPASSWD sudo to see all.
+          {t("Some process names are hidden because your user doesn't own them. Reconnect as root or grant NOPASSWD sudo to see all.")}
         </BannerIcon>
       )}
       {killError && (
@@ -1528,21 +1561,21 @@ const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: 
       )}
 
       <InfoCard
-        title={`Listening · ${tcp.length} tcp · ${udp.length} udp`}
+        title={t("Listening · {tcp} tcp · {udp} udp", { tcp: tcp.length, udp: udp.length })}
         icon={<Plug size={12} />}
         toolbar={
           <div className="flex items-center gap-1.5 flex-wrap">
-            <ProtoPill active={protoFilter === "all"} onClick={() => setProtoFilter("all")}>All</ProtoPill>
+            <ProtoPill active={protoFilter === "all"} onClick={() => setProtoFilter("all")}>{t("All")}</ProtoPill>
             <ProtoPill active={protoFilter === "tcp"} onClick={() => setProtoFilter("tcp")}>TCP</ProtoPill>
             <ProtoPill active={protoFilter === "udp"} onClick={() => setProtoFilter("udp")}>UDP</ProtoPill>
             <div className="flex-1 min-w-[120px]">
-              <FilterInput value={filter} onChange={setFilter} placeholder="Port / address / process" />
+              <FilterInput value={filter} onChange={setFilter} placeholder={t("Port / address / process")} />
             </div>
           </div>
         }
       >
         {filtered.length === 0 ? (
-          <Empty>{data.rows.length === 0 ? "No listening sockets reported." : "No matches."}</Empty>
+          <Empty>{data.rows.length === 0 ? t("No listening sockets reported.") : t("No matches.")}</Empty>
         ) : (
           // Tabular layout — everything aligned in columns so a socket's proto /
           // port / bind / state / process / pid read at a glance. `table-fixed`
@@ -1556,12 +1589,12 @@ const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: 
             <table className="w-full min-w-[460px] table-fixed border-collapse text-[11px] font-mono">
               <thead>
                 <tr className="text-left text-[9px] uppercase tracking-wider text-zinc-500 border-b border-white/10">
-                  <th className="font-bold px-2 py-1.5 w-[46px]">Proto</th>
-                  <th className="font-bold px-2 py-1.5 w-[54px]">Port</th>
-                  <th className="font-bold px-2 py-1.5">Address</th>
-                  <th className="font-bold px-2 py-1.5 w-[72px]">State</th>
-                  <th className="font-bold px-2 py-1.5">Process</th>
-                  <th className="font-bold px-2 py-1.5 w-[52px]">PID</th>
+                  <th className="font-bold px-2 py-1.5 w-[46px]">{t("Proto")}</th>
+                  <th className="font-bold px-2 py-1.5 w-[54px]">{t("Port")}</th>
+                  <th className="font-bold px-2 py-1.5">{t("Address")}</th>
+                  <th className="font-bold px-2 py-1.5 w-[72px]">{t("State")}</th>
+                  <th className="font-bold px-2 py-1.5">{t("Process")}</th>
+                  <th className="font-bold px-2 py-1.5 w-[52px]">{t("PID")}</th>
                   <th className="font-bold px-1 py-1.5 w-[36px]"></th>
                 </tr>
               </thead>
@@ -1581,7 +1614,7 @@ const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: 
                       </td>
                       <td className="px-2 py-1 align-middle text-[10px] uppercase tracking-wider text-zinc-500 truncate" title={r.state}>{r.state || ""}</td>
                       <td className="px-2 py-1 align-middle text-zinc-200 truncate" title={r.process}>
-                        {r.process ? <CopyValue value={r.process}>{r.process}</CopyValue> : <span className="text-zinc-600 italic">hidden</span>}
+                        {r.process ? <CopyValue value={r.process}>{r.process}</CopyValue> : <span className="text-zinc-600 italic">{t("hidden")}</span>}
                       </td>
                       <td className="px-2 py-1 align-middle text-zinc-500 whitespace-nowrap">{r.pid || ""}</td>
                       <td className="px-1 py-1 align-middle text-right">
@@ -1589,7 +1622,7 @@ const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: 
                           <button
                             onClick={() => killProc(r.pid, r.process)}
                             disabled={!!killing[r.pid]}
-                            title={`Kill PID ${r.pid} (SIGTERM)`}
+                            title={t("Kill PID {pid} (SIGTERM)", { pid: r.pid })}
                             className="p-1 rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
                           >
                             {killing[r.pid] ? <Loader2 size={12} className="animate-spin" /> : <Square size={11} />}
@@ -1609,10 +1642,10 @@ const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: 
 };
 
 const REFRESH_OPTIONS: { label: string; ms: number }[] = [
-  { label: "Manual", ms: 0 },
-  { label: "1s", ms: 1000 },
-  { label: "2s", ms: 2000 },
-  { label: "5s", ms: 5000 },
+  { label: tk("Manual"), ms: 0 },
+  { label: tk("1s"), ms: 1000 },
+  { label: tk("2s"), ms: 2000 },
+  { label: tk("5s"), ms: 5000 },
 ];
 
 // Self-contained live process monitor. Unlike the other Info tabs it owns its
@@ -1621,6 +1654,7 @@ const REFRESH_OPTIONS: { label: string; ms: number }[] = [
 // the shared loading state. Simple summary table with the vital columns only,
 // horizontal scroll for long command lines, sortable by CPU/MEM, kill per row.
 const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: string; disabled?: boolean; visible?: boolean }) => {
+  const t = useT();
   const [rows, setRows] = useState<ProcRow[]>([]);
   const [available, setAvailable] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -1650,7 +1684,7 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
       setLastMs(r.exec_ms);
       setErr(null);
     } catch (e: any) {
-      setErr(typeof e === "string" ? e : (e?.message || "probe failed"));
+      setErr(typeof e === "string" ? e : (e?.message || t("probe failed")));
     } finally {
       setLoading(false);
     }
@@ -1671,19 +1705,19 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
 
   const killProc = async (row: ProcRow) => {
     const ok = await confirm({
-      title: `Kill PID ${row.pid}?`,
-      message: `Send SIGTERM to "${row.command}" (${row.user}).`,
+      title: t("Kill PID {pid}?", { pid: row.pid }),
+      message: t("Send SIGTERM to \"{command}\" ({user}).", { command: row.command, user: row.user }),
       destructive: true,
-      okLabel: "Kill",
+      okLabel: t("Kill"),
     });
     if (!ok) return;
     setKilling(k => ({ ...k, [row.pid]: true }));
     try {
       const r = await invoke<SystemctlResult>("ssh_kill_process", { sessionId, pid: parseInt(row.pid, 10), signal: "TERM" });
-      if (!r.success) setErr(`PID ${row.pid}: ${r.stdout || `kill exited ${r.exit_code}`}`);
+      if (!r.success) setErr(t("PID {pid}: {error}", { pid: row.pid, error: r.stdout || t("kill exited {code}", { code: r.exit_code }) }));
       setTimeout(fetchNow, 400);
     } catch (e: any) {
-      setErr(`PID ${row.pid}: ${typeof e === "string" ? e : (e?.message || "kill failed")}`);
+      setErr(t("PID {pid}: {error}", { pid: row.pid, error: typeof e === "string" ? e : (e?.message || t("kill failed")) }));
     } finally {
       setKilling(k => ({ ...k, [row.pid]: false }));
     }
@@ -1704,7 +1738,7 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
   if (!available && !loading && rows.length === 0) {
     return (
       <BannerIcon tone="amber" icon={<AlertTriangle size={14} />}>
-        <code className="font-mono px-1">ps</code> is not available on this host, so the process list can't be read.
+        {tx("{ps} is not available on this host, so the process list can't be read.", { ps: <code className="font-mono px-1">ps</code> })}
       </BannerIcon>
     );
   }
@@ -1713,31 +1747,31 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
     <div className="space-y-3">
       {err && <BannerIcon tone="red" icon={<AlertTriangle size={14} />}>{err}</BannerIcon>}
       <InfoCard
-        title={`Processes · ${rows.length}`}
+        title={t("Processes · {count}", { count: rows.length })}
         icon={<Activity size={12} />}
         toolbar={
           <div className="flex items-center gap-1.5 flex-wrap">
             <div className="flex items-center gap-1">
               {REFRESH_OPTIONS.map(o => (
-                <ProtoPill key={o.ms} active={intervalMs === o.ms} onClick={() => setIntervalMs(o.ms)}>{o.label}</ProtoPill>
+                <ProtoPill key={o.ms} active={intervalMs === o.ms} onClick={() => setIntervalMs(o.ms)}>{t(o.label)}</ProtoPill>
               ))}
             </div>
             <button
               onClick={fetchNow}
               disabled={loading || disabled}
-              title="Refresh now"
+              title={t("Refresh now")}
               className="h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 transition-all"
             >
               {loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
             </button>
             <div className="flex-1 min-w-[110px]">
-              <FilterInput value={filter} onChange={setFilter} placeholder="Filter process / user / pid" />
+              <FilterInput value={filter} onChange={setFilter} placeholder={t("Filter process / user / pid")} />
             </div>
           </div>
         }
       >
         {shown.length === 0 ? (
-          <Empty>{rows.length === 0 ? "No processes reported." : "No matches."}</Empty>
+          <Empty>{rows.length === 0 ? t("No processes reported.") : t("No matches.")}</Empty>
         ) : (
           // Simple summary table with horizontal scroll (whitespace-nowrap keeps
           // long command lines on one line and lets the table scroll sideways).
@@ -1745,12 +1779,12 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
             <table className="w-full border-collapse text-[11px] font-mono whitespace-nowrap">
               <thead>
                 <tr className="text-left text-[9px] uppercase tracking-wider text-zinc-500 border-b border-white/10">
-                  <th className="font-bold px-2 py-1.5">PID</th>
-                  <th className="font-bold px-2 py-1.5">User</th>
-                  <th onClick={() => setSortKey("cpu")} className={`font-bold px-2 py-1.5 cursor-pointer hover:text-zinc-300 ${sortKey === "cpu" ? "text-primary" : ""}`}>CPU%</th>
-                  <th onClick={() => setSortKey("mem")} className={`font-bold px-2 py-1.5 cursor-pointer hover:text-zinc-300 ${sortKey === "mem" ? "text-primary" : ""}`}>MEM%</th>
-                  <th className="font-bold px-2 py-1.5">RSS</th>
-                  <th className="font-bold px-2 py-1.5">Command</th>
+                  <th className="font-bold px-2 py-1.5">{t("PID")}</th>
+                  <th className="font-bold px-2 py-1.5">{t("User")}</th>
+                  <th onClick={() => setSortKey("cpu")} className={`font-bold px-2 py-1.5 cursor-pointer hover:text-zinc-300 ${sortKey === "cpu" ? "text-primary" : ""}`}>{t("CPU%")}</th>
+                  <th onClick={() => setSortKey("mem")} className={`font-bold px-2 py-1.5 cursor-pointer hover:text-zinc-300 ${sortKey === "mem" ? "text-primary" : ""}`}>{t("MEM%")}</th>
+                  <th className="font-bold px-2 py-1.5">{t("RSS")}</th>
+                  <th className="font-bold px-2 py-1.5">{t("Command")}</th>
                   <th className="font-bold px-1 py-1.5 w-[36px]"></th>
                 </tr>
               </thead>
@@ -1767,7 +1801,7 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
                       <button
                         onClick={() => killProc(r)}
                         disabled={!!killing[r.pid]}
-                        title={`Kill PID ${r.pid} (SIGTERM)`}
+                        title={t("Kill PID {pid} (SIGTERM)", { pid: r.pid })}
                         className="p-1 rounded text-zinc-500 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
                       >
                         {killing[r.pid] ? <Loader2 size={12} className="animate-spin" /> : <Square size={11} />}
@@ -1778,15 +1812,15 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
               </tbody>
             </table>
             {filtered.length > CAP && (
-              <div className="text-[10px] text-zinc-500 italic px-2 pt-2">Showing top {CAP} of {filtered.length} by {sortKey.toUpperCase()}.</div>
+              <div className="text-[10px] text-zinc-500 italic px-2 pt-2">{t("Showing top {cap} of {total} by {sort}.", { cap: CAP, total: filtered.length, sort: sortKey.toUpperCase() })}</div>
             )}
           </div>
         )}
         <div className="mt-2 text-[10px] text-zinc-600 flex items-center gap-2">
           {intervalMs
-            ? <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-brief" /> auto · every {intervalMs / 1000}s</span>
-            : <span>manual refresh</span>}
-          {lastMs != null && <span>· probed in {lastMs} ms</span>}
+            ? <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-brief" /> {t("auto · every {seconds}s", { seconds: intervalMs / 1000 })}</span>
+            : <span>{t("manual refresh")}</span>}
+          {lastMs != null && <span>{t("· probed in {ms} ms", { ms: lastMs })}</span>}
         </div>
       </InfoCard>
     </div>
@@ -1794,6 +1828,7 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
 };
 
 const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: { available: boolean; rows: ServiceRow[] }; onRefresh: () => void }) => {
+  const t = useT();
   const [filter, setFilter] = useState("");
   const [stateFilter, setStateFilter] = useState<"all" | "active" | "inactive" | "failed">("active");
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -1850,7 +1885,7 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
   if (!data.available) {
     return (
       <BannerIcon tone="amber" icon={<AlertTriangle size={14} />}>
-        <code className="font-mono px-1">systemctl</code> not available. This server likely uses a different init system (e.g. OpenRC, runit).
+        {tx("{systemctl} not available. This server likely uses a different init system (e.g. OpenRC, runit).", { systemctl: <code className="font-mono px-1">systemctl</code> })}
       </BannerIcon>
     );
   }
@@ -1858,10 +1893,10 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
   const performAction = async (unit: string, action: "start" | "stop" | "restart") => {
     if (action === "stop" || action === "restart") {
       const ok = await confirm({
-        title: action === "stop" ? `Stop ${unit}?` : `Restart ${unit}?`,
-        message: "This will disconnect anyone currently connected.",
+        title: action === "stop" ? t("Stop {unit}?", { unit }) : t("Restart {unit}?", { unit }),
+        message: t("This will disconnect anyone currently connected."),
         destructive: true,
-        okLabel: action === "stop" ? "Stop" : "Restart",
+        okLabel: action === "stop" ? t("Stop") : t("Restart"),
       });
       if (!ok) return;
     }
@@ -1873,7 +1908,9 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
         ...prev,
         [unit]: {
           ok: r.success,
-          msg: r.success ? `${action} succeeded${r.used_sudo ? " (via sudo)" : ""}` : (r.stdout || `${action} failed (exit ${r.exit_code})`),
+          msg: r.success
+            ? t(r.used_sudo ? SERVICE_OK_SUDO[action] : SERVICE_OK[action])
+            : (r.stdout || t(SERVICE_FAILED_EXIT[action], { code: r.exit_code })),
           sudo: r.used_sudo,
         },
       }));
@@ -1883,7 +1920,7 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
         setTimeout(onRefresh, 800);
       }
     } catch (e: any) {
-      const msg = typeof e === "string" ? e : (e?.message || `${action} failed`);
+      const msg = typeof e === "string" ? e : (e?.message || t(SERVICE_FAILED[action]));
       setLastResult(prev => ({ ...prev, [unit]: { ok: false, msg, sudo: false } }));
     } finally {
       setBusy(b => ({ ...b, [unit]: false }));
@@ -1893,22 +1930,22 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
   return (
     <div className="space-y-3">
       <InfoCard
-        title="Services"
+        title={t("Services")}
         icon={<Cog size={12} />}
         toolbar={
           <div className="space-y-2">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <CountPill active={stateFilter === "active"}   onClick={() => setStateFilter("active")}   tone="green"  count={counts.active}>active</CountPill>
-              <CountPill active={stateFilter === "inactive"} onClick={() => setStateFilter("inactive")} tone="zinc"   count={counts.inactive}>inactive</CountPill>
-              <CountPill active={stateFilter === "failed"}   onClick={() => setStateFilter("failed")}   tone="red"    count={counts.failed}>failed</CountPill>
-              <CountPill active={stateFilter === "all"}      onClick={() => setStateFilter("all")}      tone="primary" count={data.rows.length}>all</CountPill>
+              <CountPill active={stateFilter === "active"}   onClick={() => setStateFilter("active")}   tone="green"  count={counts.active}>{t("active")}</CountPill>
+              <CountPill active={stateFilter === "inactive"} onClick={() => setStateFilter("inactive")} tone="zinc"   count={counts.inactive}>{t("inactive")}</CountPill>
+              <CountPill active={stateFilter === "failed"}   onClick={() => setStateFilter("failed")}   tone="red"    count={counts.failed}>{t("failed")}</CountPill>
+              <CountPill active={stateFilter === "all"}      onClick={() => setStateFilter("all")}      tone="primary" count={data.rows.length}>{t("all")}</CountPill>
             </div>
-            <FilterInput value={filter} onChange={setFilter} placeholder="Filter services…" />
+            <FilterInput value={filter} onChange={setFilter} placeholder={t("Filter services…")} />
           </div>
         }
       >
         {filtered.length === 0 ? (
-          <Empty>No matching services.</Empty>
+          <Empty>{t("No matching services.")}</Empty>
         ) : (
           <div className="space-y-1.5 max-h-[60vh] overflow-y-auto custom-scrollbar pr-1">
             {filtered.map((s, i) => {
@@ -1937,23 +1974,23 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       {!isActive && (
-                        <ActionBtn title="Start" disabled={isBusy} onClick={() => performAction(s.unit, "start")}>
+                        <ActionBtn title={t("Start")} disabled={isBusy} onClick={() => performAction(s.unit, "start")}>
                           <Play size={11} />
                         </ActionBtn>
                       )}
                       {isActive && (
-                        <ActionBtn title="Stop" disabled={isBusy} tone="rose" onClick={() => performAction(s.unit, "stop")}>
+                        <ActionBtn title={t("Stop")} disabled={isBusy} tone="rose" onClick={() => performAction(s.unit, "stop")}>
                           <Square size={11} />
                         </ActionBtn>
                       )}
-                      <ActionBtn title="Restart" disabled={isBusy} tone="amber" onClick={() => performAction(s.unit, "restart")}>
+                      <ActionBtn title={t("Restart")} disabled={isBusy} tone="amber" onClick={() => performAction(s.unit, "restart")}>
                         {isBusy ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
                       </ActionBtn>
                     </div>
                   </div>
                   {result && (
                     <div className={`mt-1.5 text-[10px] px-2 py-1 rounded ${result.ok ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20" : "bg-red-500/10 text-red-300 border border-red-500/20"}`}>
-                      <span className="font-bold uppercase tracking-wider mr-1">{result.ok ? "OK" : "Error"}</span>
+                      <span className="font-bold uppercase tracking-wider mr-1">{result.ok ? t("OK|status") : t("Error")}</span>
                       <span className="font-mono whitespace-pre-wrap break-words">{result.msg}</span>
                     </div>
                   )}
@@ -2022,6 +2059,7 @@ const KV = ({ label, value, icon, copyable }: KVProps) => (
 
 interface MeterProps { label: string; used: number; total: number; compact?: boolean; }
 const Meter = ({ label, used, total, compact }: MeterProps) => {
+  const t = useT();
   const pct = total > 0 ? Math.min(100, Math.max(0, (used / total) * 100)) : 0;
   const tone = pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500";
   return (
@@ -2034,8 +2072,8 @@ const Meter = ({ label, used, total, compact }: MeterProps) => {
       )}
       {!label && (
         <div className="flex items-baseline justify-between text-[10px] mb-1">
-          <span className="font-mono text-zinc-400 select-text">{formatBytes(used)} used</span>
-          <span className="font-mono text-zinc-500 select-text">{formatBytes(total)} total · {pct.toFixed(0)}%</span>
+          <span className="font-mono text-zinc-400 select-text">{t("{used} used", { used: formatBytes(used) })}</span>
+          <span className="font-mono text-zinc-500 select-text">{t("{total} total · {pct}%", { total: formatBytes(total), pct: pct.toFixed(0) })}</span>
         </div>
       )}
       <div className="h-1.5 bg-black/40 rounded-full overflow-hidden">

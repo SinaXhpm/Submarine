@@ -15,14 +15,15 @@ import { VncSpeedFields } from "./VncOptionFields";
 import { DEFAULT_VNC_OPTIONS, normalizeVncOptions, type VncOptions } from "../util/vncOptions";
 import { IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
+import { t, tn, tx, useT } from "../i18n";
 
 // Compact "2h ago" style relative time for the attribution line.
 function relTime(d: Date): string {
   const s = Math.floor((Date.now() - d.getTime()) / 1000);
-  if (s < 45) return "just now";
-  const m = Math.floor(s / 60); if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`;
-  const dd = Math.floor(h / 24); if (dd < 30) return `${dd}d ago`;
+  if (s < 45) return t("just now");
+  const m = Math.floor(s / 60); if (m < 60) return t("{count}m ago", { count: m });
+  const h = Math.floor(m / 60); if (h < 24) return t("{count}h ago", { count: h });
+  const dd = Math.floor(h / 24); if (dd < 30) return t("{count}d ago", { count: dd });
   return d.toLocaleDateString();
 }
 
@@ -54,6 +55,7 @@ type ImportedSshKey = {
 };
 
 const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credentials, sshKeys, refreshSshKeys, folders, refreshFolders, refreshServers, servers, isEditMode, formError, isMobile }: any) => {
+  const t = useT();
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   // An RDP (issue #3), telnet (#179) or VNC server has a host, port, login
   // and maybe an SSH server to go through; the SSH-only parts of the form
@@ -111,7 +113,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     // Empty, it reaches the backend as null; out of range, the connection
     // would wrap it to some other port.
     if (!Number.isInteger(newNode.port) || newNode.port < 1 || newNode.port > 65535) {
-      setPortError("Port must be 1 to 65535.");
+      setPortError(t("Port must be 1 to 65535."));
       return;
     }
     setPortError("");
@@ -289,12 +291,15 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
         .catch(() => false);
       if (shared) {
         withKeys = await confirm({
-          title: "Add your key files to a shared profile?",
-          message:
-            `This profile is shared. ${keyFiles.length === 1 ? "This private key" : "These private keys"} from this computer would go to everyone you share it with: ` +
-            `${keyFiles.join(", ")}. Import the hosts with ${keyFiles.length === 1 ? "it" : "them"}, or without (you can pick keys for them later)?`,
-          okLabel: "Import with keys",
-          cancelLabel: "Without keys",
+          title: t("Add your key files to a shared profile?"),
+          message: tn(
+            keyFiles.length,
+            "This profile is shared. This private key from this computer would go to everyone you share it with: {keys}. Import the hosts with it, or without (you can pick keys for them later)?",
+            "This profile is shared. These private keys from this computer would go to everyone you share it with: {keys}. Import the hosts with them, or without (you can pick keys for them later)?",
+            { keys: keyFiles.join(", ") },
+          ),
+          okLabel: t("Import with keys"),
+          cancelLabel: t("Without keys"),
           safeDefault: true,
         });
       }
@@ -366,9 +371,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     }
     setImportBusy(false);
     if (saveErr) {
-      setImportError(`${ok} imported, but they couldn't be saved: ${saveErr}`);
+      setImportError(t("{ok} imported, but they couldn't be saved: {error}", { ok, error: saveErr }));
     } else if (failed > 0) {
-      setImportError(`${ok} imported, ${failed} failed${lastErr ? `: ${lastErr}` : ""}`);
+      setImportError(lastErr
+        ? t("{ok} imported, {failed} failed: {error}", { ok, failed, error: lastErr })
+        : t("{ok} imported, {failed} failed", { ok, failed }));
     }
     if (refreshServers) {
       try { await refreshServers(); } catch { /* refresh failure isn't fatal */ }
@@ -381,10 +388,12 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     // asked at connect time (issue #30) — either way, hold the modal open and
     // point it out so the import isn't silently half-finished.
     if (keysNeedingPassphrase > 0) {
-      setImportNotice(
-        `${ok} imported, ${keysAttached} SSH key${keysAttached === 1 ? "" : "s"} attached. ` +
-        `${keysNeedingPassphrase} of them need a passphrase — add it under Settings › SSH keys, or leave it empty to be asked when connecting.`,
-      );
+      setImportNotice(tn(
+        keysAttached,
+        "{ok} imported, {count} SSH key attached. {need} of them need a passphrase — add it under Settings › SSH keys, or leave it empty to be asked when connecting.",
+        "{ok} imported, {count} SSH keys attached. {need} of them need a passphrase — add it under Settings › SSH keys, or leave it empty to be asked when connecting.",
+        { ok, need: keysNeedingPassphrase },
+      ));
       return;
     }
     if (failed === 0 && !saveErr) {
@@ -408,10 +417,10 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
       setNewNode({ ...newNode, keyId: key.id.toString() });
       setKeyBrowseNote(
         key.encrypted
-          ? `Loaded "${key.name}" — it's passphrase-protected. Add the passphrase under Settings › SSH keys, or leave it empty to be asked when connecting.`
+          ? t("Loaded \"{name}\" — it's passphrase-protected. Add the passphrase under Settings › SSH keys, or leave it empty to be asked when connecting.", { name: key.name })
           : key.reused
-            ? `"${key.name}" was already in your vault — selected it.`
-            : `Loaded "${key.name}" into your vault.`,
+            ? t("\"{name}\" was already in your vault — selected it.", { name: key.name })
+            : t("Loaded \"{name}\" into your vault.", { name: key.name }),
       );
     } catch (e: any) {
       setKeyBrowseNote(typeof e === "string" ? e : (e?.message || String(e)));
@@ -426,11 +435,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
     if (keyBrowseBusy) return;
     const suggested = `${String(newNode.name || newNode.host || "server").trim()}-key`;
     const name = await textPrompt({
-      title: "Generate SSH key",
-      message: "Give this key a name — it's just for your reference here in Submarine.",
+      title: t("Generate SSH key"),
+      message: t("Give this key a name — it's just for your reference here in Submarine."),
       initialValue: suggested,
-      okLabel: "Generate",
-      validate: (v) => v.length === 0 ? "Name is required" : null,
+      okLabel: t("Generate"),
+      validate: (v) => v.length === 0 ? t("Name is required") : null,
     });
     if (!name) return;
     setKeyBrowseBusy(true);
@@ -455,7 +464,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
       await navigator.clipboard.writeText(generatedKey.publicKey);
       setPublicKeyCopied(true);
     } catch {
-      setKeyBrowseNote("Couldn't copy — select the key text and copy it by hand.");
+      setKeyBrowseNote(t("Couldn't copy — select the key text and copy it by hand."));
     }
   };
 
@@ -494,7 +503,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center text-primary shadow-inner border border-primary/20">
               <Cpu size={16} />
             </div>
-            <h2 className="text-[14px] font-bold text-white tracking-tight">Server details</h2>
+            <h2 className="text-[14px] font-bold text-white tracking-tight">{t("Server details")}</h2>
           </div>
           <div className="flex items-center gap-2">
             {/* Import only makes sense when creating a fresh row — editing an
@@ -506,15 +515,15 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             {!isEditMode && isSsh && (
               <button
                 onClick={openImportModal}
-                title="Import from ~/.ssh/config"
+                title={t("Import from ~/.ssh/config")}
                 className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 rounded-xl transition-all"
               >
                 <Download size={12} />
-                <span className="hidden sm:inline">Import from ~/.ssh/config</span>
-                <span className="sm:hidden">Import</span>
+                <span className="hidden sm:inline">{t("Import from ~/.ssh/config")}</span>
+                <span className="sm:hidden">{t("Import")}</span>
               </button>
             )}
-            <button aria-label="Close" onClick={() => void requestClose()} className="w-8 h-8 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-xl transition-all shadow-inner">
+            <button aria-label={t("Close")} onClick={() => void requestClose()} className="w-8 h-8 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-xl transition-all shadow-inner">
               <X size={16} />
             </button>
           </div>
@@ -529,44 +538,44 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 computer's RDP app, a telnet one in a terminal, a VNC one as
                 its screen in the tab; all directly or through an SSH server. */}
             <div className="space-y-1.5">
-              <label htmlFor="server-type" className="text-[11px] font-bold text-zinc-400 ml-1">Type</label>
+              <label htmlFor="server-type" className="text-[11px] font-bold text-zinc-400 ml-1">{t("Type")}</label>
               <select
                 id="server-type"
-                aria-label="Server type"
+                aria-label={t("Server type")}
                 value={isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : "ssh"}
                 onChange={(e) => setProtocol(e.target.value as "ssh" | "rdp" | "telnet" | "vnc")}
                 className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
               >
                 <option value="ssh" className="bg-[#1a1a1e] text-white">SSH</option>
-                <option value="rdp" className="bg-[#1a1a1e] text-white">RDP (Remote Desktop)</option>
-                <option value="telnet" className="bg-[#1a1a1e] text-white">Telnet (not encrypted)</option>
+                <option value="rdp" className="bg-[#1a1a1e] text-white">{t("RDP (Remote Desktop)")}</option>
+                <option value="telnet" className="bg-[#1a1a1e] text-white">{t("Telnet (not encrypted)")}</option>
                 <option value="vnc" className="bg-[#1a1a1e] text-white">VNC</option>
               </select>
               {isTelnet && (
                 <p role="note" className="flex gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-[11px] leading-snug text-amber-200/90">
                   <ShieldAlert size={13} className="shrink-0 mt-px" aria-hidden="true" />
-                  <span>Telnet isn't encrypted: what is typed, passwords too, crosses the network as plain text. Use it on a network you trust, or through an SSH server: then only the part after that server isn't encrypted.</span>
+                  <span>{t("Telnet isn't encrypted: what is typed, passwords too, crosses the network as plain text. Use it on a network you trust, or through an SSH server: then only the part after that server isn't encrypted.")}</span>
                 </p>
               )}
               {isVnc && !newNode.jumpHostId && (
                 <p role="note" className="flex gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-[11px] leading-snug text-amber-200/90">
                   <ShieldAlert size={13} className="shrink-0 mt-px" aria-hidden="true" />
-                  <span>VNC isn't encrypted: the screen and what is typed cross the network as they are. Pick an SSH server to go through (below) to keep it private up to that server.</span>
+                  <span>{t("VNC isn't encrypted: the screen and what is typed cross the network as they are. Pick an SSH server to go through (below) to keep it private up to that server.")}</span>
                 </p>
               )}
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[11px] font-bold text-zinc-400 ml-1">Name</label>
-              <input type="text" className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner" placeholder="e.g. Work server" value={newNode.name} onChange={e => setNewNode({ ...newNode, name: e.target.value })} />
+              <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Name")}</label>
+              <input type="text" className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner" placeholder={t("e.g. Work server")} value={newNode.name} onChange={e => setNewNode({ ...newNode, name: e.target.value })} />
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[11px] font-bold text-zinc-400 ml-1">Folder</label>
+              <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Folder")}</label>
               {!isCreatingFolder ? (
                 <div className="flex gap-2">
                   <select className="flex-1 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner" value={newNode.folderId} onChange={e => setNewNode({ ...newNode, folderId: e.target.value })}>
-                    <option value="" className="bg-[#1a1a1e] text-zinc-500">-- Root --</option>
+                    <option value="" className="bg-[#1a1a1e] text-zinc-500">{t("-- Root --")}</option>
                     {/* Nested folders by their full path, in path order. */}
                     {(() => {
                       const tree = folderTree(folders);
@@ -576,21 +585,21 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         .map((f: any) => <option key={f.id} value={f.id.toString()} className="bg-[#1a1a1e] text-white">{f.label}</option>);
                     })()}
                   </select>
-                  <button aria-label="New folder" onClick={() => setIsCreatingFolder(true)} className="w-9 h-9 bg-white/5 border border-white/10 rounded-lg text-primary hover:bg-white/10 transition-all flex items-center justify-center shrink-0">
+                  <button aria-label={t("New folder")} onClick={() => setIsCreatingFolder(true)} className="w-9 h-9 bg-white/5 border border-white/10 rounded-lg text-primary hover:bg-white/10 transition-all flex items-center justify-center shrink-0">
                     <FolderPlus size={14} />
                   </button>
                 </div>
               ) : (
                 <div className="flex gap-2 animate-in fade-in">
-                  <input type="text" className="flex-1 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" placeholder="Folder name…" value={newFolderName} onChange={e => setNewFolderName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleCreateFolder()} />
-                  <button onClick={handleCreateFolder} className="h-9 px-3 bg-primary text-black font-bold text-[12px] rounded-lg hover:bg-primary transition-all">Add</button>
-                  <button aria-label="Cancel" onClick={() => setIsCreatingFolder(false)} className="w-9 h-9 bg-white/5 text-zinc-400 rounded-lg hover:bg-white/10 transition-all flex justify-center items-center shrink-0"><X size={14} /></button>
+                  <input type="text" className="flex-1 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" placeholder={t("Folder name…")} value={newFolderName} onChange={e => setNewFolderName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleCreateFolder()} />
+                  <button onClick={handleCreateFolder} className="h-9 px-3 bg-primary text-black font-bold text-[12px] rounded-lg hover:bg-primary transition-all">{t("Add")}</button>
+                  <button aria-label={t("Cancel")} onClick={() => setIsCreatingFolder(false)} className="w-9 h-9 bg-white/5 text-zinc-400 rounded-lg hover:bg-white/10 transition-all flex justify-center items-center shrink-0"><X size={14} /></button>
                 </div>
               )}
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[11px] font-bold text-zinc-400 ml-1">Tag colour</label>
+              <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Tag colour")}</label>
               <div className="flex items-center gap-2 flex-wrap">
                 {TAG_COLOURS.map((p) => {
                   const selected = (newNode.color ?? null) === p.value;
@@ -598,8 +607,8 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     <button
                       key={p.name}
                       type="button"
-                      title={p.name}
-                      aria-label={p.name}
+                      title={t(p.name)}
+                      aria-label={t(p.name)}
                       aria-pressed={selected}
                       onClick={() => setNewNode({ ...newNode, color: p.value })}
                       className={`w-6 h-6 rounded-full ${p.value ? "" : "bg-zinc-500"} ring-2 ring-transparent hover:ring-white/30 transition-all ${selected ? "ring-white" : ""}`}
@@ -613,13 +622,13 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   const custom = customTagColour(newNode.color);
                   return (
                     <label
-                      title="Another colour…"
+                      title={t("Another colour…")}
                       className={`relative w-6 h-6 rounded-full cursor-pointer ring-2 ring-transparent hover:ring-white/30 transition-all ${custom ? "ring-white" : ""}`}
                       style={{ background: custom ?? "conic-gradient(#ef4444, #eab308, #22c55e, #06b6d4, #3b82f6, #a855f7, #ef4444)" }}
                     >
                       <input
                         type="color"
-                        aria-label="Another colour"
+                        aria-label={t("Another colour")}
                         value={pickerValue(newNode.color ?? null)}
                         onChange={(e) => setNewNode({ ...newNode, color: e.target.value })}
                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
@@ -632,11 +641,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
 
             <div className="grid grid-cols-4 gap-4">
               <div className="col-span-3 space-y-1.5">
-                <label className="text-[11px] font-bold text-zinc-400 ml-1">Host</label>
-                <input type="text" className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner" placeholder="192.168.1.1 or example.com" value={newNode.host} onChange={e => setNewNode({ ...newNode, host: e.target.value })} />
+                <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Host")}</label>
+                <input type="text" className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner" placeholder={t("192.168.1.1 or example.com")} value={newNode.host} onChange={e => setNewNode({ ...newNode, host: e.target.value })} />
               </div>
               <div className="space-y-1.5">
-                <label className="text-[11px] font-bold text-zinc-400 ml-1">Port</label>
+                <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Port")}</label>
                 <input type="number" className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner" value={newNode.port} onChange={e => setNewNode({ ...newNode, port: parseInt(e.target.value) })} />
               </div>
             </div>
@@ -645,15 +654,15 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
 
           <div className="pt-5 border-t border-white/5 space-y-4">
             <div className="flex justify-between items-center">
-              <label className="text-[11px] font-bold text-zinc-400">How to log in</label>
+              <label className="text-[11px] font-bold text-zinc-400">{t("How to log in")}</label>
               <select
                 className="bg-transparent text-[12px] font-bold text-primary outline-none cursor-pointer"
                 value={newNode.authType}
                 onChange={(e) => setNewNode({ ...newNode, authType: e.target.value })}
               >
-                <option value="vault" className="bg-[#121215] text-primary">Use a saved login</option>
-                <option value="custom_pass" className="bg-[#121215] text-primary">Type a password</option>
-                {isSsh && <option value="custom_key" className="bg-[#121215] text-primary">Use an SSH key</option>}
+                <option value="vault" className="bg-[#121215] text-primary">{t("Use a saved login")}</option>
+                <option value="custom_pass" className="bg-[#121215] text-primary">{t("Type a password")}</option>
+                {isSsh && <option value="custom_key" className="bg-[#121215] text-primary">{t("Use an SSH key")}</option>}
               </select>
             </div>
 
@@ -662,18 +671,18 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               return (
                 <div className="space-y-3 animate-in fade-in slide-in-from-top-1">
                   <div className="space-y-1.5">
-                    <label className="text-[11px] font-bold text-zinc-400 ml-1">Saved login</label>
+                    <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Saved login")}</label>
                     <select className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" value={newNode.credentialId} onChange={e => setNewNode({ ...newNode, credentialId: e.target.value })}>
-                      <option value="" className="bg-[#1a1a1e] text-zinc-500">-- Pick one --</option>
+                      <option value="" className="bg-[#1a1a1e] text-zinc-500">{t("-- Pick one --")}</option>
                       {credentials?.map((c: any) => <option key={c.id} value={c.id.toString()} className="bg-[#1a1a1e] text-zinc-300">{c.name} ({c.username})</option>)}
                     </select>
                   </div>
                   {selectedCred && (
                     <div className="px-3 py-2 bg-primary/5 border border-primary/20 rounded-lg text-[11px] font-mono text-zinc-300 flex items-center gap-2">
                       <User size={11} className="text-primary shrink-0" />
-                      <span className="text-zinc-500">Sign in as</span>
+                      <span className="text-zinc-500">{t("Sign in as")}</span>
                       <span className="text-primary font-bold">{selectedCred.username || "—"}</span>
-                      <span className="text-zinc-600 ml-auto text-[10px]">{selectedCred.auth_type === 'key' ? 'using key' : 'using password'}</span>
+                      <span className="text-zinc-600 ml-auto text-[10px]">{selectedCred.auth_type === 'key' ? t("using key") : t("using password")}</span>
                     </div>
                   )}
                 </div>
@@ -683,19 +692,19 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             {newNode.authType === 'custom_pass' && isRdp && (
               <div className="space-y-3 animate-in fade-in">
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-400 ml-1">Username</label>
-                  <input type="text" placeholder="Asked by the RDP app" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} autoCapitalize="none" autoCorrect="off" spellCheck={false} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
-                  <p className="text-[10px] text-zinc-500 ml-1">{"DOMAIN\\user works too."}</p>
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Username")}</label>
+                  <input type="text" placeholder={t("Asked by the RDP app")} value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} autoCapitalize="none" autoCorrect="off" spellCheck={false} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
+                  <p className="text-[10px] text-zinc-500 ml-1">{t("DOMAIN\\user works too.")}</p>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-400 ml-1">Password</label>
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Password")}</label>
                   <PasswordField
                     value={newNode.password || ""}
                     onChange={(v) => setNewNode({ ...newNode, password: v, password_dirty: true })}
                     className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner"
                     placeholder="••••••"
                   />
-                  <p className="text-[10px] text-zinc-500 ml-1">Leave empty to be asked when connecting. Remote Desktop Connection on Windows gets it too.</p>
+                  <p className="text-[10px] text-zinc-500 ml-1">{t("Leave empty to be asked when connecting. Remote Desktop Connection on Windows gets it too.")}</p>
                 </div>
               </div>
             )}
@@ -703,11 +712,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             {newNode.authType === 'custom_pass' && !isRdp && (
               <div className="space-y-3 animate-in fade-in">
                 {!isVnc && <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-400 ml-1">Username</label>
-                  <input type="text" placeholder={isTelnet ? "For your reference" : "Ask when connecting"} value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} autoCapitalize="none" autoCorrect="off" spellCheck={false} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Username")}</label>
+                  <input type="text" placeholder={isTelnet ? t("For your reference") : t("Ask when connecting")} value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} autoCapitalize="none" autoCorrect="off" spellCheck={false} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
                 </div>}
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-400 ml-1">{isVnc ? "VNC password" : "Password"}</label>
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">{isVnc ? t("VNC password") : t("Password")}</label>
                   <PasswordField
                     value={newNode.password || ""}
                     onChange={(v) => setNewNode({ ...newNode, password: v, password_dirty: true })}
@@ -716,10 +725,10 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   />
                   <p className="text-[10px] text-zinc-500 ml-1">
                     {isTelnet
-                      ? "A telnet server asks for the login in the terminal. Type it there; at the password prompt, the terminal's key button types the saved one."
+                      ? t("A telnet server asks for the login in the terminal. Type it there; at the password prompt, the terminal's key button types the saved one.")
                       : isVnc
-                        ? "Leave empty to be asked when the server wants one. VNC uses its first 8 characters."
-                        : "Leave empty to be asked when connecting."}
+                        ? t("Leave empty to be asked when the server wants one. VNC uses its first 8 characters.")
+                        : t("Leave empty to be asked when connecting.")}
                   </p>
                 </div>
               </div>
@@ -728,12 +737,12 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             {newNode.authType === 'custom_key' && isSsh && (
               <div className="space-y-3 animate-in fade-in">
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-zinc-400 ml-1">Username</label>
-                  <input type="text" placeholder="Ask when connecting" value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
+                  <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Username")}</label>
+                  <input type="text" placeholder={t("Ask when connecting")} value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
                 </div>
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between ml-1">
-                    <label className="text-[11px] font-bold text-zinc-400">SSH key</label>
+                    <label className="text-[11px] font-bold text-zinc-400">{t("SSH key")}</label>
                     {/* Loading a key from disk is the common case for someone
                         moving over from the `ssh` command line — the key is
                         already in ~/.ssh and copy-pasting it out of a terminal
@@ -743,11 +752,11 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         type="button"
                         onClick={generateKey}
                         disabled={keyBrowseBusy}
-                        title="Make a new SSH key and use it for this server"
+                        title={t("Make a new SSH key and use it for this server")}
                         className="h-6 px-2 flex items-center gap-1 text-[10px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-all"
                       >
                         <Plus size={10} />
-                        Generate
+                        {t("Generate")}
                       </button>
                       <button
                         type="button"
@@ -756,12 +765,12 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         className="h-6 px-2 flex items-center gap-1 text-[10px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-all"
                       >
                         <Key size={10} />
-                        {keyBrowseBusy ? "Loading…" : "Load from file"}
+                        {keyBrowseBusy ? t("Loading…") : t("Load from file")}
                       </button>
                     </div>
                   </div>
                   <select className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" value={newNode.keyId} onChange={e => setNewNode({ ...newNode, keyId: e.target.value })}>
-                    <option value="" className="bg-[#1a1a1e] text-zinc-500">-- Pick a key --</option>
+                    <option value="" className="bg-[#1a1a1e] text-zinc-500">{t("-- Pick a key --")}</option>
                     {sshKeys?.map((k: any) => <option key={k.id} value={k.id.toString()} className="bg-[#1a1a1e] text-zinc-300">{k.name}</option>)}
                   </select>
                   {keyBrowseNote && (
@@ -772,8 +781,10 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   {generatedKey && newNode.keyId === generatedKey.id.toString() && (
                     <div className="p-2 bg-white/5 border border-white/10 rounded-lg text-[11px] text-zinc-400 space-y-1.5">
                       <div>
-                        Generated "{generatedKey.name}" and picked it for this server. Add its public key to
-                        {" "}<code className="text-zinc-300">~/.ssh/authorized_keys</code> on the server before connecting:
+                        {tx("Generated \"{name}\" and picked it for this server. Add its public key to {path} on the server before connecting:", {
+                          name: generatedKey.name,
+                          path: <code className="text-zinc-300">~/.ssh/authorized_keys</code>,
+                        })}
                       </div>
                       <code className="block p-1.5 bg-black/40 rounded text-[10.5px] text-zinc-300 font-mono break-all select-text">
                         {generatedKey.publicKey}
@@ -784,7 +795,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         className="h-6 px-2 flex items-center gap-1 text-[10px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 rounded-lg transition-all"
                       >
                         <Copy size={10} />
-                        {publicKeyCopied ? "Copied" : "Copy public key"}
+                        {publicKeyCopied ? t("Copied") : t("Copy public key")}
                       </button>
                     </div>
                   )}
@@ -796,9 +807,9 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
           <div className="pt-5 border-t border-white/5 space-y-4">
             {isSsh && (<>
             <div className="flex justify-between items-center">
-              <label className="text-[11px] font-bold text-zinc-400">Proxy</label>
+              <label className="text-[11px] font-bold text-zinc-400">{t("Proxy")}</label>
               <select className="bg-transparent text-[12px] font-bold text-zinc-300 outline-none cursor-pointer" value={newNode.proxyType} onChange={e => setNewNode({ ...newNode, proxyType: e.target.value })}>
-                <option value="none" className="bg-[#121215] text-zinc-400">No proxy</option>
+                <option value="none" className="bg-[#121215] text-zinc-400">{t("No proxy")}</option>
                 <option value="socks5" className="bg-[#121215] text-zinc-400">SOCKS5</option>
                 <option value="http" className="bg-[#121215] text-zinc-400">HTTP</option>
               </select>
@@ -808,14 +819,14 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               <div className="grid grid-cols-4 gap-3 animate-in fade-in">
                 <input
                   className="col-span-3 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner"
-                  placeholder="Proxy Host"
+                  placeholder={t("Proxy Host")}
                   value={newNode.proxyHost || ""}
                   onChange={e => setNewNode({ ...newNode, proxyHost: e.target.value })}
                 />
                 <input
                   type="number"
                   className="h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner"
-                  placeholder="Port"
+                  placeholder={t("Port")}
                   value={newNode.proxyPort || ""}
                   onChange={e => setNewNode({ ...newNode, proxyPort: parseInt(e.target.value) || 0 })}
                 />
@@ -829,13 +840,13 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 that opens a direct-tcpip channel to the target. Self is filtered
                 out so a node can't jump through itself. */}
             <div className="flex justify-between items-center gap-3">
-              <label className="text-[11px] font-bold text-zinc-400 shrink-0">{isSsh ? "Jump via" : "Through SSH server"}</label>
+              <label className="text-[11px] font-bold text-zinc-400 shrink-0">{isSsh ? t("Jump via") : t("Through SSH server")}</label>
               <select
                 className="flex-1 min-w-0 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
                 value={newNode.jumpHostId || ""}
                 onChange={e => setNewNode({ ...newNode, jumpHostId: e.target.value })}
               >
-                <option value="" className="bg-[#1a1a1e] text-zinc-500">{isSsh ? "Direct — no jump host" : "Direct — no SSH server"}</option>
+                <option value="" className="bg-[#1a1a1e] text-zinc-500">{isSsh ? t("Direct — no jump host") : t("Direct — no SSH server")}</option>
                 {(servers || [])
                   .filter((s: any) => s.id !== newNode.id && (s.protocol ?? "ssh") === "ssh")
                   .map((s: any) => (
@@ -858,15 +869,15 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   {/* A phone has only the built-in client (offered in the tab). */}
                   {!IS_MOBILE && (
                     <div className="flex justify-between items-center gap-3">
-                      <label className="text-[11px] font-bold text-zinc-400 shrink-0">Open in</label>
+                      <label className="text-[11px] font-bold text-zinc-400 shrink-0">{t("Open in")}</label>
                       <select
-                        aria-label="Open in"
+                        aria-label={t("Open in")}
                         className="flex-1 min-w-0 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
                         value={o.app}
                         onChange={(e) => set({ app: e.target.value === "builtin" ? "builtin" : "system" })}
                       >
-                        <option value="system" className="bg-[#1a1a1e]">This computer's RDP app</option>
-                        <option value="builtin" className="bg-[#1a1a1e]">Submarine's tab (experimental)</option>
+                        <option value="system" className="bg-[#1a1a1e]">{t("This computer's RDP app")}</option>
+                        <option value="builtin" className="bg-[#1a1a1e]">{t("Submarine's tab (experimental)")}</option>
                       </select>
                     </div>
                   )}
@@ -874,21 +885,21 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     <div role="note" className="flex gap-2 p-2.5 rounded-lg border border-amber-500/25 bg-amber-500/5 text-[10.5px] leading-snug text-amber-200/90">
                       <FlaskConical size={13} className="shrink-0 mt-px text-amber-300" aria-hidden="true" />
                       <span>
-                        {RDP_BUILTIN_EXPERIMENTAL} The desktop opens in the server's tab, sized to it; the saved password is used, or asked for there.
+                        {t(RDP_BUILTIN_EXPERIMENTAL)} {t("The desktop opens in the server's tab, sized to it; the saved password is used, or asked for there.")}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="text-[11px] font-bold text-zinc-300">Allow servers without NLA</div>
+                        <div className="text-[11px] font-bold text-zinc-300">{t("Allow servers without NLA")}</div>
                         <div className="text-[10.5px] text-zinc-500 leading-snug">
-                          NLA makes the server prove it knows the password before it is sent. Off, a server without it is refused and nothing is sent; on, the password goes inside TLS only.
+                          {t("NLA makes the server prove it knows the password before it is sent. Off, a server without it is refused and nothing is sent; on, the password goes inside TLS only.")}
                         </div>
                       </div>
                       <button
                         type="button"
                         onClick={() => set({ allowNoNla: !o.allowNoNla })}
                         role="switch"
-                        aria-label="Allow servers without NLA"
+                        aria-label={t("Allow servers without NLA")}
                         aria-checked={!!o.allowNoNla}
                         className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.allowNoNla ? "bg-primary" : "bg-white/10"}`}
                       >
@@ -897,16 +908,16 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="text-[11px] font-bold text-zinc-300">Share the clipboard</div>
+                        <div className="text-[11px] font-bold text-zinc-300">{t("Share the clipboard")}</div>
                         <div className="text-[10.5px] text-zinc-500 leading-snug">
-                          Text you copy on the server comes to this device, by itself while the tab is in front. This device's text goes to the server only when you paste it there (a paste key in the tab, or its Paste button).
+                          {t("Text you copy on the server comes to this device, by itself while the tab is in front. This device's text goes to the server only when you paste it there (a paste key in the tab, or its Paste button).")}
                         </div>
                       </div>
                       <button
                         type="button"
                         onClick={() => set({ clipboard: !o.clipboard })}
                         role="switch"
-                        aria-label="Share the clipboard"
+                        aria-label={t("Share the clipboard")}
                         aria-checked={o.clipboard}
                         className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.clipboard ? "bg-primary" : "bg-white/10"}`}
                       >
@@ -916,14 +927,14 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     {/* Files: a folder or a whole drive of this computer (rdp_share.rs). */}
                     {!IS_MOBILE && <RdpShareFields o={o} set={set} drives={localDrives} />}
                     <div className="pt-1 space-y-2.5">
-                      <div className="text-[11px] font-bold text-zinc-300">Speed and quality</div>
+                      <div className="text-[11px] font-bold text-zinc-300">{t("Speed and quality")}</div>
                       <RdpSpeedFields o={o} set={set} />
                     </div>
                   </>) : (<>
                   <div className="flex justify-between items-center gap-3">
-                    <label className="text-[11px] font-bold text-zinc-400 shrink-0">Window</label>
+                    <label className="text-[11px] font-bold text-zinc-400 shrink-0">{t("Window")}</label>
                     <select
-                      aria-label="RDP window"
+                      aria-label={t("RDP window")}
                       className="flex-1 min-w-0 h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
                       value={o.fullScreen ? "full" : size}
                       onChange={(e) => {
@@ -933,7 +944,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                         set({ fullScreen: false, width, height });
                       }}
                     >
-                      <option value="full" className="bg-[#1a1a1e]">Full screen</option>
+                      <option value="full" className="bg-[#1a1a1e]">{t("Full screen")}</option>
                       {RDP_WINDOW_SIZES.map(([w, h]) => (
                         <option key={`${w}x${h}`} value={`${w}x${h}`} className="bg-[#1a1a1e]">{w} × {h}</option>
                       ))}
@@ -942,14 +953,14 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="text-[11px] font-bold text-zinc-300">Share the clipboard</div>
-                      <div className="text-[10.5px] text-zinc-500 leading-snug">Copy and paste between this computer and the server.</div>
+                      <div className="text-[11px] font-bold text-zinc-300">{t("Share the clipboard")}</div>
+                      <div className="text-[10.5px] text-zinc-500 leading-snug">{t("Copy and paste between this computer and the server.")}</div>
                     </div>
                     <button
                       type="button"
                       onClick={() => set({ clipboard: !o.clipboard })}
                       role="switch"
-                      aria-label="Share the clipboard"
+                      aria-label={t("Share the clipboard")}
                       aria-checked={o.clipboard}
                       className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.clipboard ? "bg-primary" : "bg-white/10"}`}
                     >
@@ -958,14 +969,14 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="text-[11px] font-bold text-zinc-300">Share this computer's files</div>
-                      <div className="text-[10.5px] text-zinc-500 leading-snug">The server can read and change them (with Remmina: your home folder).</div>
+                      <div className="text-[11px] font-bold text-zinc-300">{t("Share this computer's files")}</div>
+                      <div className="text-[10.5px] text-zinc-500 leading-snug">{t("The server can read and change them (with Remmina: your home folder).")}</div>
                     </div>
                     <button
                       type="button"
                       onClick={() => set({ drives: !o.drives })}
                       role="switch"
-                      aria-label="Share this computer's files"
+                      aria-label={t("Share this computer's files")}
                       aria-checked={o.drives}
                       className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${o.drives ? "bg-primary" : "bg-white/10"}`}
                     >
@@ -973,7 +984,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     </button>
                   </div>
                   </>)}
-                  <p className="text-[10px] text-zinc-500 ml-1">These are kept on this device only, not synced.</p>
+                  <p className="text-[10px] text-zinc-500 ml-1">{t("These are kept on this device only, not synced.")}</p>
                 </div>
               );
             })()}
@@ -985,14 +996,14 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               return (
                 <div className="space-y-2.5 pt-1">
                   <SwitchRow
-                    label="Share the clipboard"
-                    hint="Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there (a paste key in the tab, or its Paste button). Plain ASCII text only, such as links and commands: a VNC clipboard can't carry other characters."
+                    label={t("Share the clipboard")}
+                    hint={t("Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there (a paste key in the tab, or its Paste button). Plain ASCII text only, such as links and commands: a VNC clipboard can't carry other characters.")}
                     checked={o.clipboard}
                     onChange={(clipboard) => set({ clipboard })}
                   />
-                  <div className="text-[11px] font-bold text-zinc-300">Speed and quality</div>
+                  <div className="text-[11px] font-bold text-zinc-300">{t("Speed and quality")}</div>
                   <VncSpeedFields o={o} set={set} />
-                  <p className="text-[10px] text-zinc-500 ml-1">These are kept on this device only, not synced.</p>
+                  <p className="text-[10px] text-zinc-500 ml-1">{t("These are kept on this device only, not synced.")}</p>
                 </div>
               );
             })()}
@@ -1000,26 +1011,26 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             {isSsh && (<>
             <div className="space-y-2.5">
               <div className="flex justify-between items-center">
-                <span className="text-[11px] font-bold text-zinc-400">Port forwarding</span>
-                <button onClick={() => setNewNode({ ...newNode, tunnels: [...newNode.tunnels, { rid: `t-${Date.now()}-${Math.random().toString(36).slice(2,7)}`, local: "1080", remote: "", type: "D" }] })} className="text-[11px] font-bold text-primary hover:text-primary transition-colors">+ Add</button>
+                <span className="text-[11px] font-bold text-zinc-400">{t("Port forwarding")}</span>
+                <button onClick={() => setNewNode({ ...newNode, tunnels: [...newNode.tunnels, { rid: `t-${Date.now()}-${Math.random().toString(36).slice(2,7)}`, local: "1080", remote: "", type: "D" }] })} className="text-[11px] font-bold text-primary hover:text-primary transition-colors">{t("+ Add")}</button>
               </div>
 
               <div className="space-y-2">
-                {newNode.tunnels?.map((t: any, idx: number) => (
+                {newNode.tunnels?.map((tun: any, idx: number) => (
                   // `rid` is a stable per-row id added on Add. Falling
                   // back to idx for legacy rows that lack it; new rows
                   // always carry rid so deletions / reorders preserve
                   // each input's focus and cursor state.
-                  <div key={t.rid ?? idx} className="p-2 bg-[#1a1a1e] rounded-lg border border-white/5 group transition-all hover:border-primary/30 space-y-1.5">
+                  <div key={tun.rid ?? idx} className="p-2 bg-[#1a1a1e] rounded-lg border border-white/5 group transition-all hover:border-primary/30 space-y-1.5">
                     <div className="flex items-center gap-2">
                       <select
                         className="bg-transparent text-[11px] font-black outline-none text-primary uppercase tracking-wider cursor-pointer pl-1"
-                        value={t.type}
+                        value={tun.type}
                         onChange={e => updateTunnel(idx, 'type', e.target.value)}
                       >
-                        <option value="D" className="bg-[#1a1a1e] text-primary">Dynamic</option>
-                        <option value="L" className="bg-[#1a1a1e] text-primary">Local</option>
-                        <option value="R" className="bg-[#1a1a1e] text-primary">Remote</option>
+                        <option value="D" className="bg-[#1a1a1e] text-primary">{t("Dynamic")}</option>
+                        <option value="L" className="bg-[#1a1a1e] text-primary">{t("Local")}</option>
+                        <option value="R" className="bg-[#1a1a1e] text-primary">{t("Remote")}</option>
                       </select>
 
                       <div className="h-4 w-px bg-white/10 mx-1" />
@@ -1027,27 +1038,27 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       <input
                         className="flex-1 min-w-0 bg-transparent text-[12px] font-mono outline-none text-zinc-300 placeholder:text-zinc-700"
                         placeholder={
-                          t.type === 'D' ? "Port (1080)" :
-                          t.type === 'R' ? "Server bind (8080 or 0.0.0.0:8080)" :
-                                           "Local (8080 or 0.0.0.0:8080)"
+                          tun.type === 'D' ? t("Port (1080)") :
+                          tun.type === 'R' ? t("Server bind (8080 or 0.0.0.0:8080)") :
+                                             t("Local (8080 or 0.0.0.0:8080)")
                         }
-                        value={t.local}
+                        value={tun.local}
                         onChange={e => updateTunnel(idx, 'local', e.target.value)}
                       />
 
-                      {t.type !== 'D' && (
+                      {tun.type !== 'D' && (
                         <>
                           <ArrowLeftRight size={10} className="text-zinc-700 shrink-0 mx-1" />
                           <input
                             className="flex-1 min-w-0 bg-transparent text-[12px] font-mono outline-none text-primary placeholder:text-zinc-700"
-                            placeholder="Remote (80)"
-                            value={t.remote}
+                            placeholder={t("Remote (80)")}
+                            value={tun.remote}
                             onChange={e => updateTunnel(idx, 'remote', e.target.value)}
                           />
                         </>
                       )}
 
-                      <button aria-label="Remove this forward" onClick={() => setNewNode({ ...newNode, tunnels: newNode.tunnels.filter((_: any, i: number) => i !== idx) })} className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 w-6 h-6 flex items-center justify-center text-red-500 hover:bg-red-500/10 rounded transition-all shrink-0">
+                      <button aria-label={t("Remove this forward")} onClick={() => setNewNode({ ...newNode, tunnels: newNode.tunnels.filter((_: any, i: number) => i !== idx) })} className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 w-6 h-6 flex items-center justify-center text-red-500 hover:bg-red-500/10 rounded transition-all shrink-0">
                         <X size={12} />
                       </button>
                     </div>
@@ -1056,26 +1067,26 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     <div className="flex items-center gap-2 pl-1">
                       <input
                         className="flex-1 min-w-0 bg-transparent text-[11px] outline-none text-zinc-300 placeholder:text-zinc-700"
-                        placeholder="Name (optional)"
-                        aria-label="Forward name"
+                        placeholder={t("Name (optional)")}
+                        aria-label={t("Forward name")}
                         maxLength={64}
-                        value={t.name ?? ""}
+                        value={tun.name ?? ""}
                         onChange={e => updateTunnel(idx, 'name', e.target.value)}
                       />
                       <button
                         type="button"
-                        onClick={() => updateTunnel(idx, 'stopped', !t.stopped)}
-                        title={t.stopped
-                          ? "Kept, but not started on connect. Click to start it on connect."
-                          : "Started on connect. Click to keep it stopped."}
+                        onClick={() => updateTunnel(idx, 'stopped', !tun.stopped)}
+                        title={tun.stopped
+                          ? t("Kept, but not started on connect. Click to start it on connect.")
+                          : t("Started on connect. Click to keep it stopped.")}
                         className={`h-5 px-1.5 rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 shrink-0 transition-colors ${
-                          t.stopped
+                          tun.stopped
                             ? "text-zinc-500 bg-white/5 hover:text-zinc-300"
                             : "text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20"
                         }`}
                       >
-                        {t.stopped ? <Square size={9} /> : <Play size={9} fill="currentColor" />}
-                        {t.stopped ? "Stopped" : "On connect"}
+                        {tun.stopped ? <Square size={9} /> : <Play size={9} fill="currentColor" />}
+                        {tun.stopped ? t("Stopped") : t("On connect")}
                       </button>
                     </div>
                   </div>
@@ -1089,7 +1100,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 panel inside an open session. */}
             <div className="space-y-2.5">
               <div className="flex justify-between items-center">
-                <span className="text-[11px] font-bold text-zinc-400">Folder mirrors</span>
+                <span className="text-[11px] font-bold text-zinc-400">{t("Folder mirrors")}</span>
                 <button
                   type="button"
                   onClick={() => setNewNode({
@@ -1097,7 +1108,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     mirrors: [...(newNode.mirrors || []), { local: "", remote: "", soft_delete: true, excludes: [], conflict_resolution: "local" }],
                   })}
                   className="text-[11px] font-bold text-primary hover:text-primary transition-colors"
-                >+ Add</button>
+                >{t("+ Add")}</button>
               </div>
               <div className="space-y-2">
                 {(newNode.mirrors || []).map((m: any, idx: number) => (
@@ -1124,7 +1135,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                           setNewNode({ ...newNode, mirrors: next });
                         }}
                       />
-                      <button aria-label="Remove this mirror"
+                      <button aria-label={t("Remove this mirror")}
                         type="button"
                         onClick={() => setNewNode({ ...newNode, mirrors: newNode.mirrors.filter((_: any, i: number) => i !== idx) })}
                         className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 w-6 h-6 flex items-center justify-center text-red-500 hover:bg-red-500/10 rounded transition-all shrink-0"
@@ -1144,7 +1155,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                           }}
                           className="accent-primary"
                         />
-                        <span>Soft delete</span>
+                        <span>{t("Soft delete")}</span>
                       </label>
                       <select
                         value={m.conflict_resolution || "local"}
@@ -1153,16 +1164,16 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                           next[idx] = { ...next[idx], conflict_resolution: e.target.value };
                           setNewNode({ ...newNode, mirrors: next });
                         }}
-                        title="Initial-sync conflict resolution: which side overwrites when a file exists on both with different content. Files missing on one side always copy across."
+                        title={t("Initial-sync conflict resolution: which side overwrites when a file exists on both with different content. Files missing on one side always copy across.")}
                         className="h-6 px-1.5 bg-black/30 border border-white/10 rounded text-[10.5px] text-zinc-300 outline-none focus:border-primary/40"
                       >
-                        <option value="local">Local wins</option>
-                        <option value="remote">Remote wins</option>
-                        <option value="newer">Newer wins</option>
+                        <option value="local">{t("Local wins")}</option>
+                        <option value="remote">{t("Remote wins")}</option>
+                        <option value="newer">{t("Newer wins")}</option>
                       </select>
                       <input
                         className="flex-1 min-w-0 h-6 bg-transparent rounded px-1 text-[10.5px] font-mono text-zinc-400 placeholder:text-zinc-700 outline-none"
-                        placeholder="Excludes: .git, node_modules, *.swp"
+                        placeholder={t("Excludes: .git, node_modules, *.swp")}
                         value={(m.excludes || []).join(", ")}
                         onChange={(e) => {
                           const parts = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
@@ -1183,16 +1194,16 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 a shell on. */}
             <div className="flex items-center justify-between gap-3 pt-1">
               <div className="min-w-0">
-                <div className="text-[11px] font-bold text-zinc-300">Autostart</div>
+                <div className="text-[11px] font-bold text-zinc-300">{t("Autostart")}</div>
                 <div className="text-[10.5px] text-zinc-500 leading-snug">
-                  Open + connect this node automatically when the app launches.
+                  {t("Open + connect this node automatically when the app launches.")}
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setNewNode({ ...newNode, autostart: !newNode.autostart })}
                 role="switch"
-                aria-label="Autostart"
+                aria-label={t("Autostart")}
                 aria-checked={!!newNode.autostart}
                 className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${
                   newNode.autostart ? "bg-primary" : "bg-white/10"
@@ -1211,8 +1222,8 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             {isSsh && (
               <div className="space-y-2 pt-1">
                 {([
-                  ["keepalives", "Send keepalives"],
-                  ["reconnect", "Reconnect automatically"],
+                  ["keepalives", t("Send keepalives")],
+                  ["reconnect", t("Reconnect automatically")],
                 ] as const).map(([field, label]) => (
                   <div key={field} className="flex items-center justify-between gap-3">
                     <label className="text-[11px] font-bold text-zinc-400 ml-1">{label}</label>
@@ -1222,13 +1233,13 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       value={(newNode.sessionKeep || DEFAULT_SESSION_KEEP)[field]}
                       onChange={(e) => setNewNode({ ...newNode, sessionKeep: { ...(newNode.sessionKeep || DEFAULT_SESSION_KEEP), [field]: e.target.value } })}
                     >
-                      <option value="default" className="bg-[#1a1a1e]">As in Settings</option>
-                      <option value="on" className="bg-[#1a1a1e]">On</option>
-                      <option value="off" className="bg-[#1a1a1e]">Off</option>
+                      <option value="default" className="bg-[#1a1a1e]">{t("As in Settings")}</option>
+                      <option value="on" className="bg-[#1a1a1e]">{t("On")}</option>
+                      <option value="off" className="bg-[#1a1a1e]">{t("Off")}</option>
                     </select>
                   </div>
                 ))}
-                <p className="text-[10px] text-zinc-500 ml-1">Kept on this device only. A keepalive change applies the next time a session connects.</p>
+                <p className="text-[10px] text-zinc-500 ml-1">{t("Kept on this device only. A keepalive change applies the next time a session connects.")}</p>
               </div>
             )}
 
@@ -1238,15 +1249,15 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 where the deploy script lives, contact for the box, etc. */}
             <div className="space-y-1.5 pt-1">
               <label className="text-[11px] font-bold text-zinc-400 ml-1 flex items-center gap-2">
-                <span>Notes</span>
+                <span>{t("Notes")}</span>
                 <span className="text-[10px] text-zinc-600 font-normal normal-case tracking-normal">
-                  Description, runbook, contacts — only for this server.
+                  {t("Description, runbook, contacts — only for this server.")}
                 </span>
               </label>
               <textarea
                 value={newNode.notes || ""}
                 onChange={(e) => setNewNode({ ...newNode, notes: e.target.value })}
-                placeholder="e.g. Prod web. Reboot windows Sun 04:00 UTC. Deploy via `make ship`. Pager: @ops"
+                placeholder={t("e.g. Prod web. Reboot windows Sun 04:00 UTC. Deploy via `make ship`. Pager: @ops")}
                 rows={6}
                 className="w-full bg-[#1a1a1e] rounded-lg p-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner font-mono leading-relaxed resize-y"
               />
@@ -1258,8 +1269,13 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 ml-1 pt-0.5">
                     <History size={11} className="text-zinc-600 shrink-0" />
                     <span>
-                      Last edited{when ? ` ${relTime(when)}` : ""}
-                      {newNode.editedBy ? <> by <span className="text-zinc-300 font-medium">{newNode.editedBy}</span></> : ""}
+                      {(() => {
+                        const who = newNode.editedBy ? <span className="text-zinc-300 font-medium">{newNode.editedBy}</span> : null;
+                        if (when && who) return tx("Last edited {when} by {who}", { when: relTime(when), who });
+                        if (when) return t("Last edited {when}", { when: relTime(when) });
+                        if (who) return tx("Last edited by {who}", { who });
+                        return t("Last edited");
+                      })()}
                       {when && <span className="text-zinc-600" title={when.toLocaleString()}> · {when.toLocaleDateString()}</span>}
                     </span>
                   </div>
@@ -1274,15 +1290,15 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
             {isSsh && (
             <div className="space-y-1.5 pt-1">
               <label className="text-[11px] font-bold text-zinc-400 ml-1 flex items-center gap-2">
-                <span>Run on connect</span>
+                <span>{t("Run on connect")}</span>
                 <span className="text-[10px] text-zinc-600 font-normal normal-case tracking-normal">
-                  Commands auto-run once on the first terminal. One per line.
+                  {t("Commands auto-run once on the first terminal. One per line.")}
                 </span>
               </label>
               <textarea
                 value={newNode.runOnConnect || ""}
                 onChange={(e) => setNewNode({ ...newNode, runOnConnect: e.target.value })}
-                placeholder={"e.g.\ncd /var/www\nsource .venv/bin/activate\ntail -f storage/logs/app.log"}
+                placeholder={t("e.g.\ncd /var/www\nsource .venv/bin/activate\ntail -f storage/logs/app.log")}
                 rows={4}
                 spellCheck={false}
                 className="w-full bg-[#1a1a1e] rounded-lg p-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner font-mono leading-relaxed resize-y"
@@ -1294,7 +1310,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                   onChange={(e) => setNewNode({ ...newNode, runOnConnectEvery: e.target.checked })}
                   className="accent-primary"
                 />
-                <span>Also run them in each new terminal you open</span>
+                <span>{t("Also run them in each new terminal you open")}</span>
               </label>
             </div>
             )}
@@ -1304,7 +1320,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
         {/* Footer */}
         <div className="p-6 border-t border-white/5 shrink-0">
           <button onClick={save} disabled={saving} className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:bg-primary hover:shadow-[0_0_20px_rgba(var(--primary),0.3)] transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center gap-2">
-            <Cpu size={14} /> {isEditMode ? "Save changes" : "Save server"}
+            <Cpu size={14} /> {isEditMode ? t("Save changes") : t("Save server")}
           </button>
         </div>
       </div>
@@ -1330,10 +1346,10 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               <div className="flex items-center gap-2">
                 <Download size={14} className="text-primary" />
                 <h3 id="ssh-import-title" className="text-[12px] font-black uppercase tracking-widest text-zinc-100">
-                  Import SSH hosts
+                  {t("Import SSH hosts")}
                 </h3>
               </div>
-              <button aria-label="Close"
+              <button aria-label={t("Close")}
                 onClick={closeImportModal}
                 disabled={importBusy}
                 className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-white/[0.04] border border-white/10 hover:bg-white/10 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1358,7 +1374,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     : "text-zinc-400 border border-white/5 hover:text-white hover:bg-white/[0.04]"
                 }`}
               >
-                From ~/.ssh/config
+                {t("From ~/.ssh/config")}
               </button>
               <button
                 onClick={() => switchImportSource("paste")}
@@ -1369,7 +1385,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                     : "text-zinc-400 border border-white/5 hover:text-white hover:bg-white/[0.04]"
                 }`}
               >
-                Paste PuTTY / MobaXterm / JSON
+                {t("Paste PuTTY / MobaXterm / JSON")}
               </button>
             </div>
 
@@ -1378,17 +1394,27 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               {importSource === "paste" && importHosts.length === 0 && !importLoading && (
                 <div className="space-y-2 mb-2">
                   <div className="text-[11px] text-zinc-400 leading-relaxed px-1">
-                    Paste an export from another SSH client. Recognised sources:
+                    {t("Paste an export from another SSH client. Recognised sources:")}
                     <ul className="mt-1.5 ml-4 list-disc space-y-0.5 text-zinc-500 text-[10.5px]">
-                      <li><b className="text-zinc-300">PuTTY</b> — export via <code className="text-zinc-300">regedit /e ... HKCU\Software\SimonTatham\PuTTY\Sessions</code>, open the .reg file, paste its contents.</li>
-                      <li><b className="text-zinc-300">MobaXterm</b> — Export sessions → open <code className="text-zinc-300">.mxtsessions</code>, paste.</li>
-                      <li><b className="text-zinc-300">JSON</b> — an array of <code className="text-zinc-300">{`{name,host,port,user}`}</code> or Termius-style <code className="text-zinc-300">{`{label,address,port,username}`}</code>.</li>
+                      <li>{tx("{putty} — export via {command}, open the .reg file, paste its contents.", {
+                        putty: <b className="text-zinc-300">PuTTY</b>,
+                        command: <code className="text-zinc-300">regedit /e ... HKCU\Software\SimonTatham\PuTTY\Sessions</code>,
+                      })}</li>
+                      <li>{tx("{mobaxterm} — Export sessions → open {file}, paste.", {
+                        mobaxterm: <b className="text-zinc-300">MobaXterm</b>,
+                        file: <code className="text-zinc-300">.mxtsessions</code>,
+                      })}</li>
+                      <li>{tx("{json} — an array of {shape} or Termius-style {termius}.", {
+                        json: <b className="text-zinc-300">JSON</b>,
+                        shape: <code className="text-zinc-300">{`{name,host,port,user}`}</code>,
+                        termius: <code className="text-zinc-300">{`{label,address,port,username}`}</code>,
+                      })}</li>
                     </ul>
                   </div>
                   <textarea
                     value={importPasteText}
                     onChange={(e) => setImportPasteText(e.target.value)}
-                    placeholder={`Paste your export here…\n\nExample JSON:\n[\n  {"name":"prod-web","host":"1.2.3.4","port":22,"user":"root"},\n  {"name":"db","host":"10.0.0.5","user":"admin"}\n]`}
+                    placeholder={t(`Paste your export here…\n\nExample JSON:\n[\n  {"name":"prod-web","host":"1.2.3.4","port":22,"user":"root"},\n  {"name":"db","host":"10.0.0.5","user":"admin"}\n]`)}
                     rows={10}
                     className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-[11px] font-mono text-zinc-200 placeholder:text-zinc-600 focus:border-primary/40 focus:outline-none resize-none custom-scrollbar"
                   />
@@ -1398,7 +1424,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       disabled={!importPasteText.trim()}
                       className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase tracking-wider bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                     >
-                      Parse pasted text
+                      {t("Parse pasted text")}
                     </button>
                   </div>
                 </div>
@@ -1406,7 +1432,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
 
               {importLoading && (
                 <div className="p-6 text-center text-[12px] text-zinc-400">
-                  {importSource === "ssh" ? "Reading ~/.ssh/config…" : "Parsing pasted text…"}
+                  {importSource === "ssh" ? t("Reading ~/.ssh/config…") : t("Parsing pasted text…")}
                 </div>
               )}
 
@@ -1418,7 +1444,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
 
               {!importLoading && !importError && importSource === "ssh" && importHosts.length === 0 && (
                 <div className="p-6 text-center text-[12px] text-zinc-500">
-                  No importable hosts found in ~/.ssh/config.
+                  {t("No importable hosts found in ~/.ssh/config.")}
                 </div>
               )}
 
@@ -1434,10 +1460,10 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                       {importSelected.size === importHosts.length
                         ? <CheckSquare size={13} className="text-primary" />
                         : <Square size={13} className="text-zinc-500" />}
-                      <span>Select all ({importHosts.length})</span>
+                      <span>{t("Select all ({count})", { count: importHosts.length })}</span>
                     </button>
                     <span className="text-[11px] text-zinc-500 font-mono">
-                      {importSelected.size} selected
+                      {t("{count} selected", { count: importSelected.size })}
                     </span>
                   </div>
 
@@ -1468,8 +1494,8 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                             </div>
                             {(h.identity_file || h.proxy_jump) && (
                               <div className="mt-0.5 text-[10.5px] text-zinc-600 truncate">
-                                {h.identity_file && <span className="mr-2">key: {h.identity_file}</span>}
-                                {h.proxy_jump && <span>jump: {h.proxy_jump}</span>}
+                                {h.identity_file && <span className="mr-2">{t("key: {file}", { file: h.identity_file })}</span>}
+                                {h.proxy_jump && <span>{t("jump: {host}", { host: h.proxy_jump })}</span>}
                               </div>
                             )}
                           </div>
@@ -1500,7 +1526,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 disabled={importBusy}
                 className="px-3 h-8 rounded-lg text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Cancel
+                {t("Cancel")}
               </button>
               <button
                 onClick={importSelectedHosts}
@@ -1508,7 +1534,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
                 className="px-3 h-8 rounded-lg text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
               >
                 <Download size={11} />
-                {importBusy ? "Importing…" : `Import ${importSelected.size} selected`}
+                {importBusy ? t("Importing…") : t("Import {count} selected", { count: importSelected.size })}
               </button>
             </div>
           </div>

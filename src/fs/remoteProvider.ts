@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { FileEntry, ListResult, RemoteFileProvider } from "./types";
+import { tk } from "../i18n";
 
 // SFTP provider. Wraps the existing `sftp_*` Tauri commands behind the
 // `FileProvider` interface so the same `FilePanel` UI can drive either side.
@@ -28,7 +29,7 @@ export function createRemoteProvider(sessionId: string): RemoteFileProvider {
   return {
     id: "remote",
     sessionId,
-    label: "Remote",
+    label: tk("Remote"),
     pathSep: "/",
 
     async homePath() {

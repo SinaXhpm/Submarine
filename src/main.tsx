@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { IS_IOS, IS_MOBILE } from "./util/platform";
+import { initI18n } from "./i18n";
 import "./App.css";
 // Registers the bundled terminal fonts (@font-face) before any terminal mounts.
 import "./util/bundledFonts";
@@ -96,8 +97,12 @@ if (window.visualViewport) {
 window.addEventListener("resize", syncVvHeight);
 window.addEventListener("orientationchange", syncVvHeight);
 
-ReactDOM.createRoot(root).render(
-  <ErrorBoundary>
-    <App />
-  </ErrorBoundary>,
-);
+// The device's language is loaded before the first screen, so the app never
+// shows English first (src/i18n). It renders even if that fails.
+void initI18n().finally(() => {
+  ReactDOM.createRoot(root).render(
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>,
+  );
+});

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Trash2, X } from "lucide-react";
 import { useFocusTrap } from "../ui/confirm";
+import { tk, useT } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // Deletions a shared profile's sync would have made here, held until this
 // device's user decides (src-tauri/src/approvals.rs, hold_deletions): one
@@ -12,13 +14,13 @@ import { useFocusTrap } from "../ui/confirm";
 export type HeldDeletion = { uuid: string; entity_type: string; name: string; emptied?: boolean };
 
 const KINDS: [string, string][] = [
-  ["servers", "Servers"],
-  ["folders", "Folders"],
-  ["credentials", "Logins"],
-  ["ssh_keys", "SSH keys"],
-  ["commands", "Commands"],
-  ["notes", "Notes"],
-  ["monitor_configs", "Monitoring settings"],
+  ["servers", tk("Servers")],
+  ["folders", tk("Folders")],
+  ["credentials", tk("Logins")],
+  ["ssh_keys", tk("SSH keys")],
+  ["commands", tk("Commands")],
+  ["notes", tk("Notes")],
+  ["monitor_configs", tk("Monitoring settings")],
 ];
 
 export function HeldDeletions({ items, onResolve, onClose }: {
@@ -26,6 +28,7 @@ export function HeldDeletions({ items, onResolve, onClose }: {
   onResolve: (deleteThem: boolean) => Promise<void>;
   onClose: () => void;
 }) {
+  const t = useT();
   const panelRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(1, panelRef);
   const [busy, setBusy] = useState(false);
@@ -49,7 +52,7 @@ export function HeldDeletions({ items, onResolve, onClose }: {
   };
   const groups = [
     ...KINDS.map(([type, label]) => [label, items.filter((i) => !i.emptied && i.entity_type === type)] as const),
-    ["Saved key or password emptied", items.filter((i) => i.emptied)] as const,
+    [tk("Saved key or password emptied"), items.filter((i) => i.emptied)] as const,
   ].filter(([, list]) => list.length > 0);
   const anyEmptied = items.some((i) => i.emptied);
 
@@ -67,26 +70,27 @@ export function HeldDeletions({ items, onResolve, onClose }: {
           <div className="flex items-center gap-2">
             <Trash2 size={14} className="text-amber-400" />
             <span id="held-deletions-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
-              {anyEmptied ? "Deleted or emptied by someone else" : "Deleted by someone else"}
+              {anyEmptied ? t("Deleted or emptied by someone else") : t("Deleted by someone else")}
             </span>
           </div>
-          <button aria-label="Close" onClick={onClose} className="text-zinc-500 hover:text-white shrink-0">
+          <button aria-label={t("Close")} onClick={onClose} className="text-zinc-500 hover:text-white shrink-0">
             <X size={12} />
           </button>
         </div>
         <p className="px-4 pb-3 text-[12px] text-zinc-400 leading-relaxed">
           {anyEmptied
-            ? "Someone you share this profile with deleted these, or emptied a saved key or password in them. They're still here as they were: do the same here, or keep them. "
-            : "Someone you share this profile with deleted these in one go. They're still here: delete them here too, or keep them. "}
-          Kept items come back for everyone, or, if you can only view this profile, stay on this device.
+            ? t("Someone you share this profile with deleted these, or emptied a saved key or password in them. They're still here as they were: do the same here, or keep them.")
+            : t("Someone you share this profile with deleted these in one go. They're still here: delete them here too, or keep them.")}
+          {sentenceGap()}
+          {t("Kept items come back for everyone, or, if you can only view this profile, stay on this device.")}
         </p>
         <div className="flex-1 overflow-y-auto custom-scrollbar px-4 pb-2 space-y-3">
           {groups.map(([label, list]) => (
-            <section key={label} aria-label={label} className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
-              <div className="text-[10.5px] font-bold uppercase tracking-wider text-zinc-500 mb-1.5">{label}</div>
+            <section key={label} aria-label={t(label)} className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+              <div className="text-[10.5px] font-bold uppercase tracking-wider text-zinc-500 mb-1.5">{t(label)}</div>
               <ul className="space-y-1">
                 {list.map((i) => (
-                  <li key={i.uuid} className="text-[12px] text-zinc-200 break-words">{i.name || "(no name)"}</li>
+                  <li key={i.uuid} className="text-[12px] text-zinc-200 break-words">{i.name || t("(no name)")}</li>
                 ))}
               </ul>
             </section>
@@ -98,14 +102,14 @@ export function HeldDeletions({ items, onResolve, onClose }: {
             onClick={() => decide(false)}
             className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-50"
           >
-            Keep them
+            {t("Keep them")}
           </button>
           <button
             disabled={busy}
             onClick={() => decide(true)}
             className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-rose-500/10 border border-rose-500/40 text-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
           >
-            {anyEmptied ? "Do the same here" : "Delete here too"}
+            {anyEmptied ? t("Do the same here") : t("Delete here too")}
           </button>
         </div>
       </div>

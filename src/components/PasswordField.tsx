@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
+import { useT } from "../i18n";
 
 // Password input with a built-in show/hide eye toggle. Used wherever the
 // user might need to *inspect* a stored secret (vault credential password,
@@ -24,6 +25,7 @@ interface Props {
 const PasswordField = ({
   value, onChange, placeholder, className, autoFocus, onKeyDown, disabled,
 }: Props) => {
+  const t = useT();
   const [show, setShow] = useState(false);
   return (
     <div className="relative">
@@ -41,7 +43,7 @@ const PasswordField = ({
         type="button"
         onClick={() => setShow((s) => !s)}
         tabIndex={-1}
-        title={show ? "Hide password" : "Show password"}
+        title={show ? t("Hide password") : t("Show password")}
         className="absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-white/5 flex items-center justify-center"
       >
         {show ? <EyeOff size={14} /> : <Eye size={14} />}

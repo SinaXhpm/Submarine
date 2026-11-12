@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Search, X, History } from "lucide-react";
+import { t, tx, useLanguage, useT } from "../i18n";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Command History Search — Ctrl+Shift+R (Cmd+Shift+R on macOS) overlay
@@ -38,15 +39,18 @@ interface Props {
   onInsert: (command: string, execute: boolean) => void;
 }
 
+// How long ago, as one short text ("5s ago", "3m ago", "2h ago", "4d ago").
 const relTime = (ts: number): string => {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
+  if (s < 60) return t("{n}s ago", { n: s });
+  if (s < 3600) return t("{n}m ago", { n: Math.floor(s / 60) });
+  if (s < 86400) return t("{n}h ago", { n: Math.floor(s / 3600) });
+  return t("{n}d ago", { n: Math.floor(s / 86400) });
 };
 
 const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Props) => {
+  const t = useT();
+  const language = useLanguage();
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState<CmdHistoryEntry[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -130,10 +134,10 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
   };
 
   const emptyMsg = useMemo(() => {
-    if (error) return `Error: ${error}`;
-    if (query) return `No commands match "${query}".`;
-    return "Nothing here yet. Commands you run in a terminal will appear in this list.";
-  }, [error, query]);
+    if (error) return t("Error: {error}", { error });
+    if (query) return t('No commands match "{query}".', { query });
+    return t("Nothing here yet. Commands you run in a terminal will appear in this list.");
+  }, [error, query, language]);
 
   if (!isOpen) return null;
 
@@ -153,7 +157,7 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
         <div className="flex items-center gap-2 px-3 py-2 border-b border-white/10">
           <History size={14} className="text-primary" />
           <span id="cmd-history-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
-            Command History
+            {t("Command History")}
           </span>
           <div className="flex-1" />
           {filterServerId != null && (
@@ -164,13 +168,13 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
                 checked={restrictToServer}
                 onChange={(e) => setRestrictToServer(e.target.checked)}
               />
-              This server only
+              {t("This server only")}
             </label>
           )}
           <button
             onClick={onClose}
             className="text-zinc-500 hover:text-white shrink-0 p-0.5"
-            aria-label="Close"
+            aria-label={t("Close")}
           >
             <X size={14} />
           </button>
@@ -181,7 +185,7 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search command history…"
+            placeholder={t("Search command history…")}
             className="flex-1 bg-transparent outline-none text-[13px] text-zinc-100 placeholder:text-zinc-600"
           />
           <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">
@@ -218,7 +222,7 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
                   {row.command}
                 </div>
                 <div className="mt-1 flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
-                  <span title={new Date(row.ts).toISOString()}>{relTime(row.ts)} ago</span>
+                  <span title={new Date(row.ts).toISOString()}>{relTime(row.ts)}</span>
                   {row.server_name && (
                     <>
                       <span className="text-zinc-700">·</span>
@@ -229,7 +233,7 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
                     <>
                       <span className="text-zinc-700">·</span>
                       <span className={row.exit_code === 0 ? "text-emerald-400" : "text-rose-400"}>
-                        exit {row.exit_code}
+                        {t("exit {code}", { code: row.exit_code })}
                       </span>
                     </>
                   )}
@@ -239,9 +243,9 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
           )}
         </div>
         <div className="px-3 py-1.5 border-t border-white/10 flex items-center gap-3 text-[10px] text-zinc-500 uppercase tracking-wider">
-          <span><kbd className="text-zinc-400">Enter</kbd> insert</span>
-          <span><kbd className="text-zinc-400">Shift+Enter</kbd> insert + run</span>
-          <span><kbd className="text-zinc-400">Esc</kbd> close</span>
+          <span>{tx("{key} insert", { key: <kbd className="text-zinc-400">Enter</kbd> })}</span>
+          <span>{tx("{key} insert + run", { key: <kbd className="text-zinc-400">Shift+Enter</kbd> })}</span>
+          <span>{tx("{key} close", { key: <kbd className="text-zinc-400">Esc</kbd> })}</span>
         </div>
       </div>
     </div>,

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ShieldAlert, X } from "lucide-react";
 import { useFocusTrap } from "../ui/confirm";
+import { t, useT } from "../i18n";
 
 // What this device holds back until its user allows it: a change someone else
 // made in a shared profile that would act on its own here, or what a profile
@@ -27,28 +28,28 @@ const byRank = (a: string, b: string) => rank(a) - rank(b) || a.localeCompare(b)
 function describe(item: string, server: HeldServer): { what: string; detail?: string } {
   if (item.startsWith("moved:")) {
     return {
-      what: `Now connects to ${server.moved_to || "a new address"}`,
-      detail: `It connected to ${item.slice("moved:".length)}. Opening it asks you first.`,
+      what: t("Now connects to {address}", { address: server.moved_to || t("a new address") }),
+      detail: t("It connected to {address}. Opening it asks you first.", { address: item.slice("moved:".length) }),
     };
   }
   if (item === "run_on_connect") {
-    const where = server.run_on_connect_every
-      ? "into your terminal when you connect, and into each new terminal you open"
-      : "into your terminal when you connect";
-    return { what: `Types these commands ${where}`, detail: server.run_on_connect || "" };
+    const what = server.run_on_connect_every
+      ? t("Types these commands into your terminal when you connect, and into each new terminal you open")
+      : t("Types these commands into your terminal when you connect");
+    return { what, detail: server.run_on_connect || "" };
   }
   if (item === "autostart") {
-    return { what: "Connects by itself when you unlock this profile" };
+    return { what: t("Connects by itself when you unlock this profile") };
   }
   if (item.startsWith("tunnel:")) {
     const [kind, local, remote] = item.slice("tunnel:".length).split("|");
-    if (kind === "D") return { what: `SOCKS proxy on ${local}`, detail: "Programs set to use it reach the network through the server." };
-    if (kind === "L") return { what: `Local forward ${local} → ${remote}`, detail: "Connections to that address on this computer go through the server to the target." };
-    if (kind === "R") return { what: `Remote forward: the server listens on ${local} and sends connections to ${remote}`, detail: "Whoever reaches that port on the server reaches this side." };
-    return { what: `Forward ${item.slice("tunnel:".length)}` };
+    if (kind === "D") return { what: t("SOCKS proxy on {local}", { local }), detail: t("Programs set to use it reach the network through the server.") };
+    if (kind === "L") return { what: t("Local forward {local} → {remote}", { local, remote }), detail: t("Connections to that address on this computer go through the server to the target.") };
+    if (kind === "R") return { what: t("Remote forward: the server listens on {local} and sends connections to {remote}", { local, remote }), detail: t("Whoever reaches that port on the server reaches this side.") };
+    return { what: t("Forward {forward}", { forward: item.slice("tunnel:".length) }) };
   }
   if (item.startsWith("metric:")) {
-    return { what: "Monitor command, run on the server at every check", detail: item.slice("metric:".length) };
+    return { what: t("Monitor command, run on the server at every check"), detail: item.slice("metric:".length) };
   }
   return { what: item };
 }
@@ -58,6 +59,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
   onAllow: (serverId: number, items: string[]) => Promise<void>;
   onClose: () => void;
 }) {
+  const t = useT();
   const panelRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(1, panelRef);
   const [busy, setBusy] = useState(false);
@@ -101,17 +103,15 @@ export function HeldReview({ servers, onAllow, onClose }: {
           <div className="flex items-center gap-2">
             <ShieldAlert size={14} className="text-amber-400" />
             <span id="held-review-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
-              Waiting for your OK
+              {t("Waiting for your OK")}
             </span>
           </div>
-          <button aria-label="Close" onClick={onClose} className="text-zinc-500 hover:text-white shrink-0">
+          <button aria-label={t("Close")} onClick={onClose} className="text-zinc-500 hover:text-white shrink-0">
             <X size={12} />
           </button>
         </div>
         <p className="px-4 pb-3 text-[12px] text-zinc-400 leading-relaxed">
-          These came from someone you share this profile with, or from a profile file you imported. Until you
-          allow one, it doesn't run on this device: commands aren't typed, forwards stay stopped, autostart
-          doesn't connect and monitor commands don't run. Allowing counts for this device only.
+          {t("These came from someone you share this profile with, or from a profile file you imported. Until you allow one, it doesn't run on this device: commands aren't typed, forwards stay stopped, autostart doesn't connect and monitor commands don't run. Allowing counts for this device only.")}
         </p>
         <div className="flex-1 overflow-y-auto custom-scrollbar px-4 pb-2 space-y-3">
           {held.map((s) => (
@@ -119,7 +119,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
               <div className="flex items-center justify-between gap-2 mb-2">
                 <div className="min-w-0">
                   <div className="text-[12.5px] font-bold text-zinc-100 truncate">{s.name}</div>
-                  {s.edited_by && <div className="text-[10.5px] text-zinc-500 truncate">last changed by {s.edited_by}</div>}
+                  {s.edited_by && <div className="text-[10.5px] text-zinc-500 truncate">{t("last changed by {name}", { name: s.edited_by })}</div>}
                 </div>
                 {(s.held || []).length > 1 && (
                   <button
@@ -127,7 +127,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
                     onClick={() => allow(s.id, [])}
                     className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white disabled:opacity-50"
                   >
-                    Allow all
+                    {t("Allow all")}
                   </button>
                 )}
               </div>
@@ -149,10 +149,10 @@ export function HeldReview({ servers, onAllow, onClose }: {
                       <button
                         disabled={busy}
                         onClick={() => allow(s.id, [item])}
-                        aria-label={`Allow: ${d.what}`}
+                        aria-label={t("Allow: {what}", { what: d.what })}
                         className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-50"
                       >
-                        Allow
+                        {t("Allow")}
                       </button>
                     </li>
                   );
@@ -168,7 +168,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
               onClick={allowEverything}
               className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-50"
             >
-              Allow everything
+              {t("Allow everything")}
             </button>
           )}
           <button
@@ -176,7 +176,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
             data-default-focus
             className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white"
           >
-            Close
+            {t("Close")}
           </button>
         </div>
       </div>
