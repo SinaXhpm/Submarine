@@ -177,6 +177,7 @@ const TerminalView = ({
   sessionId,
   terminalId,
   disabled = false,
+  reconnecting = false,
   isActive = true,
   shown = isActive,
   isActiveView = false,
@@ -196,6 +197,9 @@ const TerminalView = ({
   sessionId: string;
   terminalId: string;
   disabled?: boolean;
+  /// The session is being reconnected: the read-only badge says so, with a
+  /// dot that pulses for a few seconds of each attempt.
+  reconnecting?: boolean;
   /// Attach-only mode: the PTY behind this terminal is owned by
   /// another TerminalView instance (typically the one inside the
   /// session tab). This instance ONLY listens to output events and
@@ -618,6 +622,20 @@ const TerminalView = ({
       releaseInput(true);
       resendPtySize(terminalId, term.cols, term.rows);
     };
+    // A shell that couldn't open again because the link dropped once more
+    // while it was opening (the session is down again, the banner above is
+    // already trying) says nothing: a red "failed" line here read as if the
+    // reconnecting had stopped. The next reconnect writes its own divider.
+    // Known by the error (russh's "Disconnected", the backend's "Session not
+    // connected": the session's watcher reports that drop too, sometimes
+    // seconds later) or by the session being down already; the open's error
+    // and the session's "disconnected" come in either order, so it looks a
+    // moment later.
+    const failed = (e: unknown, text: string) => {
+      releaseInput(false);
+      if (/^Disconnected\b|Session not connected/i.test(String(e))) return;
+      setTimeout(() => { if (!disabledRef.current && xtermRef.current === term) term.writeln(`\x1b[31m${text}\x1b[0m`); }, 500);
+    };
     const ce = containerExecRef.current;
     if (telnet) {
       invoke('telnet_open_terminal', {
@@ -625,10 +643,7 @@ const TerminalView = ({
         terminalId,
         cols: term.cols || 80,
         rows: term.rows || 24,
-      }).then(syncSize, e => {
-        releaseInput(false);
-        term.writeln(`\x1b[31m${t('Reconnect failed: {error}', { error: String(e) })}\x1b[0m`);
-      });
+      }).then(syncSize, e => failed(e, t('Reconnect failed: {error}', { error: String(e) })));
     } else if (ce) {
       invoke('open_container_terminal', {
         sessionId,
@@ -637,10 +652,7 @@ const TerminalView = ({
         cols: term.cols || 80,
         rows: term.rows || 24,
         useSudo: ce.useSudo,
-      }).then(syncSize, e => {
-        releaseInput(false);
-        term.writeln(`\x1b[31m${t('Reconnect into container failed: {error}', { error: String(e) })}\x1b[0m`);
-      });
+      }).then(syncSize, e => failed(e, t('Reconnect into container failed: {error}', { error: String(e) })));
     } else {
       // A terminal with a login of its own logs in again first.
       (ownLogin ? connectOwn(term) : Promise.resolve(sessionId))
@@ -655,10 +667,8 @@ const TerminalView = ({
             useLocalShell: readUseLocalShell(),
           }).then(() => true);
         })
-        .then((opened) => { if (opened) syncSize(); else releaseInput(false); }, e => {
-          releaseInput(false);
-          term.writeln(`\x1b[31m${t('Reconnect failed: {error}', { error: String(e) })}\x1b[0m`);
-        });
+        .then((opened) => { if (opened) syncSize(); else releaseInput(false); },
+          e => failed(e, t('Reconnect failed: {error}', { error: String(e) })));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionEpoch]);
@@ -1933,13 +1943,22 @@ const TerminalView = ({
           select-drag that starts under it. */}
       {/* One line: centred like this it only gets half the width, and wrapped
           it covered two lines of the terminal on a phone, where the banner
-          above already says the session is down. */}
+          above already says the session is down. Solid colours (the tint
+          over a dark ground), so the text under it doesn't show through. */}
       {disabled && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
-          <span className="whitespace-nowrap px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border bg-rose-500/15 border-rose-500/30 text-rose-300 shadow-lg">
-            <span className="sm:hidden">{t('Read-only')}</span>
-            <span className="hidden sm:inline">{t('Disconnected — buffer is read-only')}</span>
-          </span>
+          {reconnecting ? (
+            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border bg-[#2c1f0b] border-amber-500/30 text-amber-200 shadow-lg flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-300 animate-pulse-brief" aria-hidden="true" />
+              <span className="sm:hidden">{t('Reconnecting…')}</span>
+              <span className="hidden sm:inline">{t('Reconnecting… buffer is read-only')}</span>
+            </span>
+          ) : (
+            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border bg-[#2c1117] border-rose-500/30 text-rose-300 shadow-lg">
+              <span className="sm:hidden">{t('Read-only')}</span>
+              <span className="hidden sm:inline">{t('Disconnected — buffer is read-only')}</span>
+            </span>
+          )}
         </div>
       )}
     </div>
