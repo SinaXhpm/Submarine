@@ -1303,7 +1303,7 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
                   )}
                 </div>
                 <div className="space-y-1">
-                  {([[tk("services"), z.services], [tk("ports"), z.ports]] as const).map(([label, items]) => (
+                  {([[tk("services"), z.services, tk("none|services")], [tk("ports"), z.ports, tk("none|ports")]] as const).map(([label, items, none]) => (
                     <div key={label} className="flex items-start gap-2">
                       <span className="text-[9px] text-zinc-500 uppercase tracking-wide w-12 shrink-0 pt-1">{t(label)}</span>
                       {items.length ? (
@@ -1313,7 +1313,7 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
                           ))}
                         </div>
                       ) : (
-                        <span className="text-[10px] text-zinc-600 italic pt-0.5">{t("none")}</span>
+                        <span className="text-[10px] text-zinc-600 italic pt-0.5">{t(none)}</span>
                       )}
                     </div>
                   ))}
@@ -1335,7 +1335,7 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
         icon={<Shield size={12} />}
         actions={
           <>
-            <StatusBadge tone="green">{t("active")}</StatusBadge>
+            <StatusBadge tone="green">{t("active|firewall")}</StatusBadge>
             {fw.usedSudo && <StatusBadge tone="zinc">sudo</StatusBadge>}
           </>
         }
@@ -1812,7 +1812,9 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
               </tbody>
             </table>
             {filtered.length > CAP && (
-              <div className="text-[10px] text-zinc-500 italic px-2 pt-2">{t("Showing top {cap} of {total} by {sort}.", { cap: CAP, total: filtered.length, sort: sortKey.toUpperCase() })}</div>
+              <div className="text-[10px] text-zinc-500 italic px-2 pt-2">{sortKey === "cpu"
+                ? t("Showing top {cap} of {total} by CPU.", { cap: CAP, total: filtered.length })
+                : t("Showing top {cap} of {total} by memory.", { cap: CAP, total: filtered.length })}</div>
             )}
           </div>
         )}
@@ -1935,7 +1937,7 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
         toolbar={
           <div className="space-y-2">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <CountPill active={stateFilter === "active"}   onClick={() => setStateFilter("active")}   tone="green"  count={counts.active}>{t("active")}</CountPill>
+              <CountPill active={stateFilter === "active"}   onClick={() => setStateFilter("active")}   tone="green"  count={counts.active}>{t("active|services")}</CountPill>
               <CountPill active={stateFilter === "inactive"} onClick={() => setStateFilter("inactive")} tone="zinc"   count={counts.inactive}>{t("inactive")}</CountPill>
               <CountPill active={stateFilter === "failed"}   onClick={() => setStateFilter("failed")}   tone="red"    count={counts.failed}>{t("failed")}</CountPill>
               <CountPill active={stateFilter === "all"}      onClick={() => setStateFilter("all")}      tone="primary" count={data.rows.length}>{t("all")}</CountPill>

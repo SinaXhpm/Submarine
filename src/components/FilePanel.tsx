@@ -1351,9 +1351,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const summary =
       items.length === 1
         ? (items[0].isDir ? t("Downloading folder {name}…", { name: items[0].name }) : t("Downloading {name}…", { name: items[0].name }))
-        : dirCount
-          ? tn(dirCount, "Downloading {files} files + {count} folder…", "Downloading {files} files + {count} folders…", { files: fileCount })
-          : t("Downloading {files} files…", { files: fileCount });
+        : !dirCount
+          ? tn(fileCount, "Downloading {count} file…", "Downloading {count} files…")
+          : !fileCount
+            ? tn(dirCount, "Downloading {count} folder…", "Downloading {count} folders…")
+            : t("Downloading {files} and {folders}…", {
+                files: tn(fileCount, "{count} file", "{count} files"),
+                folders: tn(dirCount, "{count} folder", "{count} folders"),
+              });
     notify(summary, "info");
     const batch: OverwriteBatch = { kind: "ask" };
     let count = 0;

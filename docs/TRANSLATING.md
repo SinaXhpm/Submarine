@@ -8,6 +8,14 @@ in English.
 Messages that come from a server, from the SSH connection or from the
 operating system are not translated; they are shown as they arrive.
 
+## Fixing a word
+
+The translations were made with AI, so a native speaker will find words to
+make better. Open an issue that says where the text is, what it says now and
+what it should say: Settings → Language → Suggest a fix opens one with the
+language in its title. Or change the line in `src/i18n/<language>.json` and
+send a pull request.
+
 ## Adding a language
 
 1. Run `npm run i18n`. It writes `src/i18n/en.json`, the list of every text,

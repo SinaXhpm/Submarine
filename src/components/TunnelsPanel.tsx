@@ -368,7 +368,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
               <Square size={11} />
             </button>
           ) : rule ? (
-            <button onClick={() => startRule(rule)} disabled={busy} title={t("Start")} aria-label={t("Start")} className={`${iconButton} hover:text-emerald-300`}>
+            <button onClick={() => startRule(rule)} disabled={busy} title={t("Start|forward")} aria-label={t("Start|forward")} className={`${iconButton} hover:text-emerald-300`}>
               <Play size={11} fill="currentColor" />
             </button>
           ) : null}
@@ -412,9 +412,8 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
           {live && running && (
             <span title={t("connections currently bridged / total accepted since start")}>
               <span className={live.conns_active > 0 ? "text-emerald-300" : "text-zinc-500"}>
-                {live.conns_active}
+                {tn(live.conns_active, "{count} active|connection", "{count} active|connections")}
               </span>
-              <span className="opacity-50"> {t("active")}</span>
               <span className="opacity-30"> · </span>
               <span>{t("{count} total", { count: live.conns_total })}</span>
             </span>
@@ -508,7 +507,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
               disabled={busy}
               className="h-7 px-3 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 disabled:opacity-50 shrink-0"
             >
-              {busy ? "…" : t("Start")}
+              {busy ? "…" : t("Start|forward")}
             </button>
           </div>
         </div>
