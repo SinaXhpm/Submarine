@@ -13,6 +13,16 @@ select optgroup {
   color: #e4e4e7;
 }
 
+/* Letter-spacing (Tailwind's tracking-*) breaks the line that joins Devanagari
+   letters and spreads Chinese, Japanese and Korean text apart: those scripts
+   keep their normal spacing. html lang comes from src/i18n. */
+:lang(hi) [class*="tracking-"],
+:lang(ja) [class*="tracking-"],
+:lang(ko) [class*="tracking-"],
+:lang(zh) [class*="tracking-"] {
+  letter-spacing: normal;
+}
+
 @layer base {
   :root {
     --background: #0a0a0c;
