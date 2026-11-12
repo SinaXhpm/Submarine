@@ -637,7 +637,8 @@
     "short": [
       "Sunucularınız, parolalarınız, SSH anahtarlarınız ve notlarınız, profil parolanızdan türetilen bir anahtarla şifrelenmiş olarak cihazınızda kalır. Uygulamada analitik, reklam, takip ve çökme raporlama yoktur.",
       "Cloud sync (bulut eşitleme) isteğe bağlıdır. Açarsanız eşitleme sunucusu, hesabınızın e-posta adresini ve profillerinizin şifreli hâlini saklar. Profillerin içinde ne olduğunu okuyamaz.",
-      "Hesabınızı ve sunucunun bu hesap için tuttuğu her şeyi uygulamanın içinden ya da bu web sitesinden silebilirsiniz."
+      "Hesabınızı ve sunucunun bu hesap için tuttuğu her şeyi uygulamanın içinden ya da bu web sitesinden silebilirsiniz.",
+      "<em>Geri bildirim gönder</em> ile gönderdiğiniz mesaj geliştiriciye yalnızca yazdıklarınızla ulaşır."
     ],
     "sections": [
       {
@@ -666,6 +667,7 @@
           "<strong>Kendi sunucularınız.</strong> Uygulama yalnızca eklediğiniz ya da açtığınız sunuculara bağlanır; bunu SSH, SFTP, Telnet, VNC veya RDP ile, varsa ayarladığınız proxy ya da atlama sunucusu (jump host) üzerinden yapar. Yazdıklarınız ve aktardıklarınız bize değil, o sunucuya gider. Bir uzak masaüstünde buna, oraya yapıştırdığınız pano metni ve yerleşik RDP istemcisiyle paylaşmayı seçerseniz bu bilgisayardaki bir klasör ya da sürücü de dâhildir. Düz Telnet ve düz VNC şifrelenmez; uygulama da bunu belirtir.",
           "<strong>Eşitleme hizmeti</strong>, yalnızca bulut eşitlemeye giriş yaparsanız (aşağıya bakın). Bunun yerine uygulamayı kendi sunucunuza yönlendirebilirsiniz; bu durumda verileri o sunucunun işletmecisi işler.",
           "<strong>GitHub</strong>, daha yeni bir sürüm olup olmadığına bakmak için. Profil listesi açıldığında ve “Check for updates” düğmesine bastığınızda uygulama, GitHub'ın herkese açık sürüm listesine (<code>api.github.com</code>) daha yeni bir sürüm olup olmadığını sorar. İstek, uygulamanın adını ve sürümünü (<code>submarine-app/x.y.z</code>) taşır, başka hiçbir şeyi taşımaz; her web isteğinde olduğu gibi GitHub IP adresinizi görür.",
+          "<strong>Geri bildirim gönderdiğinizde geliştiricinin sunucusu</strong> (aşağıya bakın), yalnızca o zaman.",
           "Tıkladığınız <strong>bağlantılar</strong> sisteminizin varsayılan tarayıcısında açılır."
         ],
         "after": "Bunların dışında cihazınızdan hiçbir şey çıkmaz. Uygulamada üçüncü taraf analitik, reklam ya da takip kodu yoktur."
@@ -730,6 +732,15 @@
     },
     "after": [
       {
+        "id": "feedback",
+        "title": "Uygulamadan gönderdiğiniz geri bildirimler",
+        "paragraphs": [
+          "<em>Geri bildirim gönder</em> (Ayarlar'da, profil listesinde ve Dil altında <em>Düzeltme önerin</em> olarak) geliştiriciye mesaj gönderir. Mesaj yalnızca <em>Gönder</em> düğmesine bastığınızda gönderilir ve yalnızca formda yazdıklarınızı içerir: mesajınız, verirseniz bir ad ve verirseniz bir e-posta adresi; e-posta yalnızca o mesaja yanıt vermek için kullanılır.",
+          "Başka hiçbir şey eklenmez: günlük kaydı, sunucularınızın listesi, uygulama sürümü ya da sistem bilgisi, hesap veya cihaz kimliği yoktur. Mesaj HTTPS ile bulut eşitlemeyle aynı sunucuya (<code>submarine.sinaxhpm.com</code>) gider; kendi sunucunuzla eşitleseniz bile böyledir ve bu sunucuya giden her istek gibi Cloudflare üzerinden geçer. Sunucu IP adresinizi toplu gönderimlere karşı kullanır ve mesajla birlikte saklamaz: adres, istek sınırı sayaçlarına girer ({rateDays} gün saklanır) ve yalnızca ondan izin verilenden fazla mesaj gelirse hesap olayları günlüğüne yazılır ({auditDays} gün saklanır).",
+          "Mesajları geliştirici okur. Mesajlar {feedbackDays} gün saklanır, sonra kendiliğinden silinir; istek üzerine biri daha önce silinebilir. Gönderdikten sonra uygulama mesajın rapor numarasını gösterir: o mesajın silinmesi için bu numarayı belirtin (aşağıya bakın). Mesajlar kimseyle paylaşılmaz; okunmak ve yanıtlanmak dışında hiçbir şey için kullanılmaz."
+        ]
+      },
+      {
         "id": "website",
         "title": "Bu web sitesi",
         "paragraphs": [
@@ -744,6 +755,7 @@
           "<strong>Hesabınızı silmek için</strong> uygulamada (0.4 ve sonraki sürümler) <em>Cloud sync → (giriş yapmışken) → Delete account…</em> yolunu izleyin ya da bu web sitesindeki <a href=\"{deleteUrl}\">hesap silme sayfasını</a> kullanın. Hesap parolanızla onaylarsınız. Bu işlem şunları anında kaldırır: tüm profillerinizin buluttaki kopyaları, paylaşım anahtarınız, paylaştığınız her profil (paylaştığınız kişiler erişimini kaybeder), başkalarının paylaşımlarındaki üyeliğiniz, oturumlarınız ve hesabınızın günlük girdileri. Başka birinin paylaşılan profiline yazdığınız kayıtlar, yazan kişi belirtilmeden o profilde kalır. Cihazlarınızdaki profillere dokunulmaz.",
           "<strong>Silme işleminden sonra yazılan günlük satırları</strong> en fazla {auditDays} gün saklanır: silme işleminin kendisi (e-posta adresi içermez) ve o e-posta adresiyle sonradan yapılan her giriş denemesi. Sunucu yazılımının güncellemeleri sırasında alınan yedekler yalnızca kısa bir süre tutulur.",
           "<strong>Tek bir profilin buluttaki kopyasını kaldırmak için</strong> uygulamada, profil listesinde ilgili profilin menüsünden <em>Delete from cloud…</em> komutunu seçin.",
+          "<strong>Bir geri bildirim mesajını {feedbackDays} gün dolmadan silmek</strong> için rapor numarasıyla bize yazın.",
           "<strong>Bir cihazdaki verileri silmek için</strong> uygulamayı kaldırın (Windows'un taşınabilir sürümünde programın yanındaki klasörü silin).",
           "Eski bir sürüm kullanıyorsanız ya da uygulamayı artık açamıyorsanız bizimle iletişime geçin (aşağıya bakın); hesabın size ait olduğunu gösterebildiğinizde hesabı sileriz."
         ]

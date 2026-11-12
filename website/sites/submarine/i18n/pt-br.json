@@ -637,7 +637,8 @@
     "short": [
       "Seus servidores, senhas, chaves SSH e notas ficam no seu dispositivo, criptografados com uma chave gerada a partir da senha do perfil. O app não tem análise de uso, publicidade, rastreamento nem relatórios de falhas.",
       "O recurso Cloud sync (sincronização na nuvem) é opcional. Se você ativá-lo, o servidor de sincronização guarda o endereço de e-mail da sua conta e os seus perfis, criptografados. Ele não consegue ler o que há dentro deles.",
-      "Você pode excluir sua conta, e tudo o que o servidor guarda vinculado a ela, pelo próprio app ou neste site."
+      "Você pode excluir sua conta, e tudo o que o servidor guarda vinculado a ela, pelo próprio app ou neste site.",
+      "Uma mensagem que você envia com <em>Enviar comentários</em> chega ao desenvolvedor só com o que você digitou."
     ],
     "sections": [
       {
@@ -666,6 +667,7 @@
           "<strong>Os seus próprios servidores.</strong> O app só se conecta aos hosts que você adiciona ou abre, usando SSH, SFTP, Telnet, VNC ou RDP, por meio de qualquer proxy ou jump host que você configurar. O que você digita e transfere vai para esse servidor, não para nós. Em uma área de trabalho remota, isso inclui o texto da área de transferência que você cola nela e uma pasta ou unidade deste computador, se você decidir compartilhar uma com o cliente RDP integrado. O Telnet simples e o VNC simples não são criptografados, e o app avisa sobre isso.",
           "<strong>O serviço de sincronização</strong>, só se você entrar na sua conta de sincronização na nuvem (veja abaixo). Em vez dele, você pode apontar o app para um servidor próprio; nesse caso, os dados ficam a cargo de quem opera esse servidor.",
           "<strong>O GitHub</strong>, para procurar uma versão mais nova. Quando a lista de perfis abre e quando você aperta “Check for updates”, o app consulta a lista pública de versões no GitHub (<code>api.github.com</code>) para saber se existe uma versão mais nova. A requisição leva o nome e a versão do app (<code>submarine-app/x.y.z</code>) e nada mais; o GitHub vê o seu endereço IP, como em qualquer requisição na web.",
+          "<strong>O servidor do desenvolvedor, quando você envia comentários</strong> (veja abaixo), e só nesse momento.",
           "<strong>Os links</strong> em que você clica abrem no navegador padrão do sistema."
         ],
         "after": "Nada mais sai do seu dispositivo. O app não contém código de terceiros para análise de uso, publicidade ou rastreamento."
@@ -730,6 +732,15 @@
     },
     "after": [
       {
+        "id": "feedback",
+        "title": "Comentários que você envia pelo app",
+        "paragraphs": [
+          "<em>Enviar comentários</em> (nas Configurações, na lista de perfis e como <em>Sugerir uma correção</em> em Idioma) envia uma mensagem ao desenvolvedor. Ela só é enviada quando você toca em <em>Enviar</em> e contém só o que você digitou no formulário: sua mensagem, um nome, se você informar, e um endereço de e-mail, se você informar, usado só para responder a essa mensagem.",
+          "Nada mais é acrescentado: nada de registros, lista dos seus servidores, versão do app ou dados do sistema, conta ou ID do dispositivo. A mensagem vai por HTTPS para o mesmo servidor da sincronização na nuvem (<code>submarine.sinaxhpm.com</code>), mesmo que você sincronize com um servidor próprio, e passa pelo Cloudflare como qualquer requisição a ele. O servidor usa seu endereço IP contra envios em massa e não o guarda com a mensagem: ele vai para os contadores de limite de requisições (guardados por {rateDays} dias) e, só se dele vierem mais mensagens que o permitido, para o registro de eventos da conta (guardado por {auditDays} dias).",
+          "O desenvolvedor lê as mensagens. Elas são guardadas por {feedbackDays} dias e depois excluídas automaticamente; uma pode ser excluída antes, se você pedir. Depois do envio, o app mostra o número do relatório da mensagem: informe-o para pedir que essa mensagem seja excluída (veja abaixo). As mensagens não são compartilhadas com ninguém nem usadas para nada além de lê-las e respondê-las."
+        ]
+      },
+      {
         "id": "website",
         "title": "Este site",
         "paragraphs": [
@@ -744,6 +755,7 @@
           "<strong>Exclua sua conta</strong> no app (versão 0.4 ou posterior): <em>Cloud sync → (conectado) → Delete account…</em>, ou na <a href=\"{deleteUrl}\">página de exclusão de conta</a> deste site. Você confirma com a senha da conta. Isso remove imediatamente: as cópias na nuvem de todos os seus perfis, sua chave de compartilhamento, todos os perfis que você compartilhou (as pessoas com quem você os compartilhou perdem o acesso), sua participação nos compartilhamentos de outras pessoas, suas sessões e as entradas de log da sua conta. Os registros que você gravou no perfil compartilhado de outra pessoa ficam com esse perfil, sem identificar quem os escreveu. Os perfis nos seus dispositivos não são afetados.",
           "<strong>As linhas de log gravadas depois disso</strong> (a própria exclusão, que não contém nenhum e-mail, e qualquer tentativa de login posterior com esse e-mail) ficam guardadas por até {auditDays} dias. Os backups feitos quando o software do servidor é atualizado são mantidos só por pouco tempo.",
           "<strong>Remova a cópia na nuvem de um perfil</strong> no app: no menu do perfil, na lista de perfis, <em>Delete from cloud…</em>.",
+          "<strong>Excluir uma mensagem de comentários</strong> antes dos {feedbackDays} dias: fale com a gente informando o número do relatório.",
           "<strong>Exclua o que está em um dispositivo</strong> removendo o app (na versão portátil para Windows, apagando a pasta ao lado do programa).",
           "Se você usa uma versão mais antiga ou não consegue mais abrir o app, entre em contato conosco (veja abaixo) e excluiremos a conta quando você puder mostrar que ela é sua."
         ]

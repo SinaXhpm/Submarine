@@ -13,7 +13,7 @@ const REPO_URL = "https://github.com/SinaXhpm/Submarine";
 const RELEASES_URL = `${REPO_URL}/releases`;
 const ISSUES_URL = `${REPO_URL}/issues`;
 const ECHOES = "https://echoes.sinaxhpm.com";
-const POLICY_DATE = "2026-11-10";
+const POLICY_DATE = "2026-11-12";
 
 // ---- facts (one place; the pages only refer to them) --------------------
 // Checked against the code at the commit: Argon2 settings (src-tauri/src/lib.rs
@@ -29,6 +29,7 @@ const FACTS = {
   sessionDays: 90,
   auditDays: 90,
   rateDays: 7,
+  feedbackDays: 180,
   unverifiedDays: 7,
   lockoutTries: 5,
   lockoutMinutes: 15,
@@ -119,7 +120,9 @@ export default function build({ out, commit, date }) {
     src: HERE,
     out,
     date,
-    langs: LANGS.map((l) => l.code),
+    // Not in Persian or Arabic (taken off on 2026-11-12, the maintainer's choice; their old addresses go to
+    // English in .htaccess). The Echoes site keeps its own list.
+    langs: LANGS.map((l) => l.code).filter((c) => c !== "fa" && c !== "ar"),
     slugs: { home: "", security: "security/", privacy: "privacy/", delete: "delete-account/" },
     themeColor: "#04070f",
     ogAlt: "Submarine: SSH, SFTP, RDP, VNC and Telnet client",
@@ -172,6 +175,7 @@ export default function build({ out, commit, date }) {
       sessionDays: n.format(FACTS.sessionDays),
       auditDays: n.format(FACTS.auditDays),
       rateDays: n.format(FACTS.rateDays),
+      feedbackDays: n.format(FACTS.feedbackDays),
       unverifiedDays: n.format(FACTS.unverifiedDays),
       lockoutTries: n.format(FACTS.lockoutTries),
       lockoutMinutes: n.format(FACTS.lockoutMinutes),

@@ -637,7 +637,8 @@
     "short": [
       "Ihre Server, Passwörter, SSH-Schlüssel und Notizen bleiben auf Ihrem Gerät, verschlüsselt mit einem Schlüssel, der aus Ihrem Profilpasswort abgeleitet wird. In der App gibt es keine Nutzungsanalyse, keine Werbung, kein Tracking und keine Absturzberichte.",
       "Die Synchronisierung („Cloud sync“) ist optional. Wenn Sie sie einschalten, speichert der Sync-Server die E-Mail-Adresse Ihres Kontos und Ihre verschlüsselten Profile. Was darin steht, kann er nicht lesen.",
-      "Sie können Ihr Konto und alles, was der Server dazu speichert, in der App oder auf dieser Website löschen."
+      "Sie können Ihr Konto und alles, was der Server dazu speichert, in der App oder auf dieser Website löschen.",
+      "Eine Nachricht, die Sie mit <em>Feedback senden</em> schicken, erreicht den Entwickler nur mit dem, was Sie eingegeben haben."
     ],
     "sections": [
       {
@@ -666,6 +667,7 @@
           "<strong>Ihre eigenen Server.</strong> Die App verbindet sich nur mit den Hosts, die Sie hinzufügen oder öffnen, per SSH, SFTP, Telnet, VNC oder RDP und über die Proxys oder Jump-Hosts, die Sie gegebenenfalls einrichten. Was Sie eingeben und übertragen, geht an diesen Server, nicht an uns. Bei einem Remote-Desktop gehört dazu der Text aus der Zwischenablage, den Sie dort einfügen, sowie ein Ordner oder Laufwerk dieses Computers, falls Sie eine solche Freigabe für den eingebauten RDP-Client einrichten. Einfaches Telnet und einfaches VNC sind nicht verschlüsselt, und die App weist darauf hin.",
           "<strong>Der Sync-Dienst</strong>, nur wenn Sie sich dort anmelden (siehe unten). Sie können die App stattdessen auf einen eigenen Server einstellen; dann verarbeitet der Betreiber dieses Servers die Daten.",
           "<strong>GitHub</strong>, um nach einer neueren Version zu suchen. Wenn sich die Profilliste öffnet und wenn Sie „Check for updates“ wählen, fragt die App bei der öffentlichen Liste der Releases auf GitHub (<code>api.github.com</code>) nach, ob es eine neuere Version gibt. Die Anfrage enthält den Namen und die Version der App (<code>submarine-app/x.y.z</code>) und sonst nichts; GitHub sieht dabei Ihre IP-Adresse, wie bei jeder Anfrage im Web.",
+          "<strong>Den Server des Entwicklers, wenn Sie Feedback senden</strong> (siehe unten), und nur dann.",
           "<strong>Links</strong>, die Sie anklicken, öffnen sich im Standardbrowser Ihres Systems."
         ],
         "after": "Darüber hinaus verlässt nichts Ihr Gerät. Die App enthält keinen Code von Drittanbietern für Nutzungsanalyse, Werbung oder Tracking."
@@ -730,6 +732,15 @@
     },
     "after": [
       {
+        "id": "feedback",
+        "title": "Feedback, das Sie aus der App senden",
+        "paragraphs": [
+          "<em>Feedback senden</em> (in den Einstellungen, in der Profilliste und als <em>Korrektur vorschlagen</em> unter Sprache) schickt dem Entwickler eine Nachricht. Sie wird nur gesendet, wenn Sie auf <em>Senden</em> drücken, und enthält nur, was Sie im Formular eingegeben haben: Ihre Nachricht, einen Namen, wenn Sie einen angeben, und eine E-Mail-Adresse, wenn Sie eine angeben – sie dient nur dazu, auf diese Nachricht zu antworten.",
+          "Sonst wird nichts hinzugefügt: keine Protokolle, keine Liste Ihrer Server, keine App-Version oder Systemangaben, kein Konto und keine Geräte-ID. Die Nachricht geht per HTTPS an denselben Server wie die Cloud-Synchronisierung (<code>submarine.sinaxhpm.com</code>), auch wenn Sie mit einem eigenen Server synchronisieren, und wie jede Anfrage dorthin über Cloudflare. Der Server nutzt Ihre IP-Adresse gegen Massenanfragen und speichert sie nicht mit der Nachricht: Sie landet in den Zählern der Ratenbegrenzung ({rateDays} Tage aufbewahrt) und nur dann, wenn von ihr mehr Nachrichten als erlaubt kommen, im Protokoll der Kontoereignisse ({auditDays} Tage aufbewahrt).",
+          "Der Entwickler liest die Nachrichten. Sie werden {feedbackDays} Tage aufbewahrt und dann automatisch gelöscht; auf Wunsch wird eine früher gelöscht. Nach dem Senden zeigt die App die Meldungsnummer der Nachricht: Nennen Sie sie, um diese Nachricht löschen zu lassen (siehe unten). Nachrichten werden an niemanden weitergegeben und für nichts anderes verwendet, als sie zu lesen und zu beantworten."
+        ]
+      },
+      {
         "id": "website",
         "title": "Diese Website",
         "paragraphs": [
@@ -744,6 +755,7 @@
           "<strong>Löschen Sie Ihr Konto</strong> in der App (ab Version 0.4) über <em>Cloud sync → (angemeldet) → Delete account…</em> oder auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> auf dieser Website. Sie bestätigen mit Ihrem Kontopasswort. Dadurch wird sofort Folgendes entfernt: die Cloud-Kopien aller Ihrer Profile, Ihr Freigabeschlüssel, jedes Profil, das Sie geteilt haben (die Personen, mit denen Sie es geteilt haben, verlieren den Zugriff), Ihre Mitgliedschaft in Freigaben anderer Personen, Ihre Sitzungen und die Protokolleinträge Ihres Kontos. Datensätze, die Sie in ein geteiltes Profil einer anderen Person geschrieben haben, bleiben in diesem Profil, ohne dass genannt wird, wer sie geschrieben hat. Profile auf Ihren Geräten bleiben unberührt.",
           "<strong>Protokollzeilen, die danach geschrieben werden</strong> (zur Löschung selbst, ohne E-Mail-Adresse, und zu jedem späteren Anmeldeversuch mit dieser E-Mail-Adresse), bleiben bis zu {auditDays} Tage erhalten. Sicherungskopien, die bei Aktualisierungen der Serversoftware angelegt werden, werden nur kurz aufbewahrt.",
           "<strong>Entfernen Sie die Cloud-Kopie eines einzelnen Profils</strong> in der App: im Menü des Profils in der Profilliste, <em>Delete from cloud…</em>.",
+          "<strong>Eine Feedback-Nachricht löschen</strong> vor Ablauf ihrer {feedbackDays} Tage: Schreiben Sie uns mit ihrer Meldungsnummer.",
           "<strong>Löschen Sie die Daten auf einem Gerät</strong>, indem Sie die App entfernen (bei der portablen Windows-Version den Ordner neben dem Programm).",
           "Wenn Sie eine ältere Version nutzen oder die App nicht mehr öffnen können, wenden Sie sich an uns (siehe unten). Wir löschen das Konto, wenn Sie nachweisen können, dass es Ihnen gehört."
         ]

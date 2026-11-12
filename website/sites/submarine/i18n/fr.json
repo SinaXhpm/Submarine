@@ -637,7 +637,8 @@
     "short": [
       "Vos serveurs, mots de passe, clés SSH et notes restent sur votre appareil, chiffrés avec une clé calculée à partir du mot de passe de votre profil. L’application n’a ni statistiques d’utilisation, ni publicité, ni pistage, ni rapports de plantage.",
       "La synchronisation (Cloud sync) est facultative. Si vous l’activez, le serveur de synchronisation conserve l’adresse e-mail de votre compte, ainsi que vos profils sous forme chiffrée. Il ne peut pas lire leur contenu.",
-      "Vous pouvez supprimer votre compte, et tout ce que le serveur conserve pour ce compte, depuis l’application ou sur ce site web."
+      "Vous pouvez supprimer votre compte, et tout ce que le serveur conserve pour ce compte, depuis l’application ou sur ce site web.",
+      "Un message que vous envoyez avec <em>Envoyer des commentaires</em> n’arrive au développeur qu’avec ce que vous y avez écrit."
     ],
     "sections": [
       {
@@ -666,6 +667,7 @@
           "<strong>Vos propres serveurs.</strong> L’application se connecte uniquement aux hôtes que vous ajoutez ou ouvrez, en SSH, SFTP, Telnet, VNC ou RDP, via tout proxy ou hôte de rebond que vous configurez. Ce que vous tapez et transférez va à ce serveur, pas à nous. Pour un bureau à distance, cela comprend le texte du presse-papiers que vous y collez, et un dossier ou un lecteur de cet ordinateur si vous choisissez d’en partager un avec le client RDP intégré. Le Telnet simple et le VNC simple ne sont pas chiffrés, et l’application l’indique.",
           "<strong>Le service de synchronisation</strong>, uniquement si vous vous connectez à la synchronisation dans le cloud (voir plus bas). Vous pouvez à la place faire pointer l’application vers votre propre serveur ; c’est alors l’exploitant de ce serveur qui traite les données.",
           "<strong>GitHub</strong>, pour chercher une version plus récente. À l’ouverture de la liste des profils, et quand vous appuyez sur « Check for updates », l’application consulte la liste publique des versions sur GitHub (<code>api.github.com</code>) pour savoir si une version plus récente existe. La requête transmet le nom et la version de l’application (<code>submarine-app/x.y.z</code>), et rien d’autre ; GitHub voit votre adresse IP, comme pour toute requête web.",
+          "<strong>Le serveur du développeur, quand vous envoyez des commentaires</strong> (voir plus bas), et seulement à ce moment-là.",
           "<strong>Les liens</strong> sur lesquels vous cliquez s’ouvrent dans le navigateur de votre système."
         ],
         "after": "Rien d’autre ne quitte votre appareil. L’application ne contient aucun code tiers de statistiques d’utilisation, de publicité ou de pistage."
@@ -730,6 +732,15 @@
     },
     "after": [
       {
+        "id": "feedback",
+        "title": "Les commentaires que vous envoyez depuis l’application",
+        "paragraphs": [
+          "<em>Envoyer des commentaires</em> (dans les Paramètres, dans la liste des profils, et <em>Proposer une correction</em> sous Langue) envoie un message au développeur. Il n’est envoyé que lorsque vous appuyez sur <em>Envoyer</em>, et il ne contient que ce que vous avez saisi dans le formulaire : votre message, un nom si vous en donnez un, et une adresse e-mail si vous en donnez une, utilisée uniquement pour répondre à ce message.",
+          "Rien d’autre n’est ajouté : ni journaux, ni liste de vos serveurs, ni version de l’application ou informations sur le système, ni compte, ni identifiant d’appareil. Le message part en HTTPS vers le même serveur que la synchronisation cloud (<code>submarine.sinaxhpm.com</code>), même si vous synchronisez avec votre propre serveur, et passe par Cloudflare comme toute requête vers ce serveur. Le serveur utilise votre adresse IP contre les envois en masse et ne la conserve pas avec le message : elle va dans les compteurs de limitation (conservés {rateDays} jours) et, seulement si plus de messages que permis en proviennent, dans le journal des événements de compte (conservé {auditDays} jours).",
+          "Le développeur lit les messages. Ils sont conservés {feedbackDays} jours puis supprimés automatiquement ; un message peut être supprimé plus tôt sur demande. Après l’envoi, l’application affiche le numéro du rapport : indiquez-le pour faire supprimer ce message (voir plus bas). Les messages ne sont partagés avec personne et ne servent qu’à être lus et à recevoir une réponse."
+        ]
+      },
+      {
         "id": "website",
         "title": "Ce site web",
         "paragraphs": [
@@ -744,6 +755,7 @@
           "<strong>Supprimez votre compte</strong> dans l’application (à partir de la version 0.4) : <em>Cloud sync → (une fois connecté) → Delete account…</em>, ou sur la <a href=\"{deleteUrl}\">page de suppression du compte</a> de ce site web. Vous confirmez avec le mot de passe de votre compte. Cela supprime immédiatement : les copies dans le cloud de tous vos profils, votre clé de partage, chaque profil que vous avez partagé (les personnes avec qui vous l’avez partagé perdent l’accès), votre appartenance aux partages d’autres personnes, vos sessions, et les entrées du journal de votre compte. Les enregistrements que vous avez écrits dans le profil partagé de quelqu’un d’autre restent dans ce profil, sans nom d’auteur. Les profils présents sur vos appareils ne sont pas touchés.",
           "<strong>Les lignes de journal écrites ensuite</strong> (la suppression elle-même, qui ne comporte aucune adresse e-mail, et toute tentative de connexion ultérieure avec cette adresse e-mail) sont conservées jusqu’à {auditDays} jours. Les sauvegardes faites lors des mises à jour du logiciel du serveur ne sont conservées que peu de temps.",
           "<strong>Supprimez la copie dans le cloud d’un profil</strong> dans l’application : menu du profil dans la liste des profils, <em>Delete from cloud…</em>.",
+          "<strong>Supprimer un message de commentaires</strong> avant ses {feedbackDays} jours : contactez-nous avec son numéro de rapport.",
           "<strong>Supprimez ce qui se trouve sur un appareil</strong> en désinstallant l’application (pour la version portable de Windows, en supprimant le dossier situé à côté du programme).",
           "Si vous utilisez une version plus ancienne, ou si vous ne pouvez plus ouvrir l’application, contactez-nous (voir ci-dessous) et nous supprimerons le compte lorsque vous pourrez montrer qu’il vous appartient."
         ]

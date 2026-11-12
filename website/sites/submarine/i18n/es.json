@@ -637,7 +637,8 @@
     "short": [
       "Tus servidores, contraseñas, claves SSH y notas se quedan en tu dispositivo, cifrados con una clave generada a partir de la contraseña de tu perfil. La aplicación no tiene analítica, ni publicidad, ni rastreo, ni informes de fallos.",
       "La función Cloud sync (sincronización en la nube) es opcional. Si la activas, el servidor de sincronización guarda la dirección de correo electrónico de tu cuenta y tus perfiles cifrados. No puede leer lo que contienen.",
-      "Puedes eliminar tu cuenta, y todo lo que el servidor guarda de ella, desde la propia aplicación o en este sitio web."
+      "Puedes eliminar tu cuenta, y todo lo que el servidor guarda de ella, desde la propia aplicación o en este sitio web.",
+      "Un mensaje que envíes con <em>Enviar comentarios</em> llega al desarrollador solo con lo que escribiste."
     ],
     "sections": [
       {
@@ -666,6 +667,7 @@
           "<strong>Tus propios servidores.</strong> La aplicación solo se conecta a los hosts que añades o abres, mediante SSH, SFTP, Telnet, VNC o RDP, a través de cualquier proxy o servidor de salto que configures. Lo que escribes y transfieres va a ese servidor, no a nosotros. En el caso de un escritorio remoto, eso incluye el texto del portapapeles que pegas en él y una carpeta o unidad de esta computadora si decides compartirla con el cliente RDP integrado. Telnet y VNC en su forma básica no están cifrados, y la aplicación lo indica.",
           "<strong>El servicio de sincronización</strong>, solo si inicias sesión en la sincronización en la nube (ver más abajo). En su lugar, puedes configurar la aplicación para que use un servidor propio; en ese caso, los datos los gestiona el operador de ese servidor.",
           "<strong>GitHub</strong>, para buscar una versión más reciente. Cuando se abre la lista de perfiles, y cuando pulsas «Check for updates» (buscar actualizaciones), la aplicación consulta en la lista pública de versiones de GitHub (<code>api.github.com</code>) si existe una versión más reciente. La solicitud lleva el nombre y la versión de la aplicación (<code>submarine-app/x.y.z</code>) y nada más; GitHub ve tu dirección IP, como en cualquier solicitud web.",
+          "<strong>El servidor del desarrollador, cuando envías comentarios</strong> (ver más abajo), y solo entonces.",
           "<strong>Los enlaces</strong> en los que haces clic se abren en el navegador de tu sistema."
         ],
         "after": "Nada más sale de tu dispositivo. La aplicación no contiene código de analítica, publicidad ni rastreo de terceros."
@@ -730,6 +732,15 @@
     },
     "after": [
       {
+        "id": "feedback",
+        "title": "Comentarios que envías desde la aplicación",
+        "paragraphs": [
+          "<em>Enviar comentarios</em> (en Configuración, en la lista de perfiles y como <em>Sugerir una corrección</em> en Idioma) envía un mensaje al desarrollador. Solo se envía cuando pulsas <em>Enviar</em>, y contiene solo lo que escribiste en el formulario: tu mensaje, un nombre si lo das y una dirección de correo si la das, que se usa solo para responder a ese mensaje.",
+          "No se añade nada más: ni registros, ni la lista de tus servidores, ni la versión de la aplicación o datos del sistema, ni la cuenta ni un ID de dispositivo. El mensaje va por HTTPS al mismo servidor que la sincronización en la nube (<code>submarine.sinaxhpm.com</code>), también si sincronizas con un servidor propio, y pasa por Cloudflare como cualquier solicitud a ese servidor. El servidor usa tu dirección IP contra los envíos masivos y no la guarda con el mensaje: va a los contadores de límite de frecuencia (se conservan {rateDays} días) y, solo si desde ella llegan más mensajes de los permitidos, al registro de eventos de la cuenta (se conserva {auditDays} días).",
+          "El desarrollador lee los mensajes. Se guardan {feedbackDays} días y luego se eliminan automáticamente; si lo pides, uno se puede eliminar antes. Tras el envío, la aplicación muestra el número de informe del mensaje: menciónalo para que se elimine ese mensaje (ver más abajo). Los mensajes no se comparten con nadie ni se usan para nada más que leerlos y responderlos."
+        ]
+      },
+      {
         "id": "website",
         "title": "Este sitio web",
         "paragraphs": [
@@ -744,6 +755,7 @@
           "<strong>Elimina tu cuenta</strong> en la aplicación (versión 0.4 o posterior): <em>Cloud sync → (con la sesión iniciada) → Delete account…</em>, o en la <a href=\"{deleteUrl}\">página para eliminar la cuenta</a> de este sitio web. Se confirma con la contraseña de tu cuenta. Esto elimina de inmediato: las copias en la nube de todos tus perfiles, tu clave para compartir, todos los perfiles que compartes (las personas con quienes los compartes pierden el acceso), tu pertenencia a perfiles compartidos de otras personas, tus sesiones y las entradas de tu cuenta en el registro de eventos. Los registros que hayas escrito en el perfil compartido de otra persona se quedan en ese perfil, sin que figure quién los escribió. Los perfiles de tus dispositivos no se ven afectados.",
           "<strong>Las entradas del registro de eventos escritas después</strong> (la propia eliminación, que no incluye ninguna dirección de correo electrónico, y cualquier intento posterior de iniciar sesión con esa dirección) se conservan durante un máximo de {auditDays} días. Las copias de seguridad hechas en torno a las actualizaciones del software del servidor solo se conservan durante poco tiempo.",
           "<strong>Quita la copia en la nube de un perfil</strong> en la aplicación: el menú del perfil en la lista de perfiles, <em>Delete from cloud…</em>.",
+          "<strong>Eliminar un mensaje de comentarios</strong> antes de sus {feedbackDays} días: escríbenos con su número de informe.",
           "<strong>Elimina lo que hay en un dispositivo</strong> desinstalando la aplicación (en la versión portable de Windows, borrando la carpeta que está junto al programa).",
           "Si usas una versión anterior o ya no puedes abrir la aplicación, ponte en contacto con nosotros (ver más abajo) y eliminaremos la cuenta cuando puedas demostrar que es tuya."
         ]
