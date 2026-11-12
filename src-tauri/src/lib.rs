@@ -23,6 +23,7 @@ mod monitor;
 mod cloud;
 mod cloud_config;
 mod about;
+mod feedback;
 mod mirror;
 mod docker;
 mod hlc;
@@ -25398,6 +25399,7 @@ pub fn run() {
             monitor_resume, monitor_pause, monitor_resume_all, monitor_pause_all,
             monitor_get_settings, monitor_set_settings,
             about::app_info, about::check_for_updates, about::open_external_url,
+            feedback::send_feedback,
             portable::get_storage_info,
             fonts::list_system_fonts,
             clipboard_read_text

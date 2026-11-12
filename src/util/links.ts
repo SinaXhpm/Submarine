@@ -2,6 +2,9 @@
  *  PRIVACY.md in the repository, whose address keeps working. */
 export const PRIVACY_URL = "https://submarine.sinaxhpm.com/privacy/";
 
+/** A new GitHub issue, for when the feedback inbox is full for the day. */
+export const REPO_ISSUES_URL = "https://github.com/SinaXhpm/Submarine/issues/new";
+
 /** A new GitHub issue to fix a translation, its title naming the language
  *  ("Translation (de): "), with a short form to fill in. */
 export function translationIssueUrl(language: string): string {

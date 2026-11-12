@@ -3,13 +3,14 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle, ArrowBigUp, ArrowRight, ArrowUpCircle, Check, CheckCircle2, Cloud, CloudOff, Download,
-  Eye, EyeOff, Fingerprint, Github, HardDrive, History, Loader2, MoreHorizontal, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X,
+  Eye, EyeOff, Fingerprint, Github, HardDrive, History, Loader2, MessageSquare, MoreHorizontal, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X,
 } from "lucide-react";
 import CloudPanel from "./CloudPanel";
 import { CloudConfigView, hostOf } from "./SyncServerSetting";
 import logoUrl from "../assets/logo.png";
 import { IS_ANDROID, IS_IOS, IS_MOBILE } from "../util/platform";
 import { PRIVACY_URL } from "../util/links";
+import { openFeedback } from "./Feedback";
 import { useTextPrompt, useConfirm } from "../ui/confirm";
 import { forgetProfileBookmarks } from "../util/sftpBookmarks";
 import { t, tn, tx, useT } from "../i18n";
@@ -1114,6 +1115,8 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
             <FooterButton onClick={openRepo} title={t("Open Submarine on GitHub")} icon={<Github size={12} />} label="GitHub" />
             <FooterDot />
             <FooterButton onClick={() => openLink(PRIVACY_URL)} title={t("What Submarine stores and sends: the privacy policy")} icon={<ShieldCheck size={12} />} label={t("Privacy")} />
+            <FooterDot />
+            <FooterButton onClick={() => openFeedback()} title={t("Send a message to the developer")} icon={<MessageSquare size={12} />} label={t("Feedback")} />
             {!update && appInfo?.updates !== false && (
               <>
                 <FooterDot />
