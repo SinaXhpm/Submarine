@@ -5,7 +5,7 @@ Two static sites, built from this folder:
 - [submarine.sinaxhpm.com](https://submarine.sinaxhpm.com) (`sites/submarine/`): what Submarine is, how it protects your data, the privacy policy and the account deletion page.
 - [echoes.sinaxhpm.com](https://echoes.sinaxhpm.com) (`sites/echoes/`): Echoes, the network toolkit by the same author (its source is [SinaXhpm/Echoes](https://github.com/SinaXhpm/Echoes)), and its privacy policy, which follows that repository's PRIVACY.md word for word.
 
-Both are in English and 11 translations. Static HTML with one style sheet and one small script (plus the delete form on the Submarine site); fonts are served from the site itself; no cookies, no analytics, no third-party requests. The servers send a strict Content-Security-Policy (`script-src 'self'; style-src 'self'`), so the pages have no inline script or style.
+The Submarine site is in English and 9 translations (no Persian or Arabic since November 2026), the Echoes site in English and 11. Static HTML with one style sheet and one small script (plus the delete form on the Submarine site); fonts are served from the site itself; no cookies, no analytics, no third-party requests. The servers send a strict Content-Security-Policy (`script-src 'self'; style-src 'self'`), so the pages have no inline script or style.
 
 ## Layout
 
@@ -43,15 +43,15 @@ msedge --headless=new --window-size=1200,630 --screenshot=<site>/img/og.png file
 ## Check
 
 ```sh
-node website/tools/check-i18n.mjs submarine fa ar zh es fr de ru pt-br ja tr hi   # translations against English
+node website/tools/check-i18n.mjs submarine zh es fr de ru pt-br ja tr hi         # translations against English and the app's own words
 node website/tools/check-i18n.mjs echoes fa ar zh es fr de ru pt-br ja tr hi
 node website/tools/serve.mjs 8790 submarine                                      # serves dist/<site> with the production headers
-node website/tools/shoot.mjs http://127.0.0.1:8790 out / /fa/ /security/          # pictures + console/CSP errors (Edge or Chrome)
+node website/tools/shoot.mjs http://127.0.0.1:8790 out / /de/ /security/          # pictures + console/CSP errors (Edge or Chrome)
 ```
 
 ## Translations
 
-`sites/<site>/i18n/en.json` is the source. Each language is `<code>.json` with the same keys; a missing string falls back to English (the build lists them), and a list of things with ids (features, sections) that doesn't match the English one is taken from English whole. Keep `{placeholders}` and the HTML tags as they are. Both apps are in English, so the names of their buttons, settings and tools stay in English (`check-i18n.mjs` knows them). Don't make any claim stronger or weaker than the English one. The privacy policies' translations say that the English text is the one that counts. A new language is a line in `LANGS` in `engine.mjs` plus its JSON files.
+`sites/<site>/i18n/en.json` is the source. Each language is `<code>.json` with the same keys; a missing string falls back to English (the build lists them), and a list of things with ids (features, sections) that doesn't match the English one is taken from English whole. Keep `{placeholders}` and the HTML tags as they are. Submarine's app is translated (since 0.4), so a translated Submarine page names the app's buttons and settings as the app does in that language (`src/i18n/<lang>.json`; `check-i18n.mjs` checks the ones the pages name), except in picture descriptions: the screenshots show the app in English. Echoes is in English only, so its site keeps the names of its tools and buttons in English (`check-i18n.mjs` knows them). Don't make any claim stronger or weaker than the English one. The privacy policies' translations say that the English text is the one that counts. A new language is a line in `LANGS` in `engine.mjs` plus its JSON files.
 
 ## Hosting
 

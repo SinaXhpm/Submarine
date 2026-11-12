@@ -100,13 +100,18 @@
           "id": "remote",
           "title": "RDP et VNC",
           "text": "Des bureaux à distance dans un onglet, avec presse-papiers partagé, réglages de vitesse et de qualité, et un indicateur qui montre l’état de la connexion.",
-          "wide": true,
           "new": true
         },
         {
           "id": "telnet",
           "title": "Telnet",
           "text": "Pour les anciens commutateurs et routeurs, clairement signalé comme non chiffré.",
+          "new": true
+        },
+        {
+          "id": "languages",
+          "title": "Dans votre langue",
+          "text": "L’application est disponible en {appLanguages} langues. Elle s’affiche dans la langue de votre système, ou dans celle que vous choisissez dans les Paramètres.",
           "new": true
         },
         {
@@ -202,7 +207,7 @@
           "points": [
             "Utilise votre agent SSH : Pageant, l’agent OpenSSH de Windows, 1Password, clés matérielles.",
             "Certificats OpenSSH, hôtes de rebond, et proxys HTTP et SOCKS.",
-            "Quand un mot de passe enregistré est erroné, ou qu’aucun n’est enregistré, la fenêtre de saisie du mot de passe propose <strong>Save password</strong>. Le mot de passe est conservé une fois la connexion réussie."
+            "Quand un mot de passe enregistré est erroné, ou qu’aucun n’est enregistré, la fenêtre de saisie du mot de passe propose <strong>Enregistrer le mot de passe</strong>. Le mot de passe est conservé une fois la connexion réussie."
           ],
           "alt": "Le formulaire d’ajout d’un serveur, avec import depuis ~/.ssh/config"
         },
@@ -248,12 +253,12 @@
         {
           "id": "mark",
           "title": "Voyez l’état de la connexion",
-          "text": "Un indicateur dans l’onglet affiche « Good » (bon), « Fair » (moyen), « Weak » (faible) ou « Not answering » (pas de réponse), avec le délai. Son panneau montre la quantité de données qui passe dans chaque sens et, si la connexion est faible, propose d’utiliser moins de données."
+          "text": "Un indicateur dans l’onglet affiche « Bonne », « Moyenne », « Faible » ou « Ne répond pas », avec le délai. Son panneau montre la quantité de données qui passe dans chaque sens et, si la connexion est faible, propose d’utiliser moins de données."
         },
         {
           "id": "quality",
           "title": "Une image nette, ou moins de données",
-          "text": "Choisissez les couleurs, la résolution et, pour VNC, la fréquence de mise à jour de l’image, ou prenez un préréglage comme « Less data » (moins de données). Un onglet masqué met son image en pause : rien n’est envoyé tant que personne ne regarde."
+          "text": "Choisissez les couleurs, la résolution et, pour VNC, la fréquence de mise à jour de l’image, ou prenez un préréglage comme « Moins de données ». Un onglet masqué met son image en pause : rien n’est envoyé tant que personne ne regarde."
         },
         {
           "id": "clipboard",
@@ -279,7 +284,7 @@
       "alt": "Un bureau à distance en RDP dans un onglet Submarine, avec Paste, l’indicateur de connexion (Good, 6 ms), Files et Settings dans sa barre",
       "altVnc": "Un bureau VNC dans un onglet Submarine, signalé comme non chiffré",
       "altSettings": "Le panneau Speed and quality d’un onglet de bureau à distance",
-      "note": "Le client RDP intégré est expérimental, et reste désactivé tant que vous ne le choisissez pas pour un serveur (<em>Open in: Submarine's tab</em>). D’ici là, RDP s’ouvre dans l’application RDP de votre ordinateur. Sur Android, c’est le client intégré qui est utilisé."
+      "note": "Le client RDP intégré est expérimental, et reste désactivé tant que vous ne le choisissez pas pour un serveur (<em>Ouvrir dans : Onglet de Submarine</em>). D’ici là, RDP s’ouvre dans l’application RDP de votre ordinateur. Sur Android, c’est le client intégré qui est utilisé."
     },
     "privacy": {
       "kicker": "Conçu pour protéger votre vie privée",
@@ -296,7 +301,7 @@
         },
         {
           "title": "Pas de pistage",
-          "text": "Pas de publicité, pas de statistiques d’utilisation, pas de rapports de plantage. L’application ne communique qu’avec vos serveurs, avec le serveur de synchronisation si vous vous connectez, et avec GitHub pour vérifier s’il existe une nouvelle version."
+          "text": "Pas de publicité, pas de statistiques d’utilisation, pas de rapports de plantage. L’application ne communique qu’avec vos serveurs, avec le serveur de synchronisation si vous vous connectez, avec GitHub pour vérifier s’il existe une nouvelle version, et avec nous quand vous envoyez des commentaires."
         }
       ],
       "link": "Comment cela fonctionne, et comment le vérifier vous-même"
@@ -374,19 +379,27 @@
         },
         {
           "q": "Qu’est-ce qu’un bureau à distance reçoit de mon ordinateur ?",
-          "a": "Le texte du presse-papiers quand vous collez dans son onglet, et rien avant. Le texte copié sur le serveur arrive dans votre presse-papiers tant que <em>Share the clipboard</em> est activé. Des fichiers, uniquement si vous choisissez un dossier ou un lecteur pour le client RDP intégré, sur un ordinateur. Ces choix sont conservés sur votre appareil et ne sont jamais synchronisés : personne avec qui vous partagez un profil ne peut donc les activer."
+          "a": "Le texte du presse-papiers quand vous collez dans son onglet, et rien avant. Le texte copié sur le serveur arrive dans votre presse-papiers tant que <em>Partager le presse-papiers</em> est activé. Des fichiers, uniquement si vous choisissez un dossier ou un lecteur pour le client RDP intégré, sur un ordinateur. Ces choix sont conservés sur votre appareil et ne sont jamais synchronisés : personne avec qui vous partagez un profil ne peut donc les activer."
         },
         {
           "q": "Sur quels systèmes fonctionne-t-il ?",
-          "a": "Windows 10 et 11, macOS sur Apple Silicon (M1 ou plus récent), Linux (.deb, .rpm, Arch, AppImage) et Android 7.0 ou version ultérieure."
+          "a": "Windows 10 et 11, macOS sur Apple Silicon (M1 ou plus récent), Linux (.deb, .rpm, Arch, AppImage) et Android 7.0 ou version ultérieure. Pour iPhone et iPad (iOS 15 ou version ultérieure), une bêta est proposée sur <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>."
+        },
+        {
+          "q": "En quelles langues l’application est-elle disponible ?",
+          "a": "À partir de la version 0.4, en {appLanguages} langues : {appLanguageList}. L’application s’affiche dans la langue de votre système, ou dans celle que vous choisissez dans <em>Paramètres → Langue</em>. Les traductions sont récentes : si un mot est incorrect, dites-le-nous avec <em>Proposer une correction</em>, au même endroit."
         },
         {
           "q": "Puis-je utiliser mon propre serveur de synchronisation ?",
-          "a": "Oui. Dans l’application, ouvrez Cloud sync et modifiez le serveur de synchronisation. Le code de notre serveur n’est pas publié : votre propre serveur doit donc proposer la même API, qui est décrite dans le code source de l’application."
+          "a": "Oui. Dans l’application, ouvrez « Synchronisation cloud » et modifiez le serveur de synchronisation. Le code de notre serveur n’est pas publié : votre propre serveur doit donc proposer la même API, qui est décrite dans le code source de l’application."
         },
         {
           "q": "Comment supprimer mon compte ?",
-          "a": "Dans l’application (à partir de la version 0.4) : Cloud sync → Delete account… ; vous pouvez aussi le faire sur la <a href=\"{deleteUrl}\">page de suppression du compte</a>."
+          "a": "Dans l’application (à partir de la version 0.4) : Synchronisation cloud → Supprimer le compte… ; vous pouvez aussi le faire sur la <a href=\"{deleteUrl}\">page de suppression du compte</a>."
+        },
+        {
+          "q": "Comment signaler un problème ou faire une demande ?",
+          "a": "À partir de la version 0.4, utilisez <em>Envoyer des commentaires</em> dans les Paramètres, ou <em>Commentaires</em> en bas de la liste des profils. Seul ce que vous saisissez est envoyé, avec une adresse e-mail uniquement si vous en indiquez une pour recevoir une réponse. Vous pouvez aussi <a href=\"{issuesUrl}\">ouvrir un ticket sur GitHub</a>."
         }
       ]
     }
@@ -454,7 +467,7 @@
       },
       {
         "id": "sync",
-        "title": "2. La synchronisation (Cloud sync)",
+        "title": "2. Synchronisation cloud",
         "paragraphs": [
           "La synchronisation reste désactivée jusqu’à ce que vous vous connectiez. Chaque profil a sa propre clé de données aléatoire de 256 bits, conservée à l’intérieur du profil chiffré. Avant l’envoi, chaque élément (un serveur, un identifiant, une clé, une note…) est chiffré individuellement avec cette clé, au moyen d’AES-256-GCM et d’un nouveau nonce aléatoire.",
           "Avec chaque élément chiffré, le serveur reçoit un ID aléatoire, le type d’élément, un horodatage et un indicateur précisant si l’élément a été supprimé. L’horodatage contient un ID aléatoire de l’appareil qui a fait la modification. La taille de l’élément chiffré indique à peu près la taille de l’élément lui-même. Le serveur stocke aussi le nom de chaque profil. Les clés d’hôtes connues, l’historique des commandes, les réglages de supervision et les choix conservés pour cet appareil uniquement ne sont jamais synchronisés."
@@ -527,18 +540,21 @@
         "id": "network",
         "title": "7. Tout ce à quoi l’application se connecte",
         "paragraphs": [
-          "Vos propres serveurs, ainsi que les proxys et hôtes de rebond que vous configurez pour eux. Le serveur de synchronisation, uniquement quand vous êtes connecté. Et GitHub, pour vérifier s’il existe une version plus récente : à l’ouverture de la liste des profils et quand vous appuyez sur « Check for updates », l’application consulte la liste publique des versions sur GitHub. Cette requête ne transmet que le nom et la version de l’application.",
+          "Vos propres serveurs, ainsi que les proxys et hôtes de rebond que vous configurez pour eux. Le serveur de synchronisation, uniquement quand vous êtes connecté. Notre serveur (<code>submarine.sinaxhpm.com</code>) quand vous envoyez des commentaires, même si vous synchronisez avec votre propre serveur, et dans ce cas uniquement avec ce que vous avez saisi. Et GitHub, pour vérifier s’il existe une version plus récente : à l’ouverture de la liste des profils et quand vous appuyez sur « Rechercher des mises à jour », l’application consulte la liste publique des versions sur GitHub. Cette requête ne transmet que le nom et la version de l’application. L’application iOS, la version du Mac App Store et le Flatpak n’interrogent jamais GitHub : leurs boutiques les tiennent à jour.",
           "L’application ne contient aucun code de statistiques d’utilisation, de rapports de plantage ou de publicité. Pour la synchronisation, elle ne fait confiance qu’à sa propre liste intégrée d’autorités de certification, et elle ne suit jamais de redirection : on ne peut donc pas la faire pointer discrètement vers un autre serveur."
         ],
         "code": [
-          "updateCheck"
+          "updateCheck",
+          "updateBuilds",
+          "feedbackBody",
+          "feedbackSend"
         ]
       },
       {
         "id": "remote",
         "title": "8. Ce qu’un bureau à distance reçoit de votre appareil",
         "paragraphs": [
-          "<strong>Le presse-papiers.</strong> Le texte que vous collez dans un onglet RDP ou VNC va à ce serveur, et rien ne lui est proposé avant que vous colliez. Avec <em>Share the clipboard</em> activé (le réglage par défaut, avec un interrupteur pour chaque serveur), le texte copié sur le bureau à distance est placé dans le presse-papiers de cet appareil. Il s’agit uniquement de texte, jamais de fichiers, et VNC ne transporte que du texte ASCII simple.",
+          "<strong>Le presse-papiers.</strong> Le texte que vous collez dans un onglet RDP ou VNC va à ce serveur, et rien ne lui est proposé avant que vous colliez. Avec <em>Partager le presse-papiers</em> activé (le réglage par défaut, avec un interrupteur pour chaque serveur), le texte copié sur le bureau à distance est placé dans le presse-papiers de cet appareil. Il s’agit uniquement de texte, jamais de fichiers, et VNC ne transporte que du texte ASCII simple.",
           "<strong>Les fichiers</strong>, uniquement avec le client RDP intégré sur un ordinateur, et uniquement si vous choisissez un dossier ou un lecteur pour ce serveur, en lecture seule si vous le souhaitez. Le serveur le voit comme un lecteur sous <code>\\\\tsclient</code>, et rien d’autre de votre ordinateur. Chaque chemin qu’il demande est vérifié : pas de <code>..</code>, et aucun lien n’est suivi en cours de route, si bien que rien en dehors de ce que vous avez choisi n’est accessible.",
           "Ces choix sont conservés sur cet appareil et ne sont jamais synchronisés : personne avec qui vous partagez un profil ne peut donc les activer."
         ],
@@ -558,7 +574,7 @@
         },
         {
           "title": "Observez les connexions",
-          "text": "Utilisez un pare-feu ou un outil de surveillance du réseau. Vous verrez vos propres serveurs, le serveur de synchronisation uniquement pendant que vous êtes connecté, et api.github.com à l’ouverture de la liste des profils. Rien d’autre."
+          "text": "Utilisez un pare-feu ou un outil de surveillance du réseau. Vous verrez vos propres serveurs, le serveur de synchronisation uniquement pendant que vous êtes connecté, submarine.sinaxhpm.com quand vous envoyez des commentaires, et api.github.com à l’ouverture de la liste des profils (pas dans les versions App Store et Flatpak). Rien d’autre."
         },
         {
           "title": "Regardez ce que le serveur stocke",
@@ -624,6 +640,9 @@
       "sealTo": "Scellement d’une clé pour un membre",
       "invite": "Invitation d’un membre",
       "updateCheck": "La recherche de mises à jour",
+      "updateBuilds": "Les versions qui n’interrogent jamais GitHub",
+      "feedbackBody": "Ce que contient un message de commentaires",
+      "feedbackSend": "Où va un message de commentaires",
       "shareInside": "Confinement des chemins au dossier partagé",
       "vncPaste": "Ce que le presse-papiers de VNC peut transporter"
     }
@@ -632,11 +651,11 @@
     "title": "Politique de confidentialité – Submarine",
     "description": "Ce que conservent l’application Submarine et son service de synchronisation facultatif, ce qu’ils peuvent lire et ne peuvent pas lire, combien de temps ces données sont conservées, et comment les supprimer.",
     "heading": "Politique de confidentialité",
-    "intro": "Cette politique s’applique à l’application Submarine (Windows, macOS, Linux et Android), au service de synchronisation facultatif de Submarine, que l’application peut utiliser, et à ce site web.",
+    "intro": "Cette politique s’applique à l’application Submarine (Windows, macOS, Linux, Android et iOS), au service de synchronisation facultatif de Submarine, que l’application peut utiliser, et à ce site web.",
     "shortTitle": "En bref",
     "short": [
       "Vos serveurs, mots de passe, clés SSH et notes restent sur votre appareil, chiffrés avec une clé calculée à partir du mot de passe de votre profil. L’application n’a ni statistiques d’utilisation, ni publicité, ni pistage, ni rapports de plantage.",
-      "La synchronisation (Cloud sync) est facultative. Si vous l’activez, le serveur de synchronisation conserve l’adresse e-mail de votre compte, ainsi que vos profils sous forme chiffrée. Il ne peut pas lire leur contenu.",
+      "La fonction « Synchronisation cloud » est facultative. Si vous l’activez, le serveur de synchronisation conserve l’adresse e-mail de votre compte, ainsi que vos profils sous forme chiffrée. Il ne peut pas lire leur contenu.",
       "Vous pouvez supprimer votre compte, et tout ce que le serveur conserve pour ce compte, depuis l’application ou sur ce site web.",
       "Un message que vous envoyez avec <em>Envoyer des commentaires</em> n’arrive au développeur qu’avec ce que vous y avez écrit."
     ],
@@ -655,7 +674,7 @@
           "<strong>Vos profils</strong> (serveurs, identifiants, clés SSH, tunnels, notes, commandes, clés d’hôtes connues, et mots de passe que vous choisissez d’enregistrer depuis une fenêtre de connexion) sont stockés dans le dossier de données de l’application. Ils sont chiffrés avec AES-256-GCM, au moyen d’une clé calculée à partir du mot de passe de votre profil avec Argon2id. Le mot de passe du profil n’est jamais enregistré et n’est jamais envoyé nulle part. Il n’existe aucun moyen de le récupérer : si vous l’oubliez, le profil ne peut pas être ouvert.",
           "<strong>Le déverrouillage rapide</strong> (facultatif, désactivé par défaut) : si vous activez Windows Hello ou une empreinte digitale sur Android, la clé du profil est scellée avec une clé détenue par le système (le TPM ou l’Android Keystore). Le système vérifie votre empreinte digitale ou votre code PIN ; l’application ne les voit jamais. Sous Windows, vous pouvez à la place choisir qu’un profil s’ouvre automatiquement (désactivé par défaut lui aussi) : sa clé est alors protégée par Windows pour votre compte, sans aucune vérification, si bien que toute personne ou tout programme utilisant ce compte Windows peut l’ouvrir.",
           "<strong>Les réglages</strong>, comme la position de la fenêtre, le nom du dernier profil utilisé et le thème de couleurs, ainsi que les choix faits pour cet appareil uniquement (la vitesse et la qualité d’un bureau à distance, le partage ou non du presse-papiers, le dossier ou le lecteur partagé avec un serveur RDP, et les serveurs pour lesquels un terminal s’ouvre toujours avec son propre identifiant), sont stockés dans les réglages propres à l’application, sans chiffrement, et ne sont jamais synchronisés.",
-          "<strong>Le presse-papiers</strong> n’est lu que lorsque vous collez. Ce que vous collez va au serveur dans lequel vous le collez : un terminal, ou l’onglet d’un bureau à distance. Avec <em>Share the clipboard</em> activé (par défaut pour les serveurs RDP et VNC), le texte copié sur le bureau à distance est placé dans le presse-papiers de cet appareil. Rien de ce qui se trouve dans le presse-papiers ne nous est jamais envoyé.",
+          "<strong>Le presse-papiers</strong> n’est lu que lorsque vous collez. Ce que vous collez va au serveur dans lequel vous le collez : un terminal, ou l’onglet d’un bureau à distance. Avec <em>Partager le presse-papiers</em> activé (par défaut pour les serveurs RDP et VNC), le texte copié sur le bureau à distance est placé dans le presse-papiers de cet appareil. Rien de ce qui se trouve dans le presse-papiers ne nous est jamais envoyé.",
           "<strong>Connexion Bureau à distance (Windows)</strong> reçoit le mot de passe enregistré d’un serveur dans un fichier .rdp à courte durée de vie. Le mot de passe qu’il contient est chiffré avec Windows DPAPI pour votre utilisateur Windows, et le fichier est supprimé une fois lu. Si vous laissez l’application RDP mémoriser elle-même un identifiant, c’est Windows qui le conserve, pas Submarine.",
           "<strong>Le journal d’activité</strong> de l’application est conservé en mémoire et disparaît à la fermeture de l’application."
         ]
@@ -666,7 +685,7 @@
         "list": [
           "<strong>Vos propres serveurs.</strong> L’application se connecte uniquement aux hôtes que vous ajoutez ou ouvrez, en SSH, SFTP, Telnet, VNC ou RDP, via tout proxy ou hôte de rebond que vous configurez. Ce que vous tapez et transférez va à ce serveur, pas à nous. Pour un bureau à distance, cela comprend le texte du presse-papiers que vous y collez, et un dossier ou un lecteur de cet ordinateur si vous choisissez d’en partager un avec le client RDP intégré. Le Telnet simple et le VNC simple ne sont pas chiffrés, et l’application l’indique.",
           "<strong>Le service de synchronisation</strong>, uniquement si vous vous connectez à la synchronisation dans le cloud (voir plus bas). Vous pouvez à la place faire pointer l’application vers votre propre serveur ; c’est alors l’exploitant de ce serveur qui traite les données.",
-          "<strong>GitHub</strong>, pour chercher une version plus récente. À l’ouverture de la liste des profils, et quand vous appuyez sur « Check for updates », l’application consulte la liste publique des versions sur GitHub (<code>api.github.com</code>) pour savoir si une version plus récente existe. La requête transmet le nom et la version de l’application (<code>submarine-app/x.y.z</code>), et rien d’autre ; GitHub voit votre adresse IP, comme pour toute requête web.",
+          "<strong>GitHub</strong>, pour chercher une version plus récente (pas dans l’application iOS, ni dans la version du Mac App Store, ni dans le Flatpak, que leurs boutiques tiennent à jour). À l’ouverture de la liste des profils, et quand vous appuyez sur « Rechercher des mises à jour », l’application consulte la liste publique des versions sur GitHub (<code>api.github.com</code>) pour savoir si une version plus récente existe. La requête transmet le nom et la version de l’application (<code>submarine-app/x.y.z</code>), et rien d’autre ; GitHub voit votre adresse IP, comme pour toute requête web.",
           "<strong>Le serveur du développeur, quand vous envoyez des commentaires</strong> (voir plus bas), et seulement à ce moment-là.",
           "<strong>Les liens</strong> sur lesquels vous cliquez s’ouvrent dans le navigateur de votre système."
         ],
@@ -675,7 +694,7 @@
     ],
     "table": {
       "id": "sync",
-      "title": "Synchronisation facultative (Cloud sync) : ce que conserve le serveur",
+      "title": "Synchronisation cloud (facultative) : ce que conserve le serveur",
       "intro": "Si vous créez un compte, le serveur stocke :",
       "head": [
         "Donnée",
@@ -752,9 +771,9 @@
         "id": "deleting",
         "title": "Supprimer vos données",
         "list": [
-          "<strong>Supprimez votre compte</strong> dans l’application (à partir de la version 0.4) : <em>Cloud sync → (une fois connecté) → Delete account…</em>, ou sur la <a href=\"{deleteUrl}\">page de suppression du compte</a> de ce site web. Vous confirmez avec le mot de passe de votre compte. Cela supprime immédiatement : les copies dans le cloud de tous vos profils, votre clé de partage, chaque profil que vous avez partagé (les personnes avec qui vous l’avez partagé perdent l’accès), votre appartenance aux partages d’autres personnes, vos sessions, et les entrées du journal de votre compte. Les enregistrements que vous avez écrits dans le profil partagé de quelqu’un d’autre restent dans ce profil, sans nom d’auteur. Les profils présents sur vos appareils ne sont pas touchés.",
+          "<strong>Supprimez votre compte</strong> dans l’application (à partir de la version 0.4) : <em>Synchronisation cloud → (une fois connecté) → Supprimer le compte…</em>, ou sur la <a href=\"{deleteUrl}\">page de suppression du compte</a> de ce site web. Vous confirmez avec le mot de passe de votre compte. Cela supprime immédiatement : les copies dans le cloud de tous vos profils, votre clé de partage, chaque profil que vous avez partagé (les personnes avec qui vous l’avez partagé perdent l’accès), votre appartenance aux partages d’autres personnes, vos sessions, et les entrées du journal de votre compte. Les enregistrements que vous avez écrits dans le profil partagé de quelqu’un d’autre restent dans ce profil, sans nom d’auteur. Les profils présents sur vos appareils ne sont pas touchés.",
           "<strong>Les lignes de journal écrites ensuite</strong> (la suppression elle-même, qui ne comporte aucune adresse e-mail, et toute tentative de connexion ultérieure avec cette adresse e-mail) sont conservées jusqu’à {auditDays} jours. Les sauvegardes faites lors des mises à jour du logiciel du serveur ne sont conservées que peu de temps.",
-          "<strong>Supprimez la copie dans le cloud d’un profil</strong> dans l’application : menu du profil dans la liste des profils, <em>Delete from cloud…</em>.",
+          "<strong>Supprimez la copie dans le cloud d’un profil</strong> dans l’application : menu du profil dans la liste des profils, <em>Supprimer du cloud…</em>.",
           "<strong>Supprimer un message de commentaires</strong> avant ses {feedbackDays} jours : contactez-nous avec son numéro de rapport.",
           "<strong>Supprimez ce qui se trouve sur un appareil</strong> en désinstallant l’application (pour la version portable de Windows, en supprimant le dossier situé à côté du programme).",
           "Si vous utilisez une version plus ancienne, ou si vous ne pouvez plus ouvrir l’application, contactez-nous (voir ci-dessous) et nous supprimerons le compte lorsque vous pourrez montrer qu’il vous appartient."
@@ -810,7 +829,7 @@
       "Les lignes de journal écrites après la suppression (la suppression elle-même, sans votre adresse e-mail, et les tentatives de connexion ultérieures) sont conservées jusqu’à {auditDays} jours."
     ],
     "inAppTitle": "Dans l’application",
-    "inApp": "À partir de la version 0.4 : une fois connecté, ouvrez <em>Cloud sync</em>, choisissez <em>Delete account…</em> et confirmez avec le mot de passe de votre compte.",
+    "inApp": "À partir de la version 0.4 : une fois connecté, ouvrez <em>Synchronisation cloud</em>, choisissez <em>Supprimer le compte…</em> et confirmez avec le mot de passe de votre compte.",
     "formTitle": "Sur cette page",
     "formLede": "Connectez-vous avec l’adresse e-mail et le mot de passe de votre compte de synchronisation. Votre compte est supprimé immédiatement.",
     "email": "Adresse e-mail",
@@ -829,7 +848,7 @@
       "confirm": "Veuillez cocher la case pour confirmer."
     },
     "helpTitle": "Pas de mot de passe, ou pas d’accès ?",
-    "help": "Si vous vous connectez toujours avec un code reçu par e-mail, définissez d’abord un mot de passe dans l’application (Cloud sync → Forgot password?). Si vous ne pouvez utiliser ni l’application ni ce formulaire, ouvrez un ticket sur <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> sans aucune information privée, et nous supprimerons le compte lorsque vous pourrez montrer qu’il vous appartient."
+    "help": "Si vous vous connectez toujours avec un code reçu par e-mail, définissez d’abord un mot de passe dans l’application (Synchronisation cloud → Mot de passe oublié ?). Si vous ne pouvez utiliser ni l’application ni ce formulaire, ouvrez un ticket sur <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> sans aucune information privée, et nous supprimerons le compte lorsque vous pourrez montrer qu’il vous appartient."
   },
   "notFound": {
     "title": "Page introuvable – Submarine",

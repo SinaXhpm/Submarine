@@ -100,13 +100,18 @@
           "id": "remote",
           "title": "RDP y VNC",
           "text": "Escritorios remotos en una pestaña, con portapapeles compartido, opciones de velocidad y calidad, y un indicador que muestra cómo va la conexión.",
-          "wide": true,
           "new": true
         },
         {
           "id": "telnet",
           "title": "Telnet",
           "text": "Para switches y routers antiguos, marcado claramente como sin cifrar.",
+          "new": true
+        },
+        {
+          "id": "languages",
+          "title": "En tu idioma",
+          "text": "La aplicación está disponible en {appLanguages} idiomas. Se muestra en el idioma de tu sistema o en el que elijas en Configuración.",
           "new": true
         },
         {
@@ -202,7 +207,7 @@
           "points": [
             "Usa tu agente SSH: Pageant, el agente de OpenSSH de Windows, 1Password, llaves de hardware.",
             "Certificados de OpenSSH, servidores de salto y proxies HTTP y SOCKS.",
-            "Si una contraseña guardada es incorrecta, o no hay ninguna guardada, la ventana que pide la contraseña ofrece <strong>Save password</strong>. La contraseña se guarda en cuanto el inicio de sesión funciona."
+            "Si una contraseña guardada es incorrecta, o no hay ninguna guardada, la ventana que pide la contraseña ofrece <strong>Guardar contraseña</strong>. La contraseña se guarda en cuanto el inicio de sesión funciona."
           ],
           "alt": "El formulario para un servidor nuevo, con importación desde ~/.ssh/config"
         },
@@ -248,12 +253,12 @@
         {
           "id": "mark",
           "title": "Mira cómo va la conexión",
-          "text": "Un indicador en la pestaña dice Good, Fair, Weak o Not answering (buena, aceptable, débil o sin respuesta), con el retardo. Su panel muestra cuántos datos van en cada sentido y, si la conexión es débil, ofrece usar menos datos."
+          "text": "Un indicador en la pestaña dice «Buena», «Regular», «Débil» o «Sin respuesta», con el retardo. Su panel muestra cuántos datos van en cada sentido y, si la conexión es débil, ofrece usar menos datos."
         },
         {
           "id": "quality",
           "title": "Una imagen nítida, o menos datos",
-          "text": "Elige los colores, la resolución y, en VNC, con qué frecuencia se actualiza la imagen, o usa una opción rápida como Less data. Una pestaña oculta pausa su imagen, así que no se envía nada mientras nadie la está mirando."
+          "text": "Elige los colores, la resolución y, en VNC, con qué frecuencia se actualiza la imagen, o usa una opción rápida como «Menos datos». Una pestaña oculta pausa su imagen, así que no se envía nada mientras nadie la está mirando."
         },
         {
           "id": "clipboard",
@@ -279,7 +284,7 @@
       "alt": "Un escritorio remoto por RDP en una pestaña de Submarine, con Paste, el indicador de conexión (Good, 6 ms), Files y Settings en su barra",
       "altVnc": "Un escritorio VNC en una pestaña de Submarine, marcado como sin cifrar",
       "altSettings": "El panel Speed and quality de una pestaña de escritorio remoto",
-      "note": "El cliente RDP integrado es experimental y está desactivado hasta que lo eliges para un servidor (<em>Open in: Submarine's tab</em>). Hasta entonces, RDP se abre en la aplicación de RDP de tu computadora. En Android se usa el cliente integrado."
+      "note": "El cliente RDP integrado es experimental y está desactivado hasta que lo eliges para un servidor (<em>Abrir en: Pestaña de Submarine</em>). Hasta entonces, RDP se abre en la aplicación de RDP de tu computadora. En Android se usa el cliente integrado."
     },
     "privacy": {
       "kicker": "Privacidad desde el diseño",
@@ -296,7 +301,7 @@
         },
         {
           "title": "Sin rastreo",
-          "text": "Sin anuncios, sin analítica, sin informes de fallos. La aplicación solo se comunica con tus servidores, con el servidor de sincronización si inicias sesión y con GitHub para comprobar si hay una versión nueva."
+          "text": "Sin anuncios, sin analítica, sin informes de fallos. La aplicación solo se comunica con tus servidores, con el servidor de sincronización si inicias sesión, con GitHub para comprobar si hay una versión nueva y con nosotros cuando envías comentarios."
         }
       ],
       "link": "Cómo funciona y cómo comprobarlo por tu cuenta"
@@ -374,19 +379,27 @@
         },
         {
           "q": "¿Qué recibe un escritorio remoto de mi computadora?",
-          "a": "El texto del portapapeles cuando pegas en su pestaña, y nada antes de eso. El texto copiado en el servidor llega a tu portapapeles mientras <em>Share the clipboard</em> está activado. Archivos, solo si eliges una carpeta o una unidad para el cliente RDP integrado, en una computadora. Estas opciones se guardan en tu dispositivo y nunca se sincronizan, así que nadie con quien compartas un perfil puede activarlas."
+          "a": "El texto del portapapeles cuando pegas en su pestaña, y nada antes de eso. El texto copiado en el servidor llega a tu portapapeles mientras <em>Compartir el portapapeles</em> está activado. Archivos, solo si eliges una carpeta o una unidad para el cliente RDP integrado, en una computadora. Estas opciones se guardan en tu dispositivo y nunca se sincronizan, así que nadie con quien compartas un perfil puede activarlas."
         },
         {
           "q": "¿En qué sistemas funciona?",
-          "a": "Windows 10 y 11, macOS en Apple Silicon (M1 o posterior), Linux (.deb, .rpm, Arch, AppImage) y Android 7.0 o posterior."
+          "a": "Windows 10 y 11, macOS en Apple Silicon (M1 o posterior), Linux (.deb, .rpm, Arch, AppImage) y Android 7.0 o posterior. Para iPhone y iPad (iOS 15 o posterior) hay una beta en <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>."
+        },
+        {
+          "q": "¿En qué idiomas está disponible la aplicación?",
+          "a": "A partir de la versión 0.4, en {appLanguages} idiomas: {appLanguageList}. Se muestra en el idioma de tu sistema o en el que elijas en <em>Configuración → Idioma</em>. Las traducciones son nuevas, así que, si una palabra está mal, avísanos allí mismo con <em>Sugerir una corrección</em>."
         },
         {
           "q": "¿Puedo usar mi propio servidor de sincronización?",
-          "a": "Sí. En la aplicación, abre Cloud sync y cambia el servidor de sincronización. El código de nuestro servidor no está publicado, así que un servidor propio tiene que ofrecer la misma API, que se describe en el código fuente de la aplicación."
+          "a": "Sí. En la aplicación, abre «Sincronización en la nube» y cambia el servidor de sincronización. El código de nuestro servidor no está publicado, así que un servidor propio tiene que ofrecer la misma API, que se describe en el código fuente de la aplicación."
         },
         {
           "q": "¿Cómo elimino mi cuenta?",
-          "a": "En la aplicación (versión 0.4 o posterior): Cloud sync → Delete account… También puedes hacerlo en la <a href=\"{deleteUrl}\">página para eliminar la cuenta</a>."
+          "a": "En la aplicación (versión 0.4 o posterior): Sincronización en la nube → Eliminar cuenta… También puedes hacerlo en la <a href=\"{deleteUrl}\">página para eliminar la cuenta</a>."
+        },
+        {
+          "q": "¿Cómo informo de un problema o pido algo?",
+          "a": "A partir de la versión 0.4, usa <em>Enviar comentarios</em> en Configuración o <em>Comentarios</em> en la parte inferior de la lista de perfiles. Solo se envía lo que escribes, y una dirección de correo electrónico solo si la das para recibir una respuesta. También puedes <a href=\"{issuesUrl}\">abrir una incidencia en GitHub</a>."
         }
       ]
     }
@@ -454,7 +467,7 @@
       },
       {
         "id": "sync",
-        "title": "2. Cloud sync (sincronización en la nube)",
+        "title": "2. Sincronización en la nube",
         "paragraphs": [
           "La sincronización está desactivada hasta que inicias sesión. Cada perfil tiene su propia clave de datos aleatoria de 256 bits, que se guarda dentro del perfil cifrado. Antes de subirse, cada elemento (un servidor, una credencial, una clave, una nota…) se cifra por separado con esta clave, usando AES-256-GCM y un nonce aleatorio nuevo.",
           "Junto a cada elemento cifrado, el servidor recibe un identificador aleatorio, el tipo de elemento, una marca de tiempo y un indicador que dice si se eliminó. La marca de tiempo contiene un identificador aleatorio del dispositivo que hizo el cambio. El tamaño del elemento cifrado deja ver aproximadamente cuánto ocupa el elemento. El servidor también guarda el nombre de cada perfil. Las claves de host conocidas, el historial de comandos, los ajustes de supervisión y las opciones que se guardan solo para este dispositivo nunca se sincronizan."
@@ -527,18 +540,21 @@
         "id": "network",
         "title": "7. Todas las conexiones de la aplicación",
         "paragraphs": [
-          "Tus propios servidores, y los proxies y servidores de salto que configures para ellos. El servidor de sincronización, solo cuando tienes la sesión iniciada. Y GitHub, para comprobar si hay una versión más reciente: cuando se abre la lista de perfiles y cuando pulsas «Check for updates» (buscar actualizaciones), la aplicación consulta la lista pública de versiones de GitHub. Esa solicitud solo lleva el nombre y la versión de la aplicación.",
+          "Tus propios servidores, y los proxies y servidores de salto que configures para ellos. El servidor de sincronización, solo cuando tienes la sesión iniciada. Nuestro servidor (<code>submarine.sinaxhpm.com</code>) cuando envías comentarios, incluso si sincronizas con un servidor propio, y entonces solo con lo que escribiste. Y GitHub, para comprobar si hay una versión más reciente: cuando se abre la lista de perfiles y cuando pulsas «Buscar actualizaciones», la aplicación consulta la lista pública de versiones de GitHub. Esa solicitud solo lleva el nombre y la versión de la aplicación. La aplicación para iOS, la versión del Mac App Store y el Flatpak nunca consultan GitHub: sus tiendas los mantienen actualizados.",
           "La aplicación no contiene código de analítica, de informes de fallos ni de publicidad. Para la sincronización, la aplicación solo confía en su propia lista integrada de autoridades de certificación y nunca sigue una redirección, así que no se la puede desviar en silencio hacia otro servidor."
         ],
         "code": [
-          "updateCheck"
+          "updateCheck",
+          "updateBuilds",
+          "feedbackBody",
+          "feedbackSend"
         ]
       },
       {
         "id": "remote",
         "title": "8. Qué recibe un escritorio remoto de tu dispositivo",
         "paragraphs": [
-          "<strong>El portapapeles.</strong> El texto que pegas en una pestaña de RDP o VNC va a ese servidor, y no se le ofrece nada antes de que pegues. Con <em>Share the clipboard</em> activado (la opción predeterminada, con un interruptor para cada servidor), el texto copiado en el escritorio remoto se pone en el portapapeles de este dispositivo. Es solo texto, nunca archivos, y VNC solo transmite texto ASCII sin formato.",
+          "<strong>El portapapeles.</strong> El texto que pegas en una pestaña de RDP o VNC va a ese servidor, y no se le ofrece nada antes de que pegues. Con <em>Compartir el portapapeles</em> activado (la opción predeterminada, con un interruptor para cada servidor), el texto copiado en el escritorio remoto se pone en el portapapeles de este dispositivo. Es solo texto, nunca archivos, y VNC solo transmite texto ASCII sin formato.",
           "<strong>Archivos</strong>, solo con el cliente RDP integrado en una computadora, y solo si eliges una carpeta o una unidad para ese servidor, de solo lectura si quieres. El servidor la ve como una unidad dentro de <code>\\\\tsclient</code>, y nada más de tu computadora. Se comprueba cada ruta que pide: no se admite <code>..</code> ni se sigue ningún enlace por el camino, así que no se puede llegar a nada fuera de lo que elegiste.",
           "Estas opciones se guardan en este dispositivo y nunca se sincronizan, así que nadie con quien compartas un perfil puede activarlas."
         ],
@@ -558,7 +574,7 @@
         },
         {
           "title": "Observa las conexiones",
-          "text": "Usa un cortafuegos o un monitor de red. Verás tus propios servidores, el servidor de sincronización solo mientras tengas la sesión iniciada, y api.github.com cuando se abra la lista de perfiles. Nada más."
+          "text": "Usa un cortafuegos o un monitor de red. Verás tus propios servidores, el servidor de sincronización solo mientras tengas la sesión iniciada, submarine.sinaxhpm.com cuando envíes comentarios, y api.github.com cuando se abra la lista de perfiles (no en las versiones del App Store ni en la de Flatpak). Nada más."
         },
         {
           "title": "Mira lo que guarda el servidor",
@@ -624,6 +640,9 @@
       "sealTo": "Sellar una clave para un miembro",
       "invite": "Invitar a un miembro",
       "updateCheck": "La búsqueda de actualizaciones",
+      "updateBuilds": "Las versiones que nunca consultan GitHub",
+      "feedbackBody": "Lo que lleva un mensaje de comentarios",
+      "feedbackSend": "Adónde va un mensaje de comentarios",
       "shareInside": "Mantener las rutas de una carpeta compartida dentro de ella",
       "vncPaste": "Lo que puede transmitir el portapapeles de VNC"
     }
@@ -632,11 +651,11 @@
     "title": "Política de privacidad – Submarine",
     "description": "Qué guardan la aplicación Submarine y su servicio opcional de sincronización, qué pueden leer y qué no, cuánto tiempo se conserva y cómo eliminarlo.",
     "heading": "Política de privacidad",
-    "intro": "Esta política se aplica a la aplicación Submarine (Windows, macOS, Linux y Android), al servicio opcional de sincronización de Submarine que la aplicación puede usar y a este sitio web.",
+    "intro": "Esta política se aplica a la aplicación Submarine (Windows, macOS, Linux, Android e iOS), al servicio opcional de sincronización de Submarine que la aplicación puede usar y a este sitio web.",
     "shortTitle": "En resumen",
     "short": [
       "Tus servidores, contraseñas, claves SSH y notas se quedan en tu dispositivo, cifrados con una clave generada a partir de la contraseña de tu perfil. La aplicación no tiene analítica, ni publicidad, ni rastreo, ni informes de fallos.",
-      "La función Cloud sync (sincronización en la nube) es opcional. Si la activas, el servidor de sincronización guarda la dirección de correo electrónico de tu cuenta y tus perfiles cifrados. No puede leer lo que contienen.",
+      "La función «Sincronización en la nube» es opcional. Si la activas, el servidor de sincronización guarda la dirección de correo electrónico de tu cuenta y tus perfiles cifrados. No puede leer lo que contienen.",
       "Puedes eliminar tu cuenta, y todo lo que el servidor guarda de ella, desde la propia aplicación o en este sitio web.",
       "Un mensaje que envíes con <em>Enviar comentarios</em> llega al desarrollador solo con lo que escribiste."
     ],
@@ -655,7 +674,7 @@
           "<strong>Tus perfiles</strong> (servidores, credenciales, claves SSH, túneles, notas, comandos, claves de host conocidas y las contraseñas que decidas guardar desde una ventana de inicio de sesión) se guardan en la carpeta de datos de la aplicación. Están cifrados con AES-256-GCM, con una clave generada a partir de la contraseña de tu perfil mediante Argon2id. La contraseña del perfil nunca se guarda ni se envía a ningún sitio. No hay forma de recuperarla: si la olvidas, el perfil no se puede abrir.",
           "<strong>Desbloqueo rápido</strong> (opcional, desactivado de forma predeterminada): si activas Windows Hello o la huella dactilar en Android, la clave del perfil se sella con una clave que guarda el sistema (el TPM o el Android Keystore). El sistema comprueba tu huella dactilar o tu PIN; la aplicación nunca los ve. En Windows puedes elegir, en su lugar, que un perfil se abra automáticamente (también desactivado de forma predeterminada): su clave queda entonces protegida por Windows para tu cuenta, sin ninguna comprobación, así que cualquier persona o programa que use esa cuenta de Windows puede abrirlo.",
           "<strong>Los ajustes</strong>, como la posición de la ventana, el nombre del último perfil usado y el tema de color, y las opciones elegidas solo para este dispositivo (la velocidad y la calidad de un escritorio remoto, si comparte el portapapeles, la carpeta o la unidad compartida con un servidor RDP, y qué servidores reciben siempre una terminal con su propio inicio de sesión), se guardan en la configuración propia de la aplicación, sin cifrar, y nunca se sincronizan.",
-          "<strong>El portapapeles</strong> solo se lee cuando pegas. Lo que pegas va al servidor en el que lo pegas: una terminal o la pestaña de un escritorio remoto. Con <em>Share the clipboard</em> activado (la opción predeterminada para los servidores RDP y VNC), el texto copiado en el escritorio remoto se pone en el portapapeles de este dispositivo. Nunca se nos envía nada del portapapeles.",
+          "<strong>El portapapeles</strong> solo se lee cuando pegas. Lo que pegas va al servidor en el que lo pegas: una terminal o la pestaña de un escritorio remoto. Con <em>Compartir el portapapeles</em> activado (la opción predeterminada para los servidores RDP y VNC), el texto copiado en el escritorio remoto se pone en el portapapeles de este dispositivo. Nunca se nos envía nada del portapapeles.",
           "<strong>Conexión a Escritorio remoto (Windows)</strong> recibe la contraseña guardada de un servidor en un archivo .rdp de corta duración. La contraseña que contiene está cifrada con DPAPI de Windows para tu usuario de Windows, y el archivo se elimina en cuanto se ha leído. Si dejas que la propia aplicación de RDP recuerde unas credenciales, las guarda Windows, no Submarine.",
           "<strong>El registro de actividad</strong> de la aplicación se guarda en memoria y desaparece al cerrarla."
         ]
@@ -666,7 +685,7 @@
         "list": [
           "<strong>Tus propios servidores.</strong> La aplicación solo se conecta a los hosts que añades o abres, mediante SSH, SFTP, Telnet, VNC o RDP, a través de cualquier proxy o servidor de salto que configures. Lo que escribes y transfieres va a ese servidor, no a nosotros. En el caso de un escritorio remoto, eso incluye el texto del portapapeles que pegas en él y una carpeta o unidad de esta computadora si decides compartirla con el cliente RDP integrado. Telnet y VNC en su forma básica no están cifrados, y la aplicación lo indica.",
           "<strong>El servicio de sincronización</strong>, solo si inicias sesión en la sincronización en la nube (ver más abajo). En su lugar, puedes configurar la aplicación para que use un servidor propio; en ese caso, los datos los gestiona el operador de ese servidor.",
-          "<strong>GitHub</strong>, para buscar una versión más reciente. Cuando se abre la lista de perfiles, y cuando pulsas «Check for updates» (buscar actualizaciones), la aplicación consulta en la lista pública de versiones de GitHub (<code>api.github.com</code>) si existe una versión más reciente. La solicitud lleva el nombre y la versión de la aplicación (<code>submarine-app/x.y.z</code>) y nada más; GitHub ve tu dirección IP, como en cualquier solicitud web.",
+          "<strong>GitHub</strong>, para buscar una versión más reciente (no en la aplicación para iOS, ni en la versión del Mac App Store, ni en el Flatpak, que sus tiendas mantienen actualizados). Cuando se abre la lista de perfiles, y cuando pulsas «Buscar actualizaciones», la aplicación consulta en la lista pública de versiones de GitHub (<code>api.github.com</code>) si existe una versión más reciente. La solicitud lleva el nombre y la versión de la aplicación (<code>submarine-app/x.y.z</code>) y nada más; GitHub ve tu dirección IP, como en cualquier solicitud web.",
           "<strong>El servidor del desarrollador, cuando envías comentarios</strong> (ver más abajo), y solo entonces.",
           "<strong>Los enlaces</strong> en los que haces clic se abren en el navegador de tu sistema."
         ],
@@ -675,7 +694,7 @@
     ],
     "table": {
       "id": "sync",
-      "title": "Cloud sync (opcional): lo que guarda el servidor de sincronización",
+      "title": "Sincronización en la nube (opcional): lo que guarda el servidor de sincronización",
       "intro": "Si creas una cuenta, el servidor guarda:",
       "head": [
         "Qué",
@@ -752,9 +771,9 @@
         "id": "deleting",
         "title": "Eliminar tus datos",
         "list": [
-          "<strong>Elimina tu cuenta</strong> en la aplicación (versión 0.4 o posterior): <em>Cloud sync → (con la sesión iniciada) → Delete account…</em>, o en la <a href=\"{deleteUrl}\">página para eliminar la cuenta</a> de este sitio web. Se confirma con la contraseña de tu cuenta. Esto elimina de inmediato: las copias en la nube de todos tus perfiles, tu clave para compartir, todos los perfiles que compartes (las personas con quienes los compartes pierden el acceso), tu pertenencia a perfiles compartidos de otras personas, tus sesiones y las entradas de tu cuenta en el registro de eventos. Los registros que hayas escrito en el perfil compartido de otra persona se quedan en ese perfil, sin que figure quién los escribió. Los perfiles de tus dispositivos no se ven afectados.",
+          "<strong>Elimina tu cuenta</strong> en la aplicación (versión 0.4 o posterior): <em>Sincronización en la nube → (con la sesión iniciada) → Eliminar cuenta…</em>, o en la <a href=\"{deleteUrl}\">página para eliminar la cuenta</a> de este sitio web. Se confirma con la contraseña de tu cuenta. Esto elimina de inmediato: las copias en la nube de todos tus perfiles, tu clave para compartir, todos los perfiles que compartes (las personas con quienes los compartes pierden el acceso), tu pertenencia a perfiles compartidos de otras personas, tus sesiones y las entradas de tu cuenta en el registro de eventos. Los registros que hayas escrito en el perfil compartido de otra persona se quedan en ese perfil, sin que figure quién los escribió. Los perfiles de tus dispositivos no se ven afectados.",
           "<strong>Las entradas del registro de eventos escritas después</strong> (la propia eliminación, que no incluye ninguna dirección de correo electrónico, y cualquier intento posterior de iniciar sesión con esa dirección) se conservan durante un máximo de {auditDays} días. Las copias de seguridad hechas en torno a las actualizaciones del software del servidor solo se conservan durante poco tiempo.",
-          "<strong>Quita la copia en la nube de un perfil</strong> en la aplicación: el menú del perfil en la lista de perfiles, <em>Delete from cloud…</em>.",
+          "<strong>Quita la copia en la nube de un perfil</strong> en la aplicación: el menú del perfil en la lista de perfiles, <em>Eliminar de la nube…</em>.",
           "<strong>Eliminar un mensaje de comentarios</strong> antes de sus {feedbackDays} días: escríbenos con su número de informe.",
           "<strong>Elimina lo que hay en un dispositivo</strong> desinstalando la aplicación (en la versión portable de Windows, borrando la carpeta que está junto al programa).",
           "Si usas una versión anterior o ya no puedes abrir la aplicación, ponte en contacto con nosotros (ver más abajo) y eliminaremos la cuenta cuando puedas demostrar que es tuya."
@@ -810,7 +829,7 @@
       "Las entradas del registro de eventos escritas después de la eliminación (la propia eliminación, sin tu dirección de correo electrónico, y los intentos posteriores de iniciar sesión) se conservan durante un máximo de {auditDays} días."
     ],
     "inAppTitle": "En la aplicación",
-    "inApp": "Versión 0.4 o posterior: con la sesión iniciada, abre <em>Cloud sync</em>, elige <em>Delete account…</em> y confirma con la contraseña de tu cuenta.",
+    "inApp": "Versión 0.4 o posterior: con la sesión iniciada, abre <em>Sincronización en la nube</em>, elige <em>Eliminar cuenta…</em> y confirma con la contraseña de tu cuenta.",
     "formTitle": "En esta página",
     "formLede": "Inicia sesión con la dirección de correo electrónico y la contraseña de tu cuenta de sincronización. Tu cuenta se elimina de inmediato.",
     "email": "Correo electrónico",
@@ -829,7 +848,7 @@
       "confirm": "Marca la casilla para confirmar."
     },
     "helpTitle": "¿Sin contraseña o sin acceso?",
-    "help": "Si siempre inicias sesión con un código que recibes por correo electrónico, primero establece una contraseña en la aplicación (Cloud sync → Forgot password?). Si no puedes usar la aplicación ni este formulario, abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> sin ningún dato privado, y eliminaremos la cuenta cuando puedas demostrar que es tuya."
+    "help": "Si siempre inicias sesión con un código que recibes por correo electrónico, primero establece una contraseña en la aplicación (Sincronización en la nube → ¿Olvidaste la contraseña?). Si no puedes usar la aplicación ni este formulario, abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> sin ningún dato privado, y eliminaremos la cuenta cuando puedas demostrar que es tuya."
   },
   "notFound": {
     "title": "Página no encontrada – Submarine",

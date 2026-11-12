@@ -33,6 +33,8 @@ export const LANGS = [
 export const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 export const stripTags = (s) => String(s).replace(/<[^>]+>/g, "");
 const ALLOWED = /^<\/?(a|strong|em|code|br)(\s[^<>]*)?\/?>$/;
+// A name in another language, marked so that screen readers say it in that language.
+const LANG_SPAN = /^(<span lang="[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*">|<\/span>)$/;
 // Fills {name} from vals; every placeholder must be known.
 export function fill(s, vals, where) {
   return String(s).replace(/\{(\w+)\}/g, (m, k) => {
@@ -44,7 +46,7 @@ export function fill(s, vals, where) {
 export function rich(s, vals, where) {
   const out = fill(s, vals, where);
   for (const tag of out.match(/<[^>]*>/g) || []) {
-    if (!ALLOWED.test(tag)) throw new Error(`tag not allowed in ${where}: ${tag}`);
+    if (!ALLOWED.test(tag) && !LANG_SPAN.test(tag)) throw new Error(`tag not allowed in ${where}: ${tag}`);
     if (/^<a\s/.test(tag) && !/^<a href="(https:\/\/[^"]+|\/[^"]*|#[^"]*)"( rel="noopener")?>$/.test(tag)) throw new Error(`link not allowed in ${where}: ${tag}`);
   }
   if ((out.match(/</g) || []).length !== (out.match(/>/g) || []).length) throw new Error(`broken tag in ${where}`);
@@ -302,13 +304,13 @@ Sitemap: ${this.origin}/sitemap.xml
 `;
   }
 
-  securityTxt(contact, policy) {
+  securityTxt(contact, policy, languages = "en, fa") {
     const expires = new Date(Date.parse(`${this.date}T00:00:00Z`) + 365 * 864e5).toISOString();
     return `# Found a security problem in ${this.name}? Please open an issue that only says
 # you found one (no details), and a private channel will be set up with you.
 Contact: ${contact}
 Expires: ${expires}
-Preferred-Languages: en, fa
+Preferred-Languages: ${languages}
 Canonical: ${this.origin}/.well-known/security.txt
 Policy: ${policy}
 `;

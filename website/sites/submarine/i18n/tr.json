@@ -100,13 +100,18 @@
           "id": "remote",
           "title": "RDP ve VNC",
           "text": "Bir sekmede uzak masaüstleri: ortak pano, hız ve kalite seçenekleri ve bağlantının durumunu gösteren bir gösterge.",
-          "wide": true,
           "new": true
         },
         {
           "id": "telnet",
           "title": "Telnet",
           "text": "Eski switch ve yönlendiriciler için; şifrelenmediği açıkça işaretlenir.",
+          "new": true
+        },
+        {
+          "id": "languages",
+          "title": "Kendi dilinizde",
+          "text": "Uygulama {appLanguages} dilde kullanılabilir. Sisteminizin dilini ya da Ayarlar'da seçtiğiniz dili kullanır.",
           "new": true
         },
         {
@@ -202,7 +207,7 @@
           "points": [
             "SSH ajanınızı kullanır: Pageant, Windows'un OpenSSH ajanı, 1Password, donanım anahtarları.",
             "OpenSSH sertifikaları, atlama sunucuları (jump host) ile HTTP ve SOCKS proxy'leri.",
-            "Kayıtlı parola yanlışsa ya da hiç parola kaydedilmemişse parola penceresi <strong>Save password</strong> seçeneğini sunar. Parola, giriş başarılı olunca saklanır."
+            "Kayıtlı parola yanlışsa ya da hiç parola kaydedilmemişse parola penceresi <strong>Parolayı kaydet</strong> seçeneğini sunar. Parola, giriş başarılı olunca saklanır."
           ],
           "alt": "~/.ssh/config dosyasından içe aktarma seçeneğiyle yeni sunucu formu"
         },
@@ -248,12 +253,12 @@
         {
           "id": "mark",
           "title": "Bağlantının durumunu görün",
-          "text": "Sekmedeki gösterge, gecikmeyle birlikte Good (iyi), Fair (orta), Weak (zayıf) ya da Not answering (yanıt yok) der. Paneli her iki yönde ne kadar veri gittiğini gösterir; bağlantı zayıfsa daha az veri kullanmayı önerir."
+          "text": "Sekmedeki gösterge, gecikmeyle birlikte “İyi”, “Orta”, “Zayıf” ya da “Yanıt vermiyor” der. Paneli her iki yönde ne kadar veri gittiğini gösterir; bağlantı zayıfsa daha az veri kullanmayı önerir."
         },
         {
           "id": "quality",
           "title": "Net bir görüntü ya da daha az veri",
-          "text": "Renkleri, çözünürlüğü ve VNC'de görüntünün ne sıklıkla güncelleneceğini seçin ya da Less data gibi hazır bir seçeneği kullanın. Görünmeyen bir sekme görüntüsünü duraklatır; böylece kimse bakmıyorken hiçbir şey gönderilmez."
+          "text": "Renkleri, çözünürlüğü ve VNC'de görüntünün ne sıklıkla güncelleneceğini seçin ya da “Daha az veri” gibi hazır bir seçeneği kullanın. Görünmeyen bir sekme görüntüsünü duraklatır; böylece kimse bakmıyorken hiçbir şey gönderilmez."
         },
         {
           "id": "clipboard",
@@ -279,7 +284,7 @@
       "alt": "Bir Submarine sekmesinde RDP ile açılmış bir uzak masaüstü; çubuğunda Paste, bağlantı göstergesi (Good, 6 ms), Files ve Settings",
       "altVnc": "Bir Submarine sekmesinde, şifrelenmemiş olarak işaretlenmiş bir VNC masaüstü",
       "altSettings": "Bir uzak masaüstü sekmesinin Speed and quality paneli",
-      "note": "Yerleşik RDP istemcisi deneyseldir ve bir sunucu için siz seçene kadar kapalıdır (<em>Open in: Submarine's tab</em>). O zamana kadar RDP, bilgisayarınızın RDP uygulamasında açılır. Android'de yerleşik istemci kullanılır."
+      "note": "Yerleşik RDP istemcisi deneyseldir ve bir sunucu için siz seçene kadar kapalıdır (<em>Açılacak yer: Submarine sekmesi</em>). O zamana kadar RDP, bilgisayarınızın RDP uygulamasında açılır. Android'de yerleşik istemci kullanılır."
     },
     "privacy": {
       "kicker": "Gizlilik odaklı tasarım",
@@ -296,7 +301,7 @@
         },
         {
           "title": "Takip yok",
-          "text": "Reklam yok, analitik yok, çökme raporu yok. Uygulama yalnızca sizin sunucularınızla, giriş yaparsanız eşitleme sunucusuyla ve yeni bir sürüm olup olmadığını denetlemek için GitHub ile iletişim kurar."
+          "text": "Reklam yok, analitik yok, çökme raporu yok. Uygulama yalnızca sizin sunucularınızla, giriş yaparsanız eşitleme sunucusuyla, yeni bir sürüm olup olmadığını denetlemek için GitHub ile ve geri bildirim gönderdiğinizde bizimle iletişim kurar."
         }
       ],
       "link": "Nasıl çalıştığı ve bunu kendiniz nasıl doğrulayabileceğiniz"
@@ -374,19 +379,27 @@
         },
         {
           "q": "Uzak masaüstü bilgisayarımdan neler alır?",
-          "a": "Sekmesine yapıştırdığınızda pano metnini alır; ondan önce hiçbir şey almaz. <em>Share the clipboard</em> açıkken sunucuda kopyalanan metin sizin panonuza gelir. Dosyaları ise yalnızca bilgisayarda, yerleşik RDP istemcisi için bir klasör ya da sürücü seçerseniz alır. Bu seçimler cihazınızda tutulur ve hiçbir zaman eşitlenmez; böylece profil paylaştığınız hiç kimse bunları açamaz."
+          "a": "Sekmesine yapıştırdığınızda pano metnini alır; ondan önce hiçbir şey almaz. <em>Panoyu paylaş</em> açıkken sunucuda kopyalanan metin sizin panonuza gelir. Dosyaları ise yalnızca bilgisayarda, yerleşik RDP istemcisi için bir klasör ya da sürücü seçerseniz alır. Bu seçimler cihazınızda tutulur ve hiçbir zaman eşitlenmez; böylece profil paylaştığınız hiç kimse bunları açamaz."
         },
         {
           "q": "Hangi sistemlerde çalışıyor?",
-          "a": "Windows 10 ve 11, Apple Silicon üzerinde macOS (M1 ve sonrası), Linux (.deb, .rpm, Arch, AppImage) ve Android 7.0 veya üzeri."
+          "a": "Windows 10 ve 11, Apple Silicon üzerinde macOS (M1 ve sonrası), Linux (.deb, .rpm, Arch, AppImage) ve Android 7.0 veya üzeri. iPhone ve iPad (iOS 15 veya üzeri) için <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>'ta bir beta sürümü var."
+        },
+        {
+          "q": "Uygulama hangi dillerde kullanılabiliyor?",
+          "a": "0.4 sürümünden itibaren {appLanguages} dilde: {appLanguageList}. Uygulama sisteminizin dilini ya da <em>Ayarlar → Dil</em> bölümünde seçtiğiniz dili kullanır. Çeviriler yeni; bu yüzden yanlış bir kelime görürseniz lütfen bunu orada <em>Düzeltme önerin</em> düğmesiyle bize bildirin."
         },
         {
           "q": "Kendi eşitleme sunucumu kullanabilir miyim?",
-          "a": "Evet. Uygulamada Cloud sync bölümünü açın ve eşitleme sunucusunu değiştirin. Sunucumuzun kodu yayımlanmamıştır; bu yüzden kendi sunucunuzun aynı API'yi sunması gerekir. Bu API, uygulamanın kaynak kodunda açıklanmıştır."
+          "a": "Evet. Uygulamada Bulut eşitleme bölümünü açın ve eşitleme sunucusunu değiştirin. Sunucumuzun kodu yayımlanmamıştır; bu yüzden kendi sunucunuzun aynı API'yi sunması gerekir. Bu API, uygulamanın kaynak kodunda açıklanmıştır."
         },
         {
           "q": "Hesabımı nasıl silerim?",
-          "a": "Uygulamada (0.4 ve sonraki sürümler): Cloud sync → Delete account…. Bunu <a href=\"{deleteUrl}\">hesap silme sayfasından</a> da yapabilirsiniz."
+          "a": "Uygulamada (0.4 ve sonraki sürümler) Bulut eşitleme bölümündeki “Hesabı sil…” komutunu kullanın. Bunu <a href=\"{deleteUrl}\">hesap silme sayfasından</a> da yapabilirsiniz."
+        },
+        {
+          "q": "Bir sorunu nasıl bildiririm ya da nasıl istekte bulunurum?",
+          "a": "0.4 sürümünden itibaren Ayarlar'daki <em>Geri bildirim gönder</em> düğmesini ya da profil listesinin altındaki <em>Geri bildirim</em> düğmesini kullanın. Yalnızca yazdıklarınız gönderilir; e-posta adresi ise yalnızca yanıt almak için verirseniz gönderilir. Ayrıca <a href=\"{issuesUrl}\">GitHub'da bir issue açabilirsiniz</a>."
         }
       ]
     }
@@ -454,7 +467,7 @@
       },
       {
         "id": "sync",
-        "title": "2. Cloud sync (bulut eşitleme)",
+        "title": "2. Bulut eşitleme",
         "paragraphs": [
           "Eşitleme, siz giriş yapana kadar kapalıdır. Her profilin kendine ait, rastgele 256 bitlik bir veri anahtarı vardır ve bu anahtar şifreli profilin içinde durur. Yüklenmeden önce her öğe (bir sunucu, bir kimlik bilgisi, bir anahtar, bir not…) bu anahtarla, AES-256-GCM ve yeni, rastgele bir nonce kullanılarak ayrı ayrı şifrelenir.",
           "Sunucu, her şifreli öğeyle birlikte şunları alır: rastgele bir ID, öğenin türü, bir zaman damgası ve öğenin silinip silinmediğini gösteren bir işaret. Zaman damgası, değişikliği yapan cihazın rastgele bir ID'sini içerir. Şifreli öğenin boyutu, öğenin aşağı yukarı ne kadar büyük olduğunu gösterir. Sunucu ayrıca her profilin adını saklar. Bilinen sunucu anahtarları (known hosts), komut geçmişi, izleme ayarları ve yalnızca bu cihaz için tutulan seçimler hiçbir zaman eşitlenmez."
@@ -527,18 +540,21 @@
         "id": "network",
         "title": "7. Uygulamanın bağlandığı her yer",
         "paragraphs": [
-          "Kendi sunucularınız ve bunlar için ayarladığınız proxy'ler ile atlama sunucuları (jump host). Eşitleme sunucusu, ama yalnızca giriş yapmışsanız. Bir de daha yeni bir sürüm olup olmadığını denetlemek için GitHub: Profil listesi açıldığında ve “Check for updates” düğmesine bastığınızda uygulama, GitHub'ın herkese açık sürüm listesini sorgular. Bu istek yalnızca uygulamanın adını ve sürümünü taşır.",
+          "Kendi sunucularınız ve bunlar için ayarladığınız proxy'ler ile atlama sunucuları (jump host). Eşitleme sunucusu, ama yalnızca giriş yapmışsanız. Geri bildirim gönderdiğinizde, kendi sunucunuzla eşitleseniz bile, sunucumuz (<code>submarine.sinaxhpm.com</code>); o zaman da yalnızca yazdıklarınız gönderilir. Bir de daha yeni bir sürüm olup olmadığını denetlemek için GitHub: Profil listesi açıldığında ve “Güncellemeleri denetle” düğmesine bastığınızda uygulama, GitHub'ın herkese açık sürüm listesini sorgular. Bu istek yalnızca uygulamanın adını ve sürümünü taşır. iOS uygulaması, Mac App Store sürümü ve Flatpak sürümü GitHub'a hiçbir zaman sormaz: Bunları kendi mağazaları güncel tutar.",
           "Uygulamada analitik, çökme raporlama ya da reklam kodu yoktur. Uygulama, eşitleme için yalnızca kendi yerleşik sertifika yetkilisi listesine güvenir ve hiçbir yönlendirmeyi (redirect) izlemez; bu yüzden fark ettirmeden başka bir sunucuya yöneltilemez."
         ],
         "code": [
-          "updateCheck"
+          "updateCheck",
+          "updateBuilds",
+          "feedbackBody",
+          "feedbackSend"
         ]
       },
       {
         "id": "remote",
         "title": "8. Uzak masaüstünün cihazınızdan aldıkları",
         "paragraphs": [
-          "<strong>Pano.</strong> Bir RDP ya da VNC sekmesine yapıştırdığınız metin o sunucuya gider; siz yapıştırmadan önce sunucuya hiçbir şey sunulmaz. <em>Share the clipboard</em> açıkken (varsayılan olarak açıktır ve her sunucu için ayrı ayarlanır), uzak masaüstünde kopyalanan metin bu cihazın panosuna konur. Bu yalnızca metindir, asla dosya değildir; VNC ise yalnızca düz ASCII metin taşır.",
+          "<strong>Pano.</strong> Bir RDP ya da VNC sekmesine yapıştırdığınız metin o sunucuya gider; siz yapıştırmadan önce sunucuya hiçbir şey sunulmaz. <em>Panoyu paylaş</em> açıkken (varsayılan olarak açıktır ve her sunucu için ayrı ayarlanır), uzak masaüstünde kopyalanan metin bu cihazın panosuna konur. Bu yalnızca metindir, asla dosya değildir; VNC ise yalnızca düz ASCII metin taşır.",
           "<strong>Dosyalar</strong> yalnızca bilgisayarda, yerleşik RDP istemcisiyle ve yalnızca o sunucu için bir klasör ya da sürücü seçerseniz paylaşılır; isterseniz salt okunur olarak. Sunucu bunu <code>\\\\tsclient</code> altında bir sürücü olarak görür; bilgisayarınızın başka hiçbir yerini görmez. İstediği her yol denetlenir: <code>..</code> kabul edilmez ve yol üzerindeki hiçbir bağlantı (link) izlenmez; böylece seçtiğinizin dışındaki hiçbir şeye ulaşılamaz.",
           "Bu seçimler bu cihazda tutulur ve hiçbir zaman eşitlenmez; böylece profil paylaştığınız hiç kimse bunları açamaz."
         ],
@@ -558,7 +574,7 @@
         },
         {
           "title": "Ağ bağlantılarını izleyin",
-          "text": "Bir güvenlik duvarı ya da ağ izleme aracı kullanın. Kendi sunucularınızı, yalnızca giriş yapmışken eşitleme sunucusunu ve profil listesi açıldığında api.github.com adresini göreceksiniz. Bunların dışında hiçbir şey görmezsiniz."
+          "text": "Bir güvenlik duvarı ya da ağ izleme aracı kullanın. Kendi sunucularınızı, yalnızca giriş yapmışken eşitleme sunucusunu, geri bildirim gönderdiğinizde submarine.sinaxhpm.com adresini ve profil listesi açıldığında api.github.com adresini (App Store ve Flatpak sürümlerinde değil) göreceksiniz. Bunların dışında hiçbir şey görmezsiniz."
         },
         {
           "title": "Sunucunun ne sakladığına bakın",
@@ -624,6 +640,9 @@
       "sealTo": "Anahtarın bir üye için mühürlenmesi",
       "invite": "Üye davet etme",
       "updateCheck": "Güncelleme denetimi",
+      "updateBuilds": "GitHub'a hiçbir zaman sormayan sürümler",
+      "feedbackBody": "Bir geri bildirim mesajının taşıdıkları",
+      "feedbackSend": "Bir geri bildirim mesajının gittiği yer",
       "shareInside": "Paylaşılan bir klasörün yollarının klasörün içinde kalması",
       "vncPaste": "VNC panosunun taşıyabilecekleri"
     }
@@ -632,11 +651,11 @@
     "title": "Gizlilik politikası – Submarine",
     "description": "Submarine uygulamasının ve isteğe bağlı eşitleme hizmetinin neleri sakladığı, neleri okuyup neleri okuyamadığı, bunları ne kadar süre tuttuğu ve nasıl silebileceğiniz.",
     "heading": "Gizlilik politikası",
-    "intro": "Bu politika; Submarine uygulamasını (Windows, macOS, Linux ve Android), uygulamanın kullanabildiği isteğe bağlı Submarine eşitleme hizmetini ve bu web sitesini kapsar.",
+    "intro": "Bu politika; Submarine uygulamasını (Windows, macOS, Linux, Android ve iOS), uygulamanın kullanabildiği isteğe bağlı Submarine eşitleme hizmetini ve bu web sitesini kapsar.",
     "shortTitle": "Kısaca",
     "short": [
       "Sunucularınız, parolalarınız, SSH anahtarlarınız ve notlarınız, profil parolanızdan türetilen bir anahtarla şifrelenmiş olarak cihazınızda kalır. Uygulamada analitik, reklam, takip ve çökme raporlama yoktur.",
-      "Cloud sync (bulut eşitleme) isteğe bağlıdır. Açarsanız eşitleme sunucusu, hesabınızın e-posta adresini ve profillerinizin şifreli hâlini saklar. Profillerin içinde ne olduğunu okuyamaz.",
+      "Bulut eşitleme isteğe bağlıdır. Açarsanız eşitleme sunucusu, hesabınızın e-posta adresini ve profillerinizin şifreli hâlini saklar. Profillerin içinde ne olduğunu okuyamaz.",
       "Hesabınızı ve sunucunun bu hesap için tuttuğu her şeyi uygulamanın içinden ya da bu web sitesinden silebilirsiniz.",
       "<em>Geri bildirim gönder</em> ile gönderdiğiniz mesaj geliştiriciye yalnızca yazdıklarınızla ulaşır."
     ],
@@ -655,7 +674,7 @@
           "<strong>Profilleriniz</strong> (sunucular, kimlik bilgileri, SSH anahtarları, tüneller, notlar, komutlar, bilinen sunucu anahtarları ve bir giriş penceresinden kaydetmeyi seçtiğiniz parolalar) uygulamanın veri klasöründe saklanır. Profil parolanızdan Argon2id ile türetilen bir anahtar kullanılarak AES-256-GCM ile şifrelenirler. Profil parolası hiçbir zaman saklanmaz ve hiçbir yere gönderilmez. Parolayı kurtarmanın hiçbir yolu yoktur: Unutursanız profil açılamaz.",
           "<strong>Hızlı kilit açma</strong> (isteğe bağlı, varsayılan olarak kapalı): Windows Hello'yu ya da Android'de parmak iziyle kilit açmayı etkinleştirirseniz profilin anahtarı, sistemin tuttuğu bir anahtarla (TPM ya da Android Keystore) mühürlenir. Parmak izinizi ya da PIN'inizi sistem denetler; uygulama bunu hiçbir zaman görmez. Windows'ta bunun yerine profilin otomatik açılmasını da seçebilirsiniz (bu da varsayılan olarak kapalıdır): o zaman profilin anahtarını hesabınız için Windows korur, hiçbir denetim yapılmaz; dolayısıyla o Windows hesabını kullanan herkes ve her program profili açabilir.",
           "Pencere konumu, son kullanılan profilin adı ve renk teması gibi <strong>ayarlar</strong> ile yalnızca bu cihaz için yapılan seçimler (bir uzak masaüstünün hızı ve kalitesi, panoyu paylaşıp paylaşmadığı, bir RDP sunucusuyla paylaşılan klasör ya da sürücü ve hangi sunucuların her zaman kendi girişiyle açılan bir terminal aldığı) uygulamanın kendi ayarlarında şifrelenmeden saklanır ve hiçbir zaman eşitlenmez.",
-          "<strong>Pano</strong> yalnızca yapıştırdığınızda okunur. Yapıştırdığınız şey, onu yapıştırdığınız terminalin ya da uzak masaüstü sekmesinin sunucusuna gider. <em>Share the clipboard</em> açıkken (RDP ve VNC sunucularında varsayılan budur), uzak masaüstünde kopyalanan metin bu cihazın panosuna konur. Panodaki hiçbir şey hiçbir zaman bize gönderilmez.",
+          "<strong>Pano</strong> yalnızca yapıştırdığınızda okunur. Yapıştırdığınız şey, onu yapıştırdığınız terminalin ya da uzak masaüstü sekmesinin sunucusuna gider. <em>Panoyu paylaş</em> açıkken (RDP ve VNC sunucularında varsayılan budur), uzak masaüstünde kopyalanan metin bu cihazın panosuna konur. Panodaki hiçbir şey hiçbir zaman bize gönderilmez.",
           "<strong>Uzak Masaüstü Bağlantısı (Windows)</strong>, bir sunucunun kayıtlı parolasını kısa ömürlü bir .rdp dosyasında alır. Dosyadaki parola, Windows kullanıcınız için Windows DPAPI ile şifrelenir ve dosya okunduktan sonra silinir. Bir girişi RDP uygulamasının kendisinin hatırlamasına izin verirseniz onu Submarine değil, Windows saklar.",
           "Uygulamadaki <strong>etkinlik günlüğü</strong> bellekte tutulur ve uygulama kapandığında kaybolur."
         ]
@@ -666,7 +685,7 @@
         "list": [
           "<strong>Kendi sunucularınız.</strong> Uygulama yalnızca eklediğiniz ya da açtığınız sunuculara bağlanır; bunu SSH, SFTP, Telnet, VNC veya RDP ile, varsa ayarladığınız proxy ya da atlama sunucusu (jump host) üzerinden yapar. Yazdıklarınız ve aktardıklarınız bize değil, o sunucuya gider. Bir uzak masaüstünde buna, oraya yapıştırdığınız pano metni ve yerleşik RDP istemcisiyle paylaşmayı seçerseniz bu bilgisayardaki bir klasör ya da sürücü de dâhildir. Düz Telnet ve düz VNC şifrelenmez; uygulama da bunu belirtir.",
           "<strong>Eşitleme hizmeti</strong>, yalnızca bulut eşitlemeye giriş yaparsanız (aşağıya bakın). Bunun yerine uygulamayı kendi sunucunuza yönlendirebilirsiniz; bu durumda verileri o sunucunun işletmecisi işler.",
-          "<strong>GitHub</strong>, daha yeni bir sürüm olup olmadığına bakmak için. Profil listesi açıldığında ve “Check for updates” düğmesine bastığınızda uygulama, GitHub'ın herkese açık sürüm listesine (<code>api.github.com</code>) daha yeni bir sürüm olup olmadığını sorar. İstek, uygulamanın adını ve sürümünü (<code>submarine-app/x.y.z</code>) taşır, başka hiçbir şeyi taşımaz; her web isteğinde olduğu gibi GitHub IP adresinizi görür.",
+          "<strong>GitHub</strong>, daha yeni bir sürüm olup olmadığına bakmak için (iOS uygulaması, Mac App Store sürümü ve Flatpak sürümü hariç; bunları kendi mağazaları güncel tutar). Profil listesi açıldığında ve “Güncellemeleri denetle” düğmesine bastığınızda uygulama, GitHub'ın herkese açık sürüm listesine (<code>api.github.com</code>) daha yeni bir sürüm olup olmadığını sorar. İstek, uygulamanın adını ve sürümünü (<code>submarine-app/x.y.z</code>) taşır, başka hiçbir şeyi taşımaz; her web isteğinde olduğu gibi GitHub IP adresinizi görür.",
           "<strong>Geri bildirim gönderdiğinizde geliştiricinin sunucusu</strong> (aşağıya bakın), yalnızca o zaman.",
           "Tıkladığınız <strong>bağlantılar</strong> sisteminizin varsayılan tarayıcısında açılır."
         ],
@@ -675,7 +694,7 @@
     ],
     "table": {
       "id": "sync",
-      "title": "Cloud sync (isteğe bağlı): eşitleme sunucusunun sakladıkları",
+      "title": "Bulut eşitleme (isteğe bağlı): eşitleme sunucusunun sakladıkları",
       "intro": "Bir hesap oluşturursanız sunucu şunları saklar:",
       "head": [
         "Ne",
@@ -752,9 +771,9 @@
         "id": "deleting",
         "title": "Verilerinizi silme",
         "list": [
-          "<strong>Hesabınızı silmek için</strong> uygulamada (0.4 ve sonraki sürümler) <em>Cloud sync → (giriş yapmışken) → Delete account…</em> yolunu izleyin ya da bu web sitesindeki <a href=\"{deleteUrl}\">hesap silme sayfasını</a> kullanın. Hesap parolanızla onaylarsınız. Bu işlem şunları anında kaldırır: tüm profillerinizin buluttaki kopyaları, paylaşım anahtarınız, paylaştığınız her profil (paylaştığınız kişiler erişimini kaybeder), başkalarının paylaşımlarındaki üyeliğiniz, oturumlarınız ve hesabınızın günlük girdileri. Başka birinin paylaşılan profiline yazdığınız kayıtlar, yazan kişi belirtilmeden o profilde kalır. Cihazlarınızdaki profillere dokunulmaz.",
+          "<strong>Hesabınızı silmek için</strong> uygulamada (0.4 ve sonraki sürümler) <em>Bulut eşitleme → (giriş yapmışken) → Hesabı sil…</em> yolunu izleyin ya da bu web sitesindeki <a href=\"{deleteUrl}\">hesap silme sayfasını</a> kullanın. Hesap parolanızla onaylarsınız. Bu işlem şunları anında kaldırır: tüm profillerinizin buluttaki kopyaları, paylaşım anahtarınız, paylaştığınız her profil (paylaştığınız kişiler erişimini kaybeder), başkalarının paylaşımlarındaki üyeliğiniz, oturumlarınız ve hesabınızın günlük girdileri. Başka birinin paylaşılan profiline yazdığınız kayıtlar, yazan kişi belirtilmeden o profilde kalır. Cihazlarınızdaki profillere dokunulmaz.",
           "<strong>Silme işleminden sonra yazılan günlük satırları</strong> en fazla {auditDays} gün saklanır: silme işleminin kendisi (e-posta adresi içermez) ve o e-posta adresiyle sonradan yapılan her giriş denemesi. Sunucu yazılımının güncellemeleri sırasında alınan yedekler yalnızca kısa bir süre tutulur.",
-          "<strong>Tek bir profilin buluttaki kopyasını kaldırmak için</strong> uygulamada, profil listesinde ilgili profilin menüsünden <em>Delete from cloud…</em> komutunu seçin.",
+          "<strong>Tek bir profilin buluttaki kopyasını kaldırmak için</strong> uygulamada, profil listesinde ilgili profilin menüsünden <em>Buluttan sil…</em> komutunu seçin.",
           "<strong>Bir geri bildirim mesajını {feedbackDays} gün dolmadan silmek</strong> için rapor numarasıyla bize yazın.",
           "<strong>Bir cihazdaki verileri silmek için</strong> uygulamayı kaldırın (Windows'un taşınabilir sürümünde programın yanındaki klasörü silin).",
           "Eski bir sürüm kullanıyorsanız ya da uygulamayı artık açamıyorsanız bizimle iletişime geçin (aşağıya bakın); hesabın size ait olduğunu gösterebildiğinizde hesabı sileriz."
@@ -810,7 +829,7 @@
       "Silme işleminden sonra yazılan günlük satırları en fazla {auditDays} gün saklanır: silme işleminin kendisi (e-posta adresiniz olmadan) ve sonraki giriş denemeleri."
     ],
     "inAppTitle": "Uygulamada",
-    "inApp": "0.4 ve sonraki sürümler: Giriş yapmışken <em>Cloud sync</em> bölümünü açın, <em>Delete account…</em> komutunu seçin ve hesap parolanızla onaylayın.",
+    "inApp": "0.4 ve sonraki sürümler: Giriş yapmışken <em>Bulut eşitleme</em> bölümünü açın, <em>Hesabı sil…</em> komutunu seçin ve hesap parolanızla onaylayın.",
     "formTitle": "Bu sayfada",
     "formLede": "Eşitleme hesabınızın e-posta adresi ve parolasıyla giriş yapın. Hesabınız hemen silinir.",
     "email": "E-posta adresi",
@@ -829,7 +848,7 @@
       "confirm": "Onaylamak için lütfen kutuyu işaretleyin."
     },
     "helpTitle": "Parolanız ya da erişiminiz yok mu?",
-    "help": "Giriş için her zaman e-postayla gelen bir kod kullanıyorsanız önce uygulamada bir parola belirleyin (Cloud sync → Forgot password?). Uygulamayı ya da bu formu kullanamıyorsanız, hiçbir özel bilgi eklemeden <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> adresinde bir issue açın; hesabın size ait olduğunu gösterebildiğinizde hesabı sileriz."
+    "help": "Giriş için her zaman e-postayla gelen bir kod kullanıyorsanız önce uygulamada bir parola belirleyin (Bulut eşitleme → Parolanızı mı unuttunuz?). Uygulamayı ya da bu formu kullanamıyorsanız, hiçbir özel bilgi eklemeden <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> adresinde bir issue açın; hesabın size ait olduğunu gösterebildiğinizde hesabı sileriz."
   },
   "notFound": {
     "title": "Sayfa bulunamadı – Submarine",

@@ -100,13 +100,18 @@
           "id": "remote",
           "title": "RDP und VNC",
           "text": "Remote-Desktops in einem Tab, mit gemeinsamer Zwischenablage, wählbarer Geschwindigkeit und Qualität und einer Anzeige, wie es um die Verbindung steht.",
-          "wide": true,
           "new": true
         },
         {
           "id": "telnet",
           "title": "Telnet",
           "text": "Für alte Switches und Router, deutlich als unverschlüsselt gekennzeichnet.",
+          "new": true
+        },
+        {
+          "id": "languages",
+          "title": "In Ihrer Sprache",
+          "text": "Die App gibt es in {appLanguages} Sprachen. Sie richtet sich nach Ihrer Systemsprache oder nach der Sprache, die Sie in den Einstellungen wählen.",
           "new": true
         },
         {
@@ -202,7 +207,7 @@
           "points": [
             "Nutzt Ihren SSH-Agenten: Pageant, den OpenSSH-Agenten von Windows, 1Password, Hardware-Schlüssel.",
             "OpenSSH-Zertifikate, Jump-Hosts sowie HTTP- und SOCKS-Proxys.",
-            "Ist ein gespeichertes Passwort falsch oder keines gespeichert, bietet die Passwortabfrage <strong>Save password</strong> an. Das Passwort wird gespeichert, sobald die Anmeldung funktioniert."
+            "Ist ein gespeichertes Passwort falsch oder keines gespeichert, bietet die Passwortabfrage <strong>Passwort speichern</strong> an. Das Passwort wird gespeichert, sobald die Anmeldung funktioniert."
           ],
           "alt": "Das Formular für einen neuen Server, mit Import aus ~/.ssh/config"
         },
@@ -248,12 +253,12 @@
         {
           "id": "mark",
           "title": "Sehen, wie es um die Verbindung steht",
-          "text": "Eine Anzeige im Tab meldet „Good“, „Fair“, „Weak“ oder „Not answering“ (gut, mittel, schwach, keine Antwort), dazu die Verzögerung. Der Bereich dazu zeigt, wie viele Daten in jede Richtung fließen, und bietet bei einer schwachen Verbindung an, weniger Daten zu nutzen."
+          "text": "Eine Anzeige im Tab meldet „Gut“, „Mittel“, „Schwach“ oder „Antwortet nicht“, dazu die Verzögerung. Der Bereich dazu zeigt, wie viele Daten in jede Richtung fließen, und bietet bei einer schwachen Verbindung an, weniger Daten zu nutzen."
         },
         {
           "id": "quality",
           "title": "Ein scharfes Bild oder weniger Daten",
-          "text": "Wählen Sie die Farbtiefe, die Auflösung und bei VNC, wie oft das Bild aktualisiert wird, oder nehmen Sie eine Schnellauswahl wie „Less data“ (weniger Daten). Ein verborgener Tab hält sein Bild an, sodass nichts gesendet wird, solange niemand hinsieht."
+          "text": "Wählen Sie die Farbtiefe, die Auflösung und bei VNC, wie oft das Bild aktualisiert wird, oder nehmen Sie eine Schnellauswahl wie „Weniger Daten“. Ein verborgener Tab hält sein Bild an, sodass nichts gesendet wird, solange niemand hinsieht."
         },
         {
           "id": "clipboard",
@@ -279,7 +284,7 @@
       "alt": "Ein Remote-Desktop über RDP in einem Submarine-Tab, mit Paste, der Verbindungsanzeige (Good, 6 ms), Files und Settings in seiner Leiste",
       "altVnc": "Ein VNC-Desktop in einem Submarine-Tab, als unverschlüsselt gekennzeichnet",
       "altSettings": "Der Bereich „Speed and quality“ eines Remote-Desktop-Tabs",
-      "note": "Der eingebaute RDP-Client ist experimentell und ausgeschaltet, bis Sie ihn für einen Server wählen (<em>Open in: Submarine's tab</em>). Bis dahin öffnet sich RDP in der RDP-App Ihres Computers. Unter Android wird der eingebaute Client verwendet."
+      "note": "Der eingebaute RDP-Client ist experimentell und ausgeschaltet, bis Sie ihn für einen Server wählen (<em>Öffnen in: Submarine-Tab</em>). Bis dahin öffnet sich RDP in der RDP-App Ihres Computers. Unter Android wird der eingebaute Client verwendet."
     },
     "privacy": {
       "kicker": "Von Grund auf privat",
@@ -296,7 +301,7 @@
         },
         {
           "title": "Kein Tracking",
-          "text": "Keine Werbung, keine Nutzungsanalyse, keine Absturzberichte. Die App kommuniziert nur mit Ihren Servern, mit dem Sync-Server, wenn Sie sich anmelden, und mit GitHub, um nach einer neuen Version zu suchen."
+          "text": "Keine Werbung, keine Nutzungsanalyse, keine Absturzberichte. Die App kommuniziert nur mit Ihren Servern, mit dem Sync-Server, wenn Sie sich anmelden, mit GitHub, um nach einer neuen Version zu suchen, und mit uns, wenn Sie Feedback senden."
         }
       ],
       "link": "Wie es funktioniert und wie Sie es selbst prüfen können"
@@ -374,19 +379,27 @@
         },
         {
           "q": "Was bekommt ein Remote-Desktop von meinem Computer?",
-          "a": "Text aus der Zwischenablage, wenn Sie in seinen Tab einfügen, und vorher nichts. Text, der auf dem Server kopiert wird, landet in Ihrer Zwischenablage, solange <em>Share the clipboard</em> eingeschaltet ist. Dateien nur, wenn Sie auf einem Computer einen Ordner oder ein Laufwerk für den eingebauten RDP-Client auswählen. Diese Einstellungen bleiben auf Ihrem Gerät und werden nie synchronisiert. Daher kann niemand, mit dem Sie ein Profil teilen, sie einschalten."
+          "a": "Text aus der Zwischenablage, wenn Sie in seinen Tab einfügen, und vorher nichts. Text, der auf dem Server kopiert wird, landet in Ihrer Zwischenablage, solange <em>Zwischenablage teilen</em> eingeschaltet ist. Dateien nur, wenn Sie auf einem Computer einen Ordner oder ein Laufwerk für den eingebauten RDP-Client auswählen. Diese Einstellungen bleiben auf Ihrem Gerät und werden nie synchronisiert. Daher kann niemand, mit dem Sie ein Profil teilen, sie einschalten."
         },
         {
           "q": "Auf welchen Systemen läuft Submarine?",
-          "a": "Windows 10 und 11, macOS auf Apple Silicon (ab M1), Linux (.deb, .rpm, Arch, AppImage) und Android 7.0 oder neuer."
+          "a": "Windows 10 und 11, macOS auf Apple Silicon (ab M1), Linux (.deb, .rpm, Arch, AppImage) und Android 7.0 oder neuer. Für iPhone und iPad (iOS 15 oder neuer) gibt es eine Beta über <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>."
+        },
+        {
+          "q": "In welchen Sprachen gibt es die App?",
+          "a": "Ab Version 0.4 in {appLanguages} Sprachen: {appLanguageList}. Die App richtet sich nach Ihrer Systemsprache oder nach der Sprache, die Sie unter <em>Einstellungen → Sprache</em> wählen. Die Übersetzungen sind neu – wenn ein Wort nicht stimmt, sagen Sie es uns bitte dort über <em>Korrektur vorschlagen</em>."
         },
         {
           "q": "Kann ich einen eigenen Sync-Server verwenden?",
-          "a": "Ja. Öffnen Sie in der App „Cloud sync“ und ändern Sie den Sync-Server. Der Code unseres Servers ist nicht veröffentlicht. Ein eigener Server muss daher dieselbe API anbieten; sie ist im Quellcode der App beschrieben."
+          "a": "Ja. Öffnen Sie in der App „Cloud-Synchronisierung“ und ändern Sie den Sync-Server. Der Code unseres Servers ist nicht veröffentlicht. Ein eigener Server muss daher dieselbe API anbieten; sie ist im Quellcode der App beschrieben."
         },
         {
           "q": "Wie lösche ich mein Konto?",
-          "a": "In der App (ab Version 0.4) wählen Sie unter „Cloud sync“ den Punkt „Delete account…“. Sie können das auch auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> erledigen."
+          "a": "In der App (ab Version 0.4) wählen Sie unter „Cloud-Synchronisierung“ den Punkt „Konto löschen…“. Sie können das auch auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> erledigen."
+        },
+        {
+          "q": "Wie kann ich ein Problem melden oder einen Wunsch äußern?",
+          "a": "Ab Version 0.4 nutzen Sie dafür <em>Feedback senden</em> in den Einstellungen oder <em>Feedback</em> unten in der Profilliste. Gesendet wird nur, was Sie eingeben, und eine E-Mail-Adresse nur, wenn Sie eine angeben, um eine Antwort zu bekommen. Sie können auch <a href=\"{issuesUrl}\">ein Issue auf GitHub erstellen</a>."
         }
       ]
     }
@@ -454,7 +467,7 @@
       },
       {
         "id": "sync",
-        "title": "2. Synchronisierung (Cloud sync)",
+        "title": "2. Cloud-Synchronisierung",
         "paragraphs": [
           "Die Synchronisierung ist ausgeschaltet, bis Sie sich anmelden. Jedes Profil hat einen eigenen zufälligen 256-Bit-Datenschlüssel, der im verschlüsselten Profil liegt. Vor dem Hochladen wird jeder Eintrag (ein Server, Zugangsdaten, ein Schlüssel, eine Notiz …) einzeln mit diesem Schlüssel verschlüsselt, mit AES-256-GCM und einer neuen zufälligen Nonce.",
           "Zu jedem verschlüsselten Eintrag erhält der Server eine zufällige ID, die Art des Eintrags, einen Zeitstempel und eine Markierung, die angibt, ob der Eintrag gelöscht wurde. Der Zeitstempel enthält eine zufällige ID des Geräts, das die Änderung vorgenommen hat. An der Größe des verschlüsselten Eintrags lässt sich ungefähr ablesen, wie groß der Eintrag ist. Der Server speichert außerdem den Namen jedes Profils. Bekannte Host-Schlüssel, der Befehlsverlauf, die Überwachungseinstellungen und die Einstellungen, die nur für dieses Gerät gelten, werden nie synchronisiert."
@@ -527,18 +540,21 @@
         "id": "network",
         "title": "7. Alles, womit sich die App verbindet",
         "paragraphs": [
-          "Ihre eigenen Server sowie die Proxys und Jump-Hosts, die Sie dafür einrichten. Der Sync-Server, nur wenn Sie angemeldet sind. Und GitHub, um nach einer neueren Version zu suchen: Wenn sich die Profilliste öffnet und wenn Sie „Check for updates“ wählen, fragt die App die öffentliche Liste der Releases auf GitHub ab. Diese Anfrage enthält nur den Namen und die Version der App.",
+          "Ihre eigenen Server sowie die Proxys und Jump-Hosts, die Sie dafür einrichten. Der Sync-Server, nur wenn Sie angemeldet sind. Unser Server (<code>submarine.sinaxhpm.com</code>) beim Senden von Feedback, auch wenn Sie mit einem eigenen Server synchronisieren, und dabei nur mit dem, was Sie eingegeben haben. Und GitHub, um nach einer neueren Version zu suchen: Wenn sich die Profilliste öffnet und wenn Sie „Nach Updates suchen“ wählen, fragt die App die öffentliche Liste der Releases auf GitHub ab. Diese Anfrage enthält nur den Namen und die Version der App. Die iOS-App, die Version aus dem Mac App Store und das Flatpak fragen nie bei GitHub nach, denn ihre Stores halten sie aktuell.",
           "Die App enthält keinen Code für Nutzungsanalyse, Absturzberichte oder Werbung. Für die Synchronisierung vertraut die App nur ihrer eigenen eingebauten Liste von Zertifizierungsstellen, und sie folgt nie einer Umleitung. So kann sie nicht unbemerkt auf einen anderen Server umgelenkt werden."
         ],
         "code": [
-          "updateCheck"
+          "updateCheck",
+          "updateBuilds",
+          "feedbackBody",
+          "feedbackSend"
         ]
       },
       {
         "id": "remote",
         "title": "8. Was ein Remote-Desktop von Ihrem Gerät bekommt",
         "paragraphs": [
-          "<strong>Die Zwischenablage.</strong> Text, den Sie in einen RDP- oder VNC-Tab einfügen, geht an diesen Server, und bevor Sie einfügen, wird ihm nichts angeboten. Wenn <em>Share the clipboard</em> eingeschaltet ist (die Standardeinstellung, für jeden Server einzeln schaltbar), wird Text, der auf dem Remote-Desktop kopiert wird, in die Zwischenablage dieses Geräts gelegt. Dabei geht es nur um Text, nie um Dateien, und VNC überträgt nur reinen ASCII-Text.",
+          "<strong>Die Zwischenablage.</strong> Text, den Sie in einen RDP- oder VNC-Tab einfügen, geht an diesen Server, und bevor Sie einfügen, wird ihm nichts angeboten. Wenn <em>Zwischenablage teilen</em> eingeschaltet ist (die Standardeinstellung, für jeden Server einzeln schaltbar), wird Text, der auf dem Remote-Desktop kopiert wird, in die Zwischenablage dieses Geräts gelegt. Dabei geht es nur um Text, nie um Dateien, und VNC überträgt nur reinen ASCII-Text.",
           "<strong>Dateien</strong> nur mit dem eingebauten RDP-Client auf einem Computer und nur, wenn Sie für diesen Server einen Ordner oder ein Laufwerk auswählen, auf Wunsch schreibgeschützt. Der Server sieht die Freigabe als Laufwerk unter <code>\\\\tsclient</code> und sonst nichts von Ihrem Computer. Jeder Pfad, den er anfragt, wird geprüft: kein <code>..</code>, und auf dem Weg wird keinem Link gefolgt. So ist nichts außerhalb dessen erreichbar, was Sie ausgewählt haben.",
           "Diese Einstellungen bleiben auf diesem Gerät und werden nie synchronisiert. Daher kann niemand, mit dem Sie ein Profil teilen, sie einschalten."
         ],
@@ -558,7 +574,7 @@
         },
         {
           "title": "Die Verbindungen beobachten",
-          "text": "Verwenden Sie eine Firewall oder einen Netzwerkmonitor. Sie sehen Ihre eigenen Server, den Sync-Server nur, solange Sie angemeldet sind, und api.github.com, wenn sich die Profilliste öffnet. Sonst nichts."
+          "text": "Verwenden Sie eine Firewall oder einen Netzwerkmonitor. Sie sehen Ihre eigenen Server, den Sync-Server nur, solange Sie angemeldet sind, submarine.sinaxhpm.com, wenn Sie Feedback senden, und api.github.com, wenn sich die Profilliste öffnet (nicht in den Versionen aus dem App Store oder im Flatpak). Sonst nichts."
         },
         {
           "title": "Ansehen, was der Server speichert",
@@ -624,6 +640,9 @@
       "sealTo": "Einen Schlüssel für ein Mitglied versiegeln",
       "invite": "Ein Mitglied einladen",
       "updateCheck": "Die Suche nach neuen Versionen",
+      "updateBuilds": "Die Versionen, die nie bei GitHub nachfragen",
+      "feedbackBody": "Was eine Feedback-Nachricht enthält",
+      "feedbackSend": "Wohin eine Feedback-Nachricht geht",
       "shareInside": "Die Pfade innerhalb des freigegebenen Ordners halten",
       "vncPaste": "Was die Zwischenablage über VNC übertragen darf"
     }
@@ -632,11 +651,11 @@
     "title": "Datenschutzerklärung – Submarine",
     "description": "Was die Submarine-App und ihr optionaler Sync-Dienst speichern, was sie lesen können und was nicht, wie lange das aufbewahrt wird und wie Sie es löschen.",
     "heading": "Datenschutzerklärung",
-    "intro": "Diese Datenschutzerklärung gilt für die Submarine-App (Windows, macOS, Linux und Android), den optionalen Submarine-Sync-Dienst, den die App nutzen kann, und diese Website.",
+    "intro": "Diese Datenschutzerklärung gilt für die Submarine-App (Windows, macOS, Linux, Android und iOS), den optionalen Submarine-Sync-Dienst, den die App nutzen kann, und diese Website.",
     "shortTitle": "Kurz gesagt",
     "short": [
       "Ihre Server, Passwörter, SSH-Schlüssel und Notizen bleiben auf Ihrem Gerät, verschlüsselt mit einem Schlüssel, der aus Ihrem Profilpasswort abgeleitet wird. In der App gibt es keine Nutzungsanalyse, keine Werbung, kein Tracking und keine Absturzberichte.",
-      "Die Synchronisierung („Cloud sync“) ist optional. Wenn Sie sie einschalten, speichert der Sync-Server die E-Mail-Adresse Ihres Kontos und Ihre verschlüsselten Profile. Was darin steht, kann er nicht lesen.",
+      "Die Cloud-Synchronisierung ist optional. Wenn Sie sie einschalten, speichert der Sync-Server die E-Mail-Adresse Ihres Kontos und Ihre verschlüsselten Profile. Was darin steht, kann er nicht lesen.",
       "Sie können Ihr Konto und alles, was der Server dazu speichert, in der App oder auf dieser Website löschen.",
       "Eine Nachricht, die Sie mit <em>Feedback senden</em> schicken, erreicht den Entwickler nur mit dem, was Sie eingegeben haben."
     ],
@@ -655,7 +674,7 @@
           "<strong>Ihre Profile</strong> (Server, Zugangsdaten, SSH-Schlüssel, Tunnel, Notizen, Befehle, bekannte Host-Schlüssel und Passwörter, die Sie bei einer Anmeldeabfrage speichern lassen) werden im Datenordner der App gespeichert. Sie sind mit AES-256-GCM verschlüsselt; der Schlüssel dafür wird mit Argon2id aus Ihrem Profilpasswort abgeleitet. Das Profilpasswort wird nie gespeichert und nirgendwohin gesendet. Es gibt keine Möglichkeit, es wiederherzustellen: Wenn Sie es vergessen, kann das Profil nicht geöffnet werden.",
           "<strong>Schnellentsperrung</strong> (optional, standardmäßig ausgeschaltet): Wenn Sie Windows Hello oder unter Android die Entsperrung per Fingerabdruck einschalten, wird der Schlüssel des Profils mit einem Schlüssel versiegelt, den das System verwahrt (das TPM oder der Android Keystore). Das System prüft Ihren Fingerabdruck oder Ihre PIN; die App bekommt beides nie zu sehen. Unter Windows können Sie stattdessen wählen, dass ein Profil automatisch geöffnet wird (ebenfalls standardmäßig ausgeschaltet): Sein Schlüssel wird dann von Windows für Ihr Konto geschützt, ganz ohne Prüfung, sodass jede Person und jedes Programm, das dieses Windows-Konto nutzt, es öffnen kann.",
           "<strong>Einstellungen</strong> wie die Fensterposition, der Name des zuletzt verwendeten Profils und das Farbdesign sowie alles, was Sie nur für dieses Gerät festlegen (Geschwindigkeit und Qualität eines Remote-Desktops, ob er die Zwischenablage teilt, der Ordner oder das Laufwerk, das für einen RDP-Server freigegeben ist, und welche Server immer ein Terminal mit eigener Anmeldung bekommen), werden unverschlüsselt in den eigenen Einstellungen der App gespeichert und nie synchronisiert.",
-          "<strong>Die Zwischenablage</strong> wird nur gelesen, wenn Sie etwas einfügen. Was Sie einfügen, geht an den Server, in dessen Terminal oder Remote-Desktop-Tab Sie es einfügen. Wenn <em>Share the clipboard</em> eingeschaltet ist (die Standardeinstellung für RDP- und VNC-Server), wird Text, der auf dem Remote-Desktop kopiert wird, in die Zwischenablage dieses Geräts gelegt. Nichts aus der Zwischenablage wird je an uns gesendet.",
+          "<strong>Die Zwischenablage</strong> wird nur gelesen, wenn Sie etwas einfügen. Was Sie einfügen, geht an den Server, in dessen Terminal oder Remote-Desktop-Tab Sie es einfügen. Wenn <em>Zwischenablage teilen</em> eingeschaltet ist (die Standardeinstellung für RDP- und VNC-Server), wird Text, der auf dem Remote-Desktop kopiert wird, in die Zwischenablage dieses Geräts gelegt. Nichts aus der Zwischenablage wird je an uns gesendet.",
           "<strong>Die Remotedesktopverbindung (Windows)</strong> bekommt das gespeicherte Passwort eines Servers in einer kurzlebigen .rdp-Datei. Das Passwort darin ist mit Windows DPAPI für Ihr Windows-Benutzerkonto verschlüsselt, und die Datei wird gelöscht, sobald sie gelesen wurde. Wenn Sie die RDP-App sich selbst eine Anmeldung merken lassen, bewahrt Windows sie auf, nicht Submarine.",
           "<strong>Das Aktivitätsprotokoll</strong> der App liegt im Arbeitsspeicher und verschwindet, wenn die App geschlossen wird."
         ]
@@ -666,7 +685,7 @@
         "list": [
           "<strong>Ihre eigenen Server.</strong> Die App verbindet sich nur mit den Hosts, die Sie hinzufügen oder öffnen, per SSH, SFTP, Telnet, VNC oder RDP und über die Proxys oder Jump-Hosts, die Sie gegebenenfalls einrichten. Was Sie eingeben und übertragen, geht an diesen Server, nicht an uns. Bei einem Remote-Desktop gehört dazu der Text aus der Zwischenablage, den Sie dort einfügen, sowie ein Ordner oder Laufwerk dieses Computers, falls Sie eine solche Freigabe für den eingebauten RDP-Client einrichten. Einfaches Telnet und einfaches VNC sind nicht verschlüsselt, und die App weist darauf hin.",
           "<strong>Der Sync-Dienst</strong>, nur wenn Sie sich dort anmelden (siehe unten). Sie können die App stattdessen auf einen eigenen Server einstellen; dann verarbeitet der Betreiber dieses Servers die Daten.",
-          "<strong>GitHub</strong>, um nach einer neueren Version zu suchen. Wenn sich die Profilliste öffnet und wenn Sie „Check for updates“ wählen, fragt die App bei der öffentlichen Liste der Releases auf GitHub (<code>api.github.com</code>) nach, ob es eine neuere Version gibt. Die Anfrage enthält den Namen und die Version der App (<code>submarine-app/x.y.z</code>) und sonst nichts; GitHub sieht dabei Ihre IP-Adresse, wie bei jeder Anfrage im Web.",
+          "<strong>GitHub</strong>, um nach einer neueren Version zu suchen (nicht in der iOS-App, der Version aus dem Mac App Store oder dem Flatpak, die von ihren Stores aktuell gehalten werden). Wenn sich die Profilliste öffnet und wenn Sie „Nach Updates suchen“ wählen, fragt die App bei der öffentlichen Liste der Releases auf GitHub (<code>api.github.com</code>) nach, ob es eine neuere Version gibt. Die Anfrage enthält den Namen und die Version der App (<code>submarine-app/x.y.z</code>) und sonst nichts; GitHub sieht dabei Ihre IP-Adresse, wie bei jeder Anfrage im Web.",
           "<strong>Den Server des Entwicklers, wenn Sie Feedback senden</strong> (siehe unten), und nur dann.",
           "<strong>Links</strong>, die Sie anklicken, öffnen sich im Standardbrowser Ihres Systems."
         ],
@@ -675,7 +694,7 @@
     ],
     "table": {
       "id": "sync",
-      "title": "Optionale Synchronisierung (Cloud sync): was der Sync-Server speichert",
+      "title": "Cloud-Synchronisierung (optional): was der Sync-Server speichert",
       "intro": "Wenn Sie ein Konto anlegen, speichert der Server:",
       "head": [
         "Was",
@@ -752,9 +771,9 @@
         "id": "deleting",
         "title": "Ihre Daten löschen",
         "list": [
-          "<strong>Löschen Sie Ihr Konto</strong> in der App (ab Version 0.4) über <em>Cloud sync → (angemeldet) → Delete account…</em> oder auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> auf dieser Website. Sie bestätigen mit Ihrem Kontopasswort. Dadurch wird sofort Folgendes entfernt: die Cloud-Kopien aller Ihrer Profile, Ihr Freigabeschlüssel, jedes Profil, das Sie geteilt haben (die Personen, mit denen Sie es geteilt haben, verlieren den Zugriff), Ihre Mitgliedschaft in Freigaben anderer Personen, Ihre Sitzungen und die Protokolleinträge Ihres Kontos. Datensätze, die Sie in ein geteiltes Profil einer anderen Person geschrieben haben, bleiben in diesem Profil, ohne dass genannt wird, wer sie geschrieben hat. Profile auf Ihren Geräten bleiben unberührt.",
+          "<strong>Löschen Sie Ihr Konto</strong> in der App (ab Version 0.4) über <em>Cloud-Synchronisierung → (angemeldet) → Konto löschen…</em> oder auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> auf dieser Website. Sie bestätigen mit Ihrem Kontopasswort. Dadurch wird sofort Folgendes entfernt: die Cloud-Kopien aller Ihrer Profile, Ihr Freigabeschlüssel, jedes Profil, das Sie geteilt haben (die Personen, mit denen Sie es geteilt haben, verlieren den Zugriff), Ihre Mitgliedschaft in Freigaben anderer Personen, Ihre Sitzungen und die Protokolleinträge Ihres Kontos. Datensätze, die Sie in ein geteiltes Profil einer anderen Person geschrieben haben, bleiben in diesem Profil, ohne dass genannt wird, wer sie geschrieben hat. Profile auf Ihren Geräten bleiben unberührt.",
           "<strong>Protokollzeilen, die danach geschrieben werden</strong> (zur Löschung selbst, ohne E-Mail-Adresse, und zu jedem späteren Anmeldeversuch mit dieser E-Mail-Adresse), bleiben bis zu {auditDays} Tage erhalten. Sicherungskopien, die bei Aktualisierungen der Serversoftware angelegt werden, werden nur kurz aufbewahrt.",
-          "<strong>Entfernen Sie die Cloud-Kopie eines einzelnen Profils</strong> in der App: im Menü des Profils in der Profilliste, <em>Delete from cloud…</em>.",
+          "<strong>Entfernen Sie die Cloud-Kopie eines einzelnen Profils</strong> in der App: im Menü des Profils in der Profilliste, <em>Aus der Cloud löschen…</em>.",
           "<strong>Eine Feedback-Nachricht löschen</strong> vor Ablauf ihrer {feedbackDays} Tage: Schreiben Sie uns mit ihrer Meldungsnummer.",
           "<strong>Löschen Sie die Daten auf einem Gerät</strong>, indem Sie die App entfernen (bei der portablen Windows-Version den Ordner neben dem Programm).",
           "Wenn Sie eine ältere Version nutzen oder die App nicht mehr öffnen können, wenden Sie sich an uns (siehe unten). Wir löschen das Konto, wenn Sie nachweisen können, dass es Ihnen gehört."
@@ -810,7 +829,7 @@
       "Protokollzeilen, die nach der Löschung geschrieben werden (zur Löschung selbst, ohne Ihre E-Mail-Adresse, und zu späteren Anmeldeversuchen), werden bis zu {auditDays} Tage aufbewahrt."
     ],
     "inAppTitle": "In der App",
-    "inApp": "Ab Version 0.4: Öffnen Sie <em>Cloud sync</em>, während Sie angemeldet sind, wählen Sie <em>Delete account…</em> und bestätigen Sie mit Ihrem Kontopasswort.",
+    "inApp": "Ab Version 0.4: Öffnen Sie <em>Cloud-Synchronisierung</em>, während Sie angemeldet sind, wählen Sie <em>Konto löschen…</em> und bestätigen Sie mit Ihrem Kontopasswort.",
     "formTitle": "Auf dieser Seite",
     "formLede": "Melden Sie sich mit der E-Mail-Adresse und dem Passwort Ihres Sync-Kontos an. Ihr Konto wird sofort gelöscht.",
     "email": "E-Mail-Adresse",
@@ -829,7 +848,7 @@
       "confirm": "Bitte setzen Sie zur Bestätigung das Häkchen."
     },
     "helpTitle": "Kein Passwort oder kein Zugriff?",
-    "help": "Wenn Sie sich immer mit einem Code per E-Mail anmelden, legen Sie zuerst in der App ein Passwort fest (Cloud sync → Forgot password?). Wenn Sie weder die App noch dieses Formular nutzen können, erstellen Sie ohne private Angaben ein Issue unter <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a>. Wir löschen das Konto, wenn Sie nachweisen können, dass es Ihnen gehört."
+    "help": "Wenn Sie sich immer mit einem Code per E-Mail anmelden, legen Sie zuerst in der App ein Passwort fest (Cloud-Synchronisierung → Passwort vergessen?). Wenn Sie weder die App noch dieses Formular nutzen können, erstellen Sie ohne private Angaben ein Issue unter <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a>. Wir löschen das Konto, wenn Sie nachweisen können, dass es Ihnen gehört."
   },
   "notFound": {
     "title": "Seite nicht gefunden – Submarine",

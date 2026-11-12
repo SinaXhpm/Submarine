@@ -51,6 +51,9 @@ const CODE = {
   sealTo: { file: "src-tauri/src/identity.rs", from: /^pub fn seal_to\(/ },
   invite: { file: "src-tauri/src/lib.rs", from: /^async fn invite_to_share\(/ },
   updateCheck: { file: "src-tauri/src/about.rs", from: /^pub async fn check_for_updates\(/ },
+  updateBuilds: { file: "src-tauri/src/about.rs", from: /^const UPDATES: bool\b/, through: /^fn updates\(/ },
+  feedbackBody: { file: "src-tauri/src/feedback.rs", from: /^pub fn build_body\(/ },
+  feedbackSend: { file: "src-tauri/src/feedback.rs", from: /^pub async fn send_feedback\(/ },
   rdpPassword: { file: "src-tauri/src/rdp.rs", from: /^pub fn protect_password\(/ },
   shareInside: { file: "src-tauri/src/rdp_share.rs", from: /^pub fn inside\(/ },
   vncPaste: { file: "src-tauri/src/vnc_client.rs", from: /^pub fn paste_refusal\(/ },
@@ -91,6 +94,16 @@ function resolveCode(commit) {
   return out;
 }
 
+// The app's languages at the commit, as its Settings → Language lists them
+// (src/i18n/index.ts), so the count and the names on the pages never drift.
+function appLanguages(commit) {
+  const src = execFileSync("git", ["-C", REPO, "show", `${commit}:src/i18n/index.ts`]).toString();
+  const list = src.slice(src.indexOf("export const LANGUAGES"), src.indexOf("];", src.indexOf("export const LANGUAGES")));
+  const langs = [...list.matchAll(/\{\s*id:\s*"([A-Za-z-]+)",\s*name:\s*"([^"]+)"\s*\}/g)].map((m) => ({ id: m[1], name: m[2] }));
+  if (langs.length < 2 || langs[0].id !== "en") throw new Error(`the app's language list not found at ${commit}`);
+  return langs;
+}
+
 // Screenshots: img/<name>-<width>.webp, made by tools/images.sh.
 const SHOTS = {
   hero: { widths: [960, 1600, 2560], ratio: [2560, 1600], sizes: "(max-width: 1160px) 100vw, 1120px" },
@@ -107,7 +120,7 @@ const SHOTS = {
 };
 // Which picture goes with which feature row, and the icons of the tiles and points.
 const FEATURE_SHOT = { terminal: "terminal", files: "files", tunnels: "tunnels", fits: "fits", monitor: "monitor", vault: "vault", phone: "phone" };
-const TILE_ICON = { terminal: "terminal", wall: "split", files: "folder", remote: "desktop", telnet: "server", tunnels: "tunnel", agent: "key", sync: "sync", sharing: "users", monitor: "activity", vault: "lock", phone: "phone", commands: "code", imports: "plug" };
+const TILE_ICON = { terminal: "terminal", wall: "split", files: "folder", remote: "desktop", telnet: "server", languages: "globe", tunnels: "tunnel", agent: "key", sync: "sync", sharing: "users", monitor: "activity", vault: "lock", phone: "phone", commands: "code", imports: "plug" };
 const POINT_ICON = { clipboard: "clipboard", files: "folder", quality: "sliders", mark: "shieldCheck", ssh: "tunnel", keyboard: "keyboard", password: "key", split: "split" };
 const PLATFORM_ICON = { windows: "windows", macos: "laptop", linux: "box", android: "phone" };
 
@@ -149,6 +162,7 @@ export default function build({ out, commit, date }) {
   });
 
   const code = resolveCode(commit);
+  const appLangs = appLanguages(commit);
   site.putShared();
   site.asset(path.join(HERE, "delete.js"), "delete.js");
   site.asset(path.join(HERE, "img", "logo-64.png"), "logo.png");
@@ -180,6 +194,11 @@ export default function build({ out, commit, date }) {
       lockoutTries: n.format(FACTS.lockoutTries),
       lockoutMinutes: n.format(FACTS.lockoutMinutes),
       scrollback: n.format(FACTS.scrollback),
+      appLanguages: n.format(appLangs.length),
+      // British English, as the pages are written: "A, B and C"; Hindi likewise without a comma before "और".
+      appLanguageList: new Intl.ListFormat(lang.code === "en" ? "en-GB" : lang.locale, { type: "conjunction" })
+        .format(appLangs.map((a) => `<span lang="${a.id}">${esc(a.name)}</span>`))
+        .replace(/, और (?=<span)/, " और "),
       certSha256: FACTS.certSha256,
       commit: `<code>${commit.slice(0, 7)}</code>`,
       date: d.format(new Date(`${POLICY_DATE}T00:00:00Z`)),
@@ -448,7 +467,7 @@ ${site.translationNote(lang, "delete", t)}
 
 > ${stripTags(fill(t.home.description, v, "llms"))}
 
-Submarine is a free, open-source (MIT) remote-access client by Sina Xhpm: SSH terminal, two-pane SFTP, port forwarding, folder mirror, a built-in RDP client, VNC and Telnet, for Windows 10/11, macOS (Apple Silicon: M1 and later), Linux and Android 7.0+. Built with Rust and Tauri. No ads, no analytics, no paid plan; the optional encrypted sync service is free within limits (${FACTS.limitMb} MB of encrypted data, ${FACTS.limitItems.toLocaleString("en")} items and ${FACTS.limitProfiles} profiles per account).
+Submarine is a free, open-source (MIT) remote-access client by Sina Xhpm: SSH terminal, two-pane SFTP, port forwarding, folder mirror, a built-in RDP client, VNC and Telnet, for Windows 10/11, macOS (Apple Silicon: M1 and later), Linux and Android 7.0+, with a beta for iPhone and iPad (iOS 15+) on TestFlight. From version 0.4 the app is in ${appLangs.length} languages (${appLangs.map((a) => a.name).join(", ")}). Built with Rust and Tauri. No ads, no analytics, no paid plan; the optional encrypted sync service is free within limits (${FACTS.limitMb} MB of encrypted data, ${FACTS.limitItems.toLocaleString("en")} items and ${FACTS.limitProfiles} profiles per account).
 
 ## Features
 
@@ -493,7 +512,8 @@ When citing Submarine, please link ${ORIGIN}/ or the GitHub repository. The name
   site.file("robots.txt", site.robots(["/account/", "/api/"]));
   site.file("llms.txt", llms(vEn));
   site.file("manifest.webmanifest", site.manifest(stripTags(site.en.home.description)));
-  site.file(".well-known/security.txt", site.securityTxt(`${ISSUES_URL}/new`, `${ORIGIN}/security/`));
+  // Reports in English: the Submarine site has no Persian (or Arabic) since 2026-11-12.
+  site.file(".well-known/security.txt", site.securityTxt(`${ISSUES_URL}/new`, `${ORIGIN}/security/`, "en"));
   for (const [k, c] of Object.entries(code)) console.log(`code ${k}: ${c.file}:${c.from}-${c.to}`);
   console.log(`code links at ${commit.slice(0, 7)}`);
   return site.check();
