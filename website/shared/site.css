@@ -449,7 +449,9 @@ td { color: var(--soft); }
 .combo .over { position: absolute; z-index: 2; width: 24%; max-width: 240px; inset-inline-end: -5%; bottom: -9%; margin: 0; border-radius: 22px; border-width: 5px; box-shadow: 0 30px 70px rgba(0, 0, 0, 0.7); }
 .feature .combo .over { width: 26%; inset-inline-end: -3%; bottom: -10%; }
 .hero-stage.narrow { max-width: 860px; }
-@media (max-width: 700px) { .combo .over { border-radius: 14px; border-width: 3px; inset-inline-end: -2%; } }
+@media (max-width: 700px) { .combo .over { border-radius: 14px; border-width: 3px; } }
+/* Where the picture is about as wide as the screen, the phone stays inside its edge: past it, the page cuts it off. */
+@media (max-width: 1000px) { .combo .over, .feature .combo .over { inset-inline-end: 0; } }
 @media (min-width: 900px) and (prefers-reduced-motion: no-preference) {
   .hero-stage.combo .shot.over { transform: none; }
   .hero-stage.combo:hover .shot.over { transform: none; }
