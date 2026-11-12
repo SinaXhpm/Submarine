@@ -15,12 +15,18 @@ pub const GITHUB_REPO: &str = "SinaXhpm/Submarine";
 #[derive(Debug, Clone, Serialize)]
 pub struct AppInfo {
     pub version: String,
-    /// Whether this build looks for new releases on GitHub. Not on iOS and not
-    /// in the Mac App Store build: the App Store updates those (and
-    /// PRIVACY.md says the iOS app doesn't ask GitHub).
+    /// Whether this copy looks for new releases on GitHub. Not on iOS, not in
+    /// the Mac App Store build and not as a Flatpak: the store it came from
+    /// updates those (and PRIVACY.md says the iOS app doesn't ask GitHub).
     pub updates: bool,
     pub github_repo_url: String,
     pub github_releases_url: String,
+}
+
+/// Running as a Flatpak. Flathub updates it, so a newer release on GitHub is
+/// nothing for its user to act on.
+pub fn in_flatpak() -> bool {
+    std::path::Path::new("/.flatpak-info").exists()
 }
 
 /// Static info bundled with the binary. Version comes from CARGO_PKG_VERSION
@@ -29,14 +35,17 @@ pub struct AppInfo {
 pub fn app_info() -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        updates: UPDATES,
+        updates: updates(),
         github_repo_url: format!("https://github.com/{}", GITHUB_REPO),
         github_releases_url: format!("https://github.com/{}/releases", GITHUB_REPO),
     }
 }
 
-/// See `AppInfo::updates`.
+/// See `AppInfo::updates`: off in the App Store's builds, and in a Flatpak.
 const UPDATES: bool = !cfg!(any(target_os = "ios", feature = "app-store"));
+fn updates() -> bool {
+    UPDATES && !in_flatpak()
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateInfo {
@@ -82,8 +91,8 @@ struct GhRelease {
 #[tauri::command]
 pub async fn check_for_updates() -> Result<UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
-    // The App Store's builds: nothing is asked, nothing is offered.
-    if !UPDATES {
+    // The App Store's builds and a Flatpak: nothing is asked, nothing is offered.
+    if !updates() {
         return Ok(UpdateInfo { current, latest: None, has_update: false, release_url: None });
     }
     let url = format!("https://api.github.com/repos/{}/releases?per_page=100", GITHUB_REPO);
