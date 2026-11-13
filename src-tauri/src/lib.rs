@@ -15,6 +15,7 @@ use serde_json::json;
 use ssh_key::{private::{Ed25519Keypair, Ed25519PrivateKey}, PrivateKey};
 mod ssh_manager;
 mod tunnel;
+mod dial;
 mod telnet;
 mod vnc_client;
 mod screen_flow;
@@ -13623,7 +13624,7 @@ fn reach_hop<'a>(
             }
             _ => {
                 ctx.log(&format!("Connecting to jump host {host}:{port}..."), "info");
-                let tcp = match tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect((host.as_str(), port))).await {
+                let tcp = match tokio::time::timeout(Duration::from_secs(10), dial::connect((host.as_str(), port))).await {
                     Ok(Ok(s)) => {
                         let _ = s.set_nodelay(true);
                         if ctx.tcp_keepalive { apply_tcp_keepalive(&s); }
@@ -14565,7 +14566,7 @@ async fn initiate_connection(
                 let proxy_addr = format!("{}:{}", p_host, p_port);
                 match tokio::time::timeout(
                     Duration::from_secs(10),
-                    tokio_socks::tcp::Socks5Stream::connect(proxy_addr.as_str(), (host.as_str(), port as u16))
+                    dial::socks5(proxy_addr.as_str(), (host.as_str(), port as u16))
                 ).await {
                     Ok(Ok(stream)) => {
                         emit_log("SOCKS5 Proxy tunnel established successfully.", "success");
@@ -14599,7 +14600,7 @@ async fn initiate_connection(
                 let proxy_addr = format!("{}:{}", p_host, p_port);
                 match tokio::time::timeout(
                     Duration::from_secs(10),
-                    tokio::net::TcpStream::connect(proxy_addr)
+                    dial::connect(proxy_addr)
                 ).await {
                     Ok(Ok(mut tcp_stream)) => {
                         // Disable Nagle: SSH is heavily interactive (keystrokes,
@@ -14644,7 +14645,7 @@ async fn initiate_connection(
                 emit_log(&format!("Connecting directly to {}:{}...", host, port), "info");
                 match tokio::time::timeout(
                     Duration::from_secs(10),
-                    tokio::net::TcpStream::connect((host.as_str(), port as u16))
+                    dial::connect((host.as_str(), port as u16))
                 ).await {
                     Ok(Ok(stream)) => {
                         // See HTTP-proxy branch — SSH wants every packet on the
@@ -17077,7 +17078,7 @@ async fn rdp_builtin_open(
         type Route = (tokio::io::DuplexStream, std::net::SocketAddr, Vec<russh::client::Handle<ssh_manager::ClientHandler>>, tokio::task::JoinHandle<()>);
         let (stream, client_addr, route, mut carrier): Route = match jump_id {
             None => {
-                let tcp = match tokio::time::timeout(std::time::Duration::from_secs(15), tokio::net::TcpStream::connect((host.as_str(), port))).await {
+                let tcp = match tokio::time::timeout(std::time::Duration::from_secs(15), dial::connect((host.as_str(), port))).await {
                     Ok(Ok(s)) => s,
                     Ok(Err(e)) => {
                         let reason = format!("Couldn't reach {target}: {e}");
@@ -17875,7 +17876,7 @@ async fn vnc_open(
         let (stream, route, mut carrier, via): Route = match jump_id {
             None => {
                 log("VNC isn't encrypted: the screen and what is typed cross the network as they are. Through an SSH server, it's private up to that server.", "warning");
-                let tcp = match tokio::time::timeout(std::time::Duration::from_secs(15), tokio::net::TcpStream::connect((host.as_str(), port))).await {
+                let tcp = match tokio::time::timeout(std::time::Duration::from_secs(15), dial::connect((host.as_str(), port))).await {
                     Ok(Ok(s)) => s,
                     Ok(Err(e)) => {
                         let reason = format!("Couldn't reach {target}: {e}");
