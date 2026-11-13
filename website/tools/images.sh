@@ -8,10 +8,13 @@
 #        (store shots: the Echoes-mac-store-screenshots and Echoes-store-screenshots
 #         artifacts of the Echoes repo's macos-appstore.yml and ios-screenshots.yml,
 #         unpacked into mac/ and ios/)
+#   bash website/tools/images.sh captun <Captun repo> <screenshots dir>
+#        (screenshots: every page of the desktop app drawn with made-up data at 960 x 620,
+#         1.5x, as large-on-home.png, large-off-home.png, large-on-devices.png and so on)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-SITE="${1:?submarine or echoes}"
+SITE="${1:?submarine, echoes or captun}"
 OUT="$HERE/sites/$SITE/img"
 mkdir -p "$OUT"
 q=80
@@ -84,6 +87,26 @@ echoes)
   # each site's footer shows the other one
   square "$ER/Assets/logo.png" 88 "$HERE/sites/submarine/img/echoes-88.png"
   magick "$REPO/src-tauri/icons/icon.png" -strip -resize 88x88 "$OUT/submarine-88.png"
+  ;;
+captun)
+  CR="${2:?the Captun repo}"
+  SH="${3:?the folder with the screenshots}"
+  shot home "$SH/large-on-home.png" - 960 1440
+  shot ready "$SH/large-off-home.png" 1440x790+0+0 720 1440
+  shot devices "$SH/large-on-devices.png" 1440x480+0+0 720 1440
+  shot outbound "$SH/large-on-outbound.png" 1440x620+0+0 720 1440
+  shot rules "$SH/large-on-rules.png" 1440x540+0+0 720 1440
+  shot dns "$SH/large-on-dns.png" 1440x690+0+0 720 1440
+  shot usage "$SH/large-on-usage.png" - 720 1440
+  ICONS="$CR/apps/desktop/src-tauri/icons"
+  # the bare helm for the header, the navy tile for the rest
+  magick "$CR/apps/desktop/public/logo.png" -strip -resize 64x64 "$OUT/logo-64.png"
+  magick "$ICONS/icon.png" -strip -resize 192x192 "$OUT/icon-192.png"
+  cp "$ICONS/icon.png" "$OUT/icon-512.png"
+  magick "$ICONS/icon.png" -strip -resize 180x180 "$OUT/apple-touch-icon.png"
+  # the .ico's hand-drawn 16, 32 and 48 px pictures
+  magick "$ICONS/icon.ico[1]" "$ICONS/icon.ico[4]" "$ICONS/icon.ico[6]" "$OUT/favicon.ico"
+  magick "$HERE/sites/echoes/img/icon-192.png" -strip -resize 88x88 "$OUT/echoes-88.png"
   ;;
 *) echo "unknown site $SITE"; exit 1 ;;
 esac

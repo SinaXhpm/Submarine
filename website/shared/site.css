@@ -498,3 +498,48 @@ td { color: var(--soft); }
 .form-card h2 { font-size: 1.35rem; letter-spacing: -0.01em; }
 .form-card .inner { padding: 30px; }
 .float-chip.c4 { top: 6%; inset-inline-end: -6%; }
+
+/* ---- Captun: the brass of its helm on a night-sea navy, as in the app ---- */
+body[data-site="captun"] {
+  --bg: #050c14;
+  --bg-2: #08131f;
+  --card: #0b1724;
+  --card-2: #0f1f30;
+  --accent: #e3b04e;
+  --accent-2: #f6d98b;
+  --a: 227, 176, 78;
+  --b: 79, 143, 214;
+  --accent-ink: #1d1406;
+}
+.platform-cards.three { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 900px) { .platform-cards.three { grid-template-columns: 1fr; } }
+.btn-row.center-row { justify-content: center; margin-bottom: 30px; }
+.chip small { display: block; margin-top: 2px; font-size: 0.78rem; font-weight: 500; color: var(--muted); }
+
+/* ---- a route: devices, the app in the middle, the ways out ---- */
+.route { display: grid; grid-template-columns: 1fr auto 1.1fr auto 1.25fr; align-items: center; gap: 16px; max-width: 1040px; margin: 0 auto; }
+.route-col { display: grid; gap: 10px; }
+.route-col > b { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+:lang(ja) .route-col > b, :lang(zh-Hans) .route-col > b, :lang(hi) .route-col > b { letter-spacing: 0; text-transform: none; font-size: 0.88rem; }
+.route .chip { display: flex; align-items: center; gap: 10px; }
+.route .chip > svg { width: 18px; height: 18px; flex: none; color: var(--accent); }
+.route-hub {
+  text-align: center; padding: 26px 20px; border-radius: var(--radius); border: 1px solid rgba(var(--a), 0.45);
+  background: radial-gradient(circle at 50% 30%, rgba(var(--a), 0.16), transparent 70%), var(--card-2);
+  box-shadow: 0 0 60px -20px rgba(var(--a), 0.6);
+}
+.route-hub img { width: 72px; height: 72px; margin: 0 auto 12px; border-radius: 18px; }
+.route-hub h3 { margin: 0 0 4px; font-size: 1.2rem; }
+.route-hub p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+.route-link { display: grid; justify-items: center; gap: 4px; max-width: 120px; color: var(--faint); font-size: 0.8rem; text-align: center; }
+.route-link::before { content: "→"; font-size: 1.5rem; line-height: 1; color: rgba(var(--a), 0.85); }
+.route-steps { grid-template-columns: repeat(3, 1fr); max-width: 1040px; margin: 48px auto 0; }
+.route-steps p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+@media (max-width: 900px) {
+  .route { grid-template-columns: 1fr; max-width: 420px; }
+  .route-link { max-width: none; margin-inline: auto; }
+  .route-link::before { content: "↓"; }
+  .route-steps { grid-template-columns: 1fr; }
+}
+.route-steps + .verify-box { max-width: 1040px; margin-inline: auto; }
+@media (min-width: 901px) { body[data-site="captun"] .feature.flip { grid-template-columns: 7fr 5fr; } }

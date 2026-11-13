@@ -315,8 +315,7 @@ Contact: ${contact}
 Expires: ${expires}
 Preferred-Languages: en
 Canonical: ${this.origin}/.well-known/security.txt
-Policy: ${policy}
-`;
+${policy ? `Policy: ${policy}\n` : ""}`;
   }
 
   manifest(description) {

@@ -3,7 +3,7 @@
 // (English is the source; a missing string falls back to it, with a warning).
 // No dependencies beyond Node 20+ and git.
 //
-//   node website/build.mjs [--site submarine|echoes|all] [--out website/dist]
+//   node website/build.mjs [--site submarine|echoes|captun|all] [--out website/dist]
 //                          [--commit <sha>] [--date 2026-10-27]
 //
 // --commit is the Submarine main-branch commit its security page's code links
@@ -15,7 +15,7 @@ const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? process.argv[i + 1] : fallback;
 };
-const SITES = ["submarine", "echoes"];
+const SITES = ["submarine", "echoes", "captun"];
 const which = arg("site", "all");
 const out = path.resolve(arg("out", path.join(HERE, "dist")));
 const date = arg("date", new Date().toISOString().slice(0, 10));
