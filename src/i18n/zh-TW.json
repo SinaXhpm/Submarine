@@ -1629,6 +1629,8 @@
   "Show password": "顯示密碼",
   "Show the keyboard": "顯示鍵盤",
   "Show the log": "顯示記錄",
+  "Show the tabs to the left": "顯示左側的分頁",
+  "Show the tabs to the right": "顯示右側的分頁",
   "Show the terminal again": "重新顯示終端機",
   "Showing top {cap} of {total} by CPU.": "依 CPU 排序，顯示前 {cap} 個（共 {total} 個）。",
   "Showing top {cap} of {total} by memory.": "依記憶體排序，顯示前 {cap} 個（共 {total} 個）。",

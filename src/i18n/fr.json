@@ -1629,6 +1629,8 @@
   "Show password": "Afficher le mot de passe",
   "Show the keyboard": "Afficher le clavier",
   "Show the log": "Afficher le journal",
+  "Show the tabs to the left": "Afficher les onglets à gauche",
+  "Show the tabs to the right": "Afficher les onglets à droite",
   "Show the terminal again": "Afficher à nouveau le terminal",
   "Showing top {cap} of {total} by CPU.": "Affichage des {cap} premiers sur {total}, triés par CPU.",
   "Showing top {cap} of {total} by memory.": "Affichage des {cap} premiers sur {total}, triés par mémoire.",

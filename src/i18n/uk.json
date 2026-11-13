@@ -1670,6 +1670,8 @@
   "Show password": "Показати пароль",
   "Show the keyboard": "Показати клавіатуру",
   "Show the log": "Показати журнал",
+  "Show the tabs to the left": "Показати вкладки ліворуч",
+  "Show the tabs to the right": "Показати вкладки праворуч",
   "Show the terminal again": "Знову показати термінал",
   "Showing top {cap} of {total} by CPU.": "Показано перші {cap} з {total} за використанням CPU.",
   "Showing top {cap} of {total} by memory.": "Показано перші {cap} з {total} за використанням пам’яті.",

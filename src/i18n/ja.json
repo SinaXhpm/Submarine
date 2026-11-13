@@ -1629,6 +1629,8 @@
   "Show password": "パスワードを表示",
   "Show the keyboard": "キーボードを表示",
   "Show the log": "ログを表示",
+  "Show the tabs to the left": "左側のタブを表示",
+  "Show the tabs to the right": "右側のタブを表示",
   "Show the terminal again": "ターミナルを再表示",
   "Showing top {cap} of {total} by CPU.": "{total}件中、CPU使用率の上位{cap}件を表示しています。",
   "Showing top {cap} of {total} by memory.": "{total}件中、メモリ使用量の上位{cap}件を表示しています。",
