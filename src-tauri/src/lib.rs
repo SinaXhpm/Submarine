@@ -17920,14 +17920,14 @@ async fn ftp_connect(
     };
     let attempt = ssh_manager::ConnectAttempt::new(Arc::clone(&state.session_generation), session_id.clone(), generation);
 
-    let (name, host, port, user, password, protocol, jump_id, jump_name) = {
+    let (name, host, port, user, password, protocol, jump_id, jump_name, proxy) = {
         let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
         let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
         conn.query_row(
             "SELECT s.name, s.host, s.port,
                     CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault' THEN c.username ELSE s.username END,
                     CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault' THEN c.password ELSE s.password END,
-                    s.protocol, s.jump_host_id, j.name
+                    s.protocol, s.jump_host_id, j.name, s.proxy_type, s.proxy_host, s.proxy_port
              FROM servers s
              LEFT JOIN credentials c ON s.credential_id = c.id
              LEFT JOIN servers j ON j.id = s.jump_host_id
@@ -17943,12 +17943,16 @@ async fn ftp_connect(
                     r.get::<_, Option<String>>(5)?,
                     r.get::<_, Option<i32>>(6)?,
                     r.get::<_, Option<String>>(7)?,
+                    (r.get::<_, Option<String>>(8)?, r.get::<_, Option<String>>(9)?, r.get::<_, Option<i64>>(10)?),
                 ))
             },
         )
         .map_err(|_| "Server not found".to_string())?
     };
     let security = ftp::Security::of_protocol(protocol.as_deref()).ok_or_else(|| format!("{name} isn't an FTP server"))?;
+    // Through an SSH server, the proxy isn't used (as for an SSH server's own
+    // jump host).
+    let proxy = if jump_id.is_some() { None } else { ftp::Proxy::of_row(proxy.0.as_deref(), proxy.1.as_deref(), proxy.2)? };
     let host = host.trim().to_string();
     telnet::check_host(&host)?;
     let port = u16::try_from(port).ok().filter(|p| *p > 0).unwrap_or_else(|| security.default_port());
@@ -18033,9 +18037,17 @@ async fn ftp_connect(
             password
         };
 
-        // The way there: straight, or channels through the SSH server.
+        // The way there: straight, through a proxy, or channels through the
+        // SSH server.
         let (dial, via): (ftp::Dial, Option<String>) = match jump_id {
-            None => (ftp::dial_direct(&host), None),
+            None => match proxy {
+                None => (ftp::dial_direct(&host), None),
+                Some(p) => {
+                    let through = p.describe();
+                    log(&format!("Going through {through}..."), "info");
+                    (ftp::dial_proxy(p, &host), Some(through))
+                }
+            },
             Some(jid) => {
                 let via_name = jump_name.clone().unwrap_or_else(|| format!("server {jid}"));
                 log(&format!("Going through the SSH server {via_name}..."), "info");

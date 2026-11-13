@@ -863,7 +863,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
           </div>
 
           <div className="pt-5 border-t border-white/5 space-y-4">
-            {isSsh && (<>
+            {(isSsh || ftp) && (<>
             <div className="flex justify-between items-center">
               <label className="text-[11px] font-bold text-zinc-400">{t("Proxy")}</label>
               <select className="bg-transparent text-[12px] font-bold text-zinc-300 outline-none cursor-pointer" value={newNode.proxyType} onChange={e => setNewNode({ ...newNode, proxyType: e.target.value })}>

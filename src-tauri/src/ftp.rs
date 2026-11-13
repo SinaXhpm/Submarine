@@ -35,6 +35,9 @@ pub const CONNECT_TIME: Duration = Duration::from_secs(15);
 /// How long the server may take to say a transfer ended, once the data has
 /// all gone: it may still be writing the file out.
 pub const FINISH_TIME: Duration = Duration::from_secs(120);
+/// How long an upload's data connection is read after its end, for what the
+/// server still sends before it closes it (`Data::shutdown`).
+const DRAIN_TIME: Duration = Duration::from_secs(5);
 /// The longest line in an answer, and the most an answer may hold.
 const LINE_MAX: usize = 8 * 1024;
 const ANSWER_MAX: usize = 256 * 1024;
@@ -919,10 +922,25 @@ impl Data {
         self.io.write_all(data).await
     }
 
-    /// The end of an upload: TLS's close, then the connection's.
+    /// The end of an upload: TLS's close, then the connection's, then what
+    /// the server still sends read to its end (for a few seconds at most). A
+    /// socket closed with bytes unread in it (TLS 1.3's session tickets) is
+    /// reset rather than closed, and the reset makes the server throw away
+    /// the end of the upload it hasn't read yet: vsftpd's "426 Failure
+    /// reading network stream", and a file cut short.
     pub async fn shutdown(&mut self) -> std::io::Result<()> {
         self.io.flush().await?;
-        self.io.shutdown().await
+        self.io.shutdown().await?;
+        let mut sink = [0u8; 4096];
+        let _ = tokio::time::timeout(DRAIN_TIME, async {
+            while let Ok(n) = self.io.read(&mut sink).await {
+                if n == 0 {
+                    break;
+                }
+            }
+        })
+        .await;
+        Ok(())
     }
 
     /// Whether a download's data ended as it should: not cut off by someone on
@@ -1240,6 +1258,130 @@ pub fn dial_through(route: Arc<Vec<russh::client::Handle<crate::ssh_manager::Cli
     })
 }
 
+/// The proxy a server row says to go through, SOCKS5 or HTTP (CONNECT), as
+/// for an SSH server. The control connection and every data connection go
+/// through it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Proxy {
+    pub kind: ProxyKind,
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProxyKind {
+    Socks5,
+    Http,
+}
+
+impl Proxy {
+    /// The row's proxy (`proxy_type`, `proxy_host`, `proxy_port`), when it
+    /// has one. A proxy without a host is a mistake to report, not "no
+    /// proxy". The ports when none is saved are the SSH connect's.
+    pub fn of_row(kind: Option<&str>, host: Option<&str>, port: Option<i64>) -> Result<Option<Proxy>, String> {
+        let kind = match kind.map(str::trim) {
+            Some("socks5") => ProxyKind::Socks5,
+            Some("http") => ProxyKind::Http,
+            _ => return Ok(None),
+        };
+        let name = kind.name();
+        let host = host.map(str::trim).unwrap_or_default();
+        if host.is_empty() {
+            return Err(format!("The {name} proxy has no host"));
+        }
+        crate::telnet::check_host(host).map_err(|e| format!("The {name} proxy: {e}"))?;
+        let saved = port.and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
+        let port = saved.unwrap_or(match kind {
+            ProxyKind::Socks5 => 1080,
+            ProxyKind::Http => 8080,
+        });
+        Ok(Some(Proxy { kind, host: host.to_string(), port }))
+    }
+
+    /// "the SOCKS5 proxy host:port".
+    pub fn describe(&self) -> String {
+        format!("the {} proxy {}", self.kind.name(), crate::telnet::address(&self.host, self.port))
+    }
+}
+
+impl ProxyKind {
+    fn name(self) -> &'static str {
+        match self {
+            ProxyKind::Socks5 => "SOCKS5",
+            ProxyKind::Http => "HTTP",
+        }
+    }
+}
+
+/// A `Dial` through `proxy`: a connection to it for each connection to the
+/// server, the data connections as well.
+pub fn dial_proxy(proxy: Proxy, host: &str) -> Dial {
+    let host = host.trim().to_string();
+    Arc::new(move |port| {
+        let (proxy, host) = (proxy.clone(), host.clone());
+        Box::pin(async move {
+            let address = crate::telnet::address(&host, port);
+            let sock = match tokio::time::timeout(CONNECT_TIME, through(&proxy, &host, port)).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => return Err(format!("Couldn't reach {address} through {}: {e}", proxy.describe())),
+                Err(_) => return Err(format!("Couldn't reach {address} through {}: no answer within 15 seconds", proxy.describe())),
+            };
+            crate::tunnel::apply_tunnel_sockopts(&sock);
+            let _ = sock.set_nodelay(true);
+            Ok(Box::new(sock) as Stream)
+        })
+    })
+}
+
+/// A connection to `proxy`, asked to go on to `host:port`. The proxy's name
+/// is looked up as any host's is (not with the blocking lookup of
+/// `Socks5Stream::connect`).
+async fn through(proxy: &Proxy, host: &str, port: u16) -> Result<tokio::net::TcpStream, String> {
+    let mut tcp = tokio::net::TcpStream::connect((proxy.host.as_str(), proxy.port)).await.map_err(|e| e.to_string())?;
+    match proxy.kind {
+        ProxyKind::Socks5 => tokio_socks::tcp::Socks5Stream::connect_with_socket(tcp, (host, port))
+            .await
+            .map(tokio_socks::tcp::Socks5Stream::into_inner)
+            .map_err(|e| e.to_string()),
+        ProxyKind::Http => {
+            http_connect(&mut tcp, host, port).await?;
+            Ok(tcp)
+        }
+    }
+}
+
+/// Asks an HTTP proxy for a tunnel to `host:port` and reads its answer a
+/// byte at a time up to the blank line: an FTP server speaks first, and its
+/// greeting can come in the same packet as the proxy's "200". A reader with
+/// a buffer would take the greeting along and lose it.
+async fn http_connect<S: AsyncRead + AsyncWrite + Unpin>(io: &mut S, host: &str, port: u16) -> Result<(), String> {
+    if !crate::http_connect_host_ok(host) {
+        return Err(format!("{host:?} can't be asked of an HTTP proxy"));
+    }
+    let target = crate::telnet::address(host, port);
+    io.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes()).await.map_err(|e| e.to_string())?;
+    let mut head: Vec<u8> = Vec::with_capacity(128);
+    let mut byte = [0u8; 1];
+    while !(head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n")) {
+        if head.len() >= 8 * 1024 {
+            return Err("the proxy's answer is too long".into());
+        }
+        if io.read(&mut byte).await.map_err(|e| e.to_string())? == 0 {
+            return Err("the proxy closed the connection".into());
+        }
+        head.push(byte[0]);
+    }
+    let text = String::from_utf8_lossy(&head);
+    let first = text.lines().next().unwrap_or_default().trim();
+    let code = first.split_whitespace().nth(1).unwrap_or_default();
+    if first.starts_with("HTTP/1.") && code.len() == 3 && code.starts_with('2') {
+        Ok(())
+    } else {
+        let said: String = first.chars().filter(|c| !c.is_control()).take(120).collect();
+        Err(format!("the proxy refused: {said}"))
+    }
+}
+
 /// A stream that keeps a copy of the first bytes read from it (up to 1 KiB),
 /// for `Control::open` to tell a plain FTP refusal from a broken TLS server.
 struct FirstBytes {
@@ -1493,5 +1635,68 @@ mod tests {
         assert_eq!(Security::of_protocol(Some("ftp")).map(Security::encrypted), Some(false));
         assert_eq!(Security::of_protocol(Some("ssh")), None);
         assert_eq!(Security::of_protocol(None), None);
+    }
+    #[test]
+    fn a_rows_proxy_is_read_as_the_ssh_connect_reads_it() {
+        assert_eq!(Proxy::of_row(None, Some("p"), Some(1)), Ok(None));
+        assert_eq!(Proxy::of_row(Some("none"), Some("p"), Some(1)), Ok(None));
+        let socks = Proxy::of_row(Some("socks5"), Some(" proxy.lan "), None).unwrap().unwrap();
+        assert_eq!(socks, Proxy { kind: ProxyKind::Socks5, host: "proxy.lan".into(), port: 1080 });
+        assert_eq!(socks.describe(), "the SOCKS5 proxy proxy.lan:1080");
+        let http = Proxy::of_row(Some("http"), Some("::1"), Some(3128)).unwrap().unwrap();
+        assert_eq!((http.kind, http.port, http.describe().as_str()), (ProxyKind::Http, 3128, "the HTTP proxy [::1]:3128"));
+        assert_eq!(Proxy::of_row(Some("http"), Some("p"), Some(0)).unwrap().unwrap().port, 8080);
+        assert_eq!(Proxy::of_row(Some("http"), Some("p"), Some(70000)).unwrap().unwrap().port, 8080);
+        assert_eq!(Proxy::of_row(Some("socks5"), Some("  "), Some(1080)), Err("The SOCKS5 proxy has no host".into()));
+        assert!(Proxy::of_row(Some("socks5"), None, None).is_err());
+        assert!(Proxy::of_row(Some("http"), Some("a b"), None).unwrap_err().starts_with("The HTTP proxy: "));
+    }
+
+    /// A pretend HTTP proxy at the other end of a pipe: reads the CONNECT
+    /// request, then sends `answer` in one write and hangs up. Gives what
+    /// `http_connect` made of it, the request, and what was left to read.
+    async fn http_proxy_says(answer: &'static [u8]) -> (Result<(), String>, String, Vec<u8>) {
+        let (mut client, mut proxy) = tokio::io::duplex(4096);
+        let side = tokio::spawn(async move {
+            let mut asked = Vec::new();
+            let mut b = [0u8; 1];
+            while !asked.ends_with(b"\r\n\r\n") {
+                if proxy.read(&mut b).await.unwrap() == 0 {
+                    break;
+                }
+                asked.push(b[0]);
+            }
+            proxy.write_all(answer).await.unwrap();
+            drop(proxy);
+            String::from_utf8(asked).unwrap()
+        });
+        let res = http_connect(&mut client, "ftp.example", 21).await;
+        let asked = side.await.unwrap();
+        let mut rest = Vec::new();
+        client.read_to_end(&mut rest).await.unwrap();
+        (res, asked, rest)
+    }
+
+    #[tokio::test]
+    async fn the_server_greeting_that_comes_with_the_proxys_answer_is_kept() {
+        let (res, asked, rest) = http_proxy_says(b"HTTP/1.1 200 Connection established\r\nProxy-Agent: x\r\n\r\n220 Welcome\r\n").await;
+        assert_eq!(res, Ok(()));
+        assert_eq!(asked, "CONNECT ftp.example:21 HTTP/1.1\r\nHost: ftp.example:21\r\n\r\n");
+        assert_eq!(rest, b"220 Welcome\r\n");
+        // A proxy that ends its lines with LF only.
+        let (res, _, rest) = http_proxy_says(b"HTTP/1.0 200 OK\n\n220 Hi\r\n").await;
+        assert_eq!((res, rest), (Ok(()), b"220 Hi\r\n".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn an_http_proxy_that_refuses_or_hangs_up_is_told() {
+        let (res, _, _) = http_proxy_says(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
+        assert_eq!(res, Err("the proxy refused: HTTP/1.1 403 Forbidden".into()));
+        let (res, _, _) = http_proxy_says(b"HTTP/1.1 200 OK\r\n").await;
+        assert_eq!(res, Err("the proxy closed the connection".into()));
+        let (res, _, _) = http_proxy_says(b"SSH-2.0-x\r\n\r\n").await;
+        assert!(res.unwrap_err().starts_with("the proxy refused: SSH-2.0-x"));
+        let (mut client, _proxy) = tokio::io::duplex(64);
+        assert!(http_connect(&mut client, "a\r\nb", 21).await.unwrap_err().contains("can't be asked of an HTTP proxy"));
     }
 }
