@@ -1649,6 +1649,8 @@
   "Show password": "Mostra password",
   "Show the keyboard": "Mostra la tastiera",
   "Show the log": "Mostra il registro",
+  "Show the tabs to the left": "Mostra le schede a sinistra",
+  "Show the tabs to the right": "Mostra le schede a destra",
   "Show the terminal again": "Mostra di nuovo il terminale",
   "Showing top {cap} of {total} by CPU.": "Mostrati i primi {cap} su {total}, ordinati per CPU.",
   "Showing top {cap} of {total} by memory.": "Mostrati i primi {cap} su {total}, ordinati per memoria.",

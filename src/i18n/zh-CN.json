@@ -1649,6 +1649,8 @@
   "Show password": "显示密码",
   "Show the keyboard": "显示键盘",
   "Show the log": "显示日志",
+  "Show the tabs to the left": "显示左侧的标签页",
+  "Show the tabs to the right": "显示右侧的标签页",
   "Show the terminal again": "重新显示终端",
   "Showing top {cap} of {total} by CPU.": "按 CPU 排序，显示前 {cap} 个（共 {total} 个）。",
   "Showing top {cap} of {total} by memory.": "按内存排序，显示前 {cap} 个（共 {total} 个）。",

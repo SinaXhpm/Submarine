@@ -1649,6 +1649,8 @@
   "Show password": "पासवर्ड दिखाएँ",
   "Show the keyboard": "कीबोर्ड दिखाएँ",
   "Show the log": "लॉग दिखाएँ",
+  "Show the tabs to the left": "बाईं ओर के टैब दिखाएँ",
+  "Show the tabs to the right": "दाईं ओर के टैब दिखाएँ",
   "Show the terminal again": "टर्मिनल फिर से दिखाएँ",
   "Showing top {cap} of {total} by CPU.": "CPU के अनुसार {total} में से शीर्ष {cap} दिखाए जा रहे हैं।",
   "Showing top {cap} of {total} by memory.": "मेमोरी के अनुसार {total} में से शीर्ष {cap} दिखाए जा रहे हैं।",

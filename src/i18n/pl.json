@@ -1686,6 +1686,8 @@
   "Show password": "Pokaż hasło",
   "Show the keyboard": "Pokaż klawiaturę",
   "Show the log": "Pokaż dziennik",
+  "Show the tabs to the left": "Pokaż karty po lewej",
+  "Show the tabs to the right": "Pokaż karty po prawej",
   "Show the terminal again": "Pokaż ponownie terminal",
   "Showing top {cap} of {total} by CPU.": "Pokazano pierwsze {cap} z {total} według użycia CPU.",
   "Showing top {cap} of {total} by memory.": "Pokazano pierwsze {cap} z {total} według użycia pamięci.",

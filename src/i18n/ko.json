@@ -1649,6 +1649,8 @@
   "Show password": "비밀번호 표시",
   "Show the keyboard": "키보드 표시",
   "Show the log": "로그 표시",
+  "Show the tabs to the left": "왼쪽 탭 표시",
+  "Show the tabs to the right": "오른쪽 탭 표시",
   "Show the terminal again": "터미널 다시 표시",
   "Showing top {cap} of {total} by CPU.": "CPU 기준으로 전체 {total}개 중 상위 {cap}개를 표시합니다.",
   "Showing top {cap} of {total} by memory.": "메모리 기준으로 전체 {total}개 중 상위 {cap}개를 표시합니다.",

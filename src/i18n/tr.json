@@ -1649,6 +1649,8 @@
   "Show password": "Parolayı göster",
   "Show the keyboard": "Klavyeyi göster",
   "Show the log": "Günlüğü göster",
+  "Show the tabs to the left": "Soldaki sekmeleri göster",
+  "Show the tabs to the right": "Sağdaki sekmeleri göster",
   "Show the terminal again": "Terminali yeniden göster",
   "Showing top {cap} of {total} by CPU.": "{total} işlemden CPU kullanımına göre ilk {cap} tanesi gösteriliyor.",
   "Showing top {cap} of {total} by memory.": "{total} işlemden bellek kullanımına göre ilk {cap} tanesi gösteriliyor.",
