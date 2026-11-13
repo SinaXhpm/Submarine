@@ -230,6 +230,57 @@
       ],
       "note": "<em>Experimental</em>: per-device ways out, rules, speed limits, data allowances, live speeds and the usage history need “Route devices through Captun”, Captun's own routing engine, which is still experimental."
     },
+    "next": {
+      "kicker": "Coming next",
+      "title": "Built, <em>now being tested</em>",
+      "lede": "These are already in Captun's code and pass its tests. They come with the next version, once they have been tried on real computers.",
+      "routing": "Needs the routing engine",
+      "items": [
+        {
+          "id": "qr",
+          "title": "Join with a QR code",
+          "text": "Phones scan a code to join the hotspot, with no typing.",
+          "routing": false,
+          "alt": "Captun showing a QR code that joins the “Captun” network, with its name and password"
+        },
+        {
+          "id": "kinds",
+          "title": "Know every device",
+          "text": "Each device's maker and kind (phone, laptop, TV), from the public list of hardware address prefixes.",
+          "routing": false,
+          "alt": "The Devices page with a phone, a tablet and a TV, their makers, and a TV paused until later"
+        },
+        {
+          "id": "pause",
+          "title": "Pause a device, or set its hours",
+          "text": "No internet for 15 minutes, an hour or until morning, or internet hours with none at night.",
+          "routing": true,
+          "alt": "The pause menu of a device: for 15 minutes, for 1 hour, or until 7:00"
+        },
+        {
+          "id": "backup",
+          "title": "A backup way out",
+          "text": "Every way out is checked every 30 seconds. Give one a backup, and its devices move there while it isn't working.",
+          "routing": true,
+          "alt": "The Outbound page: a VPN that isn't working, so its devices use Direct, and the time each way out takes to answer"
+        },
+        {
+          "id": "csv",
+          "title": "Usage in a spreadsheet",
+          "text": "Save what each device used as a CSV file, for example for a monthly report.",
+          "routing": true,
+          "alt": "The Usage page for the last 7 days, with the menu to save the totals or each day per device"
+        },
+        {
+          "id": "alerts",
+          "title": "Notifications",
+          "text": "When a new device joins or waits to be allowed, when a device has used 80% or all of its allowance, and last week's use. The allowance and weekly ones need the routing engine.",
+          "routing": false,
+          "alt": "Captun's settings: a data allowance for each device, and the three kinds of notifications"
+        }
+      ],
+      "note": "Not on GitHub yet: the version you can build from source today doesn't have them."
+    },
     "privacy": {
       "kicker": "Private",
       "title": "Captun steers traffic. <em>It doesn't read it.</em>",

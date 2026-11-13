@@ -102,19 +102,43 @@
       "lede": "一个具有管理员权限的小型服务负责运行热点、DNS 服务器和数据包引擎；数据包引擎针对每一个连接，决定设备的流量走哪条路。桌面应用负责显示运行情况和更改设置。",
       "devicesTitle": "你的设备",
       "devices": [
-        { "id": "phone", "name": "手机" },
-        { "id": "tv", "name": "电视和游戏机" },
-        { "id": "laptop", "name": "笔记本电脑" },
-        { "id": "tablet", "name": "平板电脑" }
+        {
+          "id": "phone",
+          "name": "手机"
+        },
+        {
+          "id": "tv",
+          "name": "电视和游戏机"
+        },
+        {
+          "id": "laptop",
+          "name": "笔记本电脑"
+        },
+        {
+          "id": "tablet",
+          "name": "平板电脑"
+        }
       ],
       "links": "Wi-Fi 热点、网线或 USB",
       "hub": "规则、DNS、限制",
       "choose": "按设备或规则",
       "outTitle": "出口",
       "outbounds": [
-        { "id": "direct", "name": "直连", "detail": "任何网卡：Ethernet、Wi-Fi、VPN 应用的网卡" },
-        { "id": "vpn", "name": "VPN 链接", "detail": "VLESS、VMess、Trojan、Shadowsocks、Hysteria2" },
-        { "id": "proxy", "name": "代理", "detail": "SOCKS5、HTTP、HTTPS，也可串联" }
+        {
+          "id": "direct",
+          "name": "直连",
+          "detail": "任何网卡：Ethernet、Wi-Fi、VPN 应用的网卡"
+        },
+        {
+          "id": "vpn",
+          "name": "VPN 链接",
+          "detail": "VLESS、VMess、Trojan、Shadowsocks、Hysteria2"
+        },
+        {
+          "id": "proxy",
+          "name": "代理",
+          "detail": "SOCKS5、HTTP、HTTPS，也可串联"
+        }
       ],
       "caption": "手机、电视、游戏机、笔记本电脑和平板电脑通过 Wi-Fi 热点、网线或 USB 连接到 Captun。Captun 应用你的规则、DNS 和限制，再把每台设备的流量直接发出，或经由 VPN 链接、代理发出。",
       "steps": [
@@ -229,6 +253,57 @@
         }
       ],
       "note": "<em>实验性</em>：按设备选择出口、规则、限速、流量额度、实时网速和用量历史，都需要开启“Route devices through Captun”，也就是 Captun 自己的路由引擎，它仍处于实验阶段。"
+    },
+    "next": {
+      "kicker": "下一个版本",
+      "title": "已经做好，<em>正在测试</em>",
+      "lede": "这些功能已经在 Captun 的代码中，并通过了它的测试。等在真实的电脑上试过之后，它们会随下一个版本推出。",
+      "routing": "需要路由引擎",
+      "items": [
+        {
+          "id": "qr",
+          "title": "扫描 二维码加入",
+          "text": "手机扫码即可加入热点，无需手动输入。",
+          "routing": false,
+          "alt": "Captun 显示一个 二维码，扫描即可加入“Captun”网络，旁边是网络名称和密码"
+        },
+        {
+          "id": "kinds",
+          "title": "认出每一台设备",
+          "text": "根据公开的硬件地址前缀列表，显示每台设备的厂商和类型（手机、笔记本电脑、电视）。",
+          "routing": false,
+          "alt": "设备页面：一部手机、一台平板电脑和一台电视及各自的厂商，其中电视已暂停上网，到稍后某个时间为止"
+        },
+        {
+          "id": "pause",
+          "title": "暂停设备，或设定上网时段",
+          "text": "让设备断网 15 分钟、一小时或直到早上，或者设定上网时段，让它夜里不能上网。",
+          "routing": true,
+          "alt": "某台设备的暂停菜单：15 分钟、1 小时或到 7:00 为止"
+        },
+        {
+          "id": "backup",
+          "title": "备用出口",
+          "text": "每个出口每 30 秒检查一次。为某个出口指定备用出口后，在它失效期间，使用它的设备会改走备用出口。",
+          "routing": true,
+          "alt": "出口页面：一个 VPN 失效了，所以它的设备改走直连；页面上还显示了每个出口的响应时间"
+        },
+        {
+          "id": "csv",
+          "title": "把用量导出为表格",
+          "text": "把每台设备的用量保存为 CSV 文件，例如用来做月度报告。",
+          "routing": true,
+          "alt": "最近 7 天的用量页面，以及保存菜单：可保存每台设备的总量，或每台设备每天的用量"
+        },
+        {
+          "id": "alerts",
+          "title": "通知",
+          "text": "新设备加入或等待放行时、设备用掉 80% 或全部流量额度时会通知你，还会告诉你上周的用量。其中流量额度和每周用量的通知需要路由引擎。",
+          "routing": false,
+          "alt": "Captun 的设置：每台设备的流量额度，以及三类通知"
+        }
+      ],
+      "note": "GitHub 上还没有：你现在能从源代码构建的版本还不包含这些功能。"
     },
     "privacy": {
       "kicker": "隐私",

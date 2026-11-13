@@ -102,19 +102,43 @@
       "lede": "Ein kleiner Dienst mit Administratorrechten betreibt den Hotspot, einen DNS-Server und eine Paket-Engine, die für jede Verbindung einzeln entscheidet, welchen Weg der Datenverkehr eines Geräts nimmt. Die Desktop-App zeigt, was passiert, und ändert die Einstellungen.",
       "devicesTitle": "Ihre Geräte",
       "devices": [
-        { "id": "phone", "name": "Smartphones" },
-        { "id": "tv", "name": "Fernseher und Konsolen" },
-        { "id": "laptop", "name": "Laptops" },
-        { "id": "tablet", "name": "Tablets" }
+        {
+          "id": "phone",
+          "name": "Smartphones"
+        },
+        {
+          "id": "tv",
+          "name": "Fernseher und Konsolen"
+        },
+        {
+          "id": "laptop",
+          "name": "Laptops"
+        },
+        {
+          "id": "tablet",
+          "name": "Tablets"
+        }
       ],
       "links": "WLAN-Hotspot, Kabel oder USB",
       "hub": "Regeln, DNS, Limits",
       "choose": "pro Gerät oder Regel",
       "outTitle": "Der Ausgang",
       "outbounds": [
-        { "id": "direct", "name": "Direkt", "detail": "jeder Netzwerkadapter: Ethernet, WLAN, der Adapter einer VPN-App" },
-        { "id": "vpn", "name": "VPN-Link", "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2" },
-        { "id": "proxy", "name": "Proxy", "detail": "SOCKS5, HTTP, HTTPS, auch verkettet" }
+        {
+          "id": "direct",
+          "name": "Direkt",
+          "detail": "jeder Netzwerkadapter: Ethernet, WLAN, der Adapter einer VPN-App"
+        },
+        {
+          "id": "vpn",
+          "name": "VPN-Link",
+          "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2"
+        },
+        {
+          "id": "proxy",
+          "name": "Proxy",
+          "detail": "SOCKS5, HTTP, HTTPS, auch verkettet"
+        }
       ],
       "caption": "Smartphones, Fernseher, Konsolen, Laptops und Tablets verbinden sich über einen WLAN-Hotspot, ein Kabel oder USB mit Captun. Captun wendet Ihre Regeln, DNS-Einstellungen und Limits an und leitet den Datenverkehr jedes Geräts direkt, über einen VPN-Link oder über einen Proxy ins Internet.",
       "steps": [
@@ -229,6 +253,57 @@
         }
       ],
       "note": "<em>Experimentell</em>: Ausgänge pro Gerät, Regeln, Geschwindigkeitslimits, Datenkontingente, Live-Geschwindigkeiten und der Nutzungsverlauf brauchen „Route devices through Captun“, die eigene Routing-Engine von Captun, die noch experimentell ist."
+    },
+    "next": {
+      "kicker": "Als Nächstes",
+      "title": "Entwickelt, <em>jetzt im Test</em>",
+      "lede": "Diese Funktionen sind schon im Code von Captun enthalten und bestehen die Tests. Sie kommen mit der nächsten Version, sobald sie auf echten Computern ausprobiert wurden.",
+      "routing": "Braucht die Routing-Engine",
+      "items": [
+        {
+          "id": "qr",
+          "title": "Per QR-Code verbinden",
+          "text": "Smartphones scannen einen Code und verbinden sich mit dem Hotspot, ohne etwas einzutippen.",
+          "routing": false,
+          "alt": "Captun zeigt einen QR-Code zum Verbinden mit dem Netzwerk „Captun“, dazu Netzwerkname und Passwort"
+        },
+        {
+          "id": "kinds",
+          "title": "Jedes Gerät erkennen",
+          "text": "Hersteller und Art jedes Geräts (Smartphone, Laptop, Fernseher), anhand der öffentlichen Liste der Präfixe von Hardware-Adressen.",
+          "routing": false,
+          "alt": "Die Geräteseite mit einem Smartphone, einem Tablet und einem Fernseher, ihren Herstellern und einem vorübergehend pausierten Fernseher"
+        },
+        {
+          "id": "pause",
+          "title": "Ein Gerät pausieren oder seine Online-Zeiten festlegen",
+          "text": "Kein Internet für 15 Minuten, eine Stunde oder bis zum Morgen, oder Online-Zeiten, nachts ohne Internet.",
+          "routing": true,
+          "alt": "Das Menü zum Pausieren eines Geräts: für 15 Minuten, für 1 Stunde oder bis 7:00"
+        },
+        {
+          "id": "backup",
+          "title": "Ein Ersatzausgang",
+          "text": "Jeder Ausgang wird alle 30 Sekunden geprüft. Geben Sie einem Ausgang einen Ersatz, und seine Geräte wechseln dorthin, solange er nicht funktioniert.",
+          "routing": true,
+          "alt": "Die Seite mit den Ausgängen: ein VPN, das nicht funktioniert, weshalb seine Geräte direkt ins Internet gehen, und die Antwortzeit jedes Ausgangs"
+        },
+        {
+          "id": "csv",
+          "title": "Nutzung als Tabelle",
+          "text": "Speichern Sie, was jedes Gerät verbraucht hat, als CSV-Datei, zum Beispiel für einen Monatsbericht.",
+          "routing": true,
+          "alt": "Die Nutzungsseite für die letzten 7 Tage, mit dem Menü zum Speichern der Gesamtwerte oder der einzelnen Tage pro Gerät"
+        },
+        {
+          "id": "alerts",
+          "title": "Benachrichtigungen",
+          "text": "Wenn sich ein neues Gerät verbindet oder darauf wartet, zugelassen zu werden, wenn ein Gerät 80 % oder sein ganzes Datenkontingent verbraucht hat, und die Nutzung der letzten Woche. Die Benachrichtigungen zum Datenkontingent und zur Wochennutzung brauchen die Routing-Engine.",
+          "routing": false,
+          "alt": "Die Einstellungen von Captun: ein Datenkontingent für jedes Gerät und die drei Arten von Benachrichtigungen"
+        }
+      ],
+      "note": "Noch nicht auf GitHub: Die Version, die Sie heute aus dem Quellcode bauen können, enthält sie nicht."
     },
     "privacy": {
       "kicker": "Privat",

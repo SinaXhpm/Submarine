@@ -8,7 +8,7 @@
 #        (store shots: the Echoes-mac-store-screenshots and Echoes-store-screenshots
 #         artifacts of the Echoes repo's macos-appstore.yml and ios-screenshots.yml,
 #         unpacked into mac/ and ios/)
-#   bash website/tools/images.sh captun <Captun repo> <screenshots dir>
+#   bash website/tools/images.sh captun <Captun repo> <screenshots dir> [<next-version close-ups dir>]
 #        (screenshots: every page of the desktop app drawn with made-up data at 960 x 620,
 #         1.5x, as large-on-home.png, large-off-home.png, large-on-devices.png and so on)
 set -euo pipefail
@@ -98,6 +98,16 @@ captun)
   shot rules "$SH/large-on-rules.png" 1440x540+0+0 720 1440
   shot dns "$SH/large-on-dns.png" 1440x690+0+0 720 1440
   shot usage "$SH/large-on-usage.png" - 720 1440
+  # close-ups of what the next version adds (640 x 540 at 1.5x), all cut to the same 8:5
+  NEXT="${4:-}"
+  if [ -n "$NEXT" ]; then
+    shot nextQr "$NEXT/qr-join.png" 960x600+0+20 480 960
+    shot nextKinds "$NEXT/new-devices.png" 960x600+0+0 480 960
+    shot nextPause "$NEXT/new-pause-menu.png" 960x600+0+0 480 960
+    shot nextBackup "$NEXT/new-outbound-health.png" 960x600+0+0 480 960
+    shot nextCsv "$NEXT/new-usage-export.png" 960x600+0+0 480 960
+    shot nextAlerts "$NEXT/new-settings-notifications.png" 960x600+0+210 480 960
+  fi
   ICONS="$CR/apps/desktop/src-tauri/icons"
   # the bare helm for the header, the navy tile for the rest
   magick "$CR/apps/desktop/public/logo.png" -strip -resize 64x64 "$OUT/logo-64.png"

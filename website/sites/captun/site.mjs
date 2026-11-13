@@ -27,11 +27,14 @@ const SHOTS = {
   rules: { widths: [720, 1440], ratio: [1440, 540], sizes: "(max-width: 900px) 100vw, 640px" },
   dns: { widths: [720, 1440], ratio: [1440, 690], sizes: "(max-width: 900px) 100vw, 640px" },
   usage: { widths: [720, 1440], ratio: [1440, 930], sizes: "(max-width: 900px) 100vw, 640px" },
+  // close-ups of what the next version adds, all 8:5
+  ...Object.fromEntries(["nextQr", "nextKinds", "nextPause", "nextBackup", "nextCsv", "nextAlerts"].map((n) => [n, { widths: [480, 960], ratio: [960, 600], sizes: "(max-width: 700px) 92vw, (max-width: 1020px) 46vw, 360px" }])),
 };
 const USE_ICON = { vpn: "lock", usb: "plug", rules: "shield", watch: "users" };
 const SHARE_ICON = { wifi: "wifi", cable: "network", usb: "plug", reach: "ban" };
 const DEVICE_ICON = { phone: "phone", tv: "desktop", laptop: "laptop", tablet: "tablet" };
 const OUT_ICON = { direct: "globe", vpn: "lock", proxy: "server" };
+const NEXT_SHOT = { qr: "nextQr", kinds: "nextKinds", pause: "nextPause", backup: "nextBackup", csv: "nextCsv", alerts: "nextAlerts" };
 const PRIVACY_ICON = [ICON.eyeOff, ICON.lock, ICON.tunnel];
 const PLATFORM_ICON = { windows: "windows", linux: "box", macos: "laptop" };
 
@@ -154,6 +157,15 @@ ${rows}
 <p class="note center-note">${rich(h.features.note, v, where)}</p>
 </div></section>`;
 
+    // Built and tested, not released: the next version (the Captun session, 2026-11-14). Each says whether it needs
+    // the experimental routing engine.
+    const nx = h.next;
+    const next = `<section id="next"><div class="wrap">
+${head2(nx, v, where)}
+<div class="next-grid">${nx.items.map((x) => `<article class="next-card reveal">${site.shot(NEXT_SHOT[x.id], x.alt, t)}<h3>${esc(x.title)}</h3><p>${rich(x.text, v, where)}</p>${x.routing ? `<span class="badge">${esc(nx.routing)}</span>` : ""}</article>`).join("")}</div>
+<p class="note center-note">${rich(nx.note, v, where)}</p>
+</div></section>`;
+
     const pv = h.privacy;
     const privacy = `<section id="private"><div class="wrap">
 <div class="glow-card reveal"><div class="inner">
@@ -211,7 +223,7 @@ ${head2(h.faq, v, where)}
         { "@type": "WebSite", "@id": `${ORIGIN}/#site`, name: "Captun", url: `${ORIGIN}/`, inLanguage: site.built.map((l) => l.hreflang) },
       ],
     };
-    return site.page({ lang, page: "home", title: plain(h.title, v, where), description: plain(h.description, v, where), ld, main: [hero, instead, uses, how, share, features, privacy, platforms, source, faq].join("\n"), t, v });
+    return site.page({ lang, page: "home", title: plain(h.title, v, where), description: plain(h.description, v, where), ld, main: [hero, instead, uses, how, share, features, next, privacy, platforms, source, faq].join("\n"), t, v });
   }
 
   function notFoundPage(t) {
@@ -243,6 +255,10 @@ ${h.uses.items.map((x) => `- ${x.title}: ${stripTags(fill(x.text, v, "llms"))}`)
 ## Features
 
 ${h.features.items.map((x) => `- ${x.title}${x.badge ? ` (${x.badge.toLowerCase()})` : ""}: ${stripTags(fill(x.text, v, "llms"))}`).join("\n")}
+
+## Coming in the next version (built and tested, not released yet)
+
+${h.next.items.map((x) => `- ${x.title}${x.routing ? " (needs the routing engine)" : ""}: ${stripTags(fill(x.text, v, "llms"))}`).join("\n")}
 
 Per-device outbounds, rules, speed limits, data allowances, the usage history and live speeds need "Route devices through Captun", its own routing engine, which is experimental. Captun routes traffic; it doesn't encrypt or anonymise it (the VPN or proxy a user adds does).
 

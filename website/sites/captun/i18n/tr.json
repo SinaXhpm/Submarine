@@ -102,19 +102,43 @@
       "lede": "Yönetici haklarına sahip küçük bir hizmet; hotspot'u, bir DNS sunucusunu ve her cihazın trafiğinin hangi yoldan gideceğine bağlantı bağlantı karar veren bir paket motorunu çalıştırır. Masaüstü uygulaması olup biteni gösterir ve ayarları değiştirir.",
       "devicesTitle": "Cihazlarınız",
       "devices": [
-        { "id": "phone", "name": "Telefonlar" },
-        { "id": "tv", "name": "Televizyonlar ve konsollar" },
-        { "id": "laptop", "name": "Dizüstü bilgisayarlar" },
-        { "id": "tablet", "name": "Tabletler" }
+        {
+          "id": "phone",
+          "name": "Telefonlar"
+        },
+        {
+          "id": "tv",
+          "name": "Televizyonlar ve konsollar"
+        },
+        {
+          "id": "laptop",
+          "name": "Dizüstü bilgisayarlar"
+        },
+        {
+          "id": "tablet",
+          "name": "Tabletler"
+        }
       ],
       "links": "Wi-Fi hotspot, kablo ya da USB",
       "hub": "Kurallar, DNS, sınırlar",
       "choose": "cihaza ya da kurala göre",
       "outTitle": "Çıkış",
       "outbounds": [
-        { "id": "direct", "name": "Doğrudan", "detail": "herhangi bir ağ bağdaştırıcısı: Ethernet, Wi-Fi, bir VPN uygulamasının bağdaştırıcısı" },
-        { "id": "vpn", "name": "VPN linki", "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2" },
-        { "id": "proxy", "name": "Proxy", "detail": "SOCKS5, HTTP, HTTPS, zincirleme de" }
+        {
+          "id": "direct",
+          "name": "Doğrudan",
+          "detail": "herhangi bir ağ bağdaştırıcısı: Ethernet, Wi-Fi, bir VPN uygulamasının bağdaştırıcısı"
+        },
+        {
+          "id": "vpn",
+          "name": "VPN linki",
+          "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2"
+        },
+        {
+          "id": "proxy",
+          "name": "Proxy",
+          "detail": "SOCKS5, HTTP, HTTPS, zincirleme de"
+        }
       ],
       "caption": "Telefonlar, televizyonlar, konsollar, dizüstü bilgisayarlar ve tabletler Captun'a Wi-Fi hotspot, kablo ya da USB ile bağlanır. Captun kurallarınızı, DNS ayarlarınızı ve sınırlarınızı uygular; her cihazın trafiğini doğrudan, bir VPN linki üzerinden ya da bir proxy üzerinden dışarı gönderir.",
       "steps": [
@@ -229,6 +253,57 @@
         }
       ],
       "note": "<em>Deneysel</em>: Cihaz başına çıkışlar, kurallar, hız sınırları, veri kotaları, canlı hızlar ve kullanım geçmişi için Captun'un kendi yönlendirme motoru olan “Route devices through Captun” gerekir; bu motor hâlâ deneyseldir."
+    },
+    "next": {
+      "kicker": "Bir sonraki sürümde",
+      "title": "Geliştirildi, <em>şimdi test ediliyor</em>",
+      "lede": "Bu özellikler Captun'un kodunda zaten var ve testlerini geçiyor. Gerçek bilgisayarlarda denendikten sonra bir sonraki sürümle gelecekler.",
+      "routing": "Yönlendirme motoru gerekir",
+      "items": [
+        {
+          "id": "qr",
+          "title": "QR koduyla bağlanın",
+          "text": "Telefonlar bir kodu tarayarak hotspot'a bağlanır, hiçbir şey yazmaya gerek kalmaz.",
+          "routing": false,
+          "alt": "Captun, “Captun” ağına bağlanmak için bir QR kodu, ağın adı ve parolasıyla birlikte gösteriyor"
+        },
+        {
+          "id": "kinds",
+          "title": "Her cihazı tanıyın",
+          "text": "Her cihazın üreticisi ve türü (telefon, dizüstü bilgisayar, televizyon), herkese açık donanım adresi önekleri listesine göre.",
+          "routing": false,
+          "alt": "Devices sayfası: bir telefon, bir tablet ve bir televizyon, üreticileri ve daha sonraki bir saate kadar duraklatılmış bir televizyon"
+        },
+        {
+          "id": "pause",
+          "title": "Bir cihazı duraklatın ya da internet saatlerini belirleyin",
+          "text": "15 dakika, bir saat ya da sabaha kadar internetsiz kalsın; ya da internet belirli saatlerde açık, geceleri kapalı olsun.",
+          "routing": true,
+          "alt": "Bir cihazın duraklatma menüsü: 15 dakika, 1 saat ya da saat 7:00'ye kadar"
+        },
+        {
+          "id": "backup",
+          "title": "Yedek bir çıkış",
+          "text": "Her çıkış 30 saniyede bir kontrol edilir. Bir çıkışa yedek atayın; çıkış çalışmadığı sürece cihazları yedeğe geçer.",
+          "routing": true,
+          "alt": "Outbound sayfası: çalışmayan bir VPN (bu yüzden cihazları Direct üzerinden çıkıyor) ve her çıkışın yanıt verme süresi"
+        },
+        {
+          "id": "csv",
+          "title": "Kullanım verileri elektronik tabloda",
+          "text": "Her cihazın ne kadar kullandığını bir CSV dosyası olarak kaydedin; örneğin aylık bir rapor için.",
+          "routing": true,
+          "alt": "Son 7 günü gösteren Usage sayfası; toplamları ya da her cihazın gün gün kullanımını kaydetme menüsüyle"
+        },
+        {
+          "id": "alerts",
+          "title": "Bildirimler",
+          "text": "Yeni bir cihaz bağlandığında ya da izin beklediğinde, bir cihaz veri kotasının %80'ini ya da tamamını kullandığında haber verir; geçen haftanın kullanımını da bildirir. Kota ve haftalık bildirimler için yönlendirme motoru gerekir.",
+          "routing": false,
+          "alt": "Captun'un ayarları: her cihaz için bir veri kotası ve üç tür bildirim"
+        }
+      ],
+      "note": "Henüz GitHub'da yok: Bugün kaynak kodundan derleyebileceğiniz sürümde bu özellikler bulunmuyor."
     },
     "privacy": {
       "kicker": "Gizlilik",

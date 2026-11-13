@@ -543,3 +543,12 @@ body[data-site="captun"] {
 }
 .route-steps + .verify-box { max-width: 1040px; margin-inline: auto; }
 @media (min-width: 901px) { body[data-site="captun"] .feature.flip { grid-template-columns: 7fr 5fr; } }
+/* ---- what the next version adds: cards with a picture on top ---- */
+.next-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.next-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 14px 20px; border-radius: var(--radius); border: 1px dashed rgba(var(--a), 0.35); background: linear-gradient(180deg, var(--card-2), var(--card)); }
+.next-card .shot { border-radius: 12px; margin-bottom: 8px; box-shadow: none; }
+.next-card h3 { margin: 4px 6px 0; font-size: 1.08rem; }
+.next-card p { margin: 0 6px; color: var(--muted); font-size: 0.95rem; flex: 1; }
+.next-card .badge { align-self: flex-start; margin: 6px 6px 0; }
+@media (max-width: 1020px) { .next-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) { .next-grid { grid-template-columns: 1fr; } }

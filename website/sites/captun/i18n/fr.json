@@ -102,19 +102,43 @@
       "lede": "Un petit service doté des droits d’administrateur fait fonctionner le point d’accès, un serveur DNS et un moteur de paquets qui décide, connexion par connexion, par où passe le trafic de chaque appareil. L’application de bureau montre ce qui se passe et modifie les réglages.",
       "devicesTitle": "Vos appareils",
       "devices": [
-        { "id": "phone", "name": "Téléphones" },
-        { "id": "tv", "name": "Téléviseurs et consoles" },
-        { "id": "laptop", "name": "Ordinateurs portables" },
-        { "id": "tablet", "name": "Tablettes" }
+        {
+          "id": "phone",
+          "name": "Téléphones"
+        },
+        {
+          "id": "tv",
+          "name": "Téléviseurs et consoles"
+        },
+        {
+          "id": "laptop",
+          "name": "Ordinateurs portables"
+        },
+        {
+          "id": "tablet",
+          "name": "Tablettes"
+        }
       ],
       "links": "Point d’accès Wi-Fi, câble ou USB",
       "hub": "Règles, DNS, limites",
       "choose": "par appareil ou par règle",
       "outTitle": "La sortie",
       "outbounds": [
-        { "id": "direct", "name": "Direct", "detail": "n’importe quelle carte réseau : Ethernet, Wi-Fi, la carte d’une application VPN" },
-        { "id": "vpn", "name": "Lien VPN", "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2" },
-        { "id": "proxy", "name": "Proxy", "detail": "SOCKS5, HTTP, HTTPS, aussi en chaîne" }
+        {
+          "id": "direct",
+          "name": "Direct",
+          "detail": "n’importe quelle carte réseau : Ethernet, Wi-Fi, la carte d’une application VPN"
+        },
+        {
+          "id": "vpn",
+          "name": "Lien VPN",
+          "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2"
+        },
+        {
+          "id": "proxy",
+          "name": "Proxy",
+          "detail": "SOCKS5, HTTP, HTTPS, aussi en chaîne"
+        }
       ],
       "caption": "Téléphones, téléviseurs, consoles, ordinateurs portables et tablettes se connectent à Captun par un point d’accès Wi-Fi, un câble ou l’USB. Captun applique vos règles, votre DNS et vos limites, puis fait sortir le trafic de chaque appareil directement, via un lien VPN ou via un proxy.",
       "steps": [
@@ -229,6 +253,57 @@
         }
       ],
       "note": "<em>Expérimental</em> : les sorties par appareil, les règles, les limites de débit, les quotas de données, les débits en direct et l’historique d’utilisation nécessitent « Route devices through Captun », le moteur de routage propre à Captun, encore expérimental."
+    },
+    "next": {
+      "kicker": "À venir",
+      "title": "Développées, <em>maintenant à l’essai</em>",
+      "lede": "Ces fonctionnalités sont déjà dans le code de Captun et réussissent ses tests. Elles arriveront avec la prochaine version, une fois qu’elles auront été essayées sur de vrais ordinateurs.",
+      "routing": "Nécessite le moteur de routage",
+      "items": [
+        {
+          "id": "qr",
+          "title": "Se connecter avec un QR code",
+          "text": "Les téléphones scannent un code pour rejoindre le point d’accès, sans rien taper.",
+          "routing": false,
+          "alt": "Captun affiche un QR code qui permet de rejoindre le réseau « Captun », avec son nom et son mot de passe"
+        },
+        {
+          "id": "kinds",
+          "title": "Identifier chaque appareil",
+          "text": "Le fabricant et le type de chaque appareil (téléphone, ordinateur portable, téléviseur), d’après la liste publique des préfixes d’adresses matérielles.",
+          "routing": false,
+          "alt": "La page des appareils avec un téléphone, une tablette et un téléviseur, leurs fabricants, et un téléviseur mis en pause pour le moment"
+        },
+        {
+          "id": "pause",
+          "title": "Mettre un appareil en pause ou définir ses horaires",
+          "text": "Pas d’Internet pendant 15 minutes, une heure ou jusqu’au matin, ou des horaires d’accès, sans Internet la nuit.",
+          "routing": true,
+          "alt": "Le menu de pause d’un appareil : pendant 15 minutes, pendant 1 heure ou jusqu’à 7:00"
+        },
+        {
+          "id": "backup",
+          "title": "Une sortie de secours",
+          "text": "Chaque sortie est vérifiée toutes les 30 secondes. Donnez une sortie de secours à l’une d’elles, et ses appareils y basculent tant qu’elle ne fonctionne pas.",
+          "routing": true,
+          "alt": "La page des sorties : un VPN qui ne fonctionne pas, si bien que ses appareils passent par la sortie Direct, et le temps de réponse de chaque sortie"
+        },
+        {
+          "id": "csv",
+          "title": "L’utilisation dans un tableur",
+          "text": "Enregistrez ce que chaque appareil a consommé dans un fichier CSV, par exemple pour un rapport mensuel.",
+          "routing": true,
+          "alt": "La page d’utilisation sur les 7 derniers jours, avec le menu pour enregistrer les totaux ou chaque jour par appareil"
+        },
+        {
+          "id": "alerts",
+          "title": "Notifications",
+          "text": "Quand un nouvel appareil se connecte ou attend d’être autorisé, quand un appareil a consommé 80 % ou la totalité de son quota de données, et la consommation de la semaine passée. Les notifications de quota et la notification hebdomadaire nécessitent le moteur de routage.",
+          "routing": false,
+          "alt": "Les réglages de Captun : un quota de données pour chaque appareil et les trois types de notifications"
+        }
+      ],
+      "note": "Pas encore sur GitHub : la version que vous pouvez compiler à partir du code source aujourd’hui ne les inclut pas."
     },
     "privacy": {
       "kicker": "Confidentialité",

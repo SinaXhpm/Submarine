@@ -102,19 +102,43 @@
       "lede": "Um pequeno serviço com permissões de administrador cuida do hotspot, de um servidor DNS e de um motor de pacotes que decide, conexão por conexão, por onde vai o tráfego de cada dispositivo. O app para desktop mostra o que está acontecendo e altera as configurações.",
       "devicesTitle": "Seus dispositivos",
       "devices": [
-        { "id": "phone", "name": "Celulares" },
-        { "id": "tv", "name": "TVs e consoles" },
-        { "id": "laptop", "name": "Notebooks" },
-        { "id": "tablet", "name": "Tablets" }
+        {
+          "id": "phone",
+          "name": "Celulares"
+        },
+        {
+          "id": "tv",
+          "name": "TVs e consoles"
+        },
+        {
+          "id": "laptop",
+          "name": "Notebooks"
+        },
+        {
+          "id": "tablet",
+          "name": "Tablets"
+        }
       ],
       "links": "Hotspot Wi-Fi, cabo ou USB",
       "hub": "Regras, DNS, limites",
       "choose": "por dispositivo ou por regra",
       "outTitle": "A saída",
       "outbounds": [
-        { "id": "direct", "name": "Direto", "detail": "qualquer adaptador de rede: Ethernet, Wi-Fi, o adaptador de um app de VPN" },
-        { "id": "vpn", "name": "Link de VPN", "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2" },
-        { "id": "proxy", "name": "Proxy", "detail": "SOCKS5, HTTP, HTTPS, também em cadeia" }
+        {
+          "id": "direct",
+          "name": "Direto",
+          "detail": "qualquer adaptador de rede: Ethernet, Wi-Fi, o adaptador de um app de VPN"
+        },
+        {
+          "id": "vpn",
+          "name": "Link de VPN",
+          "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2"
+        },
+        {
+          "id": "proxy",
+          "name": "Proxy",
+          "detail": "SOCKS5, HTTP, HTTPS, também em cadeia"
+        }
       ],
       "caption": "Celulares, TVs, consoles, notebooks e tablets se conectam ao Captun por um hotspot Wi-Fi, cabo ou USB. O Captun aplica as suas regras, o DNS e os limites e envia o tráfego de cada dispositivo direto, por um link de VPN ou por um proxy.",
       "steps": [
@@ -229,6 +253,57 @@
         }
       ],
       "note": "<em>Experimental</em>: saídas por dispositivo, regras, limites de velocidade, franquias de dados, velocidades em tempo real e o histórico de uso precisam de “Route devices through Captun”, o motor de roteamento próprio do Captun, que ainda é experimental."
+    },
+    "next": {
+      "kicker": "Na próxima versão",
+      "title": "Já feitos, <em>agora em teste</em>",
+      "lede": "Estes recursos já estão no código do Captun e passam nos testes. Eles chegam na próxima versão, depois de serem postos à prova em computadores reais.",
+      "routing": "Precisa do motor de roteamento",
+      "items": [
+        {
+          "id": "qr",
+          "title": "Conexão por QR code",
+          "text": "Os celulares escaneiam um código para entrar no hotspot, sem digitar nada.",
+          "routing": false,
+          "alt": "O Captun mostrando um QR code para entrar na rede “Captun”, com o nome e a senha da rede"
+        },
+        {
+          "id": "kinds",
+          "title": "Conheça cada dispositivo",
+          "text": "O fabricante e o tipo de cada dispositivo (celular, notebook, TV), com base na lista pública de prefixos de endereços de hardware.",
+          "routing": false,
+          "alt": "A página Devices com um celular, um tablet e uma TV, os fabricantes deles e uma TV pausada até mais tarde"
+        },
+        {
+          "id": "pause",
+          "title": "Pause um dispositivo ou defina horários",
+          "text": "Sem internet por 15 minutos, por uma hora ou até de manhã, ou horários de internet, sem acesso à noite.",
+          "routing": true,
+          "alt": "O menu de pausa de um dispositivo: por 15 minutos, por 1 hora ou até as 7:00"
+        },
+        {
+          "id": "backup",
+          "title": "Uma saída de reserva",
+          "text": "Todas as saídas são verificadas a cada 30 segundos. Dê uma reserva a uma saída, e os dispositivos dela passam para a reserva enquanto ela não estiver funcionando.",
+          "routing": true,
+          "alt": "A página Outbound: uma VPN que não está funcionando, por isso os dispositivos dela usam Direct, e o tempo que cada saída leva para responder"
+        },
+        {
+          "id": "csv",
+          "title": "O uso em uma planilha",
+          "text": "Salve em um arquivo CSV quanto cada dispositivo usou, por exemplo, para um relatório mensal.",
+          "routing": true,
+          "alt": "A página Usage dos últimos 7 dias, com o menu para salvar os totais ou cada dia por dispositivo"
+        },
+        {
+          "id": "alerts",
+          "title": "Notificações",
+          "text": "Quando um novo dispositivo entra ou aguarda permissão, quando um dispositivo já usou 80% ou toda a sua franquia de dados, e o uso da semana passada. As notificações de franquia e as semanais precisam do motor de roteamento.",
+          "routing": false,
+          "alt": "As configurações do Captun: uma franquia de dados para cada dispositivo e os três tipos de notificações"
+        }
+      ],
+      "note": "Ainda não estão no GitHub: a versão que você pode compilar hoje a partir do código-fonte não tem esses recursos."
     },
     "privacy": {
       "kicker": "Privado",
