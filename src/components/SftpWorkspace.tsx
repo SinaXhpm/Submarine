@@ -62,7 +62,7 @@ interface SftpWorkspaceProps {
   follow?: ShellFolderState | null;
   // An FTP server's tab (FtpSessionView): its files go over FTP, so nothing
   // that runs commands on the server is offered (root mode, archives, the
-  // owners' names) and there is no mirror.
+  // owners' names). The mirror works over FTP too (mirror.rs, Files::Ftp).
   ftp?: boolean;
 }
 // "split" is Local above Remote; the name predates "side" and stays because
@@ -289,8 +289,8 @@ function FollowSetup({ onCopy }: { onCopy: (line: string) => void }) {
 
 const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files", profile, follow, ftp = false }: SftpWorkspaceProps) => {
   const t = useT();
-  // Mirror needs a saved SSH server; without one the files always show.
-  const shownView: SftpView = view === "mirror" && serverId && !ftp ? "mirror" : "files";
+  // Mirror needs a saved server; without one the files always show.
+  const shownView: SftpView = view === "mirror" && serverId ? "mirror" : "files";
   // Files layout: "tabs" (one side full height) is the default because the
   // side panel is narrow on most desktop setups and "split" squeezed each
   // FilePanel into 5-6 rows. "split" and "side" stay available for users who
@@ -731,7 +731,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
 
       {/* Mirror view — kept MOUNTED (CSS hidden) so the live worker's logs
           and progress counters survive when the user pops back to Files. */}
-      {!!serverId && !ftp && (
+      {!!serverId && (
         <div className={`${shownView === "mirror" ? "flex-1 flex flex-col min-h-0" : "hidden"}`}>
           <MirrorsPanel
             sessionId={sessionId}

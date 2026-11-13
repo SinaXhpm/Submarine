@@ -683,6 +683,14 @@ impl Control {
         Ok(if r.code == 213 { r.first().trim().parse().ok() } else { None })
     }
 
+    /// A file's time (MDTM, exact and in UTC), None when the server has no
+    /// answer for it.
+    pub async fn mdtm(&mut self, path: &str) -> Result<Option<u32>, Error> {
+        check_arg(path)?;
+        let r = self.cmd(&format!("MDTM {path}")).await?;
+        Ok(if r.code == 213 { parse_time(r.first().trim()) } else { None })
+    }
+
     /// One path's fields (MLST), where the server has it.
     pub async fn mlst(&mut self, path: &str) -> Result<Option<Entry>, Error> {
         check_arg(path)?;
@@ -703,11 +711,15 @@ impl Control {
         self.ok(&format!("SITE CHMOD {:o} {path}", mode & 0o7777)).await.map(|_| ())
     }
 
-    /// A file's time (MFMT, UTC).
+    /// A file's time (UTC): MFMT where the server has it, else the
+    /// two-argument MDTM that vsftpd and others take (`MDTM <time> <path>`).
+    /// A server that knows neither reads that as a name and says no.
     pub async fn set_time(&mut self, path: &str, time: u32) -> Result<(), Error> {
         check_arg(path)?;
         let t = chrono::DateTime::from_timestamp(i64::from(time), 0).ok_or_else(|| Error::Local("Bad time".into()))?;
-        self.ok(&format!("MFMT {} {path}", t.format("%Y%m%d%H%M%S"))).await.map(|_| ())
+        let stamp = t.format("%Y%m%d%H%M%S");
+        let command = if self.features.mfmt { format!("MFMT {stamp} {path}") } else { format!("MDTM {stamp} {path}") };
+        self.ok(&command).await.map(|_| ())
     }
 
     // ---- data connections ----------------------------------------------------
@@ -1000,6 +1012,9 @@ pub struct Entry {
     pub mtime: Option<u32>,
     /// Permission bits (0o7777), where the server tells them.
     pub mode: Option<u32>,
+    /// `mtime` is exact and in UTC (MLSD, MLST, MDTM). A LIST line's time is
+    /// to the minute (or the day), in the server's own time zone.
+    pub exact: bool,
 }
 
 /// Each line of a listing through `parse`, keeping only entries a folder can
@@ -1071,7 +1086,7 @@ fn parse_mlsx(line: &str, whole: bool) -> Option<Entry> {
     }
     let kind = kind.unwrap_or(Kind::File);
     let size = if kind == Kind::Dir { Some(0) } else { size };
-    Some(Entry { name: if whole { name.rsplit('/').next().unwrap_or(&name).to_string() } else { name }, kind, size, mtime, mode })
+    Some(Entry { name: if whole { name.rsplit('/').next().unwrap_or(&name).to_string() } else { name }, kind, size, mtime, mode, exact: true })
 }
 
 const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
@@ -1147,7 +1162,7 @@ fn parse_unix_line(line: &str, now: i64) -> Option<Entry> {
         _ => (name.to_string(), Kind::Other),
     };
     let size = if kind == Kind::Dir { Some(0) } else { Some(size) };
-    Some(Entry { name, kind, size, mtime, mode: Some(full & 0o7777) })
+    Some(Entry { name, kind, size, mtime, mode: Some(full & 0o7777), exact: false })
 }
 
 /// `11-13-26  10:05AM       <DIR>          name` or `... 1234 name`.
@@ -1176,7 +1191,7 @@ fn parse_dos_line(line: &str) -> Option<Entry> {
     let name = c.get(8)?.as_str().to_string();
     let dir = c.get(7)?.as_str() == "<DIR>";
     let size = if dir { Some(0) } else { c.get(7)?.as_str().parse().ok() };
-    Some(Entry { name, kind: if dir { Kind::Dir } else { Kind::File }, size, mtime, mode: None })
+    Some(Entry { name, kind: if dir { Kind::Dir } else { Kind::File }, size, mtime, mode: None, exact: false })
 }
 
 // ---------------------------------------------------------------------------
@@ -1374,7 +1389,7 @@ mod tests {
     #[test]
     fn mlsd_lines() {
         let e = parse_mlsx("type=file;size=1024;modify=20261113100500;UNIX.mode=0644; a b.txt", false).unwrap();
-        assert_eq!(e, Entry { name: "a b.txt".into(), kind: Kind::File, size: Some(1024), mtime: Some(1794564300), mode: Some(0o644) });
+        assert_eq!(e, Entry { name: "a b.txt".into(), kind: Kind::File, size: Some(1024), mtime: Some(1794564300), mode: Some(0o644), exact: true });
         let d = parse_mlsx("Type=dir;Modify=20261113100500.123;Perm=flcdmpe; sub", false).unwrap();
         assert_eq!((d.kind, d.size), (Kind::Dir, Some(0)));
         assert!(parse_mlsx("type=cdir;modify=20261113100500; .", false).is_none());

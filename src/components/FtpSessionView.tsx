@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { AlertTriangle, FolderOpen, Loader2, Lock, RotateCw, ScrollText, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, FolderOpen, FolderUp, Loader2, Lock, RotateCw, ScrollText, ShieldAlert, X } from "lucide-react";
 import { AuthPrompts } from "./AuthPrompts";
-import SftpWorkspace from "./SftpWorkspace";
+import SftpWorkspace, { type SftpView } from "./SftpWorkspace";
+import { parseObjectList } from "../util/serverJson";
 import { readUseSshAgent } from "../util/sshAgent";
 import { tk, useT } from "../i18n";
 
@@ -32,6 +33,8 @@ export default function FtpSessionView({ session, profile, displayName, onClose,
   // The files come with the first connection and stay (greyed) after a drop.
   const [everConnected, setEverConnected] = useState(false);
   const [showLog, setShowLog] = useState(false);
+  // The files, or the folder mirror (a saved server's, as in an SSH tab).
+  const [view, setView] = useState<SftpView>("files");
   // Asked again after the saved password was refused: twice at most.
   const askPassword = useRef(false);
   const passwordRetries = useRef(0);
@@ -218,6 +221,20 @@ export default function FtpSessionView({ session, profile, displayName, onClose,
         <span className={`min-w-0 flex-1 truncate text-[11px] ${broken ? "text-red-400/90" : "text-zinc-500"}`}>{statusText}</span>
         {everConnected && (
           <button
+            onClick={() => setView((v) => (v === "mirror" ? "files" : "mirror"))}
+            disabled={!session.serverId}
+            aria-pressed={view === "mirror"}
+            aria-label={t("Mirror")}
+            title={!session.serverId
+              ? t("Mirror needs a saved server")
+              : view === "mirror" ? t("Back to the files") : t("Mirror: keep a local folder copied to this server")}
+            className={`h-10 min-w-10 justify-center sm:h-7 sm:min-w-0 px-2 flex items-center gap-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${view === "mirror" ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-300 hover:bg-white/10"}`}
+          >
+            <FolderUp size={13} /><span className="hidden sm:inline">{t("Mirror")}</span>
+          </button>
+        )}
+        {everConnected && (
+          <button
             onClick={() => setShowLog((v) => !v)}
             aria-pressed={showLog}
             title={t("The connection log")}
@@ -253,6 +270,8 @@ export default function FtpSessionView({ session, profile, displayName, onClose,
             disabled={status !== "connected"}
             serverId={session.serverId}
             profile={profile}
+            mirrorsConfig={parseObjectList(session.mirrors)}
+            view={view}
             ftp
           />
           {broken && reason && (

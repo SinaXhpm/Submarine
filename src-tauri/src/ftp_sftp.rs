@@ -78,12 +78,54 @@ impl Link {
     }
 }
 
+/// How many of a tab's connections are open, for the tab to wait until
+/// none are: a Reconnect lets the earlier ones close first, as a server with a
+/// limit per client (vsftpd's max_per_ip, most shared hosting) would refuse
+/// the new ones while they last.
+#[derive(Default)]
+pub struct Gauge {
+    open: AtomicUsize,
+    changed: tokio::sync::Notify,
+}
+
+impl Gauge {
+    fn up(&self) {
+        self.open.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// One fewer (or `n` fewer); returns how many are left.
+    fn down(&self, n: usize) -> usize {
+        let left = self.open.fetch_sub(n, Ordering::AcqRel) - n;
+        self.changed.notify_waiters();
+        left
+    }
+
+    pub fn open(&self) -> usize {
+        self.open.load(Ordering::Acquire)
+    }
+
+    /// Waits until none are open, `limit` at most. True when none are.
+    pub async fn closed(&self, limit: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            // Asked for before the look, so a change between the two isn't missed.
+            let changed = self.changed.notified();
+            if self.open() == 0 {
+                return true;
+            }
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
+                return self.open() == 0;
+            }
+        }
+    }
+}
+
 /// The tab's connections.
 struct Pool {
     link: Arc<Link>,
     spare: StdMutex<Vec<(Control, Instant)>>,
     /// Connections that exist: spare, held by the handler or by a transfer.
-    count: AtomicUsize,
+    count: Arc<Gauge>,
     /// The most the server allowed (MAX_CONNECTIONS until it refuses one).
     limit: Arc<AtomicUsize>,
     /// Told once no connection can be made at all.
@@ -113,7 +155,17 @@ impl std::ops::DerefMut for Pooled {
 impl Drop for Pooled {
     fn drop(&mut self) {
         if self.c.take().is_some() {
-            self.pool.count.fetch_sub(1, Ordering::AcqRel);
+            self.pool.count.down(1);
+        }
+    }
+}
+
+impl Drop for Pool {
+    /// The spare connections close with the pool.
+    fn drop(&mut self) {
+        let spare = self.spare.get_mut().map(|s| s.len()).unwrap_or(0);
+        if spare > 0 {
+            self.count.down(spare);
         }
     }
 }
@@ -133,7 +185,7 @@ fn too_many(e: &ftp::Error) -> bool {
 
 impl Pool {
     fn adopt(self: &Arc<Self>, c: Control) -> Pooled {
-        self.count.fetch_add(1, Ordering::AcqRel);
+        self.count.up();
         Pooled { c: Some(c), pool: Arc::clone(self) }
     }
 
@@ -158,15 +210,15 @@ impl Pool {
             }
             return Ok(Some(p));
         }
-        let now = self.count.load(Ordering::Acquire);
+        let now = self.count.open();
         if now >= self.limit.load(Ordering::Acquire) {
             return Ok(None);
         }
-        self.count.fetch_add(1, Ordering::AcqRel);
+        self.count.up();
         match self.link.connect().await {
             Ok(c) => Ok(Some(Pooled { c: Some(c), pool: Arc::clone(self) })),
             Err(e) => {
-                let others = self.count.fetch_sub(1, Ordering::AcqRel) - 1;
+                let others = self.count.down(1);
                 if others > 0 && too_many(&e) {
                     self.limit.store(others, Ordering::Release);
                     return Ok(None);
@@ -544,7 +596,7 @@ impl FtpSftp {
     /// What is at `path` (normalized), not following a link.
     async fn entry(&mut self, path: &str) -> Result<Entry, StatusReply> {
         if path == "/" {
-            return Ok(Entry { name: "/".into(), kind: Kind::Dir, size: Some(0), mtime: None, mode: None });
+            return Ok(Entry { name: "/".into(), kind: Kind::Dir, size: Some(0), mtime: None, mode: None, exact: false });
         }
         if let Some(e) = self.cached(path) {
             return Ok(e);
@@ -561,16 +613,30 @@ impl FtpSftp {
         }
         // The folder can't be listed: ask about the path itself.
         if again_if_broken!(self, c => c.is_dir(path))? {
-            return Ok(Entry { name, kind: Kind::Dir, size: Some(0), mtime: None, mode: None });
+            return Ok(Entry { name, kind: Kind::Dir, size: Some(0), mtime: None, mode: None, exact: false });
         }
         match again_if_broken!(self, c => c.size(path))? {
-            Some(size) => Ok(Entry { name, kind: Kind::File, size: Some(size), mtime: None, mode: None }),
+            Some(size) => Ok(Entry { name, kind: Kind::File, size: Some(size), mtime: None, mode: None, exact: false }),
             None => Err(status(StatusCode::NoSuchFile, "No such file")),
         }
     }
 
     async fn attrs(&mut self, path: &str, follow: bool) -> Result<FileAttributes, StatusReply> {
-        let e = self.entry(path).await?;
+        let mut e = self.entry(path).await?;
+        // A file asked about by itself: its exact time (MDTM, UTC) where the
+        // listing's is to the minute and in the server's own time zone. A
+        // folder listing doesn't ask (one command a file); the mirror does,
+        // per file it compares.
+        if !e.exact && e.kind == Kind::File && self.features.mdtm {
+            if let Some(t) = again_if_broken!(self, c => c.mdtm(path))? {
+                e.mtime = Some(t);
+                e.exact = true;
+                if let Some(c) = self.cache.get_mut(path) {
+                    c.entry.mtime = Some(t);
+                    c.entry.exact = true;
+                }
+            }
+        }
         if !follow || !matches!(e.kind, Kind::Link(_)) {
             return Ok(attrs_of(&e));
         }
@@ -604,7 +670,7 @@ impl FtpSftp {
             once!(self, c => c.chmod(path, m))?;
         }
         if let Some(t) = attrs.mtime {
-            if !self.features.mfmt {
+            if !self.features.mfmt && !self.features.mdtm {
                 return Err(unsupported("This FTP server can't set a file's time"));
             }
             once!(self, c => c.set_time(path, t))?;
@@ -901,6 +967,8 @@ pub struct Live {
     pub info: Info,
     /// The pool's limit (see `Pool::limit`).
     pub limit: Arc<AtomicUsize>,
+    /// The tab's open connections (see `Gauge`).
+    pub gauge: Arc<Gauge>,
 }
 
 impl Live {
@@ -923,23 +991,27 @@ pub struct Info {
     pub home: String,
     /// The server lists with MLSD (exact sizes and times).
     pub mlsd: bool,
+    /// The server tells a file's exact time (MDTM): with MLSD or this, a
+    /// mirror can compare times.
+    pub mdtm: bool,
 }
 
 /// Starts file access over FTP on a logged-in connection: an SFTP session the
 /// rest of the app uses as any other. `lost` is told when the server can't be
 /// reached any more (no connection could be made).
-pub async fn start(link: Link, first: Control, lost: Box<dyn Fn(String) + Send + Sync>) -> Result<(SftpSession, Arc<AtomicUsize>), String> {
+pub async fn start(link: Link, first: Control, lost: Box<dyn Fn(String) + Send + Sync>) -> Result<(SftpSession, Arc<AtomicUsize>, Arc<Gauge>), String> {
     let home = if first.home.starts_with('/') { first.home.clone() } else { "/".to_string() };
     let features = first.features.clone();
     let pool = Arc::new(Pool {
         link: Arc::new(link),
         spare: StdMutex::new(Vec::new()),
-        count: AtomicUsize::new(0),
+        count: Arc::new(Gauge::default()),
         limit: Arc::new(AtomicUsize::new(MAX_CONNECTIONS)),
         lost,
     });
     let main = pool.adopt(first);
     let limit = Arc::clone(&pool.limit);
+    let gauge = Arc::clone(&pool.count);
     let handler = FtpSftp {
         pool,
         main: Some(main),
@@ -958,7 +1030,7 @@ pub async fn start(link: Link, first: Control, lost: Box<dyn Fn(String) + Send +
     .await
     .map_err(|_| "File access over FTP didn't start".to_string())?
     .map_err(|e| e.to_string())?;
-    Ok((sftp, limit))
+    Ok((sftp, limit, gauge))
 }
 
 #[cfg(test)]
@@ -992,9 +1064,31 @@ mod tests {
         assert!(!too_many(&r(530, "Login incorrect")));
     }
 
+    /// A Reconnect waits until the earlier connections have closed, and no
+    /// longer than its limit when one doesn't.
+    #[tokio::test(start_paused = true)]
+    async fn the_gauge_tells_when_every_connection_has_closed() {
+        let gauge = Arc::new(Gauge::default());
+        gauge.up();
+        gauge.up();
+        let g = Arc::clone(&gauge);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            g.down(1);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            g.down(1);
+        });
+        let start = tokio::time::Instant::now();
+        assert!(gauge.closed(Duration::from_secs(5)).await);
+        assert!(start.elapsed() >= Duration::from_millis(200) && start.elapsed() < Duration::from_secs(1));
+        gauge.up();
+        assert!(!gauge.closed(Duration::from_millis(300)).await);
+        assert_eq!(gauge.open(), 1);
+    }
+
     #[test]
     fn entries_carry_their_type() {
-        let e = |kind| Entry { name: "x".into(), kind, size: Some(3), mtime: Some(5), mode: Some(0o640) };
+        let e = |kind| Entry { name: "x".into(), kind, size: Some(3), mtime: Some(5), mode: Some(0o640), exact: false };
         let a = attrs_of(&e(Kind::Dir));
         assert!(a.is_dir());
         assert_eq!(attrs_of(&e(Kind::File)).permissions, Some(0o100640));

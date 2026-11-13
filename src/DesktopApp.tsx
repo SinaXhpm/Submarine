@@ -1144,6 +1144,24 @@ function DesktopApp() {
   // exactly as before even if the save fails; the persisted node is a
   // best-effort side effect the backend dedups by (host, port, username).
   const openQuickConnect = (auth: QuickAuth) => {
+    // An FTP server is saved first and then opened like any saved one: its tab
+    // connects by the saved server (ftp_connect), with the certificate check
+    // and the password prompt that come with it.
+    if (isFtp(auth.protocol)) {
+      setIsQuickConnectOpen(false);
+      const shown = auth.username ? `${auth.username}@${auth.host}:${auth.port}` : `${auth.host}:${auth.port}`;
+      addLog(t("Quick connect → {name}", { name: shown }), "info");
+      invoke<number>("save_quick_connect_node", { auth })
+        .then(async (id) => {
+          const list = await invoke<any[]>("get_servers");
+          refreshServers();
+          bumpSync();
+          const server = list.find((s) => s.id === id);
+          if (server) await openServer(server);
+        })
+        .catch((e) => addLog(`QUICK_NODE_SAVE_FAILED: ${e}`, "error"));
+      return;
+    }
     const sessionId = `session-quick-${Date.now()}`;
     // No `user@` when the username is left blank (asked at connect, #54).
     const displayName = auth.username
@@ -3152,7 +3170,8 @@ function DesktopApp() {
               authType: newNode.authType === "vault" ? "vault" : "custom_pass",
               keyId: null,
               autostart: false,
-              mirrors: [],
+              // An FTP server keeps its mirrors (they work over FTP too).
+              mirrors: ftpServer ? (newNode.mirrors || []) : [],
               color: newNode.color ?? null,
               preservePassword: !!newNode.id && !newNode.password_dirty,
             } : {

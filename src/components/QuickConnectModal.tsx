@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Zap, X, AlertTriangle, KeyRound, Lock } from "lucide-react";
+import { Zap, X, AlertTriangle, KeyRound, Lock, ShieldAlert } from "lucide-react";
 import PasswordField from "./PasswordField";
 import { useT } from "../i18n";
+import { USUAL_PORTS, isFtp, parseServerLink, type FtpProtocol, type ServerProtocol } from "../util/serverProtocol";
 
 // Quick Connect: the auth bundle lives in component state, gets passed to
 // DesktopApp via onConnect, and the resulting session carries it through to
@@ -9,6 +10,10 @@ import { useT } from "../i18n";
 // connection uses the inline auth directly). DesktopApp ALSO persists the
 // target as a reusable node in the root directory (see save_quick_connect_node)
 // so it can be reconnected later without re-typing credentials.
+//
+// An FTP server (Type, or a pasted ftp:// / ftps:// / ftpes:// link) is saved
+// first and then opened like any saved one: its tab, certificate check and
+// password prompt are the saved server's (DesktopApp's openQuickConnect).
 
 export interface QuickAuth {
   host: string;
@@ -17,6 +22,8 @@ export interface QuickAuth {
   password?: string | null;
   private_key?: string | null;
   passphrase?: string | null;
+  /** SSH when absent; an FTP kind for an FTP server (util/serverProtocol). */
+  protocol?: "ssh" | FtpProtocol;
 }
 
 interface Props {
@@ -27,9 +34,13 @@ interface Props {
 
 const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
   const t = useT();
+  const [protocol, setProtocolState] = useState<"ssh" | FtpProtocol>("ssh");
   const [host, setHost] = useState("");
   const [port, setPort] = useState<number>(22);
   const [username, setUsername] = useState("root");
+  // Typed by the user: a change of kind leaves them as they are.
+  const [portTyped, setPortTyped] = useState(false);
+  const [userTyped, setUserTyped] = useState(false);
   const [authMode, setAuthMode] = useState<"password" | "key">("password");
   const [password, setPassword] = useState("");
   const [privateKey, setPrivateKey] = useState("");
@@ -38,7 +49,43 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
 
   if (!isOpen) return null;
 
+  const ftp = isFtp(protocol);
+  // The usual port and login of the new kind, unless the user typed their own:
+  // root for SSH (empty asks), empty for FTP (anonymous).
+  const setProtocol = (next: "ssh" | FtpProtocol) => {
+    setProtocolState(next);
+    if (!portTyped) setPort(USUAL_PORTS[next as ServerProtocol]);
+    if (!userTyped) setUsername(isFtp(next) ? "" : "root");
+    if (isFtp(next)) setAuthMode("password");
+  };
+  // A pasted link fills the form: its kind, host, port and login.
+  const onHostChange = (value: string) => {
+    const link = value.includes("://") ? parseServerLink(value) : null;
+    if (!link || (link.protocol !== "ssh" && !isFtp(link.protocol))) {
+      setHost(value);
+      return;
+    }
+    const kind = link.protocol as "ssh" | FtpProtocol;
+    setProtocolState(kind);
+    setHost(link.host);
+    setPort(link.port);
+    setPortTyped(true);
+    if (link.username !== undefined) {
+      setUsername(link.username);
+      setUserTyped(true);
+    } else if (!userTyped) {
+      setUsername(isFtp(kind) ? "" : "root");
+    }
+    if (link.password !== undefined) {
+      setAuthMode("password");
+      setPassword(link.password);
+    }
+    if (isFtp(kind)) setAuthMode("password");
+    setErr(null);
+  };
+
   const reset = () => {
+    setProtocolState("ssh"); setPortTyped(false); setUserTyped(false);
     setHost(""); setPort(22); setUsername("root");
     setAuthMode("password"); setPassword(""); setPrivateKey(""); setPassphrase("");
     setErr(null);
@@ -49,6 +96,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
   const connect = () => {
     setErr(null);
     if (!host.trim()) { setErr(t("Host is required")); return; }
+    if (host.includes("://")) { setErr(t("Only ftp://, ftps://, ftpes://, sftp:// and ssh:// links work here")); return; }
     if (!port || port < 1 || port > 65535) { setErr(t("Port must be 1–65535")); return; }
     if (authMode === "key" && !privateKey.trim()) { setErr(t("Private key body is required")); return; }
 
@@ -61,6 +109,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
       password: authMode === "password" && password ? password : null,
       private_key: authMode === "key" ? privateKey : null,
       passphrase: authMode === "key" && passphrase ? passphrase : null,
+      protocol,
     };
     reset();
     onConnect(auth);
@@ -84,14 +133,52 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
             </div>
           )}
 
+          {/* SSH or FTP; an FTP server's encryption, as in the server form. */}
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label htmlFor="quick-type" className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Type")}</label>
+              <select
+                id="quick-type"
+                value={ftp ? "ftps" : "ssh"}
+                onChange={(e) => setProtocol(e.target.value === "ftps" ? "ftps" : "ssh")}
+                className="w-full h-9 px-2 bg-zinc-900/60 border border-white/10 rounded-lg text-[12px] text-zinc-50 outline-none focus:border-primary/50"
+              >
+                <option value="ssh" className="bg-[#1a1a1e]">SSH</option>
+                <option value="ftps" className="bg-[#1a1a1e]">{t("FTP or FTPS (files)")}</option>
+              </select>
+            </div>
+            {ftp && (
+              <div className="space-y-1">
+                <label htmlFor="quick-ftp-security" className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Encryption")}</label>
+                <select
+                  id="quick-ftp-security"
+                  value={protocol}
+                  onChange={(e) => setProtocol(e.target.value as FtpProtocol)}
+                  className="w-full h-9 px-2 bg-zinc-900/60 border border-white/10 rounded-lg text-[12px] text-zinc-50 outline-none focus:border-primary/50"
+                >
+                  <option value="ftps" className="bg-[#1a1a1e]">{t("FTPS: TLS after connecting (usual)")}</option>
+                  <option value="ftps-implicit" className="bg-[#1a1a1e]">{t("FTPS: TLS from the start (port 990)")}</option>
+                  <option value="ftp" className="bg-[#1a1a1e]">{t("None: plain FTP (not encrypted)")}</option>
+                </select>
+              </div>
+            )}
+          </div>
+          {protocol === "ftp" && (
+            <p role="note" className="flex gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-[11px] leading-snug text-amber-200/90">
+              <ShieldAlert size={13} className="shrink-0 mt-px" aria-hidden="true" />
+              <span>{t("Plain FTP isn't encrypted: the password and the files cross the network as they are.")}</span>
+            </p>
+          )}
+
           {/* Host + port */}
           <div className="grid grid-cols-4 gap-2">
             <div className="col-span-3 space-y-1">
               <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Host")}</label>
               <input
                 value={host}
-                onChange={(e) => setHost(e.target.value)}
+                onChange={(e) => onHostChange(e.target.value)}
                 placeholder={t("192.168.1.1 or example.com")}
+                aria-describedby="quick-host-hint"
                 className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-zinc-50 outline-none focus:border-primary/50"
                 autoFocus
               />
@@ -101,25 +188,26 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
               <input
                 type="number"
                 value={port}
-                onChange={(e) => setPort(parseInt(e.target.value) || 22)}
+                onChange={(e) => { setPort(parseInt(e.target.value) || USUAL_PORTS[protocol as ServerProtocol]); setPortTyped(true); }}
                 className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-zinc-50 outline-none focus:border-primary/50"
               />
             </div>
           </div>
+          <p id="quick-host-hint" className="text-[10px] text-zinc-500 ml-0.5 -mt-1">{t("A link works too, such as ftp://user@host or sftp://user@host:22")}</p>
 
           {/* Username */}
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Username")}</label>
             <input
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder={t("Ask when connecting")}
+              onChange={(e) => { setUsername(e.target.value); setUserTyped(true); }}
+              placeholder={ftp ? t("Empty: anonymous") : t("Ask when connecting")}
               className="w-full h-9 px-3 bg-zinc-900/60 border border-white/10 rounded-lg text-[12.5px] text-zinc-50 outline-none focus:border-primary/50"
             />
           </div>
 
-          {/* Auth mode toggle */}
-          <div className="pt-1">
+          {/* Auth mode toggle (SSH only: an FTP server takes a password) */}
+          {!ftp && <div className="pt-1">
             <div className="flex items-center gap-1.5 bg-white/[0.03] border border-white/10 rounded-lg p-1">
               <button
                 onClick={() => setAuthMode("password")}
@@ -142,7 +230,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                 <KeyRound size={11} /> {t("SSH Key")}
               </button>
             </div>
-          </div>
+          </div>}
 
           {authMode === "password" ? (
             <div className="space-y-1 animate-in fade-in">

@@ -8264,14 +8264,29 @@ async fn save_quick_connect_node(
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
 
     // A blank username stays blank: the saved node then asks for it at
-    // connect time too (issue #54), exactly like the live session does.
+    // connect time too (issue #54), exactly like the live session does. An FTP
+    // server without one logs in as anonymous.
     let username = auth.username.trim().to_string();
+    // SSH, or one of the FTP kinds (ftp.rs). An FTP server logs in with a
+    // password, never a key.
+    let protocol: Option<&str> = match auth.protocol.as_deref() {
+        None | Some("ssh") => None,
+        Some(p @ ("ftp" | "ftps" | "ftps-implicit")) => Some(p),
+        Some(other) => return Err(format!("[DATABASE] SERVER_PROTOCOL_UNKNOWN: {other}")),
+    };
+    if protocol.is_some() && auth.private_key.as_ref().is_some_and(|k| !k.trim().is_empty()) {
+        return Err("An FTP server logs in with a password, not an SSH key".into());
+    }
+    if protocol.is_some() {
+        ftp::check_arg(&username).map_err(|e| e.message())?;
+    }
 
     // Dedup against existing, non-deleted ROOT nodes with the same identity so
-    // the grid doesn't fill with duplicates on repeated quick connects.
+    // the grid doesn't fill with duplicates on repeated quick connects. The
+    // kind is part of it: an FTP quick connect never reuses an SSH node.
     let existing = conn.query_row(
-        "SELECT id FROM servers WHERE deleted = 0 AND folder_id IS NULL AND host = ?1 AND port = ?2 AND COALESCE(username,'') = ?3 LIMIT 1",
-        rusqlite::params![auth.host, auth.port, username],
+        "SELECT id FROM servers WHERE deleted = 0 AND folder_id IS NULL AND host = ?1 AND port = ?2 AND COALESCE(username,'') = ?3 AND COALESCE(protocol,'ssh') = ?4 LIMIT 1",
+        rusqlite::params![auth.host, auth.port, username, protocol.unwrap_or("ssh")],
         |r| r.get::<_, i64>(0),
     );
     match existing {
@@ -8300,9 +8315,9 @@ async fn save_quick_connect_node(
         };
 
     conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color) \
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, 'none', '', 1080, '[]', ?6, ?7, 0, '[]', NULL)",
-        rusqlite::params![name, auth.host, auth.port, username, db_password, auth_type, db_key_id],
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, protocol) \
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, 'none', '', 1080, '[]', ?6, ?7, 0, '[]', NULL, ?8)",
+        rusqlite::params![name, auth.host, auth.port, username, db_password, auth_type, db_key_id, protocol],
     ).map_err(|e| format!("[DATABASE] QUICK_NODE_INSERT_FAILED: {}", e))?;
 
     let new_id = conn.last_insert_rowid();
@@ -9730,6 +9745,11 @@ struct QuickAuth {
     private_key: Option<String>,
     #[serde(default)]
     passphrase: Option<String>,
+    /// None (or "ssh") for an SSH server; "ftps", "ftps-implicit" or "ftp" for
+    /// an FTP one, which Quick Connect saves first and then opens like any
+    /// saved server (`ftp_connect`).
+    #[serde(default)]
+    protocol: Option<String>,
 }
 
 /// Largest number of connect-time secret prompts (a missing password or key
@@ -16297,6 +16317,22 @@ async fn restart_session_tunnels(
 
 // ----- Mirror commands -----------------------------------------------------
 
+/// A tab's file access for a mirror: an FTP tab's own (shared with the tab),
+/// or the SSH connection the mirror opens its SFTP session on. An FTP server
+/// that gives no exact file times (neither MLSD nor MDTM) isn't mirrored:
+/// "newer" can't be told, and every same-size file would be fetched to be
+/// compared on every start.
+async fn mirror_files(ssh: &SshState, session_id: &str) -> Result<mirror::Files, String> {
+    if let Some(live) = ssh.ftp_sessions.lock().await.get(session_id) {
+        if !live.info.mlsd && !live.info.mdtm {
+            return Err("This FTP server doesn't give exact file times (it has neither MLSD nor MDTM), so a mirror can't tell which copy is newer.".into());
+        }
+        return Ok(mirror::Files::Ftp { sftp: Arc::clone(&live.sftp), exact: live.info.mlsd });
+    }
+    let conns = ssh.connections.lock().await;
+    conns.get(session_id).cloned().map(mirror::Files::Ssh).ok_or_else(|| "Session not connected".to_string())
+}
+
 #[tauri::command]
 async fn mirror_dry_run(
     ssh: tauri::State<'_, SshState>,
@@ -16304,12 +16340,8 @@ async fn mirror_dry_run(
     mut spec: mirror::MirrorSpec,
 ) -> Result<mirror::DryRunReport, String> {
     spec.local = guard_mirror_folder(&spec.local)?;
-    let handle = {
-        let conns = ssh.connections.lock().await;
-        conns.get(&session_id).cloned()
-            .ok_or_else(|| "Session not connected".to_string())?
-    };
-    mirror::dry_run(handle, spec).await
+    let files = mirror_files(&ssh, &session_id).await?;
+    mirror::dry_run(files, spec).await
 }
 
 #[tauri::command]
@@ -16321,12 +16353,8 @@ async fn start_mirror(
     mut spec: mirror::MirrorSpec,
 ) -> Result<String, String> {
     spec.local = guard_mirror_folder(&spec.local)?;
-    let handle = {
-        let conns = ssh.connections.lock().await;
-        conns.get(&session_id).cloned()
-            .ok_or_else(|| "Session not connected".to_string())?
-    };
-    mirror::start(app, session_id, handle, Arc::clone(&mirrors), spec).await
+    let files = mirror_files(&ssh, &session_id).await?;
+    mirror::start(app, session_id, files, Arc::clone(&mirrors), spec).await
 }
 
 #[tauri::command]
@@ -17881,8 +17909,9 @@ async fn ftp_connect(
     use std::sync::Arc;
     use tauri::Emitter;
 
-    // A new attempt replaces the tab's last one, and its connections.
-    state.ftp_sessions.lock().await.remove(&session_id);
+    // A new attempt replaces the tab's last one, and its connections: they are
+    // waited for below, before any new one (see ftp_sftp::Gauge).
+    let earlier = state.ftp_sessions.lock().await.remove(&session_id);
     let generation = {
         let mut g = state.session_generation.lock().await;
         let next = g.get(&session_id).copied().unwrap_or(0).wrapping_add(1);
@@ -17951,6 +17980,13 @@ async fn ftp_connect(
             ftp::Security::Implicit => "FTPS, TLS from the start",
         };
         log(&format!("Opening the FTP server {target} ({how})..."), "info");
+        if let Some(earlier) = earlier {
+            let gauge = std::sync::Arc::clone(&earlier.gauge);
+            drop(earlier);
+            if gauge.open() > 0 && !gauge.closed(std::time::Duration::from_secs(5)).await {
+                log("The tab's earlier connections are still closing; trying anyway.", "info");
+            }
+        }
         if !security.encrypted() {
             log("Plain FTP isn't encrypted: the password and the files cross the network as they are.", "warning");
         }
@@ -18119,6 +18155,7 @@ async fn ftp_connect(
             tls: tls_version,
             home: control.home.clone(),
             mlsd: control.features.mlst,
+            mdtm: control.features.mdtm,
         };
         let link = ftp_sftp::Link { dial, port, security, tls, cert, ca_valid, user, password };
         // No connection can be made any more: the tab hears it once.
@@ -18139,7 +18176,7 @@ async fn ftp_connect(
                 });
             })
         };
-        let (sftp, limit) = match ftp_sftp::start(link, control, lost).await {
+        let (sftp, limit, gauge) = match ftp_sftp::start(link, control, lost).await {
             Ok(s) => s,
             Err(e) => {
                 log(&e, "error");
@@ -18155,7 +18192,7 @@ async fn ftp_connect(
             if !attempt.is_current().await {
                 return;
             }
-            map.insert(session_id.clone(), ftp_sftp::Live { generation, sftp: Arc::new(sftp), info: info.clone(), limit });
+            map.insert(session_id.clone(), ftp_sftp::Live { generation, sftp: Arc::new(sftp), info: info.clone(), limit, gauge });
         }
         match &via {
             Some(v) => log(&format!("Connected to {target} through {v}."), "success"),
@@ -23465,7 +23502,7 @@ async fn android_default_local_dir(app: tauri::AppHandle) -> Result<String, Stri
 /// via the existing `add_server` command. A host that named an `IdentityFile`
 /// gets that key registered and linked; everything else lands password-less
 /// for the user to finish.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Default)]
 struct ImportedHost {
     /// The alias the user actually types (`ssh <alias>`) — becomes the
     /// server's display name after import.
@@ -23486,6 +23523,15 @@ struct ImportedHost {
     /// Resolved `ProxyJump`. Informational only; live proxy config still
     /// happens in the Server details panel.
     proxy_jump: Option<String>,
+    /// An FTP site's kind ("ftps", "ftps-implicit" or "ftp", see ftp.rs);
+    /// None for an SSH host. Only FileZilla's site list has FTP sites.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol: Option<String>,
+    /// A password the source kept for the site (FileZilla keeps them in
+    /// base64, which is no protection): it goes into the vault with the
+    /// server, after the page asks when the profile is shared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
 }
 
 /// Read the user's OpenSSH client config (default `~/.ssh/config`) and
@@ -23553,6 +23599,7 @@ async fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, Str
                     user: b.user.clone().unwrap_or_default(),
                     identity_file: b.identity_file.clone(),
                     proxy_jump: b.proxy_jump.clone(),
+                    ..Default::default()
                 });
             }
         }
@@ -23686,6 +23733,11 @@ fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
         return parse_mobaxterm_sessions(trimmed);
     }
 
+    // ── FileZilla's site list (sitemanager.xml, or File → Export).
+    if trimmed.starts_with('<') && trimmed.contains("<FileZilla3") {
+        return parse_filezilla_sites(trimmed);
+    }
+
     // ── JSON array — the most permissive path. Two
     //    supported field-name variants (see doc comment). We accept a
     //    generic `serde_json::Value` array rather than a strict struct
@@ -23732,6 +23784,7 @@ fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
                 user,
                 identity_file,
                 proxy_jump,
+                ..Default::default()
             });
         }
         if out.is_empty() {
@@ -23748,7 +23801,7 @@ fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
         return parse_putty_reg(trimmed);
     }
 
-    Err("Unrecognised format — paste a JSON array, a PuTTY .reg export, or a MobaXterm .mxtsessions block.".into())
+    Err("Unrecognised format — paste a JSON array, a PuTTY .reg export, a MobaXterm .mxtsessions block, or FileZilla's site list.".into())
 }
 
 /// Parse `regedit /e` output of PuTTY's session key. The format is
@@ -23770,6 +23823,7 @@ fn parse_putty_reg(text: &str) -> Result<Vec<ImportedHost>, String> {
                     user,
                     identity_file: None,
                     proxy_jump: None,
+                    ..Default::default()
                 });
             }
         }
@@ -23948,6 +24002,7 @@ fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
             user: user.to_string(),
             identity_file,
             proxy_jump: mobaxterm_jump_hosts(field(8), field(9), field(10)),
+            ..Default::default()
         });
     }
     if out.is_empty() {
@@ -23983,9 +24038,218 @@ fn mobaxterm_jump_hosts(hosts: &str, ports: &str, users: &str) -> Option<String>
     (!hops.is_empty()).then(|| hops.join(","))
 }
 
+/// The most of FileZilla's site list that is read (a list of thousands of
+/// sites is a few hundred KiB).
+const FILEZILLA_MAX: usize = 16 * 1024 * 1024;
+
+/// FileZilla's site list (`sitemanager.xml`, or what File → Export writes)
+/// as hosts. FTP sites become FTP servers with at least the encryption
+/// FileZilla used: its "FTP" (TLS when the server offers it) and "FTPES" are
+/// FTPS with TLS after connecting, required here (no silent fall back to
+/// plain FTP); implicit FTPS stays implicit; only FileZilla's own "plain FTP
+/// (insecure)", chosen there on purpose, is plain. SFTP sites become SSH
+/// servers. Other kinds (S3, WebDAV, cloud storage) are left out.
+///
+/// FileZilla keeps passwords in base64, which protects nothing, unless its
+/// master password encrypts them: those stay behind and are asked when
+/// connecting. A site in folders is named by its folders and its name, so
+/// two of the same name stay apart. The XML may have no DTD (roxmltree's
+/// default), so no entity can grow it or reach outside it.
+fn parse_filezilla_sites(text: &str) -> Result<Vec<ImportedHost>, String> {
+    use base64::Engine as _;
+    if text.len() > FILEZILLA_MAX {
+        return Err("The site list is too big to read".into());
+    }
+    let doc = roxmltree::Document::parse(text).map_err(|e| format!("This isn't a FileZilla site list: {e}"))?;
+    let root = doc.root_element();
+    if !root.has_tag_name("FileZilla3") {
+        return Err("This isn't a FileZilla site list".into());
+    }
+    let child_text = |node: roxmltree::Node, name: &str| -> Option<String> {
+        node.children()
+            .find(|c| c.has_tag_name(name))
+            .and_then(|c| c.text())
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+    };
+    // A node's own text (not its children's): a folder's name, and a site's
+    // in older lists that have no <Name>.
+    let own_text = |node: roxmltree::Node| -> String {
+        node.children().filter(|c| c.is_text()).filter_map(|c| c.text()).collect::<String>().trim().to_string()
+    };
+    let mut out: Vec<ImportedHost> = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    for site in root.descendants().filter(|n| n.has_tag_name("Server")) {
+        let Some(host) = child_text(site, "Host") else { continue };
+        if host.chars().any(|c| c.is_whitespace() || c.is_control()) || host.len() > 253 {
+            continue;
+        }
+        let kind = child_text(site, "Protocol").and_then(|p| p.parse::<i32>().ok()).unwrap_or(0);
+        let (protocol, usual_port) = match kind {
+            0 | 4 => (Some("ftps"), ftp::DEFAULT_PORT),
+            3 => (Some("ftps-implicit"), ftp::IMPLICIT_PORT),
+            6 => (Some("ftp"), ftp::DEFAULT_PORT),
+            1 => (None, 22),
+            _ => continue,
+        };
+        let port = child_text(site, "Port").and_then(|p| p.parse::<u16>().ok()).filter(|p| *p > 0).unwrap_or(usual_port);
+        // 0 anonymous, 1 normal, 2 ask, 3 interactive, 4 account, 5 key file.
+        let logon = child_text(site, "Logontype").and_then(|l| l.parse::<i32>().ok()).unwrap_or(1);
+        let user = if logon == 0 { String::new() } else { child_text(site, "User").unwrap_or_default() };
+        if user.contains(['\r', '\n', '\0']) {
+            continue;
+        }
+        let password = if matches!(logon, 1 | 4) {
+            site.children().find(|c| c.has_tag_name("Pass")).and_then(|p| {
+                let raw = p.text()?.trim();
+                match p.attribute("encoding") {
+                    Some("base64") => base64::engine::general_purpose::STANDARD
+                        .decode(raw)
+                        .ok()
+                        .and_then(|b| String::from_utf8(b).ok()),
+                    // Lists from before FileZilla 3.26 keep it as it is.
+                    None => Some(raw.to_string()),
+                    // "crypt": FileZilla's master password protects it.
+                    Some(_) => None,
+                }
+            })
+        } else {
+            None
+        }
+        .filter(|p| !p.is_empty() && !p.contains(['\r', '\n', '\0']));
+        let identity_file = if kind == 1 && logon == 5 { child_text(site, "Keyfile") } else { None };
+        let own = child_text(site, "Name").unwrap_or_else(|| own_text(site));
+        let own = if own.is_empty() { host.clone() } else { own };
+        let mut folders: Vec<String> = site
+            .ancestors()
+            .skip(1)
+            .filter(|a| a.has_tag_name("Folder"))
+            .map(own_text)
+            .filter(|f| !f.is_empty())
+            .collect();
+        folders.reverse();
+        folders.push(own);
+        let base = folders.join(" / ");
+        let mut name = base.clone();
+        let mut n = 2;
+        while !names.insert(name.clone()) {
+            name = format!("{base} ({n})");
+            n += 1;
+        }
+        out.push(ImportedHost {
+            host_alias: name,
+            hostname: host,
+            port,
+            user,
+            identity_file,
+            protocol: protocol.map(str::to_string),
+            password,
+            ..Default::default()
+        });
+    }
+    if out.is_empty() {
+        return Err("The site list has no FTP or SFTP sites to import.".into());
+    }
+    Ok(out)
+}
+
+/// FileZilla's own site list on this computer, read where FileZilla keeps it:
+/// %APPDATA%\FileZilla on Windows, ~/.config/filezilla elsewhere (and the
+/// older ~/.filezilla). The page offers it beside ~/.ssh/config. A lab build
+/// with `SUBMARINE_LAB_HOME` reads only below that folder, as for
+/// ~/.ssh/config (ssh_config::home_dir), never the tester's own list.
+#[tauri::command]
+fn read_filezilla_sites() -> Result<Vec<ImportedHost>, String> {
+    let lab = cfg!(debug_assertions) && std::env::var("SUBMARINE_LAB_HOME").is_ok_and(|h| !h.is_empty());
+    let mut places: Vec<std::path::PathBuf> = Vec::new();
+    #[cfg(windows)]
+    if let (false, Some(appdata)) = (lab, std::env::var_os("APPDATA")) {
+        places.push(std::path::PathBuf::from(appdata).join("FileZilla").join("sitemanager.xml"));
+    }
+    if let (false, Some(config)) = (lab, std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty())) {
+        places.push(std::path::PathBuf::from(config).join("filezilla").join("sitemanager.xml"));
+    }
+    if let Some(home) = crate::ssh_config::home_dir().map(std::path::PathBuf::from) {
+        places.push(home.join(".config").join("filezilla").join("sitemanager.xml"));
+        places.push(home.join(".filezilla").join("sitemanager.xml"));
+    }
+    for place in places {
+        let Ok(meta) = std::fs::metadata(&place) else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        if meta.len() > FILEZILLA_MAX as u64 {
+            return Err("FileZilla's site list is too big to read".into());
+        }
+        let text = std::fs::read_to_string(&place).map_err(|e| format!("FileZilla's site list can't be read: {e}"))?;
+        return parse_filezilla_sites(&text);
+    }
+    Err("No FileZilla site list on this computer. In FileZilla, File → Export saves one; paste it under Paste.".into())
+}
+
 #[cfg(test)]
 mod client_import_tests {
     use super::parse_client_import;
+
+    /// FileZilla's site list: the kinds it has, passwords as FileZilla keeps
+    /// them, folders in the names, what is left out.
+    #[test]
+    fn filezilla_site_lists() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<FileZilla3 version="3.69.0" platform="windows">
+  <Servers>
+    <Server>
+      <Host>ftp.example.com</Host><Port>21</Port><Protocol>0</Protocol><Type>0</Type>
+      <User>me@example.com</User><Pass encoding="base64">czNjcjN0</Pass><Logontype>1</Logontype>
+      <Name>Web host</Name>
+    </Server>
+    <Folder expanded="1">Clients
+      <Folder>Acme
+        <Server>
+          <Host>files.acme.test</Host><Port>990</Port><Protocol>3</Protocol>
+          <User>acme</User><Pass encoding="crypt" pubkey="x">abc</Pass><Logontype>1</Logontype>
+          <Name>Files</Name>
+        </Server>
+      </Folder>
+      <Server>
+        <Host>10.0.0.5</Host><Protocol>6</Protocol><Logontype>0</Logontype><Name>Old box</Name>
+      </Server>
+      <Server>
+        <Host>sftp.acme.test</Host><Port>2222</Port><Protocol>1</Protocol>
+        <User>deploy</User><Logontype>5</Logontype><Keyfile>C:\keys\deploy.ppk</Keyfile>
+        <Name>Web host</Name>
+      </Server>
+      <Server><Host>bucket</Host><Protocol>7</Protocol><Name>S3</Name></Server>
+      <Server><Host>ask.example</Host><Protocol>4</Protocol><User>u</User><Pass encoding="base64">eA==</Pass><Logontype>2</Logontype>Legacy name</Server>
+    </Folder>
+  </Servers>
+</FileZilla3>"#;
+        let hosts = parse_client_import(xml.to_string()).unwrap();
+        let by = |n: &str| hosts.iter().find(|h| h.host_alias == n).unwrap_or_else(|| panic!("{n} missing: {:?}", hosts.iter().map(|h| &h.host_alias).collect::<Vec<_>>()));
+        assert_eq!(hosts.len(), 5, "S3 is left out");
+        let web = by("Web host");
+        assert_eq!((web.protocol.as_deref(), web.port, web.user.as_str(), web.password.as_deref()), (Some("ftps"), 21, "me@example.com", Some("s3cr3t")));
+        let files = by("Clients / Acme / Files");
+        assert_eq!((files.protocol.as_deref(), files.port, files.password.as_deref()), (Some("ftps-implicit"), 990, None));
+        let old = by("Clients / Old box");
+        assert_eq!((old.protocol.as_deref(), old.user.as_str(), old.port), (Some("ftp"), "", 21));
+        let sftp = by("Clients / Web host");
+        assert_eq!((sftp.protocol.as_deref(), sftp.port, sftp.identity_file.as_deref()), (None, 2222, Some("C:\\keys\\deploy.ppk")));
+        // "Ask for password": the user, not the password; a name in the old place.
+        let ask = by("Clients / Legacy name");
+        assert_eq!((ask.protocol.as_deref(), ask.user.as_str(), ask.password.as_deref()), (Some("ftps"), "u", None));
+    }
+
+    #[test]
+    fn filezilla_lists_with_tricks_are_refused_or_cleaned() {
+        // No DTD, so no entity can grow the list or read a file.
+        let dtd = r#"<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]><FileZilla3><Servers><Server><Host>&a;</Host></Server></Servers></FileZilla3>"#;
+        assert!(parse_client_import(dtd.to_string()).is_err());
+        // A host with a space and a user with a line break are left out.
+        let odd = "<FileZilla3><Servers><Server><Host>a b</Host></Server><Server><Host>ok.test</Host><User>x&#10;DELE y</User></Server></Servers></FileZilla3>";
+        assert!(parse_client_import(odd.to_string()).is_err());
+        assert!(parse_client_import("<FileZilla3><Servers/></FileZilla3>".to_string()).is_err());
+    }
 
     /// Lines as MobaXterm writes them: a blank before the first `#`, the
     /// icon, the `%`-separated settings, then the terminal settings.
@@ -25851,6 +26115,7 @@ pub fn run() {
             android_quick_dirs, android_default_local_dir,
             parse_ssh_config,
             parse_client_import,
+            read_filezilla_sites,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner, sftp_stat,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_batch_limits, sftp_open_remote_file,

@@ -5910,6 +5910,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rfd",
+ "roxmltree",
  "rusqlite",
  "russh",
  "russh-sftp",
