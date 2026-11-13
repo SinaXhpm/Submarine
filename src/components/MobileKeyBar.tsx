@@ -14,9 +14,14 @@
 // TerminalView (which owns the xterm `onData` callback). This component
 // only renders state + forwards events.
 
-import { useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { ChevronUp } from "lucide-react";
 import { useT } from "../i18n";
+
+// A held arrow repeats as a held key on a keyboard does (#324): once when
+// pressed, then every HOLD_EVERY ms from HOLD_DELAY on, until the finger lifts.
+const HOLD_DELAY = 400;
+const HOLD_EVERY = 60;
 
 export type ModKey = "ctrl" | "alt" | "shift";
 export type ModState = "off" | "armed" | "locked";
@@ -56,7 +61,44 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
   // A modifier that's on stays in sight, so closing the row can't hide it.
   const showSecondRow = wantsSecondRow || modifiers.alt !== "off" || modifiers.shift !== "off";
 
-  const ModBtn = ({ m, label }: { m: ModKey; label: string }) => {
+  // The key being held, repeating. The lift is heard on the window, wherever
+  // the finger is by then; leaving the app or the page ends it too.
+  const sendKey = useRef(onSpecialKey);
+  sendKey.current = onSpecialKey;
+  const holdTimer = useRef<number | null>(null);
+  const stopHold = useCallback(() => {
+    if (holdTimer.current !== null) {
+      window.clearTimeout(holdTimer.current);
+      holdTimer.current = null;
+    }
+  }, []);
+  useEffect(() => {
+    window.addEventListener("pointerup", stopHold);
+    window.addEventListener("pointercancel", stopHold);
+    window.addEventListener("blur", stopHold);
+    document.addEventListener("visibilitychange", stopHold);
+    return () => {
+      stopHold();
+      window.removeEventListener("pointerup", stopHold);
+      window.removeEventListener("pointercancel", stopHold);
+      window.removeEventListener("blur", stopHold);
+      document.removeEventListener("visibilitychange", stopHold);
+    };
+  }, [stopHold]);
+  const startHold = (key: SpecialKey) => {
+    stopHold();
+    sendKey.current(key);
+    const again = () => {
+      sendKey.current(key);
+      holdTimer.current = window.setTimeout(again, HOLD_EVERY);
+    };
+    holdTimer.current = window.setTimeout(again, HOLD_DELAY);
+  };
+
+  // Render functions, not components: a component made anew on each render
+  // would be a new kind of element each time, and React would replace the
+  // key under the finger while it's held.
+  const modBtn = (m: ModKey, label: string) => {
     const s = modifiers[m];
     const tone =
       s === "locked" ? "bg-amber-500/25 text-amber-200 border-amber-500/50 ring-1 ring-amber-300/40 shadow-inner shadow-amber-500/20"
@@ -81,17 +123,23 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
   };
 
   // `symbol`: a one-glyph key (arrow or symbol), with a larger glyph.
-  const KeyBtn = ({ label, onClick, title, symbol }: { label: string; onClick: () => void; title?: string; symbol?: boolean }) => (
+  // `held`: an arrow, which repeats while held. It goes when pressed, not
+  // when the finger lifts as a click does, so the click after a press sends
+  // nothing more; one from the keyboard (detail 0) still sends. A long press
+  // brings up no menu and selects nothing.
+  const keyBtn = ({ label, onClick, title, symbol, held }: { label: string; onClick: () => void; title?: string; symbol?: boolean; held?: SpecialKey }) => (
     <button
       type="button"
-      onClick={onClick}
+      onClick={held ? (e) => { if (e.detail === 0) onClick(); } : onClick}
+      onPointerDown={held ? (e) => { if (e.button === 0) startHold(held); } : undefined}
+      onContextMenu={held ? (e) => e.preventDefault() : undefined}
       onMouseDown={(e) => e.preventDefault()}
       onTouchStart={(e) => e.preventDefault()}
       title={title}
       aria-label={title}
       className={`flex-1 min-w-0 h-9 rounded-md font-bold border border-transparent bg-white/[0.05] text-zinc-300 hover:bg-white/10 active:bg-white/15 transition-colors ${
         symbol ? "text-[14px]" : "text-[clamp(9px,2.9vw,10.5px)] uppercase"
-      }`}
+      }${held ? " touch-none select-none" : ""}`}
     >
       {label}
     </button>
@@ -115,22 +163,22 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
       {/* Above the main row, so that row doesn't move under the thumb. */}
       {showSecondRow && (
         <div className="flex gap-1">
-          <ModBtn m="alt"   label="Alt"   />
-          <ModBtn m="shift" label="Shift" />
-          <KeyBtn symbol label="|" onClick={() => onSpecialKey("|")} title={t("Pipe (|)")} />
-          <KeyBtn symbol label="~" onClick={() => onSpecialKey("~")} title={t("Tilde (~)")} />
-          <KeyBtn symbol label="/" onClick={() => onSpecialKey("/")} title={t("Slash (/)")} />
-          <KeyBtn symbol label="-" onClick={() => onSpecialKey("-")} title={t("Dash (-)")} />
+          {modBtn("alt", "Alt")}
+          {modBtn("shift", "Shift")}
+          {keyBtn({ symbol: true, label: "|", onClick: () => onSpecialKey("|"), title: t("Pipe (|)") })}
+          {keyBtn({ symbol: true, label: "~", onClick: () => onSpecialKey("~"), title: t("Tilde (~)") })}
+          {keyBtn({ symbol: true, label: "/", onClick: () => onSpecialKey("/"), title: t("Slash (/)") })}
+          {keyBtn({ symbol: true, label: "-", onClick: () => onSpecialKey("-"), title: t("Dash (-)") })}
         </div>
       )}
       <div className="flex gap-1">
-        <ModBtn m="ctrl" label="Ctrl" />
-        <KeyBtn label="Esc" onClick={() => onSpecialKey("esc")} title={t("Send Escape (0x1b)")} />
-        <KeyBtn label="Tab" onClick={() => onSpecialKey("tab")} title={t("Send Tab (or back-tab when Shift armed)")} />
-        <KeyBtn symbol label="←" onClick={() => onSpecialKey("left")} title={t("Left arrow")} />
-        <KeyBtn symbol label="↑" onClick={() => onSpecialKey("up")} title={t("Up arrow")} />
-        <KeyBtn symbol label="↓" onClick={() => onSpecialKey("down")} title={t("Down arrow")} />
-        <KeyBtn symbol label="→" onClick={() => onSpecialKey("right")} title={t("Right arrow")} />
+        {modBtn("ctrl", "Ctrl")}
+        {keyBtn({ label: "Esc", onClick: () => onSpecialKey("esc"), title: t("Send Escape (0x1b)") })}
+        {keyBtn({ label: "Tab", onClick: () => onSpecialKey("tab"), title: t("Send Tab (or back-tab when Shift armed)") })}
+        {keyBtn({ symbol: true, label: "←", onClick: () => onSpecialKey("left"), title: t("Left arrow"), held: "left" })}
+        {keyBtn({ symbol: true, label: "↑", onClick: () => onSpecialKey("up"), title: t("Up arrow"), held: "up" })}
+        {keyBtn({ symbol: true, label: "↓", onClick: () => onSpecialKey("down"), title: t("Down arrow"), held: "down" })}
+        {keyBtn({ symbol: true, label: "→", onClick: () => onSpecialKey("right"), title: t("Right arrow"), held: "right" })}
         <button
           type="button"
           onClick={() => setSecondRowOpen(!wantsSecondRow)}
