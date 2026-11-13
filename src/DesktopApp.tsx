@@ -6,7 +6,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
-  StickyNote, Search, Square, Copy, ChevronLeft, MoreVertical, Radio,
+  StickyNote, Search, Square, Copy, ChevronLeft, ChevronRight, MoreVertical, Radio,
   ChevronDown, Columns, LayoutGrid, Pin, PinOff, Server
 } from "lucide-react";
 import { useBroadcast } from "./ui/broadcast";
@@ -46,6 +46,8 @@ import ProfilePanel from "./components/ProfilePanel";
 import { SessionView } from "./components/SessionView";
 import RdpSessionView from "./components/RdpSessionView";
 import TelnetSessionView from "./components/TelnetSessionView";
+import FtpSessionView from "./components/FtpSessionView";
+import { isFtp, serverProtocol, type ServerProtocol } from "./util/serverProtocol";
 import VncSessionView from "./components/VncSessionView";
 import MonitoringPanel from "./components/MonitoringPanel";
 import { ErrorBoundary, Guarded } from "./ui/ErrorBoundary";
@@ -80,7 +82,7 @@ const SESSION_STATUS: Record<string, string> = {
 // looking up the DB row.
 // `serverUuid` is the saved server's sync id, which keys this device's own
 // per-server settings (the Shell button, see util/shellSync.ts).
-type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; protocol?: "ssh" | "rdp" | "telnet" | "vnc"; mirrors?: string; runOnConnect?: string; runOnConnectEvery?: boolean; runOnConnectHeld?: boolean; quickAuth?: QuickAuth | null };
+type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; protocol?: ServerProtocol; mirrors?: string; runOnConnect?: string; runOnConnectEvery?: boolean; runOnConnectHeld?: boolean; quickAuth?: QuickAuth | null };
 
 const hexToRgb = (hex: string) => {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -309,8 +311,9 @@ function DesktopApp() {
   const defaultNode = {
     id: null as number | null,
     // "ssh", "rdp" (issue #3: it opens in the system's RDP app), "telnet"
-    // (#179: it opens in a terminal, over telnet) or "vnc" (its screen in the tab).
-    protocol: "ssh" as "ssh" | "rdp" | "telnet" | "vnc",
+    // (#179: it opens in a terminal, over telnet), "vnc" (its screen in the tab)
+    // or one of the FTP kinds (its files in the tab; util/serverProtocol).
+    protocol: "ssh" as ServerProtocol,
     // An RDP server's window and sharing on this device (util/rdpOptions).
     rdpOptions: { ...DEFAULT_RDP_OPTIONS },
     // An SSH server's keepalives and reconnecting on this device (util/sessionKeep).
@@ -356,6 +359,66 @@ function DesktopApp() {
   // that couldn't see a desktop window being shrunk by the user — the new
   // hook updates on every resize so layout swaps follow the actual width.
   const isMobile = useIsNarrow();
+
+  // The tab strip, when its tabs don't fit (#322): which ends have more tabs
+  // past them. Tabs coming, going or changing width are followed as well as
+  // the strip's own width and scroll.
+  const tabStripEl = useRef<HTMLDivElement | null>(null);
+  const tabStripUnwatch = useRef<(() => void) | null>(null);
+  const [tabsPast, setTabsPast] = useState({ left: false, right: false });
+  const measureTabStrip = useCallback(() => {
+    const el = tabStripEl.current;
+    if (!el) return;
+    const left = el.scrollLeft > 1;
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setTabsPast(p => (p.left === left && p.right === right ? p : { left, right }));
+  }, []);
+  // A ref callback, not an effect: the strip only exists once a profile is
+  // open, and is watched from the moment it shows.
+  const tabStripRef = useCallback((el: HTMLDivElement | null) => {
+    tabStripUnwatch.current?.();
+    tabStripUnwatch.current = null;
+    tabStripEl.current = el;
+    if (!el) return;
+    const sizes = new ResizeObserver(measureTabStrip);
+    const watch = () => {
+      sizes.disconnect();
+      sizes.observe(el);
+      for (const tab of Array.from(el.children)) sizes.observe(tab);
+      measureTabStrip();
+    };
+    watch();
+    const tabs = new MutationObserver(watch);
+    tabs.observe(el, { childList: true });
+    el.addEventListener("scroll", measureTabStrip, { passive: true });
+    tabStripUnwatch.current = () => {
+      sizes.disconnect();
+      tabs.disconnect();
+      el.removeEventListener("scroll", measureTabStrip);
+    };
+  }, [measureTabStrip]);
+  const tabScroll = (): ScrollBehavior =>
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  // The tab on screen is kept in view, a new one too: otherwise it opens
+  // past the end of a full strip, where nothing shows it.
+  useEffect(() => {
+    const el = tabStripEl.current;
+    if (!el || !activeView.startsWith("session-")) return;
+    const tab = Array.from(el.children).find((c) => (c as HTMLElement).dataset.tabId === activeView);
+    if (!tab) return;
+    const box = el.getBoundingClientRect();
+    const r = tab.getBoundingClientRect();
+    // Room for the arrow over each end.
+    const room = 32;
+    const left = r.left - box.left + el.scrollLeft;
+    const right = left + r.width;
+    if (left < el.scrollLeft + room) el.scrollTo({ left: Math.max(0, left - room), behavior: tabScroll() });
+    else if (right > el.scrollLeft + el.clientWidth - room) el.scrollTo({ left: right - el.clientWidth + room, behavior: tabScroll() });
+  }, [activeView, sessions.length]);
+  const scrollTabs = (dir: -1 | 1) => {
+    const el = tabStripEl.current;
+    if (el) el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: tabScroll() });
+  };
 
   const [newNode, setNewNode] = useState(defaultNode);
   // A closed panel stays mounted, its fields hidden: what it held goes once it
@@ -1115,7 +1178,7 @@ function DesktopApp() {
         id: sessionId,
         serverId: server.id,
         serverName: server.name,
-        protocol: ["rdp", "telnet", "vnc"].includes(server.protocol) ? server.protocol : "ssh",
+        protocol: serverProtocol(server.protocol),
         // Pass the raw mirrors JSON through to SessionView so the
         // MirrorsPanel can pre-populate "Saved on this node" without
         // another round-trip to the backend.
@@ -1141,6 +1204,24 @@ function DesktopApp() {
   // exactly as before even if the save fails; the persisted node is a
   // best-effort side effect the backend dedups by (host, port, username).
   const openQuickConnect = (auth: QuickAuth) => {
+    // An FTP server is saved first and then opened like any saved one: its tab
+    // connects by the saved server (ftp_connect), with the certificate check
+    // and the password prompt that come with it.
+    if (isFtp(auth.protocol)) {
+      setIsQuickConnectOpen(false);
+      const shown = auth.username ? `${auth.username}@${auth.host}:${auth.port}` : `${auth.host}:${auth.port}`;
+      addLog(t("Quick connect → {name}", { name: shown }), "info");
+      invoke<number>("save_quick_connect_node", { auth })
+        .then(async (id) => {
+          const list = await invoke<any[]>("get_servers");
+          refreshServers();
+          bumpSync();
+          const server = list.find((s) => s.id === id);
+          if (server) await openServer(server);
+        })
+        .catch((e) => addLog(`QUICK_NODE_SAVE_FAILED: ${e}`, "error"));
+      return;
+    }
     const sessionId = `session-quick-${Date.now()}`;
     // No `user@` when the username is left blank (asked at connect, #54).
     const displayName = auth.username
@@ -1182,7 +1263,7 @@ function DesktopApp() {
     }
     setNewNode({
       id: server.id,
-      protocol: ["rdp", "telnet", "vnc"].includes(server.protocol) ? server.protocol : "ssh",
+      protocol: serverProtocol(server.protocol),
       rdpOptions: readRdpOptions(server.uuid),
       sessionKeep: readSessionKeep(server.uuid),
       vncOptions: readVncOptions(server.uuid),
@@ -1579,10 +1660,19 @@ function DesktopApp() {
           clicking a tab selects it instead of dragging the window. On phone
           the horizontal scroll is replaced by the dropdown above; the
           strip below is hidden on mobile. */}
+      <div data-tauri-drag-region className={`${isMobile ? 'hidden' : 'flex'} relative flex-1 min-w-0 h-full`}>
       <div
+        ref={tabStripRef}
         data-tauri-drag-region
-        className={`${isMobile ? 'hidden' : 'flex'} flex-1 gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1`}
-        onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY; }}
+        className="flex flex-1 min-w-0 gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1"
+        onWheel={(e) => {
+          // A mouse wheel scrolls the strip sideways; a touchpad's sideways
+          // swipe does by itself. A wheel that counts in lines or pages
+          // (some Linux set-ups) is turned into pixels.
+          if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+          const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? e.currentTarget.clientWidth : 1;
+          e.currentTarget.scrollLeft += e.deltaY * unit;
+        }}
       >
         {sessions.map(s => {
           const st = sessionStatuses[s.id] ?? "connecting";
@@ -1615,6 +1705,7 @@ function DesktopApp() {
           return (
             <div
               key={s.id}
+              data-tab-id={s.id}
               onClick={(e) => {
                 // Ctrl/⌘-click toggles this tab in the split beside the
                 // currently-active session view — a quick keyboard-free
@@ -1752,6 +1843,30 @@ function DesktopApp() {
             </div>
           );
         })}
+      </div>
+      {/* More tabs past an end: an arrow over that end scrolls to them. */}
+      {tabsPast.left && (
+        <button
+          type="button"
+          onClick={() => scrollTabs(-1)}
+          title={t("Show the tabs to the left")}
+          aria-label={t("Show the tabs to the left")}
+          className="no-drag absolute left-0 bottom-1 h-7 w-8 flex items-center justify-start pl-1 rounded-l-full text-zinc-300 hover:text-white bg-gradient-to-r from-[#0d0d10] via-[#0d0d10]/90 to-transparent"
+        >
+          <ChevronLeft size={15} />
+        </button>
+      )}
+      {tabsPast.right && (
+        <button
+          type="button"
+          onClick={() => scrollTabs(1)}
+          title={t("Show the tabs to the right")}
+          aria-label={t("Show the tabs to the right")}
+          className="no-drag absolute right-0 bottom-1 h-7 w-8 flex items-center justify-end pr-1 rounded-r-full text-zinc-300 hover:text-white bg-gradient-to-l from-[#0d0d10] via-[#0d0d10]/90 to-transparent"
+        >
+          <ChevronRight size={15} />
+        </button>
+      )}
       </div>
       {/* Wall trigger — moved OUT of the scrollable tab strip and next
           to the Broadcast pill so both multi-session affordances live
@@ -2532,6 +2647,17 @@ function DesktopApp() {
                                 shown={isVisible && viewIsSession}
                                 onPromptChange={handlePromptChange}
                               />
+                            ) : isFtp(sess.protocol) ? (
+                              <FtpSessionView
+                                session={sess}
+                                profile={activeProfile}
+                                displayName={tabLabel(sess)}
+                                onClose={getCloseHandler(sess.id)}
+                                onStatusChange={handleSessionStatus}
+                                isActiveView={isFocused}
+                                shown={isVisible && viewIsSession}
+                                onPromptChange={handlePromptChange}
+                              />
                             ) : sess.protocol === "telnet" ? (
                               <TelnetSessionView
                                 session={sess}
@@ -3121,7 +3247,9 @@ function DesktopApp() {
             const isRdp = newNode.protocol === "rdp";
             const isTelnet = newNode.protocol === "telnet";
             const isVnc = newNode.protocol === "vnc";
-            const payload = isRdp || isTelnet || isVnc ? {
+            // An FTP server: the same, its saved password for its login.
+            const ftpServer = isFtp(newNode.protocol);
+            const payload = isRdp || isTelnet || isVnc || ftpServer ? {
               name: newNode.name,
               host: newNode.host,
               port: newNode.port,
@@ -3136,7 +3264,8 @@ function DesktopApp() {
               authType: newNode.authType === "vault" ? "vault" : "custom_pass",
               keyId: null,
               autostart: false,
-              mirrors: [],
+              // An FTP server keeps its mirrors (they work over FTP too).
+              mirrors: ftpServer ? (newNode.mirrors || []) : [],
               color: newNode.color ?? null,
               preservePassword: !!newNode.id && !newNode.password_dirty,
             } : {
@@ -3198,9 +3327,9 @@ function DesktopApp() {
             } catch (e) {
               addLog(`SAVE_JUMP_HOST_FAILED: ${e}`, "error");
             }
-            // SSH, RDP, telnet or VNC: the same separate-write pattern.
+            // SSH, RDP, telnet, VNC or FTP: the same separate-write pattern.
             try {
-              await invoke("set_server_protocol", { id: savedId, value: isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : null, persist: false });
+              await invoke("set_server_protocol", { id: savedId, value: isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : ftpServer ? newNode.protocol : null, persist: false });
             } catch (e) {
               addLog(`SAVE_PROTOCOL_FAILED: ${e}`, "error");
             }

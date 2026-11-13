@@ -15,7 +15,10 @@ use serde_json::json;
 use ssh_key::{private::{Ed25519Keypair, Ed25519PrivateKey}, PrivateKey};
 mod ssh_manager;
 mod tunnel;
+mod dial;
 mod telnet;
+mod ftp;
+mod ftp_sftp;
 mod vnc_client;
 mod screen_flow;
 mod screen_link;
@@ -6531,6 +6534,8 @@ async fn teardown_profile(
     ssh.sftp_shell.lock().await.clear();
     // Wipe every connect-time secret the user typed this profile (issue #30).
     ssh.prompted_secrets.lock().await.clear();
+    // FTP tabs: their connections, and the password each keeps for them.
+    ssh.ftp_sessions.lock().await.clear();
     ssh.connections.lock().await.clear();
     ssh.jump_connections.lock().await.clear();
     ssh.fp_txs.lock().await.clear();
@@ -8260,14 +8265,29 @@ async fn save_quick_connect_node(
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
 
     // A blank username stays blank: the saved node then asks for it at
-    // connect time too (issue #54), exactly like the live session does.
+    // connect time too (issue #54), exactly like the live session does. An FTP
+    // server without one logs in as anonymous.
     let username = auth.username.trim().to_string();
+    // SSH, or one of the FTP kinds (ftp.rs). An FTP server logs in with a
+    // password, never a key.
+    let protocol: Option<&str> = match auth.protocol.as_deref() {
+        None | Some("ssh") => None,
+        Some(p @ ("ftp" | "ftps" | "ftps-implicit")) => Some(p),
+        Some(other) => return Err(format!("[DATABASE] SERVER_PROTOCOL_UNKNOWN: {other}")),
+    };
+    if protocol.is_some() && auth.private_key.as_ref().is_some_and(|k| !k.trim().is_empty()) {
+        return Err("An FTP server logs in with a password, not an SSH key".into());
+    }
+    if protocol.is_some() {
+        ftp::check_arg(&username).map_err(|e| e.message())?;
+    }
 
     // Dedup against existing, non-deleted ROOT nodes with the same identity so
-    // the grid doesn't fill with duplicates on repeated quick connects.
+    // the grid doesn't fill with duplicates on repeated quick connects. The
+    // kind is part of it: an FTP quick connect never reuses an SSH node.
     let existing = conn.query_row(
-        "SELECT id FROM servers WHERE deleted = 0 AND folder_id IS NULL AND host = ?1 AND port = ?2 AND COALESCE(username,'') = ?3 LIMIT 1",
-        rusqlite::params![auth.host, auth.port, username],
+        "SELECT id FROM servers WHERE deleted = 0 AND folder_id IS NULL AND host = ?1 AND port = ?2 AND COALESCE(username,'') = ?3 AND COALESCE(protocol,'ssh') = ?4 LIMIT 1",
+        rusqlite::params![auth.host, auth.port, username, protocol.unwrap_or("ssh")],
         |r| r.get::<_, i64>(0),
     );
     match existing {
@@ -8296,9 +8316,9 @@ async fn save_quick_connect_node(
         };
 
     conn.execute(
-        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color) \
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, 'none', '', 1080, '[]', ?6, ?7, 0, '[]', NULL)",
-        rusqlite::params![name, auth.host, auth.port, username, db_password, auth_type, db_key_id],
+        "INSERT INTO servers (name, host, port, username, password, credential_id, folder_id, proxy_type, proxy_host, proxy_port, tunnels, auth_type, key_id, autostart, mirrors, color, protocol) \
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, 'none', '', 1080, '[]', ?6, ?7, 0, '[]', NULL, ?8)",
+        rusqlite::params![name, auth.host, auth.port, username, db_password, auth_type, db_key_id, protocol],
     ).map_err(|e| format!("[DATABASE] QUICK_NODE_INSERT_FAILED: {}", e))?;
 
     let new_id = conn.last_insert_rowid();
@@ -8642,6 +8662,7 @@ fn non_ssh_kind(protocol: Option<&str>) -> Option<&'static str> {
         Some("rdp") => Some("an RDP"),
         Some("telnet") => Some("a telnet"),
         Some("vnc") => Some("a VNC"),
+        Some("ftp" | "ftps" | "ftps-implicit") => Some("an FTP"),
         _ => None,
     }
 }
@@ -8657,6 +8678,11 @@ async fn set_server_protocol(state: tauri::State<'_, DbState>, id: i32, value: O
         Some("rdp") => Some("rdp"),
         Some("telnet") => Some("telnet"),
         Some("vnc") => Some("vnc"),
+        // FTP: "ftps" (TLS after connecting), "ftps-implicit" (TLS from the
+        // start) or "ftp" (not encrypted); see ftp.rs.
+        Some("ftp") => Some("ftp"),
+        Some("ftps") => Some("ftps"),
+        Some("ftps-implicit") => Some("ftps-implicit"),
         Some(other) => return Err(format!("[DATABASE] SERVER_PROTOCOL_UNKNOWN: {other}")),
     };
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
@@ -8791,6 +8817,9 @@ async fn get_servers(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json:
                 Some("rdp") => "rdp",
                 Some("telnet") => "telnet",
                 Some("vnc") => "vnc",
+                Some("ftp") => "ftp",
+                Some("ftps") => "ftps",
+                Some("ftps-implicit") => "ftps-implicit",
                 _ => "ssh",
             },
         }))
@@ -9717,6 +9746,11 @@ struct QuickAuth {
     private_key: Option<String>,
     #[serde(default)]
     passphrase: Option<String>,
+    /// None (or "ssh") for an SSH server; "ftps", "ftps-implicit" or "ftp" for
+    /// an FTP one, which Quick Connect saves first and then opens like any
+    /// saved server (`ftp_connect`).
+    #[serde(default)]
+    protocol: Option<String>,
 }
 
 /// Largest number of connect-time secret prompts (a missing password or key
@@ -13623,7 +13657,7 @@ fn reach_hop<'a>(
             }
             _ => {
                 ctx.log(&format!("Connecting to jump host {host}:{port}..."), "info");
-                let tcp = match tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect((host.as_str(), port))).await {
+                let tcp = match tokio::time::timeout(Duration::from_secs(10), dial::connect((host.as_str(), port))).await {
                     Ok(Ok(s)) => {
                         let _ = s.set_nodelay(true);
                         if ctx.tcp_keepalive { apply_tcp_keepalive(&s); }
@@ -14213,6 +14247,7 @@ async fn initiate_connection(
                 Some("rdp") => return Err("This is an RDP server: it opens in an RDP app, not a terminal".into()),
                 Some("telnet") => return Err("This is a telnet server: it opens over telnet, not SSH".into()),
                 Some("vnc") => return Err("This is a VNC server: it opens as a screen, not a terminal".into()),
+                Some("ftp" | "ftps" | "ftps-implicit") => return Err("This is an FTP server: it opens as files, not a terminal".into()),
                 _ => {}
             }
 
@@ -14565,7 +14600,7 @@ async fn initiate_connection(
                 let proxy_addr = format!("{}:{}", p_host, p_port);
                 match tokio::time::timeout(
                     Duration::from_secs(10),
-                    tokio_socks::tcp::Socks5Stream::connect(proxy_addr.as_str(), (host.as_str(), port as u16))
+                    dial::socks5(proxy_addr.as_str(), (host.as_str(), port as u16))
                 ).await {
                     Ok(Ok(stream)) => {
                         emit_log("SOCKS5 Proxy tunnel established successfully.", "success");
@@ -14599,7 +14634,7 @@ async fn initiate_connection(
                 let proxy_addr = format!("{}:{}", p_host, p_port);
                 match tokio::time::timeout(
                     Duration::from_secs(10),
-                    tokio::net::TcpStream::connect(proxy_addr)
+                    dial::connect(proxy_addr)
                 ).await {
                     Ok(Ok(mut tcp_stream)) => {
                         // Disable Nagle: SSH is heavily interactive (keystrokes,
@@ -14618,14 +14653,14 @@ async fn initiate_connection(
                         emit_log(&format!("Requesting HTTP CONNECT tunnel to {}:{}...", host, port), "info");
                         match tokio::time::timeout(
                             Duration::from_secs(10),
-                            async_http_proxy::http_connect_tokio(&mut tcp_stream, &host, port as u16)
+                            dial::http_tunnel(&mut tcp_stream, &host, port as u16)
                         ).await {
-                            Ok(Ok(_)) => {
+                            Ok(Ok(())) => {
                                 emit_log("HTTP Proxy tunnel established successfully.", "success");
                                 Ok(Box::new(tcp_stream))
                             }
                             Ok(Err(e)) => {
-                                Err(humanize_network_err(&e.to_string(), &host, port, "HTTP CONNECT tunnel"))
+                                Err(humanize_network_err(&e, &host, port, "HTTP CONNECT tunnel"))
                             }
                             Err(_) => {
                                 Err(format!("HTTP CONNECT tunnel to {}:{} timed out", host, port))
@@ -14644,7 +14679,7 @@ async fn initiate_connection(
                 emit_log(&format!("Connecting directly to {}:{}...", host, port), "info");
                 match tokio::time::timeout(
                     Duration::from_secs(10),
-                    tokio::net::TcpStream::connect((host.as_str(), port as u16))
+                    dial::connect((host.as_str(), port as u16))
                 ).await {
                     Ok(Ok(stream)) => {
                         // See HTTP-proxy branch — SSH wants every packet on the
@@ -16283,6 +16318,22 @@ async fn restart_session_tunnels(
 
 // ----- Mirror commands -----------------------------------------------------
 
+/// A tab's file access for a mirror: an FTP tab's own (shared with the tab),
+/// or the SSH connection the mirror opens its SFTP session on. An FTP server
+/// that gives no exact file times (neither MLSD nor MDTM) isn't mirrored:
+/// "newer" can't be told, and every same-size file would be fetched to be
+/// compared on every start.
+async fn mirror_files(ssh: &SshState, session_id: &str) -> Result<mirror::Files, String> {
+    if let Some(live) = ssh.ftp_sessions.lock().await.get(session_id) {
+        if !live.info.mlsd && !live.info.mdtm {
+            return Err("This FTP server doesn't give exact file times (it has neither MLSD nor MDTM), so a mirror can't tell which copy is newer.".into());
+        }
+        return Ok(mirror::Files::Ftp { sftp: Arc::clone(&live.sftp), exact: live.info.mlsd });
+    }
+    let conns = ssh.connections.lock().await;
+    conns.get(session_id).cloned().map(mirror::Files::Ssh).ok_or_else(|| "Session not connected".to_string())
+}
+
 #[tauri::command]
 async fn mirror_dry_run(
     ssh: tauri::State<'_, SshState>,
@@ -16290,12 +16341,8 @@ async fn mirror_dry_run(
     mut spec: mirror::MirrorSpec,
 ) -> Result<mirror::DryRunReport, String> {
     spec.local = guard_mirror_folder(&spec.local)?;
-    let handle = {
-        let conns = ssh.connections.lock().await;
-        conns.get(&session_id).cloned()
-            .ok_or_else(|| "Session not connected".to_string())?
-    };
-    mirror::dry_run(handle, spec).await
+    let files = mirror_files(&ssh, &session_id).await?;
+    mirror::dry_run(files, spec).await
 }
 
 #[tauri::command]
@@ -16307,12 +16354,8 @@ async fn start_mirror(
     mut spec: mirror::MirrorSpec,
 ) -> Result<String, String> {
     spec.local = guard_mirror_folder(&spec.local)?;
-    let handle = {
-        let conns = ssh.connections.lock().await;
-        conns.get(&session_id).cloned()
-            .ok_or_else(|| "Session not connected".to_string())?
-    };
-    mirror::start(app, session_id, handle, Arc::clone(&mirrors), spec).await
+    let files = mirror_files(&ssh, &session_id).await?;
+    mirror::start(app, session_id, files, Arc::clone(&mirrors), spec).await
 }
 
 #[tauri::command]
@@ -17077,7 +17120,7 @@ async fn rdp_builtin_open(
         type Route = (tokio::io::DuplexStream, std::net::SocketAddr, Vec<russh::client::Handle<ssh_manager::ClientHandler>>, tokio::task::JoinHandle<()>);
         let (stream, client_addr, route, mut carrier): Route = match jump_id {
             None => {
-                let tcp = match tokio::time::timeout(std::time::Duration::from_secs(15), tokio::net::TcpStream::connect((host.as_str(), port))).await {
+                let tcp = match tokio::time::timeout(std::time::Duration::from_secs(15), dial::connect((host.as_str(), port))).await {
                     Ok(Ok(s)) => s,
                     Ok(Err(e)) => {
                         let reason = format!("Couldn't reach {target}: {e}");
@@ -17733,6 +17776,449 @@ async fn telnet_connect(
     Ok(())
 }
 
+/// An FTPS server's certificate in known_hosts: rows of their own kind, as
+/// an RDP server's are.
+const FTPS_CERT_KIND: &str = "ftps-certificate";
+
+/// What known_hosts says about an FTPS certificate (as rdp_cert_verdict).
+fn ftps_cert_verdict(conn: &rusqlite::Connection, host: &str, port: u16, fingerprint: &str) -> (bool, Vec<String>) {
+    let known: Vec<String> = conn
+        .prepare("SELECT fingerprint FROM known_hosts WHERE host=?1 AND port=?2 AND key_type=?3")
+        .and_then(|mut s| {
+            s.query_map(rusqlite::params![host, port, FTPS_CERT_KIND], |r| r.get::<_, String>(0))
+                .map(|rows| rows.flatten().collect())
+        })
+        .unwrap_or_default();
+    let on_file = known.iter().any(|f| f == fingerprint);
+    (on_file, if on_file { Vec::new() } else { known })
+}
+
+fn save_ftps_cert(conn: &rusqlite::Connection, host: &str, port: u16, fingerprint: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM known_hosts WHERE host=?1 AND port=?2 AND key_type=?3",
+        rusqlite::params![host, port, FTPS_CERT_KIND],
+    )?;
+    conn.execute(
+        "INSERT INTO known_hosts (host, port, fingerprint, key_type) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![host, port, fingerprint, FTPS_CERT_KIND],
+    )?;
+    Ok(())
+}
+
+/// An FTPS certificate the public certificate authorities don't vouch for
+/// (self-signed, or for another name): the one on file, else the user's
+/// check in the tab, as for an RDP server. True when it is accepted.
+#[allow(clippy::too_many_arguments)]
+async fn check_ftps_cert(
+    app: &tauri::AppHandle,
+    db: &std::sync::Arc<std::sync::Mutex<Option<rusqlite::Connection>>>,
+    fp_txs: &std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+    attempt: &ssh_manager::ConnectAttempt,
+    session_id: &str,
+    host: &str,
+    port: u16,
+    cert: &[u8],
+) -> bool {
+    use tauri::Emitter;
+    let fingerprint = ftp::fingerprint(cert);
+    let (on_file, prior) = {
+        let guard = db.lock();
+        match guard.as_ref().ok().and_then(|g| g.as_ref()) {
+            Some(conn) => ftps_cert_verdict(conn, host, port, &fingerprint),
+            None => return false,
+        }
+    };
+    let say = |msg: &str, ty: &str| {
+        if attempt.is_current_now() {
+            let _ = app.emit(&format!("session-log-{session_id}"), serde_json::json!({"msg": msg, "type": ty}));
+        }
+    };
+    if on_file {
+        if !attempt.is_current_now() {
+            return false;
+        }
+        say("The server's certificate is the one on file.", "success");
+        return true;
+    }
+    if !attempt.may_prompt().await {
+        return false;
+    }
+    let mismatch = !prior.is_empty();
+    say(
+        if mismatch {
+            "⚠ The FTP server's certificate has CHANGED since the last time. Check it before accepting."
+        } else {
+            "The FTP server's certificate is new. Waiting for you to check it..."
+        },
+        if mismatch { "error" } else { "warn" },
+    );
+    let nonce = format!("ftps-cert-{session_id}-{}", rand::random::<u64>());
+    let (ftx, frx) = tokio::sync::oneshot::channel::<bool>();
+    fp_txs.lock().await.insert(nonce.clone(), ftx);
+    let _ = app.emit(
+        &format!("fingerprint-prompt-{session_id}"),
+        serde_json::json!({
+            "host": host,
+            "keyType": "FTPS certificate",
+            "fingerprint": fingerprint,
+            "mismatch": mismatch,
+            "priorFingerprints": prior,
+            "nonce": nonce,
+        }),
+    );
+    let accepted = matches!(tokio::time::timeout(std::time::Duration::from_secs(90), frx).await, Ok(Ok(true)));
+    fp_txs.lock().await.remove(&nonce);
+    let _ = app.emit(&format!("fingerprint-prompt-dismiss-{session_id}"), serde_json::json!({ "nonce": nonce }));
+    if accepted {
+        if let Ok(guard) = db.lock() {
+            if let Some(conn) = guard.as_ref() {
+                let _ = save_ftps_cert(conn, host, port, &fingerprint);
+            }
+        }
+        say("Certificate accepted and saved.", "success");
+    } else {
+        say("The certificate wasn't accepted.", "error");
+    }
+    accepted
+}
+
+/// Opens an FTP server (plain FTP, or FTPS with TLS after connecting or from
+/// the start) in its tab: straight to it, or through the SSH server it's
+/// saved with (its `jump_host_id`), whose login asks through this tab's
+/// usual prompts. The login is the server's saved one (or its saved
+/// login's); a password that isn't saved is asked for in the tab, with a
+/// "Save password" tick, and asked again (`ask_password`) after the saved one
+/// was refused. No login name: anonymous. Under FTPS the certificate is
+/// checked before anything secret goes: valid for the host by the public
+/// certificate authorities, or pinned like an RDP server's.
+///
+/// Once logged in, the tab's files work through `get_sftp_session` as an SSH
+/// server's do (ftp_sftp.rs). The tab hears `connection-success-{id}` (address,
+/// via, security, tls, home) or `connection-failed-{id}` (reason, and `auth`
+/// when the server refused the login), and later `session-disconnected-{id}`
+/// when the server can't be reached any more.
+#[tauri::command]
+async fn ftp_connect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+    db_state: tauri::State<'_, DbState>,
+    session_id: String,
+    server_id: i32,
+    use_ssh_agent: Option<bool>,
+    ask_password: Option<bool>,
+) -> Result<(), String> {
+    use std::sync::Arc;
+    use tauri::Emitter;
+
+    // A new attempt replaces the tab's last one, and its connections: they are
+    // waited for below, before any new one (see ftp_sftp::Gauge).
+    let earlier = state.ftp_sessions.lock().await.remove(&session_id);
+    let generation = {
+        let mut g = state.session_generation.lock().await;
+        let next = g.get(&session_id).copied().unwrap_or(0).wrapping_add(1);
+        g.insert(session_id.clone(), next);
+        next
+    };
+    let attempt = ssh_manager::ConnectAttempt::new(Arc::clone(&state.session_generation), session_id.clone(), generation);
+
+    let (name, host, port, user, password, protocol, jump_id, jump_name, proxy) = {
+        let guard = db_state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+        let conn = guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+        conn.query_row(
+            "SELECT s.name, s.host, s.port,
+                    CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault' THEN c.username ELSE s.username END,
+                    CASE WHEN COALESCE(s.auth_type, 'vault') = 'vault' THEN c.password ELSE s.password END,
+                    s.protocol, s.jump_host_id, j.name, s.proxy_type, s.proxy_host, s.proxy_port
+             FROM servers s
+             LEFT JOIN credentials c ON s.credential_id = c.id
+             LEFT JOIN servers j ON j.id = s.jump_host_id
+             WHERE s.id = ?1",
+            [server_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    zeroize::Zeroizing::new(r.get::<_, Option<String>>(4)?.unwrap_or_default()),
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<i32>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                    (r.get::<_, Option<String>>(8)?, r.get::<_, Option<String>>(9)?, r.get::<_, Option<i64>>(10)?),
+                ))
+            },
+        )
+        .map_err(|_| "Server not found".to_string())?
+    };
+    let security = ftp::Security::of_protocol(protocol.as_deref()).ok_or_else(|| format!("{name} isn't an FTP server"))?;
+    // Through an SSH server, the proxy isn't used (as for an SSH server's own
+    // jump host).
+    let proxy = if jump_id.is_some() { None } else { ftp::Proxy::of_row(proxy.0.as_deref(), proxy.1.as_deref(), proxy.2)? };
+    let host = host.trim().to_string();
+    telnet::check_host(&host)?;
+    let port = u16::try_from(port).ok().filter(|p| *p > 0).unwrap_or_else(|| security.default_port());
+    let user = user.trim().to_string();
+    ftp::check_arg(&user).map_err(|e| e.message())?;
+
+    let fp_txs = Arc::clone(&state.fp_txs);
+    let kbi_txs = Arc::clone(&state.kbi_txs);
+    let cache = Arc::clone(&state.prompted_secrets);
+    let sessions = Arc::clone(&state.ftp_sessions);
+    let db = Arc::clone(&db_state.conn);
+    let use_agent = use_ssh_agent.unwrap_or(true);
+    tauri::async_runtime::spawn(async move {
+        let log = |msg: &str, ty: &str| {
+            if attempt.is_current_now() {
+                let _ = app.emit(&format!("session-log-{session_id}"), serde_json::json!({"msg": msg, "type": ty}));
+            }
+        };
+        let fail = |reason: String, auth: bool| {
+            let (app, attempt, sid) = (app.clone(), attempt.clone(), session_id.clone());
+            async move {
+                emit_connection_failed(&app, &attempt, &sid, serde_json::json!({"reason": reason, "auth": auth})).await;
+            }
+        };
+        let target = telnet::address(&host, port);
+        let how = match security {
+            ftp::Security::Plain => "plain FTP, not encrypted",
+            ftp::Security::Explicit => "FTPS, TLS after connecting",
+            ftp::Security::Implicit => "FTPS, TLS from the start",
+        };
+        log(&format!("Opening the FTP server {target} ({how})..."), "info");
+        if let Some(earlier) = earlier {
+            let gauge = std::sync::Arc::clone(&earlier.gauge);
+            drop(earlier);
+            if gauge.open() > 0 && !gauge.closed(std::time::Duration::from_secs(5)).await {
+                log("The tab's earlier connections are still closing; trying anyway.", "info");
+            }
+        }
+        if !security.encrypted() {
+            log("Plain FTP isn't encrypted: the password and the files cross the network as they are.", "warning");
+        }
+
+        // Who logs in. No login name: anonymous, with the customary password
+        // unless one is saved.
+        let anonymous = user.is_empty();
+        let user = if anonymous { "anonymous".to_string() } else { user };
+        let mut save_after_login: Option<zeroize::Zeroizing<String>> = None;
+        let save_target = if server_id > 0 { SaveTarget::for_server(&app, server_id) } else { None };
+        let password = if anonymous {
+            log("No login name saved: logging in as anonymous.", "info");
+            if password.is_empty() { zeroize::Zeroizing::new("anonymous@".to_string()) } else { password }
+        } else if password.is_empty() || ask_password.unwrap_or(false) {
+            let nonce = format!("ftp-{session_id}-{generation}");
+            let (ptx, prx) = tokio::sync::oneshot::channel::<Option<Vec<String>>>();
+            kbi_txs.lock().await.insert(nonce.clone(), ptx);
+            let instructions = if password.is_empty() { "" } else { "The password was rejected. Please try again." };
+            let mut payload = serde_json::json!({ "nonce": nonce, "name": "", "instructions": instructions, "prompts": [{ "prompt": format!("Password for {user} on {target}"), "echo": false }] });
+            if let Some(to) = save_target {
+                payload["save"] = to.offer(&app);
+            }
+            let _ = app.emit(&format!("kbi-prompt-{session_id}"), payload);
+            let answer = tokio::time::timeout(std::time::Duration::from_secs(120), prx).await;
+            kbi_txs.lock().await.remove(&nonce);
+            let _ = app.emit(&format!("kbi-prompt-dismiss-{session_id}"), serde_json::json!({ "nonce": nonce }));
+            let save = take_save_choice(&app, &nonce).await;
+            match answer {
+                Ok(Ok(Some(a))) if !a.is_empty() => {
+                    let mut a = zeroize::Zeroizing::new(a);
+                    let typed = zeroize::Zeroizing::new(std::mem::take(&mut a[0]));
+                    if save {
+                        save_after_login = Some(typed.clone());
+                    }
+                    typed
+                }
+                _ => {
+                    log("No password given.", "error");
+                    fail("No password given".into(), false).await;
+                    return;
+                }
+            }
+        } else {
+            password
+        };
+
+        // The way there: straight, through a proxy, or channels through the
+        // SSH server.
+        let (dial, via): (ftp::Dial, Option<String>) = match jump_id {
+            None => match proxy {
+                None => (ftp::dial_direct(&host), None),
+                Some(p) => {
+                    let through = p.describe();
+                    log(&format!("Going through {through}..."), "info");
+                    (ftp::dial_proxy(p, &host), Some(through))
+                }
+            },
+            Some(jid) => {
+                let via_name = jump_name.clone().unwrap_or_else(|| format!("server {jid}"));
+                log(&format!("Going through the SSH server {via_name}..."), "info");
+                let auth_failed = std::sync::atomic::AtomicBool::new(false);
+                let network_failed = std::sync::atomic::AtomicBool::new(false);
+                let ctx = HopCtx {
+                    app: &app,
+                    db: &db,
+                    fp_txs: &fp_txs,
+                    kbi_txs: &kbi_txs,
+                    cache: &cache,
+                    allow_prompt: true,
+                    auth_failed: &auth_failed,
+                    network_failed: &network_failed,
+                    tcp_keepalive: true,
+                    attempt: &attempt,
+                    session_id: &session_id,
+                    use_agent,
+                };
+                match connect_jump_host(&ctx, jid).await {
+                    Ok(chain) => (ftp::dial_through(Arc::new(chain), &host), Some(via_name)),
+                    Err(e) => {
+                        let reason = format!("The SSH server {via_name}: {e}");
+                        log(&reason, "error");
+                        fail(reason, false).await;
+                        return;
+                    }
+                }
+            }
+        };
+
+        let tls = if security.encrypted() {
+            match ftp::Tls::new(&host) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    log(&e, "error");
+                    fail(e, false).await;
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        // A server that has too many connections from here answers 421 at
+        // once. Often those are this tab's own from before (a Reconnect), still
+        // closing: a few more tries, a moment apart.
+        let mut tries = 0;
+        let opened = loop {
+            match ftp::Control::open(Arc::clone(&dial), port, security, tls.clone()).await {
+                Ok(o) => break o,
+                Err(e) if e.code() == Some(421) && tries < 4 && attempt.is_current_now() => {
+                    tries += 1;
+                    log(&format!("{} Trying again in a moment...", e.message()), "warn");
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                }
+                Err(e) => {
+                    let reason = e.message();
+                    log(&reason, "error");
+                    fail(reason, false).await;
+                    return;
+                }
+            }
+        };
+        log(&format!("The server says: {}", opened.greeting), "info");
+
+        // The certificate, before anything secret goes.
+        let mut ca_valid = false;
+        let mut cert: Option<Vec<u8>> = None;
+        let mut tls_version: Option<String> = None;
+        if let (Some(peer), Some(t)) = (&opened.peer, &tls) {
+            let Some(der) = peer.cert() else {
+                log("The server sent no certificate.", "error");
+                fail("The server sent no certificate".into(), false).await;
+                return;
+            };
+            match t.ca_check(&peer.chain) {
+                Ok(()) => {
+                    ca_valid = true;
+                    log(&format!("{}: the certificate is valid for {host}.", peer.version), "success");
+                }
+                Err(why) => {
+                    log(&format!("{}: the certificate isn't vouched for by a public certificate authority ({why}).", peer.version), "info");
+                    if !check_ftps_cert(&app, &db, &fp_txs, &attempt, &session_id, &host, port, der).await {
+                        fail("The certificate wasn't accepted".into(), false).await;
+                        return;
+                    }
+                }
+            }
+            cert = Some(der.to_vec());
+            tls_version = Some(peer.version.clone());
+        }
+        if !attempt.is_current().await {
+            return;
+        }
+
+        let mut control = opened.control;
+        if let Err(e) = control.login(&user, &password).await {
+            let reason = match e.code() {
+                Some(530) => format!("The server refused the login: {}", e.message()),
+                _ => e.message(),
+            };
+            log(&reason, "error");
+            // The tab asks for the password again; never for anonymous, which isn't asked.
+            fail(reason, e.code() == Some(530) && !anonymous).await;
+            return;
+        }
+        log(&format!("Logged in as {user}."), "success");
+        if let (Some(typed), Some(to)) = (save_after_login, save_target) {
+            match save_prompted_password(&app, to, typed.as_str()).await {
+                Ok(to) => log(&format!("Password saved to {to}."), "success"),
+                Err(e) => log(&format!("The password wasn't saved: {e}"), "error"),
+            }
+        }
+
+        let info = ftp_sftp::Info {
+            security: security.name(),
+            tls: tls_version,
+            home: control.home.clone(),
+            mlsd: control.features.mlst,
+            mdtm: control.features.mdtm,
+        };
+        let link = ftp_sftp::Link { dial, port, security, tls, cert, ca_valid, user, password };
+        // No connection can be made any more: the tab hears it once.
+        let lost: Box<dyn Fn(String) + Send + Sync> = {
+            let (app, sid, sessions) = (app.clone(), session_id.clone(), Arc::clone(&sessions));
+            Box::new(move |why: String| {
+                let (app, sid, sessions) = (app.clone(), sid.clone(), Arc::clone(&sessions));
+                tauri::async_runtime::spawn(async move {
+                    let mut map = sessions.lock().await;
+                    if map.get(&sid).is_some_and(|l| l.generation == generation) {
+                        map.remove(&sid);
+                        drop(map);
+                        let _ = app.emit(
+                            &format!("session-disconnected-{sid}"),
+                            serde_json::json!({"reason": format!("The FTP server can't be reached: {why}")}),
+                        );
+                    }
+                });
+            })
+        };
+        let (sftp, limit, gauge) = match ftp_sftp::start(link, control, lost).await {
+            Ok(s) => s,
+            Err(e) => {
+                log(&e, "error");
+                fail(e, false).await;
+                return;
+            }
+        };
+        {
+            // Checked under the map's lock: a Disconnect that came meanwhile
+            // has moved the generation on, or waits for this lock and then
+            // removes what goes in here.
+            let mut map = sessions.lock().await;
+            if !attempt.is_current().await {
+                return;
+            }
+            map.insert(session_id.clone(), ftp_sftp::Live { generation, sftp: Arc::new(sftp), info: info.clone(), limit, gauge });
+        }
+        match &via {
+            Some(v) => log(&format!("Connected to {target} through {v}."), "success"),
+            None => log(&format!("Connected to {target}."), "success"),
+        }
+        let _ = app.emit(
+            &format!("connection-success-{session_id}"),
+            serde_json::json!({"address": target, "via": via, "security": info.security, "tls": info.tls, "home": info.home, "mlsd": info.mlsd}),
+        );
+    });
+    Ok(())
+}
+
 /// A telnet tab's terminal: takes the connection `telnet_connect` left and
 /// runs it (`telnet::run_pump`). Keys, resizes and the saved-password button
 /// reach it through the usual terminal maps, so the terminal view works with
@@ -17875,7 +18361,7 @@ async fn vnc_open(
         let (stream, route, mut carrier, via): Route = match jump_id {
             None => {
                 log("VNC isn't encrypted: the screen and what is typed cross the network as they are. Through an SSH server, it's private up to that server.", "warning");
-                let tcp = match tokio::time::timeout(std::time::Duration::from_secs(15), tokio::net::TcpStream::connect((host.as_str(), port))).await {
+                let tcp = match tokio::time::timeout(std::time::Duration::from_secs(15), dial::connect((host.as_str(), port))).await {
                     Ok(Ok(s)) => s,
                     Ok(Err(e)) => {
                         let reason = format!("Couldn't reach {target}: {e}");
@@ -18219,6 +18705,11 @@ async fn disconnect_session(
     // A telnet tab (#179) whose terminal hadn't opened yet; one that had
     // ends with its terminal below (its view hears `terminal-closed`).
     if telnet_pending.lock().await.remove(&session_id).is_some() {
+        use tauri::Emitter;
+        let _ = app.emit(&format!("session-disconnected-{session_id}"), serde_json::json!({"reason": "Disconnected."}));
+    }
+    // An FTP tab: its connections close with its file access.
+    if state.ftp_sessions.lock().await.remove(&session_id).is_some() {
         use tauri::Emitter;
         let _ = app.emit(&format!("session-disconnected-{session_id}"), serde_json::json!({"reason": "Disconnected."}));
     }
@@ -19942,6 +20433,11 @@ pub async fn get_sftp_session(
     state: &SshState,
     session_id: &str,
 ) -> Result<Arc<russh_sftp::client::SftpSession>, String> {
+    // An FTP tab: its file access runs over FTP (ftp_sftp.rs), with no SSH
+    // connection under it.
+    if let Some(live) = state.ftp_sessions.lock().await.get(session_id) {
+        return Ok(Arc::clone(&live.sftp));
+    }
     // Reuse one SFTP subsystem per SSH session to avoid leaking server-side
     // channels.
     if let Some(s) = state.sftp_sessions.lock().await.get(session_id) {
@@ -20522,6 +21018,19 @@ async fn sftp_download_file(
 /// minutes. A file's data is pipelined already. Over shell commands (a server
 /// without SFTP) the requests wait their turn anyway: one at a time there.
 const DIR_FILES_AT_ONCE: usize = 4;
+
+/// How many files of a selection or a folder move at once on a tab: one at a
+/// time over shell commands; over FTP as the tab's connections allow
+/// (ftp_sftp::Live::transfers_at_once).
+async fn files_at_once(state: &SshState, session_id: &str) -> usize {
+    if state.sftp_shell.lock().await.contains(session_id) {
+        return 1;
+    }
+    if let Some(live) = state.ftp_sessions.lock().await.get(session_id) {
+        return live.transfers_at_once();
+    }
+    DIR_FILES_AT_ONCE
+}
 
 /// A file bigger than this moves alone. Each file keeps up to 16 reads or 32
 /// writes in flight on the one SFTP channel, and each request's time limit runs
@@ -21437,7 +21946,7 @@ async fn sftp_download_dir(
     }
 
     let transferred = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let at_once = if over_shell { 1 } else { DIR_FILES_AT_ONCE };
+    let at_once = files_at_once(&state, &session_id).await;
     let jobs = files.iter().map(|(remote_file_path, rel, size)| DirJob {
         alone: *size > DIR_FILE_ALONE_DOWN,
         // The local name: this disk may ignore case.
@@ -21746,7 +22255,7 @@ async fn sftp_upload_dir(
             return Err(e.to_string());
         }
     };
-    let at_once = if state.sftp_shell.lock().await.contains(&session_id) { 1 } else { DIR_FILES_AT_ONCE };
+    let at_once = files_at_once(&state, &session_id).await;
 
     // Phase 2: mkdir the destination folder, then each enumerated subdir, a
     // level at a time (a parent before its children), a few at once.
@@ -21881,7 +22390,7 @@ struct SftpBatchLimits {
 
 #[tauri::command]
 async fn sftp_batch_limits(state: tauri::State<'_, SshState>, session_id: String) -> Result<SftpBatchLimits, String> {
-    let at_once = if state.sftp_shell.lock().await.contains(&session_id) { 1 } else { DIR_FILES_AT_ONCE };
+    let at_once = files_at_once(&state, &session_id).await;
     Ok(SftpBatchLimits { at_once, alone_up: DIR_FILE_ALONE_UP, alone_down: DIR_FILE_ALONE_DOWN })
 }
 
@@ -23006,7 +23515,7 @@ async fn android_default_local_dir(app: tauri::AppHandle) -> Result<String, Stri
 /// via the existing `add_server` command. A host that named an `IdentityFile`
 /// gets that key registered and linked; everything else lands password-less
 /// for the user to finish.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Default)]
 struct ImportedHost {
     /// The alias the user actually types (`ssh <alias>`) — becomes the
     /// server's display name after import.
@@ -23027,6 +23536,15 @@ struct ImportedHost {
     /// Resolved `ProxyJump`. Informational only; live proxy config still
     /// happens in the Server details panel.
     proxy_jump: Option<String>,
+    /// An FTP site's kind ("ftps", "ftps-implicit" or "ftp", see ftp.rs);
+    /// None for an SSH host. Only FileZilla's site list has FTP sites.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol: Option<String>,
+    /// A password the source kept for the site (FileZilla keeps them in
+    /// base64, which is no protection): it goes into the vault with the
+    /// server, after the page asks when the profile is shared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
 }
 
 /// Read the user's OpenSSH client config (default `~/.ssh/config`) and
@@ -23094,6 +23612,7 @@ async fn parse_ssh_config(path: Option<String>) -> Result<Vec<ImportedHost>, Str
                     user: b.user.clone().unwrap_or_default(),
                     identity_file: b.identity_file.clone(),
                     proxy_jump: b.proxy_jump.clone(),
+                    ..Default::default()
                 });
             }
         }
@@ -23227,6 +23746,11 @@ fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
         return parse_mobaxterm_sessions(trimmed);
     }
 
+    // ── FileZilla's site list (sitemanager.xml, or File → Export).
+    if trimmed.starts_with('<') && trimmed.contains("<FileZilla3") {
+        return parse_filezilla_sites(trimmed);
+    }
+
     // ── JSON array — the most permissive path. Two
     //    supported field-name variants (see doc comment). We accept a
     //    generic `serde_json::Value` array rather than a strict struct
@@ -23273,6 +23797,7 @@ fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
                 user,
                 identity_file,
                 proxy_jump,
+                ..Default::default()
             });
         }
         if out.is_empty() {
@@ -23289,7 +23814,7 @@ fn parse_client_import(text: String) -> Result<Vec<ImportedHost>, String> {
         return parse_putty_reg(trimmed);
     }
 
-    Err("Unrecognised format — paste a JSON array, a PuTTY .reg export, or a MobaXterm .mxtsessions block.".into())
+    Err("Unrecognised format — paste a JSON array, a PuTTY .reg export, a MobaXterm .mxtsessions block, or FileZilla's site list.".into())
 }
 
 /// Parse `regedit /e` output of PuTTY's session key. The format is
@@ -23311,6 +23836,7 @@ fn parse_putty_reg(text: &str) -> Result<Vec<ImportedHost>, String> {
                     user,
                     identity_file: None,
                     proxy_jump: None,
+                    ..Default::default()
                 });
             }
         }
@@ -23489,6 +24015,7 @@ fn parse_mobaxterm_sessions(text: &str) -> Result<Vec<ImportedHost>, String> {
             user: user.to_string(),
             identity_file,
             proxy_jump: mobaxterm_jump_hosts(field(8), field(9), field(10)),
+            ..Default::default()
         });
     }
     if out.is_empty() {
@@ -23524,9 +24051,218 @@ fn mobaxterm_jump_hosts(hosts: &str, ports: &str, users: &str) -> Option<String>
     (!hops.is_empty()).then(|| hops.join(","))
 }
 
+/// The most of FileZilla's site list that is read (a list of thousands of
+/// sites is a few hundred KiB).
+const FILEZILLA_MAX: usize = 16 * 1024 * 1024;
+
+/// FileZilla's site list (`sitemanager.xml`, or what File → Export writes)
+/// as hosts. FTP sites become FTP servers with at least the encryption
+/// FileZilla used: its "FTP" (TLS when the server offers it) and "FTPES" are
+/// FTPS with TLS after connecting, required here (no silent fall back to
+/// plain FTP); implicit FTPS stays implicit; only FileZilla's own "plain FTP
+/// (insecure)", chosen there on purpose, is plain. SFTP sites become SSH
+/// servers. Other kinds (S3, WebDAV, cloud storage) are left out.
+///
+/// FileZilla keeps passwords in base64, which protects nothing, unless its
+/// master password encrypts them: those stay behind and are asked when
+/// connecting. A site in folders is named by its folders and its name, so
+/// two of the same name stay apart. The XML may have no DTD (roxmltree's
+/// default), so no entity can grow it or reach outside it.
+fn parse_filezilla_sites(text: &str) -> Result<Vec<ImportedHost>, String> {
+    use base64::Engine as _;
+    if text.len() > FILEZILLA_MAX {
+        return Err("The site list is too big to read".into());
+    }
+    let doc = roxmltree::Document::parse(text).map_err(|e| format!("This isn't a FileZilla site list: {e}"))?;
+    let root = doc.root_element();
+    if !root.has_tag_name("FileZilla3") {
+        return Err("This isn't a FileZilla site list".into());
+    }
+    let child_text = |node: roxmltree::Node, name: &str| -> Option<String> {
+        node.children()
+            .find(|c| c.has_tag_name(name))
+            .and_then(|c| c.text())
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+    };
+    // A node's own text (not its children's): a folder's name, and a site's
+    // in older lists that have no <Name>.
+    let own_text = |node: roxmltree::Node| -> String {
+        node.children().filter(|c| c.is_text()).filter_map(|c| c.text()).collect::<String>().trim().to_string()
+    };
+    let mut out: Vec<ImportedHost> = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    for site in root.descendants().filter(|n| n.has_tag_name("Server")) {
+        let Some(host) = child_text(site, "Host") else { continue };
+        if host.chars().any(|c| c.is_whitespace() || c.is_control()) || host.len() > 253 {
+            continue;
+        }
+        let kind = child_text(site, "Protocol").and_then(|p| p.parse::<i32>().ok()).unwrap_or(0);
+        let (protocol, usual_port) = match kind {
+            0 | 4 => (Some("ftps"), ftp::DEFAULT_PORT),
+            3 => (Some("ftps-implicit"), ftp::IMPLICIT_PORT),
+            6 => (Some("ftp"), ftp::DEFAULT_PORT),
+            1 => (None, 22),
+            _ => continue,
+        };
+        let port = child_text(site, "Port").and_then(|p| p.parse::<u16>().ok()).filter(|p| *p > 0).unwrap_or(usual_port);
+        // 0 anonymous, 1 normal, 2 ask, 3 interactive, 4 account, 5 key file.
+        let logon = child_text(site, "Logontype").and_then(|l| l.parse::<i32>().ok()).unwrap_or(1);
+        let user = if logon == 0 { String::new() } else { child_text(site, "User").unwrap_or_default() };
+        if user.contains(['\r', '\n', '\0']) {
+            continue;
+        }
+        let password = if matches!(logon, 1 | 4) {
+            site.children().find(|c| c.has_tag_name("Pass")).and_then(|p| {
+                let raw = p.text()?.trim();
+                match p.attribute("encoding") {
+                    Some("base64") => base64::engine::general_purpose::STANDARD
+                        .decode(raw)
+                        .ok()
+                        .and_then(|b| String::from_utf8(b).ok()),
+                    // Lists from before FileZilla 3.26 keep it as it is.
+                    None => Some(raw.to_string()),
+                    // "crypt": FileZilla's master password protects it.
+                    Some(_) => None,
+                }
+            })
+        } else {
+            None
+        }
+        .filter(|p| !p.is_empty() && !p.contains(['\r', '\n', '\0']));
+        let identity_file = if kind == 1 && logon == 5 { child_text(site, "Keyfile") } else { None };
+        let own = child_text(site, "Name").unwrap_or_else(|| own_text(site));
+        let own = if own.is_empty() { host.clone() } else { own };
+        let mut folders: Vec<String> = site
+            .ancestors()
+            .skip(1)
+            .filter(|a| a.has_tag_name("Folder"))
+            .map(own_text)
+            .filter(|f| !f.is_empty())
+            .collect();
+        folders.reverse();
+        folders.push(own);
+        let base = folders.join(" / ");
+        let mut name = base.clone();
+        let mut n = 2;
+        while !names.insert(name.clone()) {
+            name = format!("{base} ({n})");
+            n += 1;
+        }
+        out.push(ImportedHost {
+            host_alias: name,
+            hostname: host,
+            port,
+            user,
+            identity_file,
+            protocol: protocol.map(str::to_string),
+            password,
+            ..Default::default()
+        });
+    }
+    if out.is_empty() {
+        return Err("The site list has no FTP or SFTP sites to import.".into());
+    }
+    Ok(out)
+}
+
+/// FileZilla's own site list on this computer, read where FileZilla keeps it:
+/// %APPDATA%\FileZilla on Windows, ~/.config/filezilla elsewhere (and the
+/// older ~/.filezilla). The page offers it beside ~/.ssh/config. A lab build
+/// with `SUBMARINE_LAB_HOME` reads only below that folder, as for
+/// ~/.ssh/config (ssh_config::home_dir), never the tester's own list.
+#[tauri::command]
+fn read_filezilla_sites() -> Result<Vec<ImportedHost>, String> {
+    let lab = cfg!(debug_assertions) && std::env::var("SUBMARINE_LAB_HOME").is_ok_and(|h| !h.is_empty());
+    let mut places: Vec<std::path::PathBuf> = Vec::new();
+    #[cfg(windows)]
+    if let (false, Some(appdata)) = (lab, std::env::var_os("APPDATA")) {
+        places.push(std::path::PathBuf::from(appdata).join("FileZilla").join("sitemanager.xml"));
+    }
+    if let (false, Some(config)) = (lab, std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty())) {
+        places.push(std::path::PathBuf::from(config).join("filezilla").join("sitemanager.xml"));
+    }
+    if let Some(home) = crate::ssh_config::home_dir().map(std::path::PathBuf::from) {
+        places.push(home.join(".config").join("filezilla").join("sitemanager.xml"));
+        places.push(home.join(".filezilla").join("sitemanager.xml"));
+    }
+    for place in places {
+        let Ok(meta) = std::fs::metadata(&place) else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        if meta.len() > FILEZILLA_MAX as u64 {
+            return Err("FileZilla's site list is too big to read".into());
+        }
+        let text = std::fs::read_to_string(&place).map_err(|e| format!("FileZilla's site list can't be read: {e}"))?;
+        return parse_filezilla_sites(&text);
+    }
+    Err("No FileZilla site list on this computer. In FileZilla, File → Export saves one; paste it under Paste.".into())
+}
+
 #[cfg(test)]
 mod client_import_tests {
     use super::parse_client_import;
+
+    /// FileZilla's site list: the kinds it has, passwords as FileZilla keeps
+    /// them, folders in the names, what is left out.
+    #[test]
+    fn filezilla_site_lists() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<FileZilla3 version="3.69.0" platform="windows">
+  <Servers>
+    <Server>
+      <Host>ftp.example.com</Host><Port>21</Port><Protocol>0</Protocol><Type>0</Type>
+      <User>me@example.com</User><Pass encoding="base64">czNjcjN0</Pass><Logontype>1</Logontype>
+      <Name>Web host</Name>
+    </Server>
+    <Folder expanded="1">Clients
+      <Folder>Acme
+        <Server>
+          <Host>files.acme.test</Host><Port>990</Port><Protocol>3</Protocol>
+          <User>acme</User><Pass encoding="crypt" pubkey="x">abc</Pass><Logontype>1</Logontype>
+          <Name>Files</Name>
+        </Server>
+      </Folder>
+      <Server>
+        <Host>10.0.0.5</Host><Protocol>6</Protocol><Logontype>0</Logontype><Name>Old box</Name>
+      </Server>
+      <Server>
+        <Host>sftp.acme.test</Host><Port>2222</Port><Protocol>1</Protocol>
+        <User>deploy</User><Logontype>5</Logontype><Keyfile>C:\keys\deploy.ppk</Keyfile>
+        <Name>Web host</Name>
+      </Server>
+      <Server><Host>bucket</Host><Protocol>7</Protocol><Name>S3</Name></Server>
+      <Server><Host>ask.example</Host><Protocol>4</Protocol><User>u</User><Pass encoding="base64">eA==</Pass><Logontype>2</Logontype>Legacy name</Server>
+    </Folder>
+  </Servers>
+</FileZilla3>"#;
+        let hosts = parse_client_import(xml.to_string()).unwrap();
+        let by = |n: &str| hosts.iter().find(|h| h.host_alias == n).unwrap_or_else(|| panic!("{n} missing: {:?}", hosts.iter().map(|h| &h.host_alias).collect::<Vec<_>>()));
+        assert_eq!(hosts.len(), 5, "S3 is left out");
+        let web = by("Web host");
+        assert_eq!((web.protocol.as_deref(), web.port, web.user.as_str(), web.password.as_deref()), (Some("ftps"), 21, "me@example.com", Some("s3cr3t")));
+        let files = by("Clients / Acme / Files");
+        assert_eq!((files.protocol.as_deref(), files.port, files.password.as_deref()), (Some("ftps-implicit"), 990, None));
+        let old = by("Clients / Old box");
+        assert_eq!((old.protocol.as_deref(), old.user.as_str(), old.port), (Some("ftp"), "", 21));
+        let sftp = by("Clients / Web host");
+        assert_eq!((sftp.protocol.as_deref(), sftp.port, sftp.identity_file.as_deref()), (None, 2222, Some("C:\\keys\\deploy.ppk")));
+        // "Ask for password": the user, not the password; a name in the old place.
+        let ask = by("Clients / Legacy name");
+        assert_eq!((ask.protocol.as_deref(), ask.user.as_str(), ask.password.as_deref()), (Some("ftps"), "u", None));
+    }
+
+    #[test]
+    fn filezilla_lists_with_tricks_are_refused_or_cleaned() {
+        // No DTD, so no entity can grow the list or read a file.
+        let dtd = r#"<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]><FileZilla3><Servers><Server><Host>&a;</Host></Server></Servers></FileZilla3>"#;
+        assert!(parse_client_import(dtd.to_string()).is_err());
+        // A host with a space and a user with a line break are left out.
+        let odd = "<FileZilla3><Servers><Server><Host>a b</Host></Server><Server><Host>ok.test</Host><User>x&#10;DELE y</User></Server></Servers></FileZilla3>";
+        assert!(parse_client_import(odd.to_string()).is_err());
+        assert!(parse_client_import("<FileZilla3><Servers/></FileZilla3>".to_string()).is_err());
+    }
 
     /// Lines as MobaXterm writes them: a blank before the first `#`, the
     /// icon, the `%`-separated settings, then the terminal settings.
@@ -25364,7 +26100,7 @@ pub fn run() {
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
             initiate_connection, verify_fingerprint_response, submit_kbi_response, kbi_save_choice, disconnect_session, set_use_ssh_config,
             initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_resize, rdp_builtin_shown, rdp_builtin_close, rdp_share_drives,
-            telnet_connect, telnet_open_terminal, vnc_open, vnc_input, vnc_resize, vnc_paste, vnc_shown, screen_ack,
+            telnet_connect, telnet_open_terminal, ftp_connect, vnc_open, vnc_input, vnc_resize, vnc_paste, vnc_shown, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
             list_tunnel_rules, remove_tunnel_rule, rename_tunnel_rule,
             open_terminal, local_shell, write_terminal_data, type_saved_password, terminal_drawn, resize_terminal, close_terminal,
@@ -25392,6 +26128,7 @@ pub fn run() {
             android_quick_dirs, android_default_local_dir,
             parse_ssh_config,
             parse_client_import,
+            read_filezilla_sites,
             sftp_list_dir, sftp_create_dir, sftp_remove_file, sftp_remove_dir,
             sftp_rename, sftp_set_permissions, sftp_set_owner, sftp_stat,
             sftp_download_file, sftp_download_dir, sftp_upload_file, sftp_upload_dir, sftp_cancel_transfer, sftp_batch_limits, sftp_open_remote_file,

@@ -417,7 +417,11 @@ jobs:
           cp -R "$APP" dmg-root/
           ln -s /Applications dmg-root/Applications
           DMG="artifacts/Submarine_${VERSION}_universal.dmg"
-          hdiutil create -volname Submarine -srcfolder dmg-root -ov -format UDZO "$DMG"
+          # hdiutil sizes the image from the folder by itself, and for this app
+          # that came out too small ("No space left on device", v0.5.0-beta.1):
+          # it gets the folder's size and a fifth more.
+          SIZE_MB=$(( $(du -sm dmg-root | cut -f1) * 12 / 10 + 20 ))
+          hdiutil create -volname Submarine -srcfolder dmg-root -ov -format UDZO -size "${SIZE_MB}m" "$DMG"
 
           if [ "$SIGNED" = true ]; then
             codesign --force --timestamp --sign "$ID" --keychain "$KC" "$DMG"

@@ -25,8 +25,10 @@ type RawSftpList = {
   via_shell?: boolean;
 };
 
-export function createRemoteProvider(sessionId: string): RemoteFileProvider {
-  return {
+// `ftp`: an FTP server's tab (src-tauri/src/ftp_sftp.rs). FTP can change
+// permissions (SITE CHMOD, where the server has it) but not owners.
+export function createRemoteProvider(sessionId: string, opts: { ftp?: boolean } = {}): RemoteFileProvider {
+  const provider: RemoteFileProvider = {
     id: "remote",
     sessionId,
     label: tk("Remote"),
@@ -46,10 +48,12 @@ export function createRemoteProvider(sessionId: string): RemoteFileProvider {
         path: r.path,
         isDir: r.is_dir,
         size: r.size,
-        permissions: r.permissions,
-        uid: r.uid,
-        gid: r.gid,
-        modified: r.modified,
+        // What the server didn't say comes as null; the panes go by undefined
+        // (an FTP server gives no owners: the column stays empty, not "null").
+        permissions: r.permissions ?? undefined,
+        uid: r.uid ?? undefined,
+        gid: r.gid ?? undefined,
+        modified: r.modified ?? undefined,
         isSymlink: !!r.is_symlink,
         brokenLink: !!r.broken_link,
       }));
@@ -104,4 +108,6 @@ export function createRemoteProvider(sessionId: string): RemoteFileProvider {
       return await invoke<string | null>("sftp_extract", { sessionId, dir, name, folder, jobId });
     },
   };
+  if (opts.ftp) delete provider.chown;
+  return provider;
 }
