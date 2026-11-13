@@ -1369,26 +1369,23 @@ const TerminalView = ({
     // when there's no real selection — so a plain click (which clears the
     // selection) still can't clobber it. The selection end is set by the last
     // mousemove, so it's final by the time we read it on mouseup.
+    //
+    // A drag that a mouse-tracking program takes (vi with mouse=a, mc, htop)
+    // can't copy stale text here: xterm clears its own selection when the
+    // program turns mouse tracking on, and again when it sends the program a
+    // mouse report. No snapshot of the selection at mousedown is kept: xterm
+    // makes a double- or triple-click's word or line in its own mousedown
+    // handler, which runs before this one, so such a snapshot would already
+    // hold the new selection and the release would copy nothing.
     let selectionArmed = false;
-    // Snapshot of the local selection when the drag started. Mouse-tracking
-    // TUIs consume the drag themselves, so xterm creates no local selection
-    // here — without this check, releasing the mouse would re-copy whatever
-    // stale text predated the TUI with a lying toast.
-    let selectionAtDown: string | null = null;
     const onMouseDown = (ev: MouseEvent) => {
       // Assign (not just set-true) so a non-left mousedown re-disarms a flag
       // that got stuck from an earlier drag whose mouseup we never saw.
       selectionArmed = ev.button === 0;
-      selectionAtDown = selectionArmed ? buildSelectedText() : null;
     };
     const onDocMouseUp = (ev: MouseEvent) => {
       if (ev.button !== 0 || !selectionArmed) return;
       selectionArmed = false;
-      const snapshot = selectionAtDown;
-      selectionAtDown = null;
-      // No fresh local selection means the drag produced nothing (consumed
-      // by the app under the cursor) — skip instead of re-copying stale text.
-      if (buildSelectedText() === snapshot) return;
       void copySelectionIfAny();
     };
     // If the window loses focus mid-drag (Alt-Tab, a focus-stealing dialog),
@@ -1397,7 +1394,7 @@ const TerminalView = ({
     // unrelated left-click would then copy this terminal's stale selection and
     // clobber the clipboard. Disarm on blur so only a release we actually see
     // can copy.
-    const onWindowBlur = () => { selectionArmed = false; selectionAtDown = null; };
+    const onWindowBlur = () => { selectionArmed = false; };
     // The clipboard's text for a paste. On Linux it comes from the backend:
     // WebKitGTK refuses the page's own clipboard read (#89), and where the
     // webview reads the clipboard itself it crashes the whole app when the
