@@ -165,6 +165,14 @@ vnc-rs = { path = "vendor/vnc-rs" }
 ironrdp = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31", default-features = false, features = ["core", "pdu", "connector", "session", "graphics", "input", "displaycontrol", "dvc", "svc", "cliprdr", "rdpdr"] }
 ironrdp-tokio = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31", default-features = false }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+# FTPS (ftp.rs): a server certificate valid by the public certificate
+# authorities is taken without asking; any other is pinned the way RDP's is.
+# Mozilla's list, already in the tree through reqwest's rustls-tls.
+webpki-roots = "1"
+# FileZilla's site list (sitemanager.xml), read for the server import. No DTD
+# is allowed (its default), so no entity can grow a list or reach outside it.
+# Already in the tree through fontdb.
+roxmltree = "0.20"
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 
 # ---------------------------------------------------------------------------
