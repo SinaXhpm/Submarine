@@ -22,6 +22,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpStream, ToSocketAddrs};
 use tokio::task::JoinSet;
 
@@ -45,6 +46,39 @@ pub async fn socks5<'t>(
 ) -> Result<tokio_socks::tcp::Socks5Stream<TcpStream>, tokio_socks::Error> {
     let socket = connect(proxy).await?;
     tokio_socks::tcp::Socks5Stream::connect_with_socket(socket, target).await
+}
+
+/// Asks an HTTP proxy, on `io`, for a tunnel to `host:port` (CONNECT) and
+/// reads its answer a byte at a time, up to the blank line. A server that
+/// speaks first (SSH's banner, an FTP greeting) can come in the same packet
+/// as the proxy's "200": a reader with a buffer takes it along and loses it,
+/// and the connect then fails ("dropped mid-handshake").
+pub async fn http_tunnel<S: AsyncRead + AsyncWrite + Unpin>(io: &mut S, host: &str, port: u16) -> Result<(), String> {
+    if !crate::http_connect_host_ok(host) {
+        return Err(format!("{host:?} can't be asked of an HTTP proxy"));
+    }
+    let target = crate::telnet::address(host, port);
+    io.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes()).await.map_err(|e| e.to_string())?;
+    let mut head: Vec<u8> = Vec::with_capacity(128);
+    let mut byte = [0u8; 1];
+    while !(head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n")) {
+        if head.len() >= 8 * 1024 {
+            return Err("the proxy's answer is too long".into());
+        }
+        if io.read(&mut byte).await.map_err(|e| e.to_string())? == 0 {
+            return Err("the proxy closed the connection".into());
+        }
+        head.push(byte[0]);
+    }
+    let text = String::from_utf8_lossy(&head);
+    let first = text.lines().next().unwrap_or_default().trim();
+    let code = first.split_whitespace().nth(1).unwrap_or_default();
+    if first.starts_with("HTTP/1.") && code.len() == 3 && code.starts_with('2') {
+        Ok(())
+    } else {
+        let said: String = first.chars().filter(|c| !c.is_control()).take(120).collect();
+        Err(format!("the proxy refused: {said}"))
+    }
 }
 
 /// The addresses in the system's order, the two families taking turns,
@@ -245,5 +279,62 @@ mod tests {
         assert_eq!(conn.peer_addr().unwrap(), SocketAddr::from(([127, 0, 0, 1], port)));
         let by_text = connect(format!("127.0.0.1:{port}")).await.unwrap();
         assert_eq!(by_text.peer_addr().unwrap().port(), port);
+    }
+    /// A pretend HTTP proxy at the other end of a pipe: reads the CONNECT
+    /// request, then sends `answer` in one write and hangs up. Gives what
+    /// `http_tunnel` made of it, the request, and what was left to read.
+    async fn http_proxy_says(answer: &'static [u8]) -> (Result<(), String>, String, Vec<u8>) {
+        let (mut client, mut proxy) = tokio::io::duplex(4096);
+        let side = tokio::spawn(async move {
+            let mut asked = Vec::new();
+            let mut b = [0u8; 1];
+            while !asked.ends_with(b"\r\n\r\n") {
+                if proxy.read(&mut b).await.unwrap() == 0 {
+                    break;
+                }
+                asked.push(b[0]);
+            }
+            proxy.write_all(answer).await.unwrap();
+            drop(proxy);
+            String::from_utf8(asked).unwrap()
+        });
+        let res = http_tunnel(&mut client, "ssh.example", 22).await;
+        let asked = side.await.unwrap();
+        let mut rest = Vec::new();
+        client.read_to_end(&mut rest).await.unwrap();
+        (res, asked, rest)
+    }
+
+    #[tokio::test]
+    async fn the_banner_that_comes_with_the_proxys_answer_is_kept() {
+        let (res, asked, rest) = http_proxy_says(b"HTTP/1.1 200 Connection established\r\nProxy-Agent: x\r\n\r\nSSH-2.0-OpenSSH_9.9\r\n").await;
+        assert_eq!(res, Ok(()));
+        assert_eq!(asked, "CONNECT ssh.example:22 HTTP/1.1\r\nHost: ssh.example:22\r\n\r\n");
+        assert_eq!(rest, b"SSH-2.0-OpenSSH_9.9\r\n");
+        // A proxy that ends its lines with LF only.
+        let (res, _, rest) = http_proxy_says(b"HTTP/1.0 200 OK\n\nSSH-2.0-x\r\n").await;
+        assert_eq!((res, rest), (Ok(()), b"SSH-2.0-x\r\n".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn an_http_proxy_that_refuses_or_hangs_up_is_told() {
+        let (res, _, _) = http_proxy_says(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
+        assert_eq!(res, Err("the proxy refused: HTTP/1.1 403 Forbidden".into()));
+        let (res, _, _) = http_proxy_says(b"HTTP/1.1 200 OK\r\n").await;
+        assert_eq!(res, Err("the proxy closed the connection".into()));
+        let (res, _, _) = http_proxy_says(b"SSH-2.0-x\r\n\r\n").await;
+        assert!(res.unwrap_err().starts_with("the proxy refused: SSH-2.0-x"));
+        let (mut client, _proxy) = tokio::io::duplex(64);
+        assert!(http_tunnel(&mut client, "a\r\nb", 22).await.unwrap_err().contains("can't be asked of an HTTP proxy"));
+        // An IPv6 address goes in brackets.
+        let (mut client, mut proxy) = tokio::io::duplex(4096);
+        let side = tokio::spawn(async move {
+            let mut asked = vec![0u8; 64];
+            let n = proxy.read(&mut asked).await.unwrap();
+            asked.truncate(n);
+            String::from_utf8(asked).unwrap()
+        });
+        let _ = tokio::time::timeout(Duration::from_millis(200), http_tunnel(&mut client, "2001:db8::1", 22)).await;
+        assert!(side.await.unwrap().starts_with("CONNECT [2001:db8::1]:22 HTTP/1.1\r\n"));
     }
 }

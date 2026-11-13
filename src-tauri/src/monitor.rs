@@ -793,7 +793,7 @@ async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Bo
             }
             tokio::time::timeout(
                 connect_timeout,
-                async_http_proxy::http_connect_tokio(&mut tcp, &auth.host, auth.port),
+                crate::dial::http_tunnel(&mut tcp, &auth.host, auth.port),
             )
             .await
             .map_err(|_| format!("HTTP CONNECT to {}:{} timed out", auth.host, auth.port))?

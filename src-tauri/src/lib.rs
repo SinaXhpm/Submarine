@@ -14619,14 +14619,14 @@ async fn initiate_connection(
                         emit_log(&format!("Requesting HTTP CONNECT tunnel to {}:{}...", host, port), "info");
                         match tokio::time::timeout(
                             Duration::from_secs(10),
-                            async_http_proxy::http_connect_tokio(&mut tcp_stream, &host, port as u16)
+                            dial::http_tunnel(&mut tcp_stream, &host, port as u16)
                         ).await {
-                            Ok(Ok(_)) => {
+                            Ok(Ok(())) => {
                                 emit_log("HTTP Proxy tunnel established successfully.", "success");
                                 Ok(Box::new(tcp_stream))
                             }
                             Ok(Err(e)) => {
-                                Err(humanize_network_err(&e.to_string(), &host, port, "HTTP CONNECT tunnel"))
+                                Err(humanize_network_err(&e, &host, port, "HTTP CONNECT tunnel"))
                             }
                             Err(_) => {
                                 Err(format!("HTTP CONNECT tunnel to {}:{} timed out", host, port))
