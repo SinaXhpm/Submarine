@@ -90,7 +90,6 @@ russh = { version = "0.65", default-features = false, features = ["flate2", "rin
 # key generation / validation code and russh's auth API.
 ssh-key = { version = "=0.7.0-rc.11", features = ["alloc", "encryption", "ed25519", "rsa"] }
 tokio-socks = "0.5"
-async-http-proxy = { version = "1.2", features = ["runtime-tokio"] }
 russh-sftp = "3"
 notify = "8.2"
 # Debounces filesystem events so we don't try to upload a file mid-write.
