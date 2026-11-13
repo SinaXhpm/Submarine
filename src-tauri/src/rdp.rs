@@ -579,7 +579,13 @@ pub fn pick_app(find: impl Fn(&str) -> Option<PathBuf>) -> Result<App, String> {
         .into_iter()
         .find_map(&find)
         .map(App::FreeRdp)
-        .ok_or_else(|| "no RDP app was found: install Remmina (with its RDP plugin) or FreeRDP".into())
+        .ok_or_else(|| {
+            if crate::about::in_flatpak() {
+                "this version runs in a sandbox and can't start an RDP app on your system: in the server's settings, set Open in to Submarine's tab".into()
+            } else {
+                "no RDP app was found: install Remmina (with its RDP plugin) or FreeRDP".into()
+            }
+        })
 }
 
 /// An RDP app, ready to start.

@@ -7,6 +7,8 @@ import {
 } from "lucide-react";
 import { IS_ANDROID, IS_MOBILE } from "../util/platform";
 import { normalizeMirror, serverRowChanged } from "../util/serverJson";
+import { tk, tx, useT } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // One-way local → remote folder mirror panel. Lives next to SFTP / Tunnels /
 // CMDS inside a session. The configured mirror pairs are stored on the node
@@ -73,10 +75,17 @@ interface MirrorsPanelProps {
 
 const LOG_CAP = 200;
 
+// A mirror's state word, as shown; the values are compared where they come in.
+const STATE_LABEL: Record<string, string> = {
+  starting: tk("starting"), scanning: tk("scanning"), "initial-sync": tk("initial-sync"),
+  watching: tk("watching"), error: tk("error"), stopped: tk("stopped"),
+};
+
 // Shared status row used by every mirror card (saved + ad-hoc). Renders the
 // state badge, transfer counters, and an inline progress bar that lights up
 // during the initial-sync transfer phase.
 function MirrorLiveStatus({ live }: { live: MirrorStatus }) {
+  const t = useT();
   const stateBadge =
     live.state === "watching"     ? "bg-emerald-500/15 text-emerald-300" :
     live.state === "initial-sync" ? "bg-indigo-500/15 text-indigo-300"   :
@@ -89,9 +98,9 @@ function MirrorLiveStatus({ live }: { live: MirrorStatus }) {
   return (
     <div className="mt-1 space-y-1">
       <div className="flex items-center gap-3 text-[10px] text-zinc-500 flex-wrap">
-        <span className={`px-1.5 rounded ${stateBadge}`}>{live.state}</span>
+        <span className={`px-1.5 rounded ${stateBadge}`}>{t(STATE_LABEL[live.state] ?? live.state)}</span>
         {live.state === "scanning" && (
-          <span className="text-sky-300">scanned {live.scanned}</span>
+          <span className="text-sky-300">{t("scanned {count}", { count: live.scanned })}</span>
         )}
         {live.state === "initial-sync" && live.transfer_total > 0 && (
           <span className="text-indigo-300">{live.transfer_done}/{live.transfer_total} ({pct}%)</span>
@@ -99,7 +108,7 @@ function MirrorLiveStatus({ live }: { live: MirrorStatus }) {
         <span>↑ {live.uploaded}</span>
         <span>↓ {live.downloaded}</span>
         <span>✗ {live.deleted}</span>
-        {live.queue_depth > 0 && <span className="text-amber-300">queue {live.queue_depth}</span>}
+        {live.queue_depth > 0 && <span className="text-amber-300">{t("queue {count}", { count: live.queue_depth })}</span>}
         {live.error && <span className="text-rose-400 truncate" title={live.error}>· {live.error}</span>}
       </div>
       {live.state === "initial-sync" && live.transfer_total > 0 && (
@@ -112,6 +121,7 @@ function MirrorLiveStatus({ live }: { live: MirrorStatus }) {
 }
 
 const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = false }: MirrorsPanelProps) => {
+  const t = useT();
   const [statuses, setStatuses] = useState<Record<string, MirrorStatus>>({});
   const [logs, setLogs] = useState<MirrorLogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -260,7 +270,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
             return [...without, pending.spec];
           });
         } catch (e: any) {
-          setError(`Mirror started but not saved to profile: ${e}`);
+          setError(t("Mirror started but not saved to profile: {error}", { error: String(e) }));
         }
       }
       // Mirror is now spawned — collapse the preview, close the ad-hoc
@@ -294,7 +304,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
   const submitDraft = () => {
     const local = draft.local.trim();
     const remote = draft.remote.trim();
-    if (!local || !remote) { setError("Local and remote paths are required."); return; }
+    if (!local || !remote) { setError(t("Local and remote paths are required.")); return; }
     const excludes = excludesText
       .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     askPreviewThenStart({ ...draft, local, remote, excludes });
@@ -305,7 +315,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       {disabled && (
         <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono uppercase">
           <span className="px-3 py-1.5 bg-red-500/15 border border-red-500/30 rounded text-red-300">
-            Session disconnected
+            {t("Session disconnected")}
           </span>
         </div>
       )}
@@ -314,14 +324,14 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       <div className="shrink-0 px-3 py-2 flex items-center justify-between border-b border-white/5 bg-[#121214]">
         <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400">
           <FolderUp size={12} />
-          <span>{Object.keys(statuses).length} running · {allSavedMirrors.length} saved</span>
+          <span>{t("{running} running · {saved} saved", { running: Object.keys(statuses).length, saved: allSavedMirrors.length })}</span>
         </div>
         <button
           onClick={() => { setAdding((a) => !a); setError(null); }}
           className="h-6 px-2.5 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 flex items-center gap-1.5"
         >
           {adding ? <X size={11} /> : <Plus size={11} />}
-          <span>{adding ? "Cancel" : "New mirror"}</span>
+          <span>{adding ? t("Cancel") : t("New mirror")}</span>
         </button>
       </div>
 
@@ -347,17 +357,17 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               <button
                 onClick={pickLocal}
                 className="h-7 px-2 rounded bg-white/[0.04] border border-white/10 hover:bg-white/10 text-zinc-300 text-[11px] flex items-center gap-1.5 shrink-0"
-                title="Pick a local directory"
+                title={t("Pick a local directory")}
               >
-                <FolderOpen size={12} /> Browse
+                <FolderOpen size={12} /> {t("Browse")}
               </button>
             )}
             <input
               value={draft.local}
               onChange={(e) => setDraft({ ...draft, local: e.target.value })}
               placeholder={IS_ANDROID
-                ? "/storage/emulated/0/… (type path)"
-                : IS_MOBILE ? "/local/path (type path)" : "/local/path (or browse)"}
+                ? t("/storage/emulated/0/… (type path)")
+                : IS_MOBILE ? t("/local/path (type path)") : t("/local/path (or browse)")}
               className="flex-1 min-w-0 h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono text-zinc-200"
             />
           </div>
@@ -366,28 +376,28 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
             <input
               value={draft.remote}
               onChange={(e) => setDraft({ ...draft, remote: e.target.value })}
-              placeholder="/remote/path on server"
+              placeholder={t("/remote/path on server")}
               className="flex-1 min-w-0 h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono text-zinc-200"
             />
           </div>
           <textarea
             value={excludesText}
             onChange={(e) => setExcludesText(e.target.value)}
-            placeholder="Excludes (one per line) — substring or *.ext"
+            placeholder={t("Excludes (one per line) — substring or *.ext")}
             rows={2}
             className="w-full p-2 bg-white/[0.04] border border-white/10 rounded text-[10.5px] font-mono text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none focus:border-primary/40"
           />
           <div className="flex items-center gap-2 text-[10.5px] text-zinc-400">
-            <span className="shrink-0 uppercase tracking-wider font-bold text-zinc-500 text-[9.5px]">On conflict</span>
+            <span className="shrink-0 uppercase tracking-wider font-bold text-zinc-500 text-[9.5px]">{t("On conflict")}</span>
             <select
               value={draft.conflict_resolution}
               onChange={(e) => setDraft({ ...draft, conflict_resolution: e.target.value as ConflictMode })}
               className="h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-200 outline-none focus:border-primary/40"
-              title="Decides which side wins when a file exists on both sides with different content. Missing-on-one-side files always copy across regardless."
+              title={t("Decides which side wins when a file exists on both sides with different content. Missing-on-one-side files always copy across regardless.")}
             >
-              <option value="local">Local wins (overwrite remote)</option>
-              <option value="remote">Remote wins (overwrite local)</option>
-              <option value="newer">Newer mtime wins</option>
+              <option value="local">{t("Local wins (overwrite remote)")}</option>
+              <option value="remote">{t("Remote wins (overwrite local)")}</option>
+              <option value="newer">{t("Newer mtime wins")}</option>
             </select>
           </div>
           <div className="flex items-center justify-between gap-2">
@@ -398,14 +408,14 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                 onChange={(e) => setDraft({ ...draft, soft_delete: e.target.checked })}
                 className="accent-primary"
               />
-              <span>Soft delete (move to <span className="font-mono text-zinc-300">.submarine-trash</span> instead of removing)</span>
+              <span>{tx("Soft delete (move to {trash} instead of removing)", { trash: <span className="font-mono text-zinc-300">.submarine-trash</span> })}</span>
             </label>
             <button
               onClick={submitDraft}
               disabled={working}
               className="h-7 px-3 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 disabled:opacity-50"
             >
-              {working ? "…" : "Continue"}
+              {working ? "…" : t("Continue")}
             </button>
           </div>
         </div>
@@ -427,7 +437,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
           <div className="flex items-start gap-2 text-[11px] text-zinc-300">
             <FolderUp size={13} className="text-primary mt-0.5 shrink-0" />
             <div className="min-w-0 flex-1">
-              <div className="font-bold">Initial sync preview</div>
+              <div className="font-bold">{t("Initial sync preview")}</div>
               <div className="text-zinc-500 text-[10.5px] font-mono truncate">
                 {pending.spec.local} → {pending.spec.remote}
               </div>
@@ -449,15 +459,17 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
             }`}>
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />
               <div className="min-w-0 leading-relaxed">
-                <span className="font-bold uppercase tracking-wider mr-1">Heads up</span>
+                <span className="font-bold uppercase tracking-wider mr-1">{t("Heads up")}</span>
                 {downloadModified > 0 ? (
                   <>
-                    {downloadModified} file{downloadModified === 1 ? "" : "s"} marked <span className="font-mono">↓ mod</span> will be <b>overwritten locally</b> with the remote copy.
-                    {" "}If you edit any of these during the sync, your changes can be lost silently — there's no re-compare between scan and transfer. Save / close editors first, or change conflict mode (currently <span className="font-mono">{conflictMode}</span>).
+                    {downloadModified === 1
+                      ? tx("{count} file marked {mod} will be {overwritten} with the remote copy.", { count: downloadModified, mod: <span className="font-mono">↓ {t("mod")}</span>, overwritten: <b>{t("overwritten locally")}</b> })
+                      : tx("{count} files marked {mod} will be {overwritten} with the remote copy.", { count: downloadModified, mod: <span className="font-mono">↓ {t("mod")}</span>, overwritten: <b>{t("overwritten locally")}</b> })}
+                    {sentenceGap()}{tx("If you edit any of these during the sync, your changes can be lost silently — there's no re-compare between scan and transfer. Save / close editors first, or change conflict mode (currently {mode}).", { mode: <span className="font-mono">{conflictMode}</span> })}
                   </>
                 ) : (
                   <>
-                    Initial sync is one decision per file based on this scan. If you edit a file locally <b>before the transfer phase finishes</b>, the change may be silently overwritten by the remote copy. Best to pause edits until the live watcher kicks in.
+                    {tx("Initial sync is one decision per file based on this scan. If you edit a file locally {before}, the change may be silently overwritten by the remote copy. Best to pause edits until the live watcher kicks in.", { before: <b>{t("before the transfer phase finishes")}</b> })}
                   </>
                 )}
               </div>
@@ -466,7 +478,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
 
           <div className="text-[11px] text-zinc-300 bg-black/40 border border-white/5 rounded p-2 max-h-40 overflow-auto custom-scrollbar font-mono">
             {pending.report.entries.length === 0 ? (
-              <div className="text-zinc-500 italic">Already in sync — nothing to move in either direction.</div>
+              <div className="text-zinc-500 italic">{t("Already in sync — nothing to move in either direction.")}</div>
             ) : (
               pending.report.entries.slice(0, 200).map((e, i) => {
                 const isDown = e.action.startsWith("download-");
@@ -474,7 +486,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                 const tone = isDown
                   ? (isNew ? "bg-sky-500/15 text-sky-300"      : "bg-violet-500/15 text-violet-300")
                   : (isNew ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300");
-                const label = `${isDown ? "↓" : "↑"} ${isNew ? "new" : "mod"}`;
+                const label = `${isDown ? "↓" : "↑"} ${isNew ? t("new") : t("mod")}`;
                 return (
                   <div key={i} className="flex items-center gap-2 text-[10.5px]">
                     <span className={`px-1 rounded text-[9px] font-bold uppercase shrink-0 ${tone}`}>{label}</span>
@@ -485,26 +497,26 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
               })
             )}
             {pending.report.entries.length > 200 && (
-              <div className="text-zinc-500 text-[10px] italic mt-1">… {pending.report.entries.length - 200} more</div>
+              <div className="text-zinc-500 text-[10px] italic mt-1">{t("… {count} more", { count: pending.report.entries.length - 200 })}</div>
             )}
           </div>
           <div className="flex items-center justify-between text-[11px]">
             <span className="text-zinc-400">
-              {pending.report.entries.length} files · {fmtBytes(pending.report.total_bytes)}
+              {t("{count} files · {size}", { count: pending.report.entries.length, size: fmtBytes(pending.report.total_bytes) })}
             </span>
             <div className="flex gap-2">
               <button
                 onClick={() => setPending(null)}
                 className="h-7 px-3 rounded text-[10px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/10"
               >
-                Cancel
+                {t("Cancel")}
               </button>
               <button
                 onClick={confirmStart}
                 disabled={working}
                 className="h-7 px-3 rounded text-[10px] font-bold uppercase tracking-wider bg-primary text-black border border-primary disabled:opacity-50 flex items-center gap-1.5"
               >
-                <Check size={11} /> Start mirror
+                <Check size={11} /> {t("Start mirror")}
               </button>
             </div>
           </div>
@@ -517,7 +529,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
         {/* Configured mirrors stored on the node — Start button picks up
             saved config and confirms via the dry-run preview. */}
         {allSavedMirrors.length > 0 && (
-          <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 px-1 pt-1">Saved on this node</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 px-1 pt-1">{t("Saved on this node")}</div>
         )}
         {allSavedMirrors.map((m, i) => {
           const key = `${m.local}|${m.remote}`;
@@ -533,7 +545,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                 {live ? (
                   <button
                     onClick={() => stopMirror(live.id)}
-                    title="Stop mirror"
+                    title={t("Stop mirror")}
                     className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-rose-400 shrink-0"
                   >
                     <Square size={11} />
@@ -541,7 +553,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                 ) : (
                   <button
                     onClick={() => askPreviewThenStart(m)}
-                    title="Start mirror"
+                    title={t("Start mirror")}
                     className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-emerald-400 shrink-0"
                   >
                     <Play size={11} fill="currentColor" />
@@ -555,7 +567,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
 
         {/* Ad-hoc / live mirrors that aren't in the saved list. */}
         {Object.values(statuses).filter((s) => !allSavedMirrors.some((m) => m.local === s.local && m.remote === s.remote)).length > 0 && (
-          <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 px-1 pt-2">Ad-hoc this session</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 px-1 pt-2">{t("Ad-hoc this session")}</div>
         )}
         {Object.values(statuses)
           .filter((s) => !allSavedMirrors.some((m) => m.local === s.local && m.remote === s.remote))
@@ -566,7 +578,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
                 <span className="text-zinc-300 truncate flex-1">{live.local}</span>
                 <ArrowRight size={11} className="text-zinc-500 shrink-0" />
                 <span className="text-zinc-400 truncate flex-1">{live.remote}</span>
-                <button aria-label="Stop mirror"
+                <button aria-label={t("Stop mirror")}
                   onClick={() => stopMirror(live.id)}
                   className="p-0.5 rounded hover:bg-white/10 text-zinc-400 hover:text-rose-400 shrink-0"
                 >
@@ -579,8 +591,8 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
 
         {allSavedMirrors.length === 0 && Object.keys(statuses).length === 0 && (
           <div className="text-center py-12 text-zinc-500 text-[11px] font-mono">
-            No mirrors yet.<br />
-            <span className="text-zinc-600 text-[10px]">Add one with “New mirror”, or define them on the node form.</span>
+            {t("No mirrors yet.")}<br />
+            <span className="text-zinc-600 text-[10px]">{t("Add one with “New mirror”, or define them on the node form.")}</span>
           </div>
         )}
       </div>
@@ -589,11 +601,11 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       <div className="shrink-0 border-t border-white/5 bg-[#0c0c0e]">
         <div className="px-3 py-1.5 flex items-center justify-between border-b border-white/5">
           <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 flex items-center gap-1.5">
-            <FileText size={11} /> Log <span className="text-zinc-600 font-normal">({logs.length})</span>
+            <FileText size={11} /> {t("Log")} <span className="text-zinc-600 font-normal">({logs.length})</span>
           </span>
           <button
             onClick={() => setLogs([])}
-            title="Clear log"
+            title={t("Clear log")}
             className="p-1 text-zinc-500 hover:text-rose-400 rounded hover:bg-white/5"
           >
             <Trash2 size={11} />
@@ -605,7 +617,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
           className="h-36 overflow-auto px-2 py-1 font-mono text-[10.5px] leading-relaxed space-y-0.5 select-text cursor-text"
         >
           {logs.length === 0 ? (
-            <div className="text-zinc-600 text-center py-4">No log entries yet.</div>
+            <div className="text-zinc-600 text-center py-4">{t("No log entries yet.")}</div>
           ) : (
             logs.map((l, i) => {
               const ts = new Date(l.ts_ms);

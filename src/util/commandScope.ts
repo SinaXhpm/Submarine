@@ -5,6 +5,7 @@
 // defensively, since a synced peer could send anything: a scope that can't
 // be read counts as every server, so no command is lost from view.
 import { folderTree } from "./folderTree";
+import { t } from "../i18n";
 
 export type CommandScope = { servers: string[]; folders: string[] };
 
@@ -40,11 +41,11 @@ export function scopeMatches(scope: CommandScope, ids: { server: string | null; 
 
 // "web-1, web-2 and the Acme folder", short enough for a card.
 export function describeScope(scope: CommandScope | null, servers: any[], folders: any[]): string {
-  if (!scope) return "All servers";
+  if (!scope) return t("All servers");
   const names = [
-    ...scope.folders.map((u) => folders.find((f) => f.uuid === u)?.name).filter(Boolean).map((n) => `${n} (folder)`),
+    ...scope.folders.map((u) => folders.find((f) => f.uuid === u)?.name).filter(Boolean).map((n) => t("{name} (folder)", { name: n })),
     ...scope.servers.map((u) => servers.find((s) => s.uuid === u)?.name).filter(Boolean),
   ] as string[];
-  if (names.length === 0) return "No server here";
-  return names.length <= 3 ? names.join(", ") : `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
+  if (names.length === 0) return t("No server here");
+  return names.length <= 3 ? names.join(", ") : t("{names} and {count} more", { names: names.slice(0, 2).join(", "), count: names.length - 2 });
 }

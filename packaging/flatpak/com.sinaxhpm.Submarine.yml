@@ -1,0 +1,51 @@
+# Builds this checkout. The copy on Flathub differs only in the first source: the release tag and its commit.
+# See README.md here for the two generated source lists and how to test a build.
+id: com.sinaxhpm.Submarine
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.node24
+command: submarine
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # SSH, SFTP, tunnels, RDP, VNC, cloud sync.
+  - --share=network
+  # Logins through the user's SSH agent.
+  - --socket=ssh-auth
+  # The local side of SFTP transfers and mirrors, wherever the user keeps files, and ~/.ssh (keys, config, known hosts).
+  - --filesystem=home
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/node24/bin
+modules:
+  - name: submarine
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/submarine/cargo
+        CARGO_NET_OFFLINE: 'true'
+        XDG_CACHE_HOME: /run/build/submarine/flatpak-node/cache
+        npm_config_cache: /run/build/submarine/flatpak-node/npm-cache
+        npm_config_nodedir: /usr/lib/sdk/node24
+        npm_config_offline: 'true'
+    build-commands:
+      - npm ci --offline --no-audit --no-fund
+      - npm run tauri -- build --no-bundle
+      - install -Dm755 src-tauri/target/release/submarine /app/bin/submarine
+      - install -Dm644 packaging/flatpak/com.sinaxhpm.Submarine.desktop /app/share/applications/com.sinaxhpm.Submarine.desktop
+      - install -Dm644 packaging/flatpak/com.sinaxhpm.Submarine.metainfo.xml /app/share/metainfo/com.sinaxhpm.Submarine.metainfo.xml
+      - install -Dm644 src-tauri/icons/128x128@2x.png /app/share/icons/hicolor/256x256/apps/com.sinaxhpm.Submarine.png
+      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/com.sinaxhpm.Submarine.png
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - node_modules
+          - src-tauri/target
+          - dist
+      - generated/cargo-sources.json
+      - generated/node-sources.json

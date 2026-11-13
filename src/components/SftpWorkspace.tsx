@@ -12,22 +12,26 @@ import { useIsNarrow } from "../hooks/useViewport";
 import { useTauriListen } from "../hooks/useTauriListen";
 import { bookmarksKey } from "../util/sftpBookmarks";
 import { FOLLOW_SETUP, type ShellFolderState } from "../util/shellFolder";
+import { t, tk, tn, useT } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // Root (sudo) mode for the remote pane — see `sftp_set_elevated` in lib.rs.
 type ElevationStatus = { elevated: boolean; passwordless: boolean };
 
 const SUDO_MESSAGES: Record<string, string> = {
-  "[SUDO] NEED_PASSWORD": "sudo needs a password.",
-  "[SUDO] WRONG_PASSWORD": "Wrong sudo password.",
-  "[SUDO] NOT_ALLOWED": "This user isn't allowed to run sftp-server with sudo.",
-  "[SUDO] REQUIRETTY": "sudo on this server requires a terminal (requiretty), so it can't be used for file access.",
-  "[SUDO] NO_SUDO": "sudo isn't installed on this server.",
-  "[SUDO] NO_SFTP_SERVER": "Couldn't find the sftp-server program on this server.",
+  "[SUDO] NEED_PASSWORD": tk("sudo needs a password."),
+  "[SUDO] WRONG_PASSWORD": tk("Wrong sudo password."),
+  "[SUDO] NOT_ALLOWED": tk("This user isn't allowed to run sftp-server with sudo."),
+  "[SUDO] REQUIRETTY": tk("sudo on this server requires a terminal (requiretty), so it can't be used for file access."),
+  "[SUDO] NO_SUDO": tk("sudo isn't installed on this server."),
+  "[SUDO] NO_SFTP_SERVER": tk("Couldn't find the sftp-server program on this server."),
 };
 
 const describeSudoError = (raw: string) => {
   const code = Object.keys(SUDO_MESSAGES).find((k) => raw.includes(k));
-  return code ? SUDO_MESSAGES[code] : raw.replace(/^\[SUDO\] FAILED:?\s*/, "sudo failed: ");
+  if (code) return t(SUDO_MESSAGES[code]);
+  const failed = raw.match(/^\[SUDO\] FAILED:?\s*([\s\S]*)$/);
+  return failed ? t("sudo failed: {reason}", { reason: failed[1] }) : raw;
 };
 
 // Dual-pane SFTP workspace. Owns the two FilePanels, the cross-pane drag
@@ -56,6 +60,10 @@ interface SftpWorkspaceProps {
   // the shell hasn't said (the pane shows how to make it); undefined while
   // Follow is off.
   follow?: ShellFolderState | null;
+  // An FTP server's tab (FtpSessionView): its files go over FTP, so nothing
+  // that runs commands on the server is offered (root mode, archives, the
+  // owners' names). The mirror works over FTP too (mirror.rs, Files::Ftp).
+  ftp?: boolean;
 }
 // "split" is Local above Remote; the name predates "side" and stays because
 // it is what earlier versions saved.
@@ -63,9 +71,9 @@ type FilesLayout = "tabs" | "split" | "side";
 type FilesSide = "local" | "remote";
 
 const LAYOUT_OPTIONS: { id: FilesLayout; title: string; Icon: typeof Rows }[] = [
-  { id: "tabs", title: "One panel at a time", Icon: LayoutPanelTop },
-  { id: "split", title: "Both panels, Local above Remote (drag-drop between them)", Icon: Rows },
-  { id: "side", title: "Both panels side by side (drag-drop between them)", Icon: Columns },
+  { id: "tabs", title: tk("One panel at a time"), Icon: LayoutPanelTop },
+  { id: "split", title: tk("Both panels, Local above Remote (drag-drop between them)"), Icon: Rows },
+  { id: "side", title: tk("Both panels side by side (drag-drop between them)"), Icon: Columns },
 ];
 
 // Cursor-following drag ghost, isolated into its own component so that the
@@ -102,7 +110,7 @@ const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
         ? <Folder size={12} className="text-indigo-300 shrink-0" />
         : <FileIcon size={12} className="text-indigo-300 shrink-0" />}
       <span className="truncate max-w-[260px]">
-        {drag.entries.length === 1 ? drag.entries[0].name : `${drag.entries.length} items`}
+        {drag.entries.length === 1 ? drag.entries[0].name : tn(drag.entries.length, "{count} item", "{count} items")}
       </span>
     </div>,
     document.body
@@ -140,19 +148,20 @@ const formatBytes = (n: number) => {
 // the whole SftpWorkspace and both FilePanels, ten times a second per transfer,
 // on the thread the terminal beside them draws and takes keys on.
 function TransferCards({ sessionId }: { sessionId: string }) {
+  const t = useT();
   const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
 
   useTauriListen<Transfer>(`sftp-transfer-${sessionId}`, (event) => {
-    const t = event.payload;
-    if (!t || !t.id) return;
-    setTransfers((prev) => ({ ...prev, [t.id]: t }));
-    if (t.status === "done" || t.status === "error" || t.status === "cancelled") {
+    const tr = event.payload;
+    if (!tr || !tr.id) return;
+    setTransfers((prev) => ({ ...prev, [tr.id]: tr }));
+    if (tr.status === "done" || tr.status === "error" || tr.status === "cancelled") {
       // Leave the final state visible briefly before clearing the card so
       // the user sees the success tick / failure colour / cancel notice.
-      const linger = t.status === "error" || t.error ? 6000 : t.status === "cancelled" ? 3000 : 1800;
+      const linger = tr.status === "error" || tr.error ? 6000 : tr.status === "cancelled" ? 3000 : 1800;
       setTimeout(() => {
         setTransfers((prev) => {
-          const { [t.id]: _, ...rest } = prev;
+          const { [tr.id]: _, ...rest } = prev;
           return rest;
         });
       }, linger);
@@ -167,72 +176,72 @@ function TransferCards({ sessionId }: { sessionId: string }) {
 
   return (
     <>
-      {Object.values(transfers).map((t) => {
-        const pct = t.total > 0 ? Math.min(100, Math.round((t.bytes * 100) / t.total)) : 0;
+      {Object.values(transfers).map((tr) => {
+        const pct = tr.total > 0 ? Math.min(100, Math.round((tr.bytes * 100) / tr.total)) : 0;
         const tone =
-          t.status === "error"     ? "border-rose-500/40 bg-rose-950/85 text-rose-200" :
-          t.status === "done"      ? "border-emerald-500/40 bg-emerald-950/85 text-emerald-200" :
-          t.status === "cancelled" ? "border-amber-500/40 bg-amber-950/85 text-amber-200" :
-                                     "border-indigo-500/40 bg-indigo-950/85 text-indigo-100";
+          tr.status === "error"     ? "border-rose-500/40 bg-rose-950/85 text-rose-200" :
+          tr.status === "done"      ? "border-emerald-500/40 bg-emerald-950/85 text-emerald-200" :
+          tr.status === "cancelled" ? "border-amber-500/40 bg-amber-950/85 text-amber-200" :
+                                      "border-indigo-500/40 bg-indigo-950/85 text-indigo-100";
         const barTone =
-          t.status === "error"     ? "bg-rose-500" :
-          t.status === "done"      ? "bg-emerald-500" :
-          t.status === "cancelled" ? "bg-amber-500" :
-                                     "bg-indigo-500";
+          tr.status === "error"     ? "bg-rose-500" :
+          tr.status === "done"      ? "bg-emerald-500" :
+          tr.status === "cancelled" ? "bg-amber-500" :
+                                      "bg-indigo-500";
         const Icon =
-          t.status === "error"     ? AlertTriangle :
-          t.status === "done"      ? Check :
-          t.status === "cancelled" ? Ban :
-          t.kind   === "upload"    ? Upload :
-          t.kind   === "delete"    ? Trash2 :
-                                     Download;
+          tr.status === "error"     ? AlertTriangle :
+          tr.status === "done"      ? Check :
+          tr.status === "cancelled" ? Ban :
+          tr.kind   === "upload"    ? Upload :
+          tr.kind   === "delete"    ? Trash2 :
+                                      Download;
         const statusLabel =
-          t.status === "error"     ? "failed"
-          : t.status === "cancelled" ? "cancelled"
-          : t.kind === "delete"      ? `${t.bytes.toLocaleString()} removed`
-          : t.listed !== undefined   ? `${t.listed.toLocaleString()} file${t.listed === 1 ? "" : "s"} found`
-          : t.total > 0              ? `${pct}%`
-                                     : formatBytes(t.bytes);
+          tr.status === "error"     ? t("failed")
+          : tr.status === "cancelled" ? t("cancelled")
+          : tr.kind === "delete"      ? t("{count} removed", { count: tr.bytes.toLocaleString() })
+          : tr.listed !== undefined   ? tn(tr.listed, "{count} file found", "{count} files found", { count: tr.listed.toLocaleString() })
+          : tr.total > 0              ? `${pct}%`
+                                      : formatBytes(tr.bytes);
         return (
-          <div key={t.id} className={`w-full max-w-[280px] pointer-events-auto px-2.5 py-1.5 rounded border ${tone} font-mono text-[10.5px] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4`}>
+          <div key={tr.id} className={`w-full max-w-[280px] pointer-events-auto px-2.5 py-1.5 rounded border ${tone} font-mono text-[10.5px] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4`}>
             <div className="flex items-center gap-1.5 mb-1">
               <Icon size={11} className="shrink-0" />
-              <span className="truncate flex-1" title={t.name}>{t.name}</span>
+              <span className="truncate flex-1" title={tr.name}>{tr.name}</span>
               <span className="text-[9.5px] opacity-80 shrink-0">{statusLabel}</span>
               {/* Stop button — only while the transfer is still running.
                   Finished / failed / cancelled cards fade out on their
                   own timer; no button needed. */}
-              {t.status === "progress" && (
+              {tr.status === "progress" && (
                 <button
-                  onClick={() => cancelTransfer(t.id)}
-                  title="Cancel"
+                  onClick={() => cancelTransfer(tr.id)}
+                  title={t("Cancel")}
                   className="shrink-0 p-0.5 rounded hover:bg-white/15 text-zinc-300 hover:text-rose-300"
                 >
                   <X size={11} />
                 </button>
               )}
             </div>
-            {t.status !== "error" && (
+            {tr.status !== "error" && (
               <div className="h-1 bg-white/10 rounded overflow-hidden">
                 {/* No transition: with a step every 100 ms, an animated width
                     is a layout and a paint at every frame for as long as the
                     transfer runs, a whole core beside a long file list. */}
                 <div
-                  className={`h-full ${barTone} ${t.kind === "delete" && t.status === "progress" ? "animate-pulse" : ""}`}
-                  style={{ width: t.total > 0 ? `${pct}%` : "100%" }}
+                  className={`h-full ${barTone} ${tr.kind === "delete" && tr.status === "progress" ? "animate-pulse" : ""}`}
+                  style={{ width: tr.total > 0 ? `${pct}%` : "100%" }}
                 />
               </div>
             )}
             {/* Why it failed: up to three lines, so the reason can be
                 read without hovering; the tooltip has all of it. */}
-            {t.status === "error" && t.error && (
-              <div className="text-[9.5px] opacity-80 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
+            {tr.status === "error" && tr.error && (
+              <div className="text-[9.5px] opacity-80 line-clamp-3 [overflow-wrap:anywhere]" title={tr.error}>{tr.error}</div>
             )}
             {/* A finished folder download can carry a note, e.g. names
                 this computer can't store were skipped; a cancelled
                 upload says what it left on the server. */}
-            {(t.status === "done" || t.status === "cancelled") && t.error && (
-              <div className="text-[9.5px] text-amber-300/90 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
+            {(tr.status === "done" || tr.status === "cancelled") && tr.error && (
+              <div className="text-[9.5px] text-amber-300/90 line-clamp-3 [overflow-wrap:anywhere]" title={tr.error}>{tr.error}</div>
             )}
           </div>
         );
@@ -244,13 +253,14 @@ function TransferCards({ sessionId }: { sessionId: string }) {
 // Follow is on but the terminal's shell hasn't said which folder it is in:
 // the one line that makes it, for the shell picked.
 function FollowSetup({ onCopy }: { onCopy: (line: string) => void }) {
+  const t = useT();
   const [picked, setPicked] = useState(0);
   const setup = FOLLOW_SETUP[picked];
   return (
     <div className="px-1 flex flex-col gap-1 text-[10px] leading-snug text-zinc-400">
       <span>
-        The terminal hasn't said which folder it is in. Add this line to {setup.file}, then open a new terminal.
-        {setup.note ? ` ${setup.note}` : ""}
+        {t("The terminal hasn't said which folder it is in. Add this line to {file}, then open a new terminal.", { file: setup.file })}
+        {setup.note ? sentenceGap() + t(setup.note) : ""}
       </span>
       <div className="flex items-center gap-1">
         {FOLLOW_SETUP.map((s, i) => (
@@ -269,7 +279,7 @@ function FollowSetup({ onCopy }: { onCopy: (line: string) => void }) {
           onClick={() => onCopy(setup.line)}
           className="ml-auto h-5 px-1.5 rounded border border-white/10 text-zinc-300 hover:text-white hover:bg-white/5"
         >
-          Copy
+          {t("Copy")}
         </button>
       </div>
       <code className="block px-1.5 py-1 rounded bg-black/30 font-mono text-zinc-300 break-all select-text">{setup.line}</code>
@@ -277,7 +287,8 @@ function FollowSetup({ onCopy }: { onCopy: (line: string) => void }) {
   );
 }
 
-const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files", profile, follow }: SftpWorkspaceProps) => {
+const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files", profile, follow, ftp = false }: SftpWorkspaceProps) => {
+  const t = useT();
   // Mirror needs a saved server; without one the files always show.
   const shownView: SftpView = view === "mirror" && serverId ? "mirror" : "files";
   // Files layout: "tabs" (one side full height) is the default because the
@@ -307,8 +318,9 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   const [activeSide, setActiveSide] = useState<FilesSide>(() => {
     try {
       const v = localStorage.getItem(sideStorageKey);
-      return v === "remote" ? "remote" : "local";
-    } catch { return "local"; }
+      // An FTP tab is there for the server's files: they come first.
+      return v === "remote" || v === "local" ? v : ftp ? "remote" : "local";
+    } catch { return ftp ? "remote" : "local"; }
   });
   const setActiveSidePersisted = (s: FilesSide) => {
     setActiveSide(s);
@@ -317,7 +329,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   // Providers are created once per session so the panels' provider identity
   // is stable across renders (the FilePanel's load-on-mount effect keys off it).
   const localProvider = useMemo(() => createLocalProvider(), []);
-  const remoteProvider = useMemo(() => createRemoteProvider(sessionId), [sessionId]);
+  const remoteProvider = useMemo(() => createRemoteProvider(sessionId, { ftp }), [sessionId, ftp]);
 
   const localRef = useRef<FilePanelHandle | null>(null);
   const remoteRef = useRef<FilePanelHandle | null>(null);
@@ -339,6 +351,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   const [elevError, setElevError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (ftp) return;
     let cancelled = false;
     invoke<ElevationStatus>("sftp_elevation_status", { sessionId })
       .then((s) => { if (!cancelled) setElevation(s); })
@@ -347,7 +360,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   }, [sessionId]);
 
   useEffect(() => {
-    if (disabled) return;
+    if (disabled || ftp) return;
     let cancelled = false;
     invoke<string>("sftp_login_user", { sessionId })
       .then((u) => { if (!cancelled) setLoginUser(u || null); })
@@ -380,14 +393,14 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
             if (!wrong && !raw.includes("[SUDO] NEED_PASSWORD")) throw e;
             if (wrong && ++wrongTries >= 3) throw e;
             password = await textPrompt({
-              title: "Run file operations as root",
+              title: t("Run file operations as root"),
               message: wrong
-                ? "Wrong sudo password, try again."
-                : "Enter your sudo password. It's kept in memory for this tab only and never saved.",
+                ? t("Wrong sudo password, try again.")
+                : t("Enter your sudo password. It's kept in memory for this tab only and never saved."),
               password: true,
               keepWhitespace: true,
-              okLabel: "Use sudo",
-              validate: (v) => (v ? null : "Enter the password"),
+              okLabel: t("Use sudo"),
+              validate: (v) => (v ? null : t("Enter the password")),
             });
             if (password === null) return;
           }
@@ -413,7 +426,9 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
     <button
       onClick={toggleElevation}
       disabled={elevBusy}
-      title={`File operations run as root via sudo${elevation.passwordless ? " (passwordless)" : ""}. Click to go back to ${loginUser || "your login user"}.`}
+      title={elevation.passwordless
+        ? t("File operations run as root via sudo (passwordless). Click to go back to {user}.", { user: loginUser || t("your login user") })
+        : t("File operations run as root via sudo. Click to go back to {user}.", { user: loginUser || t("your login user") })}
       aria-label="root (sudo)"
       className={`${rootBadgeClass} hover:bg-rose-500/30 disabled:opacity-50`}
     >
@@ -421,7 +436,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
       <span className={elevWord}>root<span className={elevMore}> · sudo</span></span>
     </button>
   ) : rootByLogin ? (
-    <span title="Logged in as root: file operations run with full privileges." className={rootBadgeClass}>
+    <span title={t("Logged in as root: file operations run with full privileges.")} className={rootBadgeClass}>
       <ShieldAlert size={11} className="shrink-0" />
       <span className={elevWord}>root</span>
     </span>
@@ -429,7 +444,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
     <button
       onClick={toggleElevation}
       disabled={elevBusy || disabled}
-      title="Run file operations as root (sudo)"
+      title={t("Run file operations as root (sudo)")}
       aria-label="sudo"
       className={`${elevBox} font-bold bg-white/[0.04] text-zinc-300 border-white/10 hover:bg-white/10 hover:text-white disabled:opacity-40`}
     >
@@ -499,20 +514,20 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   const copyLine = async (line: string) => {
     try {
       await navigator.clipboard.writeText(line);
-      notify("Copied", "success");
+      notify(t("Copied"), "success");
     } catch {
-      notify("Couldn't copy it: select the line and copy it from there.", "error");
+      notify(t("Couldn't copy it: select the line and copy it from there."), "error");
     }
   };
   const followNote = follow === undefined ? null
     : follow === null ? <FollowSetup onCopy={copyLine} />
     : follow.away ? (
       <div className="px-1 text-[10px] leading-snug text-amber-300 break-words">
-        The terminal is on {follow.away} now; the files stay on this server.
+        {t("The terminal is on {host} now; the files stay on this server.", { host: follow.away })}
       </div>
     ) : followMiss ? (
       <div role="alert" className="px-1 text-[10px] leading-snug text-amber-300 break-words">
-        Can't open {followMiss}, the terminal's folder.
+        {t("Can't open {path}, the terminal's folder.", { path: followMiss })}
       </div>
     ) : null;
 
@@ -552,7 +567,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
       if (!targetDir) return;
 
       const source = active.paneId === "local" ? localRef.current : remoteRef.current;
-      source?.sendTo(active.entries, targetDir).catch((err) => notify(`Transfer failed: ${err}`, "error"));
+      source?.sendTo(active.entries, targetDir).catch((err) => notify(t("Transfer failed: {error}", { error: String(err) }), "error"));
     };
     window.addEventListener("mouseup", onMouseUp);
     return () => window.removeEventListener("mouseup", onMouseUp);
@@ -580,7 +595,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
                     : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
                 }`}
               >
-                <Folder size={11} /> Local
+                <Folder size={11} /> {t("Local")}
               </button>
               <button
                 onClick={() => setActiveSidePersisted("remote")}
@@ -590,12 +605,12 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
                     : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
                 }`}
               >
-                <Folder size={11} /> Remote
+                <Folder size={11} /> {t("Remote")}
               </button>
             </div>
           ) : (
             <div className="flex-1 flex items-center px-3 text-[9.5px] font-bold uppercase tracking-widest text-zinc-500">
-              Local + Remote
+              {t("Local + Remote")}
             </div>
           )}
           {/* Compare (#18): marks in both panes what differs from the other. */}
@@ -603,20 +618,20 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
             type="button"
             onClick={() => setCompareOn((v) => !v)}
             aria-pressed={compareOn}
-            title={compareOn ? "Stop comparing" : "Compare: mark what differs between the two folders"}
+            title={compareOn ? t("Stop comparing") : t("Compare: mark what differs between the two folders")}
             className={`shrink-0 flex items-center gap-1.5 px-2.5 border-l border-white/5 text-[10px] font-bold uppercase tracking-wider transition-all ${
               compareOn ? "text-primary bg-primary/10" : "text-zinc-500 hover:bg-white/5 hover:text-white"
             }`}
           >
             <GitCompare size={12} />
-            <span className="hidden sm:inline">Compare</span>
+            <span className="hidden sm:inline">{t("Compare")}</span>
           </button>
-          <div role="group" aria-label="Files layout" className="flex items-stretch border-l border-white/5 shrink-0">
+          <div role="group" aria-label={t("Files layout")} className="flex items-stretch border-l border-white/5 shrink-0">
             {LAYOUT_OPTIONS.filter((o) => o.id !== "side" || !isNarrow).map(({ id, title, Icon }) => (
               <button
                 key={id}
                 onClick={() => setLayoutPersisted(id)}
-                title={title}
+                title={t(title)}
                 aria-pressed={shownLayout === id}
                 className={`w-9 sm:w-7 flex items-center justify-center transition-all ${
                   shownLayout === id
@@ -632,11 +647,11 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
 
         {compareOn && (
           <div className="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 border-b border-white/5 bg-black/20 text-[10.5px] text-zinc-400">
-            <span className="text-zinc-500">Each folder against the other, by name, size and time:</span>
-            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-amber-400" /> only here</span>
-            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-rose-400" /> another size or kind</span>
-            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-emerald-400" /> newer</span>
-            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-zinc-500" /> older</span>
+            <span className="text-zinc-500">{t("Each folder against the other, by name, size and time:")}</span>
+            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-amber-400" /> {t("only here")}</span>
+            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-rose-400" /> {t("another size or kind")}</span>
+            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-emerald-400" /> {t("newer")}</span>
+            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-zinc-500" /> {t("older")}</span>
             <label className="ml-auto flex items-center gap-1.5 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -644,7 +659,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
                 onChange={(e) => setHideSame(e.target.checked)}
                 className="accent-[var(--primary-hex)]"
               />
-              Hide files that are the same
+              {t("Hide files that are the same")}
             </label>
           </div>
         )}
@@ -703,10 +718,12 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               onEntriesChange={setRemoteEntries}
               compareWith={compareOn ? localEntries : null}
               hideSame={hideSame}
-              headerExtra={elevationControl}
+              headerExtra={ftp ? undefined : elevationControl}
               headerNote={<>{elevationNote}{followNote}</>}
-              rootMode={elevation.elevated || rootByLogin}
-              archiveOff={elevation.elevated ? "Archive and extract aren't available in root mode: they run as the login user, not through sudo" : undefined}
+              rootMode={!ftp && (elevation.elevated || rootByLogin)}
+              archiveOff={ftp
+                ? t("Archive and extract need an SSH server: they run commands on it")
+                : elevation.elevated ? t("Archive and extract aren't available in root mode: they run as the login user, not through sudo") : undefined}
             />
           </div>
         </div>

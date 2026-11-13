@@ -15,12 +15,18 @@ pub const GITHUB_REPO: &str = "SinaXhpm/Submarine";
 #[derive(Debug, Clone, Serialize)]
 pub struct AppInfo {
     pub version: String,
-    /// Whether this build looks for new releases on GitHub. Not on iOS and not
-    /// in the Mac App Store build: the App Store updates those (and
-    /// PRIVACY.md says the iOS app doesn't ask GitHub).
+    /// Whether this copy looks for new releases on GitHub. Not on iOS, not in
+    /// the Mac App Store build and not as a Flatpak: the store it came from
+    /// updates those (and PRIVACY.md says the iOS app doesn't ask GitHub).
     pub updates: bool,
     pub github_repo_url: String,
     pub github_releases_url: String,
+}
+
+/// Running as a Flatpak. Flathub updates it, so a newer release on GitHub is
+/// nothing for its user to act on.
+pub fn in_flatpak() -> bool {
+    std::path::Path::new("/.flatpak-info").exists()
 }
 
 /// Static info bundled with the binary. Version comes from CARGO_PKG_VERSION
@@ -29,14 +35,17 @@ pub struct AppInfo {
 pub fn app_info() -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        updates: UPDATES,
+        updates: updates(),
         github_repo_url: format!("https://github.com/{}", GITHUB_REPO),
         github_releases_url: format!("https://github.com/{}/releases", GITHUB_REPO),
     }
 }
 
-/// See `AppInfo::updates`.
+/// See `AppInfo::updates`: off in the App Store's builds, and in a Flatpak.
 const UPDATES: bool = !cfg!(any(target_os = "ios", feature = "app-store"));
+fn updates() -> bool {
+    UPDATES && !in_flatpak()
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateInfo {
@@ -82,8 +91,8 @@ struct GhRelease {
 #[tauri::command]
 pub async fn check_for_updates() -> Result<UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
-    // The App Store's builds: nothing is asked, nothing is offered.
-    if !UPDATES {
+    // The App Store's builds and a Flatpak: nothing is asked, nothing is offered.
+    if !updates() {
         return Ok(UpdateInfo { current, latest: None, has_update: false, release_url: None });
     }
     let url = format!("https://api.github.com/repos/{}/releases?per_page=100", GITHUB_REPO);
@@ -180,10 +189,7 @@ fn semver_greater(a: &str, b: &str) -> bool {
 /// Android yet" — now fixed).
 #[tauri::command]
 pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    let lowered = url.to_ascii_lowercase();
-    if !(lowered.starts_with("https://") || lowered.starts_with("http://")) {
-        return Err("[OPEN] only http(s) urls are allowed".into());
-    }
+    let url = checked_url(&url)?;
     // On Linux the browser starts without this app's own WebKit workarounds
     // (child_env.rs), which the plugin would hand down to it.
     #[cfg(target_os = "linux")]
@@ -197,5 +203,45 @@ pub fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), Strin
         app.opener()
             .open_url(&url, None::<&str>)
             .map_err(|e| format!("[OPEN] {}", e))
+    }
+}
+
+/// The address the browser gets: parsed, not only checked at its start, so
+/// a space, a quote or a control character can't reach a handler that might
+/// read it differently. An http(s) scheme and a host are required.
+fn checked_url(url: &str) -> Result<String, String> {
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("[OPEN] that address has spaces or control characters".into());
+    }
+    let parsed = tauri::Url::parse(url).map_err(|_| "[OPEN] that isn't a web address".to_string())?;
+    if !matches!(parsed.scheme(), "https" | "http") {
+        return Err("[OPEN] only http(s) urls are allowed".into());
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err("[OPEN] that address has no host".into());
+    }
+    Ok(parsed.as_str().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_url;
+
+    #[test]
+    fn only_a_parsed_web_address_opens() {
+        assert_eq!(checked_url("https://example.com/a?b=1").unwrap(), "https://example.com/a?b=1");
+        assert_eq!(checked_url("HTTP://Example.COM").unwrap(), "http://example.com/");
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ms-settings:",
+            "https://exa mple.com",
+            "https://example.com/\u{7}",
+            "https://example.com/\n--flag",
+            "https://",
+            "",
+        ] {
+            assert!(checked_url(bad).is_err(), "{bad:?}");
+        }
     }
 }

@@ -1,11 +1,12 @@
 {
   "name": "submarine",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "i18n": "node scripts/i18n-check.mjs",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

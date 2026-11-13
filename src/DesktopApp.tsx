@@ -6,7 +6,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
-  StickyNote, Search, Square, Copy, ChevronLeft, MoreVertical, Radio,
+  StickyNote, Search, Square, Copy, ChevronLeft, ChevronRight, MoreVertical, Radio,
   ChevronDown, Columns, LayoutGrid, Pin, PinOff, Server
 } from "lucide-react";
 import { useBroadcast } from "./ui/broadcast";
@@ -29,6 +29,7 @@ import {
 } from "./util/terminalTheme";
 import { USE_LOCAL_SHELL_KEY, readUseLocalShell } from "./util/terminalShell";
 import { USE_SSH_AGENT_KEY, readUseSshAgent } from "./util/sshAgent";
+import { AUTO_RECONNECT_KEY, DEFAULT_SESSION_KEEP, SEND_KEEPALIVES_KEY, forgetSessionKeep, readAutoReconnectDefault, readSendKeepalivesDefault, readSessionKeep, writeSessionKeep } from "./util/sessionKeep";
 import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
 import { DEFAULT_RDP_OPTIONS, forgetRdpOptions, readRdpOptions, writeRdpOptions } from "./util/rdpOptions";
 import { DEFAULT_VNC_OPTIONS, forgetVncOptions, readVncOptions, writeVncOptions } from "./util/vncOptions";
@@ -45,10 +46,15 @@ import ProfilePanel from "./components/ProfilePanel";
 import { SessionView } from "./components/SessionView";
 import RdpSessionView from "./components/RdpSessionView";
 import TelnetSessionView from "./components/TelnetSessionView";
+import FtpSessionView from "./components/FtpSessionView";
+import { isFtp, serverProtocol, type ServerProtocol } from "./util/serverProtocol";
 import VncSessionView from "./components/VncSessionView";
 import MonitoringPanel from "./components/MonitoringPanel";
 import { ErrorBoundary, Guarded } from "./ui/ErrorBoundary";
+import { FormError, unsavedQuestion, useUnsavedGuard } from "./ui/slideOverForm";
 import { normalizeMirror, normalizeTunnel, parseObjectList } from "./util/serverJson";
+import { tk, tn, tx, useT } from "./i18n";
+import { joinSentences } from "./util/sentences";
 
 const appWindow = getCurrentWindow();
 
@@ -60,6 +66,15 @@ const EMPTY_CRED = { id: null, name: "", auth_type: "password", username: "", pa
 const EMPTY_KEY = { id: null, name: "", public_key: "", private_key: "", passphrase: "" };
 // How long a slide-over takes to slide out (their duration-500).
 const SLIDE_OUT_MS = 500;
+// The status words a Wall tile shows while its session isn't connected (the
+// values of sessionStatuses; tk so the translation list finds them).
+const SESSION_STATUS: Record<string, string> = {
+  connecting: tk("connecting"),
+  connected: tk("connected"),
+  failed: tk("failed"),
+  disconnected: tk("disconnected"),
+  idle: tk("idle"),
+};
 
 // Sessions can be either DB-backed (saved node, `serverId > 0`) or quick
 // connect (one-shot, `serverId === 0` and `quickAuth` populated). SessionView
@@ -67,7 +82,7 @@ const SLIDE_OUT_MS = 500;
 // looking up the DB row.
 // `serverUuid` is the saved server's sync id, which keys this device's own
 // per-server settings (the Shell button, see util/shellSync.ts).
-type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; protocol?: "ssh" | "rdp" | "telnet" | "vnc"; mirrors?: string; runOnConnect?: string; runOnConnectEvery?: boolean; runOnConnectHeld?: boolean; quickAuth?: QuickAuth | null };
+type Session = { id: string; serverId: number; serverName: string; serverUuid?: string | null; protocol?: ServerProtocol; mirrors?: string; runOnConnect?: string; runOnConnectEvery?: boolean; runOnConnectHeld?: boolean; quickAuth?: QuickAuth | null };
 
 const hexToRgb = (hex: string) => {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -77,6 +92,7 @@ const hexToRgb = (hex: string) => {
 };
 
 function DesktopApp() {
+  const t = useT();
   const [loading, setLoading] = useState(true);
   const [isUnlocked, setIsUnlocked] = useState(false);
   // Multi-exec broadcast state lives in a shared provider (see App.tsx) so
@@ -295,10 +311,13 @@ function DesktopApp() {
   const defaultNode = {
     id: null as number | null,
     // "ssh", "rdp" (issue #3: it opens in the system's RDP app), "telnet"
-    // (#179: it opens in a terminal, over telnet) or "vnc" (its screen in the tab).
-    protocol: "ssh" as "ssh" | "rdp" | "telnet" | "vnc",
+    // (#179: it opens in a terminal, over telnet), "vnc" (its screen in the tab)
+    // or one of the FTP kinds (its files in the tab; util/serverProtocol).
+    protocol: "ssh" as ServerProtocol,
     // An RDP server's window and sharing on this device (util/rdpOptions).
     rdpOptions: { ...DEFAULT_RDP_OPTIONS },
+    // An SSH server's keepalives and reconnecting on this device (util/sessionKeep).
+    sessionKeep: { ...DEFAULT_SESSION_KEEP },
     // A VNC server's speed and quality on this device (util/vncOptions).
     vncOptions: { ...DEFAULT_VNC_OPTIONS },
     name: "", host: "", port: 22, username: "", password: "",
@@ -341,6 +360,66 @@ function DesktopApp() {
   // hook updates on every resize so layout swaps follow the actual width.
   const isMobile = useIsNarrow();
 
+  // The tab strip, when its tabs don't fit (#322): which ends have more tabs
+  // past them. Tabs coming, going or changing width are followed as well as
+  // the strip's own width and scroll.
+  const tabStripEl = useRef<HTMLDivElement | null>(null);
+  const tabStripUnwatch = useRef<(() => void) | null>(null);
+  const [tabsPast, setTabsPast] = useState({ left: false, right: false });
+  const measureTabStrip = useCallback(() => {
+    const el = tabStripEl.current;
+    if (!el) return;
+    const left = el.scrollLeft > 1;
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setTabsPast(p => (p.left === left && p.right === right ? p : { left, right }));
+  }, []);
+  // A ref callback, not an effect: the strip only exists once a profile is
+  // open, and is watched from the moment it shows.
+  const tabStripRef = useCallback((el: HTMLDivElement | null) => {
+    tabStripUnwatch.current?.();
+    tabStripUnwatch.current = null;
+    tabStripEl.current = el;
+    if (!el) return;
+    const sizes = new ResizeObserver(measureTabStrip);
+    const watch = () => {
+      sizes.disconnect();
+      sizes.observe(el);
+      for (const tab of Array.from(el.children)) sizes.observe(tab);
+      measureTabStrip();
+    };
+    watch();
+    const tabs = new MutationObserver(watch);
+    tabs.observe(el, { childList: true });
+    el.addEventListener("scroll", measureTabStrip, { passive: true });
+    tabStripUnwatch.current = () => {
+      sizes.disconnect();
+      tabs.disconnect();
+      el.removeEventListener("scroll", measureTabStrip);
+    };
+  }, [measureTabStrip]);
+  const tabScroll = (): ScrollBehavior =>
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  // The tab on screen is kept in view, a new one too: otherwise it opens
+  // past the end of a full strip, where nothing shows it.
+  useEffect(() => {
+    const el = tabStripEl.current;
+    if (!el || !activeView.startsWith("session-")) return;
+    const tab = Array.from(el.children).find((c) => (c as HTMLElement).dataset.tabId === activeView);
+    if (!tab) return;
+    const box = el.getBoundingClientRect();
+    const r = tab.getBoundingClientRect();
+    // Room for the arrow over each end.
+    const room = 32;
+    const left = r.left - box.left + el.scrollLeft;
+    const right = left + r.width;
+    if (left < el.scrollLeft + room) el.scrollTo({ left: Math.max(0, left - room), behavior: tabScroll() });
+    else if (right > el.scrollLeft + el.clientWidth - room) el.scrollTo({ left: right - el.clientWidth + room, behavior: tabScroll() });
+  }, [activeView, sessions.length]);
+  const scrollTabs = (dir: -1 | 1) => {
+    const el = tabStripEl.current;
+    if (el) el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: tabScroll() });
+  };
+
   const [newNode, setNewNode] = useState(defaultNode);
   // A closed panel stays mounted, its fields hidden: what it held goes once it
   // has slid out, or a revealed password, key or passphrase would stay in the
@@ -382,6 +461,10 @@ function DesktopApp() {
     // On by default: logins may use keys from an ssh-agent on this computer.
     // See util/sshAgent.
     useSshAgent: readUseSshAgent(),
+    // On by default: idle sessions send keepalives, and a dropped one logs back
+    // in by itself. See util/sessionKeep.
+    sendKeepalives: readSendKeepalivesDefault(),
+    autoReconnect: readAutoReconnectDefault(),
     // On by default: connections use what ~/.ssh/config says about a host.
     // See util/sshConfig.
     useSshConfig: readUseSshConfig(),
@@ -410,6 +493,8 @@ function DesktopApp() {
     localStorage.setItem(MIN_CONTRAST_KEY, appSettings.terminalMinContrast ? 'on' : 'off');
     localStorage.setItem(USE_LOCAL_SHELL_KEY, appSettings.useLocalShell ? 'on' : 'off');
     localStorage.setItem(USE_SSH_AGENT_KEY, appSettings.useSshAgent ? 'on' : 'off');
+    localStorage.setItem(SEND_KEEPALIVES_KEY, appSettings.sendKeepalives === false ? 'off' : 'on');
+    localStorage.setItem(AUTO_RECONNECT_KEY, appSettings.autoReconnect === false ? 'off' : 'on');
     localStorage.setItem(USE_SSH_CONFIG_KEY, appSettings.useSshConfig ? 'on' : 'off');
     invoke("set_use_ssh_config", { enabled: appSettings.useSshConfig }).catch(() => {});
     localStorage.setItem('submarine-auto-sync', appSettings.autoSync ? 'on' : 'off');
@@ -489,10 +574,10 @@ function DesktopApp() {
     if (removed <= 0 && emptied <= 0) return;
     addLog(
       [
-        removed > 0 && `Sync removed ${removed} item${removed === 1 ? "" : "s"} from this profile (deleted elsewhere).`,
-        emptied > 0 && `Sync emptied a saved key or password in ${emptied} item${emptied === 1 ? "" : "s"} (done elsewhere).`,
-        report.backup && `The profile as it was is kept as ${report.backup}. To go back to it, lock the profile and use its ⋯ menu.`,
-      ].filter(Boolean).join(" "),
+        removed > 0 && tn(removed, "Sync removed {count} item from this profile (deleted elsewhere).", "Sync removed {count} items from this profile (deleted elsewhere)."),
+        emptied > 0 && tn(emptied, "Sync emptied a saved key or password in {count} item (done elsewhere).", "Sync emptied a saved key or password in {count} items (done elsewhere)."),
+        report.backup && t("The profile as it was is kept as {backup}. To go back to it, lock the profile and use its ⋯ menu.", { backup: report.backup }),
+      ].reduce<string>((all, s) => (s ? joinSentences(all, s) : all), ""),
       "info",
     );
   }, [addLog]);
@@ -516,7 +601,7 @@ function DesktopApp() {
   const allowHeld = useCallback(async (serverId: number, items: string[]) => {
     try {
       await invoke("allow_held", { serverId, items });
-      addLog(items.length ? `Allowed ${items.length} held change${items.length === 1 ? "" : "s"}.` : "Allowed the held changes.", "success");
+      addLog(items.length ? tn(items.length, "Allowed {count} held change.", "Allowed {count} held changes.") : t("Allowed the held changes."), "success");
     } catch (e) {
       addLog(`ALLOW_FAILED: ${e}`, "error");
     }
@@ -587,20 +672,20 @@ function DesktopApp() {
       const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; emptied?: number; backup?: string | null }>("sync_now");
       await refreshAll();
       refreshSharedState();
-      setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
-      addLog(`Cloud sync complete — pushed ${report.pushed}, pulled ${report.pulled}.`, "success");
+      setLastSyncLabel(t("Last synced {time}", { time: new Date().toLocaleTimeString() }));
+      addLog(t("Cloud sync complete — pushed {pushed}, pulled {pulled}.", { pushed: report.pushed, pulled: report.pulled }), "success");
       logRemoved(report);
       if (report.key_change) {
-        addLog("This shared profile's key has changed. Your changes aren't uploaded until you deal with the notice in Servers.", "info");
+        addLog(t("This shared profile's key has changed. Your changes aren't uploaded until you deal with the notice in Servers."), "info");
       }
     } catch (e) {
       const msg = String(e);
       if (/NO_TOKEN|invalid_token|Missing auth|401/i.test(msg)) {
-        addLog("Cloud sync: not signed in. Open the Cloud panel from the profile picker and sign in first.", "error");
+        addLog(t("Cloud sync: not signed in. Open the Cloud panel from the profile picker and sign in first."), "error");
       } else if (/NO_PROFILE_OPEN|DB_NOT_OPEN|NO_KEY|NO_HLC/i.test(msg)) {
-        addLog("Cloud sync: no profile open — unlock a profile first.", "error");
+        addLog(t("Cloud sync: no profile open — unlock a profile first."), "error");
       } else {
-        addLog(`Cloud sync failed: ${msg}`, "error");
+        addLog(t("Cloud sync failed: {error}", { error: msg }), "error");
       }
     } finally {
       setCloudSyncing(false);
@@ -632,9 +717,9 @@ function DesktopApp() {
   const acceptShareKey = useCallback(async (fingerprint: string) => {
     try {
       await invoke("accept_share_key", { fingerprint });
-      addLog("This shared profile now uses its new key.", "success");
+      addLog(t("This shared profile now uses its new key."), "success");
     } catch (e) {
-      addLog(`Couldn't switch to the new key: ${e}`, "error");
+      addLog(t("Couldn't switch to the new key: {error}", { error: String(e) }), "error");
     }
     await handleCloudSync();
   }, [addLog, handleCloudSync]);
@@ -663,7 +748,7 @@ function DesktopApp() {
       const report = await invoke<{ pushed: number; pulled: number; key_change: boolean; removed?: number; emptied?: number; backup?: string | null }>("sync_now");
       if (report.pulled > 0) await refreshAllRef.current();
       refreshSharedState();
-      setLastSyncLabel(`Last synced ${new Date().toLocaleTimeString()}`);
+      setLastSyncLabel(t("Last synced {time}", { time: new Date().toLocaleTimeString() }));
       logRemoved(report);
     } catch {
       // Silent by design — not signed in, offline, or a viewer with nothing to
@@ -686,8 +771,7 @@ function DesktopApp() {
   const resolveHeldDeletions = useCallback(async (deleteThem: boolean) => {
     try {
       const n = await invoke<number>("resolve_held_deletions", { deleteThem });
-      const s = n === 1 ? "" : "s";
-      addLog(deleteThem ? `Done here too: ${n} item${s}.` : `Kept ${n} item${s}.`, "success");
+      addLog(deleteThem ? tn(n, "Done here too: {count} item.", "Done here too: {count} items.") : tn(n, "Kept {count} item.", "Kept {count} items."), "success");
     } catch (e) {
       addLog(`HELD_DELETIONS: ${e}`, "error");
     }
@@ -768,6 +852,7 @@ function DesktopApp() {
     if (activeProfile) forgetServerBookmarks(activeProfile, s.id);
     if (s.uuid) {
       forgetRdpOptions(s.uuid);
+      forgetSessionKeep(s.uuid);
       forgetVncOptions(s.uuid);
     }
   };
@@ -779,7 +864,7 @@ function DesktopApp() {
       forgetServer(server || { id });
       refreshServers();
       bumpSync();
-      addLog("Server removed.", "info");
+      addLog(t("Server removed."), "info");
     } catch (e) { addLog(`DELETE_EXCEPTION: ${e}`, "error"); }
   };
 
@@ -794,7 +879,7 @@ function DesktopApp() {
       gone.forEach(forgetServer);
       await Promise.all([refreshFolders(), refreshServers()]);
       bumpSync();
-      addLog("Folder removed.", "info");
+      addLog(t("Folder removed."), "info");
     } catch (e) { addLog(`DELETE_EXCEPTION: ${e}`, "error"); }
   };
 
@@ -803,7 +888,7 @@ function DesktopApp() {
       await invoke("add_folder", { name, parentId });
       await refreshFolders();
       bumpSync();
-      addLog(`Folder "${name}" created.`, "success");
+      addLog(t('Folder "{name}" created.', { name }), "success");
     } catch (e) {
       addLog(`FOLDER_ERROR: ${e}`, "error");
       throw e; // NodeGrid keeps the name input open for a retry
@@ -817,8 +902,8 @@ function DesktopApp() {
       await invoke("move_server_to_folder", { id, folderId });
       await refreshServers();
       bumpSync();
-      const where = folderId === null ? "the top level" : `"${folders.find((f: any) => f.id === folderId)?.name ?? "folder"}"`;
-      addLog(`Server moved to ${where}.`, "info");
+      const folder = folders.find((f: any) => f.id === folderId)?.name ?? t("folder");
+      addLog(folderId === null ? t("Server moved to the top level.") : t('Server moved to "{folder}".', { folder }), "info");
     } catch (e) {
       addLog(`MOVE_ERROR: ${e}`, "error");
       throw e;
@@ -829,8 +914,8 @@ function DesktopApp() {
       await invoke("move_folder", { id, parentId });
       await refreshFolders();
       bumpSync();
-      const where = parentId === null ? "the top level" : `"${folders.find((f: any) => f.id === parentId)?.name ?? "folder"}"`;
-      addLog(`Folder moved to ${where}.`, "info");
+      const folder = folders.find((f: any) => f.id === parentId)?.name ?? t("folder");
+      addLog(parentId === null ? t("Folder moved to the top level.") : t('Folder moved to "{folder}".', { folder }), "info");
     } catch (e) {
       addLog(`MOVE_ERROR: ${e}`, "error");
       throw e;
@@ -842,7 +927,7 @@ function DesktopApp() {
       await invoke("rename_folder", { id, name });
       await refreshFolders();
       bumpSync();
-      addLog(`Folder renamed to "${name}".`, "info");
+      addLog(t('Folder renamed to "{name}".', { name }), "info");
     } catch (e) {
       addLog(`RENAME_EXCEPTION: ${e}`, "error");
       throw e; // bubble up so NodeGrid can keep the input open if the user wants to retry
@@ -856,7 +941,7 @@ function DesktopApp() {
   const handleProfileUnlocked = async (name: string) => {
     setActiveProfile(name);
     setIsUnlocked(true);
-    addLog(`Profile "${name}" unlocked.`, "success");
+    addLog(t('Profile "{name}" unlocked.', { name }), "success");
     refreshAll();
     // Attribute future edits to the signed-in cloud account so shared/multi-
     // device profiles show "last edited by <email>". Best-effort; unattributed
@@ -877,7 +962,7 @@ function DesktopApp() {
       const isHeld = (s: any) => (s.held || []).includes("autostart");
       const waiting = list.filter((s) => s.autostart && isHeld(s));
       if (waiting.length > 0) {
-        addLog(`Autostart: ${waiting.map((s) => s.name).join(", ")} waiting for your OK (Servers → Review).`, "info");
+        addLog(t("Autostart: {names} waiting for your OK (Servers → Review).", { names: waiting.map((s) => s.name).join(", ") }), "info");
       }
       // Only SSH servers start by themselves (an RDP server would open an app).
       const toStart = list.filter((s) => s.autostart && !isHeld(s) && (s.protocol ?? "ssh") === "ssh");
@@ -899,7 +984,7 @@ function DesktopApp() {
         return [...prev, ...fresh];
       });
       setActiveView(newSessions[0].id);
-      addLog(`Autostart: opened ${newSessions.length} node${newSessions.length === 1 ? "" : "s"}.`, "info");
+      addLog(tn(newSessions.length, "Autostart: opened {count} node.", "Autostart: opened {count} nodes."), "info");
     } catch (e) {
       addLog(`AUTOSTART_LOAD_FAILED: ${e}`, "error");
     }
@@ -914,21 +999,19 @@ function DesktopApp() {
   // same passphrase as ever, so no rule for it here but that it's there.
   const unlockSharing = async () => {
     const pass = await textPrompt({
-      title: "Unlock sharing",
-      message:
-        "This shared profile's key may have changed. Enter your sharing passphrase to check. " +
-        "Until then this device can't read what's new, and your changes aren't uploaded. The passphrase never leaves this device.",
-      placeholder: "Sharing passphrase",
+      title: t("Unlock sharing"),
+      message: t("This shared profile's key may have changed. Enter your sharing passphrase to check. Until then this device can't read what's new, and your changes aren't uploaded. The passphrase never leaves this device."),
+      placeholder: t("Sharing passphrase"),
       password: true,
-      okLabel: "Unlock",
-      validate: (v) => (v.length < 1 ? "Enter your sharing passphrase" : null),
+      okLabel: t("Unlock"),
+      validate: (v) => (v.length < 1 ? t("Enter your sharing passphrase") : null),
     });
     if (!pass) return;
     try {
       await invoke("setup_identity", { encPassphrase: pass });
-      addLog("Sharing unlocked.", "success");
+      addLog(t("Sharing unlocked."), "success");
     } catch (e) {
-      addLog(`Couldn't unlock sharing: ${String(e).replace(/^\[[A-Z_]+\]\s*/, "")}`, "error");
+      addLog(t("Couldn't unlock sharing: {error}", { error: String(e).replace(/^\[[A-Z_]+\]\s*/, "") }), "error");
       return;
     }
     await handleCloudSync();
@@ -958,10 +1041,10 @@ function DesktopApp() {
       if (n === 0) return; // nothing to lose — let the close proceed
       event.preventDefault();
       const ok = await confirm({
-        title: "Close Submarine?",
-        message: `${n} session${n === 1 ? "" : "s"} ${n === 1 ? "is" : "are"} still connected. Closing now disconnects ${n === 1 ? "it" : "them all"} and aborts any in-flight transfers.`,
-        okLabel: "Close anyway",
-        cancelLabel: "Stay",
+        title: t("Close Submarine?"),
+        message: tn(n, "{count} session is still connected. Closing now disconnects it and aborts any in-flight transfers.", "{count} sessions are still connected. Closing now disconnects them all and aborts any in-flight transfers."),
+        okLabel: t("Close anyway"),
+        cancelLabel: t("Stay"),
         destructive: true,
       });
       if (ok) {
@@ -996,20 +1079,20 @@ function DesktopApp() {
   const handleLogout = async () => {
     if (sessions.length > 0) {
       const ok = await confirm({
-        title: "Switch profile?",
-        message: `You have ${sessions.length} open session${sessions.length === 1 ? "" : "s"}. Switching will disconnect ${sessions.length === 1 ? "it" : "them all"} and take you back to the profile picker.`,
-        okLabel: "Switch",
-        cancelLabel: "Stay",
+        title: t("Switch profile?"),
+        message: tn(sessions.length, "You have {count} open session. Switching will disconnect it and take you back to the profile picker.", "You have {count} open sessions. Switching will disconnect them all and take you back to the profile picker."),
+        okLabel: t("Switch"),
+        cancelLabel: t("Stay"),
         destructive: true,
       });
       if (!ok) return;
     }
     if (!(await saveDrafts())) {
       const lockAnyway = await confirm({
-        title: "Lock without saving?",
-        message: "What you were typing in the Library couldn't be saved.\n\nIf you lock now, it is lost.",
-        okLabel: "Lock anyway",
-        cancelLabel: "Stay",
+        title: t("Lock without saving?"),
+        message: t("What you were typing in the Library couldn't be saved.\n\nIf you lock now, it is lost."),
+        okLabel: t("Lock anyway"),
+        cancelLabel: t("Stay"),
         destructive: true,
         safeDefault: true,
       });
@@ -1021,10 +1104,10 @@ function DesktopApp() {
     try { await invoke("persist_vault"); }
     catch (e) {
       const lockAnyway = await confirm({
-        title: "Lock without saving?",
-        message: `This profile couldn't be saved: ${e}\n\nIf you lock it now, everything changed since the last good save is lost.`,
-        okLabel: "Lock anyway",
-        cancelLabel: "Stay",
+        title: t("Lock without saving?"),
+        message: t("This profile couldn't be saved: {error}\n\nIf you lock it now, everything changed since the last good save is lost.", { error: String(e) }),
+        okLabel: t("Lock anyway"),
+        cancelLabel: t("Stay"),
         destructive: true,
         safeDefault: true,
       });
@@ -1070,7 +1153,7 @@ function DesktopApp() {
     setNewNode(defaultNode);
     setEditCredData(EMPTY_CRED);
     setEditKeyData(EMPTY_KEY);
-    addLog("Profile locked.", "info");
+    addLog(t("Profile locked."), "info");
   };
 
   const openServer = async (server: any) => {
@@ -1082,10 +1165,10 @@ function DesktopApp() {
       const moved: string | undefined = (server.held || []).find((i: string) => i.startsWith("moved:"));
       if (moved) {
         const ok = await confirm({
-          title: "Connect to the new address?",
-          message: `${server.name} now connects to ${server.moved_to || "a new address"}. It connected to ${moved.slice("moved:".length)}, and this device hasn't allowed the change.`,
-          okLabel: "Allow and connect",
-          cancelLabel: "Not now",
+          title: t("Connect to the new address?"),
+          message: t("{name} now connects to {to}. It connected to {from}, and this device hasn't allowed the change.", { name: server.name, to: server.moved_to || t("a new address"), from: moved.slice("moved:".length) }),
+          okLabel: t("Allow and connect"),
+          cancelLabel: t("Not now"),
           safeDefault: true,
         });
         if (!ok) return;
@@ -1095,7 +1178,7 @@ function DesktopApp() {
         id: sessionId,
         serverId: server.id,
         serverName: server.name,
-        protocol: ["rdp", "telnet", "vnc"].includes(server.protocol) ? server.protocol : "ssh",
+        protocol: serverProtocol(server.protocol),
         // Pass the raw mirrors JSON through to SessionView so the
         // MirrorsPanel can pre-populate "Saved on this node" without
         // another round-trip to the backend.
@@ -1121,6 +1204,24 @@ function DesktopApp() {
   // exactly as before even if the save fails; the persisted node is a
   // best-effort side effect the backend dedups by (host, port, username).
   const openQuickConnect = (auth: QuickAuth) => {
+    // An FTP server is saved first and then opened like any saved one: its tab
+    // connects by the saved server (ftp_connect), with the certificate check
+    // and the password prompt that come with it.
+    if (isFtp(auth.protocol)) {
+      setIsQuickConnectOpen(false);
+      const shown = auth.username ? `${auth.username}@${auth.host}:${auth.port}` : `${auth.host}:${auth.port}`;
+      addLog(t("Quick connect → {name}", { name: shown }), "info");
+      invoke<number>("save_quick_connect_node", { auth })
+        .then(async (id) => {
+          const list = await invoke<any[]>("get_servers");
+          refreshServers();
+          bumpSync();
+          const server = list.find((s) => s.id === id);
+          if (server) await openServer(server);
+        })
+        .catch((e) => addLog(`QUICK_NODE_SAVE_FAILED: ${e}`, "error"));
+      return;
+    }
     const sessionId = `session-quick-${Date.now()}`;
     // No `user@` when the username is left blank (asked at connect, #54).
     const displayName = auth.username
@@ -1134,11 +1235,11 @@ function DesktopApp() {
     }]);
     setActiveView(sessionId);
     setIsQuickConnectOpen(false);
-    addLog(`Quick connect → ${displayName}`, "info");
+    addLog(t("Quick connect → {name}", { name: displayName }), "info");
     // Persist a root-level profile for reuse. Best-effort: a failure here must
     // never block the live connection the user just asked for.
     invoke("save_quick_connect_node", { auth })
-      .then(() => { refreshServers(); bumpSync(); addLog(`Saved node → ${displayName}`, "success"); })
+      .then(() => { refreshServers(); bumpSync(); addLog(t("Saved node → {name}", { name: displayName }), "success"); })
       .catch((e) => addLog(`QUICK_NODE_SAVE_FAILED: ${e}`, "error"));
   };
 
@@ -1162,8 +1263,9 @@ function DesktopApp() {
     }
     setNewNode({
       id: server.id,
-      protocol: ["rdp", "telnet", "vnc"].includes(server.protocol) ? server.protocol : "ssh",
+      protocol: serverProtocol(server.protocol),
       rdpOptions: readRdpOptions(server.uuid),
+      sessionKeep: readSessionKeep(server.uuid),
       vncOptions: readVncOptions(server.uuid),
       name: server.name || "",
       host: server.host || "",
@@ -1195,6 +1297,153 @@ function DesktopApp() {
     });
     setIsPanelOpen(true);
   };
+
+  // The Library and Logins forms. A close with changes in a form (a click
+  // beside it, or its X) asks first, as the server form does
+  // (ui/slideOverForm). A close clears the error line, which the forms share.
+  const closeCommandPanel = () => { setIsCommandPanelOpen(false); setFormError(""); };
+  const saveCommand = async () => {
+    if (!editCommandData.title || !editCommandData.content) {
+      setFormError(t("Title and Content are required."));
+      addLog(t("Title and Content are required."), "error");
+      return;
+    }
+    const scope = editCommandData.scope;
+    if (scope && !scope.servers.length && !scope.folders.length) {
+      setFormError(t("Tick at least one server or folder, or choose All servers."));
+      return;
+    }
+    try {
+      if (editCommandData.id) {
+        await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content });
+        await invoke("set_command_scope", { id: editCommandData.id, scope: scopeToJson(scope) });
+      } else {
+        await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope) });
+      }
+      closeCommandPanel();
+      refreshCommands();
+      bumpSync();
+      addLog(t("Command saved."), "success");
+    } catch (e) {
+      setFormError(t("Failed to save command: {error}", { error: String(e) }));
+      addLog(`COMMAND_SAVE_ERROR: ${e}`, "error");
+    }
+  };
+  const commandForm = useUnsavedGuard({
+    open: isCommandPanelOpen,
+    value: editCommandData,
+    close: closeCommandPanel,
+    save: saveCommand,
+    question: (opened) => unsavedQuestion("command", !opened.id, opened.title),
+  });
+
+  const closeNotePanel = () => { setIsNotePanelOpen(false); setFormError(""); };
+  const saveNote = async () => {
+    if (!editNoteData.title.trim() && !editNoteData.body.trim()) {
+      setFormError(t("Add a title or some content first."));
+      return;
+    }
+    try {
+      const action = editNoteData.id
+        ? invoke("edit_note", { id: editNoteData.id, title: editNoteData.title, body: editNoteData.body })
+        : invoke("add_note", { title: editNoteData.title, body: editNoteData.body });
+      await action;
+      closeNotePanel();
+      refreshNotes();
+      bumpSync();
+      addLog(t("Note saved."), "success");
+    } catch (e) {
+      setFormError(t("Failed to save note: {error}", { error: String(e) }));
+      addLog(`NOTE_SAVE_ERROR: ${e}`, "error");
+    }
+  };
+  const noteForm = useUnsavedGuard({
+    open: isNotePanelOpen,
+    value: editNoteData,
+    close: closeNotePanel,
+    save: saveNote,
+    question: (opened) => unsavedQuestion("note", !opened.id, opened.title),
+  });
+
+  const closeCredPanel = () => { setIsCredPanelOpen(false); setFormError(""); };
+  const saveCred = async () => {
+    if (!editCredData.name) {
+      setFormError(t("Name is required."));
+      addLog(t("Name is required."), "error");
+      return;
+    }
+    if (editCredData.auth_type === "key" && !editCredData.key_id) {
+      setFormError(t("Please select a linked SSH Private Key."));
+      addLog(t("Please select a linked SSH Private Key."), "error");
+      return;
+    }
+    try {
+      const payload = {
+        name: editCredData.name,
+        authType: editCredData.auth_type || "password",
+        // Blank = asked when connecting (issue #54).
+        username: editCredData.username?.trim() ?? "",
+        password: editCredData.auth_type === "key" ? null : (editCredData.password || null),
+        keyId: editCredData.auth_type === "key" ? (editCredData.key_id ? parseInt(editCredData.key_id.toString()) : null) : null
+      };
+      const action = editCredData.id
+        ? invoke("edit_credential", { id: editCredData.id, ...payload })
+        : invoke("add_credential", payload);
+      await action;
+      closeCredPanel();
+      refreshCredentials();
+      bumpSync();
+      addLog(t("Credential saved."), "success");
+    } catch (e) {
+      setFormError(t("Failed to save credential: {error}", { error: String(e) }));
+      addLog(`CRED_SAVE_ERROR: ${e}`, "error");
+    }
+  };
+  // The revealed password is part of what the form opened with: only while
+  // it is open, as in the form itself.
+  const credForm = useUnsavedGuard({
+    open: isCredPanelOpen,
+    value: editCredData,
+    close: closeCredPanel,
+    save: saveCred,
+    question: (opened) => unsavedQuestion("login", !opened.id, opened.name),
+  });
+
+  const closeKeyPanel = () => { setIsKeyPanelOpen(false); setFormError(""); };
+  const saveKey = async () => {
+    if (!editKeyData.name || !editKeyData.private_key) {
+      setFormError(t("Name and Private Key are required."));
+      addLog(t("Name and Private Key are required."), "error");
+      return;
+    }
+    try {
+      const payload = {
+        name: editKeyData.name,
+        publicKey: editKeyData.public_key,
+        privateKey: editKeyData.private_key,
+        passphrase: editKeyData.passphrase || null
+      };
+      const action = editKeyData.id
+        ? invoke("edit_ssh_key", { id: editKeyData.id, ...payload })
+        : invoke("add_ssh_key", payload);
+      await action;
+      closeKeyPanel();
+      refreshSshKeys();
+      bumpSync();
+      addLog(t("SSH Key saved."), "success");
+    } catch (e) {
+      setFormError(t("Failed to save SSH Key: {error}", { error: String(e) }));
+      addLog(`KEY_SAVE_ERROR: ${e}`, "error");
+    }
+  };
+  // The same for the private key and passphrase.
+  const keyForm = useUnsavedGuard({
+    open: isKeyPanelOpen,
+    value: editKeyData,
+    close: closeKeyPanel,
+    save: saveKey,
+    question: (opened) => unsavedQuestion("key", !opened.id, opened.name),
+  });
 
   // Render helper, NOT a component — it is invoked as `{TitleBar()}` below,
   // never as `<TitleBar />`. Rendering it as a JSX element would give it a
@@ -1246,7 +1495,7 @@ function DesktopApp() {
             <button
               type="button"
               onClick={() => setMobileSessionPickerOpen(v => !v)}
-              className={`w-full h-7 px-3 rounded-full flex items-center gap-2 border transition-all ${
+              className={`relative w-full h-7 px-3 rounded-full flex items-center gap-2 border transition-all before:absolute before:inset-x-0 before:-top-1 before:-bottom-2 before:content-[''] ${
                 activeView.startsWith('session-') || activeView === 'wall'
                   ? 'bg-primary/15 text-primary border-primary/40 shadow-inner'
                   : 'bg-white/[0.06] text-zinc-300 border-white/10'
@@ -1272,8 +1521,8 @@ function DesktopApp() {
                       : (cur && <span className={`w-2 h-2 rounded-full shrink-0 ${dotTone}`} />)}
                     <span className="truncate flex-1 text-left text-[11px] font-bold">
                       {isWall
-                        ? `Wall${wallItems.length > 0 ? ` · ${wallItems.length} pinned` : ''}`
-                        : cur ? tabLabel(cur) : `${sessions.length} open session${sessions.length === 1 ? '' : 's'}`}
+                        ? (wallItems.length > 0 ? t("Wall · {count} pinned", { count: wallItems.length }) : t("Wall"))
+                        : cur ? tabLabel(cur) : tn(sessions.length, "{count} open session", "{count} open sessions")}
                     </span>
                     {mergedSessionIds.length > 0 && (
                       <span className="shrink-0 h-4 px-1 rounded-full bg-primary/25 text-primary text-[9px] font-bold flex items-center gap-0.5">
@@ -1308,7 +1557,7 @@ function DesktopApp() {
                           role="option"
                           aria-selected={isActive}
                           onClick={() => { setActiveView(s.id); setMobileSessionPickerOpen(false); }}
-                          className={`flex-1 flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-all ${
+                          className={`flex-1 flex items-center gap-2 px-2.5 py-3 sm:py-2 rounded-lg text-left transition-all ${
                             isActive
                               ? 'bg-primary/15 text-primary'
                               : isMerged
@@ -1319,7 +1568,7 @@ function DesktopApp() {
                           <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
                           <span className="text-[12px] font-semibold truncate flex-1">{tabLabel(s)}</span>
                           {isMerged && !isActive && (
-                            <span className="text-[9px] font-bold uppercase tracking-wider text-primary/60">Split-in</span>
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-primary/60">{t("Split-in")}</span>
                           )}
                         </button>
                         {/* Merge/unmerge toggle — mobile equivalent of
@@ -1341,7 +1590,7 @@ function DesktopApp() {
                                 else setMergedSessionIds(prev => [...prev, s.id]);
                               }
                             }}
-                            title={isMerged ? 'Remove from split view' : 'Split with current view'}
+                            title={isMerged ? t("Remove from split view") : t("Split with current view")}
                             className={`h-8 w-8 shrink-0 rounded-lg flex items-center justify-center border transition-all ${
                               isMerged
                                 ? 'bg-primary/15 text-primary border-primary/40'
@@ -1367,8 +1616,8 @@ function DesktopApp() {
                             unpinSessionFromWall(sid);
                             setActiveView(prev => (prev === sid ? 'nodes' : prev));
                           }}
-                          title="Close session"
-                          className="h-8 w-8 shrink-0 rounded-lg flex items-center justify-center text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] transition-all"
+                          title={t("Close session")}
+                          className="h-10 w-10 sm:h-8 sm:w-8 shrink-0 rounded-lg flex items-center justify-center text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] transition-all"
                         >
                           <X size={13} />
                         </button>
@@ -1386,17 +1635,17 @@ function DesktopApp() {
                       setActiveView('wall');
                       setMobileSessionPickerOpen(false);
                     }}
-                    className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-all ${
+                    className={`w-full flex items-center gap-2 px-2.5 py-3 sm:py-2 rounded-lg text-left transition-all ${
                       activeView === 'wall'
                         ? 'bg-primary/15 text-primary'
                         : 'text-zinc-200 hover:bg-white/[0.06]'
                     }`}
                   >
                     <LayoutGrid size={13} className="shrink-0" />
-                    <span className="text-[12px] font-semibold flex-1">Wall</span>
+                    <span className="text-[12px] font-semibold flex-1">{t("Wall")}</span>
                     {wallItems.length > 0 && (
                       <span className="text-[9px] font-bold uppercase tracking-wider text-primary/70">
-                        {wallItems.length} pinned
+                        {t("{count} pinned", { count: wallItems.length })}
                       </span>
                     )}
                   </button>
@@ -1411,10 +1660,19 @@ function DesktopApp() {
           clicking a tab selects it instead of dragging the window. On phone
           the horizontal scroll is replaced by the dropdown above; the
           strip below is hidden on mobile. */}
+      <div data-tauri-drag-region className={`${isMobile ? 'hidden' : 'flex'} relative flex-1 min-w-0 h-full`}>
       <div
+        ref={tabStripRef}
         data-tauri-drag-region
-        className={`${isMobile ? 'hidden' : 'flex'} flex-1 gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1`}
-        onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY; }}
+        className="flex flex-1 min-w-0 gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1"
+        onWheel={(e) => {
+          // A mouse wheel scrolls the strip sideways; a touchpad's sideways
+          // swipe does by itself. A wheel that counts in lines or pages
+          // (some Linux set-ups) is turned into pixels.
+          if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+          const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? e.currentTarget.clientWidth : 1;
+          e.currentTarget.scrollLeft += e.deltaY * unit;
+        }}
       >
         {sessions.map(s => {
           const st = sessionStatuses[s.id] ?? "connecting";
@@ -1432,11 +1690,11 @@ function DesktopApp() {
             st === "disconnected" ? "bg-rose-500" :
                                     "bg-zinc-500";
           const dotTitle =
-            waiting               ? "Waiting for you — open this tab to answer" :
-            st === "connected"    ? "Connected" :
-            st === "connecting"   ? "Connecting…" :
-            st === "failed"       ? "Connection failed" :
-            st === "disconnected" ? "Disconnected" :
+            waiting               ? t("Waiting for you — open this tab to answer") :
+            st === "connected"    ? t("Connected") :
+            st === "connecting"   ? t("Connecting…") :
+            st === "failed"       ? t("Connection failed") :
+            st === "disconnected" ? t("Disconnected") :
                                     st;
           // Broadcast indicator: small orange dot next to the status dot when
           // this session is in the target set AND broadcast is armed. Kept
@@ -1447,6 +1705,7 @@ function DesktopApp() {
           return (
             <div
               key={s.id}
+              data-tab-id={s.id}
               onClick={(e) => {
                 // Ctrl/⌘-click toggles this tab in the split beside the
                 // currently-active session view — a quick keyboard-free
@@ -1489,7 +1748,7 @@ function DesktopApp() {
               // `whitespace-nowrap` keeps long names on a single line; without
               // it a tab with a 30-char hostname would wrap into a two-line
               // pill and break the row's height.
-              title={isMergedTab ? `${tabLabel(s)} · split beside current view (Ctrl-click to unpair)` : tabLabel(s)}
+              title={isMergedTab ? t("{name} · split beside current view (Ctrl-click to unpair)", { name: tabLabel(s) }) : tabLabel(s)}
               className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all shrink-0 mr-1 ${
                 activeView === s.id
                   ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10'
@@ -1505,8 +1764,8 @@ function DesktopApp() {
               />
               {isBroadcastTarget && (
                 <span
-                  title="Broadcast target"
-                  aria-label="Broadcast target"
+                  title={t("Broadcast target")}
+                  aria-label={t("Broadcast target")}
                   className="w-1.5 h-1.5 rounded-full mr-1.5 shrink-0 bg-orange-400 shadow-[0_0_6px_rgba(251,146,60,0.7)]"
                 />
               )}
@@ -1536,7 +1795,7 @@ function DesktopApp() {
                   The X below is desktop-only so we don't stack both. */}
               <button
                 type="button"
-                aria-label="Session actions"
+                aria-label={t("Session actions")}
                 className="sm:hidden ml-1 h-5 w-5 flex items-center justify-center rounded hover:bg-white/5 shrink-0 text-zinc-400"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1552,7 +1811,7 @@ function DesktopApp() {
                   SessionView so both tab strips look like siblings. */}
               <button
                 type="button"
-                aria-label="Close session"
+                aria-label={t("Close session")}
                 className="hidden sm:flex ml-1 h-5 w-5 items-center justify-center rounded hover:bg-white/5 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-zinc-400 hover:text-red-400 transition-opacity"
                 onClick={async (e) => {
                   e.stopPropagation();
@@ -1562,9 +1821,9 @@ function DesktopApp() {
                   // that drives the coloured dot above.
                   if (sessionStatuses[s.id] === "connected") {
                     const ok = await confirm({
-                      title: "Close this session?",
-                      message: "The connection will be dropped.",
-                      okLabel: "Close",
+                      title: t("Close this session?"),
+                      message: t("The connection will be dropped."),
+                      okLabel: t("Close"),
                       destructive: true,
                     });
                     if (!ok) return;
@@ -1584,6 +1843,30 @@ function DesktopApp() {
             </div>
           );
         })}
+      </div>
+      {/* More tabs past an end: an arrow over that end scrolls to them. */}
+      {tabsPast.left && (
+        <button
+          type="button"
+          onClick={() => scrollTabs(-1)}
+          title={t("Show the tabs to the left")}
+          aria-label={t("Show the tabs to the left")}
+          className="no-drag absolute left-0 bottom-1 h-7 w-8 flex items-center justify-start pl-1 rounded-l-full text-zinc-300 hover:text-white bg-gradient-to-r from-[#0d0d10] via-[#0d0d10]/90 to-transparent"
+        >
+          <ChevronLeft size={15} />
+        </button>
+      )}
+      {tabsPast.right && (
+        <button
+          type="button"
+          onClick={() => scrollTabs(1)}
+          title={t("Show the tabs to the right")}
+          aria-label={t("Show the tabs to the right")}
+          className="no-drag absolute right-0 bottom-1 h-7 w-8 flex items-center justify-end pr-1 rounded-r-full text-zinc-300 hover:text-white bg-gradient-to-l from-[#0d0d10] via-[#0d0d10]/90 to-transparent"
+        >
+          <ChevronRight size={15} />
+        </button>
+      )}
       </div>
       {/* Wall trigger — moved OUT of the scrollable tab strip and next
           to the Broadcast pill so both multi-session affordances live
@@ -1606,10 +1889,10 @@ function DesktopApp() {
               setActiveView("wall");
             }}
             title={wallItems.length > 0
-              ? `Wall · ${wallItems.length} pinned terminal${wallItems.length === 1 ? '' : 's'}`
-              : "Wall — pinboard for terminals across servers"}
-            aria-label="Wall pinboard"
-            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all ${
+              ? tn(wallItems.length, "Wall · {count} pinned terminal", "Wall · {count} pinned terminals")
+              : t("Wall — pinboard for terminals across servers")}
+            aria-label={t("Wall pinboard")}
+            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all max-sm:before:absolute max-sm:before:-inset-1.5 max-sm:before:content-[''] ${
               activeView === "wall"
                 ? "bg-primary/15 border border-primary/40 text-primary shadow-inner shadow-primary/10"
                 : "bg-white/[0.06] border border-white/10 text-zinc-400 hover:bg-white/[0.1] hover:text-white"
@@ -1641,10 +1924,10 @@ function DesktopApp() {
             type="button"
             onClick={() => setBroadcastMenuOpen(v => !v)}
             title={broadcast.enabled
-              ? `Broadcasting to ${broadcast.targetSessionIds.size} session${broadcast.targetSessionIds.size === 1 ? "" : "s"}`
-              : "Broadcast input to multiple sessions"}
-            aria-label="Broadcast input"
-            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all ${
+              ? tn(broadcast.targetSessionIds.size, "Broadcasting to {count} session", "Broadcasting to {count} sessions")
+              : t("Broadcast input to multiple sessions")}
+            aria-label={t("Broadcast input")}
+            className={`relative flex items-center justify-center w-7 h-7 rounded-full transition-all max-sm:before:absolute max-sm:before:-inset-1.5 max-sm:before:content-[''] ${
               broadcast.enabled
                 ? "bg-orange-500/15 border border-orange-400/40 text-orange-300 shadow-inner shadow-orange-400/10"
                 : "bg-white/[0.06] border border-white/10 text-zinc-400 hover:bg-white/[0.1] hover:text-white"
@@ -1676,13 +1959,13 @@ function DesktopApp() {
                       onChange={broadcast.toggleEnabled}
                     />
                     <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-200">
-                      Broadcast input
+                      {t("Broadcast input")}
                     </span>
                   </label>
                   <button
                     onClick={() => setBroadcastMenuOpen(false)}
                     className="text-zinc-500 hover:text-white p-0.5"
-                    aria-label="Close"
+                    aria-label={t("Close")}
                   >
                     <X size={12} />
                   </button>
@@ -1692,13 +1975,13 @@ function DesktopApp() {
                     onClick={() => broadcast.selectAll(sessions.map(s => s.id))}
                     className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
                   >
-                    All
+                    {t("All")}
                   </button>
                   <button
                     onClick={() => broadcast.selectNone()}
                     className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
                   >
-                    None
+                    {t("None")}
                   </button>
                   <div className="flex-1" />
                   <span className={`text-[10px] font-bold uppercase tracking-wider ${
@@ -1708,9 +1991,9 @@ function DesktopApp() {
                   }`}>
                     {broadcast.enabled
                       ? (broadcast.targetSessionIds.size >= 2
-                          ? `Live · ${broadcast.targetSessionIds.size}`
-                          : "Pick 2+")
-                      : "Off"}
+                          ? t("Live · {count}", { count: broadcast.targetSessionIds.size })
+                          : t("Pick 2+"))
+                      : t("Off")}
                   </span>
                 </div>
                 <div className="max-h-[240px] overflow-y-auto custom-scrollbar mt-2 space-y-0.5">
@@ -1757,19 +2040,19 @@ function DesktopApp() {
         <div className="flex items-center h-full gap-1 no-drag">
           <button
             onClick={() => appWindow.minimize()}
-            title="Minimize"
+            title={t("Minimize")}
             className="w-10 h-full flex items-center justify-center hover:bg-white/5 transition-colors"
           ><div className="w-3.5 h-[1.5px] bg-zinc-600" /></button>
           <button
             onClick={toggleMaximize}
-            title={isMaximized ? "Restore" : "Maximize"}
+            title={isMaximized ? t("Restore") : t("Maximize")}
             className="w-10 h-full flex items-center justify-center hover:bg-white/5 transition-colors group"
           >
             {isMaximized
               ? <Copy size={12} className="text-zinc-600 group-hover:text-zinc-300 scale-x-[-1]" />
               : <Square size={11} className="text-zinc-600 group-hover:text-zinc-300" />}
           </button>
-          <button title="Close" onClick={() => appWindow.close()} className="w-10 h-full flex items-center justify-center hover:bg-red-500 group transition-all"><X size={14} className="text-zinc-600 group-hover:text-white" /></button>
+          <button title={t("Close")} onClick={() => appWindow.close()} className="w-10 h-full flex items-center justify-center hover:bg-red-500 group transition-all"><X size={14} className="text-zinc-600 group-hover:text-white" /></button>
         </div>
       )}
       {tabMenu && (() => {
@@ -1784,6 +2067,10 @@ function DesktopApp() {
         const targetIsActive = activeView === targetId;
         const currentMerges = targetIsActive ? mergedSessionIds : [];
         const others = sessions.filter(s => s.id !== targetId);
+        // The saved server behind the tab, for Edit server. None for a quick
+        // connect (server 0), or once the server has been deleted.
+        const targetServerId = sessions.find(s => s.id === targetId)?.serverId ?? 0;
+        const targetServer = targetServerId > 0 ? servers.find(sv => sv.id === targetServerId) : undefined;
         return (
         <>
           <div className="fixed inset-0 z-[60]" onClick={() => { setTabMenu(null); setTabRename(null); }} onContextMenu={(e) => { e.preventDefault(); setTabMenu(null); setTabRename(null); }} />
@@ -1797,7 +2084,7 @@ function DesktopApp() {
             {tabRename === targetId ? (
               <RenameInput
                 initialValue={tabNames[targetId] ?? sessions.find(s => s.id === targetId)?.serverName ?? ""}
-                placeholder="Tab name (empty: the server's)"
+                placeholder={t("Tab name (empty: the server's)")}
                 onCommit={(v) => {
                   const name = v.trim();
                   if (name) setTabNames(prev => ({ ...prev, [targetId]: name }));
@@ -1811,7 +2098,16 @@ function DesktopApp() {
               <button
                 className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
                 onClick={() => setTabRename(targetId)}
-              >Rename tab</button>
+              >{t("Rename tab")}</button>
+            )}
+            {targetServer && (
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
+                onClick={() => {
+                  setTabMenu(null);
+                  void handleEditNode(targetServer);
+                }}
+              >{t("Edit server")}</button>
             )}
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-primary/15 hover:text-primary text-zinc-200 flex items-center gap-2"
@@ -1819,14 +2115,14 @@ function DesktopApp() {
                 window.dispatchEvent(new CustomEvent(`session-reconnect-${targetId}`));
                 setTabMenu(null);
               }}
-            >Reconnect</button>
+            >{t("Reconnect")}</button>
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-zinc-200"
               onClick={() => {
                 invoke("disconnect_session", { sessionId: targetId }).catch(console.error);
                 setTabMenu(null);
               }}
-            >Disconnect</button>
+            >{t("Disconnect")}</button>
 
             {/* Pin/Unpin the session's currently-active terminal to
                 the Wall — one-click convenience so users don't have to
@@ -1850,8 +2146,8 @@ function DesktopApp() {
                       }}
                     >
                       {activeTermPinned
-                        ? (<><PinOff size={12} className="text-zinc-500" /> Unpin active terminal</>)
-                        : (<><Pin size={12} className="text-zinc-500" /> Pin active terminal to Wall</>)}
+                        ? (<><PinOff size={12} className="text-zinc-500" /> {t("Unpin active terminal")}</>)
+                        : (<><Pin size={12} className="text-zinc-500" /> {t("Pin active terminal to Wall")}</>)}
                     </button>
                   )}
                   {anyPinned && (
@@ -1859,7 +2155,7 @@ function DesktopApp() {
                       className="w-full text-left px-3 py-1.5 hover:bg-rose-500/10 hover:text-rose-300 text-zinc-400 flex items-center gap-2 text-[10.5px]"
                       onClick={() => { unpinSessionFromWall(targetId); setTabMenu(null); }}
                     >
-                      <PinOff size={11} /> Unpin ALL from this session
+                      <PinOff size={11} /> {t("Unpin ALL from this session")}
                     </button>
                   )}
                 </>
@@ -1877,14 +2173,14 @@ function DesktopApp() {
                 <div className="border-t border-white/5 my-1" />
                 <div className="px-3 pt-1 pb-1.5 flex items-center justify-between">
                   <span className="text-[9.5px] font-bold uppercase tracking-widest text-zinc-500">
-                    Split view with
+                    {t("Split view with")}
                   </span>
                   {targetIsActive && currentMerges.length > 0 && (
                     <button
                       onClick={() => { setMergedSessionIds([]); setTabMenu(null); }}
                       className="text-[9.5px] font-bold uppercase tracking-wider text-zinc-500 hover:text-white"
                     >
-                      Clear
+                      {t("Clear")}
                     </button>
                   )}
                 </div>
@@ -1957,7 +2253,7 @@ function DesktopApp() {
                 setActiveView(prev => (prev === sid ? "nodes" : prev));
                 setTabMenu(null);
               }}
-            >Close tab</button>
+            >{t("Close tab")}</button>
           </div>
         </>
         );
@@ -1969,7 +2265,7 @@ function DesktopApp() {
   // when the Android soft keyboard opens the visualViewport shrinks and the
   // whole flex chain cascades above the keyboard instead of anchoring to
   // the un-shrunken layout viewport.
-  if (loading) return <div className="h-full bg-black flex items-center justify-center font-mono text-xs text-primary animate-pulse">Loading…</div>;
+  if (loading) return <div className="h-full bg-black flex items-center justify-center font-mono text-xs text-primary animate-pulse">{t("Loading…")}</div>;
 
   return (
     <div className="h-full w-full bg-background flex flex-col overflow-hidden text-zinc-200 select-none">
@@ -1987,7 +2283,7 @@ function DesktopApp() {
 
           <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-transparent relative">
             {activeView === "nodes" && (
-              <ErrorBoundary label="Servers">
+              <ErrorBoundary label={t("Servers")}>
               <NodeGrid
                 servers={servers}
                 folders={folders}
@@ -2021,7 +2317,7 @@ function DesktopApp() {
                 onMoveServer={moveServerToFolder}
                 onMoveFolder={moveFolder}
                 onCloneServer={async (id: number) => {
-                  try { await invoke("clone_server", { id }); refreshServers(); bumpSync(); addLog("Node cloned.", "success"); }
+                  try { await invoke("clone_server", { id }); refreshServers(); bumpSync(); addLog(t("Node cloned."), "success"); }
                   catch (e) { addLog(`CLONE_ERROR: ${e}`, "error"); }
                 }}
                 onReorderServers={async (ids: number[]) => {
@@ -2036,7 +2332,7 @@ function DesktopApp() {
             )}
 
             {activeView === "profile" && (
-              <ErrorBoundary label="Profile">
+              <ErrorBoundary label={t("Profile")}>
                 <ProfilePanel
                   onSync={handleCloudSync}
                   syncing={cloudSyncing}
@@ -2050,7 +2346,7 @@ function DesktopApp() {
             )}
 
             {activeView === "settings" && (
-              <ErrorBoundary label="Settings">
+              <ErrorBoundary label={t("Settings")}>
                 <SettingsPanel
                   settings={appSettings}
                   setSettings={setAppSettings}
@@ -2062,45 +2358,45 @@ function DesktopApp() {
             )}
 
             {activeView === "vault" && (
-              <ErrorBoundary label="Logins"><Guarded render={() => (
+              <ErrorBoundary label={t("Logins")}><Guarded render={() => (
               <div className="flex-1 flex flex-col p-4 sm:p-8 space-y-6 sm:space-y-8 animate-in overflow-y-auto custom-scrollbar">
                 <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 border-b border-zinc-700 pb-5 sm:pb-6 shrink-0">
                   <div className="min-w-0">
-                    <h2 className="text-[18px] sm:text-[22px] font-bold text-white tracking-tight">Logins</h2>
-                    <p className="hidden sm:block text-[13px] text-zinc-400">Your saved passwords and SSH keys.</p>
+                    <h2 className="text-[18px] sm:text-[22px] font-bold text-white tracking-tight">{t("Logins")}</h2>
+                    <p className="hidden sm:block text-[13px] text-zinc-400">{t("Your saved passwords and SSH keys.")}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button
                       onClick={() => { setEditCredData(EMPTY_CRED); setIsCredPanelOpen(true); }}
-                      title="Add Password"
+                      title={t("Add Password")}
                       className="h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[12px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-zinc-800 transition-all flex items-center gap-1.5"
                     >
-                      <Plus size={14} /> <span className="hidden sm:inline">Add Password</span><span className="sm:hidden">Password</span>
+                      <Plus size={14} /> <span className="hidden sm:inline">{t("Add Password")}</span><span className="sm:hidden">{t("Password")}</span>
                     </button>
                     <button
                       onClick={() => { setEditKeyData(EMPTY_KEY); setIsKeyPanelOpen(true); }}
-                      title="Add Key"
+                      title={t("Add Key")}
                       className="h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[12px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-zinc-800 transition-all flex items-center gap-1.5"
                     >
-                      <Plus size={14} /> <span className="hidden sm:inline">Add Key</span><span className="sm:hidden">Key</span>
+                      <Plus size={14} /> <span className="hidden sm:inline">{t("Add Key")}</span><span className="sm:hidden">{t("Key")}</span>
                     </button>
                     <button
                       onClick={async () => {
                         // Native window.prompt is a no-op in Tauri's Android
                         // WebView — themed useTextPrompt works everywhere.
                         const name = await textPrompt({
-                          title: "Generate SSH key",
-                          message: "Give this key a name — it's just for your reference here in Submarine.",
-                          placeholder: "e.g. laptop-2026",
-                          okLabel: "Generate",
-                          validate: (v) => v.length === 0 ? "Name is required" : null,
+                          title: t("Generate SSH key"),
+                          message: t("Give this key a name — it's just for your reference here in Submarine."),
+                          placeholder: t("e.g. laptop-2026"),
+                          okLabel: t("Generate"),
+                          validate: (v) => v.length === 0 ? t("Name is required") : null,
                         });
                         if (name) invoke("generate_ssh_key", { name }).then(() => refreshSshKeys()).catch((e) => addLog(`KEY_GENERATE_ERROR: ${e}`, "error"));
                       }}
-                      title="Generate Key"
+                      title={t("Generate Key")}
                       className="h-9 px-2.5 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5"
                     >
-                      <Key size={14} /> <span className="hidden sm:inline">Generate Key</span><span className="sm:hidden">Generate</span>
+                      <Key size={14} /> <span className="hidden sm:inline">{t("Generate Key")}</span><span className="sm:hidden">{t("Generate")}</span>
                     </button>
                   </div>
                 </header>
@@ -2108,18 +2404,18 @@ function DesktopApp() {
                 <div className="space-y-10 pb-10">
                   <section>
                     <h3 className="text-[13px] font-bold text-zinc-400 mb-4 flex items-center gap-2">
-                      <Shield size={14} /> Saved passwords
+                      <Shield size={14} /> {t("Saved passwords")}
                     </h3>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
                       {credentials.length === 0 ? (
-                        <div className="col-span-full py-10 text-center text-zinc-600 text-[14px] italic border border-dashed border-white/5 rounded-2xl">Nothing here yet.</div>
+                        <div className="col-span-full py-10 text-center text-zinc-600 text-[14px] italic border border-dashed border-white/5 rounded-2xl">{t("Nothing here yet.")}</div>
                       ) : (
                         credentials.map(c => (
                           <div key={c.id} className="bg-[#16161a] border border-white/5 rounded-xl p-3 group relative hover:border-primary/30 transition-all">
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{c.name}</h4>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity absolute right-3 top-3">
-                                <button aria-label={`Edit ${c.name}`} onClick={async () => {
+                                <button aria-label={t("Edit {name}", { name: c.name })} onClick={async () => {
                                   // Credentials list now ships `has_password` instead of plaintext;
                                   // pull the secret on demand for the edit sheet.
                                   let pw = "";
@@ -2130,8 +2426,8 @@ function DesktopApp() {
                                   setEditCredData({ ...c, password: pw });
                                   setIsCredPanelOpen(true);
                                 }} className="text-zinc-500 hover:text-white"><Edit2 size={14} /></button>
-                                <button aria-label={`Delete ${c.name}`} onClick={async () => {
-                                  const ok = await confirm({ title: "Delete saved password?", message: `“${c.name}” will be removed. Servers using this login will lose it.`, destructive: true });
+                                <button aria-label={t("Delete {name}", { name: c.name })} onClick={async () => {
+                                  const ok = await confirm({ title: t("Delete saved password?"), message: t("“{name}” will be removed. Servers using this login will lose it.", { name: c.name }), destructive: true });
                                   if (!ok) return;
                                   invoke("delete_credential", { id: c.id }).then(() => { refreshCredentials(); bumpSync(); }).catch((e) => addLog(`CRED_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
@@ -2142,7 +2438,7 @@ function DesktopApp() {
                                 <User size={10} /> {c.username}
                               </div>
                               <div className="flex items-center gap-2 text-[11px] text-zinc-500 font-medium">
-                                <Key size={10} /> {c.has_password ? "••••••••" : "Using SSH key"}
+                                <Key size={10} /> {c.has_password ? "••••••••" : t("Using SSH key")}
                               </div>
                             </div>
                           </div>
@@ -2153,18 +2449,18 @@ function DesktopApp() {
 
                   <section>
                     <h3 className="text-[13px] font-bold text-zinc-400 mb-4 flex items-center gap-2">
-                      <Key size={14} /> SSH keys
+                      <Key size={14} /> {t("SSH keys")}
                     </h3>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
                       {sshKeys.length === 0 ? (
-                        <div className="col-span-full py-10 text-center text-zinc-600 text-[14px] italic border border-dashed border-white/5 rounded-2xl">No keys saved yet.</div>
+                        <div className="col-span-full py-10 text-center text-zinc-600 text-[14px] italic border border-dashed border-white/5 rounded-2xl">{t("No keys saved yet.")}</div>
                       ) : (
                         sshKeys.map((k: any) => (
                           <div key={k.id} className="bg-[#16161a] border border-white/5 rounded-xl p-3 group relative hover:border-primary/30 transition-all">
                             <div className="flex justify-between items-start mb-1">
                               <h4 className="text-[14px] font-bold text-zinc-100 truncate pr-8">{k.name}</h4>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity absolute right-3 top-3">
-                                <button aria-label={`Edit ${k.name}`} onClick={async () => {
+                                <button aria-label={t("Edit {name}", { name: k.name })} onClick={async () => {
                                   // Same pattern as credentials — pull the private key + passphrase
                                   // on demand instead of leaking them in the list response.
                                   let secrets: { private_key?: string|null; passphrase?: string|null } = {};
@@ -2179,8 +2475,8 @@ function DesktopApp() {
                                   });
                                   setIsKeyPanelOpen(true);
                                 }} className="text-zinc-500 hover:text-white"><Edit2 size={14} /></button>
-                                <button aria-label={`Delete ${k.name}`} onClick={async () => {
-                                  const ok = await confirm({ title: "Delete SSH key?", message: `“${k.name}” will be removed. This key cannot be recovered.`, destructive: true });
+                                <button aria-label={t("Delete {name}", { name: k.name })} onClick={async () => {
+                                  const ok = await confirm({ title: t("Delete SSH key?"), message: t("“{name}” will be removed. This key cannot be recovered.", { name: k.name }), destructive: true });
                                   if (!ok) return;
                                   invoke("delete_ssh_key", { id: k.id }).then(() => { refreshSshKeys(); bumpSync(); }).catch((e) => addLog(`KEY_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500"><Trash2 size={14} /></button>
@@ -2191,7 +2487,7 @@ function DesktopApp() {
                                 {k.public_key.substring(0, 24)}...
                               </div>
                               <div className="text-[10px] text-primary/50 font-medium">
-                                Private key
+                                {t("Private key")}
                               </div>
                             </div>
                           </div>
@@ -2316,7 +2612,7 @@ function DesktopApp() {
                                   // reverts to plain full-width single view.
                                   setMergedSessionIds(next.length < 2 ? [] : next);
                                 }}
-                                title="Remove this pane from the split view"
+                                title={t("Remove this pane from the split view")}
                                 className="h-5 w-5 rounded flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-white/[0.05] transition-all"
                               >
                                 <X size={11} />
@@ -2344,6 +2640,17 @@ function DesktopApp() {
                             ) : sess.protocol === "vnc" ? (
                               <VncSessionView
                                 session={sess}
+                                displayName={tabLabel(sess)}
+                                onClose={getCloseHandler(sess.id)}
+                                onStatusChange={handleSessionStatus}
+                                isActiveView={isFocused}
+                                shown={isVisible && viewIsSession}
+                                onPromptChange={handlePromptChange}
+                              />
+                            ) : isFtp(sess.protocol) ? (
+                              <FtpSessionView
+                                session={sess}
+                                profile={activeProfile}
                                 displayName={tabLabel(sess)}
                                 onClose={getCloseHandler(sess.id)}
                                 onStatusChange={handleSessionStatus}
@@ -2401,16 +2708,16 @@ function DesktopApp() {
                 <div className="h-10 shrink-0 border-b border-white/5 bg-[#111114] flex items-center gap-2 px-3">
                   <LayoutGrid size={12} className="text-primary/70 shrink-0" />
                   <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 shrink-0">
-                    Wall {wallItems.length > 0 ? `· ${wallItems.length}` : ''}
+                    {wallItems.length > 0 ? t("Wall · {count}", { count: wallItems.length }) : t("Wall")}
                   </span>
                   <div className="flex-1 min-w-0 flex items-center gap-3 ml-2 overflow-x-auto no-scrollbar">
-                    <div className="flex items-center gap-1 shrink-0" role="group" aria-label="Columns">
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">Cols</span>
+                    <div className="flex items-center gap-1 shrink-0" role="group" aria-label={t("Columns")}>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">{t("Cols")}</span>
                       {[1, 2, 3, 4, 5, 6].map(n => (
                         <button
                           key={n}
                           onClick={() => setWallCols(n)}
-                          title={`${n} column${n === 1 ? '' : 's'} per row`}
+                          title={tn(n, "{count} column per row", "{count} columns per row")}
                           aria-pressed={wallCols === n}
                           className={`h-6 w-6 rounded flex items-center justify-center text-[10px] font-bold transition-all ${
                             wallCols === n
@@ -2422,13 +2729,13 @@ function DesktopApp() {
                         </button>
                       ))}
                     </div>
-                    <div className="flex items-center gap-1 shrink-0" role="group" aria-label="Rows">
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">Rows</span>
+                    <div className="flex items-center gap-1 shrink-0" role="group" aria-label={t("Rows")}>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">{t("Rows")}</span>
                       {[0, 1, 2, 3, 4].map(n => (
                         <button
                           key={n}
                           onClick={() => setWallRows(n)}
-                          title={n === 0 ? 'As many rows as the tiles need' : `${n} row${n === 1 ? '' : 's'} on screen; more tiles scroll`}
+                          title={n === 0 ? t("As many rows as the tiles need") : tn(n, "{count} row on screen; more tiles scroll", "{count} rows on screen; more tiles scroll")}
                           aria-pressed={wallRows === n}
                           className={`h-6 ${n === 0 ? 'px-1.5' : 'w-6'} rounded flex items-center justify-center text-[10px] font-bold transition-all ${
                             wallRows === n
@@ -2436,25 +2743,25 @@ function DesktopApp() {
                               : 'text-zinc-400 hover:bg-white/[0.06] border border-transparent'
                           }`}
                         >
-                          {n === 0 ? 'Auto' : n}
+                          {n === 0 ? t("Auto") : n}
                         </button>
                       ))}
                     </div>
                   </div>
                   <button
                     onClick={() => setWallPickerOpen(v => !v)}
-                    title="Pick terminals to pin"
+                    title={t("Pick terminals to pin")}
                     className="px-3 py-1 bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 rounded-md text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5"
                   >
-                    <Plus size={11} /> Add
+                    <Plus size={11} /> {t("Add")}
                   </button>
                   {wallItems.length > 0 && (
                     <button
                       onClick={() => setWallItems([])}
-                      title="Unpin everything (terminals stay open in their sessions)"
+                      title={t("Unpin everything (terminals stay open in their sessions)")}
                       className="px-3 py-1 bg-white/[0.04] hover:bg-rose-500/15 hover:text-rose-300 border border-white/10 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5"
                     >
-                      <X size={11} /> Clear
+                      <X size={11} /> {t("Clear")}
                     </button>
                   )}
                 </div>
@@ -2467,8 +2774,8 @@ function DesktopApp() {
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-center px-6 pointer-events-none">
                       <LayoutGrid size={40} className="text-zinc-600" />
                       <div className="text-zinc-400 text-[13px] max-w-md leading-relaxed">
-                        The Wall is a pinboard for watching multiple <em>terminals</em> at once.<br/>
-                        Right-click a session tab or use the <span className="text-primary font-semibold">Add</span> button above to pin any terminal from any server.
+                        {tx("The Wall is a pinboard for watching multiple {terminals} at once.", { terminals: <em>{t("terminals")}</em> })}<br/>
+                        {tx("Right-click a session tab or use the {add} button above to pin any terminal from any server.", { add: <span className="text-primary font-semibold">{t("Add")}</span> })}
                       </div>
                     </div>
                   ) : (
@@ -2509,14 +2816,14 @@ function DesktopApp() {
                               </span>
                               <button
                                 onClick={() => setActiveView(sess.id)}
-                                title="Open this session in its own tab"
+                                title={t("Open this session in its own tab")}
                                 className="h-5 w-5 rounded flex items-center justify-center text-zinc-500 hover:text-primary hover:bg-white/[0.05] transition-all"
                               >
                                 <TerminalSquare size={11} />
                               </button>
                               <button
                                 onClick={() => unpinTerminalFromWall(item.terminalId)}
-                                title="Unpin from Wall"
+                                title={t("Unpin from Wall")}
                                 className="h-5 w-5 rounded flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-white/[0.05] transition-all"
                               >
                                 <PinOff size={11} />
@@ -2543,7 +2850,7 @@ function DesktopApp() {
                               </div>
                             ) : (
                               <div className="flex-1 flex items-center justify-center text-zinc-500 text-[10.5px] font-medium uppercase tracking-wider">
-                                Session {st}
+                                {t("Session {status}", { status: t(SESSION_STATUS[st] ?? st) })}
                               </div>
                             )}
                           </div>
@@ -2564,9 +2871,9 @@ function DesktopApp() {
                     <div className="absolute top-12 right-3 z-[66] w-80 max-h-[70vh] bg-[#15151a] border border-white/10 rounded-xl shadow-2xl p-2 flex flex-col">
                       <div className="px-2 pb-2 flex items-center justify-between shrink-0">
                         <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                          Pin terminals
+                          {t("Pin terminals")}
                         </span>
-                        <button aria-label="Close"
+                        <button aria-label={t("Close")}
                           onClick={() => setWallPickerOpen(false)}
                           className="h-5 w-5 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/[0.05]"
                         >
@@ -2575,7 +2882,7 @@ function DesktopApp() {
                       </div>
                       {sessions.length === 0 ? (
                         <div className="px-2 py-6 text-center text-zinc-500 text-[11px]">
-                          No open sessions yet.
+                          {t("No open sessions yet.")}
                         </div>
                       ) : (
                         <div className="overflow-y-auto custom-scrollbar space-y-1 pr-1">
@@ -2594,12 +2901,12 @@ function DesktopApp() {
                                     {tabLabel(s)}
                                   </span>
                                   <span className="text-[9px] uppercase tracking-wider text-zinc-500">
-                                    {terms.length} term{terms.length === 1 ? '' : 's'}
+                                    {tn(terms.length, "{count} term", "{count} terms")}
                                   </span>
                                 </div>
                                 {terms.length === 0 ? (
                                   <div className="px-3 py-2 text-[10px] text-zinc-500 italic">
-                                    Session not yet ready.
+                                    {t("Session not yet ready.")}
                                   </div>
                                 ) : (
                                   <div className="p-1 space-y-0.5">
@@ -2650,7 +2957,7 @@ function DesktopApp() {
                 on narrow viewports and puts both lists under one search
                 box. The sub-tab state (`libraryTab`) is kept at the parent
                 so it survives navigation elsewhere and back. */}
-            {activeView === "library" && <ErrorBoundary label="Library"><Guarded render={() => {
+            {activeView === "library" && <ErrorBoundary label={t("Library")}><Guarded render={() => {
               const q = libraryQuery.trim().toLowerCase();
               const filteredCommands = q
                 ? commands.filter(c =>
@@ -2663,7 +2970,7 @@ function DesktopApp() {
                     (n.body || "").toLowerCase().includes(q))
                 : notes;
               const onCommandsTab = libraryTab === "commands";
-              const addLabel = onCommandsTab ? "Add Command" : "Add Note";
+              const addLabel = onCommandsTab ? t("Add Command") : t("Add Note");
               const openAdd = () => {
                 if (onCommandsTab) {
                   setEditCommandData({ id: null, title: "", content: "", scope: null });
@@ -2679,16 +2986,16 @@ function DesktopApp() {
                     <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
                       <div className="min-w-0">
                         <h2 className="text-[18px] sm:text-[22px] font-bold text-white tracking-tight flex items-center gap-2">
-                          Library
+                          {t("Library")}
                           <span
-                            title="All entries are AES-256-GCM encrypted inside the current profile vault."
+                            title={t("All entries are AES-256-GCM encrypted inside the current profile vault.")}
                             className="inline-flex items-center gap-1 h-5 px-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[9px] font-bold uppercase tracking-wider text-emerald-300"
                           >
-                            <Shield size={9} /> Vault-locked
+                            <Shield size={9} /> {t("Vault-locked")}
                           </span>
                         </h2>
                         <p className="hidden sm:block text-[13px] text-zinc-400">
-                          Reusable snippets and freeform notes — encrypted with your profile key.
+                          {t("Reusable snippets and freeform notes — encrypted with your profile key.")}
                         </p>
                       </div>
                       <div className="flex gap-2 items-center">
@@ -2698,7 +3005,7 @@ function DesktopApp() {
                             type="text"
                             value={libraryQuery}
                             onChange={(e) => setLibraryQuery(e.target.value)}
-                            placeholder="Search title or content…"
+                            placeholder={t("Search title or content…")}
                             className="h-9 pl-7 pr-3 w-44 sm:w-56 bg-black/40 border border-white/10 rounded-xl text-[12px] text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-primary/40"
                           />
                         </div>
@@ -2723,7 +3030,7 @@ function DesktopApp() {
                             : "text-zinc-400 hover:text-zinc-100"
                         }`}
                       >
-                        <TerminalSquare size={12} /> Commands
+                        <TerminalSquare size={12} /> {t("Commands")}
                         <span className={`text-[9px] font-bold ${onCommandsTab ? "text-primary/70" : "text-zinc-600"}`}>
                           {filteredCommands.length}
                         </span>
@@ -2736,7 +3043,7 @@ function DesktopApp() {
                             : "text-zinc-400 hover:text-zinc-100"
                         }`}
                       >
-                        <StickyNote size={12} /> Notes
+                        <StickyNote size={12} /> {t("Notes")}
                         <span className={`text-[9px] font-bold ${!onCommandsTab ? "text-primary/70" : "text-zinc-600"}`}>
                           {filteredNotes.length}
                         </span>
@@ -2748,7 +3055,7 @@ function DesktopApp() {
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-10">
                       {filteredCommands.length === 0 ? (
                         <div className="col-span-full py-12 text-center text-zinc-500 text-[14px] italic border border-dashed border-white/10 rounded-2xl">
-                          {q ? `No commands match "${libraryQuery}".` : "No commands yet."}
+                          {q ? t('No commands match "{query}".', { query: libraryQuery }) : t("No commands yet.")}
                         </div>
                       ) : (
                         filteredCommands.map(cmd => (
@@ -2756,9 +3063,9 @@ function DesktopApp() {
                             <div className="flex justify-between items-start mb-2">
                               <h3 className="text-[16px] font-bold text-primary tracking-tight truncate flex-1">{cmd.title}</h3>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity">
-                                <button aria-label={`Edit ${cmd.title}`} onClick={() => { setEditCommandData({ id: cmd.id, title: cmd.title, content: cmd.content, scope: parseCommandScope(cmd.scope) }); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
-                                <button aria-label={`Delete ${cmd.title}`} onClick={async () => {
-                                  const ok = await confirm({ title: "Delete command?", message: `“${cmd.title}” will be removed.`, destructive: true });
+                                <button aria-label={t("Edit {name}", { name: cmd.title })} onClick={() => { setEditCommandData({ id: cmd.id, title: cmd.title, content: cmd.content, scope: parseCommandScope(cmd.scope) }); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
+                                <button aria-label={t("Delete {name}", { name: cmd.title })} onClick={async () => {
+                                  const ok = await confirm({ title: t("Delete command?"), message: t("“{name}” will be removed.", { name: cmd.title }), destructive: true });
                                   if (!ok) return;
                                   invoke("delete_command", { id: cmd.id }).then(() => { refreshCommands(); bumpSync(); }).catch((e) => addLog(`COMMAND_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
@@ -2770,7 +3077,7 @@ function DesktopApp() {
                             {parseCommandScope(cmd.scope) && (
                               <div className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-400 min-w-0" data-command-scope>
                                 <Server size={11} className="shrink-0 text-zinc-500" />
-                                <span className="truncate">For {describeScope(parseCommandScope(cmd.scope), servers, folders)}</span>
+                                <span className="truncate">{t("For {scope}", { scope: describeScope(parseCommandScope(cmd.scope), servers, folders) })}</span>
                               </div>
                             )}
                           </div>
@@ -2781,17 +3088,17 @@ function DesktopApp() {
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-10">
                       {filteredNotes.length === 0 ? (
                         <div className="col-span-full py-12 text-center text-zinc-500 text-[14px] italic border border-dashed border-white/10 rounded-2xl">
-                          {q ? `No notes match "${libraryQuery}".` : "No notes yet."}
+                          {q ? t('No notes match "{query}".', { query: libraryQuery }) : t("No notes yet.")}
                         </div>
                       ) : (
                         filteredNotes.map(n => (
                           <div key={n.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[170px]">
                             <div className="flex justify-between items-start mb-2 gap-2">
-                              <h3 className="text-[15px] font-bold text-primary tracking-tight truncate flex-1">{n.title || "Untitled"}</h3>
+                              <h3 className="text-[15px] font-bold text-primary tracking-tight truncate flex-1">{n.title || t("Untitled")}</h3>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity shrink-0">
-                                <button aria-label={`Edit ${n.title || "Untitled"}`} onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
-                                <button aria-label={`Delete ${n.title || "Untitled"}`} onClick={async () => {
-                                  const ok = await confirm({ title: "Delete note?", message: `“${n.title || "Untitled"}” will be removed.`, destructive: true });
+                                <button aria-label={t("Edit {name}", { name: n.title || t("Untitled") })} onClick={() => { setEditNoteData({ id: n.id, title: n.title || "", body: n.body || "" }); setIsNotePanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
+                                <button aria-label={t("Delete {name}", { name: n.title || t("Untitled") })} onClick={async () => {
+                                  const ok = await confirm({ title: t("Delete note?"), message: t("“{name}” will be removed.", { name: n.title || t("Untitled") }), destructive: true });
                                   if (!ok) return;
                                   invoke("delete_note", { id: n.id }).then(() => { refreshNotes(); bumpSync(); }).catch((e) => addLog(`NOTE_DELETE_ERROR: ${e}`, "error"));
                                 }} className="text-zinc-500 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
@@ -2817,7 +3124,7 @@ function DesktopApp() {
                 mounted preserves the live data; the backend pollers were
                 always running, only the UI side was losing state. */}
             <div className={`flex-1 flex flex-col overflow-hidden ${activeView === "monitor" ? "" : "hidden"}`}>
-              <ErrorBoundary label="Monitor">
+              <ErrorBoundary label={t("Monitor")}>
                 <MonitoringPanel servers={servers} refreshServers={refreshServers} addLog={addLog} active={activeView === "monitor"} />
               </ErrorBoundary>
             </div>
@@ -2839,20 +3146,20 @@ function DesktopApp() {
                 lengths — the whole point of compare mode is uniform
                 side-by-side. */}
             {activeView === "logs" && (
-              <ErrorBoundary label="Activity"><Guarded render={() => (
+              <ErrorBoundary label={t("Activity")}><Guarded render={() => (
               <div className="flex-1 flex flex-col p-3 sm:p-8 space-y-3 sm:space-y-6 animate-in overflow-hidden">
                 <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-3 border-b border-zinc-700 pb-3 sm:pb-6 shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
                     <button
                       onClick={() => setActiveView("settings")}
                       className="h-8 w-8 sm:hidden flex items-center justify-center rounded-lg text-zinc-400 hover:text-white hover:bg-white/5 transition-all shrink-0"
-                      title="Back to Settings"
+                      title={t("Back to Settings")}
                     >
                       <ChevronLeft size={18} />
                     </button>
                     <div className="min-w-0">
-                      <h2 className="text-[16px] sm:text-[22px] font-bold text-white tracking-tight">Activity</h2>
-                      <p className="hidden sm:block text-[13px] text-zinc-400">What the app has been doing.</p>
+                      <h2 className="text-[16px] sm:text-[22px] font-bold text-white tracking-tight">{t("Activity")}</h2>
+                      <p className="hidden sm:block text-[13px] text-zinc-400">{t("What the app has been doing.")}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 self-end sm:self-auto">
@@ -2860,14 +3167,14 @@ function DesktopApp() {
                       onClick={() => setActiveView("settings")}
                       className="hidden sm:flex h-9 px-3 bg-white/[0.04] text-zinc-300 text-[12px] font-bold rounded-xl border border-white/5 hover:bg-white/10 hover:text-white transition-all items-center gap-1.5"
                     >
-                      <ChevronLeft size={14} /> Settings
+                      <ChevronLeft size={14} /> {t("Settings")}
                     </button>
                     <button onClick={async () => {
-                      const ok = await confirm({ title: "Clear activity log?", message: "All entries will be discarded.", destructive: true });
+                      const ok = await confirm({ title: t("Clear activity log?"), message: t("All entries will be discarded."), destructive: true });
                       if (!ok) return;
                       setLogs([]);
                     }} className="h-8 sm:h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[11px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-red-500/20 hover:text-red-400 hover:border-primary/50 transition-all flex items-center gap-1.5">
-                      <Trash2 size={13} /> Clear
+                      <Trash2 size={13} /> {t("Clear")}
                     </button>
                   </div>
                 </header>
@@ -2875,7 +3182,7 @@ function DesktopApp() {
                 <div className="flex-1 overflow-y-auto custom-scrollbar bg-black/50 rounded-xl sm:rounded-2xl border border-white/5 p-2 sm:p-4 space-y-0.5 sm:space-y-1 shadow-inner select-text cursor-text">
                   {logs.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-zinc-600 text-[12px] sm:text-[14px] font-mono italic">
-                      Nothing yet.
+                      {t("Nothing yet.")}
                     </div>
                   ) : (
                     [...logs].reverse().map((log) => (
@@ -2902,25 +3209,25 @@ function DesktopApp() {
         </div>
       )}
 
-      <ErrorBoundary overlay label="Server form" onReset={() => { setIsPanelOpen(false); setFormError(""); }}>
+      <ErrorBoundary overlay label={t("Server form")} onReset={() => { setIsPanelOpen(false); setFormError(""); }}>
       <AddNodePanel
         isOpen={isPanelOpen} onClose={() => { setIsPanelOpen(false); setFormError(""); }}
         newNode={newNode} setNewNode={setNewNode}
         isEditMode={!!newNode.id}
         onSave={async () => {
           if (!newNode.name || !newNode.host) {
-            setFormError("Name and Host are required.");
-            addLog("Name and Host are required.", "error");
+            setFormError(t("Name and Host are required."));
+            addLog(t("Name and Host are required."), "error");
             return;
           }
           if (newNode.authType === "vault" && !newNode.credentialId) {
-            setFormError("Please pick a saved login.");
-            addLog("Please pick a saved login.", "error");
+            setFormError(t("Please pick a saved login."));
+            addLog(t("Please pick a saved login."), "error");
             return;
           }
           if ((newNode.protocol ?? "ssh") === "ssh" && newNode.authType === "custom_key" && !newNode.keyId) {
-            setFormError("Please pick an SSH key.");
-            addLog("Please pick an SSH key.", "error");
+            setFormError(t("Please pick an SSH key."));
+            addLog(t("Please pick an SSH key."), "error");
             return;
           }
           try {
@@ -2940,7 +3247,9 @@ function DesktopApp() {
             const isRdp = newNode.protocol === "rdp";
             const isTelnet = newNode.protocol === "telnet";
             const isVnc = newNode.protocol === "vnc";
-            const payload = isRdp || isTelnet || isVnc ? {
+            // An FTP server: the same, its saved password for its login.
+            const ftpServer = isFtp(newNode.protocol);
+            const payload = isRdp || isTelnet || isVnc || ftpServer ? {
               name: newNode.name,
               host: newNode.host,
               port: newNode.port,
@@ -2955,7 +3264,8 @@ function DesktopApp() {
               authType: newNode.authType === "vault" ? "vault" : "custom_pass",
               keyId: null,
               autostart: false,
-              mirrors: [],
+              // An FTP server keeps its mirrors (they work over FTP too).
+              mirrors: ftpServer ? (newNode.mirrors || []) : [],
               color: newNode.color ?? null,
               preservePassword: !!newNode.id && !newNode.password_dirty,
             } : {
@@ -3017,9 +3327,9 @@ function DesktopApp() {
             } catch (e) {
               addLog(`SAVE_JUMP_HOST_FAILED: ${e}`, "error");
             }
-            // SSH, RDP, telnet or VNC: the same separate-write pattern.
+            // SSH, RDP, telnet, VNC or FTP: the same separate-write pattern.
             try {
-              await invoke("set_server_protocol", { id: savedId, value: isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : null, persist: false });
+              await invoke("set_server_protocol", { id: savedId, value: isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : ftpServer ? newNode.protocol : null, persist: false });
             } catch (e) {
               addLog(`SAVE_PROTOCOL_FAILED: ${e}`, "error");
             }
@@ -3039,6 +3349,15 @@ function DesktopApp() {
                 addLog(`SAVE_RDP_OPTIONS_FAILED: ${e}`, "error");
               }
             }
+            // An SSH server's keepalives and reconnecting: the same, this device's own.
+            if (!isRdp && !isVnc && !isTelnet) {
+              try {
+                const uuid = (await invoke<any[]>("get_servers")).find((s) => s.id === savedId)?.uuid;
+                if (uuid) writeSessionKeep(uuid, newNode.sessionKeep || DEFAULT_SESSION_KEEP);
+              } catch (e) {
+                addLog(`SAVE_SESSION_KEEP_FAILED: ${e}`, "error");
+              }
+            }
             // A VNC server's speed and quality: the same, this device's own.
             if (isVnc) {
               try {
@@ -3052,6 +3371,14 @@ function DesktopApp() {
             setFormError("");
             refreshServers();
             bumpSync();
+            // A tab open on this server shows its new name (Edit server is in
+            // the tab's own menu). A tab given a name of its own keeps it.
+            if (newNode.id) {
+              const name = newNode.name;
+              setSessions(prev => prev.some(s => s.serverId === savedId && s.serverName !== name)
+                ? prev.map(s => (s.serverId === savedId ? { ...s, serverName: name } : s))
+                : prev);
+            }
             // If we just edited a node whose session is live, re-apply its saved
             // forwarding rules now so a changed/added tunnel comes up without a
             // manual reconnect. The backend cleared the stale tunnel cache when
@@ -3060,9 +3387,9 @@ function DesktopApp() {
             if (newNode.id && sessionStatuses[`session-${savedId}`] === "connected") {
               invoke("restart_session_tunnels", { sessionId: `session-${savedId}`, serverId: savedId }).catch(() => {});
             }
-            addLog(`Node ${newNode.id ? 'updated' : 'added'} successfully.`, "success");
+            addLog(newNode.id ? t("Node updated successfully.") : t("Node added successfully."), "success");
           } catch (e) {
-            setFormError(`Failed to save: ${e}`);
+            setFormError(t("Failed to save: {error}", { error: String(e) }));
             addLog(`SAVE_ERROR: ${e}`, "error");
           }
         }}
@@ -3074,7 +3401,7 @@ function DesktopApp() {
       />
       </ErrorBoundary>
 
-      <ErrorBoundary overlay label="Quick connect" onReset={() => setIsQuickConnectOpen(false)}>
+      <ErrorBoundary overlay label={t("Quick connect")} onReset={() => setIsQuickConnectOpen(false)}>
         <QuickConnectModal
           isOpen={isQuickConnectOpen}
           onClose={() => setIsQuickConnectOpen(false)}
@@ -3085,26 +3412,26 @@ function DesktopApp() {
 
       {/* The slide-overs stay mounted while closed (to slide out): inert
           then, so Tab can't reach their fields. */}
-      <ErrorBoundary overlay label="Command form" onReset={() => setIsCommandPanelOpen(false)}><Guarded render={() => (
-      <div inert={isCommandPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCommandPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsCommandPanelOpen(false)}>
+      <ErrorBoundary overlay label={t("Command form")} onReset={() => setIsCommandPanelOpen(false)}><Guarded render={() => (
+      <div inert={isCommandPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCommandPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...commandForm.backdropProps}>
         <div ref={commandPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCommandPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <TerminalSquare size={18} className="text-primary" />
-              {editCommandData.id ? "Edit command" : "New command"}
+              {editCommandData.id ? t("Edit command") : t("New command")}
             </h2>
-            <button aria-label="Close" onClick={() => { setIsCommandPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label={t("Close")} onClick={() => void commandForm.requestClose()} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
           <div className="p-6 flex-1 overflow-y-auto space-y-6">
-            {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+            <FormError message={formError} active={isCommandPanelOpen} />
             <div className="space-y-1.5">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">Title</label>
-              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. Update packages" value={editCommandData.title} onChange={e => setEditCommandData({ ...editCommandData, title: e.target.value })} />
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Title")}</label>
+              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder={t("e.g. Update packages")} value={editCommandData.title} onChange={e => setEditCommandData({ ...editCommandData, title: e.target.value })} />
             </div>
             <div className="space-y-1.5 flex-1 flex flex-col h-64">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">Command</label>
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Command")}</label>
               <textarea className="w-full flex-1 bg-black rounded-lg p-3 text-[13px] text-zinc-300 font-mono border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none" placeholder="sudo apt update && sudo apt upgrade -y" value={editCommandData.content} onChange={e => setEditCommandData({ ...editCommandData, content: e.target.value })} />
             </div>
             {/* Remounted per command opened, so it starts from that command's choice. */}
@@ -3117,140 +3444,96 @@ function DesktopApp() {
             />
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">
-            <button 
-              onClick={async () => {
-                if (!editCommandData.title || !editCommandData.content) {
-                  addLog("Title and Content are required.", "error");
-                  return;
-                }
-                const scope = editCommandData.scope;
-                if (scope && !scope.servers.length && !scope.folders.length) {
-                  setFormError("Tick at least one server or folder, or choose All servers.");
-                  return;
-                }
-                try {
-                  if (editCommandData.id) {
-                    await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content });
-                    await invoke("set_command_scope", { id: editCommandData.id, scope: scopeToJson(scope) });
-                  } else {
-                    await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope) });
-                  }
-                  setFormError("");
-                  setIsCommandPanelOpen(false);
-                  refreshCommands();
-                  bumpSync();
-                  addLog("Command saved.", "success");
-                } catch (e) {
-                  setFormError(`Failed to save command: ${e}`);
-                  addLog(`COMMAND_SAVE_ERROR: ${e}`, "error");
-                }
-              }} 
+            <button
+              onClick={() => void commandForm.save()}
               className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] shadow-[0_0_15px_rgba(var(--primary),0.2)] flex items-center justify-center gap-2"
             >
-              Save
+              {t("Save")}
             </button>
           </div>
         </div>
       </div>
       )} /></ErrorBoundary>
 
-      <ErrorBoundary overlay label="Note form" onReset={() => setIsNotePanelOpen(false)}><Guarded render={() => (
-      <div inert={isNotePanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isNotePanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsNotePanelOpen(false)}>
+      <ErrorBoundary overlay label={t("Note form")} onReset={() => setIsNotePanelOpen(false)}><Guarded render={() => (
+      <div inert={isNotePanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isNotePanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...noteForm.backdropProps}>
         <div ref={notePanelRef} tabIndex={-1} className={`w-full max-w-[480px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isNotePanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <StickyNote size={18} className="text-primary" />
-              {editNoteData.id ? "Edit note" : "New note"}
+              {editNoteData.id ? t("Edit note") : t("New note")}
             </h2>
-            <button aria-label="Close" onClick={() => { setIsNotePanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label={t("Close")} onClick={() => void noteForm.requestClose()} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
           <div className="p-6 flex-1 overflow-y-auto space-y-6 flex flex-col">
-            {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+            <FormError message={formError} active={isNotePanelOpen} />
             <div className="space-y-1.5">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">Title</label>
-              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. Production credentials reminder" value={editNoteData.title} onChange={e => setEditNoteData({ ...editNoteData, title: e.target.value })} />
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Title")}</label>
+              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder={t("e.g. Production credentials reminder")} value={editNoteData.title} onChange={e => setEditNoteData({ ...editNoteData, title: e.target.value })} />
             </div>
             <div className="space-y-1.5 flex-1 flex flex-col min-h-[240px]">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">Content</label>
-              <textarea className="w-full flex-1 bg-black rounded-lg p-3 text-[13px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none leading-relaxed" placeholder="Write anything — markdown, paths, secrets you'd otherwise forget…" value={editNoteData.body} onChange={e => setEditNoteData({ ...editNoteData, body: e.target.value })} />
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Content")}</label>
+              <textarea className="w-full flex-1 bg-black rounded-lg p-3 text-[13px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none leading-relaxed" placeholder={t("Write anything — markdown, paths, secrets you'd otherwise forget…")} value={editNoteData.body} onChange={e => setEditNoteData({ ...editNoteData, body: e.target.value })} />
             </div>
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">
             <button
-              onClick={async () => {
-                if (!editNoteData.title.trim() && !editNoteData.body.trim()) {
-                  setFormError("Add a title or some content first.");
-                  return;
-                }
-                try {
-                  const action = editNoteData.id
-                    ? invoke("edit_note", { id: editNoteData.id, title: editNoteData.title, body: editNoteData.body })
-                    : invoke("add_note", { title: editNoteData.title, body: editNoteData.body });
-                  await action;
-                  setIsNotePanelOpen(false);
-                  refreshNotes();
-                  bumpSync();
-                  addLog("Note saved.", "success");
-                } catch (e) {
-                  setFormError(`Failed to save note: ${e}`);
-                  addLog(`NOTE_SAVE_ERROR: ${e}`, "error");
-                }
-              }}
+              onClick={() => void noteForm.save()}
               className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] shadow-[0_0_15px_rgba(var(--primary),0.2)] flex items-center justify-center gap-2"
             >
-              Save
+              {t("Save")}
             </button>
           </div>
         </div>
       </div>
       )} /></ErrorBoundary>
 
-      <ErrorBoundary overlay label="Login form" onReset={() => setIsCredPanelOpen(false)}><Guarded render={() => (
-      <div inert={isCredPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCredPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsCredPanelOpen(false)}>
+      <ErrorBoundary overlay label={t("Login form")} onReset={() => setIsCredPanelOpen(false)}><Guarded render={() => (
+      <div inert={isCredPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isCredPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...credForm.backdropProps}>
         <div ref={credPanelRef} tabIndex={-1} className={`w-full max-w-[400px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isCredPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <Shield size={18} className="text-primary" />
-              {editCredData.id ? "Edit login" : "New login"}
+              {editCredData.id ? t("Edit login") : t("New login")}
             </h2>
-            <button aria-label="Close" onClick={() => { setIsCredPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label={t("Close")} onClick={() => void credForm.requestClose()} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
           <div className="p-6 flex-1 overflow-y-auto space-y-6">
-            {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+            <FormError message={formError} active={isCredPanelOpen} />
             <div className="space-y-1.5">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">Name</label>
-              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. Work server" value={editCredData.name} onChange={e => setEditCredData({ ...editCredData, name: e.target.value })} />
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Name")}</label>
+              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder={t("e.g. Work server")} value={editCredData.name} onChange={e => setEditCredData({ ...editCredData, name: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">Username</label>
-              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="Ask when connecting" value={editCredData.username} onChange={e => setEditCredData({ ...editCredData, username: e.target.value })} />
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Username")}</label>
+              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder={t("Ask when connecting")} value={editCredData.username} onChange={e => setEditCredData({ ...editCredData, username: e.target.value })} />
             </div>
             <div className="space-y-4 pt-2">
               <div className="flex justify-between items-center">
-                <label className="text-[12px] font-bold text-zinc-400 ml-1">Sign in with</label>
+                <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Sign in with")}</label>
                 <select
                   className="bg-transparent text-[12px] font-bold text-primary outline-none cursor-pointer"
                   value={editCredData.auth_type || "password"}
                   onChange={e => setEditCredData({ ...editCredData, auth_type: e.target.value })}
                 >
-                  <option value="password" className="bg-[#121215] text-primary">Password</option>
-                  <option value="key" className="bg-[#121215] text-primary">SSH key</option>
+                  <option value="password" className="bg-[#121215] text-primary">{t("Password")}</option>
+                  <option value="key" className="bg-[#121215] text-primary">{t("SSH key")}</option>
                 </select>
               </div>
             </div>
             {editCredData.auth_type === "key" ? (
               <div className="space-y-1.5 animate-in fade-in">
-                <label className="text-[12px] font-bold text-zinc-400 ml-1">Pick a key</label>
+                <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Pick a key")}</label>
                 <select
                   className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-zinc-300 border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner"
                   value={editCredData.key_id?.toString() || ""}
                   onChange={e => setEditCredData({ ...editCredData, key_id: e.target.value ? parseInt(e.target.value) : null })}
                 >
-                  <option value="" className="bg-black text-zinc-500">-- Pick a key --</option>
+                  <option value="" className="bg-black text-zinc-500">{t("-- Pick a key --")}</option>
                   {sshKeys?.map((k: any) => (
                     <option key={k.id} value={k.id.toString()} className="bg-black text-white">{k.name}</option>
                   ))}
@@ -3258,74 +3541,42 @@ function DesktopApp() {
               </div>
             ) : (
               <div className="space-y-1.5 animate-in fade-in">
-                <label className="text-[12px] font-bold text-zinc-400 ml-1">Password</label>
+                <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Password")}</label>
                 <PasswordField
                   value={editCredData.password || ""}
                   onChange={(v) => setEditCredData({ ...editCredData, password: v })}
                   className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner"
                 />
-                <p className="text-[11px] text-zinc-500 ml-1">Leave empty to be asked when connecting.</p>
+                <p className="text-[11px] text-zinc-500 ml-1">{t("Leave empty to be asked when connecting.")}</p>
               </div>
             )}
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">
-            <button 
-              onClick={async () => {
-                if (!editCredData.name) {
-                  setFormError("Name is required.");
-                  addLog("Name is required.", "error");
-                  return;
-                }
-                if (editCredData.auth_type === "key" && !editCredData.key_id) {
-                  setFormError("Please select a linked SSH Private Key.");
-                  addLog("Please select a linked SSH Private Key.", "error");
-                  return;
-                }
-                try {
-                  const payload = {
-                    name: editCredData.name,
-                    authType: editCredData.auth_type || "password",
-                    // Blank = asked when connecting (issue #54).
-                    username: editCredData.username?.trim() ?? "",
-                    password: editCredData.auth_type === "key" ? null : (editCredData.password || null),
-                    keyId: editCredData.auth_type === "key" ? (editCredData.key_id ? parseInt(editCredData.key_id.toString()) : null) : null
-                  };
-                  const action = editCredData.id 
-                    ? invoke("edit_credential", { id: editCredData.id, ...payload })
-                    : invoke("add_credential", payload);
-                  await action;
-                  setIsCredPanelOpen(false);
-                  refreshCredentials();
-                  bumpSync();
-                  addLog("Credential saved.", "success");
-                } catch (e) {
-                  setFormError(`Failed to save credential: ${e}`);
-                  addLog(`CRED_SAVE_ERROR: ${e}`, "error");
-                }
-              }} 
+            <button
+              onClick={() => void credForm.save()}
               className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
             >
-              Save
+              {t("Save")}
             </button>
           </div>
         </div>
       </div>
       )} /></ErrorBoundary>
 
-      <ErrorBoundary overlay label="Key form" onReset={() => setIsKeyPanelOpen(false)}><Guarded render={() => (
-      <div inert={isKeyPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isKeyPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsKeyPanelOpen(false)}>
+      <ErrorBoundary overlay label={t("Key form")} onReset={() => setIsKeyPanelOpen(false)}><Guarded render={() => (
+      <div inert={isKeyPanelOpen ? undefined : ""} className={`fixed inset-0 z-50 transition-all duration-500 flex justify-end ${isKeyPanelOpen ? 'bg-black/80 backdrop-blur-sm' : 'opacity-0 pointer-events-none'}`} {...keyForm.backdropProps}>
         <div ref={keyPanelRef} tabIndex={-1} className={`w-full max-w-[450px] bg-[#09090b] border-l border-white/5 shadow-2xl transition-all duration-500 h-full flex flex-col outline-none ${isKeyPanelOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center p-6 border-b border-white/5 shrink-0">
             <h2 className="text-[15px] font-bold text-white tracking-tight flex items-center gap-2">
               <Key size={18} className="text-primary" />
-              {editKeyData.id ? "Edit SSH key" : "New SSH key"}
+              {editKeyData.id ? t("Edit SSH key") : t("New SSH key")}
             </h2>
-            <button aria-label="Close" onClick={() => { setIsKeyPanelOpen(false); setFormError(""); }} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
+            <button aria-label={t("Close")} onClick={() => void keyForm.requestClose()} className="w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white bg-black border border-white/5 hover:bg-white/10 rounded-full transition-all">
               <X size={16} />
             </button>
           </div>
           <div className="p-6 flex-1 overflow-y-auto space-y-6">
-            {formError && <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-[12px] font-bold">{formError}</div>}
+            <FormError message={formError} active={isKeyPanelOpen} />
             {/* Reading the key out of ~/.ssh beats making the user cat it in a
                 terminal and paste two multi-line blobs. Fields are filled in
                 rather than saved outright — the name is a guess from the
@@ -3352,72 +3603,48 @@ function DesktopApp() {
                   });
                   addLog(
                     loaded.encrypted
-                      ? "Key loaded — it's passphrase-protected. Fill in the passphrase below, or leave it empty to be asked when connecting."
-                      : "Key loaded from file.",
+                      ? t("Key loaded — it's passphrase-protected. Fill in the passphrase below, or leave it empty to be asked when connecting.")
+                      : t("Key loaded from file."),
                     loaded.encrypted ? "info" : "success",
                   );
                 } catch (e) {
-                  setFormError(`Couldn't read that key file: ${e}`);
+                  setFormError(t("Couldn't read that key file: {error}", { error: String(e) }));
                   addLog(`KEY_FILE_READ_ERROR: ${e}`, "error");
                 }
               }}
               className="w-full h-9 flex items-center justify-center gap-2 text-[12px] font-bold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 rounded-lg transition-all"
             >
               <Key size={13} />
-              Load from a key file
+              {t("Load from a key file")}
             </button>
             <div className="space-y-1.5">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">Name</label>
-              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder="e.g. My laptop key" value={editKeyData.name} onChange={e => setEditKeyData({ ...editKeyData, name: e.target.value })} />
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Name")}</label>
+              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder={t("e.g. My laptop key")} value={editKeyData.name} onChange={e => setEditKeyData({ ...editKeyData, name: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">Public key</label>
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Public key")}</label>
               <textarea className="w-full h-24 bg-black rounded-lg p-3 text-[13px] text-zinc-400 font-mono border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none" placeholder="ssh-ed25519 ..." value={editKeyData.public_key} onChange={e => setEditKeyData({ ...editKeyData, public_key: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">Private key</label>
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Private key")}</label>
               <textarea className="w-full h-32 bg-black rounded-lg p-3 text-[13px] text-zinc-400 font-mono border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={editKeyData.private_key} onChange={e => setEditKeyData({ ...editKeyData, private_key: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">Passphrase (if any)</label>
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Passphrase (if any)")}</label>
               <PasswordField
                 value={editKeyData.passphrase || ""}
                 onChange={(v) => setEditKeyData({ ...editKeyData, passphrase: v })}
                 className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner"
               />
-              <p className="text-[11px] text-zinc-500 ml-1">For an encrypted key, leave empty to be asked when connecting.</p>
+              <p className="text-[11px] text-zinc-500 ml-1">{t("For an encrypted key, leave empty to be asked when connecting.")}</p>
             </div>
           </div>
           <div className="p-6 border-t border-white/5 shrink-0">
-            <button 
-              onClick={async () => {
-                if (!editKeyData.name || !editKeyData.private_key) {
-                  addLog("Name and Private Key are required.", "error");
-                  return;
-                }
-                try {
-                  const payload = {
-                    name: editKeyData.name,
-                    publicKey: editKeyData.public_key,
-                    privateKey: editKeyData.private_key,
-                    passphrase: editKeyData.passphrase || null
-                  };
-                  const action = editKeyData.id 
-                    ? invoke("edit_ssh_key", { id: editKeyData.id, ...payload })
-                    : invoke("add_ssh_key", payload);
-                  await action;
-                  setIsKeyPanelOpen(false);
-                  refreshSshKeys();
-                  bumpSync();
-                  addLog("SSH Key saved.", "success");
-                } catch (e) {
-                  setFormError(`Failed to save SSH Key: ${e}`);
-                  addLog(`KEY_SAVE_ERROR: ${e}`, "error");
-                }
-              }} 
+            <button
+              onClick={() => void keyForm.save()}
               className="w-full h-10 bg-primary text-black font-bold rounded-lg text-[13px] tracking-tight hover:brightness-110 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
             >
-              Save
+              {t("Save")}
             </button>
           </div>
         </div>

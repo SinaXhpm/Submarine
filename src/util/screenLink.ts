@@ -3,6 +3,7 @@
 // every 2 seconds while it is connected). The delay is a round trip through
 // everything on the way, SSH servers and VPNs included: the server is asked to
 // draw a corner of the screen again, and its answer is timed.
+import { tk } from "../i18n";
 
 export interface LinkStats {
   /** The middle one of the last few round trips, in ms; null before the first answer. */
@@ -43,11 +44,11 @@ export function linkQuality(s: LinkStats | null): LinkQuality {
 
 /** The word on the tab's connection mark. */
 export const LINK_WORDS: Record<LinkQuality, string> = {
-  good: "Good",
-  fair: "Fair",
-  weak: "Weak",
-  silent: "Not answering",
-  unknown: "Measuring",
+  good: tk("Good"),
+  fair: tk("Fair"),
+  weak: tk("Weak"),
+  silent: tk("Not answering"),
+  unknown: tk("Measuring"),
 };
 
 /** "820 B", "35 KB", "1.2 MB", "2.05 GB" (decimal units, as networks count). */

@@ -15,6 +15,8 @@ import {
 } from "../util/rdpOptions";
 import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from "../util/rdpClipboard";
 import { scancodeFor } from "../util/scancodes";
+import { useT, tx } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // An RDP server's tab (issue #3). By default Submarine opens the system's RDP
 // app (through a forward on the node's own loopback address while the node
@@ -37,6 +39,7 @@ type LogLine = { msg: string; type: string; time: string };
 
 // `shown`: the tab is on screen (alone, or in a split), not behind another view.
 export default function RdpSessionView({ session, displayName, onClose, onStatusChange, isActiveView = false, shown = true, onPromptChange }: any) {
+  const t = useT();
   // Read once: a tab keeps the way it opened with until it's closed (a phone
   // can switch to the built-in client from the tab).
   const [builtin, setBuiltin] = useState(() => readRdpOptions(session.serverUuid).app === "builtin");
@@ -118,8 +121,8 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
     };
     if (builtin) {
       const canvas = canvasRef.current;
-      if (!canvas) return failed("The tab isn't ready yet. Try again.");
-      pushLog({ msg: RDP_BUILTIN_EXPERIMENTAL, type: "warning" });
+      if (!canvas) return failed(t("The tab isn't ready yet. Try again."));
+      pushLog({ msg: t(RDP_BUILTIN_EXPERIMENTAL), type: "warning" });
       const options = readRdpOptions(session.serverUuid);
       // The panels show what this session has, and the resolution is sized for at once.
       setOpts(options);
@@ -149,7 +152,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
     const options = readRdpOptions(session.serverUuid);
     setUsedOptions(describeRdpOptions(options));
     invoke("initiate_rdp", { sessionId: session.id, serverId: session.serverId, useSshAgent: readUseSshAgent(), options }).catch(failed);
-  }, [builtin, session.id, session.serverId, session.serverUuid, pushLog]);
+  }, [builtin, session.id, session.serverId, session.serverUuid, pushLog, t]);
 
   // Listen first, then connect: a result that comes back at once must find
   // its listener (see #167).
@@ -199,7 +202,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       // How the built-in client's link is doing, every 2 seconds.
       listen(`rdp-link-${id}`, (e: any) => setLink(e.payload as LinkStats)),
       listen(`connection-failed-${id}`, (e: any) => {
-        const why = String(e.payload?.reason ?? "The connection failed.");
+        const why = String(e.payload?.reason ?? t("The connection failed."));
         askPassword.current = false;
         setReason(why);
         setStatus("failed");
@@ -211,7 +214,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         }
       }),
       listen(`session-disconnected-${id}`, (e: any) => {
-        setReason(String(e.payload?.reason ?? "The connection closed."));
+        setReason(String(e.payload?.reason ?? t("The connection closed.")));
         setStatus("disconnected");
       }),
       listen(`rdp-app-exited-${id}`, (e: any) => {
@@ -237,7 +240,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       if (builtin) invoke("rdp_builtin_close", { sessionId: id }).catch(console.error);
       invoke("disconnect_session", { sessionId: id }).catch(console.error);
     };
-  }, [builtin, session.id, connect, pushLog]);
+  }, [builtin, session.id, connect, pushLog, t]);
 
   const handleFingerprintResponse = async (accepted: boolean) => {
     const nonce = fingerprintPrompt?.nonce;
@@ -266,7 +269,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       setUsedOptions(describeRdpOptions(options));
       const again = await invoke<{ app: string; tracked: boolean; password: boolean }>("rdp_open_again", { sessionId: session.id, options });
       setOpened((o) => (o ? { ...o, app: again.app, tracked: again.tracked, password: again.password } : o));
-      pushLog({ msg: `Opened ${again.app} again.`, type: "success" });
+      pushLog({ msg: t("Opened {app} again.", { app: again.app }), type: "success" });
     } catch (e) {
       pushLog({ msg: String(e), type: "error" });
     } finally {
@@ -289,7 +292,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
     try {
       text = await readLocalClipboard();
     } catch (e) {
-      pushLog({ msg: `This computer's clipboard couldn't be read: ${e}`, type: "warning" });
+      pushLog({ msg: t("This computer's clipboard couldn't be read: {error}", { error: String(e) }), type: "warning" });
       keyAlone();
       return;
     }
@@ -361,7 +364,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const allowWithoutNla = () => {
     if (!session.serverUuid) return;
     writeRdpOptions(session.serverUuid, { ...readRdpOptions(session.serverUuid), allowNoNla: true });
-    pushLog({ msg: "Servers without NLA are allowed for this server now.", type: "warning" });
+    pushLog({ msg: t("Servers without NLA are allowed for this server now."), type: "warning" });
     connect();
   };
 
@@ -370,7 +373,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const allowNewAddress = () => {
     if (!session.serverUuid || !moved) return;
     writeRdpOptions(session.serverUuid, { ...readRdpOptions(session.serverUuid), sharedFor: moved.now });
-    pushLog({ msg: `What this device shares with the server is allowed for ${moved.now} now.`, type: "warning" });
+    pushLog({ msg: t("What this device shares with the server is allowed for {address} now.", { address: moved.now }), type: "warning" });
     setMoved(null);
     if (!builtin && status === "connected") void openAgain();
     else connect();
@@ -378,12 +381,12 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const movedNote = (place: string) => moved && (
     <div role="status" className={`shrink-0 px-3 py-1.5 flex items-center gap-2 bg-amber-500/10 text-[11.5px] text-amber-200 ${place}`}>
       <AlertTriangle size={12} className="shrink-0" aria-hidden="true" />
-      <span className="min-w-0 break-words">This server moved from {moved.was} to {moved.now}, so the files, clipboard and login without NLA this device allowed are off.</span>
+      <span className="min-w-0 break-words">{t("This server moved from {was} to {now}, so the files, clipboard and login without NLA this device allowed are off.", { was: moved.was, now: moved.now })}</span>
       <button
         onClick={allowNewAddress}
         className="ml-auto shrink-0 h-6 px-2 rounded-md bg-amber-500/20 text-amber-100 hover:bg-amber-500/30 font-semibold"
       >
-        Allow here
+        {t("Allow here")}
       </button>
     </div>
   );
@@ -391,7 +394,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const prompts = promptWaiting && (
     <div
       role="dialog"
-      aria-label={`Connection prompt for ${session.serverName}`}
+      aria-label={t("Connection prompt for {name}", { name: session.serverName })}
       className="absolute inset-0 z-40 flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto"
     >
       <div className="max-w-2xl w-full mt-6 sm:mt-12">
@@ -429,12 +432,12 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
   const experimentalBadge = (
     <span
       role="note"
-      title={RDP_BUILTIN_EXPERIMENTAL}
-      aria-label={RDP_BUILTIN_EXPERIMENTAL}
+      title={t(RDP_BUILTIN_EXPERIMENTAL)}
+      aria-label={t(RDP_BUILTIN_EXPERIMENTAL)}
       className="shrink-0 inline-flex items-center gap-1 h-5 px-1.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300 text-[10px] font-bold uppercase tracking-wider"
     >
       <FlaskConical size={10} aria-hidden="true" />
-      <span className="hidden [@container(min-width:560px)]:inline">Experimental</span>
+      <span className="hidden [@container(min-width:560px)]:inline">{t("Experimental")}</span>
     </span>
   );
 
@@ -455,12 +458,12 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
             </div>
             <div className="min-w-0 flex-1">
               <h2 className="text-sm font-semibold text-zinc-100 truncate" title={session.serverName}>{name}</h2>
-              <p className="text-[11px] mt-0.5 text-zinc-500">RDP server</p>
+              <p className="text-[11px] mt-0.5 text-zinc-500">{t("RDP server")}</p>
             </div>
             <button
               onClick={onClose}
-              title="Close session"
-              aria-label="Close session"
+              title={t("Close session")}
+              aria-label={t("Close session")}
               className="h-8 px-2.5 flex items-center gap-1.5 rounded-lg bg-white/5 text-zinc-300 hover:bg-red-500/15 hover:text-red-300 text-xs font-semibold transition-colors"
             >
               <X size={13} />
@@ -469,14 +472,14 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           <div role="note" className="flex gap-2.5 p-3 rounded-xl border border-amber-500/25 bg-amber-500/5 text-[12.5px] leading-relaxed text-amber-200/90">
             <FlaskConical size={15} className="shrink-0 mt-0.5 text-amber-300" aria-hidden="true" />
             <span>
-              On a phone, RDP servers open with Submarine's built-in RDP client. {RDP_BUILTIN_EXPERIMENTAL} Your choice is kept for this server on this phone.
+              {t("On a phone, RDP servers open with Submarine's built-in RDP client. {note} Your choice is kept for this server on this phone.", { note: t(RDP_BUILTIN_EXPERIMENTAL) })}
             </span>
           </div>
           <button
             onClick={useBuiltin}
             className="mt-4 h-10 px-4 flex items-center gap-2 rounded-xl bg-primary/15 text-primary hover:bg-primary/25 text-[13px] font-semibold transition-colors"
           >
-            <FlaskConical size={14} aria-hidden="true" /> Open with the built-in client
+            <FlaskConical size={14} aria-hidden="true" /> {t("Open with the built-in client")}
           </button>
         </div>
       </div>
@@ -499,18 +502,18 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           </span>
           <span className="min-w-0 truncate text-[12px] font-semibold text-zinc-200" title={session.serverName}>{name}</span>
           <span className={`min-w-0 truncate text-[11px] ${broken ? "text-red-400/90" : "text-zinc-500"}`}>
-            {working ? "Connecting…" : status === "failed" ? "Connection failed" : status === "disconnected" ? "Disconnected" : "RDP"}
+            {working ? t("Connecting…") : status === "failed" ? t("Connection failed") : status === "disconnected" ? t("Disconnected") : "RDP"}
           </span>
           {experimentalBadge}
           <div className="ml-auto shrink-0 flex items-center gap-1.5">
             {connected && shareClipboard && (
               <button
                 onClick={() => void pasteToServer("ctrlv", false)}
-                title="Paste this device's clipboard into the server"
-                aria-label="Paste this device's clipboard into the server"
+                title={t("Paste this device's clipboard into the server")}
+                aria-label={t("Paste this device's clipboard into the server")}
                 className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-white/5 text-zinc-300 hover:text-zinc-100 text-[11px] font-semibold transition-colors"
               >
-                <ClipboardPaste size={12} aria-hidden="true" /><span className="hidden [@container(min-width:560px)]:inline">Paste</span>
+                <ClipboardPaste size={12} aria-hidden="true" /><span className="hidden [@container(min-width:560px)]:inline">{t("Paste")}</span>
               </button>
             )}
             {connected && <LinkMark link={link} open={panel === "link"} onClick={() => togglePanel("link")} />}
@@ -519,58 +522,58 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
               <button
                 onClick={() => togglePanel("files")}
                 aria-expanded={panel === "files"}
-                title="Shared files"
-                aria-label="Shared files"
+                title={t("Shared files")}
+                aria-label={t("Shared files")}
                 className={`h-7 px-2 flex items-center gap-1.5 rounded-md text-[11px] font-semibold transition-colors ${panel === "files" ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-400 hover:text-zinc-200"}`}
               >
-                <FolderSymlink size={12} aria-hidden="true" /><span className="hidden [@container(min-width:700px)]:inline">Files</span>
+                <FolderSymlink size={12} aria-hidden="true" /><span className="hidden [@container(min-width:700px)]:inline">{t("Files")}</span>
               </button>
             )}
             <button
               onClick={() => togglePanel("settings")}
               aria-expanded={panel === "settings"}
-              title="Speed and quality"
-              aria-label="Speed and quality"
+              title={t("Speed and quality")}
+              aria-label={t("Speed and quality")}
               className={`h-7 px-2 flex items-center gap-1.5 rounded-md text-[11px] font-semibold transition-colors ${panel === "settings" ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-400 hover:text-zinc-200"}`}
             >
-              <SlidersHorizontal size={12} aria-hidden="true" /><span className="hidden [@container(min-width:700px)]:inline">Settings</span>
+              <SlidersHorizontal size={12} aria-hidden="true" /><span className="hidden [@container(min-width:700px)]:inline">{t("Settings")}</span>
             </button>
             {connected && (
               <button
                 onClick={() => setShowLog((v) => !v)}
                 aria-pressed={showLog}
-                title={showLog ? "Hide the log" : "Show the log"}
+                title={showLog ? t("Hide the log") : t("Show the log")}
                 className={`h-7 px-2 rounded-md text-[11px] font-semibold transition-colors ${showLog ? "bg-primary/15 text-primary" : "bg-white/5 text-zinc-400 hover:text-zinc-200"}`}
               >
-                Log
+                {t("Log")}
               </button>
             )}
             {noNla && (
               <button
                 onClick={allowWithoutNla}
-                title="Log in to this server without NLA: the password then goes inside TLS only"
+                title={t("Log in to this server without NLA: the password then goes inside TLS only")}
                 className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-amber-500/15 text-amber-200 hover:bg-amber-500/25 text-[11px] font-semibold transition-colors"
               >
-                <AlertTriangle size={12} aria-hidden="true" />Allow without NLA
+                <AlertTriangle size={12} aria-hidden="true" />{t("Allow without NLA")}
               </button>
             )}
             {broken && (
               <button
                 onClick={connect}
-                title="Reconnect"
-                aria-label="Reconnect"
+                title={t("Reconnect")}
+                aria-label={t("Reconnect")}
                 className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary/20 text-[11px] font-semibold transition-colors"
               >
-                <RotateCw size={12} /><span className="hidden [@container(min-width:560px)]:inline">Reconnect</span>
+                <RotateCw size={12} /><span className="hidden [@container(min-width:560px)]:inline">{t("Reconnect")}</span>
               </button>
             )}
             <button
               onClick={onClose}
-              title="Close session"
-              aria-label="Close session"
+              title={t("Close session")}
+              aria-label={t("Close session")}
               className="h-7 px-2 flex items-center gap-1.5 rounded-md bg-white/5 text-zinc-300 hover:bg-red-500/15 hover:text-red-300 text-[11px] font-semibold transition-colors"
             >
-              <X size={12} /><span className="hidden [@container(min-width:560px)]:inline">Close</span>
+              <X size={12} /><span className="hidden [@container(min-width:560px)]:inline">{t("Close")}</span>
             </button>
           </div>
         </div>
@@ -578,14 +581,14 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         {movedNote("border-b border-white/5")}
         {connected && serverCopy !== null && (
           <div role="status" className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-white/5 bg-primary/10 text-[11.5px] text-zinc-200">
-            <span className="min-w-0 truncate">Text was copied on the server ({serverCopy.length} characters).</span>
+            <span className="min-w-0 truncate">{t("Text was copied on the server ({count} characters).", { count: serverCopy.length })}</span>
             <button
               onClick={() => navigator.clipboard.writeText(serverCopy).then(() => setServerCopy(null), () => {})}
               className="shrink-0 h-6 px-2 rounded-md bg-primary/20 text-primary hover:bg-primary/30 font-semibold"
             >
-              Copy it here
+              {t("Copy it here")}
             </button>
-            <button onClick={() => setServerCopy(null)} aria-label="Dismiss" className="ml-auto shrink-0 text-zinc-500 hover:text-zinc-300">
+            <button onClick={() => setServerCopy(null)} aria-label={t("Dismiss")} className="ml-auto shrink-0 text-zinc-500 hover:text-zinc-300">
               <X size={12} />
             </button>
           </div>
@@ -612,17 +615,17 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
 
         {/* Outside the screen: a paste key in a panel isn't the server's. */}
         {panel === "link" && (
-          <ToolPanel title="Connection" onClose={() => setPanel(null)}>
+          <ToolPanel title={t("Connection")} onClose={() => setPanel(null)}>
             <LinkPanel link={link} onLessData={lessData} />
           </ToolPanel>
         )}
         {panel === "files" && (
-          <ToolPanel title="Shared files" onClose={() => setPanel(null)}>
+          <ToolPanel title={t("Shared files")} onClose={() => setPanel(null)}>
             <FilesPanel shared={connected ? shared : undefined} o={opts} set={setOpt} drives={drives} reconnect={reconnectForOpts} />
           </ToolPanel>
         )}
         {panel === "settings" && (
-          <ToolPanel title="Speed and quality" onClose={() => setPanel(null)}>
+          <ToolPanel title={t("Speed and quality")} onClose={() => setPanel(null)}>
             <RdpSettingsPanel o={opts} set={setOpt} reconnect={reconnectForOpts} />
           </ToolPanel>
         )}
@@ -645,7 +648,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-zinc-100 truncate" title={session.serverName}>{name}</h2>
             <p className={`text-[11px] mt-0.5 ${broken ? "text-red-400/90" : "text-zinc-500"}`}>
-              {working ? "Connecting…" : status === "failed" ? "Connection failed" : status === "disconnected" ? "Disconnected" : `RDP · opened in ${opened?.app ?? "the RDP app"}`}
+              {working ? t("Connecting…") : status === "failed" ? t("Connection failed") : status === "disconnected" ? t("Disconnected") : t("RDP · opened in {app}", { app: opened?.app ?? t("the RDP app") })}
             </p>
           </div>
           <div className="shrink-0 flex items-center gap-2">
@@ -653,29 +656,29 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
               <button
                 onClick={openAgain}
                 disabled={busy}
-                title="Open the RDP app again"
+                title={t("Open the RDP app again")}
                 className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 text-xs font-semibold transition-colors disabled:opacity-50"
               >
-                <ExternalLink size={13} /><span className="hidden sm:inline">Open again</span>
+                <ExternalLink size={13} /><span className="hidden sm:inline">{t("Open again")}</span>
               </button>
             )}
             {broken && (
               <button
                 onClick={connect}
-                title="Reconnect"
-                aria-label="Reconnect"
+                title={t("Reconnect")}
+                aria-label={t("Reconnect")}
                 className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 text-xs font-semibold transition-colors"
               >
-                <RotateCw size={13} /><span className="hidden sm:inline">Reconnect</span>
+                <RotateCw size={13} /><span className="hidden sm:inline">{t("Reconnect")}</span>
               </button>
             )}
             <button
               onClick={onClose}
-              title="Close session"
-              aria-label="Close session"
+              title={t("Close session")}
+              aria-label={t("Close session")}
               className="h-8 px-2.5 sm:px-3 flex items-center gap-1.5 rounded-lg bg-white/5 text-zinc-300 hover:bg-red-500/15 hover:text-red-300 text-xs font-semibold transition-colors"
             >
-              <X size={13} /><span className="hidden sm:inline">Close</span>
+              <X size={13} /><span className="hidden sm:inline">{t("Close")}</span>
             </button>
           </div>
         </div>
@@ -684,23 +687,24 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         {status === "connected" && opened && (
           <div className="mb-3 sm:mb-4 p-4 rounded-2xl border border-white/5 bg-[#121214] text-[12.5px] leading-relaxed text-zinc-300 space-y-1.5">
             <p>
-              {opened.app} connects to <span className="font-mono text-zinc-100">{opened.address}</span>
-              {opened.via ? <> — a port of this computer that goes through the SSH server <span className="text-zinc-100">{opened.via}</span>.</> : "."}
+              {opened.via
+                ? tx("{app} connects to {address} — a port of this computer that goes through the SSH server {via}.", { app: opened.app, address: <span className="font-mono text-zinc-100">{opened.address}</span>, via: <span className="text-zinc-100">{opened.via}</span> })
+                : tx("{app} connects to {address}.", { app: opened.app, address: <span className="font-mono text-zinc-100">{opened.address}</span> })}
             </p>
             {usedOptions && <p className="text-zinc-400">{usedOptions}</p>}
             <p className="text-zinc-500">
-              {opened.password ? "It got the saved password." : "It asks for the RDP password itself."}
-              {opened.via ? " The connection stays open while this tab does; closing the tab ends it." : ""}
+              {opened.password ? t("It got the saved password.") : t("It asks for the RDP password itself.")}
+              {opened.via ? sentenceGap() + t("The connection stays open while this tab does; closing the tab ends it.") : ""}
             </p>
             {appFailed && (
               <div className="pt-1 text-red-300/90">
-                <p>{opened.app} couldn't open it.</p>
+                <p>{t("{app} couldn't open it.", { app: opened.app })}</p>
                 {appFailed.map((l, i) => <p key={i} className="font-mono text-[11px] text-zinc-500 break-all">{l}</p>)}
               </div>
             )}
             {appClosed && (
               <div className="pt-1 text-amber-300/90">
-                <p>The RDP window was closed. Open it again with “Open again”.</p>
+                <p>{t("The RDP window was closed. Open it again with “Open again”.")}</p>
                 {appClosed.map((l, i) => <p key={i} className="font-mono text-[11px] text-zinc-500 break-all">{l}</p>)}
               </div>
             )}
