@@ -15,6 +15,7 @@ import { VncSpeedFields } from "./VncOptionFields";
 import { DEFAULT_VNC_OPTIONS, normalizeVncOptions, type VncOptions } from "../util/vncOptions";
 import { IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
+import { USUAL_PORTS, isFtp, type FtpProtocol, type ServerProtocol } from "../util/serverProtocol";
 import { t, tn, tx, useT } from "../i18n";
 
 // Compact "2h ago" style relative time for the attribution line.
@@ -68,11 +69,13 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
   }, [isOpen, isRdp]);
   const isTelnet = newNode.protocol === "telnet";
   const isVnc = newNode.protocol === "vnc";
-  const isSsh = !isRdp && !isTelnet && !isVnc;
-  const setProtocol = (protocol: "ssh" | "rdp" | "telnet" | "vnc") => {
+  // FTP: FTPS with TLS after connecting (the usual), from the start, or plain.
+  const ftp = isFtp(newNode.protocol);
+  const isSsh = !isRdp && !isTelnet && !isVnc && !ftp;
+  const setProtocol = (protocol: ServerProtocol) => {
     if (protocol === newNode.protocol) return;
     // The usual port of the new kind, unless another was typed.
-    const usual: Record<string, number> = { ssh: 22, rdp: 3389, telnet: 23, vnc: 5900 };
+    const usual = USUAL_PORTS;
     const port = !newNode.port || Object.values(usual).includes(newNode.port) ? usual[protocol] : newNode.port;
     const authType = protocol !== "ssh" && newNode.authType === "custom_key" ? "custom_pass" : newNode.authType;
     setNewNode({ ...newNode, protocol, port, authType });
@@ -542,15 +545,40 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               <select
                 id="server-type"
                 aria-label={t("Server type")}
-                value={isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : "ssh"}
-                onChange={(e) => setProtocol(e.target.value as "ssh" | "rdp" | "telnet" | "vnc")}
+                value={isRdp ? "rdp" : isTelnet ? "telnet" : isVnc ? "vnc" : ftp ? "ftps" : "ssh"}
+                onChange={(e) => setProtocol(e.target.value as ServerProtocol)}
                 className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
               >
                 <option value="ssh" className="bg-[#1a1a1e] text-white">SSH</option>
                 <option value="rdp" className="bg-[#1a1a1e] text-white">{t("RDP (Remote Desktop)")}</option>
                 <option value="telnet" className="bg-[#1a1a1e] text-white">{t("Telnet (not encrypted)")}</option>
                 <option value="vnc" className="bg-[#1a1a1e] text-white">VNC</option>
+                <option value="ftps" className="bg-[#1a1a1e] text-white">{t("FTP or FTPS (files)")}</option>
               </select>
+              {ftp && (
+                <div className="space-y-1.5 pt-1">
+                  <label htmlFor="ftp-security" className="text-[11px] font-bold text-zinc-400 ml-1">{t("Encryption")}</label>
+                  <select
+                    id="ftp-security"
+                    value={newNode.protocol}
+                    onChange={(e) => setProtocol(e.target.value as FtpProtocol)}
+                    className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-[#232328] transition-all shadow-inner"
+                  >
+                    <option value="ftps" className="bg-[#1a1a1e] text-white">{t("FTPS: TLS after connecting (usual)")}</option>
+                    <option value="ftps-implicit" className="bg-[#1a1a1e] text-white">{t("FTPS: TLS from the start (port 990)")}</option>
+                    <option value="ftp" className="bg-[#1a1a1e] text-white">{t("None: plain FTP (not encrypted)")}</option>
+                  </select>
+                  {newNode.protocol !== "ftp" && (
+                    <p className="text-[10px] text-zinc-500 ml-1">{t("A certificate that no public authority vouches for is shown to you to check once, like an SSH host key.")}</p>
+                  )}
+                </div>
+              )}
+              {newNode.protocol === "ftp" && (
+                <p role="note" className="flex gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-[11px] leading-snug text-amber-200/90">
+                  <ShieldAlert size={13} className="shrink-0 mt-px" aria-hidden="true" />
+                  <span>{t("Plain FTP isn't encrypted: the password and the files cross the network as they are. Pick FTPS if the server offers it, or go through an SSH server (below) to keep it private up to that server.")}</span>
+                </p>
+              )}
               {isTelnet && (
                 <p role="note" className="flex gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-[11px] leading-snug text-amber-200/90">
                   <ShieldAlert size={13} className="shrink-0 mt-px" aria-hidden="true" />
@@ -713,7 +741,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
               <div className="space-y-3 animate-in fade-in">
                 {!isVnc && <div className="space-y-1.5">
                   <label className="text-[11px] font-bold text-zinc-400 ml-1">{t("Username")}</label>
-                  <input type="text" placeholder={isTelnet ? t("For your reference") : t("Ask when connecting")} value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} autoCapitalize="none" autoCorrect="off" spellCheck={false} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
+                  <input type="text" placeholder={isTelnet ? t("For your reference") : ftp ? t("Empty: anonymous") : t("Ask when connecting")} value={newNode.username || ""} onChange={e => setNewNode({ ...newNode, username: e.target.value })} autoCapitalize="none" autoCorrect="off" spellCheck={false} className="w-full h-9 bg-[#1a1a1e] rounded-lg px-3 text-[12px] text-white border border-white/10 outline-none focus:border-primary/50 transition-all shadow-inner" />
                 </div>}
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-bold text-zinc-400 ml-1">{isVnc ? t("VNC password") : t("Password")}</label>

@@ -5928,6 +5928,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-socks",
  "vnc-rs",
+ "webpki-roots",
  "windows 0.62.2",
  "x25519-dalek",
  "x509-cert",

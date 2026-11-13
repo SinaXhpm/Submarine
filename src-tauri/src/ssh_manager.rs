@@ -959,6 +959,9 @@ pub struct SshState {
     /// answers, and the prompt takes it with the answer. The password is saved
     /// only once the login with it worked.
     pub kbi_save: Arc<Mutex<HashMap<String, bool>>>,
+    /// FTP tabs, by session id: their file access, which every `sftp_*`
+    /// command finds through `get_sftp_session` (see ftp_sftp.rs).
+    pub ftp_sessions: Arc<Mutex<HashMap<String, crate::ftp_sftp::Live>>>,
 }
 
 /// How an elevated SFTP channel is started. The sudo password (if any) lives
@@ -1019,6 +1022,7 @@ impl SshState {
             sftp_shell: Arc::new(Mutex::new(std::collections::HashSet::new())),
             prompted_secrets: Arc::new(Mutex::new(HashMap::new())),
             kbi_save: Arc::new(Mutex::new(HashMap::new())),
+            ftp_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

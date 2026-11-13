@@ -60,6 +60,10 @@ interface SftpWorkspaceProps {
   // the shell hasn't said (the pane shows how to make it); undefined while
   // Follow is off.
   follow?: ShellFolderState | null;
+  // An FTP server's tab (FtpSessionView): its files go over FTP, so nothing
+  // that runs commands on the server is offered (root mode, archives, the
+  // owners' names) and there is no mirror.
+  ftp?: boolean;
 }
 // "split" is Local above Remote; the name predates "side" and stays because
 // it is what earlier versions saved.
@@ -283,10 +287,10 @@ function FollowSetup({ onCopy }: { onCopy: (line: string) => void }) {
   );
 }
 
-const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files", profile, follow }: SftpWorkspaceProps) => {
+const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files", profile, follow, ftp = false }: SftpWorkspaceProps) => {
   const t = useT();
-  // Mirror needs a saved server; without one the files always show.
-  const shownView: SftpView = view === "mirror" && serverId ? "mirror" : "files";
+  // Mirror needs a saved SSH server; without one the files always show.
+  const shownView: SftpView = view === "mirror" && serverId && !ftp ? "mirror" : "files";
   // Files layout: "tabs" (one side full height) is the default because the
   // side panel is narrow on most desktop setups and "split" squeezed each
   // FilePanel into 5-6 rows. "split" and "side" stay available for users who
@@ -314,8 +318,9 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   const [activeSide, setActiveSide] = useState<FilesSide>(() => {
     try {
       const v = localStorage.getItem(sideStorageKey);
-      return v === "remote" ? "remote" : "local";
-    } catch { return "local"; }
+      // An FTP tab is there for the server's files: they come first.
+      return v === "remote" || v === "local" ? v : ftp ? "remote" : "local";
+    } catch { return ftp ? "remote" : "local"; }
   });
   const setActiveSidePersisted = (s: FilesSide) => {
     setActiveSide(s);
@@ -324,7 +329,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   // Providers are created once per session so the panels' provider identity
   // is stable across renders (the FilePanel's load-on-mount effect keys off it).
   const localProvider = useMemo(() => createLocalProvider(), []);
-  const remoteProvider = useMemo(() => createRemoteProvider(sessionId), [sessionId]);
+  const remoteProvider = useMemo(() => createRemoteProvider(sessionId, { ftp }), [sessionId, ftp]);
 
   const localRef = useRef<FilePanelHandle | null>(null);
   const remoteRef = useRef<FilePanelHandle | null>(null);
@@ -346,6 +351,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   const [elevError, setElevError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (ftp) return;
     let cancelled = false;
     invoke<ElevationStatus>("sftp_elevation_status", { sessionId })
       .then((s) => { if (!cancelled) setElevation(s); })
@@ -354,7 +360,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   }, [sessionId]);
 
   useEffect(() => {
-    if (disabled) return;
+    if (disabled || ftp) return;
     let cancelled = false;
     invoke<string>("sftp_login_user", { sessionId })
       .then((u) => { if (!cancelled) setLoginUser(u || null); })
@@ -712,10 +718,12 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               onEntriesChange={setRemoteEntries}
               compareWith={compareOn ? localEntries : null}
               hideSame={hideSame}
-              headerExtra={elevationControl}
+              headerExtra={ftp ? undefined : elevationControl}
               headerNote={<>{elevationNote}{followNote}</>}
-              rootMode={elevation.elevated || rootByLogin}
-              archiveOff={elevation.elevated ? t("Archive and extract aren't available in root mode: they run as the login user, not through sudo") : undefined}
+              rootMode={!ftp && (elevation.elevated || rootByLogin)}
+              archiveOff={ftp
+                ? t("Archive and extract need an SSH server: they run commands on it")
+                : elevation.elevated ? t("Archive and extract aren't available in root mode: they run as the login user, not through sudo") : undefined}
             />
           </div>
         </div>
@@ -723,7 +731,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
 
       {/* Mirror view — kept MOUNTED (CSS hidden) so the live worker's logs
           and progress counters survive when the user pops back to Files. */}
-      {!!serverId && (
+      {!!serverId && !ftp && (
         <div className={`${shownView === "mirror" ? "flex-1 flex flex-col min-h-0" : "hidden"}`}>
           <MirrorsPanel
             sessionId={sessionId}
