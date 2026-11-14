@@ -66,7 +66,7 @@ export function AuthPrompts({
         <div className="flex items-start gap-3">
           <ShieldAlert className={`${accent} mt-1 shrink-0`} size={20} />
           <div className="flex-1 min-w-0">
-            <h3 className={`text-sm font-bold ${accent} uppercase tracking-widest`}>
+            <h3 className={`text-sm font-bold ${accent}`}>
               {isMismatch ? (isCert ? t("Certificate has CHANGED") : t("Host key has CHANGED")) : t("Unknown host fingerprint")}
             </h3>
             {isMismatch ? (
@@ -96,13 +96,13 @@ export function AuthPrompts({
             <div className="flex flex-wrap gap-2 sm:gap-3">
               <button
                 onClick={() => handleFingerprintResponse(true)}
-                className={`flex-1 sm:flex-none px-4 sm:px-6 py-2 ${acceptBtn} font-bold text-xs uppercase tracking-wider whitespace-nowrap rounded-lg transition-colors flex items-center justify-center gap-2`}
+                className={`flex-1 sm:flex-none px-4 sm:px-6 py-2 ${acceptBtn} font-semibold text-xs whitespace-nowrap rounded-lg transition-colors flex items-center justify-center gap-2`}
               >
                 <Check size={14} /> {isMismatch ? (isCert ? t("Accept new certificate") : t("Accept new key")) : t("Accept & save")}
               </button>
               <button
                 onClick={() => handleFingerprintResponse(false)}
-                className="flex-1 sm:flex-none px-4 sm:px-6 py-2 bg-white/5 text-zinc-300 font-bold text-xs uppercase tracking-wider whitespace-nowrap rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
+                className="flex-1 sm:flex-none px-4 sm:px-6 py-2 bg-white/5 text-zinc-300 font-semibold text-xs whitespace-nowrap rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
               >
                 <X size={14} /> {isMismatch ? t("Abort") : t("Reject")}
               </button>
@@ -123,7 +123,7 @@ export function AuthPrompts({
         <div className="flex items-start gap-3">
           <KeyRound className="text-primary mt-1 shrink-0" size={20} />
           <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-bold text-primary uppercase tracking-widest">
+            <h3 className="text-sm font-bold text-primary">
               {kbiPrompt.name && String(kbiPrompt.name).trim() ? kbiPrompt.name : t("Verification required")}
             </h3>
             {/* Which server is asking — the server's own wording rarely
@@ -184,13 +184,13 @@ export function AuthPrompts({
             <div className="flex flex-wrap gap-2 sm:gap-3 mt-4">
               <button
                 onClick={() => void submit()}
-                className="flex-1 sm:flex-none px-4 sm:px-6 py-2 bg-primary text-black font-bold text-xs uppercase tracking-wider whitespace-nowrap rounded-lg hover:bg-primary/80 transition-colors flex items-center justify-center gap-2"
+                className="flex-1 sm:flex-none px-4 sm:px-6 py-2 bg-primary text-black font-semibold text-xs whitespace-nowrap rounded-lg hover:bg-primary/80 transition-colors flex items-center justify-center gap-2"
               >
                 <Check size={14} /> {t("Submit")}
               </button>
               <button
                 onClick={handleKbiCancel}
-                className="flex-1 sm:flex-none px-4 sm:px-6 py-2 bg-white/5 text-zinc-300 font-bold text-xs uppercase tracking-wider whitespace-nowrap rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
+                className="flex-1 sm:flex-none px-4 sm:px-6 py-2 bg-white/5 text-zinc-300 font-semibold text-xs whitespace-nowrap rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
               >
                 <X size={14} /> {t("Cancel")}
               </button>

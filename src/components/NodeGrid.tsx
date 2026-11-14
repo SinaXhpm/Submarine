@@ -841,7 +841,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
           {field || (
             <>
               {name}
-              <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.12em]">{contents}</span>
+              <span className="text-[11px] text-zinc-500 font-semibold">{contents}</span>
             </>
           )}
         </div>
@@ -909,7 +909,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
         ? t("No matches.")
         : null;
 
-  const headerButton = "inline-flex items-center gap-1.5 h-10 sm:h-8 rounded-lg border text-[11px] font-bold uppercase tracking-wider transition-colors shrink-0";
+  const headerButton = "inline-flex items-center gap-1.5 h-10 sm:h-8 rounded-lg border text-[12px] font-semibold transition-colors shrink-0";
 
   return (
     <div className="flex-1 flex flex-col h-full p-6 overflow-hidden bg-transparent">
@@ -1053,7 +1053,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
           </span>
           <button
             onClick={() => setReviewOpen(true)}
-            className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
+            className="shrink-0 px-2.5 h-7 rounded text-[11.5px] font-semibold bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
           >
             {t("Review")}
           </button>
@@ -1072,7 +1072,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
           </span>
           <button
             onClick={() => setDeletionsOpen(true)}
-            className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
+            className="shrink-0 px-2.5 h-7 rounded text-[11.5px] font-semibold bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
           >
             {t("Review")}
           </button>
@@ -1089,7 +1089,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
           </span>
           <button
             onClick={reviewKey}
-            className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
+            className="shrink-0 px-2.5 h-7 rounded text-[11.5px] font-semibold bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
           >
             {t("Review")}
           </button>
@@ -1110,7 +1110,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
           {shareGrant === "locked" && onUnlockSharing && (
             <button
               onClick={onUnlockSharing}
-              className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
+              className="shrink-0 px-2.5 h-7 rounded text-[11.5px] font-semibold bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
             >
               {t("Unlock sharing")}
             </button>
@@ -1137,7 +1137,7 @@ export const NodeGrid = ({ servers, folders, credentials, serverTabs, activeFold
         ) : listView ? (
           <div className="rounded-xl border border-white/5 bg-[#121216] overflow-hidden">
             {!isMobile && (
-              <div className={`${LIST_COLS} h-8 pl-7 pr-2 border-b border-white/5 bg-white/[0.02] text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-500`}>
+              <div className={`${LIST_COLS} h-8 pl-7 pr-2 border-b border-white/5 bg-white/[0.02] text-[11px] font-semibold text-zinc-500`}>
                 <span>{t("Name")}</span>
                 <span>{t("Address")}</span>
                 <span>{t("Type")}</span>

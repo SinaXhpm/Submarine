@@ -98,7 +98,7 @@ const readDrawer = () => {
 /** A label above a field in the options drawer. */
 const Field = ({ label, children }: { label: string; children: ReactNode }) => (
   <label className="flex flex-col gap-1 min-w-0">
-    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">{label}</span>
+    <span className="text-[11px] font-semibold text-zinc-500">{label}</span>
     {children}
   </label>
 );
@@ -679,7 +679,7 @@ export const ChatPanel = ({
             {!titleSlot && <span className="hidden sm:inline truncate max-w-[12rem] font-mono" dir="ltr">{settings?.model}</span>}
           </button>
           {running && live?.runId != null && (
-            <button type="button" onClick={stop} className="h-10 sm:h-8 shrink-0 px-2.5 rounded-lg text-[11px] font-bold uppercase border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 flex items-center gap-1.5">
+            <button type="button" onClick={stop} className="h-10 sm:h-8 shrink-0 px-2.5 rounded-lg text-[12px] font-semibold border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 flex items-center gap-1.5">
               <Square size={10} fill="currentColor" /> Stop
             </button>
           )}
@@ -791,7 +791,7 @@ export const ChatPanel = ({
         <div className="shrink-0 px-3 py-1 text-[11px] text-zinc-400 border-b border-white/5 flex items-center gap-2">
           <Loader2 size={11} className="animate-spin shrink-0" />
           <span className="flex-1">This chat is answering in another view.</span>
-          <button type="button" onClick={() => void ai.stopChat(chatId).then(onChanged)} className="h-10 sm:h-7 px-2.5 rounded-lg text-[10.5px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5">
+          <button type="button" onClick={() => void ai.stopChat(chatId).then(onChanged)} className="h-10 sm:h-7 px-2.5 rounded-lg text-[11.5px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5">
             Stop
           </button>
         </div>
@@ -856,12 +856,12 @@ export const ChatPanel = ({
             </p>
             <div className="flex items-center gap-2">
               <button type="button" disabled={continuing} onClick={() => void continueNew()}
-                className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-amber-400/40 text-amber-200 hover:bg-amber-500/10 flex items-center gap-1.5 disabled:opacity-70">
+                className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-amber-400/40 text-amber-200 hover:bg-amber-500/10 flex items-center gap-1.5 disabled:opacity-70">
                 {continuing ? <Loader2 size={12} className="animate-spin" /> : <MessageSquarePlus size={12} />}
                 {continuing ? "Writing a summary…" : "Continue in a new chat"}
               </button>
               {continuing && (
-                <button type="button" onClick={() => void ai.stopChat(chatId)} className="h-10 sm:h-8 px-2.5 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5">
+                <button type="button" onClick={() => void ai.stopChat(chatId)} className="h-10 sm:h-8 px-2.5 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5">
                   Stop
                 </button>
               )}
@@ -876,7 +876,7 @@ export const ChatPanel = ({
         )}
         {error && <div className="text-[12px] text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2" dir="auto">{error}</div>}
         {lastUserFailed && !live && (
-          <button type="button" onClick={() => void start("retry")} className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5">
+          <button type="button" onClick={() => void start("retry")} className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5">
             <RotateCcw size={12} /> Try again
           </button>
         )}

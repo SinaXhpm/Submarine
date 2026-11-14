@@ -1988,7 +1988,7 @@ const TerminalView = ({
       {toast && (
         <div className="absolute bottom-3 right-3 z-20 max-w-[calc(100%-1.5rem)] pointer-events-none">
           <span
-            className={`block truncate px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border ${
+            className={`block truncate px-2.5 py-1 rounded text-[11.5px] font-mono border ${
               toast.tone === 'err'
                 ? 'bg-rose-500/15 border-rose-500/30 text-rose-300'
                 : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
@@ -2033,13 +2033,13 @@ const TerminalView = ({
       {disabled && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
           {reconnecting ? (
-            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border bg-[#2c1f0b] border-amber-500/30 text-amber-200 shadow-lg flex items-center gap-1.5">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[11.5px] font-mono border bg-[#2c1f0b] border-amber-500/30 text-amber-200 shadow-lg flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-300 animate-pulse-brief" aria-hidden="true" />
               <span className="sm:hidden">{t('Reconnecting…')}</span>
               <span className="hidden sm:inline">{t('Reconnecting… buffer is read-only')}</span>
             </span>
           ) : (
-            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[10.5px] font-mono uppercase tracking-wider border bg-[#2c1117] border-rose-500/30 text-rose-300 shadow-lg">
+            <span className="whitespace-nowrap px-2.5 py-1 rounded text-[11.5px] font-mono border bg-[#2c1117] border-rose-500/30 text-rose-300 shadow-lg">
               <span className="sm:hidden">{t('Read-only')}</span>
               <span className="hidden sm:inline">{t('Disconnected — buffer is read-only')}</span>
             </span>

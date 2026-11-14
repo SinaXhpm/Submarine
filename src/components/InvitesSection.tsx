@@ -64,7 +64,7 @@ export default function InvitesSection({ onLocalProfilesChanged }: Props) {
     <div className="mt-4 pt-4 border-t border-white/5 space-y-2">
       <div className="flex items-center gap-2 text-zinc-300">
         <Users size={14} className="text-indigo-300" />
-        <span className="text-[12.5px] font-bold uppercase tracking-wider">{t("Shared with you")}</span>
+        <span className="text-[12.5px] font-bold">{t("Shared with you")}</span>
       </div>
 
       {err && (

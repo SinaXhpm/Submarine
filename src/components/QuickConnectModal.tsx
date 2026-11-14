@@ -120,8 +120,8 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
       <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="shrink-0 px-4 py-3 border-b border-white/5 flex items-center justify-between">
-          <span className="text-[12px] font-bold uppercase tracking-widest text-white flex items-center gap-2">
-            <Zap size={13} className="text-primary" /> {t("Quick Connect")}
+          <span className="text-[12px] font-semibold text-white flex items-center gap-2">
+            <Zap size={13} className="text-primary" /> {t("Quick connect")}
           </span>
           <button aria-label={t("Close")} onClick={close} className="text-zinc-400 hover:text-white"><X size={16} /></button>
         </div>
@@ -136,7 +136,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
           {/* SSH or FTP; an FTP server's encryption, as in the server form. */}
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
-              <label htmlFor="quick-type" className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Type")}</label>
+              <label htmlFor="quick-type" className="text-[11px] font-semibold text-zinc-300 ml-0.5">{t("Type")}</label>
               <select
                 id="quick-type"
                 value={ftp ? "ftps" : "ssh"}
@@ -149,7 +149,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
             </div>
             {ftp && (
               <div className="space-y-1">
-                <label htmlFor="quick-ftp-security" className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Encryption")}</label>
+                <label htmlFor="quick-ftp-security" className="text-[11px] font-semibold text-zinc-300 ml-0.5">{t("Encryption")}</label>
                 <select
                   id="quick-ftp-security"
                   value={protocol}
@@ -173,7 +173,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
           {/* Host + port */}
           <div className="grid grid-cols-4 gap-2">
             <div className="col-span-3 space-y-1">
-              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Host")}</label>
+              <label className="text-[11px] font-semibold text-zinc-300 ml-0.5">{t("Host")}</label>
               <input
                 value={host}
                 onChange={(e) => onHostChange(e.target.value)}
@@ -184,7 +184,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
               />
             </div>
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Port")}</label>
+              <label className="text-[11px] font-semibold text-zinc-300 ml-0.5">{t("Port")}</label>
               <input
                 type="number"
                 value={port}
@@ -197,7 +197,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
 
           {/* Username */}
           <div className="space-y-1">
-            <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Username")}</label>
+            <label className="text-[11px] font-semibold text-zinc-300 ml-0.5">{t("Username")}</label>
             <input
               value={username}
               onChange={(e) => { setUsername(e.target.value); setUserTyped(true); }}
@@ -211,7 +211,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
             <div className="flex items-center gap-1.5 bg-white/[0.03] border border-white/10 rounded-lg p-1">
               <button
                 onClick={() => setAuthMode("password")}
-                className={`flex-1 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors ${
+                className={`flex-1 h-7 rounded text-[11.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${
                   authMode === "password"
                     ? "bg-primary/20 text-primary"
                     : "text-zinc-400 hover:text-zinc-100"
@@ -221,20 +221,20 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
               </button>
               <button
                 onClick={() => setAuthMode("key")}
-                className={`flex-1 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors ${
+                className={`flex-1 h-7 rounded text-[11.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${
                   authMode === "key"
                     ? "bg-primary/20 text-primary"
                     : "text-zinc-400 hover:text-zinc-100"
                 }`}
               >
-                <KeyRound size={11} /> {t("SSH Key")}
+                <KeyRound size={11} /> {t("SSH key")}
               </button>
             </div>
           </div>}
 
           {authMode === "password" ? (
             <div className="space-y-1 animate-in fade-in">
-              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Password")}</label>
+              <label className="text-[11px] font-semibold text-zinc-300 ml-0.5">{t("Password")}</label>
               <PasswordField
                 value={password}
                 onChange={setPassword}
@@ -247,7 +247,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
           ) : (
             <div className="space-y-2 animate-in fade-in">
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Private Key (PEM)")}</label>
+                <label className="text-[11px] font-semibold text-zinc-300 ml-0.5">{t("Private key (PEM)")}</label>
                 <textarea
                   value={privateKey}
                   onChange={(e) => setPrivateKey(e.target.value)}
@@ -257,7 +257,7 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider ml-0.5">{t("Passphrase (if any)")}</label>
+                <label className="text-[11px] font-semibold text-zinc-300 ml-0.5">{t("Passphrase (if any)")}</label>
                 <PasswordField
                   value={passphrase}
                   onChange={setPassphrase}
@@ -278,11 +278,11 @@ const QuickConnectModal = ({ isOpen, onClose, onConnect }: Props) => {
         <div className="shrink-0 px-5 py-3 border-t border-white/5 flex items-center gap-2">
           <button
             onClick={connect}
-            className="flex-1 h-10 rounded-lg text-[11.5px] font-bold uppercase tracking-wider bg-primary text-black hover:shadow-[0_0_20px_rgba(var(--primary),0.3)] flex items-center justify-center gap-2"
+            className="flex-1 h-10 rounded-lg text-[11.5px] font-semibold bg-primary text-black hover:shadow-[0_0_20px_rgba(var(--primary),0.3)] flex items-center justify-center gap-2"
           >
             <Zap size={14} /> {t("Connect")}
           </button>
-          <button onClick={close} className="h-10 px-4 rounded-lg text-[11.5px] font-bold uppercase tracking-wider bg-white/5 text-zinc-200 border border-white/10 hover:bg-white/10">
+          <button onClick={close} className="h-10 px-4 rounded-lg text-[11.5px] font-semibold bg-white/5 text-zinc-200 border border-white/10 hover:bg-white/10">
             {t("Cancel")}
           </button>
         </div>

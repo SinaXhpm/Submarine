@@ -179,7 +179,7 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
         <div data-ai-overlay="" data-ai-settings="" className="absolute inset-0 z-30 flex flex-col bg-[#121214]">
           <div className="h-11 px-3 flex items-center gap-2 border-b border-white/5 bg-white/[0.02] shrink-0">
             <Settings size={14} className="text-zinc-400 shrink-0" />
-            <div className="flex-1 min-w-0 truncate text-[11px] font-black text-zinc-400 uppercase tracking-wider">AI assistant settings</div>
+            <div className="flex-1 min-w-0 truncate text-[12px] font-semibold text-zinc-400">AI assistant settings</div>
             <button type="button" onClick={() => setSettingsOpen(false)} aria-label="Close AI settings"
               className={`${compact ? "h-10 w-10" : "h-8 w-8"} rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 flex items-center justify-center`}>
               <X size={15} />
@@ -207,7 +207,7 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
         <div className={`${compact ? "flex-1 min-w-0" : "w-72 shrink-0 border-r border-white/5"} flex flex-col min-h-0`}>
           <div className="p-3 space-y-2 border-b border-white/5">
             <div className="flex items-center gap-2">
-              <div className="flex-1 text-[11px] font-black text-zinc-500 uppercase tracking-wider flex items-center gap-1.5"><Sparkles size={13} /> Chats</div>
+              <div className="flex-1 text-[12px] font-semibold text-zinc-500 flex items-center gap-1.5"><Sparkles size={13} /> Chats</div>
               <button type="button" aria-label="AI settings" title="AI providers and keys" onClick={() => setSettingsOpen(true)}
                 className={`${compact ? "h-10 w-10" : "h-8 w-8"} rounded-lg border border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5 flex items-center justify-center`}>
                 <Settings size={14} />
@@ -216,7 +216,7 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
                 className={`${compact ? "h-10 w-10" : "h-8 w-8"} rounded-lg border border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5 flex items-center justify-center`}>
                 <History size={14} />
               </button>
-              <button type="button" onClick={() => void newChat()} className={`${compact ? "h-10" : "h-8"} px-3 rounded-lg text-[11px] font-bold uppercase bg-primary/10 border border-primary/30 text-primary hover:bg-primary hover:text-zinc-950 transition-all flex items-center gap-1.5`}>
+              <button type="button" onClick={() => void newChat()} className={`${compact ? "h-10" : "h-8"} px-3 rounded-lg text-[12px] font-semibold bg-primary/10 border border-primary/30 text-primary hover:bg-primary hover:text-zinc-950 transition-all flex items-center gap-1.5`}>
                 <Plus size={12} /> New chat
               </button>
             </div>
@@ -264,7 +264,7 @@ export const AiPage = ({ active, openSessions, serverNames }: Props) => {
           </div>
           {chats.length > 0 && (
             <div className="p-2 border-t border-white/5">
-              <button type="button" onClick={() => void deleteAll()} className={`w-full ${compact ? "h-10" : "h-8"} rounded-lg text-[11px] font-bold uppercase text-zinc-500 hover:text-rose-300 hover:bg-rose-500/10 flex items-center justify-center gap-1.5`}>
+              <button type="button" onClick={() => void deleteAll()} className={`w-full ${compact ? "h-10" : "h-8"} rounded-lg text-[12px] font-semibold text-zinc-500 hover:text-rose-300 hover:bg-rose-500/10 flex items-center justify-center gap-1.5`}>
                 <Trash2 size={12} /> Delete all
               </button>
             </div>

@@ -66,8 +66,8 @@ const sameRoute = (a: Route, b: Route): boolean => {
 };
 
 const field = "w-full h-10 sm:h-9 px-3 bg-zinc-950 border border-white/10 rounded-lg text-[13px] text-zinc-100 focus:outline-none focus:border-primary/50";
-const label = "text-[11px] font-black text-zinc-500 uppercase tracking-wider";
-const smallBtn = "h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border transition-all flex items-center gap-1.5 disabled:opacity-40";
+const label = "text-[12px] font-semibold text-zinc-500";
+const smallBtn = "h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border transition-all flex items-center gap-1.5 disabled:opacity-40";
 
 const Switch = ({ on, onChange, label: aria }: { on: boolean; onChange: (v: boolean) => void; label: string }) => (
   <button
@@ -150,7 +150,7 @@ export const AiSettings = ({ servers: given, onOpenChats, embedded = false, onCh
           <button
             type="button"
             onClick={onOpenChats}
-            className="px-4 h-10 sm:h-9 bg-primary/10 border border-primary/30 text-primary rounded-xl text-xs font-bold uppercase hover:bg-primary hover:text-zinc-950 transition-all w-full flex items-center justify-center gap-2"
+            className="px-4 h-10 sm:h-9 bg-primary/10 border border-primary/30 text-primary rounded-xl text-xs font-semibold hover:bg-primary hover:text-zinc-950 transition-all w-full flex items-center justify-center gap-2"
           >
             <MessagesSquare size={14} /> Chats
           </button>
@@ -202,7 +202,7 @@ export const AiSettings = ({ servers: given, onOpenChats, embedded = false, onCh
           <button
             type="button"
             onClick={() => openEditor(emptyInput())}
-            className="px-4 h-10 sm:h-9 bg-zinc-900 border border-white/5 text-zinc-300 rounded-xl text-xs font-bold uppercase hover:bg-white/5 transition-all w-full flex items-center justify-center gap-2"
+            className="px-4 h-10 sm:h-9 bg-zinc-900 border border-white/5 text-zinc-300 rounded-xl text-xs font-semibold hover:bg-white/5 transition-all w-full flex items-center justify-center gap-2"
           >
             <Plus size={14} /> Add provider
           </button>
@@ -212,7 +212,7 @@ export const AiSettings = ({ servers: given, onOpenChats, embedded = false, onCh
   if (embedded) return card;
   return (
     <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-      <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+      <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
         <Sparkles size={14} /> AI Assistant
       </div>
       {card}

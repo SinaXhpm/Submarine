@@ -260,7 +260,7 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
   const drawerExtra = serverUuid && (
     <div className="space-y-3 pt-1 border-t border-white/5">
       <div className="space-y-1.5">
-        <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Permission level on {serverName}</div>
+        <div className="text-[11px] font-semibold text-zinc-500">Permission level on {serverName}</div>
         <LevelPicker variant="list" serverUuid={serverUuid} serverName={currentName} sessionId={liveSession} info={info} onChanged={setInfo} />
       </div>
       <div className="flex flex-wrap items-center gap-3">
@@ -323,7 +323,7 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
     <div data-ai-overlay="" data-ai-settings="" className="absolute inset-0 z-30 flex flex-col bg-[#121214]">
       <div className="h-11 px-2 sm:px-3 flex items-center gap-2 border-b border-white/5 bg-white/[0.02] shrink-0">
         <Settings size={14} className="text-zinc-400 shrink-0" />
-        <div className="flex-1 min-w-0 truncate text-[11px] font-black text-zinc-400 uppercase tracking-wider">AI assistant settings</div>
+        <div className="flex-1 min-w-0 truncate text-[12px] font-semibold text-zinc-400">AI assistant settings</div>
         <button type="button" onClick={() => setSettingsOpen(false)} aria-label="Close AI settings" className={`${barIcon} text-zinc-500 hover:text-white hover:bg-white/5`}>
           <X size={15} />
         </button>
@@ -371,7 +371,7 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
         {banner}
         <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
           <div className="text-[12.5px] text-zinc-400 max-w-sm">Ask the assistant about {serverName}. It works over this session, within the level set for it.</div>
-          <button type="button" disabled={!connected || busy} onClick={() => void newChat()} className="h-10 sm:h-9 px-4 rounded-lg text-[11px] font-bold uppercase border border-primary/40 text-primary hover:bg-primary/10 flex items-center gap-1.5 disabled:opacity-40">
+          <button type="button" disabled={!connected || busy} onClick={() => void newChat()} className="h-10 sm:h-9 px-4 rounded-lg text-[12px] font-semibold border border-primary/40 text-primary hover:bg-primary/10 flex items-center gap-1.5 disabled:opacity-40">
             {busy ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} New chat
           </button>
         </div>

@@ -319,9 +319,9 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
       >
         {/* Header */}
         <div className="shrink-0 px-4 py-3 border-b border-white/5 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-[12px] font-bold uppercase tracking-widest text-white">
+          <div className="flex items-center gap-2 text-[12px] font-semibold text-white">
             <Cloud size={14} className="text-primary" />
-            <span>{t("Cloud Sync")}</span>
+            <span>{t("Cloud sync")}</span>
             {signedInEmail && stage === "signed-in" && (
               <span className="text-zinc-500 font-mono normal-case text-[11px] tracking-normal ml-2">
                 {signedInEmail}
@@ -378,7 +378,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
                 <button aria-label={t("Back")} onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
-                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">{t("Sign in")}</span>
+                <span className="text-[12.5px] font-bold text-zinc-300">{t("Sign in")}</span>
               </div>
               {serverLine}
               <input
@@ -425,7 +425,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
                 <button aria-label={t("Back")} onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
-                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">{t("Reset password")}</span>
+                <span className="text-[12.5px] font-bold text-zinc-300">{t("Reset password")}</span>
               </div>
               {serverLine}
               <p className="text-[11.5px] text-zinc-500 leading-relaxed">
@@ -460,7 +460,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
                 <button aria-label={t("Back")} onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
-                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">{t("New password")}</span>
+                <span className="text-[12.5px] font-bold text-zinc-300">{t("New password")}</span>
               </div>
               {serverLine}
               <p className="text-[12px] text-zinc-300">
@@ -506,7 +506,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
                 <button aria-label={t("Back")} onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
-                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">{t("Sign in by email")}</span>
+                <span className="text-[12.5px] font-bold text-zinc-300">{t("Sign in by email")}</span>
               </div>
               {serverLine}
               <p className="text-[11.5px] text-zinc-500 leading-relaxed">
@@ -541,7 +541,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
                 <button aria-label={t("Back")} onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
-                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">{t("Sign in by email")}</span>
+                <span className="text-[12.5px] font-bold text-zinc-300">{t("Sign in by email")}</span>
               </div>
               {serverLine}
               <p className="text-[12px] text-zinc-300">
@@ -570,7 +570,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
                 <button aria-label={t("Back")} onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
-                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">{t("Create account")}</span>
+                <span className="text-[12.5px] font-bold text-zinc-300">{t("Create account")}</span>
               </div>
               {serverLine}
               <p className="text-[11.5px] text-zinc-500 leading-relaxed">
@@ -599,7 +599,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
             <div className="max-w-sm mx-auto py-4 space-y-3">
               <div className="flex items-center gap-2 pb-1">
                 <button aria-label={t("Back")} onClick={goBack} className="text-zinc-400 hover:text-white"><ArrowLeft size={14} /></button>
-                <span className="text-[12.5px] font-bold uppercase tracking-wider text-zinc-300">{t("Verify email")}</span>
+                <span className="text-[12.5px] font-bold text-zinc-300">{t("Verify email")}</span>
               </div>
               {serverLine}
               <p className="text-[12px] text-zinc-300">
@@ -677,7 +677,7 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
                 <button
                   onClick={handleLogout}
                   disabled={busy}
-                  className="h-8 px-3 rounded text-[11.5px] font-bold uppercase tracking-wider bg-white/5 border border-white/10 text-zinc-300 hover:text-rose-300 hover:bg-rose-500/10 flex items-center gap-1.5 disabled:opacity-50"
+                  className="h-8 px-3 rounded text-[11.5px] font-semibold bg-white/5 border border-white/10 text-zinc-300 hover:text-rose-300 hover:bg-rose-500/10 flex items-center gap-1.5 disabled:opacity-50"
                 >
                   <LogOut size={11} /> {t("Sign out")}
                 </button>
@@ -719,14 +719,14 @@ const CloudPanel = ({ isOpen, onClose, onLocalProfilesChanged }: Props) => {
                       <button
                         onClick={() => { setConfirmDelete(false); setDeletePw(""); setError(null); }}
                         disabled={busy}
-                        className="h-8 px-3 rounded text-[11.5px] font-bold uppercase tracking-wider bg-white/5 border border-white/10 text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+                        className="h-8 px-3 rounded text-[11.5px] font-semibold bg-white/5 border border-white/10 text-zinc-300 hover:bg-white/10 disabled:opacity-50"
                       >
                         {t("Cancel")}
                       </button>
                       <button
                         onClick={handleDeleteAccount}
                         disabled={busy || !deletePw}
-                        className="h-8 px-3 rounded text-[11.5px] font-bold uppercase tracking-wider bg-rose-500 text-white hover:bg-rose-400 disabled:opacity-40 flex items-center gap-1.5"
+                        className="h-8 px-3 rounded text-[11.5px] font-semibold bg-rose-500 text-white hover:bg-rose-400 disabled:opacity-40 flex items-center gap-1.5"
                       >
                         <Trash2 size={11} /> {busy ? t("Deleting…") : t("Delete account")}
                       </button>

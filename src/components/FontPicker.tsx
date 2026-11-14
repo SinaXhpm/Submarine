@@ -217,7 +217,7 @@ export default function FontPicker({
 
           {forTerminal && (
             <>
-              <div className="px-3 pt-2 pb-1 text-[10px] font-black text-zinc-500 uppercase tracking-wider">{t("Built-in")}</div>
+              <div className="px-3 pt-2 pb-1 text-[11px] font-semibold text-zinc-500">{t("Built-in")}</div>
               {builtInRows.length ? builtInRows.map((r) => renderRow(r, index++)) : (
                 <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">{t("No match")}</div>
               )}
@@ -226,7 +226,7 @@ export default function FontPicker({
             </>
           )}
 
-          <div className="px-3 pt-1 pb-1 text-[10px] font-black text-zinc-500 uppercase tracking-wider">
+          <div className="px-3 pt-1 pb-1 text-[11px] font-semibold text-zinc-500">
             {t("Installed on this device")}{installedOnly.length ? ` · ${installedOnly.length}` : ""}
           </div>
           {installed === null && !loadError && (

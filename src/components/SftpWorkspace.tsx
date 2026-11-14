@@ -589,7 +589,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
             <div className="flex-1 grid grid-cols-2">
               <button
                 onClick={() => setActiveSidePersisted("local")}
-                className={`h-full flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-wider transition-all ${
+                className={`h-full flex items-center justify-center gap-1.5 text-[11px] font-semibold transition-all ${
                   activeSide === "local"
                     ? "text-emerald-300 bg-emerald-500/5 border-b border-emerald-400"
                     : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
@@ -599,7 +599,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               </button>
               <button
                 onClick={() => setActiveSidePersisted("remote")}
-                className={`h-full flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-wider transition-all ${
+                className={`h-full flex items-center justify-center gap-1.5 text-[11px] font-semibold transition-all ${
                   activeSide === "remote"
                     ? "text-sky-300 bg-sky-500/5 border-b border-sky-400"
                     : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
@@ -609,8 +609,8 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               </button>
             </div>
           ) : (
-            <div className="flex-1 flex items-center px-3 text-[9.5px] font-bold uppercase tracking-widest text-zinc-500">
-              {t("Local + Remote")}
+            <div className="flex-1 flex items-center px-3 text-[11px] font-semibold text-zinc-500">
+              {t("Local + remote")}
             </div>
           )}
           {/* Compare (#18): marks in both panes what differs from the other. */}
@@ -619,7 +619,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
             onClick={() => setCompareOn((v) => !v)}
             aria-pressed={compareOn}
             title={compareOn ? t("Stop comparing") : t("Compare: mark what differs between the two folders")}
-            className={`shrink-0 flex items-center gap-1.5 px-2.5 border-l border-white/5 text-[10px] font-bold uppercase tracking-wider transition-all ${
+            className={`shrink-0 flex items-center gap-1.5 px-2.5 border-l border-white/5 text-[11px] font-semibold transition-all ${
               compareOn ? "text-primary bg-primary/10" : "text-zinc-500 hover:bg-white/5 hover:text-white"
             }`}
           >

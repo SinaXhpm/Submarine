@@ -143,7 +143,7 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
         onBlur={() => setGuideAt(null)}
       >
         <input type="checkbox" className="w-3 h-3 accent-primary" checked={on} aria-label={t("Dedicated session")} onChange={(e) => onToggle(e.target.checked)} />
-        <span className="uppercase tracking-wider font-bold">{t("Dedicated")}</span>
+        <span className="font-semibold">{t("Dedicated")}</span>
         {on && status !== 'off' && (
           <span
             className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -166,7 +166,7 @@ const SepToggle = ({ on, onToggle, status, hint, onReconnect }: {
           }}
           className="fixed z-[9999] pointer-events-none bg-[#15151a] border border-white/10 rounded-lg shadow-2xl px-3 py-2 text-[11px] leading-snug text-zinc-300"
         >
-          <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-zinc-100">{t("Dedicated session")}</div>
+          <div className="mb-1 text-[11px] font-semibold text-zinc-100">{t("Dedicated session")}</div>
           <p>{hint}</p>
           <p className="mt-1 text-zinc-400">{t("When it is off, or that connection can't be opened, the terminal's connection is used.")}</p>
           <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-zinc-400">
@@ -219,7 +219,7 @@ const SecondsLeft = ({ until }: { until: number }) => {
 // dot shows and the text's width depends on the font.
 const TITLE_BAR_GAP = 12; // gap-3 between the title, the toggle and the buttons
 const WORD_GAP = 6; // gap-1.5 between a button's icon and its word
-const TITLE_BAR_TEXT = "text-[10px] font-bold uppercase tracking-wider";
+const TITLE_BAR_TEXT = "text-[11px] font-semibold";
 interface TitleBarFit { title: "full" | "short" | "none"; words: boolean }
 const TITLE_BAR_FITS: TitleBarFit[] = [
   { title: "full", words: true },
@@ -1960,7 +1960,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 requestTerminalFocus();
               }}
               title={term.container ? t("Container: {name}", { name: term.container.name }) : undefined}
-              className={`h-10 sm:h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-8 sm:pr-8' : ''} rounded-lg flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all ${
+              className={`h-10 sm:h-8 px-3 sm:px-4 ${terminals.length > 1 ? 'pr-8 sm:pr-8' : ''} rounded-lg flex items-center gap-2 text-[12px] font-semibold transition-all ${
                 isFocusedHalf
                   ? 'bg-primary/10 text-primary border border-primary/20 shadow-inner'
                   : isSplitPartner
@@ -2316,7 +2316,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             style={{ left: Math.max(8, Math.min(dockMenu.x - 210, window.innerWidth - 218)), top: Math.min(dockMenu.y, window.innerHeight - 170) }}
             className="fixed z-[9999] w-[210px] bg-[#15151a] border border-white/10 rounded-lg shadow-2xl py-1 text-[11.5px]"
           >
-            <div className="px-3 pt-1 pb-1.5 text-[9.5px] font-bold uppercase tracking-wider text-zinc-500">{t("Panel position")}</div>
+            <div className="px-3 pt-1 pb-1.5 text-[11px] font-semibold text-zinc-500">{t("Panel position")}</div>
             {DOCK_OPTIONS.map(({ id, label, Icon }) => (
               <button
                 key={id}
@@ -2369,7 +2369,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             isWaiting    ? tx("Retry in {seconds}s · #{attempt}", { seconds: secs, attempt: reconnectAttempt }) :
             gaveUp       ? t("Reconnect failed") :
                            t("Disconnected");
-          const btn = "h-8 min-w-8 sm:h-auto sm:min-h-6 px-2 sm:px-3 sm:py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5";
+          const btn = "h-8 min-w-8 sm:h-auto sm:min-h-6 px-2 sm:px-3 sm:py-1 rounded-md text-[11px] font-semibold transition-colors flex items-center justify-center gap-1.5";
           // While it is trying: the steps of the attempt, the attempts so far,
           // the time this one has taken, and a bar that sweeps or fills. The
           // motion stops after the first attempts of a long outage, and for a
@@ -2385,7 +2385,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               <div className="px-3 sm:px-4 py-1.5 sm:py-2 flex items-center gap-2 sm:gap-3">
                 {trying ? <ReconnectIcon running={isAttempting} animate={animate} /> : <AlertTriangle size={14} className="shrink-0" />}
                 <div
-                  className="min-w-0 flex-1 truncate text-[11px] font-bold sm:uppercase sm:tracking-wider"
+                  className="min-w-0 flex-1 truncate text-[12px] font-semibold"
                   title={disconnectReason ? t("{heading} — {reason}", { heading, reason: disconnectReason }) : heading}
                 >
                   <span className="sm:hidden">{shortHeading}</span>
@@ -2735,7 +2735,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               fresh remount would re-fire the probe every tab swap. */}
           <div className={`flex-1 flex flex-col overflow-hidden ${activeTool === 'info' ? '' : 'hidden'}`}>
             <div className="h-10 px-4 flex items-center justify-between gap-3 border-b border-white/5 bg-white/5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 truncate">{t("Server Info")}</span>
+              <span className="text-[11px] font-semibold text-zinc-400 truncate">{t("Server info")}</span>
               <div className="flex items-center gap-2 shrink-0">
                 {fullToggle}
                 <button onClick={() => setActiveTool(null)} aria-label={t("Close")} className="p-[13px] -m-[13px] sm:p-0 sm:m-0 text-zinc-500 hover:text-white transition-colors">
