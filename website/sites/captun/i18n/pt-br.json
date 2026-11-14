@@ -1,0 +1,426 @@
+{
+  "meta": {
+    "name": "Português (Brasil)",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "Pular para o conteúdo",
+    "features": "Recursos",
+    "how": "Como funciona",
+    "platforms": "Plataformas",
+    "faq": "Perguntas",
+    "get": "Obter o Captun",
+    "github": "Código-fonte no GitHub",
+    "language": "Idioma",
+    "home": "Página inicial do Captun",
+    "menu": "Menu"
+  },
+  "common": {
+    "tagline": "Hotspot Wi-Fi e compartilhamento de internet, com um capitão no leme",
+    "updated": "Última atualização: {date}",
+    "translationNote": "Esta página é uma tradução. Se ela divergir da versão em inglês, prevalece a versão em inglês.",
+    "englishVersion": "Versão em inglês",
+    "openFull": "Abrir a imagem em tamanho original",
+    "close": "Fechar",
+    "onThisPage": "Nesta página"
+  },
+  "footer": {
+    "product": "Captun",
+    "project": "Projeto",
+    "more": "Mais apps",
+    "issues": "Relatar um problema",
+    "author": "sinaxhpm.com",
+    "sister": "Do mesmo autor: 20 ferramentas de rede em um só app gratuito",
+    "license": "O código-fonte está no GitHub.",
+    "madeWith": "Feito com Rust e Tauri.",
+    "noTracking": "Este site não usa cookies, análise de uso nem scripts de terceiros."
+  },
+  "home": {
+    "title": "Captun – compartilhe internet, VPN ou proxy do PC por Wi-Fi",
+    "description": "Seu PC com Windows ou Linux vira um hotspot inteligente: compartilhe internet, VPN ou proxy por Wi-Fi, cabo ou USB e escolha o caminho de cada aparelho.",
+    "hero": {
+      "pillTag": "Em desenvolvimento",
+      "pill": "Ainda não há versão lançada: compile a partir do código-fonte no GitHub",
+      "title": "Compartilhe sua internet. <em>Defina o rumo de cada dispositivo.</em>",
+      "lede": "O Captun transforma o seu computador em um hotspot inteligente. Celulares, TVs e consoles se conectam por Wi-Fi, cabo ou USB, e você decide para onde vai o tráfego de cada um: direto, por uma VPN ou por um proxy.",
+      "source": "Código-fonte no GitHub",
+      "how": "Como funciona",
+      "trust": [
+        "Sem conta",
+        "Sem root no celular",
+        "Sua própria VPN ou proxy",
+        "Regras, DNS e limites"
+      ],
+      "macos": "macOS (em andamento)",
+      "chips": [
+        "Sua VPN em todos os dispositivos",
+        "Internet no celular via USB",
+        "Bloqueio de anúncios e rastreadores"
+      ],
+      "imageAlt": "O Captun no Windows: compartilhando por Wi-Fi, com três dispositivos conectados e um aguardando permissão"
+    },
+    "instead": {
+      "title": "Um só app no lugar de",
+      "items": [
+        "o Hotspot Móvel do Windows",
+        "um app de VPN em cada dispositivo",
+        "scripts de tethering reverso",
+        "um bloqueador de anúncios por DNS separado",
+        "um roteador com firmware personalizado"
+      ]
+    },
+    "uses": {
+      "kicker": "O que você pode fazer",
+      "title": "Um computador, <em>todos os dispositivos conectados do seu jeito</em>",
+      "lede": "O nome Captun vem de captain (“capitão”) + TUN. Com ele, é você quem fica no leme de tudo o que se conecta ao seu computador.",
+      "items": [
+        {
+          "id": "vpn",
+          "title": "Compartilhe uma VPN com dispositivos que não conseguem usar uma",
+          "text": "Conecte o computador a uma VPN ou a um proxy uma vez, e a sua smart TV, o seu console ou o celular de uma visita passam a usar essa conexão pelo hotspot."
+        },
+        {
+          "id": "usb",
+          "title": "Dê internet a um celular via USB",
+          "text": "Sem dados móveis e sem Wi-Fi? Conecte o celular Android ao computador e ele acessa a internet pelo computador, sem root e sem app no celular."
+        },
+        {
+          "id": "rules",
+          "title": "Tenha um hotspot com as suas próprias regras",
+          "text": "Bloqueie anúncios e rastreadores em todos os dispositivos, deixe alguns sites inacessíveis ou mande só certos sites por um proxy."
+        },
+        {
+          "id": "watch",
+          "title": "Fique de olho em cada dispositivo",
+          "text": "Veja quem está conectado e quanto cada um usa, aprove novos dispositivos antes que eles entrem na internet, bloqueie algum ou defina um limite de velocidade."
+        }
+      ]
+    },
+    "how": {
+      "kicker": "Como funciona",
+      "title": "Dispositivos na entrada, <em>a sua rota na saída</em>",
+      "lede": "Um pequeno serviço com permissões de administrador cuida do hotspot, de um servidor DNS e de um motor de pacotes que decide, conexão por conexão, por onde vai o tráfego de cada dispositivo. O app para desktop mostra o que está acontecendo e altera as configurações.",
+      "devicesTitle": "Seus dispositivos",
+      "devices": [
+        {
+          "id": "phone",
+          "name": "Celulares"
+        },
+        {
+          "id": "tv",
+          "name": "TVs e consoles"
+        },
+        {
+          "id": "laptop",
+          "name": "Notebooks"
+        },
+        {
+          "id": "tablet",
+          "name": "Tablets"
+        }
+      ],
+      "links": "Hotspot Wi-Fi, cabo ou USB",
+      "hub": "Regras, DNS, limites",
+      "choose": "por dispositivo ou por regra",
+      "outTitle": "A saída",
+      "outbounds": [
+        {
+          "id": "direct",
+          "name": "Direto",
+          "detail": "qualquer adaptador de rede: Ethernet, Wi-Fi, o adaptador de um app de VPN"
+        },
+        {
+          "id": "vpn",
+          "name": "Link de VPN",
+          "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2"
+        },
+        {
+          "id": "proxy",
+          "name": "Proxy",
+          "detail": "SOCKS5, HTTP, HTTPS, também em cadeia"
+        }
+      ],
+      "caption": "Celulares, TVs, consoles, notebooks e tablets se conectam ao Captun por um hotspot Wi-Fi, cabo ou USB. O Captun aplica as suas regras, o DNS e os limites e envia o tráfego de cada dispositivo direto, por um link de VPN ou por um proxy.",
+      "steps": [
+        {
+          "title": "Comece a compartilhar",
+          "text": "Aperte o leme: um hotspot Wi-Fi com o nome de rede e a senha que você escolher, ou USB para um celular Android."
+        },
+        {
+          "title": "Adicione as suas saídas",
+          "text": "Os adaptadores de rede do seu computador já estão lá. Adicione um proxy ou cole um link de VPN."
+        },
+        {
+          "title": "Defina o rumo",
+          "text": "Escolha a saída de cada dispositivo ou grupo e adicione regras, bloqueio por DNS, limites de velocidade e franquias de dados."
+        }
+      ],
+      "note": "No Windows, o motor captura o tráfego dos dispositivos com o WinDivert, cujo driver é assinado pela Microsoft; no Linux, ele usa um adaptador de rede TUN e roteamento por políticas."
+    },
+    "share": {
+      "kicker": "Conexão",
+      "title": "Wi-Fi, cabo <em>ou USB</em>",
+      "lede": "Três formas de um dispositivo entrar na internet pelo seu computador.",
+      "alt": "O Captun pronto para compartilhar como “Captun”, com a opção de hotspot Wi-Fi ou USB para o celular",
+      "points": [
+        {
+          "id": "wifi",
+          "title": "Hotspot Wi-Fi",
+          "text": "O nome de rede e a senha que você escolher, um limite de quantos dispositivos podem entrar e novos dispositivos aguardando até você permitir."
+        },
+        {
+          "id": "cable",
+          "title": "Compartilhamento por cabo",
+          "text": "Dispositivos ligados por cabo de rede ou por um adaptador de rede USB recebem a sua internet, com os endereços distribuídos automaticamente (DHCP)."
+        },
+        {
+          "id": "usb",
+          "title": "USB para um celular Android",
+          "text": "Tethering reverso sem root e sem app no celular: o Captun já vem com o adb embutido. Ele só dá internet ao celular e nunca usa a do celular. Sites e apps funcionam; jogos e chamadas ainda não."
+        },
+        {
+          "id": "reach",
+          "title": "O que os dispositivos podem acessar",
+          "text": "Mantenha-os longe deste computador, uns dos outros ou da sua rede doméstica."
+        }
+      ]
+    },
+    "features": {
+      "kicker": "Em detalhes",
+      "title": "Cada dispositivo, <em>a sua própria saída</em>",
+      "items": [
+        {
+          "id": "devices",
+          "title": "Todos os dispositivos em uma lista",
+          "text": "Veja quem está conectado, com as velocidades em tempo real, e intervenha antes que um novo dispositivo entre na internet.",
+          "points": [
+            "Permita um novo dispositivo ou bloqueie qualquer um com um clique.",
+            "Velocidade de download e upload de cada dispositivo, em tempo real.",
+            "Saída, limite de velocidade e franquia de dados próprios para cada dispositivo.",
+            "Encontre um dispositivo pelo nome ou pelo endereço."
+          ],
+          "alt": "A página Devices: um dispositivo aguardando permissão, um celular perto da franquia de dados e um tablet com limite de velocidade"
+        },
+        {
+          "id": "outbound",
+          "title": "Direto, por VPN ou por proxy",
+          "badge": "Experimental",
+          "text": "Cada dispositivo ou grupo sai pelo caminho que você escolher. Ative as saídas que quiser usar.",
+          "points": [
+            "Qualquer adaptador de rede do computador: Ethernet, Wi-Fi ou o adaptador de um app de VPN.",
+            "Proxies SOCKS5, HTTP e HTTPS, também em cadeia.",
+            "Links de VPN que você cola: VLESS (com REALITY), VMess, Trojan, Shadowsocks e Hysteria2, executados pelo Xray-core incluído.",
+            "Se uma saída parar de funcionar, o Captun pode cortar a internet em vez de mandar o tráfego por outro caminho."
+          ],
+          "alt": "A página Outbound: direto, um link VLESS, um proxy SOCKS5 e uma saída de bloqueio, com os adaptadores Wi-Fi e Ethernet do computador"
+        },
+        {
+          "id": "rules",
+          "title": "Regras que definem o rumo",
+          "badge": "Experimental",
+          "text": "Mande um site pela VPN, bloqueie anúncios ou desligue o tablet das crianças na hora de dormir. A primeira regra que se encaixa decide.",
+          "points": [
+            "Por dispositivo, nome do site, faixa de endereços, porta, protocolo e horário.",
+            "Regras prontas para bloquear anúncios e para apps populares.",
+            "Listas de bloqueio on-line, atualizadas só quando você aperta <em>Update lists</em>.",
+            "Um testador que mostra qual regra se aplica a um site."
+          ],
+          "alt": "A página Rules: uma regra que bloqueia anúncios, uma que manda um site de streaming pela VPN e uma regra de hora de dormir para um tablet"
+        },
+        {
+          "id": "dns",
+          "title": "Servidor DNS próprio, com bloqueio de anúncios",
+          "text": "O Captun responde às consultas de endereços de sites feitas pelos seus dispositivos, então o bloqueio e as suas respostas personalizadas funcionam em todos eles.",
+          "points": [
+            "Cache, listas de bloqueio e respostas personalizadas para os nomes que você escolher.",
+            "Servidores DNS via UDP, TCP, DNS over TLS ou DNS over HTTPS, por dispositivo.",
+            "Uma opção para obrigar os dispositivos a usá-lo, para que não consigam driblar os sites bloqueados.",
+            "Um registro das consultas em tempo real, se você ativar."
+          ],
+          "alt": "As configurações de DNS do Captun: respondendo às consultas dos dispositivos, o servidor DNS padrão e como os sites bloqueados aparecem"
+        },
+        {
+          "id": "usage",
+          "title": "Quanto cada dispositivo usou",
+          "badge": "Experimental",
+          "text": "Por hora ou por dia, para um dispositivo ou para todos, em gráfico ou em tabela.",
+          "points": [
+            "Franquias de dados por dia, semana ou mês: por exemplo, 2 GB por dia e depois velocidade reduzida.",
+            "Limites de velocidade por dispositivo, por grupo ou para todos os dispositivos juntos.",
+            "Downloads e uploads contados separadamente."
+          ],
+          "alt": "A página Usage: quanto todos os dispositivos baixaram e enviaram hoje, hora a hora"
+        }
+      ],
+      "note": "<em>Experimental</em>: saídas por dispositivo, regras, limites de velocidade, franquias de dados, velocidades em tempo real e o histórico de uso precisam de “Route devices through Captun”, o motor de roteamento próprio do Captun, que ainda é experimental."
+    },
+    "next": {
+      "kicker": "Na próxima versão",
+      "title": "Já feitos, <em>agora em teste</em>",
+      "lede": "Estes recursos já estão no código do Captun e passam nos testes. Eles chegam na próxima versão, depois de serem postos à prova em computadores reais.",
+      "routing": "Precisa do motor de roteamento",
+      "items": [
+        {
+          "id": "qr",
+          "title": "Conexão por QR code",
+          "text": "Os celulares escaneiam um código para entrar no hotspot, sem digitar nada.",
+          "routing": false,
+          "alt": "O Captun mostrando um QR code para entrar na rede “Captun”, com o nome e a senha da rede"
+        },
+        {
+          "id": "kinds",
+          "title": "Conheça cada dispositivo",
+          "text": "O fabricante e o tipo de cada dispositivo (celular, notebook, TV), com base na lista pública de prefixos de endereços de hardware.",
+          "routing": false,
+          "alt": "A página Devices com um celular, um tablet e uma TV, os fabricantes deles e uma TV pausada até mais tarde"
+        },
+        {
+          "id": "pause",
+          "title": "Pause um dispositivo ou defina horários",
+          "text": "Sem internet por 15 minutos, por uma hora ou até de manhã, ou horários de internet, sem acesso à noite.",
+          "routing": true,
+          "alt": "O menu de pausa de um dispositivo: por 15 minutos, por 1 hora ou até as 7:00"
+        },
+        {
+          "id": "backup",
+          "title": "Uma saída de reserva",
+          "text": "Todas as saídas são verificadas a cada 30 segundos. Dê uma reserva a uma saída, e os dispositivos dela passam para a reserva enquanto ela não estiver funcionando.",
+          "routing": true,
+          "alt": "A página Outbound: uma VPN que não está funcionando, por isso os dispositivos dela usam Direct, e o tempo que cada saída leva para responder"
+        },
+        {
+          "id": "csv",
+          "title": "O uso em uma planilha",
+          "text": "Salve em um arquivo CSV quanto cada dispositivo usou, por exemplo, para um relatório mensal.",
+          "routing": true,
+          "alt": "A página Usage dos últimos 7 dias, com o menu para salvar os totais ou cada dia por dispositivo"
+        },
+        {
+          "id": "alerts",
+          "title": "Notificações",
+          "text": "Quando um novo dispositivo entra ou aguarda permissão, quando um dispositivo já usou 80% ou toda a sua franquia de dados, e o uso da semana passada. As notificações de franquia e as semanais precisam do motor de roteamento.",
+          "routing": false,
+          "alt": "As configurações do Captun: uma franquia de dados para cada dispositivo e os três tipos de notificações"
+        }
+      ],
+      "note": "Ainda não estão no GitHub: a versão que você pode compilar hoje a partir do código-fonte não tem esses recursos."
+    },
+    "privacy": {
+      "kicker": "Privado",
+      "title": "O Captun direciona o tráfego. <em>Mas não o lê.</em>",
+      "lede": "Ele lê só o que as suas regras precisam, como o nome do site que uma conexão pede.",
+      "items": [
+        {
+          "title": "O conteúdo continua criptografado",
+          "text": "O que os seus dispositivos enviam continua tão criptografado quanto estava. O Captun encaminha, mas não abre."
+        },
+        {
+          "title": "As configurações ficam no seu computador",
+          "text": "Sem conta. As configurações são salvas criptografadas, e só a sua conta de usuário naquele computador consegue lê-las."
+        },
+        {
+          "title": "Não é uma VPN por si só",
+          "text": "O Captun não criptografa nem esconde o tráfego sozinho: isso vem da VPN ou do proxy que você adicionar, para o tráfego que você mandar por eles."
+        }
+      ]
+    },
+    "platforms": {
+      "kicker": "Plataformas",
+      "title": "Windows e Linux, <em>macOS a caminho</em>",
+      "lede": "Um único código-fonte em Rust, com um app para desktop em Tauri.",
+      "items": [
+        {
+          "id": "windows",
+          "name": "Windows",
+          "text": "Hotspot Wi-Fi, compartilhamento por cabo e USB para um celular Android. O hotspot do próprio Windows aceita até 8 dispositivos por padrão."
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "text": "Hotspot Wi-Fi com NetworkManager ou hostapd, compartilhamento por cabo e USB para o celular. Pouco testado em hardware real até agora."
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "badge": "Em andamento",
+          "text": "O código compila, mas ainda não rodou em um Mac."
+        }
+      ],
+      "note": "Não há app para Android nem para iOS: celulares, tablets, TVs e consoles se conectam ao Captun, não o executam."
+    },
+    "source": {
+      "kicker": "Obter o Captun",
+      "title": "Ainda sem versão lançada. <em>Compile a partir do código-fonte.</em>",
+      "lede": "O Captun está em desenvolvimento ativo. Você já pode compilá-lo a partir do código-fonte; o README no GitHub tem todos os passos.",
+      "repo": "Código-fonte no GitHub",
+      "build": "Compilar a partir do código-fonte",
+      "steps": [
+        {
+          "title": "Instale as ferramentas",
+          "text": "Rust, Node.js 20 ou mais recente, um compilador C e, no Linux, <code>libwebkit2gtk-4.1-dev</code>."
+        },
+        {
+          "title": "Baixe os auxiliares",
+          "text": "Os scripts do repositório baixam o Xray-core para os links de VPN, conferido com uma soma de verificação fixada, e, no Windows, o driver WinDivert."
+        },
+        {
+          "title": "Compile e inicie",
+          "text": "Compile o serviço e inicie o app para desktop. O app inicia o serviço sozinho, pedindo permissão de administrador."
+        }
+      ],
+      "notes": [
+        "O app está em inglês.",
+        "As versões compiladas incluem o Xray-core para os links de VPN, a libusb para o adb embutido e, no Windows, o WinDivert. As licenças deles estão listadas no README.",
+        "Encontrou um problema? <a href=\"{issuesUrl}\">Abra uma issue no GitHub</a>."
+      ]
+    },
+    "faq": {
+      "kicker": "Ajuda",
+      "title": "Perguntas e respostas",
+      "items": [
+        {
+          "q": "Posso compartilhar a minha conexão VPN por um hotspot Wi-Fi?",
+          "a": "Sim. Escolha o adaptador de rede da VPN, um proxy ou um link de VPN colado (VLESS, VMess, Trojan, Shadowsocks, Hysteria2) como saída para um dispositivo ou para todos. Escolher por dispositivo usa o motor de roteamento do Captun, que ainda é experimental."
+        },
+        {
+          "q": "O tethering USB para o celular precisa de root ou de um app?",
+          "a": "Não. Ative a depuração USB no celular Android e conecte-o; o adb embutido no Captun faz o resto. O celular usa a internet do computador, nunca o contrário. Sites e apps funcionam via USB; jogos e chamadas ainda não."
+        },
+        {
+          "q": "Dispositivos diferentes podem usar conexões diferentes?",
+          "a": "Sim. Cada dispositivo ou grupo pode ter a sua própria saída, os seus próprios servidores DNS, o seu próprio limite de velocidade e a sua própria franquia de dados, e as regras podem mandar sites específicos por outro caminho. Isso usa o motor de roteamento experimental."
+        },
+        {
+          "q": "O Captun lê o tráfego dos meus dispositivos?",
+          "a": "Não. Ele encaminha o tráfego e lê só o que precisa para aplicar as suas regras, como o nome do site que uma conexão pede. O conteúdo continua criptografado."
+        },
+        {
+          "q": "O Captun deixa o meu tráfego privado?",
+          "a": "Não por si só. O Captun não criptografa nem anonimiza nada; quem faz isso é a VPN ou o proxy que você adicionar, para o tráfego que você mandar por eles."
+        },
+        {
+          "q": "Quantos dispositivos podem se conectar?",
+          "a": "No Windows, o hotspot do sistema aceita até 8 dispositivos por padrão, e o Captun tem um limite de dispositivos próprio que você pode definir. Ele não foi testado com um grande número de usuários."
+        },
+        {
+          "q": "Em quais sistemas ele roda?",
+          "a": "Windows e Linux; o macOS está em andamento. Não há app para Android nem para iOS: celulares e tablets se conectam ao Captun."
+        },
+        {
+          "q": "Onde posso baixar?",
+          "a": "Ainda não há versão lançada. Você pode compilar a partir do código-fonte: os passos estão no <a href=\"{buildUrl}\">README no GitHub</a>."
+        },
+        {
+          "q": "O app está no meu idioma?",
+          "a": "Ainda não: o app está em inglês. Este site foi traduzido para que mais pessoas possam ler sobre ele."
+        }
+      ]
+    }
+  },
+  "notFound": {
+    "title": "Página não encontrada – Captun",
+    "heading": "Esta página não existe",
+    "text": "O endereço pode estar errado ou a página mudou de lugar.",
+    "home": "Ir para a página inicial"
+  }
+}
