@@ -123,4 +123,4 @@ When this policy changes, the date at the top changes too. The full history of c
 
 ## Contact
 
-Questions or requests about your data: open an issue at [github.com/SinaXhpm/Submarine/issues](https://github.com/SinaXhpm/Submarine/issues) (please don't post private information there), or write through [sinaxhpm.com](https://sinaxhpm.com).
+Questions or requests about your data: write to [sinaxhpm@gmail.com](mailto:sinaxhpm@gmail.com). You can also open an issue at [github.com/SinaXhpm/Submarine/issues](https://github.com/SinaXhpm/Submarine/issues) (please don't post private information there).
