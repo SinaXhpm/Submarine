@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, History, LayoutList, Loader2, Plus, Sparkles, TerminalSquare, X } from "lucide-react";
+import { ChevronDown, History, LayoutList, Loader2, Plus, Settings, Sparkles, TerminalSquare, X } from "lucide-react";
 import { ChatPanel, Toggle, barIcon } from "./ChatPanel";
 import { LevelPicker, FullAccessBanner } from "./LevelPicker";
 import { ActivityView } from "./ActivityView";
+import { AiSettings } from "./AiSettings";
 import {
   ai, errText, AI_LEVEL_EVENT, AI_OPEN_EVENT,
   type AiEvent, type AiLevelDetail, type AiOpenDetail, type ChatSummary, type Level, type LevelInfo, type ProviderView,
@@ -53,6 +54,9 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
   const [picked, setPicked] = useState(false);
   const [chatMenu, setChatMenu] = useState(false);
   const [activity, setActivity] = useState(false);
+  // The providers and their keys, over the chat: the same as Settings → AI
+  // assistant, without leaving the tab.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [openTerminal, setOpenTerminal] = useState(readOpenTerminal);
   const [busy, setBusy] = useState(false);
   // A chat that is answering stays open here: its cards wait on this view.
@@ -241,6 +245,9 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
           <TerminalSquare size={15} />
         </button>
       )}
+      <button type="button" onClick={() => setSettingsOpen(true)} aria-label="AI settings" title="AI providers and keys" className={`${barIcon} text-zinc-400 hover:text-zinc-100 hover:bg-white/5`}>
+        <Settings size={15} />
+      </button>
       {headerActions}
       <button type="button" onClick={onClose} aria-label="Close" className={`${barIcon} text-zinc-500 hover:text-white hover:bg-white/5`}>
         <X size={15} />
@@ -312,6 +319,21 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
     </div>
   );
 
+  const settingsView = settingsOpen && (
+    <div data-ai-overlay="" data-ai-settings="" className="absolute inset-0 z-30 flex flex-col bg-[#121214]">
+      <div className="h-11 px-2 sm:px-3 flex items-center gap-2 border-b border-white/5 bg-white/[0.02] shrink-0">
+        <Settings size={14} className="text-zinc-400 shrink-0" />
+        <div className="flex-1 min-w-0 truncate text-[11px] font-black text-zinc-400 uppercase tracking-wider">AI assistant settings</div>
+        <button type="button" onClick={() => setSettingsOpen(false)} aria-label="Close AI settings" className={`${barIcon} text-zinc-500 hover:text-white hover:bg-white/5`}>
+          <X size={15} />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-3 sm:p-4">
+        <AiSettings embedded onChanged={setProviders} />
+      </div>
+    </div>
+  );
+
   let body: ReactNode;
   if (!serverUuid) {
     body = (
@@ -322,11 +344,16 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
       </>
     );
   } else if (providers && providers.length === 0) {
+    // The first provider is added right here; the tab goes on to its chats
+    // as soon as it is saved.
     body = (
       <>
         {bar}
         {noticeBox}
-        <div className="p-6 text-center text-[12.5px] text-zinc-400">Add a provider in Settings → AI assistant to use the assistant.</div>
+        <div data-ai-setup="" className="flex-1 overflow-y-auto custom-scrollbar p-3 sm:p-4 space-y-3">
+          <div className="text-[12.5px] text-zinc-300">Add a provider to use the assistant on {serverName}.</div>
+          <AiSettings embedded onChanged={setProviders} />
+        </div>
       </>
     );
   } else if (providers === null || !picked) {
@@ -377,10 +404,11 @@ export const AiPanel = ({ sessionId, serverUuid, serverName, connected, active, 
   return (
     <div className="relative flex-1 flex flex-col min-h-0">
       {/* Behind the activity view nothing takes the focus or a key. */}
-      <div className="flex-1 flex flex-col min-h-0" inert={activity ? "" : undefined}>
+      <div className="flex-1 flex flex-col min-h-0" inert={activity || settingsOpen ? "" : undefined}>
         {body}
       </div>
       {activityView}
+      {settingsView}
     </div>
   );
 };

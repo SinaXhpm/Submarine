@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { History, Plus, Search, Sparkles, Trash2, Loader2, Server } from "lucide-react";
+import { History, Plus, Search, Settings, Sparkles, Trash2, Loader2, Server, X } from "lucide-react";
 import { useConfirm } from "../../ui/confirm";
 import { useIsCompact } from "../../hooks/useViewport";
 import { ChatPanel } from "./ChatPanel";
 import { ActivityView } from "./ActivityView";
+import { AiSettings } from "./AiSettings";
 import { ai, errText, AI_OPEN_EVENT, AI_OPEN_SERVER_EVENT, type AiOpenDetail, type AiOpenServerDetail, type ChatSummary, type ProviderView } from "../../util/aiApi";
 
 // The AI page: every chat, saved on this device, in one list. Kept mounted
@@ -21,14 +22,13 @@ const ago = (unix: number) => {
 
 interface Props {
   active: boolean;
-  onOpenSettings: () => void;
   /** The connected SSH session of each saved server, by uuid. */
   openSessions?: Record<string, string>;
   /** Every saved server's name, by uuid, for the activity of all of them. */
   serverNames?: Record<string, string>;
 }
 
-export const AiPage = ({ active, onOpenSettings, openSessions, serverNames }: Props) => {
+export const AiPage = ({ active, openSessions, serverNames }: Props) => {
   const confirm = useConfirm();
   const compact = useIsCompact();
   const [providers, setProviders] = useState<ProviderView[] | null>(null);
@@ -39,6 +39,9 @@ export const AiPage = ({ active, onOpenSettings, openSessions, serverNames }: Pr
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [activity, setActivity] = useState(false);
+  // The providers and their keys, over the page: the same as Settings → AI
+  // assistant, without leaving it.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // The open chat is answering: its cards wait on this view, so it stays.
   const [pageBusy, setPageBusy] = useState(false);
   const [held, setHeld] = useState(false);
@@ -153,16 +156,15 @@ export const AiPage = ({ active, onOpenSettings, openSessions, serverNames }: Pr
     return <div className="flex-1 flex items-center justify-center text-zinc-500"><Loader2 size={16} className="animate-spin" /></div>;
   }
 
+  // The first provider is added right here: the page goes on to its chats as
+  // soon as it is saved.
   if (providers.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <div className="max-w-sm text-center space-y-3">
-          <Sparkles size={28} className="mx-auto text-primary" />
-          <div className="text-zinc-100 font-semibold">AI assistant</div>
+      <div data-ai-setup="" className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6">
+        <div className="max-w-xl mx-auto space-y-4">
+          <div className="flex items-center gap-2 text-zinc-100 font-semibold"><Sparkles size={18} className="text-primary" /> AI assistant</div>
           <p className="text-[13px] text-zinc-400">Add a provider first: Anthropic, OpenAI, another OpenAI-compatible service, or a model on your own network, with your own API key.</p>
-          <button type="button" onClick={onOpenSettings} className="px-4 h-9 bg-primary/10 border border-primary/30 text-primary rounded-xl text-xs font-bold uppercase hover:bg-primary hover:text-zinc-950 transition-all">
-            Settings → AI assistant
-          </button>
+          <AiSettings embedded onChanged={setProviders} />
         </div>
       </div>
     );
@@ -173,6 +175,21 @@ export const AiPage = ({ active, onOpenSettings, openSessions, serverNames }: Pr
 
   return (
     <div className="relative flex-1 flex min-h-0 min-w-0">
+      {settingsOpen && (
+        <div data-ai-overlay="" data-ai-settings="" className="absolute inset-0 z-30 flex flex-col bg-[#121214]">
+          <div className="h-11 px-3 flex items-center gap-2 border-b border-white/5 bg-white/[0.02] shrink-0">
+            <Settings size={14} className="text-zinc-400 shrink-0" />
+            <div className="flex-1 min-w-0 truncate text-[11px] font-black text-zinc-400 uppercase tracking-wider">AI assistant settings</div>
+            <button type="button" onClick={() => setSettingsOpen(false)} aria-label="Close AI settings"
+              className={`${compact ? "h-10 w-10" : "h-8 w-8"} rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 flex items-center justify-center`}>
+              <X size={15} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6">
+            <div className="max-w-xl mx-auto"><AiSettings embedded onChanged={setProviders} /></div>
+          </div>
+        </div>
+      )}
       {activity && (
         <div data-ai-overlay="" className="absolute inset-0 z-30 flex flex-col bg-[#121214]">
           <ActivityView
@@ -185,12 +202,16 @@ export const AiPage = ({ active, onOpenSettings, openSessions, serverNames }: Pr
         </div>
       )}
       {/* Behind the activity view nothing takes the focus or a key. */}
-      <div className="flex-1 flex min-h-0 min-w-0" inert={activity ? "" : undefined}>
+      <div className="flex-1 flex min-h-0 min-w-0" inert={activity || settingsOpen ? "" : undefined}>
       {showList && (
         <div className={`${compact ? "flex-1 min-w-0" : "w-72 shrink-0 border-r border-white/5"} flex flex-col min-h-0`}>
           <div className="p-3 space-y-2 border-b border-white/5">
             <div className="flex items-center gap-2">
               <div className="flex-1 text-[11px] font-black text-zinc-500 uppercase tracking-wider flex items-center gap-1.5"><Sparkles size={13} /> Chats</div>
+              <button type="button" aria-label="AI settings" title="AI providers and keys" onClick={() => setSettingsOpen(true)}
+                className={`${compact ? "h-10 w-10" : "h-8 w-8"} rounded-lg border border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5 flex items-center justify-center`}>
+                <Settings size={14} />
+              </button>
               <button type="button" aria-label="Activity" title="What the assistant did on your servers" onClick={() => setActivity(true)}
                 className={`${compact ? "h-10 w-10" : "h-8 w-8"} rounded-lg border border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5 flex items-center justify-center`}>
                 <History size={14} />

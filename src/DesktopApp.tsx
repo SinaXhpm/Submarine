@@ -3226,7 +3226,7 @@ function DesktopApp() {
                 keeps its Channel and its place while another view is open. */}
             <div className={`flex-1 flex flex-col overflow-hidden ${activeView === "ai" ? "" : "hidden"}`}>
               <ErrorBoundary label="AI">
-                <AiPage active={activeView === "ai"} onOpenSettings={() => setActiveView("settings")} openSessions={aiSessions} serverNames={aiServerNames} />
+                <AiPage active={activeView === "ai"} openSessions={aiSessions} serverNames={aiServerNames} />
               </ErrorBoundary>
             </div>
 
