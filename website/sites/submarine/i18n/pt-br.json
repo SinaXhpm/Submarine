@@ -921,14 +921,24 @@
         "id": "warranty",
         "title": "Sem garantia",
         "paragraphs": [
-          "O app e o serviço de sincronização são fornecidos “no estado em que se encontram”, sem garantia de nenhum tipo, como diz a licença MIT. Fazemos o possível para manter o serviço funcionando e os seus dados seguros, mas não prometemos que ele estará sempre disponível, livre de erros ou adequado a uma finalidade específica."
+          "O app e o serviço de sincronização são fornecidos “no estado em que se encontram” e “conforme disponibilidade”, sem garantia de nenhum tipo, expressa ou implícita, incluindo as garantias implícitas de comercialização, adequação a uma finalidade específica e não violação de direitos de terceiros, como diz a licença MIT. Fazemos o possível para manter o serviço funcionando e os seus dados seguros, mas não prometemos que ele estará sempre disponível, livre de erros ou adequado a uma finalidade específica."
         ]
       },
       {
         "id": "liability",
-        "title": "Limitação de responsabilidade",
+        "title": "Isenção de responsabilidade",
         "paragraphs": [
-          "Na medida em que a lei permitir, não nos responsabilizamos por nenhuma perda ou dano decorrente do uso do app ou do serviço, ou da impossibilidade de usá-los: por exemplo, perda de dados, perda de acesso a um servidor ou o que acontece nos servidores a que você se conecta. Algumas leis não permitem essas limitações; onde não permitirem, as limitações se aplicam apenas na medida em que essas leis permitirem."
+          "Você usa o app e o serviço de sincronização por sua conta e risco. Na medida em que a lei permitir, nem nós nem qualquer pessoa que tenha contribuído para o Submarine somos responsáveis por qualquer perda ou dano, de qualquer natureza, direto ou indireto, incidental, especial ou consequencial, decorrente do uso do app e do serviço de sincronização, da impossibilidade de usá-los ou da confiança neles depositada. Isso inclui, por exemplo:"
+        ],
+        "list": [
+          "dados perdidos, danificados ou vazados, incluindo perfis, chaves e senhas;",
+          "tudo o que é feito nos servidores e dispositivos a que você se conecta, não importa quem o faça: você, as pessoas com quem você compartilha um perfil, o assistente de IA ou um agente de IA ao qual você deu acesso;",
+          "perda de acesso a um servidor, tempo de inatividade e perda de trabalho realizado, de negócios ou de lucros;",
+          "o que terceiros fazem ou guardam, como os servidores a que você se conecta, os seus provedores de IA e os provedores de rede e de hospedagem;",
+          "a indisponibilidade, a alteração ou o encerramento do serviço de sincronização."
+        ],
+        "after": [
+          "Nada nestes termos limita uma responsabilidade que a lei não permite limitar, como a responsabilidade por dolo ou culpa grave, ou por morte ou lesão corporal causadas por negligência. Se a lei do seu país conceder a você direitos irrenunciáveis, estes termos não os retiram."
         ]
       },
       {

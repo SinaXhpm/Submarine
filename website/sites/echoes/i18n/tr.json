@@ -681,14 +681,24 @@
         "id": "warranty",
         "title": "Garanti yok",
         "paragraphs": [
-          "Echoes, MIT lisansında belirtildiği gibi, hiçbir garanti olmaksızın “olduğu gibi” sunulur. Ağ sonuçları yanlış ya da eksik olabilir: bir test Echoes dışındaki nedenlerle başarısız olabilir ve Doctor aracının vardığı sonuç, ölçtüklerine ilişkin en iyi yorumudur."
+          "Echoes, MIT lisansında belirtildiği gibi, ticari elverişlilik, belirli bir amaca uygunluk ve üçüncü tarafların haklarını ihlal etmeme konusundaki zımni garantiler de dâhil olmak üzere, açık ya da zımni hiçbir türden garanti olmaksızın “olduğu gibi” sunulur. Ağ sonuçları yanlış ya da eksik olabilir: bir test Echoes dışındaki nedenlerle başarısız olabilir ve Doctor aracının vardığı sonuç, ölçtüklerine ilişkin en iyi yorumudur."
         ]
       },
       {
         "id": "liability",
-        "title": "Sorumluluğun sınırlandırılması",
+        "title": "Sorumluluk reddi",
         "paragraphs": [
-          "Yasaların izin verdiği ölçüde, Echoes'u kullanmaktan ya da kullanamamaktan doğan hiçbir kayıp veya zarardan sorumlu değiliz; test ettiğiniz ya da bağlandığınız ağlarda ve sunucularda olup bitenler de buna dâhildir. Bazı yasalar bu sınırlamalara izin vermez; izin vermedikleri yerlerde sınırlamalar yalnızca o yasaların izin verdiği ölçüde uygulanır."
+          "Echoes'u riski size ait olmak üzere kullanırsınız. Yasaların izin verdiği ölçüde, Echoes'u kullanmaktan, kullanamamaktan ya da ona güvenmekten doğan, doğrudan ya da dolaylı, arızi, özel ya da sonuç olarak ortaya çıkan her türlü kayıp veya zarardan ne biz sorumluyuz ne de Echoes'a katkıda bulunmuş herhangi biri. Buna örneğin şunlar dâhildir:"
+        ],
+        "list": [
+          "yanlış ya da eksik sonuçlar ve bunlara dayanılarak verilen kararlar;",
+          "test ettiğiniz, taradığınız ya da bağlandığınız ağlarda, sunucularda ve web sitelerinde olup biten her şey ve bunları test etmenin sonuçları;",
+          "web sunucusu üzerinden paylaşılan dosyalar ve proxy'den geçenler de dâhil olmak üzere kaybolan ya da sızan veriler;",
+          "check-host.net, hız testi sunucuları, DNS çözümleyicileri, Cloudflare ve Telegram gibi üçüncü taraf hizmetlerin yaptıkları ya da sakladıkları;",
+          "Doctor aracının tavsiyelerine uymanın sonuçları, örneğin bir filtreyi atlatan bir ayarın kullanılması."
+        ],
+        "after": [
+          "Bu koşullardaki hiçbir hüküm, yasaların sınırlandırılmasına izin vermediği bir sorumluluğu, örneğin kasıt ya da ağır ihmalden doğan sorumluluğu veya ihmal sonucu meydana gelen ölüm ya da bedensel zarardan doğan sorumluluğu sınırlamaz. Ülkenizin yasaları size feragat edilemeyen haklar tanıyorsa bu koşullar bu hakları elinizden almaz."
         ]
       },
       {

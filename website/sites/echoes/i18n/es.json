@@ -681,14 +681,24 @@
         "id": "warranty",
         "title": "Sin garantía",
         "paragraphs": [
-          "Echoes se proporciona «tal cual», sin garantía de ningún tipo, como indica la licencia MIT. Los resultados de red pueden ser incorrectos o incompletos: una prueba puede fallar por motivos ajenos a Echoes, y el veredicto del Doctor es su mejor interpretación de lo que ha medido."
+          "Echoes se proporciona «tal cual», sin garantía de ningún tipo, expresa o implícita, incluidas las garantías implícitas de comerciabilidad, idoneidad para un fin determinado y no infracción de derechos de terceros, como indica la licencia MIT. Los resultados de red pueden ser incorrectos o incompletos: una prueba puede fallar por motivos ajenos a Echoes, y el veredicto del Doctor es su mejor interpretación de lo que ha medido."
         ]
       },
       {
         "id": "liability",
-        "title": "Limitación de responsabilidad",
+        "title": "Exención de responsabilidad",
         "paragraphs": [
-          "En la medida en que lo permita la ley, no somos responsables de ninguna pérdida ni daño derivados del uso de Echoes o de no poder usarlo, incluido lo que ocurra en las redes y servidores que pruebes o a los que te conectes. Algunas leyes no permiten estas limitaciones; donde no las permitan, las limitaciones se aplican solo en la medida en que esas leyes lo permitan."
+          "Usas Echoes por tu cuenta y riesgo. En la medida en que lo permita la ley, ni nosotros ni ninguna persona que haya contribuido a Echoes somos responsables de ninguna pérdida ni daño de ningún tipo, ya sean directos o indirectos, incidentales, especiales o consecuentes, derivados del uso de Echoes, de no poder usarlo o de confiar en él. Esto incluye, por ejemplo:"
+        ],
+        "list": [
+          "los resultados incorrectos o incompletos, y las decisiones tomadas a partir de ellos;",
+          "cualquier cosa que ocurra en las redes, servidores y sitios web que pruebes, escanees o a los que te conectes, y las consecuencias de probarlos;",
+          "datos perdidos o filtrados, incluidos los archivos compartidos a través del servidor web y lo que pasa a través del proxy;",
+          "lo que hagan o conserven los servicios de terceros, como check-host.net, los servidores de prueba de velocidad, los resolutores de DNS, Cloudflare y Telegram;",
+          "las consecuencias de seguir los consejos del Doctor, por ejemplo, usar un ajuste que eluda un filtro."
+        ],
+        "after": [
+          "Nada en estas condiciones limita una responsabilidad que la ley no permite limitar, como la responsabilidad por dolo o negligencia grave, o por muerte o lesiones personales causadas por negligencia. Cuando la ley de tu país te otorga derechos irrenunciables, estas condiciones no te privan de ellos."
         ]
       },
       {

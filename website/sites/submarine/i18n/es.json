@@ -921,14 +921,24 @@
         "id": "warranty",
         "title": "Sin garantía",
         "paragraphs": [
-          "La aplicación y el servicio de sincronización se proporcionan «tal cual», sin garantía de ningún tipo, como indica la licencia MIT. Hacemos todo lo posible por mantener el servicio en funcionamiento y tus datos seguros, pero no prometemos que vaya a estar siempre disponible, ni que esté libre de errores, ni que sea adecuado para un fin determinado."
+          "La aplicación y el servicio de sincronización se proporcionan «tal cual» y «según disponibilidad», sin garantía de ningún tipo, expresa o implícita, incluidas las garantías implícitas de comerciabilidad, idoneidad para un fin determinado y no infracción de derechos de terceros, como indica la licencia MIT. Hacemos todo lo posible por mantener el servicio en funcionamiento y tus datos seguros, pero no prometemos que vaya a estar siempre disponible, ni que esté libre de errores, ni que sea adecuado para un fin determinado."
         ]
       },
       {
         "id": "liability",
-        "title": "Limitación de responsabilidad",
+        "title": "Exención de responsabilidad",
         "paragraphs": [
-          "En la medida en que lo permita la ley, no somos responsables de ninguna pérdida ni daño derivados del uso de la aplicación o del servicio, o de no poder usarlos: por ejemplo, la pérdida de datos, la pérdida de acceso a un servidor o lo que ocurra en los servidores a los que te conectes. Algunas leyes no permiten estas limitaciones; donde no las permitan, las limitaciones se aplican solo en la medida en que esas leyes lo permitan."
+          "Usas la aplicación y el servicio de sincronización por tu cuenta y riesgo. En la medida en que lo permita la ley, ni nosotros ni ninguna persona que haya contribuido a Submarine somos responsables de ninguna pérdida ni daño de ningún tipo, ya sean directos o indirectos, incidentales, especiales o consecuentes, derivados del uso de la aplicación y del servicio de sincronización, de no poder usarlos o de confiar en ellos. Esto incluye, por ejemplo:"
+        ],
+        "list": [
+          "datos perdidos, dañados o filtrados, incluidos perfiles, claves y contraseñas;",
+          "cualquier cosa que se haga en los servidores y dispositivos a los que te conectes, la haga quien la haga: tú, las personas con las que compartes un perfil, el asistente de IA o un agente de IA al que hayas dado acceso;",
+          "la pérdida de acceso a un servidor, el tiempo de inactividad y la pérdida de trabajo, de negocio o de beneficios;",
+          "lo que hagan o conserven terceros, como los servidores a los que te conectes, tus proveedores de IA y los proveedores de red y de alojamiento;",
+          "la falta de disponibilidad, la modificación o la finalización del servicio de sincronización."
+        ],
+        "after": [
+          "Nada en estas condiciones limita una responsabilidad que la ley no permite limitar, como la responsabilidad por dolo o negligencia grave, o por muerte o lesiones personales causadas por negligencia. Cuando la ley de tu país te otorga derechos irrenunciables, estas condiciones no te privan de ellos."
         ]
       },
       {

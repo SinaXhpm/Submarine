@@ -921,14 +921,24 @@
         "id": "warranty",
         "title": "Garanti yok",
         "paragraphs": [
-          "Uygulama ve eşitleme hizmeti, MIT lisansında belirtildiği gibi, hiçbir garanti olmaksızın “olduğu gibi” sunulur. Hizmetin çalışır durumda kalması ve verilerinizin güvende olması için elimizden geleni yaparız; ancak hizmetin her zaman kullanılabilir, hatasız ya da belirli bir amaca uygun olacağını vaat etmeyiz."
+          "Uygulama ve eşitleme hizmeti, MIT lisansında belirtildiği gibi, ticari elverişlilik, belirli bir amaca uygunluk ve üçüncü tarafların haklarını ihlal etmeme konusundaki zımni garantiler de dâhil olmak üzere, açık ya da zımni hiçbir türden garanti olmaksızın “olduğu gibi” ve “mevcut olduğu şekliyle” sunulur. Hizmetin çalışır durumda kalması ve verilerinizin güvende olması için elimizden geleni yaparız; ancak hizmetin her zaman kullanılabilir, hatasız ya da belirli bir amaca uygun olacağını vaat etmeyiz."
         ]
       },
       {
         "id": "liability",
-        "title": "Sorumluluğun sınırlandırılması",
+        "title": "Sorumluluk reddi",
         "paragraphs": [
-          "Yasaların izin verdiği ölçüde, uygulamayı ya da hizmeti kullanmaktan veya kullanamamaktan doğan hiçbir kayıp ya da zarardan sorumlu değiliz: örneğin veri kaybı, bir sunucuya erişimin kaybedilmesi ya da bağlandığınız sunucularda olup bitenler. Bazı yasalar bu sınırlamalara izin vermez; izin vermedikleri yerlerde sınırlamalar yalnızca o yasaların izin verdiği ölçüde uygulanır."
+          "Uygulamayı ve eşitleme hizmetini riski size ait olmak üzere kullanırsınız. Yasaların izin verdiği ölçüde, uygulamayı ve eşitleme hizmetini kullanmaktan, kullanamamaktan ya da onlara güvenmekten doğan, doğrudan ya da dolaylı, arızi, özel ya da sonuç olarak ortaya çıkan her türlü kayıp veya zarardan ne biz sorumluyuz ne de Submarine'e katkıda bulunmuş herhangi biri. Buna örneğin şunlar dâhildir:"
+        ],
+        "list": [
+          "profiller, anahtarlar ve parolalar da dâhil olmak üzere kaybolan, bozulan ya da sızan veriler;",
+          "bağlandığınız sunucularda ve cihazlarda yapılan her şey, bunu kim yaparsa yapsın: siz, profil paylaştığınız kişiler, yapay zekâ asistanı ya da erişim verdiğiniz bir yapay zekâ ajanı;",
+          "bir sunucuya erişimin kaybedilmesi, kesinti süreleri ve emek, iş ya da kâr kaybı;",
+          "bağlandığınız sunucular, yapay zekâ sağlayıcılarınız ve ağ ile barındırma sağlayıcıları gibi üçüncü tarafların yaptıkları ya da sakladıkları;",
+          "eşitleme hizmetinin kullanılamaması, değiştirilmesi ya da sonlandırılması."
+        ],
+        "after": [
+          "Bu koşullardaki hiçbir hüküm, yasaların sınırlandırılmasına izin vermediği bir sorumluluğu, örneğin kasıt ya da ağır ihmalden doğan sorumluluğu veya ihmal sonucu meydana gelen ölüm ya da bedensel zarardan doğan sorumluluğu sınırlamaz. Ülkenizin yasaları size feragat edilemeyen haklar tanıyorsa bu koşullar bu hakları elinizden almaz."
         ]
       },
       {

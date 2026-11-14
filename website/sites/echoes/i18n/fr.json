@@ -681,14 +681,24 @@
         "id": "warranty",
         "title": "Aucune garantie",
         "paragraphs": [
-          "Echoes est fourni « en l’état », sans aucune garantie, comme l’indique la licence MIT. Les résultats réseau peuvent être faux ou incomplets : un test peut échouer pour des raisons extérieures à Echoes, et le verdict du Doctor est sa meilleure interprétation de ce qu’il a mesuré."
+          "Echoes est fourni « en l’état », sans garantie d’aucune sorte, expresse ou implicite, y compris les garanties implicites de qualité marchande, d’adéquation à un usage particulier et d’absence de contrefaçon, comme l’indique la licence MIT. Les résultats réseau peuvent être faux ou incomplets : un test peut échouer pour des raisons extérieures à Echoes, et le verdict du Doctor est sa meilleure interprétation de ce qu’il a mesuré."
         ]
       },
       {
         "id": "liability",
-        "title": "Limitation de responsabilité",
+        "title": "Exclusion de responsabilité",
         "paragraphs": [
-          "Dans la mesure permise par la loi, nous ne sommes responsables d’aucune perte ni d’aucun dommage résultant de l’utilisation d’Echoes ou de l’impossibilité de l’utiliser, y compris ce qui se passe sur les réseaux et les serveurs que vous testez ou auxquels vous vous connectez. Certaines lois n’autorisent pas ces limitations ; là où elles ne les autorisent pas, les limitations ne s’appliquent que dans la mesure où ces lois le permettent."
+          "Vous utilisez Echoes à vos propres risques. Dans la mesure permise par la loi, ni nous ni aucune personne ayant contribué à Echoes ne sommes responsables des pertes ou dommages de quelque nature que ce soit, directs ou indirects, accessoires, spéciaux ou consécutifs, résultant de l’utilisation d’Echoes, de l’impossibilité de l’utiliser ou de la confiance que vous lui accordez. Cela comprend, par exemple :"
+        ],
+        "list": [
+          "les résultats faux ou incomplets, et les décisions prises sur leur fondement ;",
+          "tout ce qui se passe sur les réseaux, serveurs et sites web que vous testez, que vous scannez ou auxquels vous vous connectez, et les conséquences de ces tests ;",
+          "la perte ou la fuite de données, y compris de fichiers partagés par le serveur web et de ce qui transite par le proxy ;",
+          "ce que font ou conservent les services tiers, comme check-host.net, les serveurs de test de débit, les résolveurs DNS, Cloudflare et Telegram ;",
+          "les conséquences du fait de suivre les conseils du Doctor, par exemple l’utilisation d’un réglage qui contourne un filtre."
+        ],
+        "after": [
+          "Rien dans ces conditions ne limite une responsabilité que la loi ne permet pas de limiter, comme la responsabilité en cas de faute intentionnelle ou de faute lourde, ou en cas de décès ou de dommage corporel causés par une négligence. Lorsque la loi de votre pays vous accorde des droits auxquels vous ne pouvez pas renoncer, ces conditions ne vous les retirent pas."
         ]
       },
       {

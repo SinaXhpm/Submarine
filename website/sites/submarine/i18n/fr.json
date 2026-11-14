@@ -921,14 +921,24 @@
         "id": "warranty",
         "title": "Aucune garantie",
         "paragraphs": [
-          "L’application et le service de synchronisation sont fournis « en l’état », sans aucune garantie, comme l’indique la licence MIT. Nous faisons de notre mieux pour que le service reste en fonctionnement et que vos données restent en sécurité, mais nous ne promettons pas qu’il sera toujours disponible, exempt d’erreurs ou adapté à un usage particulier."
+          "L’application et le service de synchronisation sont fournis « en l’état » et « selon disponibilité », sans garantie d’aucune sorte, expresse ou implicite, y compris les garanties implicites de qualité marchande, d’adéquation à un usage particulier et d’absence de contrefaçon, comme l’indique la licence MIT. Nous faisons de notre mieux pour que le service reste en fonctionnement et que vos données restent en sécurité, mais nous ne promettons pas qu’il sera toujours disponible, exempt d’erreurs ou adapté à un usage particulier."
         ]
       },
       {
         "id": "liability",
-        "title": "Limitation de responsabilité",
+        "title": "Exclusion de responsabilité",
         "paragraphs": [
-          "Dans la mesure permise par la loi, nous ne sommes responsables d’aucune perte ni d’aucun dommage résultant de l’utilisation de l’application ou du service, ou de l’impossibilité de les utiliser : par exemple la perte de données, la perte d’accès à un serveur, ou ce qui se passe sur les serveurs auxquels vous vous connectez. Certaines lois n’autorisent pas ces limitations ; là où elles ne les autorisent pas, les limitations ne s’appliquent que dans la mesure où ces lois le permettent."
+          "Vous utilisez l’application et le service de synchronisation à vos propres risques. Dans la mesure permise par la loi, ni nous ni aucune personne ayant contribué à Submarine ne sommes responsables des pertes ou dommages de quelque nature que ce soit, directs ou indirects, accessoires, spéciaux ou consécutifs, résultant de l’utilisation de l’application et du service de synchronisation, de l’impossibilité de les utiliser ou de la confiance que vous leur accordez. Cela comprend, par exemple :"
+        ],
+        "list": [
+          "la perte, l’altération ou la fuite de données, y compris de profils, de clés et de mots de passe ;",
+          "tout ce qui est fait sur les serveurs et appareils auxquels vous vous connectez, quel qu’en soit l’auteur : vous, les personnes avec qui vous partagez un profil, l’assistant IA ou un agent IA auquel vous avez donné accès ;",
+          "la perte d’accès à un serveur, les temps d’arrêt et la perte de travail, d’activité ou de bénéfices ;",
+          "ce que des tiers font ou conservent, comme les serveurs auxquels vous vous connectez, vos fournisseurs d’IA, les fournisseurs de réseau et les hébergeurs ;",
+          "l’indisponibilité, la modification ou l’arrêt du service de synchronisation."
+        ],
+        "after": [
+          "Rien dans ces conditions ne limite une responsabilité que la loi ne permet pas de limiter, comme la responsabilité en cas de faute intentionnelle ou de faute lourde, ou en cas de décès ou de dommage corporel causés par une négligence. Lorsque la loi de votre pays vous accorde des droits auxquels vous ne pouvez pas renoncer, ces conditions ne vous les retirent pas."
         ]
       },
       {

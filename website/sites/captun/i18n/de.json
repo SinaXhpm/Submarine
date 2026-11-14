@@ -29,6 +29,7 @@
     "project": "Projekt",
     "more": "Weitere Apps",
     "issues": "Problem melden",
+    "terms": "Nutzungsbedingungen",
     "author": "sinaxhpm.com",
     "sister": "Ebenfalls vom Autor: 20 Netzwerk-Tools in einer kostenlosen App",
     "license": "Der Quellcode liegt auf GitHub.",
@@ -416,6 +417,84 @@
         }
       ]
     }
+  },
+  "terms": {
+    "title": "Nutzungsbedingungen – Captun",
+    "description": "Die Bedingungen für Captun: in Entwicklung, Teilen Ihrer Verbindung auf eigenes Risiko und im Rahmen der Gesetze, keine Gewährleistung, Haftungsausschluss.",
+    "heading": "Nutzungsbedingungen",
+    "intro": "Diese Nutzungsbedingungen gelten für Captun und diese Website. Kurz gesagt: Captun ist in Entwicklung, und es gibt noch keine veröffentlichte Version; wenn Sie es bauen und ausführen, tun Sie das auf eigenes Risiko, und Sie sind verantwortlich für die Verbindung, die Sie teilen, und für das, was über sie läuft.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Wer wir sind",
+        "paragraphs": [
+          "Captun wird von Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) entwickelt. Wenn in diesen Bedingungen von „wir“ oder „uns“ die Rede ist, ist er gemeint."
+        ]
+      },
+      {
+        "id": "software",
+        "title": "Die Software",
+        "paragraphs": [
+          "Captun wird aktiv entwickelt, und es gibt noch keine veröffentlichte Version. Der Quellcode liegt auf <a href=\"{repoUrl}\">GitHub</a>; wenn Sie Captun bauen und ausführen, gelten diese Bedingungen. Einige Funktionen sind experimentell, und diese Website gibt an, welche."
+        ]
+      },
+      {
+        "id": "responsible",
+        "title": "Ihre Verbindung und die Geräte, die Sie zulassen",
+        "list": [
+          "Teilen Sie nur eine Verbindung, die Sie teilen dürfen: Die Regeln Ihres Internetanbieters, Ihres VPN-Dienstes oder Ihres Arbeitgebers können das verbieten.",
+          "Sie entscheiden, welche Geräte sich verbinden dürfen, und Sie sind für das verantwortlich, was sie über Ihre Verbindung tun.",
+          "Nutzen Sie VPN-Links, Proxys und Sperren nur dort, wo das erlaubt ist, und nur für Datenverkehr, zu dessen Weiterleitung Sie berechtigt sind.",
+          "Captun führt einen Dienst mit Administratorrechten aus und ändert die Netzwerkeinstellungen dieses Computers; unter Windows nutzt es den WinDivert-Treiber. Machen Sie sich damit vertraut, wie Sie Captun beenden, bevor Sie sich darauf verlassen."
+        ]
+      },
+      {
+        "id": "thirdparty",
+        "title": "Software und Dienste von Drittanbietern",
+        "paragraphs": [
+          "Captun enthält Xray-core, libusb und unter Windows WinDivert, jeweils unter einer eigenen Lizenz (in der README aufgeführt). VPN- und Proxy-Anbieter sowie die Herausgeber der Blocklisten, die Sie nutzen, haben eigene Bedingungen, die gelten, wenn Captun sie für Sie nutzt."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Keine Gewährleistung",
+        "paragraphs": [
+          "Captun wird „wie besehen“ bereitgestellt, ohne jegliche ausdrückliche oder stillschweigende Gewährleistung, einschließlich der stillschweigenden Gewährleistung der Marktgängigkeit, der Eignung für einen bestimmten Zweck und der Nichtverletzung von Rechten Dritter. Es ist unfertig: Rechnen Sie mit Fehlern, und verlassen Sie sich nicht darauf, wenn ein Ausfall Schaden anrichten würde."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Haftungsausschluss",
+        "paragraphs": [
+          "Sie nutzen Captun auf eigenes Risiko. Soweit gesetzlich zulässig, haften weder wir noch Personen, die an Captun mitgewirkt haben, für Verluste oder Schäden jeglicher Art, die daraus entstehen, dass Sie Captun nutzen, es nicht nutzen können oder sich darauf verlassen, gleich ob es sich um unmittelbare oder mittelbare Schäden, Nebenschäden, besondere Schäden oder Folgeschäden handelt. Dazu gehören zum Beispiel:"
+        ],
+        "list": [
+          "Verbindungsverlust oder Geräte, die nicht online gehen können, auch nachdem Captun beendet wurde oder abgestürzt ist;",
+          "Datenverkehr, der den falschen Weg nimmt oder blockiert, verlangsamt oder offengelegt wird, auch über einen VPN-Link oder Proxy, den Sie hinzufügen;",
+          "das, was die Geräte tun, die Ihre Verbindung nutzen, und das, wofür Sie als die Person, die sie teilt, verantwortlich gemacht werden;",
+          "Verstöße gegen die Bedingungen Ihres Internetanbieters, Ihres Netzwerks oder Ihres VPN-Dienstes oder gegen das Recht an Ihrem Aufenthaltsort durch das Teilen einer Verbindung oder die Nutzung eines VPN oder eines Proxys;",
+          "Änderungen, die Captun an den Netzwerkeinstellungen, Treibern und Firewall-Regeln dieses Computers vornimmt;",
+          "das, was Dritte tun oder speichern, etwa VPN- und Proxy-Anbieter und die Herausgeber von Blocklisten."
+        ],
+        "after": [
+          "Nichts in diesen Bedingungen beschränkt eine Haftung, deren Beschränkung das Gesetz nicht zulässt, etwa die Haftung für Vorsatz oder grobe Fahrlässigkeit oder für Tod oder Körperverletzung infolge von Fahrlässigkeit. Soweit Ihnen das Recht Ihres Landes unverzichtbare Rechte gewährt, entziehen diese Bedingungen sie Ihnen nicht."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Änderungen dieser Bedingungen",
+        "paragraphs": [
+          "Wenn sich diese Bedingungen ändern, ändert sich auch das Datum oben. Mit der Nutzung von Captun nach einer Änderung akzeptieren Sie die neuen Bedingungen."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Kontakt",
+        "paragraphs": [
+          "Fragen zu diesen Bedingungen: Schreiben Sie an <a href=\"mailto:{email}\">{email}</a> oder erstellen Sie ein Issue unter <a href=\"{issuesUrl}\">github.com/SinaXhpm/captun/issues</a>."
+        ]
+      }
+    ]
   },
   "notFound": {
     "title": "Seite nicht gefunden – Captun",

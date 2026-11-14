@@ -921,14 +921,24 @@
         "id": "warranty",
         "title": "Keine Gewährleistung",
         "paragraphs": [
-          "Die App und der Sync-Dienst werden „wie besehen“ und ohne jegliche Gewährleistung bereitgestellt, wie es die MIT-Lizenz besagt. Wir tun unser Bestes, damit der Dienst läuft und Ihre Daten sicher sind, versprechen aber nicht, dass er immer verfügbar, fehlerfrei oder für einen bestimmten Zweck geeignet ist."
+          "Die App und der Sync-Dienst werden „wie besehen“ und „wie verfügbar“ bereitgestellt, ohne jegliche ausdrückliche oder stillschweigende Gewährleistung, einschließlich der stillschweigenden Gewährleistung der Marktgängigkeit, der Eignung für einen bestimmten Zweck und der Nichtverletzung von Rechten Dritter, wie es die MIT-Lizenz besagt. Wir tun unser Bestes, damit der Dienst läuft und Ihre Daten sicher sind, versprechen aber nicht, dass er immer verfügbar, fehlerfrei oder für einen bestimmten Zweck geeignet ist."
         ]
       },
       {
         "id": "liability",
-        "title": "Haftungsbeschränkung",
+        "title": "Haftungsausschluss",
         "paragraphs": [
-          "Soweit gesetzlich zulässig, haften wir für keinerlei Verluste oder Schäden, die aus der Nutzung der App oder des Dienstes entstehen oder daraus, dass Sie sie nicht nutzen können: zum Beispiel Datenverlust, den Verlust des Zugangs zu einem Server oder das, was auf Servern geschieht, mit denen Sie sich verbinden. Manche Gesetze lassen diese Beschränkungen nicht zu; wo das der Fall ist, gelten die Beschränkungen nur so weit, wie diese Gesetze es erlauben."
+          "Sie nutzen die App und den Sync-Dienst auf eigenes Risiko. Soweit gesetzlich zulässig, haften weder wir noch Personen, die an Submarine mitgewirkt haben, für Verluste oder Schäden jeglicher Art, die daraus entstehen, dass Sie die App und den Sync-Dienst nutzen, sie nicht nutzen können oder sich auf sie verlassen, gleich ob es sich um unmittelbare oder mittelbare Schäden, Nebenschäden, besondere Schäden oder Folgeschäden handelt. Dazu gehören zum Beispiel:"
+        ],
+        "list": [
+          "verlorene, beschädigte oder abgeflossene Daten, einschließlich Profilen, Schlüsseln und Passwörtern;",
+          "jede Handlung auf Servern und Geräten, mit denen Sie sich verbinden, gleich wer sie vornimmt: Sie selbst, die Personen, mit denen Sie ein Profil teilen, der KI-Assistent oder ein KI-Agent, dem Sie Zugriff gewährt haben;",
+          "der Verlust des Zugangs zu einem Server, Ausfallzeiten sowie verlorene Arbeit, entgangene Geschäfte oder entgangener Gewinn;",
+          "das, was Dritte tun oder speichern, etwa die Server, mit denen Sie sich verbinden, Ihre KI-Anbieter sowie Netzwerk- und Hosting-Anbieter;",
+          "die Nichtverfügbarkeit, Änderung oder Einstellung des Sync-Dienstes."
+        ],
+        "after": [
+          "Nichts in diesen Bedingungen beschränkt eine Haftung, deren Beschränkung das Gesetz nicht zulässt, etwa die Haftung für Vorsatz oder grobe Fahrlässigkeit oder für Tod oder Körperverletzung infolge von Fahrlässigkeit. Soweit Ihnen das Recht Ihres Landes unverzichtbare Rechte gewährt, entziehen diese Bedingungen sie Ihnen nicht."
         ]
       },
       {

@@ -681,14 +681,24 @@
         "id": "warranty",
         "title": "Keine Gewährleistung",
         "paragraphs": [
-          "Echoes wird „wie besehen“ und ohne jegliche Gewährleistung bereitgestellt, wie es die MIT-Lizenz besagt. Netzwerkergebnisse können falsch oder unvollständig sein: Ein Test kann aus Gründen fehlschlagen, die außerhalb von Echoes liegen, und der Befund des Doctors ist seine beste Deutung dessen, was er gemessen hat."
+          "Echoes wird „wie besehen“ bereitgestellt, ohne jegliche ausdrückliche oder stillschweigende Gewährleistung, einschließlich der stillschweigenden Gewährleistung der Marktgängigkeit, der Eignung für einen bestimmten Zweck und der Nichtverletzung von Rechten Dritter, wie es die MIT-Lizenz besagt. Netzwerkergebnisse können falsch oder unvollständig sein: Ein Test kann aus Gründen fehlschlagen, die außerhalb von Echoes liegen, und der Befund des Doctors ist seine beste Deutung dessen, was er gemessen hat."
         ]
       },
       {
         "id": "liability",
-        "title": "Haftungsbeschränkung",
+        "title": "Haftungsausschluss",
         "paragraphs": [
-          "Soweit gesetzlich zulässig, haften wir für keinerlei Verluste oder Schäden, die aus der Nutzung von Echoes entstehen oder daraus, dass Sie es nicht nutzen können, einschließlich dessen, was in Netzwerken und auf Servern geschieht, die Sie testen oder mit denen Sie sich verbinden. Manche Gesetze lassen diese Beschränkungen nicht zu; wo das der Fall ist, gelten die Beschränkungen nur so weit, wie diese Gesetze es erlauben."
+          "Sie nutzen Echoes auf eigenes Risiko. Soweit gesetzlich zulässig, haften weder wir noch Personen, die an Echoes mitgewirkt haben, für Verluste oder Schäden jeglicher Art, die daraus entstehen, dass Sie Echoes nutzen, es nicht nutzen können oder sich darauf verlassen, gleich ob es sich um unmittelbare oder mittelbare Schäden, Nebenschäden, besondere Schäden oder Folgeschäden handelt. Dazu gehören zum Beispiel:"
+        ],
+        "list": [
+          "falsche oder unvollständige Ergebnisse sowie Entscheidungen, die auf ihrer Grundlage getroffen werden;",
+          "alles, was in Netzwerken, auf Servern und auf Websites geschieht, die Sie testen, scannen oder mit denen Sie sich verbinden, sowie die Folgen davon, dass Sie sie testen;",
+          "verlorene oder abgeflossene Daten, einschließlich der über den Webserver geteilten Dateien und dessen, was über den Proxy läuft;",
+          "das, was Dienste von Drittanbietern tun oder speichern, etwa check-host.net, Speedtest-Server, DNS-Resolver, Cloudflare und Telegram;",
+          "die Folgen davon, dass Sie dem Rat des Doctors folgen, zum Beispiel indem Sie eine Einstellung nutzen, die einen Filter umgeht."
+        ],
+        "after": [
+          "Nichts in diesen Bedingungen beschränkt eine Haftung, deren Beschränkung das Gesetz nicht zulässt, etwa die Haftung für Vorsatz oder grobe Fahrlässigkeit oder für Tod oder Körperverletzung infolge von Fahrlässigkeit. Soweit Ihnen das Recht Ihres Landes unverzichtbare Rechte gewährt, entziehen diese Bedingungen sie Ihnen nicht."
         ]
       },
       {

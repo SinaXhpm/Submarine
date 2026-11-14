@@ -921,14 +921,24 @@
         "id": "warranty",
         "title": "No warranty",
         "paragraphs": [
-          "The app and the sync service are provided “as is”, without any warranty, as the MIT license says. We do our best to keep the service running and your data safe, but we don't promise that it will always be available, free of errors, or right for a particular purpose."
+          "The app and the sync service are provided “as is” and “as available”, without warranty of any kind, express or implied, including the implied warranties of merchantability, fitness for a particular purpose and non-infringement, as the MIT license says. We do our best to keep the service running and your data safe, but we don't promise that it will always be available, free of errors, or right for a particular purpose."
         ]
       },
       {
         "id": "liability",
-        "title": "Limits of liability",
+        "title": "Disclaimer of liability",
         "paragraphs": [
-          "As far as the law allows, we are not liable for any loss or damage from using the app or the service, or from not being able to use them: for example lost data, lost access to a server, or what happens on servers you connect to. Some laws don't allow these limits; where they don't, the limits apply only as far as those laws allow."
+          "You use the app and the sync service at your own risk. As far as the law allows, neither we nor anyone who has contributed to Submarine is liable for any loss or damage of any kind, direct or indirect, incidental, special or consequential, that comes from using the app and the sync service, from not being able to use them, or from relying on them. This includes, for example:"
+        ],
+        "list": [
+          "lost, damaged or leaked data, including profiles, keys and passwords;",
+          "anything done on servers and devices you connect to, whoever does it: you, the people you share a profile with, the AI assistant, or an AI agent you gave access;",
+          "lost access to a server, downtime, and lost work, business or profit;",
+          "what third parties do or keep, such as the servers you connect to, your AI providers, and network and hosting providers;",
+          "the sync service being unavailable, changed or ended."
+        ],
+        "after": [
+          "Nothing in these terms limits a liability that the law does not allow to be limited, such as liability for intent or gross negligence, or for death or personal injury caused by negligence. Where the law of your country gives you rights that can't be waived, these terms don't take them away."
         ]
       },
       {
