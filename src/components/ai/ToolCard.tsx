@@ -203,15 +203,15 @@ export const ToolCard = ({ call, live, canAlways, onDecide, onStop, onUndo, undo
             {mode === "buttons" && (
               <div className="flex flex-wrap gap-2">
                 <button type="button" disabled={busy} onClick={() => (call.red ? setMode("again") : void decide({ decision: "allow", always: false }))}
-                  className={`h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border flex items-center gap-1.5 ${call.red ? "border-rose-500/40 text-rose-200 hover:bg-rose-500/10" : "border-primary/40 text-primary hover:bg-primary/10"}`}>
+                  className={`h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border flex items-center gap-1.5 ${call.red ? "border-rose-500/40 text-rose-200 hover:bg-rose-500/10" : "border-primary/40 text-primary hover:bg-primary/10"}`}>
                   <Check size={12} /> {isChange ? "Apply" : isCommand ? "Run" : isDelete ? "Delete" : "Allow"}
                 </button>
                 {isCommand && (
-                  <button type="button" disabled={busy} onClick={() => { setEdited(command); setMode("edit"); }} className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5">
+                  <button type="button" disabled={busy} onClick={() => { setEdited(command); setMode("edit"); }} className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5">
                     <Pencil size={12} /> Edit
                   </button>
                 )}
-                <button type="button" disabled={busy} onClick={() => setMode("deny")} className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5">
+                <button type="button" disabled={busy} onClick={() => setMode("deny")} className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5">
                   <X size={12} /> Deny
                 </button>
                 {isCommand && canAlways && !call.red && (
@@ -225,10 +225,10 @@ export const ToolCard = ({ call, live, canAlways, onDecide, onStop, onUndo, undo
             {mode === "again" && (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[11.5px] text-rose-200">Run it anyway?</span>
-                <button type="button" disabled={busy} onClick={() => void decide({ decision: "allow", always: false })} className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-rose-500/50 text-rose-200 hover:bg-rose-500/15">
+                <button type="button" disabled={busy} onClick={() => void decide({ decision: "allow", always: false })} className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-rose-500/50 text-rose-200 hover:bg-rose-500/15">
                   Run anyway
                 </button>
-                <button type="button" onClick={() => setMode("buttons")} className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5">Back</button>
+                <button type="button" onClick={() => setMode("buttons")} className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5">Back</button>
                 {linesNote}
               </div>
             )}
@@ -239,10 +239,10 @@ export const ToolCard = ({ call, live, canAlways, onDecide, onStop, onUndo, undo
                   className="w-full bg-zinc-950 border border-white/10 rounded-lg px-2 py-1.5 font-mono text-[12px] text-zinc-100 focus:outline-none focus:border-primary/50" />
                 {edited !== command && edited.trim() && <ExactText text={edited} maxHeight={COMMAND_BOX} />}
                 <div className="flex gap-2">
-                  <button type="button" disabled={busy || !edited.trim()} onClick={() => void decide({ decision: "edit", command: edited })} className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-primary/40 text-primary hover:bg-primary/10">
+                  <button type="button" disabled={busy || !edited.trim()} onClick={() => void decide({ decision: "edit", command: edited })} className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-primary/40 text-primary hover:bg-primary/10">
                     Run this
                   </button>
-                  <button type="button" onClick={() => setMode("buttons")} className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5">Back</button>
+                  <button type="button" onClick={() => setMode("buttons")} className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5">Back</button>
                 </div>
               </div>
             )}
@@ -251,10 +251,10 @@ export const ToolCard = ({ call, live, canAlways, onDecide, onStop, onUndo, undo
                 <input aria-label="Note to the assistant" value={note} onChange={(e) => setNote(e.target.value)} dir="auto" placeholder="Note to the assistant (optional)"
                   className="w-full h-10 sm:h-9 bg-zinc-950 border border-white/10 rounded-lg px-2 text-[12.5px] text-zinc-100 focus:outline-none focus:border-primary/50" />
                 <div className="flex gap-2">
-                  <button type="button" disabled={busy} onClick={() => void decide({ decision: "deny", note: note.trim() || null })} className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-rose-500/40 text-rose-300 hover:bg-rose-500/10">
+                  <button type="button" disabled={busy} onClick={() => void decide({ decision: "deny", note: note.trim() || null })} className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-rose-500/40 text-rose-300 hover:bg-rose-500/10">
                     Deny
                   </button>
-                  <button type="button" onClick={() => setMode("buttons")} className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5">Back</button>
+                  <button type="button" onClick={() => setMode("buttons")} className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5">Back</button>
                 </div>
               </div>
             )}
@@ -265,7 +265,7 @@ export const ToolCard = ({ call, live, canAlways, onDecide, onStop, onUndo, undo
           <div className="flex items-center gap-2 text-[11.5px] text-zinc-400">
             <span>Running · {call.started ? Math.floor((now - call.started) / 1000) : 0} s</span>
             {onStop && (
-              <button type="button" onClick={onStop} className="ml-auto h-10 sm:h-8 px-2.5 rounded-lg text-[10.5px] font-bold uppercase border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 flex items-center gap-1">
+              <button type="button" onClick={onStop} className="ml-auto h-10 sm:h-8 px-2.5 rounded-lg text-[11.5px] font-semibold border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 flex items-center gap-1">
                 <Square size={10} fill="currentColor" /> Stop
               </button>
             )}
@@ -300,7 +300,7 @@ export const ToolCard = ({ call, live, canAlways, onDecide, onStop, onUndo, undo
         {r && isChange && r.action_id != null && onUndo && (undone ? (
           <div className="text-[11px] text-zinc-500 flex items-center gap-1.5"><Undo2 size={11} /> Undone</div>
         ) : (
-          <button type="button" onClick={() => onUndo(r.action_id as number, path)} className="h-10 sm:h-8 px-2.5 rounded-lg text-[10.5px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5">
+          <button type="button" onClick={() => onUndo(r.action_id as number, path)} className="h-10 sm:h-8 px-2.5 rounded-lg text-[11.5px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5">
             <Undo2 size={11} /> Undo
           </button>
         ))}

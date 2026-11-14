@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Send, Square, RotateCcw, Flag, ChevronDown, ChevronUp, MoreHorizontal, Pencil, Trash2, Loader2, ArrowLeft, Paperclip, SlidersHorizontal, MessageSquarePlus } from "lucide-react";
 import { useConfirm, useTextPrompt } from "../../ui/confirm";
@@ -98,7 +98,7 @@ const readDrawer = () => {
 /** A label above a field in the options drawer. */
 const Field = ({ label, children }: { label: string; children: ReactNode }) => (
   <label className="flex flex-col gap-1 min-w-0">
-    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">{label}</span>
+    <span className="text-[11px] font-semibold text-zinc-500">{label}</span>
     {children}
   </label>
 );
@@ -201,6 +201,24 @@ export const ChatPanel = ({
   const [text, setText] = useState("");
   const [levels, setLevels] = useState<string[]>([]);
   const [menu, setMenu] = useState(false);
+  // The menu hangs left from its button, inside the window: on a phone, with
+  // the button near the middle of the bar, it moves right until it fits.
+  const menuBox = useRef<HTMLDivElement>(null);
+  const [menuShift, setMenuShift] = useState(0);
+  useLayoutEffect(() => {
+    if (!menu) return;
+    const place = () => {
+      const el = menuBox.current;
+      // Its holder is as wide as the button.
+      const holder = el?.parentElement;
+      if (!el || !holder) return;
+      const right = holder.getBoundingClientRect().right;
+      setMenuShift(Math.max(0, Math.min(8 - (right - el.offsetWidth), window.innerWidth - 8 - right)));
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [menu]);
   const [attachMenu, setAttachMenu] = useState(false);
   const [drawer, setDrawerState] = useState(readDrawer);
   // "Continue in a new chat" is writing its summary.
@@ -661,7 +679,7 @@ export const ChatPanel = ({
             {!titleSlot && <span className="hidden sm:inline truncate max-w-[12rem] font-mono" dir="ltr">{settings?.model}</span>}
           </button>
           {running && live?.runId != null && (
-            <button type="button" onClick={stop} className="h-10 sm:h-8 shrink-0 px-2.5 rounded-lg text-[11px] font-bold uppercase border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 flex items-center gap-1.5">
+            <button type="button" onClick={stop} className="h-10 sm:h-8 shrink-0 px-2.5 rounded-lg text-[12px] font-semibold border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 flex items-center gap-1.5">
               <Square size={10} fill="currentColor" /> Stop
             </button>
           )}
@@ -670,7 +688,7 @@ export const ChatPanel = ({
               <MoreHorizontal size={16} />
             </button>
             {menu && (
-              <div className="absolute right-0 top-11 sm:top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#16161a] shadow-2xl p-1 text-[12px]">
+              <div ref={menuBox} style={{ right: -menuShift }} className="absolute top-11 sm:top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#16161a] shadow-2xl p-1 text-[12px]">
                 <button type="button" className="w-full text-left px-3 py-3 sm:py-2 rounded-lg hover:bg-white/5 text-zinc-200 flex items-center gap-2" onClick={() => void rename()}>
                   <Pencil size={12} /> Rename
                 </button>
@@ -773,7 +791,7 @@ export const ChatPanel = ({
         <div className="shrink-0 px-3 py-1 text-[11px] text-zinc-400 border-b border-white/5 flex items-center gap-2">
           <Loader2 size={11} className="animate-spin shrink-0" />
           <span className="flex-1">This chat is answering in another view.</span>
-          <button type="button" onClick={() => void ai.stopChat(chatId).then(onChanged)} className="h-10 sm:h-7 px-2.5 rounded-lg text-[10.5px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5">
+          <button type="button" onClick={() => void ai.stopChat(chatId).then(onChanged)} className="h-10 sm:h-7 px-2.5 rounded-lg text-[11.5px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5">
             Stop
           </button>
         </div>
@@ -838,12 +856,12 @@ export const ChatPanel = ({
             </p>
             <div className="flex items-center gap-2">
               <button type="button" disabled={continuing} onClick={() => void continueNew()}
-                className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-amber-400/40 text-amber-200 hover:bg-amber-500/10 flex items-center gap-1.5 disabled:opacity-70">
+                className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-amber-400/40 text-amber-200 hover:bg-amber-500/10 flex items-center gap-1.5 disabled:opacity-70">
                 {continuing ? <Loader2 size={12} className="animate-spin" /> : <MessageSquarePlus size={12} />}
                 {continuing ? "Writing a summary…" : "Continue in a new chat"}
               </button>
               {continuing && (
-                <button type="button" onClick={() => void ai.stopChat(chatId)} className="h-10 sm:h-8 px-2.5 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5">
+                <button type="button" onClick={() => void ai.stopChat(chatId)} className="h-10 sm:h-8 px-2.5 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5">
                   Stop
                 </button>
               )}
@@ -858,7 +876,7 @@ export const ChatPanel = ({
         )}
         {error && <div className="text-[12px] text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2" dir="auto">{error}</div>}
         {lastUserFailed && !live && (
-          <button type="button" onClick={() => void start("retry")} className="h-10 sm:h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5">
+          <button type="button" onClick={() => void start("retry")} className="h-10 sm:h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5">
             <RotateCcw size={12} /> Try again
           </button>
         )}

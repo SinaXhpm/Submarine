@@ -22,6 +22,7 @@ import { forgetServerBookmarks } from "./util/sftpBookmarks";
 import { useIsNarrow } from "./hooks/useViewport";
 import { IS_MOBILE } from "./util/platform";
 import { FONT_FAMILY_KEY, FONT_SIZE_KEY, readFontFamily, readFontSize } from "./util/terminalFont";
+import { UI_FONT_FAMILY_KEY, applyFonts, readUiFontFamily } from "./util/uiFont";
 import { SCROLLBACK_KEY, readScrollback } from "./util/terminalScrollback";
 import {
   BOLD_BRIGHT_KEY, CUSTOM_THEME_KEY, MIN_CONTRAST_KEY, THEME_KEY,
@@ -35,6 +36,8 @@ import { DEFAULT_RDP_OPTIONS, forgetRdpOptions, readRdpOptions, writeRdpOptions 
 import { DEFAULT_VNC_OPTIONS, forgetVncOptions, readVncOptions, writeVncOptions } from "./util/vncOptions";
 import { Sidebar } from "./components/Sidebar";
 import { NodeGrid } from "./components/NodeGrid";
+import { OpenServerMenu } from "./components/OpenServerMenu";
+import { accentOf } from "./util/serverLook";
 import { folderTree } from "./util/folderTree";
 import { CommandScope, describeScope, parseCommandScope, scopeToJson } from "./util/commandScope";
 import CommandScopePicker from "./components/CommandScopePicker";
@@ -244,6 +247,33 @@ function DesktopApp() {
       return next;
     });
   }, []);
+  // Each saved server's open tab, as its dot shows it on the server's card.
+  const serverTabs = useMemo(() => {
+    const open: Record<number, string> = {};
+    for (const s of sessions) {
+      if (s.serverId == null) continue;
+      open[s.serverId] = promptSessions.has(s.id) ? "waiting" : (sessionStatuses[s.id] ?? "connecting");
+    }
+    return open;
+  }, [sessions, sessionStatuses, promptSessions]);
+  // The tabs' order on the strip, by session id: dragging a tab changes it,
+  // and a new tab goes at the end. The sessions keep their own order, so
+  // their views are never moved around in the page.
+  const [tabOrder, setTabOrder] = useState<string[]>([]);
+  const orderedSessions = useMemo(() => {
+    const byId = new Map(sessions.map((s) => [s.id, s]));
+    const out: Session[] = [];
+    for (const id of tabOrder) {
+      const s = byId.get(id);
+      if (s) { out.push(s); byId.delete(id); }
+    }
+    for (const s of sessions) if (byId.has(s.id)) out.push(s);
+    return out;
+  }, [sessions, tabOrder]);
+  // The tab being dragged along the strip, once it has moved.
+  const [draggingTab, setDraggingTab] = useState<string | null>(null);
+  // The + after the tabs: its menu opens under it.
+  const [openServerAnchor, setOpenServerAnchor] = useState<HTMLElement | null>(null);
 
   // Maximize state mirrored from the OS window so the title-bar button can
   // swap its icon (single square = maximize, overlapping squares = restore)
@@ -451,6 +481,8 @@ function DesktopApp() {
     terminalFontSize: readFontSize(),
     // '' = the built-in cross-platform monospace stack (see util/terminalFont).
     terminalFontFamily: readFontFamily(),
+    // '' = the app's own interface font (see util/uiFont).
+    uiFontFamily: readUiFontFamily(),
     // Lines each terminal keeps above the screen. See util/terminalScrollback.
     terminalScrollback: readScrollback(),
     // Colours (util/terminalTheme): a scheme's id, the user's own scheme as
@@ -490,6 +522,7 @@ function DesktopApp() {
     localStorage.setItem('submarine-bg-color', appSettings.backgroundColor);
     localStorage.setItem(FONT_SIZE_KEY, appSettings.terminalFontSize.toString());
     localStorage.setItem(FONT_FAMILY_KEY, appSettings.terminalFontFamily);
+    localStorage.setItem(UI_FONT_FAMILY_KEY, appSettings.uiFontFamily);
     localStorage.setItem(SCROLLBACK_KEY, String(appSettings.terminalScrollback));
     localStorage.setItem(THEME_KEY, appSettings.terminalTheme);
     if (appSettings.terminalCustomScheme) localStorage.setItem(CUSTOM_THEME_KEY, appSettings.terminalCustomScheme);
@@ -509,6 +542,13 @@ function DesktopApp() {
     // users have to close+reopen every terminal to see a size change.
     window.dispatchEvent(new CustomEvent('submarine-settings-changed'));
   }, [appSettings]);
+
+  // The interface font and the font for text in columns (util/uiFont): set on
+  // the page only when one of the two faces changes, since a change restyles
+  // every element.
+  useEffect(() => {
+    applyFonts(appSettings.terminalFontFamily, appSettings.uiFontFamily);
+  }, [appSettings.terminalFontFamily, appSettings.uiFontFamily]);
 
   useEffect(() => {
     // Nothing to set up before the first screen:
@@ -1525,6 +1565,104 @@ function DesktopApp() {
     question: (opened) => unsavedQuestion("key", !opened.id, opened.name),
   });
 
+  // Closing a tab, from its ×, a middle click, its menu or the phone's list:
+  // the connection goes, with the tab's name and its broadcast, split and
+  // Wall places. With `ask`, a live connection is asked about first.
+  const closeTab = async (sid: string, ask: boolean) => {
+    if (ask && sessionStatuses[sid] === "connected") {
+      const ok = await confirm({
+        title: t("Close this session?"),
+        message: t("The connection will be dropped."),
+        okLabel: t("Close"),
+        destructive: true,
+      });
+      if (!ok) return;
+    }
+    invoke("disconnect_session", { sessionId: sid }).catch(() => {});
+    setSessions(prev => prev.filter(x => x.id !== sid));
+    setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
+    clearTabName(sid);
+    broadcast.removeSession(sid);
+    setMergedSessionIds(prev => {
+      const next = prev.filter(id => id !== sid);
+      return next.length < 2 ? [] : next;
+    });
+    unpinSessionFromWall(sid);
+    setActiveView(prev => (prev === sid ? "nodes" : prev));
+  };
+
+  // Ctrl+Tab goes to the next tab, Ctrl+Shift+Tab to the one before. A
+  // terminal gets Ctrl+Tab as a plain Tab, so the shell loses nothing; a
+  // remote desktop keeps it, as the remote's own (switching its windows).
+  const orderedSessionsRef = useRef(orderedSessions);
+  orderedSessionsRef.current = orderedSessions;
+  const activeViewRef = useRef(activeView);
+  activeViewRef.current = activeView;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || !e.ctrlKey || e.altKey || e.metaKey) return;
+      if ((e.target as HTMLElement | null)?.closest?.("[data-remote-keys]")) return;
+      if (document.querySelector('[aria-modal="true"]')) return;
+      const list = orderedSessionsRef.current;
+      if (list.length === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const at = list.findIndex((s) => s.id === activeViewRef.current);
+      const step = e.shiftKey ? -1 : 1;
+      const next = list[at < 0 ? (step > 0 ? 0 : list.length - 1) : (at + step + list.length) % list.length];
+      setMergedSessionIds((prev) => (prev.includes(next.id) ? prev : []));
+      setActiveView(next.id);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
+  // Dragging a tab along the strip: it moves past a neighbour once the
+  // pointer crosses that neighbour's middle. A drag doesn't select the tab.
+  const tabDrag = useRef<{ id: string; x: number; moved: boolean } | null>(null);
+  const tabDragged = useRef(false);
+  const startTabDrag = (e: { button: number; clientX: number; target: EventTarget }, id: string) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("[data-tab-close]")) return;
+    tabDrag.current = { id, x: e.clientX, moved: false };
+  };
+  useEffect(() => {
+    const move = (e: PointerEvent) => {
+      const d = tabDrag.current;
+      if (!d) return;
+      if (!d.moved) {
+        if (Math.abs(e.clientX - d.x) < 6) return;
+        d.moved = true;
+        setDraggingTab(d.id);
+      }
+      const strip = tabStripEl.current;
+      if (!strip) return;
+      const tabs = [...strip.querySelectorAll<HTMLElement>("[data-tab-id]")];
+      const now = tabs.map((el) => el.dataset.tabId as string);
+      const others = tabs.filter((el) => el.dataset.tabId !== d.id);
+      const at = others.filter((el) => { const r = el.getBoundingClientRect(); return r.left + r.width / 2 < e.clientX; }).length;
+      const next = others.map((el) => el.dataset.tabId as string);
+      next.splice(at, 0, d.id);
+      if (next.join("\n") !== now.join("\n")) setTabOrder(next);
+    };
+    const end = () => {
+      const d = tabDrag.current;
+      tabDrag.current = null;
+      if (!d?.moved) return;
+      setDraggingTab(null);
+      // The click that ends a drag doesn't select the tab.
+      tabDragged.current = true;
+      setTimeout(() => { tabDragged.current = false; }, 0);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+  }, []);
+
   // Render helper, NOT a component — it is invoked as `{TitleBar()}` below,
   // never as `<TitleBar />`. Rendering it as a JSX element would give it a
   // fresh function identity on every DesktopApp render, so React would treat
@@ -1549,8 +1687,11 @@ function DesktopApp() {
         if (IS_MOBILE || target.closest('.no-drag')) return;
         toggleMaximize();
       }}
-      className="h-10 bg-[#0d0d10] border-b border-white/5 flex items-center justify-between px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0"
+      className="h-10 bg-[#08080a] flex items-center justify-between px-3 select-none shrink-0 z-50 drag absolute top-0 left-0 right-0"
     >
+      {/* The bar's bottom edge, drawn under the tabs: the open tab covers it
+          and joins the session's toolbar below. */}
+      <span aria-hidden className="absolute inset-x-0 bottom-0 h-px bg-white/10 pointer-events-none" />
       {/* Logo + product name: hidden on phones to give the tab strip the
           whole row. Desktop keeps the original 75 px left padding for
           macOS traffic lights, plus the icon and brand. */}
@@ -1621,7 +1762,7 @@ function DesktopApp() {
                   role="listbox"
                   className="absolute z-[70] top-8 left-0 right-0 bg-[#15151a] border border-white/10 rounded-xl shadow-2xl p-1.5 max-h-[60vh] overflow-y-auto custom-scrollbar"
                 >
-                  {sessions.map(s => {
+                  {orderedSessions.map(s => {
                     const st = sessionStatuses[s.id] ?? 'connecting';
                     const dot =
                       promptSessions.has(s.id) ? 'bg-primary animate-pulse-brief' :
@@ -1648,7 +1789,7 @@ function DesktopApp() {
                           <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
                           <span className="text-[12px] font-semibold truncate flex-1">{tabLabel(s)}</span>
                           {isMerged && !isActive && (
-                            <span className="text-[9px] font-bold uppercase tracking-wider text-primary/60">{t("Split-in")}</span>
+                            <span className="text-[11px] font-semibold text-primary/60">{t("Split-in")}</span>
                           )}
                         </button>
                         {/* Merge/unmerge toggle — mobile equivalent of
@@ -1683,18 +1824,7 @@ function DesktopApp() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            const sid = s.id;
-                            invoke('disconnect_session', { sessionId: sid }).catch(() => {});
-                            setSessions(prev => prev.filter(x => x.id !== sid));
-                            setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
-                            clearTabName(sid);
-                            broadcast.removeSession(sid);
-                            setMergedSessionIds(prev => {
-                              const next = prev.filter(id => id !== sid);
-                              return next.length < 2 ? [] : next;
-                            });
-                            unpinSessionFromWall(sid);
-                            setActiveView(prev => (prev === sid ? 'nodes' : prev));
+                            void closeTab(s.id, false);
                           }}
                           title={t("Close session")}
                           className="h-10 w-10 sm:h-8 sm:w-8 shrink-0 rounded-lg flex items-center justify-center text-zinc-400 hover:text-red-400 hover:bg-white/[0.06] transition-all"
@@ -1724,7 +1854,7 @@ function DesktopApp() {
                     <LayoutGrid size={13} className="shrink-0" />
                     <span className="text-[12px] font-semibold flex-1">{t("Wall")}</span>
                     {wallItems.length > 0 && (
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-primary/70">
+                      <span className="text-[11px] font-semibold text-primary/70">
                         {t("{count} pinned", { count: wallItems.length })}
                       </span>
                     )}
@@ -1736,15 +1866,18 @@ function DesktopApp() {
         </div>
       )}
 
-      {/* Tab strip is a drag region; tabs themselves opt out via no-drag so
-          clicking a tab selects it instead of dragging the window. On phone
-          the horizontal scroll is replaced by the dropdown above; the
-          strip below is hidden on mobile. */}
-      <div data-tauri-drag-region className={`${isMobile ? 'hidden' : 'flex'} relative flex-1 min-w-0 h-full`}>
+      {/* The tab strip, with a + after the last tab. The row is a drag
+          region; the tabs and the + opt out via no-drag, so a click selects
+          instead of dragging the window. On a phone the dropdown above
+          replaces it. */}
+      <div data-tauri-drag-region className={`${isMobile ? 'hidden' : 'flex'} relative flex-1 min-w-0 h-full items-end`}>
+      {/* The strip and its arrows: as wide as the tabs, at most the row, so
+          the + follows the last tab and stays in view when they don't fit. */}
+      <div className="relative flex min-w-0 h-full">
       <div
         ref={tabStripRef}
         data-tauri-drag-region
-        className="flex flex-1 min-w-0 gap-1 overflow-x-auto no-scrollbar h-full items-end pb-1"
+        className="flex min-w-0 overflow-x-auto no-scrollbar h-full items-end"
         onWheel={(e) => {
           // A mouse wheel scrolls the strip sideways; a touchpad's sideways
           // swipe does by itself. A wheel that counts in lines or pages
@@ -1754,7 +1887,7 @@ function DesktopApp() {
           e.currentTarget.scrollLeft += e.deltaY * unit;
         }}
       >
-        {sessions.map(s => {
+        {orderedSessions.map((s, i) => {
           const st = sessionStatuses[s.id] ?? "connecting";
           // Dot palette: green = connected, amber = connecting, red = failed
           // or disconnected. The pulse animation only runs while connecting
@@ -1782,11 +1915,20 @@ function DesktopApp() {
           // connected?" and "is it broadcasting?" at a glance.
           const isBroadcastTarget = broadcast.enabled && broadcast.targetSessionIds.has(s.id);
           const isMergedTab = mergedSessionIds.includes(s.id);
+          // The open tab joins the session's toolbar below it, with a line in
+          // the server's own colour on top. A thin line parts two tabs where
+          // neither is the open one.
+          const active = activeView === s.id;
+          const nextTab = orderedSessions[i + 1];
+          const divider = !active && !!nextTab && nextTab.id !== activeView;
           return (
             <div
               key={s.id}
               data-tab-id={s.id}
+              onPointerDown={(e) => startTabDrag(e, s.id)}
               onClick={(e) => {
+                // The click that ends a drag along the strip selects nothing.
+                if (tabDragged.current) return;
                 // Ctrl/⌘-click toggles this tab in the split beside the
                 // currently-active session view — a quick keyboard-free
                 // way to tile two servers together without going through
@@ -1811,6 +1953,15 @@ function DesktopApp() {
                 if (!mergedSessionIds.includes(s.id)) setMergedSessionIds([]);
                 setActiveView(s.id);
               }}
+              // A middle click closes the tab, as in a browser, asking first
+              // for a live connection. The wheel button's own scrolling
+              // doesn't start.
+              onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
+              onAuxClick={(e) => {
+                if (e.button !== 1) return;
+                e.preventDefault();
+                void closeTab(s.id, true);
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setTabMenu({ x: e.clientX, y: e.clientY, sessionId: s.id });
@@ -1825,46 +1976,45 @@ function DesktopApp() {
               // row itself is horizontally scrollable (overflow-x-auto +
               // wheel-to-horizontal scroll above), so wider tabs just mean
               // more scrolling — they never hide the name behind an ellipsis.
-              // `whitespace-nowrap` keeps long names on a single line; without
-              // it a tab with a 30-char hostname would wrap into a two-line
-              // pill and break the row's height.
+              // `whitespace-nowrap` keeps long names on a single line.
               title={isMergedTab ? t("{name} · split beside current view (Ctrl-click to unpair)", { name: tabLabel(s) }) : tabLabel(s)}
-              className={`group no-drag flex items-center h-7 px-2.5 sm:px-4 rounded-full cursor-pointer transition-all shrink-0 mr-1 ${
-                activeView === s.id
-                  ? 'bg-primary/15 text-primary border border-primary/40 shadow-inner shadow-primary/10'
+              className={`group no-drag relative flex items-center gap-2 h-[33px] pl-3 pr-1.5 rounded-t-lg cursor-pointer shrink-0 transition-colors ${
+                active
+                  ? 'z-10 bg-[#141417] text-zinc-100 border-x border-t border-white/10'
                   : isMergedTab
-                    ? 'bg-primary/[0.05] text-primary/80 border border-primary/25 hover:bg-primary/10'
-                    : 'bg-white/[0.06] text-zinc-300 border border-white/10 hover:bg-white/[0.1] hover:border-white/20 hover:text-white'
-              }`}
+                    ? 'text-primary/90 bg-primary/[0.06] hover:bg-primary/10'
+                    : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]'
+              } ${draggingTab === s.id ? 'opacity-60' : ''}`}
             >
+              {active && (
+                <span
+                  aria-hidden
+                  className="absolute left-2 right-2 top-0 h-[2px] rounded-b-full"
+                  style={{ background: accentOf(servers.find((x: any) => x.id === s.serverId)?.color) }}
+                />
+              )}
               <span
                 title={dotTitle}
-                className={`w-2 h-2 rounded-full mr-2 shrink-0 ${dotTone}`}
+                className={`w-2 h-2 rounded-full shrink-0 ${dotTone}`}
                 aria-label={dotTitle}
               />
               {isBroadcastTarget && (
                 <span
                   title={t("Broadcast target")}
                   aria-label={t("Broadcast target")}
-                  className="w-1.5 h-1.5 rounded-full mr-1.5 shrink-0 bg-orange-400 shadow-[0_0_6px_rgba(251,146,60,0.7)]"
+                  className="w-1.5 h-1.5 rounded-full shrink-0 bg-orange-400 shadow-[0_0_6px_rgba(251,146,60,0.7)]"
                 />
               )}
               {isMergedTab && (
-                <Columns size={9} className="text-primary/70 mr-1 shrink-0" />
+                <Columns size={9} className="text-primary/70 shrink-0" />
               )}
-              {/* Node name display. Was 10 px + uppercase on desktop — that
-                  combination gave the smallest, hardest-to-read name in the
-                  whole title bar even though it's the ID users need most.
-                  Bumping to 12 px and dropping the uppercase transform gives
-                  the same tab pill roughly 30% more legible characters per
-                  pixel (uppercase is wider per glyph) without changing the
-                  strip height, which stays h-7. */}
-              {/* A button so the keyboard reaches the tab: its click bubbles
+              {/* The name, the ID users need most: 11.5 px, not in capitals.
+                  A button so the keyboard reaches the tab: its click bubbles
                   to the tab's own handler (and a menu key opens its menu). */}
               <button
                 type="button"
-                aria-current={activeView === s.id ? "page" : undefined}
-                className="text-[11px] font-semibold whitespace-nowrap tracking-tight rounded outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                aria-current={active ? "page" : undefined}
+                className="text-[11.5px] font-semibold whitespace-nowrap tracking-tight rounded outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
               >
                 {tabLabel(s)}
               </button>
@@ -1876,7 +2026,7 @@ function DesktopApp() {
               <button
                 type="button"
                 aria-label={t("Session actions")}
-                className="sm:hidden ml-1 h-5 w-5 flex items-center justify-center rounded hover:bg-white/5 shrink-0 text-zinc-400"
+                className="sm:hidden h-5 w-5 flex items-center justify-center rounded hover:bg-white/5 shrink-0 text-zinc-400"
                 onClick={(e) => {
                   e.stopPropagation();
                   const rect = e.currentTarget.getBoundingClientRect();
@@ -1885,41 +2035,22 @@ function DesktopApp() {
               >
                 <MoreVertical size={13} />
               </button>
-              {/* Desktop-only inline close. Hidden until hover (or keyboard
-                  focus) so the tab reads clean at rest; sizing (w-5 h-5,
-                  12 px icon) matches the terminal-tab close inside
-                  SessionView so both tab strips look like siblings. */}
+              {/* Desktop-only close: always on the open tab, on hover (or
+                  keyboard focus) on the others. A live connection is asked
+                  about first. */}
               <button
                 type="button"
+                data-tab-close=""
                 aria-label={t("Close session")}
-                className="hidden sm:flex ml-1 h-5 w-5 items-center justify-center rounded hover:bg-white/5 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-zinc-400 hover:text-red-400 transition-opacity"
-                onClick={async (e) => {
+                className={`hidden sm:flex h-5 w-5 items-center justify-center rounded hover:bg-white/10 shrink-0 text-zinc-400 hover:text-red-400 transition-opacity ${active ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
+                onClick={(e) => {
                   e.stopPropagation();
-                  // Only confirm when there's an actual live connection to
-                  // drop — connecting/failed/disconnected close instantly.
-                  // Status source of truth is the same sessionStatuses map
-                  // that drives the coloured dot above.
-                  if (sessionStatuses[s.id] === "connected") {
-                    const ok = await confirm({
-                      title: t("Close this session?"),
-                      message: t("The connection will be dropped."),
-                      okLabel: t("Close"),
-                      destructive: true,
-                    });
-                    if (!ok) return;
-                  }
-                  setSessions(prev => prev.filter(sess => sess.id !== s.id));
-                  setSessionStatuses(prev => {
-                    const { [s.id]: _, ...rest } = prev;
-                    return rest;
-                  });
-                  broadcast.removeSession(s.id);
-                  unpinSessionFromWall(s.id);
-                  setActiveView(prev => (prev === s.id ? "nodes" : prev));
+                  void closeTab(s.id, true);
                 }}
               >
                 <X size={12} />
               </button>
+              {divider && <span aria-hidden className="absolute right-0 top-2 bottom-2 w-px bg-white/10" />}
             </div>
           );
         })}
@@ -1931,7 +2062,7 @@ function DesktopApp() {
           onClick={() => scrollTabs(-1)}
           title={t("Show the tabs to the left")}
           aria-label={t("Show the tabs to the left")}
-          className="no-drag absolute left-0 bottom-1 h-7 w-8 flex items-center justify-start pl-1 rounded-l-full text-zinc-300 hover:text-white bg-gradient-to-r from-[#0d0d10] via-[#0d0d10]/90 to-transparent"
+          className="no-drag absolute left-0 bottom-0 z-20 h-[33px] w-8 flex items-center justify-start pl-1 text-zinc-300 hover:text-white bg-gradient-to-r from-[#08080a] via-[#08080a]/90 to-transparent"
         >
           <ChevronLeft size={15} />
         </button>
@@ -1942,12 +2073,42 @@ function DesktopApp() {
           onClick={() => scrollTabs(1)}
           title={t("Show the tabs to the right")}
           aria-label={t("Show the tabs to the right")}
-          className="no-drag absolute right-0 bottom-1 h-7 w-8 flex items-center justify-end pr-1 rounded-r-full text-zinc-300 hover:text-white bg-gradient-to-l from-[#0d0d10] via-[#0d0d10]/90 to-transparent"
+          className="no-drag absolute right-0 bottom-0 z-20 h-[33px] w-8 flex items-center justify-end pr-1 text-zinc-300 hover:text-white bg-gradient-to-l from-[#08080a] via-[#08080a]/90 to-transparent"
         >
           <ChevronRight size={15} />
         </button>
       )}
       </div>
+      {/* The + after the last tab: a saved server from anywhere, without
+          going back to the Servers page. */}
+      {isUnlocked && (
+        <button
+          type="button"
+          // A click leaves the focus where it was (a terminal, say): the
+          // menu gives it back there when Escape closes it.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={(e) => setOpenServerAnchor(openServerAnchor ? null : e.currentTarget)}
+          title={t("Open a server")}
+          aria-label={t("Open a server")}
+          aria-haspopup="dialog"
+          aria-expanded={!!openServerAnchor}
+          className={`no-drag shrink-0 self-center ml-1 w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${openServerAnchor ? 'bg-white/[0.08] text-white' : 'text-zinc-400 hover:text-white hover:bg-white/[0.08]'}`}
+        >
+          <Plus size={15} />
+        </button>
+      )}
+      </div>
+      {openServerAnchor && (
+        <OpenServerMenu
+          servers={servers}
+          folders={folders}
+          serverTabs={serverTabs}
+          anchor={openServerAnchor}
+          onOpen={(server) => { void openServer(server); }}
+          onQuickConnect={() => setIsQuickConnectOpen(true)}
+          onClose={() => setOpenServerAnchor(null)}
+        />
+      )}
       {/* Wall trigger — moved OUT of the scrollable tab strip and next
           to the Broadcast pill so both multi-session affordances live
           in the same "utility cluster" at the right edge of the title
@@ -2038,7 +2199,7 @@ function DesktopApp() {
                       checked={broadcast.enabled}
                       onChange={broadcast.toggleEnabled}
                     />
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-200">
+                    <span className="text-[12px] font-semibold text-zinc-200">
                       {t("Broadcast input")}
                     </span>
                   </label>
@@ -2053,18 +2214,18 @@ function DesktopApp() {
                 <div className="flex items-center gap-1.5 px-1 pb-2 border-b border-white/5">
                   <button
                     onClick={() => broadcast.selectAll(sessions.map(s => s.id))}
-                    className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                    className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[11px] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
                   >
                     {t("All")}
                   </button>
                   <button
                     onClick={() => broadcast.selectNone()}
-                    className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                    className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[11px] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
                   >
                     {t("None")}
                   </button>
                   <div className="flex-1" />
-                  <span className={`text-[10px] font-bold uppercase tracking-wider ${
+                  <span className={`text-[11px] font-semibold ${
                     broadcast.enabled && broadcast.targetSessionIds.size >= 2
                       ? "text-orange-300"
                       : "text-zinc-500"
@@ -2077,7 +2238,7 @@ function DesktopApp() {
                   </span>
                 </div>
                 <div className="max-h-[240px] overflow-y-auto custom-scrollbar mt-2 space-y-0.5">
-                  {sessions.map(s => {
+                  {orderedSessions.map(s => {
                     const checked = broadcast.targetSessionIds.has(s.id);
                     const st = sessionStatuses[s.id] ?? "connecting";
                     return (
@@ -2252,13 +2413,13 @@ function DesktopApp() {
               <>
                 <div className="border-t border-white/5 my-1" />
                 <div className="px-3 pt-1 pb-1.5 flex items-center justify-between">
-                  <span className="text-[9.5px] font-bold uppercase tracking-widest text-zinc-500">
+                  <span className="text-[11px] font-semibold text-zinc-500">
                     {t("Split view with")}
                   </span>
                   {targetIsActive && currentMerges.length > 0 && (
                     <button
                       onClick={() => { setMergedSessionIds([]); setTabMenu(null); }}
-                      className="text-[9.5px] font-bold uppercase tracking-wider text-zinc-500 hover:text-white"
+                      className="text-[11px] font-semibold text-zinc-500 hover:text-white"
                     >
                       {t("Clear")}
                     </button>
@@ -2319,18 +2480,7 @@ function DesktopApp() {
             <button
               className="w-full text-left px-3 py-1.5 hover:bg-rose-500/15 hover:text-rose-300 text-zinc-200"
               onClick={() => {
-                const sid = targetId;
-                invoke("disconnect_session", { sessionId: sid }).catch(() => {});
-                setSessions(prev => prev.filter(sess => sess.id !== sid));
-                setSessionStatuses(prev => { const { [sid]: _, ...rest } = prev; return rest; });
-                clearTabName(sid);
-                broadcast.removeSession(sid);
-                setMergedSessionIds(prev => {
-                  const next = prev.filter(id => id !== sid);
-                  return next.length < 2 ? [] : next;
-                });
-                unpinSessionFromWall(sid);
-                setActiveView(prev => (prev === sid ? "nodes" : prev));
+                void closeTab(targetId, false);
                 setTabMenu(null);
               }}
             >{t("Close tab")}</button>
@@ -2367,6 +2517,8 @@ function DesktopApp() {
               <NodeGrid
                 servers={servers}
                 folders={folders}
+                credentials={credentials}
+                serverTabs={serverTabs}
                 activeFolderId={activeFolderId}
                 onActiveFolderChange={setActiveFolderId}
                 onOpenServer={openServer}
@@ -2682,7 +2834,7 @@ function DesktopApp() {
                                 (sessionStatuses[sess.id] ?? 'connecting') === 'idle' ? 'bg-zinc-500' :
                                 'bg-rose-500'
                               }`} />
-                              <span className="font-bold text-zinc-200 uppercase tracking-wider truncate flex-1">
+                              <span className="font-semibold text-zinc-200 truncate flex-1">
                                 {tabLabel(sess)}
                               </span>
                               <button
@@ -2789,12 +2941,12 @@ function DesktopApp() {
                     scroll sideways. */}
                 <div className="h-10 shrink-0 border-b border-white/5 bg-[#111114] flex items-center gap-2 px-3">
                   <LayoutGrid size={12} className="text-primary/70 shrink-0" />
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 shrink-0">
+                  <span className="text-[11px] font-semibold text-zinc-400 shrink-0">
                     {wallItems.length > 0 ? t("Wall · {count}", { count: wallItems.length }) : t("Wall")}
                   </span>
                   <div className="flex-1 min-w-0 flex items-center gap-3 ml-2 overflow-x-auto no-scrollbar">
                     <div className="flex items-center gap-1 shrink-0" role="group" aria-label={t("Columns")}>
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">{t("Cols")}</span>
+                      <span className="text-[11px] font-semibold text-zinc-500">{t("Cols")}</span>
                       {[1, 2, 3, 4, 5, 6].map(n => (
                         <button
                           key={n}
@@ -2812,7 +2964,7 @@ function DesktopApp() {
                       ))}
                     </div>
                     <div className="flex items-center gap-1 shrink-0" role="group" aria-label={t("Rows")}>
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">{t("Rows")}</span>
+                      <span className="text-[11px] font-semibold text-zinc-500">{t("Rows")}</span>
                       {[0, 1, 2, 3, 4].map(n => (
                         <button
                           key={n}
@@ -2833,7 +2985,7 @@ function DesktopApp() {
                   <button
                     onClick={() => setWallPickerOpen(v => !v)}
                     title={t("Pick terminals to pin")}
-                    className="px-3 py-1 bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 rounded-md text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5"
+                    className="px-3 py-1 bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 rounded-md text-[11px] font-semibold flex items-center gap-1.5"
                   >
                     <Plus size={11} /> {t("Add")}
                   </button>
@@ -2841,7 +2993,7 @@ function DesktopApp() {
                     <button
                       onClick={() => setWallItems([])}
                       title={t("Unpin everything (terminals stay open in their sessions)")}
-                      className="px-3 py-1 bg-white/[0.04] hover:bg-rose-500/15 hover:text-rose-300 border border-white/10 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5"
+                      className="px-3 py-1 bg-white/[0.04] hover:bg-rose-500/15 hover:text-rose-300 border border-white/10 rounded-md text-[11px] font-semibold text-zinc-400 flex items-center gap-1.5"
                     >
                       <X size={11} /> {t("Clear")}
                     </button>
@@ -2889,7 +3041,7 @@ function DesktopApp() {
                                 so keystrokes go to xterm directly. */}
                             <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-[#141418] text-[10.5px] select-none">
                               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotTone}`} />
-                              <span className="font-bold text-zinc-200 uppercase tracking-wider truncate">
+                              <span className="font-semibold text-zinc-200 truncate">
                                 {tabLabel(sess)}
                               </span>
                               <span className="text-zinc-600">·</span>
@@ -2931,7 +3083,7 @@ function DesktopApp() {
                                 </ErrorBoundary>
                               </div>
                             ) : (
-                              <div className="flex-1 flex items-center justify-center text-zinc-500 text-[10.5px] font-medium uppercase tracking-wider">
+                              <div className="flex-1 flex items-center justify-center text-zinc-500 text-[11.5px] font-medium">
                                 {t("Session {status}", { status: t(SESSION_STATUS[st] ?? st) })}
                               </div>
                             )}
@@ -2952,7 +3104,7 @@ function DesktopApp() {
                     <div className="fixed inset-0 z-[65]" onClick={() => setWallPickerOpen(false)} />
                     <div className="absolute top-12 right-3 z-[66] w-80 max-h-[70vh] bg-[#15151a] border border-white/10 rounded-xl shadow-2xl p-2 flex flex-col">
                       <div className="px-2 pb-2 flex items-center justify-between shrink-0">
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                        <span className="text-[11px] font-semibold text-zinc-500">
                           {t("Pin terminals")}
                         </span>
                         <button aria-label={t("Close")}
@@ -2968,7 +3120,7 @@ function DesktopApp() {
                         </div>
                       ) : (
                         <div className="overflow-y-auto custom-scrollbar space-y-1 pr-1">
-                          {sessions.map(s => {
+                          {orderedSessions.map(s => {
                             const terms = sessionTerminals[s.id] ?? [];
                             const st = sessionStatuses[s.id] ?? 'connecting';
                             return (
@@ -2982,7 +3134,7 @@ function DesktopApp() {
                                   <span className="text-[11px] font-bold text-zinc-200 truncate flex-1">
                                     {tabLabel(s)}
                                   </span>
-                                  <span className="text-[9px] uppercase tracking-wider text-zinc-500">
+                                  <span className="text-[11px] text-zinc-500">
                                     {tn(terms.length, "{count} term", "{count} terms")}
                                   </span>
                                 </div>
@@ -3106,7 +3258,7 @@ function DesktopApp() {
                     <div className="flex items-center gap-1 self-start bg-black/30 border border-white/5 rounded-xl p-0.5">
                       <button
                         onClick={() => setLibraryTab("commands")}
-                        className={`h-8 px-3 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                        className={`h-8 px-3 rounded-lg text-[12px] font-semibold transition-all flex items-center gap-1.5 ${
                           onCommandsTab
                             ? "bg-primary/15 text-primary shadow-inner"
                             : "text-zinc-400 hover:text-zinc-100"
@@ -3119,7 +3271,7 @@ function DesktopApp() {
                       </button>
                       <button
                         onClick={() => setLibraryTab("notes")}
-                        className={`h-8 px-3 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                        className={`h-8 px-3 rounded-lg text-[12px] font-semibold transition-all flex items-center gap-1.5 ${
                           !onCommandsTab
                             ? "bg-primary/15 text-primary shadow-inner"
                             : "text-zinc-400 hover:text-zinc-100"
@@ -3215,7 +3367,7 @@ function DesktopApp() {
                 keeps its Channel and its place while another view is open. */}
             <div className={`flex-1 flex flex-col overflow-hidden ${activeView === "ai" ? "" : "hidden"}`}>
               <ErrorBoundary label="AI">
-                <AiPage active={activeView === "ai"} onOpenSettings={() => setActiveView("settings")} openSessions={aiSessions} serverNames={aiServerNames} />
+                <AiPage active={activeView === "ai"} openSessions={aiSessions} serverNames={aiServerNames} />
               </ErrorBoundary>
             </div>
 

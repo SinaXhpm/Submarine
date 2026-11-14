@@ -156,12 +156,12 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
       >
         <div className="flex items-center gap-2 px-3 py-2 border-b border-white/10">
           <History size={14} className="text-primary" />
-          <span id="cmd-history-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
-            {t("Command History")}
+          <span id="cmd-history-title" className="text-[12px] font-semibold text-zinc-200">
+            {t("Command history")}
           </span>
           <div className="flex-1" />
           {filterServerId != null && (
-            <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-400 cursor-pointer select-none">
+            <label className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-400 cursor-pointer select-none">
               <input
                 type="checkbox"
                 className="accent-primary"
@@ -188,7 +188,7 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
             placeholder={t("Search command history…")}
             className="flex-1 bg-transparent outline-none text-[13px] text-zinc-100 placeholder:text-zinc-600"
           />
-          <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">
+          <span className="text-[11px] text-zinc-500 font-semibold">
             {visibleEntries.length}
           </span>
         </div>
@@ -242,7 +242,7 @@ const HistorySearchOverlay = ({ isOpen, onClose, filterServerId, onInsert }: Pro
             ))
           )}
         </div>
-        <div className="px-3 py-1.5 border-t border-white/10 flex items-center gap-3 text-[10px] text-zinc-500 uppercase tracking-wider">
+        <div className="px-3 py-1.5 border-t border-white/10 flex items-center gap-3 text-[11px] text-zinc-500">
           <span>{tx("{key} insert", { key: <kbd className="text-zinc-400">Enter</kbd> })}</span>
           <span>{tx("{key} insert + run", { key: <kbd className="text-zinc-400">Shift+Enter</kbd> })}</span>
           <span>{tx("{key} close", { key: <kbd className="text-zinc-400">Esc</kbd> })}</span>

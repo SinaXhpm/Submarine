@@ -43,7 +43,7 @@ export const AgentSettings = ({ onOpenPanel }: { onOpenPanel?: () => void }) => 
 
   return (
     <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-      <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+      <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
         <Bot size={14} /> AI agents
       </div>
 

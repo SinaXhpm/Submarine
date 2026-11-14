@@ -11,6 +11,13 @@ export default {
         border: "var(--border)",    
         muted: "#a1a1aa",
       },
+      // The fonts the user picks in Settings (util/uiFont.ts, defaults in
+      // App.css): font-sans is the interface font, font-mono the one for text
+      // set in columns, which follows the terminal font.
+      fontFamily: {
+        sans: ["var(--ui-font)"],
+        mono: ["var(--ui-mono)"],
+      },
       // Tailwind's spin and pulse, but they stop: 12 turns, 5 pulses. For
       // states that can last (a tab connecting or waiting for an answer, a
       // retry, broadcast on): the browser draws an endless animation at every

@@ -69,7 +69,7 @@ export function HeldDeletions({ items, onResolve, onClose }: {
         <div className="flex items-start justify-between gap-3 p-4 pb-2">
           <div className="flex items-center gap-2">
             <Trash2 size={14} className="text-amber-400" />
-            <span id="held-deletions-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
+            <span id="held-deletions-title" className="text-[12px] font-semibold text-zinc-200">
               {anyEmptied ? t("Deleted or emptied by someone else") : t("Deleted by someone else")}
             </span>
           </div>
@@ -87,7 +87,7 @@ export function HeldDeletions({ items, onResolve, onClose }: {
         <div className="flex-1 overflow-y-auto custom-scrollbar px-4 pb-2 space-y-3">
           {groups.map(([label, list]) => (
             <section key={label} aria-label={t(label)} className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
-              <div className="text-[10.5px] font-bold uppercase tracking-wider text-zinc-500 mb-1.5">{t(label)}</div>
+              <div className="text-[11.5px] font-semibold text-zinc-500 mb-1.5">{t(label)}</div>
               <ul className="space-y-1">
                 {list.map((i) => (
                   <li key={i.uuid} className="text-[12px] text-zinc-200 break-words">{i.name || t("(no name)")}</li>
@@ -100,14 +100,14 @@ export function HeldDeletions({ items, onResolve, onClose }: {
           <button
             disabled={busy}
             onClick={() => decide(false)}
-            className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-50"
+            className="px-3 h-8 rounded text-[12px] font-semibold bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-50"
           >
             {t("Keep them")}
           </button>
           <button
             disabled={busy}
             onClick={() => decide(true)}
-            className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-rose-500/10 border border-rose-500/40 text-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
+            className="px-3 h-8 rounded text-[12px] font-semibold bg-rose-500/10 border border-rose-500/40 text-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
           >
             {anyEmptied ? t("Do the same here") : t("Delete here too")}
           </button>

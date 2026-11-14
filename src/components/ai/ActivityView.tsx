@@ -410,7 +410,7 @@ export const ActivityView = ({ serverUuid, serverName, serverNames, sessionId = 
       <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
         {serverUuid && (
           <section aria-labelledby={`${uid}-always`} className="px-3 py-3 space-y-2 border-b border-white/5">
-            <h3 id={`${uid}-always`} className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Always run on this server</h3>
+            <h3 id={`${uid}-always`} className="text-[11px] font-semibold text-zinc-500">Always run on this server</h3>
             {always === null ? (
               !error && spinner
             ) : always.length === 0 ? (
@@ -425,7 +425,7 @@ export const ActivityView = ({ serverUuid, serverName, serverNames, sessionId = 
                       disabled={removing !== null && removing !== c}
                       aria-disabled={removing === c}
                       onClick={() => void removeAlways(c)}
-                      className={`${btn} px-2.5 shrink-0 rounded-lg text-[10.5px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5 disabled:opacity-40`}
+                      className={`${btn} px-2.5 shrink-0 rounded-lg text-[11.5px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5 disabled:opacity-40`}
                     >
                       {removing === c ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Remove
                     </button>
@@ -440,7 +440,7 @@ export const ActivityView = ({ serverUuid, serverName, serverNames, sessionId = 
           {/* Stays in view over the rows, with the search. */}
           <div className="sticky top-0 z-10 bg-[#121214] px-3 pt-3 pb-2 space-y-2">
             <div className="flex items-baseline gap-2">
-              <h3 id={`${uid}-log`} className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">What the assistant did</h3>
+              <h3 id={`${uid}-log`} className="text-[11px] font-semibold text-zinc-500">What the assistant did</h3>
               {hasItems && <span className="text-[10.5px] text-zinc-600">{needle ? `${shownRows.length} of ${items.length}` : items.length}</span>}
             </div>
             {hasItems && (
@@ -508,7 +508,7 @@ export const ActivityView = ({ serverUuid, serverName, serverNames, sessionId = 
             type="button"
             aria-disabled={clearing}
             onClick={() => void clear()}
-            className={`w-full ${btn} rounded-lg text-[11px] font-bold uppercase text-zinc-500 hover:text-rose-300 hover:bg-rose-500/10 flex items-center justify-center gap-1.5`}
+            className={`w-full ${btn} rounded-lg text-[12px] font-semibold text-zinc-500 hover:text-rose-300 hover:bg-rose-500/10 flex items-center justify-center gap-1.5`}
           >
             <Trash2 size={12} /> Clear the log
           </button>
@@ -594,7 +594,7 @@ const Entry = memo(function Entry({ row, when, open, server, undoing, undoBusy, 
                   aria-disabled={undoing}
                   title={canUndo ? "Put back what was there before" : "Open the server's session to undo"}
                   onClick={() => onUndo(a.id)}
-                  className={`${btn} rounded-lg text-[10.5px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5 disabled:opacity-40 disabled:hover:bg-transparent`}
+                  className={`${btn} rounded-lg text-[11.5px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1.5 disabled:opacity-40 disabled:hover:bg-transparent`}
                 >
                   {undoing ? <Loader2 size={11} className="animate-spin-brief" /> : <Undo2 size={11} />} Undo
                 </button>

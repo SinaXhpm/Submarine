@@ -140,7 +140,7 @@ export const AgentsPanel = ({ active, servers, openSessions, serverNames, onOpen
       <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-6">
         <div className="flex items-center gap-2">
           <Bot size={18} className="text-primary" />
-          <h1 className="text-sm font-black uppercase tracking-wider text-zinc-300 flex-1">AI agents</h1>
+          <h1 className="text-sm font-black text-zinc-300 flex-1">AI agents</h1>
           <span className={`text-[11px] px-2 py-0.5 rounded-full border ${ov.listening ? "border-emerald-500/30 text-emerald-300" : "border-white/10 text-zinc-500"}`}>
             {ov.listening ? "Listening" : ov.enabled ? "Not listening" : "Off"}
           </span>
@@ -151,7 +151,7 @@ export const AgentsPanel = ({ active, servers, openSessions, serverNames, onOpen
             {!ov.enabled && <p>Agents can't reach Submarine: the switch in Settings → AI agents is off.</p>}
             {ov.enabled && !ov.profile_open && <p>Open a profile: agents can only ask while one is open.</p>}
             {ov.error && <p className="text-amber-300">{ov.error}</p>}
-            <button type="button" onClick={onOpenSettings} className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5">
+            <button type="button" onClick={onOpenSettings} className="h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5">
               Open Settings
             </button>
           </div>
@@ -259,7 +259,7 @@ function applyCall(prev: Map<string, CallItem>, e: GatewayCallEvent): Map<string
 
 const Section = ({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) => (
   <section className="space-y-3">
-    <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+    <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
       {title}
       {!!count && <span className="px-1.5 rounded-full bg-primary/15 text-primary text-[10px]">{count}</span>}
     </div>
@@ -366,14 +366,14 @@ const RequestCard = ({ req, conn, offered, longest, servers, openSessions, onOpe
           <div className="text-sm font-semibold text-zinc-100">An agent asks for access to a server</div>
           <Who conn={conn} />
           <div>
-            <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-1">Why, in its words</div>
+            <div className="text-[12px] text-zinc-500 mb-1">Why, in its words</div>
             <ExactText text={req.purpose} what="text" className="text-[12px] text-zinc-200" />
           </div>
         </div>
       </div>
 
       <div>
-        <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-1.5">What it may do</div>
+        <div className="text-[12px] text-zinc-500 mb-1.5">What it may do</div>
         <div className="space-y-1">
           {[...req.ops.filter((o) => offered.includes(o)), ...unasked].map((o) => {
             const no = ftp && isCommandOp(o);
@@ -393,7 +393,7 @@ const RequestCard = ({ req, conn, offered, longest, servers, openSessions, onOpe
 
       {needsFolders && (
         <label className="block">
-          <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-1">Folders it may work in</div>
+          <div className="text-[12px] text-zinc-500 mb-1">Folders it may work in</div>
           <textarea
             data-agent-folders=""
             value={folders}
@@ -413,7 +413,7 @@ const RequestCard = ({ req, conn, offered, longest, servers, openSessions, onOpe
       )}
 
       <div>
-        <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-1.5">
+        <div className="text-[12px] text-zinc-500 mb-1.5">
           Which server{req.server_hint && <span className="normal-case tracking-normal text-zinc-400"> · it mentions “{req.server_hint}”</span>}
         </div>
         {choices.length === 0 && <Empty>No SSH or FTP server is saved.</Empty>}
@@ -442,7 +442,7 @@ const RequestCard = ({ req, conn, offered, longest, servers, openSessions, onOpe
 
       <div className="grid sm:grid-cols-2 gap-3">
         <label className="block">
-          <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-1">For how long</div>
+          <div className="text-[12px] text-zinc-500 mb-1">For how long</div>
           <select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} className="w-full h-8 px-2 bg-zinc-950 border border-white/10 rounded-lg text-[12px] text-zinc-200">
             {durations.map((d) => (
               <option key={d} value={d}>{minutesText(d)}</option>
@@ -450,7 +450,7 @@ const RequestCard = ({ req, conn, offered, longest, servers, openSessions, onOpe
           </select>
         </label>
         <label className="block">
-          <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-1">Name the agent sees</div>
+          <div className="text-[12px] text-zinc-500 mb-1">Name the agent sees</div>
           <input
             value={label}
             onChange={(e) => setLabel(e.target.value)}
@@ -472,16 +472,16 @@ const RequestCard = ({ req, conn, offered, longest, servers, openSessions, onOpe
             className="w-full h-8 px-2 bg-zinc-950 border border-white/10 rounded-lg text-[12px] text-zinc-200 focus:outline-none focus:border-primary/50"
           />
           <div className="flex gap-2 justify-end">
-            <button type="button" onClick={() => setDenying(false)} className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5">Back</button>
-            <button type="button" data-choice="deny" disabled={busy} onClick={(e) => void deny(e)} className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 disabled:opacity-50 flex items-center gap-1">
+            <button type="button" onClick={() => setDenying(false)} className="h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5">Back</button>
+            <button type="button" data-choice="deny" disabled={busy} onClick={(e) => void deny(e)} className="h-8 px-3 rounded-lg text-[12px] font-semibold bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 disabled:opacity-50 flex items-center gap-1">
               <X size={12} /> Deny
             </button>
           </div>
         </div>
       ) : (
         <div className="flex gap-2 justify-end">
-          <button type="button" onClick={() => setDenying(true)} className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5">Deny…</button>
-          <button type="button" data-choice="approve" disabled={!canApprove} onClick={(e) => void approve(e)} className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 disabled:opacity-40 flex items-center gap-1">
+          <button type="button" onClick={() => setDenying(true)} className="h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5">Deny…</button>
+          <button type="button" data-choice="approve" disabled={!canApprove} onClick={(e) => void approve(e)} className="h-8 px-3 rounded-lg text-[12px] font-semibold bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 disabled:opacity-40 flex items-center gap-1">
             {busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Approve
           </button>
         </div>
@@ -499,7 +499,7 @@ const ConnectionBlock = ({ conn, grants, serverNames, onError }: { conn: AgentCo
           <Who conn={conn} />
           <div className="text-[11px] text-zinc-600 mt-1">Connected at {timeText(conn.since)}{conn.bridged ? "" : " (not through submarine mcp)"}</div>
         </div>
-        <button type="button" onClick={() => void act(gateway.disconnect(conn.id))} className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1 shrink-0">
+        <button type="button" onClick={() => void act(gateway.disconnect(conn.id))} className="h-8 px-3 rounded-lg text-[12px] font-semibold border border-white/10 text-zinc-300 hover:bg-white/5 flex items-center gap-1 shrink-0">
           <Unplug size={12} /> Disconnect
         </button>
       </div>
@@ -515,7 +515,7 @@ const ConnectionBlock = ({ conn, grants, serverNames, onError }: { conn: AgentCo
             {g.folders.length > 0 && <div className="text-zinc-500 break-all" dir="ltr">{g.folders.join(" · ")}</div>}
             <div className="text-zinc-500">{MODES[g.mode]} · {minutesText(g.minutes_left)} left</div>
           </div>
-          <button type="button" onClick={() => void act(gateway.revoke(g.id))} className="h-8 px-3 rounded-lg text-[11px] font-bold uppercase bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 shrink-0">
+          <button type="button" onClick={() => void act(gateway.revoke(g.id))} className="h-8 px-3 rounded-lg text-[12px] font-semibold bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 shrink-0">
             Revoke
           </button>
         </div>

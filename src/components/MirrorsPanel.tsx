@@ -313,7 +313,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
   return (
     <div className="flex-1 flex flex-col h-full bg-[#09090b] overflow-hidden relative">
       {disabled && (
-        <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono uppercase">
+        <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono">
           <span className="px-3 py-1.5 bg-red-500/15 border border-red-500/30 rounded text-red-300">
             {t("Session disconnected")}
           </span>
@@ -322,13 +322,13 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
 
       {/* Header */}
       <div className="shrink-0 px-3 py-2 flex items-center justify-between border-b border-white/5 bg-[#121214]">
-        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+        <div className="flex items-center gap-2 text-[11px] font-semibold text-zinc-400">
           <FolderUp size={12} />
           <span>{t("{running} running · {saved} saved", { running: Object.keys(statuses).length, saved: allSavedMirrors.length })}</span>
         </div>
         <button
           onClick={() => { setAdding((a) => !a); setError(null); }}
-          className="h-6 px-2.5 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 flex items-center gap-1.5"
+          className="h-6 px-2.5 rounded text-[11px] font-semibold bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 flex items-center gap-1.5"
         >
           {adding ? <X size={11} /> : <Plus size={11} />}
           <span>{adding ? t("Cancel") : t("New mirror")}</span>
@@ -388,7 +388,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
             className="w-full p-2 bg-white/[0.04] border border-white/10 rounded text-[10.5px] font-mono text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none focus:border-primary/40"
           />
           <div className="flex items-center gap-2 text-[10.5px] text-zinc-400">
-            <span className="shrink-0 uppercase tracking-wider font-bold text-zinc-500 text-[9.5px]">{t("On conflict")}</span>
+            <span className="shrink-0 font-semibold text-zinc-500 text-[11px]">{t("On conflict")}</span>
             <select
               value={draft.conflict_resolution}
               onChange={(e) => setDraft({ ...draft, conflict_resolution: e.target.value as ConflictMode })}
@@ -413,7 +413,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
             <button
               onClick={submitDraft}
               disabled={working}
-              className="h-7 px-3 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 disabled:opacity-50"
+              className="h-7 px-3 rounded text-[11px] font-semibold bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 disabled:opacity-50"
             >
               {working ? "…" : t("Continue")}
             </button>
@@ -459,7 +459,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
             }`}>
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />
               <div className="min-w-0 leading-relaxed">
-                <span className="font-bold uppercase tracking-wider mr-1">{t("Heads up")}</span>
+                <span className="font-semibold mr-1">{t("Heads up")}</span>
                 {downloadModified > 0 ? (
                   <>
                     {downloadModified === 1
@@ -507,14 +507,14 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
             <div className="flex gap-2">
               <button
                 onClick={() => setPending(null)}
-                className="h-7 px-3 rounded text-[10px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/10"
+                className="h-7 px-3 rounded text-[11px] font-semibold bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/10"
               >
                 {t("Cancel")}
               </button>
               <button
                 onClick={confirmStart}
                 disabled={working}
-                className="h-7 px-3 rounded text-[10px] font-bold uppercase tracking-wider bg-primary text-black border border-primary disabled:opacity-50 flex items-center gap-1.5"
+                className="h-7 px-3 rounded text-[11px] font-semibold bg-primary text-black border border-primary disabled:opacity-50 flex items-center gap-1.5"
               >
                 <Check size={11} /> {t("Start mirror")}
               </button>
@@ -529,7 +529,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
         {/* Configured mirrors stored on the node — Start button picks up
             saved config and confirms via the dry-run preview. */}
         {allSavedMirrors.length > 0 && (
-          <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 px-1 pt-1">{t("Saved on this node")}</div>
+          <div className="text-[11px] font-semibold text-zinc-500 px-1 pt-1">{t("Saved on this node")}</div>
         )}
         {allSavedMirrors.map((m, i) => {
           const key = `${m.local}|${m.remote}`;
@@ -567,7 +567,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
 
         {/* Ad-hoc / live mirrors that aren't in the saved list. */}
         {Object.values(statuses).filter((s) => !allSavedMirrors.some((m) => m.local === s.local && m.remote === s.remote)).length > 0 && (
-          <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 px-1 pt-2">{t("Ad-hoc this session")}</div>
+          <div className="text-[11px] font-semibold text-zinc-500 px-1 pt-2">{t("Ad-hoc this session")}</div>
         )}
         {Object.values(statuses)
           .filter((s) => !allSavedMirrors.some((m) => m.local === s.local && m.remote === s.remote))
@@ -600,7 +600,7 @@ const MirrorsPanel = ({ sessionId, serverId = 0, configuredMirrors, disabled = f
       {/* Log feed */}
       <div className="shrink-0 border-t border-white/5 bg-[#0c0c0e]">
         <div className="px-3 py-1.5 flex items-center justify-between border-b border-white/5">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold text-zinc-400 flex items-center gap-1.5">
             <FileText size={11} /> {t("Log")} <span className="text-zinc-600 font-normal">({logs.length})</span>
           </span>
           <button

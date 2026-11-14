@@ -102,7 +102,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
         <div className="flex items-start justify-between gap-3 p-4 pb-2">
           <div className="flex items-center gap-2">
             <ShieldAlert size={14} className="text-amber-400" />
-            <span id="held-review-title" className="text-[11px] font-black uppercase tracking-widest text-zinc-200">
+            <span id="held-review-title" className="text-[12px] font-semibold text-zinc-200">
               {t("Waiting for your OK")}
             </span>
           </div>
@@ -125,7 +125,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
                   <button
                     disabled={busy}
                     onClick={() => allow(s.id, [])}
-                    className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white disabled:opacity-50"
+                    className="shrink-0 px-2.5 h-7 rounded text-[11.5px] font-semibold bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white disabled:opacity-50"
                   >
                     {t("Allow all")}
                   </button>
@@ -150,7 +150,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
                         disabled={busy}
                         onClick={() => allow(s.id, [item])}
                         aria-label={t("Allow: {what}", { what: d.what })}
-                        className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-50"
+                        className="shrink-0 px-2.5 h-7 rounded text-[11.5px] font-semibold bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-50"
                       >
                         {t("Allow")}
                       </button>
@@ -166,7 +166,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
             <button
               disabled={busy}
               onClick={allowEverything}
-              className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-50"
+              className="px-3 h-8 rounded text-[12px] font-semibold bg-primary/15 border border-primary/40 text-primary hover:bg-primary/25 disabled:opacity-50"
             >
               {t("Allow everything")}
             </button>
@@ -174,7 +174,7 @@ export function HeldReview({ servers, onAllow, onClose }: {
           <button
             onClick={onClose}
             data-default-focus
-            className="px-3 h-8 rounded text-[11px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+            className="px-3 h-8 rounded text-[12px] font-semibold bg-white/[0.04] border border-white/10 text-zinc-300 hover:bg-white/[0.08] hover:text-white"
           >
             {t("Close")}
           </button>

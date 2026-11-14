@@ -51,6 +51,7 @@ mod rdp_client;
 mod rdp_share;
 mod term_filter;
 mod vault_backup;
+mod folder_copy;
 mod ai;
 mod gateway;
 #[cfg(target_os = "android")]
@@ -370,7 +371,7 @@ const VAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
 const VAULT_FILE_MAX_BYTES: u64 = VAULT_MAX_BYTES as u64 + 1024 * 1024;
 
 /// A profile's file, read in whole: refused past `VAULT_FILE_MAX_BYTES` first.
-fn read_vault_file(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read_vault_file(path: &Path) -> Result<Vec<u8>, String> {
     let len = fs::metadata(path).map_err(|e| format!("[FILE] VAULT_READ_FAILED: {}", e))?.len();
     if len > VAULT_FILE_MAX_BYTES {
         return Err(format!(
@@ -504,7 +505,11 @@ fn save_vault_blocking(
     let compressed = Zeroizing::new(vault_compress(&*serialized)?);
     let (ciphertext, nonce) = encrypt_with_key(&compressed, key)?;
     let blob = write_vault_blob(salt, &nonce, &ciphertext);
-    write_atomic(path, &path.with_extension("submarine.tmp"), &blob)
+    write_atomic(path, &path.with_extension("submarine.tmp"), &blob)?;
+    // And to the folder the user keeps a copy in, when there is one (#319,
+    // folder_copy.rs). That never holds the save up nor fails it.
+    folder_copy::after_save(path, &blob);
+    Ok(())
 }
 
 /// Atomic write: tmp -> fsync -> rename. A crash / power loss in the middle of
@@ -6628,6 +6633,8 @@ async fn delete_profile(app_handle: tauri::AppHandle, name: String, state: tauri
     // delete the user asked for.
     let _ = fs::remove_file(path.with_extension("submarine.tmp"));
     vault_backup::clear_put_back(&path);
+    // Its copy in a folder stops; the copy already there is the user's.
+    folder_copy::forget(&path);
     // And its quick unlock on this device (#166), with its Windows Hello key.
     quick_unlock::forget(&app_handle, &name);
     Ok(())
@@ -6656,6 +6663,69 @@ async fn restore_profile_copy(app_handle: tauri::AppHandle, name: String, file: 
     let _probe = try_lock_file(&path.with_extension("submarine.lock"))?;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     vault_backup::put_back(&path, &file, now)
+}
+
+/// The copy of a profile kept in a folder of the user's (folder_copy.rs,
+/// #319): the folder, when the copy was last written, and the last error.
+#[tauri::command]
+async fn folder_copy_status(app_handle: tauri::AppHandle, name: String) -> Result<folder_copy::Status, String> {
+    validate_profile_name(&name)?;
+    Ok(folder_copy::status(&profile_path(&app_handle, &name)?))
+}
+
+/// Asks for a folder and keeps a copy of the profile there from now on; the
+/// first copy is made at once. `None` when the dialog is cancelled. A lab
+/// build takes the folder from `SUBMARINE_LAB_PICK_FOLDER` instead of asking,
+/// so a test can choose one.
+#[tauri::command]
+async fn folder_copy_choose(app_handle: tauri::AppHandle, name: String) -> Result<Option<folder_copy::Status>, String> {
+    validate_profile_name(&name)?;
+    let vault = profile_path(&app_handle, &name)?;
+    #[cfg(desktop)]
+    {
+        let lab = if cfg!(debug_assertions) {
+            std::env::var("SUBMARINE_LAB_PICK_FOLDER").ok().filter(|f| !f.is_empty()).map(PathBuf::from)
+        } else {
+            None
+        };
+        let chosen = match lab {
+            Some(dir) => Some(dir),
+            // The async dialog: a blocking one would hold one of the runtime's
+            // workers for as long as it stays open.
+            None => rfd::AsyncFileDialog::new()
+                .set_title("Folder for a copy of the profile")
+                .pick_folder()
+                .await
+                .map(|picked| picked.path().to_path_buf()),
+        };
+        let Some(dir) = chosen else { return Ok(None) };
+        folder_copy::set(&vault, Some(&dir))?;
+        // A copy that fails shows in the status, with its reason.
+        let _ = folder_copy::copy_now(&vault);
+        Ok(Some(folder_copy::status(&vault)))
+    }
+    #[cfg(mobile)]
+    {
+        let _ = vault;
+        Err("A copy in a folder is kept on a computer only.".into())
+    }
+}
+
+/// Stops the copies of a profile. The copy already in the folder stays.
+#[tauri::command]
+async fn folder_copy_stop(app_handle: tauri::AppHandle, name: String) -> Result<(), String> {
+    validate_profile_name(&name)?;
+    folder_copy::set(&profile_path(&app_handle, &name)?, None)
+}
+
+/// A copy now, of the profile's file as it is on disk; then the status, which
+/// carries the error when it failed.
+#[tauri::command]
+async fn folder_copy_now(app_handle: tauri::AppHandle, name: String) -> Result<folder_copy::Status, String> {
+    validate_profile_name(&name)?;
+    let vault = profile_path(&app_handle, &name)?;
+    let _ = folder_copy::copy_now(&vault);
+    Ok(folder_copy::status(&vault))
 }
 
 /// Copy a profile's encrypted file to a user-chosen location so it can be
@@ -26134,7 +26204,7 @@ pub fn run() {
             identity_status, setup_identity, reset_identity,
             share_current_profile, invite_to_share, list_shares, share_member_list,
             accept_share, import_shared_profile, restore_personal_profile, share_set_role, share_revoke, share_leave, share_delete,
-            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key, held_deletions_list, resolve_held_deletions, cloud_resume_profile, profile_copies, restore_profile_copy,
+            profile_share_status, stop_sharing, profile_sync_stats, share_key_state, accept_share_key, share_replace_key, held_deletions_list, resolve_held_deletions, cloud_resume_profile, profile_copies, restore_profile_copy, folder_copy_status, folder_copy_choose, folder_copy_stop, folder_copy_now,
             set_editor_label,
             add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, set_server_protocol, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
