@@ -278,6 +278,24 @@ ${sections.map((s) => `<section${s.id ? ` id="${s.id}"` : ""}>${s.html}</section
 </div>`;
   }
 
+  // A page of text in sections (the terms of use): the heading band, the date, and each section's paragraphs and
+  // list. doc: { title, description, heading, intro, sections: [{ id, title, paragraphs, list, after }] }; date: formatted.
+  textPage({ lang, page, t, doc, v, date }) {
+    const where = `${lang.code}:${page}`;
+    const list = (xs) => `<ul>${xs.map((x) => `<li>${rich(x, v, where)}</li>`).join("")}</ul>`;
+    const sections = doc.sections.map((sec) => ({
+      id: sec.id,
+      toc: sec.title,
+      html: `<h2>${esc(sec.title)}</h2>
+${(sec.paragraphs || []).map((x) => `<p>${rich(x, v, where)}</p>`).join("\n")}
+${sec.list ? list(sec.list) : ""}
+${(sec.after || []).map((x) => `<p>${rich(x, v, where)}</p>`).join("\n")}`,
+    }));
+    const meta = esc(fill(t.common.updated, { ...v, date }, where));
+    const main = this.docPage({ lang, page, t, heading: doc.heading, lede: rich(doc.intro, v, where), meta, sections });
+    return this.page({ lang, page, title: plain(doc.title, v, where), description: plain(doc.description, v, where), ld: [this.crumbs(lang, page, doc.heading)], main, t, v });
+  }
+
   // ---- site files ----
   sitemap(pages) {
     const urls = [];

@@ -14,6 +14,8 @@ const RELEASES_URL = `${REPO_URL}/releases`;
 const ISSUES_URL = `${REPO_URL}/issues`;
 const ECHOES = "https://echoes.sinaxhpm.com";
 const POLICY_DATE = "2026-11-12";
+// The date at the top of the terms of use.
+const TERMS_DATE = "2026-11-14";
 
 // ---- facts (one place; the pages only refer to them) --------------------
 // Checked against the code at the commit: Argon2 settings (src-tauri/src/lib.rs
@@ -41,7 +43,7 @@ const FACTS = {
 // to line ranges at the commit so the links never drift.
 const CODE = {
   deriveKey: { file: "src-tauri/src/lib.rs", from: /^const ARGON2_M_COST\b/, through: /^fn derive_key\(/ },
-  encrypt: { file: "src-tauri/src/lib.rs", from: /^fn encrypt_with_key\(/ },
+  encrypt: { file: "src-tauri/src/lib.rs", from: /^(pub(\(crate\))? )?fn encrypt_with_key\(/ },
   saveVault: { file: "src-tauri/src/lib.rs", from: /^fn save_vault_blocking\(/ },
   encryptEntity: { file: "src-tauri/src/lib.rs", from: /^fn encrypt_entity\(/ },
   collectRecords: { file: "src-tauri/src/lib.rs", from: /^fn collect_local_records\(/ },
@@ -134,7 +136,7 @@ export default function build({ out, commit, date }) {
     out,
     date,
     langs: LANGS.map((l) => l.code),
-    slugs: { home: "", security: "security/", privacy: "privacy/", delete: "delete-account/" },
+    slugs: { home: "", security: "security/", privacy: "privacy/", delete: "delete-account/", terms: "terms/" },
     themeColor: "#04070f",
     ogAlt: "Submarine: SSH, SFTP, RDP, VNC and Telnet client",
     nav: (lang, page, t) => [
@@ -150,7 +152,7 @@ export default function build({ out, commit, date }) {
       const f = t.footer;
       const cols = [
         { title: f.product, links: [[`${home}#features`, t.nav.features], [`${home}#remote`, t.nav.remote], [`${home}#download`, t.nav.download], [`${home}#faq`, f.faq], [RELEASES_URL, f.releases]] },
-        { title: f.trust, links: [[site.pagePath(lang, "security"), t.nav.security], [site.pagePath(lang, "privacy"), t.nav.privacy], [site.pagePath(lang, "delete"), f.deleteAccount], [`${home}#verify`, f.verify]] },
+        { title: f.trust, links: [[site.pagePath(lang, "security"), t.nav.security], [site.pagePath(lang, "privacy"), t.nav.privacy], [site.pagePath(lang, "terms"), f.terms], [site.pagePath(lang, "delete"), f.deleteAccount], [`${home}#verify`, f.verify]] },
         { title: f.project, links: [[REPO_URL, t.nav.github], [ISSUES_URL, f.issues], ["https://sinaxhpm.com", f.author]] },
       ];
       const sisterPath = lang.code === "en" ? "/" : `/${lang.code}/`;
@@ -200,6 +202,9 @@ export default function build({ out, commit, date }) {
       certSha256: FACTS.certSha256,
       commit: `<code>${commit.slice(0, 7)}</code>`,
       date: d.format(new Date(`${POLICY_DATE}T00:00:00Z`)),
+      termsDate: d.format(new Date(`${TERMS_DATE}T00:00:00Z`)),
+      licenseUrl: `${REPO_URL}/blob/main/LICENSE`,
+      appleTerms: "https://www.apple.com/legal/internet-services/itunes/",
       repoUrl: REPO_URL,
       issuesUrl: ISSUES_URL,
       releasesUrl: RELEASES_URL,
@@ -476,6 +481,7 @@ ${t.home.overview.tiles.map((x) => `- ${x.title}: ${stripTags(fill(x.text, v, "l
 - [Home](${ORIGIN}/): features, screenshots, downloads, questions
 - [How your data is protected](${ORIGIN}/security/): what is encrypted and how, what the sync server can and cannot see, how to check it in the code
 - [Privacy policy](${ORIGIN}/privacy/): what the app and the sync service keep, and for how long
+- [Terms of use](${ORIGIN}/terms/): the app's licence, fair use of the sync service, no warranty
 - [Delete your account](${ORIGIN}/delete-account/)
 - Translations: ${site.built.filter((l) => l.code !== "en").map((l) => `[${l.name}](${site.abs(site.pagePath(l, "home"))})`).join(", ")}
 
@@ -503,10 +509,11 @@ When citing Submarine, please link ${ORIGIN}/ or the GitHub repository. The name
     site.file(`${base}security/index.html`, securityPage(lang, t, v));
     site.file(`${base}privacy/index.html`, privacyPage(lang, t, v));
     site.file(`${base}delete-account/index.html`, deletePage(lang, t, v));
+    site.file(`${base}terms/index.html`, site.textPage({ lang, page: "terms", t, doc: t.terms, v, date: v.termsDate }));
   }
   const vEn = valuesFor(LANGS[0]);
   site.file("404.html", notFoundPage(site.en, vEn));
-  site.file("sitemap.xml", site.sitemap(["home", "security", "privacy", "delete"]));
+  site.file("sitemap.xml", site.sitemap(["home", "security", "privacy", "delete", "terms"]));
   site.file("robots.txt", site.robots(["/account/", "/api/"]));
   site.file("llms.txt", llms(vEn));
   site.file("manifest.webmanifest", site.manifest(stripTags(site.en.home.description)));

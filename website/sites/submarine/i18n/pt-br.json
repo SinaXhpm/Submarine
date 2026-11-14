@@ -33,6 +33,7 @@
     "faq": "Perguntas",
     "releases": "Versões",
     "deleteAccount": "Excluir sua conta",
+    "terms": "Termos de uso",
     "verify": "Verifique seu download",
     "issues": "Relatar um problema",
     "author": "sinaxhpm.com",
@@ -805,6 +806,108 @@
         "title": "Contato",
         "paragraphs": [
           "Dúvidas ou pedidos sobre os seus dados: abra uma issue em <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (por favor, não publique informações privadas lá) ou escreva pelo site <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Termos de uso – Submarine",
+    "description": "Os termos do app Submarine e do serviço opcional de sincronização: licença MIT, seus servidores, uso justo da sua conta, ausência de garantia e alterações.",
+    "heading": "Termos de uso",
+    "intro": "Estes termos abrangem o app Submarine, o serviço opcional de sincronização do Submarine e este site. Em resumo: o app é gratuito e de código aberto, sob a licença MIT, o serviço de sincronização é gratuito e oferecido no estado em que se encontra, e você usa os dois por sua conta e risco e dentro da lei. A forma como tratamos os seus dados está na <a href=\"{privacyUrl}\">política de privacidade</a>.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Quem somos",
+        "paragraphs": [
+          "O Submarine e o serviço de sincronização dele são feitos e operados por Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>). Nestes termos, “nós” e “nos” se referem a ele."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "O app",
+        "paragraphs": [
+          "O app é gratuito e de código aberto, sob a <a href=\"{licenseUrl}\">licença MIT</a>. Você pode usá-lo, copiá-lo, modificá-lo e compartilhá-lo conforme essa licença permite. Nada nestes termos retira um direito que a licença concede a você.",
+          "Se você obteve o app pela App Store ou pelo TestFlight da Apple, os <a href=\"{appleTerms}\">termos da Apple</a> para esses serviços também se aplicam a essa cópia."
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Seus servidores e o que você faz neles",
+        "list": [
+          "Conecte-se apenas a servidores e dispositivos que sejam seus ou que você tenha permissão para usar.",
+          "Você é responsável pelo que faz neles: os comandos que executa (inclusive quando digita em vários servidores ao mesmo tempo), os arquivos que altera ou exclui e os túneis e pastas compartilhadas que abre.",
+          "O Telnet simples e o VNC simples não são criptografados, e o app informa isso quando uma conexão usa um deles.",
+          "Mantenha suas próprias cópias de tudo o que for importante nos seus servidores."
+        ]
+      },
+      {
+        "id": "account",
+        "title": "O serviço de sincronização e a sua conta",
+        "list": [
+          "O recurso Sincronização na nuvem é opcional e gratuito dentro de limites razoáveis: {limitMb} MB de dados criptografados, {limitItems} itens e {limitProfiles} perfis por conta.",
+          "Você precisa de um endereço de e-mail em que possa receber mensagens. Cadastros que nunca são verificados são excluídos depois de {unverifiedDays} dias.",
+          "Mantenha em segurança a senha da sua conta e a senha do perfil. Seus perfis são criptografados no seu dispositivo, por isso não conseguimos lê-los, e não conseguimos recuperar uma senha de perfil esquecida.",
+          "Em vez disso, você pode apontar o app para um servidor de sincronização próprio. Estes termos não abrangem esse servidor: valem as regras de quem o opera."
+        ]
+      },
+      {
+        "id": "fair",
+        "title": "Uso justo do serviço de sincronização",
+        "paragraphs": [
+          "O serviço existe para manter em sincronia os seus perfis do Submarine e os da sua equipe. Por favor, não:"
+        ],
+        "list": [
+          "armazene ou compartilhe nada a que você não tenha direito, nem use o serviço contra a lei;",
+          "tente acessar contas ou dados de outras pessoas;",
+          "ataque, sobrecarregue ou sonde o serviço, nem contorne os limites dele;",
+          "crie contas em massa ou com endereços de e-mail que não sejam seus."
+        ],
+        "after": [
+          "Podemos limitar, suspender ou excluir uma conta que viole estas regras ou prejudique o serviço ou as pessoas que o usam. Quando pudermos, avisaremos você antes por e-mail."
+        ]
+      },
+      {
+        "id": "ending",
+        "title": "Exclusão da sua conta, e se o serviço acabar",
+        "paragraphs": [
+          "Você pode excluir sua conta a qualquer momento: no app (<em>Excluir conta…</em> em Sincronização na nuvem) ou na <a href=\"{deleteUrl}\">página de exclusão</a>. A <a href=\"{privacyUrl}\">política de privacidade</a> diz o que é excluído e quando.",
+          "Podemos alterar o serviço de sincronização ou encerrá-lo. Seus perfis ficam nos seus dispositivos, criptografados, então o encerramento do serviço não os exclui de lá. Se algum dia ele for encerrado, avisaremos neste site com antecedência, o mais cedo que pudermos."
+        ]
+      },
+      {
+        "id": "feedback",
+        "title": "Comentários",
+        "paragraphs": [
+          "Podemos usar as ideias dos comentários que você envia para melhorar o Submarine. O que uma mensagem de comentários contém, e por quanto tempo ela é guardada, está na <a href=\"{privacyUrl}\">política de privacidade</a>."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Sem garantia",
+        "paragraphs": [
+          "O app e o serviço de sincronização são fornecidos “no estado em que se encontram”, sem garantia de nenhum tipo, como diz a licença MIT. Fazemos o possível para manter o serviço funcionando e os seus dados seguros, mas não prometemos que ele estará sempre disponível, livre de erros ou adequado a uma finalidade específica."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Limitação de responsabilidade",
+        "paragraphs": [
+          "Na medida em que a lei permitir, não nos responsabilizamos por nenhuma perda ou dano decorrente do uso do app ou do serviço, ou da impossibilidade de usá-los: por exemplo, perda de dados, perda de acesso a um servidor ou o que acontece nos servidores a que você se conecta. Algumas leis não permitem essas limitações; onde não permitirem, as limitações se aplicam apenas na medida em que essas leis permitirem."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Alterações nestes termos",
+        "paragraphs": [
+          "Quando estes termos mudam, a data no topo também muda. Se uma alteração for relevante para a sua conta, informaremos isso neste site. Usar o app ou o serviço depois de uma alteração significa que você aceita os novos termos."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Contato",
+        "paragraphs": [
+          "Dúvidas sobre estes termos: abra uma issue em <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> ou escreva pelo site <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
         ]
       }
     ]

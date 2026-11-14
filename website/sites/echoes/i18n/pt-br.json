@@ -32,6 +32,7 @@
     "appStore": "App Store",
     "releases": "Versões no GitHub",
     "privacyPolicy": "Política de privacidade",
+    "terms": "Termos de uso",
     "issues": "Relatar um problema",
     "author": "sinaxhpm.com",
     "sister": "Do mesmo autor: SSH, SFTP, RDP, VNC e Telnet em um só app criptografado",
@@ -631,6 +632,77 @@
         "title": "Contato",
         "paragraphs": [
           "Dúvidas ou preocupações: abra uma issue em <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Termos de uso – Echoes",
+    "description": "Os termos do Echoes: licença MIT, uso das ferramentas de rede só onde você tem permissão, serviços que algumas ferramentas usam e ausência de garantia.",
+    "heading": "Termos de uso",
+    "intro": "Estes termos abrangem o app Echoes e este site. Em resumo: o Echoes é gratuito e de código aberto, sob a licença MIT, não tem conta nem nenhum serviço nosso, e você usa as ferramentas dele por sua conta e risco e dentro da lei. O Echoes não coleta dados: veja a <a href=\"{privacyUrl}\">política de privacidade</a>.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Quem somos",
+        "paragraphs": [
+          "O Echoes é feito por Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) e pelos colaboradores do projeto. Nestes termos, “nós” e “nos” se referem a eles."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "O app",
+        "paragraphs": [
+          "O Echoes é gratuito e de código aberto, sob a <a href=\"{licenseUrl}\">licença MIT</a>. Você pode usá-lo, copiá-lo, modificá-lo e compartilhá-lo conforme essa licença permite. Nada nestes termos retira um direito que a licença concede a você.",
+          "Se você obteve o Echoes pela App Store, o <a href=\"{appleEula}\">contrato de licença padrão para apps</a> da Apple também se aplica a essa cópia."
+        ]
+      },
+      {
+        "id": "allowed",
+        "title": "Use as ferramentas apenas onde você tem permissão",
+        "paragraphs": [
+          "O Echoes envia tráfego de rede real. Por isso:"
+        ],
+        "list": [
+          "Faça varreduras, pings, testes e verificações apenas em redes, servidores e sites que sejam seus ou que você tenha permissão para testar. Fazer varreduras em redes de outras pessoas pode ser contra a lei onde você está.",
+          "Não use o Echoes para atacar, inundar ou invadir o que quer que seja.",
+          "Quando você inicia o servidor web, o proxy ou um listener de socket, é você quem decide quem pode se conectar e o que compartilha, e você é responsável pelo que passa por eles.",
+          "O Doctor pode dizer se uma configuração em outro app contornaria um filtro. Se isso é permitido depende de onde você está; seguir essa orientação é uma escolha sua."
+        ]
+      },
+      {
+        "id": "services",
+        "title": "Serviços que algumas ferramentas usam",
+        "paragraphs": [
+          "Algumas ferramentas se baseiam em serviços públicos (por exemplo, check-host.net, servidores de teste de velocidade, resolvedores de DNS e provedores de informações de IP) ou em contas suas (Cloudflare, Telegram). Cada um tem os próprios termos, que se aplicam quando o Echoes o usa por você. Eles estão listados na <a href=\"{privacyUrl}\">política de privacidade</a>."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Sem garantia",
+        "paragraphs": [
+          "O Echoes é fornecido “no estado em que se encontra”, sem garantia de nenhum tipo, como diz a licença MIT. Os resultados de rede podem estar errados ou incompletos: um teste pode falhar por motivos alheios ao Echoes, e o veredito do Doctor é a melhor leitura que ele faz do que mediu."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Limitação de responsabilidade",
+        "paragraphs": [
+          "Na medida em que a lei permitir, não nos responsabilizamos por nenhuma perda ou dano decorrente do uso do Echoes, ou da impossibilidade de usá-lo, incluindo o que acontece nas redes e nos servidores que você testa ou a que se conecta. Algumas leis não permitem essas limitações; onde não permitirem, as limitações se aplicam apenas na medida em que essas leis permitirem."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Alterações nestes termos",
+        "paragraphs": [
+          "Quando estes termos mudam, a data no topo também muda. Usar o Echoes depois de uma alteração significa que você aceita os novos termos."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Contato",
+        "paragraphs": [
+          "Dúvidas sobre estes termos: abra uma issue em <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
         ]
       }
     ]

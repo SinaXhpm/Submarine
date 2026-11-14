@@ -33,6 +33,7 @@
     "faq": "Questions",
     "releases": "Versions publiées",
     "deleteAccount": "Supprimer votre compte",
+    "terms": "Conditions d’utilisation",
     "verify": "Vérifiez votre téléchargement",
     "issues": "Signaler un problème",
     "author": "sinaxhpm.com",
@@ -805,6 +806,108 @@
         "title": "Contact",
         "paragraphs": [
           "Pour toute question ou demande concernant vos données : ouvrez un ticket sur <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (merci de ne pas y publier d’informations privées), ou écrivez-nous via <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Conditions d’utilisation – Submarine",
+    "description": "Les conditions de Submarine et de sa synchronisation facultative : licence MIT, vos serveurs, usage raisonnable du compte, aucune garantie, modifications.",
+    "heading": "Conditions d’utilisation",
+    "intro": "Ces conditions s’appliquent à l’application Submarine, au service de synchronisation facultatif de Submarine et à ce site web. En bref : l’application est gratuite et open source, sous licence MIT, le service de synchronisation est gratuit et proposé tel quel, et vous utilisez l’un et l’autre à vos propres risques et dans le respect de la loi. La façon dont nous traitons vos données est décrite dans la <a href=\"{privacyUrl}\">politique de confidentialité</a>.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Qui nous sommes",
+        "paragraphs": [
+          "Submarine et son service de synchronisation sont développés et exploités par Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>). Dans les présentes conditions, « nous » désigne Sina Xhpm."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "L’application",
+        "paragraphs": [
+          "L’application est gratuite et open source, sous <a href=\"{licenseUrl}\">licence MIT</a>. Vous pouvez l’utiliser, la copier, la modifier et la partager comme le permet cette licence. Rien dans ces conditions ne vous retire un droit que la licence vous accorde.",
+          "Si vous avez obtenu l’application via l’App Store ou TestFlight d’Apple, les <a href=\"{appleTerms}\">conditions d’Apple</a> pour ces services s’appliquent également à cette copie."
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Vos serveurs, et ce que vous y faites",
+        "list": [
+          "Ne vous connectez qu’à des serveurs et appareils qui vous appartiennent, ou que vous avez le droit d’utiliser.",
+          "Vous êtes responsable de ce que vous y faites : les commandes que vous exécutez (y compris quand vous tapez dans plusieurs serveurs à la fois), les fichiers que vous modifiez ou supprimez, et les tunnels et dossiers partagés que vous ouvrez.",
+          "Le Telnet simple et le VNC simple ne sont pas chiffrés, et l’application l’indique quand une connexion utilise l’un d’eux.",
+          "Conservez vos propres copies de tout ce qui est important sur vos serveurs."
+        ]
+      },
+      {
+        "id": "account",
+        "title": "Le service de synchronisation et votre compte",
+        "list": [
+          "La fonction « Synchronisation cloud » est facultative, et gratuite dans des limites raisonnables : {limitMb} Mo de données chiffrées, {limitItems} éléments et {limitProfiles} profils par compte.",
+          "Il vous faut une adresse e-mail sur laquelle vous pouvez recevoir des messages. Les inscriptions qui ne sont jamais vérifiées sont supprimées au bout de {unverifiedDays} jours.",
+          "Gardez en lieu sûr le mot de passe de votre compte et celui de votre profil. Vos profils sont chiffrés sur votre appareil, si bien que nous ne pouvons pas les lire, et nous ne pouvons pas récupérer un mot de passe de profil oublié.",
+          "Vous pouvez à la place faire pointer l’application vers votre propre serveur de synchronisation. Ces conditions ne couvrent pas ce serveur : ce sont les règles de son exploitant qui s’appliquent."
+        ]
+      },
+      {
+        "id": "fair",
+        "title": "Usage raisonnable du service de synchronisation",
+        "paragraphs": [
+          "Le service sert à garder synchronisés vos propres profils Submarine et ceux de votre équipe. Merci de ne pas :"
+        ],
+        "list": [
+          "stocker ou partager quoi que ce soit sans en avoir le droit, ou utiliser le service en violation de la loi ;",
+          "tenter d’accéder aux comptes ou aux données d’autres personnes ;",
+          "attaquer, surcharger ou sonder le service, ou contourner ses limites ;",
+          "créer des comptes en masse, ou avec des adresses e-mail qui ne sont pas les vôtres."
+        ],
+        "after": [
+          "Nous pouvons limiter, suspendre ou supprimer un compte qui enfreint ces règles ou qui nuit au service ou aux personnes qui l’utilisent. Quand nous le pouvons, nous vous prévenons d’abord par e-mail."
+        ]
+      },
+      {
+        "id": "ending",
+        "title": "Supprimer votre compte, et si le service prend fin",
+        "paragraphs": [
+          "Vous pouvez supprimer votre compte à tout moment : dans l’application (<em>Supprimer le compte…</em> dans « Synchronisation cloud ») ou sur la <a href=\"{deleteUrl}\">page de suppression du compte</a>. La <a href=\"{privacyUrl}\">politique de confidentialité</a> indique ce qui est supprimé, et quand.",
+          "Nous pouvons modifier le service de synchronisation, ou l’arrêter. Vos profils restent sur vos appareils, chiffrés, si bien que l’arrêt du service ne les y supprime pas. Si le service s’arrête un jour, nous l’annoncerons à l’avance sur ce site web, aussi tôt que nous le pourrons."
+        ]
+      },
+      {
+        "id": "feedback",
+        "title": "Commentaires",
+        "paragraphs": [
+          "Nous pouvons utiliser les idées contenues dans les commentaires que vous envoyez pour améliorer Submarine. La <a href=\"{privacyUrl}\">politique de confidentialité</a> indique ce que contient un message de commentaires, et combien de temps il est conservé."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Aucune garantie",
+        "paragraphs": [
+          "L’application et le service de synchronisation sont fournis « en l’état », sans aucune garantie, comme l’indique la licence MIT. Nous faisons de notre mieux pour que le service reste en fonctionnement et que vos données restent en sécurité, mais nous ne promettons pas qu’il sera toujours disponible, exempt d’erreurs ou adapté à un usage particulier."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Limitation de responsabilité",
+        "paragraphs": [
+          "Dans la mesure permise par la loi, nous ne sommes responsables d’aucune perte ni d’aucun dommage résultant de l’utilisation de l’application ou du service, ou de l’impossibilité de les utiliser : par exemple la perte de données, la perte d’accès à un serveur, ou ce qui se passe sur les serveurs auxquels vous vous connectez. Certaines lois n’autorisent pas ces limitations ; là où elles ne les autorisent pas, les limitations ne s’appliquent que dans la mesure où ces lois le permettent."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Modifications de ces conditions",
+        "paragraphs": [
+          "Quand ces conditions changent, la date indiquée en haut de la page change aussi. Si une modification est importante pour votre compte, nous l’indiquerons sur ce site web. Utiliser l’application ou le service après une modification signifie que vous acceptez les nouvelles conditions."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Contact",
+        "paragraphs": [
+          "Pour toute question sur ces conditions : ouvrez un ticket sur <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a>, ou écrivez-nous via <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
         ]
       }
     ]
