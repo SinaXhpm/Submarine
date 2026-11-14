@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Sparkles, Plus, Star, KeyRound, Trash2, PlugZap, Pencil, MessagesSquare, Loader2 } from "lucide-react";
 import { useConfirm } from "../../ui/confirm";
 import {
@@ -82,11 +83,16 @@ const Switch = ({ on, onChange, label: aria }: { on: boolean; onChange: (v: bool
 );
 
 interface Props {
-  servers: any[];
+  /** The saved servers, for "Through one of my servers…". Read here when not given (the AI tab and page). */
+  servers?: any[];
   onOpenChats?: () => void;
+  /** Inside the AI tab or page: the card alone, without the Settings section's heading. */
+  embedded?: boolean;
+  /** The providers as they are after each change, for a view that lists them too. */
+  onChanged?: (providers: ProviderView[]) => void;
 }
 
-export const AiSettings = ({ servers, onOpenChats }: Props) => {
+export const AiSettings = ({ servers: given, onOpenChats, embedded = false, onChanged }: Props) => {
   const confirm = useConfirm();
   const [providers, setProviders] = useState<ProviderView[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -99,10 +105,24 @@ export const AiSettings = ({ servers, onOpenChats }: Props) => {
     setEditorKey((k) => k + 1);
   };
 
+  // The saved servers, when the caller has none to give.
+  const [read, setRead] = useState<any[]>([]);
+  useEffect(() => {
+    if (given) return;
+    let alive = true;
+    invoke<any[]>("get_servers").then((rows) => { if (alive) setRead(rows); }, () => { /* the list stays empty */ });
+    return () => { alive = false; };
+  }, [given]);
+  const servers = given ?? read;
+
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
   const reload = useCallback(async () => {
     try {
-      setProviders(await ai.providers());
+      const list = await ai.providers();
+      setProviders(list);
       setError(null);
+      onChangedRef.current?.(list);
     } catch (e) {
       setError(errText(e));
     }
@@ -120,13 +140,8 @@ export const AiSettings = ({ servers, onOpenChats }: Props) => {
     try { await ai.withdrawConsent(p.id); await reload(); } catch (e) { setError(errText(e)); }
   };
 
-  return (
-    <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-      <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
-        <Sparkles size={14} /> AI Assistant
-      </div>
-
-      <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
+  const card = (
+      <div className={embedded ? "space-y-4" : "bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl"}>
         <p className="text-[12px] text-zinc-400 leading-relaxed">
           Connect the AI providers the assistant uses, with your own API keys or a model on your network. Requests go from this device straight to the provider; keys stay on this device, encrypted, and are never synced or exported.
         </p>
@@ -193,6 +208,14 @@ export const AiSettings = ({ servers, onOpenChats }: Props) => {
           </button>
         )}
       </div>
+  );
+  if (embedded) return card;
+  return (
+    <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+      <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+        <Sparkles size={14} /> AI Assistant
+      </div>
+      {card}
     </section>
   );
 };

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Send, Square, RotateCcw, Flag, ChevronDown, ChevronUp, MoreHorizontal, Pencil, Trash2, Loader2, ArrowLeft, Paperclip, SlidersHorizontal, MessageSquarePlus } from "lucide-react";
 import { useConfirm, useTextPrompt } from "../../ui/confirm";
@@ -201,6 +201,24 @@ export const ChatPanel = ({
   const [text, setText] = useState("");
   const [levels, setLevels] = useState<string[]>([]);
   const [menu, setMenu] = useState(false);
+  // The menu hangs left from its button, inside the window: on a phone, with
+  // the button near the middle of the bar, it moves right until it fits.
+  const menuBox = useRef<HTMLDivElement>(null);
+  const [menuShift, setMenuShift] = useState(0);
+  useLayoutEffect(() => {
+    if (!menu) return;
+    const place = () => {
+      const el = menuBox.current;
+      // Its holder is as wide as the button.
+      const holder = el?.parentElement;
+      if (!el || !holder) return;
+      const right = holder.getBoundingClientRect().right;
+      setMenuShift(Math.max(0, Math.min(8 - (right - el.offsetWidth), window.innerWidth - 8 - right)));
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [menu]);
   const [attachMenu, setAttachMenu] = useState(false);
   const [drawer, setDrawerState] = useState(readDrawer);
   // "Continue in a new chat" is writing its summary.
@@ -670,7 +688,7 @@ export const ChatPanel = ({
               <MoreHorizontal size={16} />
             </button>
             {menu && (
-              <div className="absolute right-0 top-11 sm:top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#16161a] shadow-2xl p-1 text-[12px]">
+              <div ref={menuBox} style={{ right: -menuShift }} className="absolute top-11 sm:top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#16161a] shadow-2xl p-1 text-[12px]">
                 <button type="button" className="w-full text-left px-3 py-3 sm:py-2 rounded-lg hover:bg-white/5 text-zinc-200 flex items-center gap-2" onClick={() => void rename()}>
                   <Pencil size={12} /> Rename
                 </button>
