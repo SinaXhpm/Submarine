@@ -725,6 +725,49 @@ pub struct Login {
     pub clipboard: bool,
     /// Files shared with the server: their channel (rdp_share.rs).
     pub drive: Option<ironrdp::rdpdr::Rdpdr>,
+    /// The keyboard layout told to the server (`keyboard_layout`); 0 leaves
+    /// it to the server.
+    pub keyboard_layout: u32,
+}
+
+/// The keyboard layout to tell the server, as a Windows keyboard layout ID
+/// (0x409 is US English). Keys go as scan codes, the physical key, and the
+/// server turns them into characters with this layout, so it must be this
+/// computer's, as the Microsoft client sends it. With 0, "the server's
+/// default", a Windows server used a default of its own that its taskbar
+/// didn't show: on an "ENG US" session Shift+2 typed `"`, not `@`.
+///
+/// On Windows it is the default input layout (Settings → Time & language →
+/// Typing → Advanced keyboard settings; else the first in the language list),
+/// not the one active at the moment: someone who also types Persian or
+/// Russian would otherwise get a session in that layout whenever it happened
+/// to be on when connecting. Elsewhere, and if it can't be read, 0 as before.
+pub fn keyboard_layout() -> u32 {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETDEFAULTINPUTLANG, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS};
+        let mut hkl: usize = 0;
+        // SAFETY: SPI_GETDEFAULTINPUTLANG writes one HKL, a pointer-sized value, where pvParam points.
+        let read = unsafe { SystemParametersInfoW(SPI_GETDEFAULTINPUTLANG, 0, Some((&mut hkl as *mut usize).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
+        if read.is_ok() {
+            return layout_of_hkl(hkl).unwrap_or(0);
+        }
+    }
+    0
+}
+
+/// The keyboard layout ID of an input locale handle (HKL): its high word is
+/// the layout (0x0409 US, 0x0809 UK, even under another language: English
+/// with a UK keyboard is 0x08090409), unless it is 0xFnnn, a variant such as
+/// US-Dvorak, whose ID only the registry knows: then the language's own
+/// layout, its low word. None for no handle.
+pub fn layout_of_hkl(hkl: usize) -> Option<u32> {
+    let language = (hkl & 0xffff) as u32;
+    let layout = ((hkl >> 16) & 0xffff) as u32;
+    if language == 0 {
+        return None;
+    }
+    Some(if layout == 0 || layout & 0xf000 == 0xf000 { language } else { layout })
 }
 
 /// "DOMAIN\user" or "user@domain" as the login name and domain NLA wants.
@@ -824,7 +867,7 @@ fn connector_config(login: &Login) -> connector::Config {
         enable_standard_rdp_security: false,
         keyboard_type: KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
-        keyboard_layout: 0,
+        keyboard_layout: login.keyboard_layout,
         keyboard_functional_keys_count: 12,
         connection_type: login.graphics.connection_type(),
         ime_file_name: String::new(),
@@ -1674,7 +1717,27 @@ mod tests {
             graphics,
             clipboard: false,
             drive: None,
+            keyboard_layout: 0,
         }
+    }
+
+    #[test]
+    fn keyboard_layout_ids() {
+        // US, UK, Persian, German: the layout is the high word.
+        assert_eq!(layout_of_hkl(0x0409_0409), Some(0x409));
+        assert_eq!(layout_of_hkl(0x0809_0809), Some(0x809));
+        assert_eq!(layout_of_hkl(0x0429_0429), Some(0x429));
+        assert_eq!(layout_of_hkl(0x0407_0407), Some(0x407));
+        // English (US) typed with a UK keyboard: the keyboard counts.
+        assert_eq!(layout_of_hkl(0x0809_0409), Some(0x809));
+        // A variant (US-Dvorak is 0xF002_0409): the language's own layout.
+        assert_eq!(layout_of_hkl(0xF002_0409), Some(0x409));
+        assert_eq!(layout_of_hkl(0x0000_0409), Some(0x409));
+        assert_eq!(layout_of_hkl(0), None);
+        // What the server is told: the login's layout, 0 when none was read.
+        assert_eq!(connector_config(&login_with(Graphics::default())).keyboard_layout, 0);
+        let us = Login { keyboard_layout: 0x409, ..login_with(Graphics::default()) };
+        assert_eq!(connector_config(&us).keyboard_layout, 0x409);
     }
 
     #[test]

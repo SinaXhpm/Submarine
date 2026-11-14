@@ -17393,6 +17393,10 @@ async fn rdp_builtin_open(
             }
         });
         let (login_user, domain) = rdp_client::split_domain(&user);
+        let keyboard_layout = rdp_client::keyboard_layout();
+        if keyboard_layout != 0 {
+            log(&format!("Keyboard layout told to the server: {keyboard_layout:08X}, this computer's default."), "info");
+        }
         let login = rdp_client::Login {
             host: host.clone(),
             username: login_user,
@@ -17404,6 +17408,7 @@ async fn rdp_builtin_open(
             graphics,
             clipboard: clipboard.unwrap_or(false),
             drive,
+            keyboard_layout,
         };
         let connected = {
             let (app, attempt, sid, target) = (app.clone(), attempt.clone(), session_id.clone(), target.clone());
