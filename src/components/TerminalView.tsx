@@ -13,6 +13,7 @@ import HistorySearchOverlay from './HistorySearchOverlay';
 import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
 import { readScrollback } from '../util/terminalScrollback';
 import { TERMINAL_PASTE, withoutPasteControls, type TerminalPaste } from '../util/pasteText';
+import { TERMINAL_READ, TERMINAL_READ_REPLY, type TerminalRead, type TerminalReadReply } from '../util/terminalRead';
 import { READABLE_CONTRAST, readBoldBright, readMinContrast, readScheme } from '../util/terminalTheme';
 import { readUseLocalShell } from '../util/terminalShell';
 import { holdTerminalInput, writeTerminal } from '../util/terminalWrite';
@@ -1431,6 +1432,22 @@ const TerminalView = ({
     // there.
     const readClipboardText = (): Promise<string> =>
       IS_LINUX ? invoke<string>('clipboard_read_text') : navigator.clipboard.readText();
+    // The lines a paste puts in, a line break at its end left out.
+    const pasteLines = (text: string) => text.replace(/(\r\n|\r|\n)$/, '').split(/\r\n|\r|\n/);
+    // More than one line into a program that hasn't turned bracketed-paste
+    // mode on (an older bash, a plain sh): each line would run the moment it
+    // lands, so this asks first and shows what would run. With the mode on,
+    // the program takes the paste as one block and nothing runs by itself; a
+    // single line with a trailing newline runs as one command, as anywhere.
+    const askLinesRun = (lines: string[], okLabel: string): Promise<boolean> => {
+      const preview = lines.slice(0, 4).map((l) => (l.length > 70 ? `${l.slice(0, 70)}…` : l)).join('\n');
+      return confirmRef.current({
+        title: tn(lines.length, 'Paste {count} line?', 'Paste {count} lines?'),
+        message: t("The program here doesn't take a paste as one block, so each line runs as soon as it lands:\n\n{preview}", { preview }) + (lines.length > 4 ? `\n${t('… and {count} more', { count: lines.length - 4 })}` : ''),
+        okLabel,
+        safeDefault: true,
+      });
+    };
     // Paste text into the PTY, however it got here. Disabled sessions silently
     // drop the paste (matches onData).
     const pasteText = async (raw: string, toast: boolean) => {
@@ -1439,22 +1456,8 @@ const TerminalView = ({
       const text = withoutPasteControls(raw);
       if (text !== raw) notify(t('Control characters left out of the paste'));
       if (!text) return;
-      // More than one line into a program that hasn't turned bracketed-paste
-      // mode on (an older bash, a plain sh): each line would run the moment it
-      // lands, so ask first and show what would run. With the mode on, the
-      // program takes the paste as one block and nothing runs by itself; a
-      // single line with a trailing newline runs as one command, as anywhere.
-      const lines = text.replace(/(\r\n|\r|\n)$/, '').split(/\r\n|\r|\n/);
-      if (lines.length > 1 && !term.modes.bracketedPasteMode) {
-        const preview = lines.slice(0, 4).map((l) => (l.length > 70 ? `${l.slice(0, 70)}…` : l)).join('\n');
-        const ok = await confirmRef.current({
-          title: tn(lines.length, 'Paste {count} line?', 'Paste {count} lines?'),
-          message: t("The program here doesn't take a paste as one block, so each line runs as soon as it lands:\n\n{preview}", { preview }) + (lines.length > 4 ? `\n${t('… and {count} more', { count: lines.length - 4 })}` : ''),
-          okLabel: t('Paste'),
-          safeDefault: true,
-        });
-        if (!ok) return;
-      }
+      const lines = pasteLines(text);
+      if (lines.length > 1 && !term.modes.bracketedPasteMode && !(await askLinesRun(lines, t('Paste')))) return;
       // Hand the text to xterm's own paste path instead of writing it raw to
       // the PTY. xterm collapses CRLF / lone LF to a single CR (one Enter per
       // line break — a Windows clipboard's `\r\n` would otherwise be two) and,
@@ -1573,11 +1576,13 @@ const TerminalView = ({
     window.addEventListener('blur', onWindowBlur);
     terminalRef.current.addEventListener('contextmenu', onContextMenu);
     terminalRef.current.addEventListener('paste', onPasteEvent, true);
-    // A paste from outside the terminal (see TERMINAL_PASTE). Only the view
-    // that owns the PTY takes it: a Wall tile would send the text again.
-    const onPasteRequest = (e: Event) => {
-      const { terminalId: target, text, enter } = (e as CustomEvent<TerminalPaste>).detail;
-      if (attachOnly || target !== terminalId) return;
+    // A paste from outside the terminal (see TERMINAL_PASTE). Text only to be
+    // pasted (the Library's Paste, the AI's Insert) was asked about as a
+    // paste; where each of its lines would run as it lands, that is asked
+    // too, before anything goes in.
+    const pasteRequested = async (text: string, enter: boolean) => {
+      const lines = pasteLines(text);
+      if (!enter && lines.length > 1 && !term.modes.bracketedPasteMode && !(await askLinesRun(lines, t('Paste and run')))) return;
       pasteRequestRef.current = { enter };
       try {
         term.paste(text);
@@ -1585,7 +1590,44 @@ const TerminalView = ({
         pasteRequestRef.current = null;
       }
     };
+    // Only the view that owns the PTY takes it: a Wall tile would send the
+    // text again.
+    const onPasteRequest = (e: Event) => {
+      const { terminalId: target, text, enter } = (e as CustomEvent<TerminalPaste>).detail;
+      if (attachOnly || target !== terminalId) return;
+      void pasteRequested(text, enter);
+    };
     window.addEventListener(TERMINAL_PASTE, onPasteRequest);
+    // The last `count` lines of the buffer, scrollback included, a wrapped
+    // line rebuilt into one as buildSelectedText does. The blank lines at the
+    // end (the rows under the prompt) are left out.
+    const readTail = (count: number): string => {
+      const buf = term.buffer.active;
+      const lines: string[] = [];
+      let text = '';
+      for (let y = buf.length - 1; y >= 0 && lines.length < count; y--) {
+        const line = buf.getLine(y);
+        if (!line) continue;
+        text = line.translateToString(true) + text;
+        // A wrapped row goes on from the one above it.
+        if (line.isWrapped && y > 0) continue;
+        if (lines.length > 0 || text.trim()) lines.push(text);
+        text = '';
+      }
+      return lines.reverse().join('\n');
+    };
+    // A read from outside the terminal (see TERMINAL_READ). The view that owns
+    // the PTY answers, as for a paste: a Wall tile holds only what came since
+    // it opened.
+    const onReadRequest = (e: Event) => {
+      const { requestId, terminalId: target, what, lines } = (e as CustomEvent<TerminalRead>).detail;
+      if (attachOnly || target !== terminalId) return;
+      const text = what === 'selection'
+        ? buildSelectedText().replace(/\n+$/, '')
+        : readTail(lines > 0 ? Math.floor(lines) : 0);
+      window.dispatchEvent(new CustomEvent<TerminalReadReply>(TERMINAL_READ_REPLY, { detail: { requestId, terminalId, text } }));
+    };
+    window.addEventListener(TERMINAL_READ, onReadRequest);
 
     // Handle Resize, once the size has settled (PTY_SIZE_SETTLE_MS).
     let sizeTimer = 0;
@@ -1794,6 +1836,7 @@ const TerminalView = ({
       document.removeEventListener('mouseup', onDocMouseUp);
       window.removeEventListener('blur', onWindowBlur);
       window.removeEventListener(TERMINAL_PASTE, onPasteRequest);
+      window.removeEventListener(TERMINAL_READ, onReadRequest);
       window.visualViewport?.removeEventListener('resize', onVvResize);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
       unlistenPromise.then(unlisten => unlisten());

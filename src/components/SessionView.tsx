@@ -1,8 +1,8 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, memo } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { TerminalSquare, Folder, FolderUp, FolderSync, Network, AlertTriangle, Check, X, Play, Library, Info, Container, Plus, ChevronDown, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, CircleSlash, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud, LogIn } from "lucide-react";
+import { TerminalSquare, Folder, FolderUp, FolderSync, Network, AlertTriangle, Check, X, Play, Library, Info, Container, Plus, ChevronDown, SplitSquareHorizontal, Columns, Rows, RotateCw, Loader2, CircleSlash, PanelRight, PanelLeft, PanelBottom, PanelTop, Maximize2, Minimize2, UploadCloud, LogIn, Sparkles } from "lucide-react";
 import TerminalView from "./TerminalView";
 import { ANIMATED_ATTEMPTS, AttemptDots, Elapsed, ReconnectBar, ReconnectIcon, StageSteps, connectStage } from "./ReconnectStatus";
 import { AuthPrompts } from "./AuthPrompts";
@@ -12,6 +12,12 @@ import { nextShellFolder, type ShellFolderState } from "../util/shellFolder";
 import TunnelsPanel from "./TunnelsPanel";
 import InfoPanel from "./InfoPanel";
 import { CmdsPanel } from "./CmdsPanel";
+import { AiPanel } from "./ai/AiPanel";
+import { AiTerminal } from "./ai/AiTerminal";
+import { createFeed, registerFeed, AI_FOCUS_EVENT, takeAiFocus } from "../util/aiEvents";
+import { ai, AI_LEVEL_EVENT, type AiLevelDetail } from "../util/aiApi";
+import { writeToTerminal } from "../util/pasteText";
+import { readTerminal } from "../util/terminalRead";
 import { RenameInput } from "../ui/renameInput";
 import { useIsCompact } from "../hooks/useViewport";
 import { fontFamilyCss, readFontFamily, readFontSize } from "../util/terminalFont";
@@ -722,7 +728,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // `baseTitle`: the title a tab had before it was renamed, which an empty
   // name brings back. `ownLogin`: the terminal logs in on a connection of
   // its own (TerminalView), not on the tab's.
-  const [terminals, setTerminals] = useState<{id: string, title: string, baseTitle?: string, container?: { name: string; useSudo: boolean }, ownLogin?: boolean}[]>(() => {
+  const [terminals, setTerminals] = useState<{id: string, title: string, baseTitle?: string, container?: { name: string; useSudo: boolean }, ownLogin?: boolean, ai?: boolean}[]>(() => {
     return [{ id: `${session.id}-term-0`, title: '1' }];
   });
   // Bumped on every successful reconnect. TerminalView watches this prop
@@ -743,6 +749,18 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   };
 
   const [activeTab, setActiveTab] = useState<string>(`${session.id}-term-0`);
+  // The assistant's terminal is a tab like the others, but no
+  // shell runs in it. The user's terminal is the last active tab that isn't
+  // it: Insert, Attach and the Library act there, never in the AI one.
+  const aiTermId = `${session.id}-ai`;
+  const [userTab, setUserTab] = useState<string>(`${session.id}-term-0`);
+  useEffect(() => {
+    if (activeTab !== aiTermId) setUserTab(activeTab);
+  }, [activeTab, aiTermId]);
+  const aiFeed = useMemo(() => createFeed(), []);
+  // Known by session: a run of this server's chat on the AI page shows here too.
+  useEffect(() => registerFeed(session.id, aiFeed), [session.id, aiFeed]);
+  const [aiPending, setAiPending] = useState(0);
   // New terminals of this server log in on their own (its choice on this device).
   const [ownLoginDefault, setOwnLoginDefault] = useState(() => readOwnLogin(session.serverUuid));
   // SFTP's Follow, and the folder each terminal's shell last reported (a
@@ -773,9 +791,9 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // pairs exist and which one is currently the session's own primary.
   useEffect(() => {
     if (typeof onTerminalsChange === "function") {
-      onTerminalsChange(session.id, terminals, activeTab);
+      onTerminalsChange(session.id, terminals.filter(t => !t.ai), activeTab === aiTermId ? userTab : activeTab);
     }
-  }, [session?.id, terminals, activeTab, onTerminalsChange]);
+  }, [session?.id, terminals, activeTab, userTab, aiTermId, onTerminalsChange]);
 
   // ── Focus the terminal when its tab (or this session's server tab) is
   // selected ── issue #51. We don't reach into xterm from here; we bump a
@@ -808,7 +826,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
-  const [activeTool, setActiveTool] = useState<'sftp' | 'tunnels' | 'mirrors' | 'cmds' | 'info' | null>(null);
+  const [activeTool, setActiveTool] = useState<'sftp' | 'tunnels' | 'mirrors' | 'cmds' | 'info' | 'ai' | null>(null);
   // A tool panel closed: its button keeps the focus, or the focus falls to the
   // page when the control went with the panel, and typing lands nowhere (#298).
   // Switching to another tool isn't a close. Nor does its toolbar button give up
@@ -825,6 +843,29 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     closedFromKeyboardRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTool]);
+  // The AI tab mounts the first time it opens, then stays: its run and the
+  // events feeding the AI terminal go on while another tool is shown.
+  const [aiOpened, setAiOpened] = useState(false);
+  useEffect(() => { if (activeTool === 'ai') setAiOpened(true); }, [activeTool]);
+  // "Open the server" on the AI page: the AI tab shows, on the chat asked
+  // for. A request made before this view mounted waits for it.
+  const [aiOpenChat, setAiOpenChat] = useState<{ id: number | null; n: number } | null>(null);
+  useEffect(() => {
+    const take = () => {
+      const chat = takeAiFocus(session.id);
+      if (chat === undefined) return;
+      setActiveTool('ai');
+      setAiOpenChat((prev) => ({ id: chat, n: (prev?.n ?? 0) + 1 }));
+    };
+    take();
+    const onFocus = (e: Event) => {
+      if ((e as CustomEvent<{ sessionId: string }>).detail?.sessionId === session.id) take();
+    };
+    window.addEventListener(AI_FOCUS_EVENT, onFocus);
+    return () => window.removeEventListener(AI_FOCUS_EVENT, onFocus);
+  }, [session.id]);
+  // Full access is on in the AI tab: the AI terminal's title says so.
+  const [aiFull, setAiFull] = useState(false);
 
   // "Push shell config": a one-shot push, not a dockable tool pane like the
   // four above, so it gets its own preview/confirm dialog. Offered on the
@@ -1003,6 +1044,13 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     const quarter = Math.round((window.innerWidth || 1440) / 4);
     return Math.max(240, Math.min(900, quarter));
   });
+  // The AI tab has a width of its own, wider by default: a chat needs room
+  // that a file list or the Library doesn't.
+  const [aiPanelWidth, setAiPanelWidth] = useState<number>(() => {
+    const saved = parseInt(localStorage.getItem('submarine-ai-panel-width') || '', 10);
+    if (Number.isFinite(saved) && saved >= 320) return saved;
+    return Math.max(460, Math.min(900, Math.round((window.innerWidth || 1440) * 0.45)));
+  });
   // Which side of the terminal the tool pane docks on (see DOCK_OPTIONS).
   // Right and left use the width above; above or below, the pane spans the
   // full width and uses its own height.
@@ -1066,6 +1114,23 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   const confirm = useConfirm();
   const confirmRef = useRef(confirm);
   confirmRef.current = confirm;
+  const insertTarget = terminals.some(t => t.id === userTab && !t.ai) ? userTab : (terminals.find(t => !t.ai)?.id ?? null);
+  const showAiTerminal = useCallback(() => {
+    setTerminals(prev => (prev.some(t => t.id === aiTermId) ? prev : [...prev, { id: aiTermId, title: 'AI', ai: true }]));
+    setActiveTab(aiTermId);
+  }, [aiTermId]);
+  // The AI terminal's Ctrl+C stops every run that acts through this session,
+  // the AI tab's and the AI page's alike.
+  const stopAiRun = useCallback(() => {
+    ai.stopSession(session.id).catch(console.error);
+  }, [session.id]);
+  // "Insert into terminal" follows the Library's paste rule and never presses
+  // Enter. Where the program there would run each line as it lands, the
+  // terminal asks first (TerminalView).
+  const insertIntoTerminal = useCallback((code: string) => {
+    if (insertTarget) void writeToTerminal({ terminalId: insertTarget, text: code, enter: false, confirm });
+  }, [insertTarget, confirm]);
+  const readUserTerminal = useCallback((what: 'selection' | 'tail') => (insertTarget ? readTerminal(insertTarget, what, 200) : Promise.resolve(null)), [insertTarget]);
   // Terminals whose shell is open (TerminalView says so): the on-connect
   // commands wait for the first one. Typed before it was open, they were
   // dropped — opening a terminal can take longer than the delay they had.
@@ -1438,7 +1503,12 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
 
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       clearSecondaryRetryTimers();
-      invoke("disconnect_session", { sessionId: session.id }).catch(console.error);
+      invoke("disconnect_session", { sessionId: session.id })
+        .catch(console.error)
+        // Full access ended with the session: a server card showing it reads again.
+        .finally(() => {
+          if (session.serverUuid) window.dispatchEvent(new CustomEvent<AiLevelDetail>(AI_LEVEL_EVENT, { detail: { serverUuid: session.serverUuid } }));
+        });
     };
   }, [session.id, session.serverId]);
 
@@ -1564,24 +1634,26 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
     }
     const startX = e.clientX;
     const area = mainAreaRef.current?.clientWidth ?? window.innerWidth;
-    const maxWidth = Math.max(240, Math.min(900, area - MIN_TERMINAL_WIDTH - 4));
+    const isAi = activeTool === 'ai';
+    const minWidth = isAi ? 320 : 240;
+    const maxWidth = Math.max(minWidth, Math.min(isAi ? 1400 : 900, area - MIN_TERMINAL_WIDTH - 4));
     // Start from what's on screen: a width saved in a wider window shows
     // capped.
-    const startWidth = Math.min(maxWidth, toolPanelRef.current?.getBoundingClientRect().width ?? toolPanelWidth);
+    const startWidth = Math.min(maxWidth, toolPanelRef.current?.getBoundingClientRect().width ?? (isAi ? aiPanelWidth : toolPanelWidth));
     let latest = startWidth;
 
     const onMove = (ev: MouseEvent) => {
       // Dragging toward the terminal widens the tool pane: left for a pane
       // on the right, right for a pane on the left.
       const pulled = toolDock === "left" ? ev.clientX - startX : startX - ev.clientX;
-      latest = Math.round(Math.max(240, Math.min(maxWidth, startWidth + pulled)));
-      setToolPanelWidth(latest);
+      latest = Math.round(Math.max(minWidth, Math.min(maxWidth, startWidth + pulled)));
+      (isAi ? setAiPanelWidth : setToolPanelWidth)(latest);
     };
 
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      try { localStorage.setItem("submarine-tool-panel-width", String(latest)); }
+      try { localStorage.setItem(isAi ? "submarine-ai-panel-width" : "submarine-tool-panel-width", String(latest)); }
       catch { /* ignore */ }
     };
 
@@ -1894,12 +1966,14 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   : isSplitPartner
                     ? 'bg-primary/[0.04] text-primary/70 border border-primary/10'
                     : 'text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:border-white/20 hover:text-white'
-              } ${term.container ? 'ring-1 ring-sky-400/30' : ''}`}
+              } ${term.container ? 'ring-1 ring-sky-400/30' : ''} ${term.ai && aiFull ? 'ring-1 ring-rose-500/60' : ''}`}
             >
               {term.container
                 ? <Container size={14} className="text-sky-300" />
-                : <TerminalSquare size={14} />}
-              {term.title}
+                : term.ai
+                  ? <Sparkles size={14} className={aiFull ? 'text-rose-300' : undefined} />
+                  : <TerminalSquare size={14} />}
+              {term.ai && aiFull ? <span className="text-rose-300">{t("{title} · Full access", { title: term.title })}</span> : term.title}
               {isSplitPartner && (
                 <SplitSquareHorizontal size={10} className="text-primary/60" />
               )}
@@ -2000,6 +2074,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
             { id: 'tunnels', icon: Network, label: t("Ports"),   hint: t("Ports — port forwarding") },
             { id: 'cmds',    icon: Library, label: t("Library"), hint: t("Library — commands & notes") },
             { id: 'info',    icon: Info,    label: t("Info"),    hint: t("Info — server overview") },
+            { id: 'ai',      icon: Sparkles, label: t("AI"),     hint: t("AI — the assistant for this server") },
           ] as const).map(({ id, icon: Icon, label, hint }) => {
             const on = activeTool === id;
             return (
@@ -2021,6 +2096,10 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               >
                 <Icon size={14} className="shrink-0" />
                 <span className="hidden md:inline text-[11px] font-semibold tracking-tight">{label}</span>
+                {/* Calls waiting for the user's answer in the AI tab. */}
+                {id === 'ai' && aiPending > 0 && (
+                  <span className="min-w-4 h-4 px-1 rounded-full bg-amber-500 text-zinc-950 text-[10px] font-bold leading-4 text-center" aria-label={`${aiPending} waiting for approval`}>{aiPending}</span>
+                )}
               </button>
             );
           })}
@@ -2422,6 +2501,9 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                     : inView ? 'inset-0 opacity-100 z-10' : 'out-of-view z-0'
                 }`}
               >
+                {term.ai ? (
+                  <AiTerminal feed={aiFeed} active={shown && isFocused} onStop={stopAiRun} />
+                ) : (
                 <TerminalView
                   sessionId={session.id}
                   terminalId={term.id}
@@ -2441,6 +2523,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   quickAuth={session.quickAuth}
                   onFolder={term.container ? undefined : onTerminalFolder}
                 />
+                )}
                 {/* Per-pane detach affordance — pulls the pane out of
                     the split without killing the underlying terminal.
                     Positioned top-right so it doesn't fight the
@@ -2566,7 +2649,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           style={activeTool && !toolAlone
             ? (dockTopBottom
                 ? { height: `${toolPanelHeight}px`, maxHeight: `calc(100% - ${MIN_TERMINAL_HEIGHT + 4}px)` }
-                : { width: `${toolPanelWidth}px`, maxWidth: `calc(100% - ${MIN_TERMINAL_WIDTH + 4}px)` })
+                : { width: `${activeTool === 'ai' ? aiPanelWidth : toolPanelWidth}px`, maxWidth: `calc(100% - ${MIN_TERMINAL_WIDTH + 4}px)` })
             : undefined}
           className={`${activeTool ? (toolAlone ? 'flex-1 min-w-0' : 'shrink-0') : 'hidden'} bg-[#121214]/95 flex flex-col ${dockTopBottom && !toolAlone ? 'w-full' : 'h-full'} overflow-hidden ${activeTool ? 'animate-in slide-in-from-right duration-300' : ''}`}
         >
@@ -2637,7 +2720,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           {activeTool === 'cmds' && (
             <ErrorBoundary label={t("Library")} onReset={() => setActiveTool(null)}>
               <CmdsPanel
-                activeTab={activeTab}
+                activeTab={insertTarget ?? activeTab}
                 onClose={() => setActiveTool(null)}
                 headerActions={fullToggle}
                 serverId={session.serverId}
@@ -2669,6 +2752,29 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               />
             </ErrorBoundary>
           </div>
+
+          {aiOpened && (
+            <div className={`flex-1 flex flex-col overflow-hidden ${activeTool === 'ai' ? '' : 'hidden'}`}>
+              <ErrorBoundary label="AI assistant" onReset={() => setActiveTool(null)}>
+                <AiPanel
+                  sessionId={session.id}
+                  serverUuid={session.serverUuid ?? null}
+                  serverName={session.serverName}
+                  connected={status === 'connected'}
+                  active={activeTool === 'ai' && isActiveView}
+                  feed={aiFeed}
+                  onShowTerminal={showAiTerminal}
+                  onInsert={insertIntoTerminal}
+                  readTerminal={readUserTerminal}
+                  onPending={setAiPending}
+                  onClose={() => setActiveTool(null)}
+                  headerActions={fullToggle}
+                  openChat={aiOpenChat}
+                  onLevel={(l) => setAiFull(l === 'full')}
+                />
+              </ErrorBoundary>
+            </div>
+          )}
         </div>
       </div>
 

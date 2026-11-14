@@ -11,6 +11,8 @@ import {
 } from "../util/shellSync";
 import { invoke } from "@tauri-apps/api/core";
 import CopyValue from "./CopyValue";
+import { AiSettings } from "./ai/AiSettings";
+import { AgentSettings } from "./agents/AgentSettings";
 import FontPicker from "./FontPicker";
 import { loadInstalledFonts } from "../util/systemFonts";
 import { MAX_SCROLLBACK, MIN_SCROLLBACK, clampScrollback } from "../util/terminalScrollback";
@@ -751,7 +753,7 @@ function LanguageSetting() {
   );
 }
 
-const SettingsPanel = ({ settings, setSettings, onOpenLogs, servers = [] }: any) => {
+const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpenAgents, servers = [] }: any) => {
   const t = useT();
   const accentColors = [
     { name: tk('Light Blue'), value: '#60a5fa' },
@@ -908,6 +910,11 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, servers = [] }: any)
             <SshConfigSetting settings={settings} setSettings={setSettings} />
           </section>
         )}
+
+        <AiSettings servers={servers} onOpenChats={onOpenAiChats} />
+
+        {/* Agents on this computer reach servers through Submarine: desktop only. */}
+        {!IS_MOBILE && <AgentSettings onOpenPanel={onOpenAgents} />}
 
         {IS_ANDROID && (
           <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
