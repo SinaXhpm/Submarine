@@ -17,7 +17,7 @@
   },
   "common": {
     "tagline": "SSH-, SFTP-, RDP-, VNC- und Telnet-Client",
-    "newIn": "Neu in 0.4",
+    "newIn": "Neu in 0.5",
     "updated": "Zuletzt aktualisiert: {date}",
     "translationNote": "Diese Seite ist eine Übersetzung. Weicht sie von der englischen Fassung ab, ist die englische Fassung maßgeblich.",
     "englishVersion": "Englische Fassung",
@@ -45,7 +45,7 @@
     "title": "Submarine – kostenloser SSH/SFTP-Client mit RDP, VNC, Telnet",
     "description": "Open-Source-SSH/SFTP-Client mit RDP, VNC und Telnet, gratis für Windows, macOS, Linux und Android. Server, Passwörter und Schlüssel bleiben verschlüsselt.",
     "hero": {
-      "pillTag": "0.4",
+      "pillTag": "0.5",
       "pill": "Remote-Desktops mit gemeinsamer Zwischenablage und wählbarer Geschwindigkeit",
       "title": "Alle Ihre Server in <em>einer verschlüsselten App</em>",
       "lede": "Submarine ist ein SSH-, SFTP-, RDP-, VNC- und Telnet-Client für Windows, macOS, Linux und Android. Ihre Server, Passwörter und Schlüssel werden auf Ihrem Gerät verschlüsselt und nur dann zwischen Ihren Geräten synchronisiert, wenn Sie das möchten.",
@@ -246,7 +246,7 @@
       ]
     },
     "remote": {
-      "kicker": "Neu in 0.4",
+      "kicker": "Neu in 0.5",
       "title": "Remote-Desktops, <em>direkt neben Ihren Terminals</em>",
       "lede": "VNC und der eingebaute RDP-Client öffnen sich in einem Tab, direkt oder über einen Ihrer SSH-Server. RDP kann sich auch in der eigenen RDP-App Ihres Computers öffnen.",
       "points": [
@@ -344,11 +344,11 @@
           "detail": "Android 7.0 und neuer · .apk"
         }
       ],
-      "betaNote": "Diese Seite beschreibt Version 0.4, die gerade die letzten Tests durchläuft. Bis zur Veröffentlichung erhalten Sie über die Schaltflächen „Herunterladen“ Version 0.3.8, die zuletzt veröffentlichte Version. Eine Beta von 0.4 gibt es auf <a href=\"{releasesUrl}\">GitHub</a> als Vorabversion und für iPhone, iPad und Mac über <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>. Version 0.3.8 enthält das Terminal, die Dateiübertragung, Tunnel, die Überwachung und die Synchronisierung, aber nicht die Remote-Desktops, Telnet, das Entsperren mit Windows Hello und Fingerabdruck, SSH-Agenten, den Ordnervergleich und alles andere, was mit 0.4 dazukommt. Ab 0.4 gibt es für Windows außerdem eine portable .zip-Datei.",
+      "betaNote": "Diese Seite beschreibt Version 0.5, die gerade die letzten Tests durchläuft. Bis zur Veröffentlichung erhalten Sie über die Schaltflächen „Herunterladen“ Version 0.3.8, die zuletzt veröffentlichte Version. Eine Beta von 0.5 gibt es auf <a href=\"{releasesUrl}\">GitHub</a> als Vorabversion und für iPhone, iPad und Mac über <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>. Version 0.3.8 enthält das Terminal, die Dateiübertragung, Tunnel, die Überwachung und die Synchronisierung, aber nicht die Remote-Desktops, Telnet, das Entsperren mit Windows Hello und Fingerabdruck, SSH-Agenten, den Ordnervergleich und alles andere, was mit 0.5 dazukommt. Ab 0.5 gibt es für Windows außerdem eine portable .zip-Datei.",
       "verifyTitle": "Ihren Download prüfen",
       "verify": [
-        "Ab Version 0.4 enthält jedes Release eine Datei SHA256SUMS mit der Prüfsumme jedes Downloads.",
-        "Ab Version 0.4 ist die Android-App mit dem Schlüssel des Autors signiert. Der SHA-256-Fingerabdruck ihres Zertifikats lautet <code class=\"hash\">{certSha256}</code>.",
+        "Ab Version 0.5 enthält jedes Release eine Datei SHA256SUMS mit der Prüfsumme jedes Downloads.",
+        "Ab Version 0.5 ist die Android-App mit dem Schlüssel des Autors signiert. Der SHA-256-Fingerabdruck ihres Zertifikats lautet <code class=\"hash\">{certSha256}</code>.",
         "Die Versionen für Windows und macOS haben noch keine Code-Signatur. Ihr System warnt Sie daher möglicherweise, wenn Sie sie zum ersten Mal öffnen."
       ]
     },
@@ -375,7 +375,7 @@
         },
         {
           "q": "Kann ich RDP, VNC und Telnet nutzen?",
-          "a": "Ja, ab Version 0.4. VNC zeigt den Bildschirm in einem Tab und teilt die Zwischenablage (reiner Text). RDP öffnet sich in der RDP-App Ihres Computers oder in einem Tab mit dem experimentellen eingebauten Client. Dieser teilt die Zwischenablage und gibt auf einem Computer einen Ordner oder ein Laufwerk frei. In einem Submarine-Tab zeigen beide, wie es um die Verbindung steht, und lassen Sie Bildqualität gegen weniger Daten eintauschen. Telnet öffnet sich in einem Terminal-Tab. Alle drei lassen sich über einen SSH-Server leiten, und Telnet und einfaches VNC sind als unverschlüsselt gekennzeichnet."
+          "a": "Ja, ab Version 0.5. VNC zeigt den Bildschirm in einem Tab und teilt die Zwischenablage (reiner Text). RDP öffnet sich in der RDP-App Ihres Computers oder in einem Tab mit dem experimentellen eingebauten Client. Dieser teilt die Zwischenablage und gibt auf einem Computer einen Ordner oder ein Laufwerk frei. In einem Submarine-Tab zeigen beide, wie es um die Verbindung steht, und lassen Sie Bildqualität gegen weniger Daten eintauschen. Telnet öffnet sich in einem Terminal-Tab. Alle drei lassen sich über einen SSH-Server leiten, und Telnet und einfaches VNC sind als unverschlüsselt gekennzeichnet."
         },
         {
           "q": "Was bekommt ein Remote-Desktop von meinem Computer?",
@@ -387,7 +387,7 @@
         },
         {
           "q": "In welchen Sprachen gibt es die App?",
-          "a": "Ab Version 0.4 in {appLanguages} Sprachen: {appLanguageList}. Die App richtet sich nach Ihrer Systemsprache oder nach der Sprache, die Sie unter <em>Einstellungen → Sprache</em> wählen. Die Übersetzungen sind neu – wenn ein Wort nicht stimmt, sagen Sie es uns bitte dort über <em>Korrektur vorschlagen</em>."
+          "a": "Ab Version 0.5 in {appLanguages} Sprachen: {appLanguageList}. Die App richtet sich nach Ihrer Systemsprache oder nach der Sprache, die Sie unter <em>Einstellungen → Sprache</em> wählen. Die Übersetzungen sind neu – wenn ein Wort nicht stimmt, sagen Sie es uns bitte dort über <em>Korrektur vorschlagen</em>."
         },
         {
           "q": "Kann ich einen eigenen Sync-Server verwenden?",
@@ -395,11 +395,11 @@
         },
         {
           "q": "Wie lösche ich mein Konto?",
-          "a": "In der App (ab Version 0.4) wählen Sie unter „Cloud-Synchronisierung“ den Punkt „Konto löschen…“. Sie können das auch auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> erledigen."
+          "a": "In der App (ab Version 0.5) wählen Sie unter „Cloud-Synchronisierung“ den Punkt „Konto löschen…“. Sie können das auch auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> erledigen."
         },
         {
           "q": "Wie kann ich ein Problem melden oder einen Wunsch äußern?",
-          "a": "Ab Version 0.4 nutzen Sie dafür <em>Feedback senden</em> in den Einstellungen oder <em>Feedback</em> unten in der Profilliste. Gesendet wird nur, was Sie eingeben, und eine E-Mail-Adresse nur, wenn Sie eine angeben, um eine Antwort zu bekommen. Sie können auch <a href=\"{issuesUrl}\">ein Issue auf GitHub erstellen</a>."
+          "a": "Ab Version 0.5 nutzen Sie dafür <em>Feedback senden</em> in den Einstellungen oder <em>Feedback</em> unten in der Profilliste. Gesendet wird nur, was Sie eingeben, und eine E-Mail-Adresse nur, wenn Sie eine angeben, um eine Antwort zu bekommen. Sie können auch <a href=\"{issuesUrl}\">ein Issue auf GitHub erstellen</a>."
         }
       ]
     }
@@ -590,7 +590,7 @@
         },
         {
           "title": "Ihren Download prüfen",
-          "text": "Vergleichen Sie die Prüfsumme mit SHA256SUMS im Release (ab Version 0.4), prüfen Sie das Zertifikat der Android-App mit apksigner oder bauen Sie die App aus dem Quellcode."
+          "text": "Vergleichen Sie die Prüfsumme mit SHA256SUMS im Release (ab Version 0.5), prüfen Sie das Zertifikat der Android-App mit apksigner oder bauen Sie die App aus dem Quellcode."
         }
       ],
       "paramsTitle": "Die Einstellungen für Ihre eigenen Werkzeuge",
@@ -771,7 +771,7 @@
         "id": "deleting",
         "title": "Ihre Daten löschen",
         "list": [
-          "<strong>Löschen Sie Ihr Konto</strong> in der App (ab Version 0.4) über <em>Cloud-Synchronisierung → (angemeldet) → Konto löschen…</em> oder auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> auf dieser Website. Sie bestätigen mit Ihrem Kontopasswort. Dadurch wird sofort Folgendes entfernt: die Cloud-Kopien aller Ihrer Profile, Ihr Freigabeschlüssel, jedes Profil, das Sie geteilt haben (die Personen, mit denen Sie es geteilt haben, verlieren den Zugriff), Ihre Mitgliedschaft in Freigaben anderer Personen, Ihre Sitzungen und die Protokolleinträge Ihres Kontos. Datensätze, die Sie in ein geteiltes Profil einer anderen Person geschrieben haben, bleiben in diesem Profil, ohne dass genannt wird, wer sie geschrieben hat. Profile auf Ihren Geräten bleiben unberührt.",
+          "<strong>Löschen Sie Ihr Konto</strong> in der App (ab Version 0.5) über <em>Cloud-Synchronisierung → (angemeldet) → Konto löschen…</em> oder auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a> auf dieser Website. Sie bestätigen mit Ihrem Kontopasswort. Dadurch wird sofort Folgendes entfernt: die Cloud-Kopien aller Ihrer Profile, Ihr Freigabeschlüssel, jedes Profil, das Sie geteilt haben (die Personen, mit denen Sie es geteilt haben, verlieren den Zugriff), Ihre Mitgliedschaft in Freigaben anderer Personen, Ihre Sitzungen und die Protokolleinträge Ihres Kontos. Datensätze, die Sie in ein geteiltes Profil einer anderen Person geschrieben haben, bleiben in diesem Profil, ohne dass genannt wird, wer sie geschrieben hat. Profile auf Ihren Geräten bleiben unberührt.",
           "<strong>Protokollzeilen, die danach geschrieben werden</strong> (zur Löschung selbst, ohne E-Mail-Adresse, und zu jedem späteren Anmeldeversuch mit dieser E-Mail-Adresse), bleiben bis zu {auditDays} Tage erhalten. Sicherungskopien, die bei Aktualisierungen der Serversoftware angelegt werden, werden nur kurz aufbewahrt.",
           "<strong>Entfernen Sie die Cloud-Kopie eines einzelnen Profils</strong> in der App: im Menü des Profils in der Profilliste, <em>Aus der Cloud löschen…</em>.",
           "<strong>Eine Feedback-Nachricht löschen</strong> vor Ablauf ihrer {feedbackDays} Tage: Schreiben Sie uns mit ihrer Meldungsnummer.",
@@ -829,7 +829,7 @@
       "Protokollzeilen, die nach der Löschung geschrieben werden (zur Löschung selbst, ohne Ihre E-Mail-Adresse, und zu späteren Anmeldeversuchen), werden bis zu {auditDays} Tage aufbewahrt."
     ],
     "inAppTitle": "In der App",
-    "inApp": "Ab Version 0.4: Öffnen Sie <em>Cloud-Synchronisierung</em>, während Sie angemeldet sind, wählen Sie <em>Konto löschen…</em> und bestätigen Sie mit Ihrem Kontopasswort.",
+    "inApp": "Ab Version 0.5: Öffnen Sie <em>Cloud-Synchronisierung</em>, während Sie angemeldet sind, wählen Sie <em>Konto löschen…</em> und bestätigen Sie mit Ihrem Kontopasswort.",
     "formTitle": "Auf dieser Seite",
     "formLede": "Melden Sie sich mit der E-Mail-Adresse und dem Passwort Ihres Sync-Kontos an. Ihr Konto wird sofort gelöscht.",
     "email": "E-Mail-Adresse",

@@ -17,7 +17,7 @@
   },
   "common": {
     "tagline": "Client SSH, SFTP, RDP, VNC et Telnet",
-    "newIn": "Nouveau en 0.4",
+    "newIn": "Nouveau en 0.5",
     "updated": "Dernière mise à jour : {date}",
     "translationNote": "Cette page est une traduction. En cas de différence avec la version anglaise, c’est la version anglaise qui fait foi.",
     "englishVersion": "Version anglaise",
@@ -45,7 +45,7 @@
     "title": "Submarine – client SSH/SFTP gratuit avec RDP, VNC et Telnet",
     "description": "Client SSH/SFTP gratuit et open source avec RDP, VNC et Telnet, sur Windows, macOS, Linux et Android. Vos serveurs, mots de passe et clés restent chiffrés.",
     "hero": {
-      "pillTag": "0.4",
+      "pillTag": "0.5",
       "pill": "Bureaux à distance avec presse-papiers partagé et réglages de vitesse",
       "title": "Tous vos serveurs dans <em>une seule application chiffrée</em>",
       "lede": "Submarine est un client SSH, SFTP, RDP, VNC et Telnet pour Windows, macOS, Linux et Android. Vos serveurs, mots de passe et clés sont chiffrés sur votre appareil, et ne sont synchronisés entre vos appareils que si vous le souhaitez.",
@@ -246,7 +246,7 @@
       ]
     },
     "remote": {
-      "kicker": "Nouveau en 0.4",
+      "kicker": "Nouveau en 0.5",
       "title": "Les bureaux à distance, <em>juste à côté de vos terminaux</em>",
       "lede": "VNC et le client RDP intégré s’ouvrent dans un onglet, directement ou via l’un de vos serveurs SSH. RDP peut aussi s’ouvrir dans l’application RDP de votre ordinateur.",
       "points": [
@@ -344,11 +344,11 @@
           "detail": "Android 7.0 ou version ultérieure · .apk"
         }
       ],
-      "betaNote": "Cette page décrit la version 0.4, qui est en fin de test. D’ici sa sortie, les boutons Télécharger donnent la version 0.3.8, la dernière publiée. Une bêta de la 0.4 est proposée sur <a href=\"{releasesUrl}\">GitHub</a> en préversion, et pour iPhone, iPad et Mac sur <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>. La version 0.3.8 comprend le terminal, le transfert de fichiers, les tunnels, la supervision et la synchronisation, mais pas les bureaux à distance, Telnet, le déverrouillage par Windows Hello et par empreinte digitale, les agents SSH, la comparaison de dossiers ni le reste de ce qu’apporte la 0.4. À partir de la 0.4, une version portable en .zip est aussi proposée pour Windows.",
+      "betaNote": "Cette page décrit la version 0.5, qui est en fin de test. D’ici sa sortie, les boutons Télécharger donnent la version 0.3.8, la dernière publiée. Une bêta de la 0.5 est proposée sur <a href=\"{releasesUrl}\">GitHub</a> en préversion, et pour iPhone, iPad et Mac sur <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>. La version 0.3.8 comprend le terminal, le transfert de fichiers, les tunnels, la supervision et la synchronisation, mais pas les bureaux à distance, Telnet, le déverrouillage par Windows Hello et par empreinte digitale, les agents SSH, la comparaison de dossiers ni le reste de ce qu’apporte la 0.5. À partir de la 0.5, une version portable en .zip est aussi proposée pour Windows.",
       "verifyTitle": "Vérifiez votre téléchargement",
       "verify": [
-        "À partir de la version 0.4, chaque version publiée comporte un fichier SHA256SUMS avec la somme de contrôle de chaque téléchargement.",
-        "À partir de la version 0.4, l’application Android est signée avec la clé de l’auteur. L’empreinte SHA-256 de son certificat est <code class=\"hash\">{certSha256}</code>.",
+        "À partir de la version 0.5, chaque version publiée comporte un fichier SHA256SUMS avec la somme de contrôle de chaque téléchargement.",
+        "À partir de la version 0.5, l’application Android est signée avec la clé de l’auteur. L’empreinte SHA-256 de son certificat est <code class=\"hash\">{certSha256}</code>.",
         "Les applications Windows et macOS n’ont pas encore de signature de code : votre système peut donc vous avertir la première fois que vous les ouvrez."
       ]
     },
@@ -375,7 +375,7 @@
         },
         {
           "q": "Puis-je utiliser RDP, VNC et Telnet ?",
-          "a": "Oui, à partir de la version 0.4. VNC affiche l’écran dans un onglet et partage le presse-papiers (texte brut). RDP s’ouvre dans l’application RDP de votre ordinateur, ou dans un onglet avec le client intégré expérimental, qui partage le presse-papiers et, sur un ordinateur, un dossier ou un lecteur. Dans un onglet Submarine, les deux montrent l’état de la connexion et vous laissent réduire la qualité de l’image pour utiliser moins de données. Telnet s’ouvre dans un onglet de terminal. Les trois peuvent passer par un serveur SSH, et Telnet et le VNC simple sont signalés comme non chiffrés."
+          "a": "Oui, à partir de la version 0.5. VNC affiche l’écran dans un onglet et partage le presse-papiers (texte brut). RDP s’ouvre dans l’application RDP de votre ordinateur, ou dans un onglet avec le client intégré expérimental, qui partage le presse-papiers et, sur un ordinateur, un dossier ou un lecteur. Dans un onglet Submarine, les deux montrent l’état de la connexion et vous laissent réduire la qualité de l’image pour utiliser moins de données. Telnet s’ouvre dans un onglet de terminal. Les trois peuvent passer par un serveur SSH, et Telnet et le VNC simple sont signalés comme non chiffrés."
         },
         {
           "q": "Qu’est-ce qu’un bureau à distance reçoit de mon ordinateur ?",
@@ -387,7 +387,7 @@
         },
         {
           "q": "En quelles langues l’application est-elle disponible ?",
-          "a": "À partir de la version 0.4, en {appLanguages} langues : {appLanguageList}. L’application s’affiche dans la langue de votre système, ou dans celle que vous choisissez dans <em>Paramètres → Langue</em>. Les traductions sont récentes : si un mot est incorrect, dites-le-nous avec <em>Proposer une correction</em>, au même endroit."
+          "a": "À partir de la version 0.5, en {appLanguages} langues : {appLanguageList}. L’application s’affiche dans la langue de votre système, ou dans celle que vous choisissez dans <em>Paramètres → Langue</em>. Les traductions sont récentes : si un mot est incorrect, dites-le-nous avec <em>Proposer une correction</em>, au même endroit."
         },
         {
           "q": "Puis-je utiliser mon propre serveur de synchronisation ?",
@@ -395,11 +395,11 @@
         },
         {
           "q": "Comment supprimer mon compte ?",
-          "a": "Dans l’application (à partir de la version 0.4) : Synchronisation cloud → Supprimer le compte… ; vous pouvez aussi le faire sur la <a href=\"{deleteUrl}\">page de suppression du compte</a>."
+          "a": "Dans l’application (à partir de la version 0.5) : Synchronisation cloud → Supprimer le compte… ; vous pouvez aussi le faire sur la <a href=\"{deleteUrl}\">page de suppression du compte</a>."
         },
         {
           "q": "Comment signaler un problème ou faire une demande ?",
-          "a": "À partir de la version 0.4, utilisez <em>Envoyer des commentaires</em> dans les Paramètres, ou <em>Commentaires</em> en bas de la liste des profils. Seul ce que vous saisissez est envoyé, avec une adresse e-mail uniquement si vous en indiquez une pour recevoir une réponse. Vous pouvez aussi <a href=\"{issuesUrl}\">ouvrir un ticket sur GitHub</a>."
+          "a": "À partir de la version 0.5, utilisez <em>Envoyer des commentaires</em> dans les Paramètres, ou <em>Commentaires</em> en bas de la liste des profils. Seul ce que vous saisissez est envoyé, avec une adresse e-mail uniquement si vous en indiquez une pour recevoir une réponse. Vous pouvez aussi <a href=\"{issuesUrl}\">ouvrir un ticket sur GitHub</a>."
         }
       ]
     }
@@ -590,7 +590,7 @@
         },
         {
           "title": "Vérifiez votre téléchargement",
-          "text": "Comparez la somme de contrôle avec le fichier SHA256SUMS de la version publiée (à partir de la version 0.4), vérifiez le certificat de l’application Android avec apksigner, ou compilez l’application à partir du code source."
+          "text": "Comparez la somme de contrôle avec le fichier SHA256SUMS de la version publiée (à partir de la version 0.5), vérifiez le certificat de l’application Android avec apksigner, ou compilez l’application à partir du code source."
         }
       ],
       "paramsTitle": "Les paramètres, pour vos propres outils",
@@ -771,7 +771,7 @@
         "id": "deleting",
         "title": "Supprimer vos données",
         "list": [
-          "<strong>Supprimez votre compte</strong> dans l’application (à partir de la version 0.4) : <em>Synchronisation cloud → (une fois connecté) → Supprimer le compte…</em>, ou sur la <a href=\"{deleteUrl}\">page de suppression du compte</a> de ce site web. Vous confirmez avec le mot de passe de votre compte. Cela supprime immédiatement : les copies dans le cloud de tous vos profils, votre clé de partage, chaque profil que vous avez partagé (les personnes avec qui vous l’avez partagé perdent l’accès), votre appartenance aux partages d’autres personnes, vos sessions, et les entrées du journal de votre compte. Les enregistrements que vous avez écrits dans le profil partagé de quelqu’un d’autre restent dans ce profil, sans nom d’auteur. Les profils présents sur vos appareils ne sont pas touchés.",
+          "<strong>Supprimez votre compte</strong> dans l’application (à partir de la version 0.5) : <em>Synchronisation cloud → (une fois connecté) → Supprimer le compte…</em>, ou sur la <a href=\"{deleteUrl}\">page de suppression du compte</a> de ce site web. Vous confirmez avec le mot de passe de votre compte. Cela supprime immédiatement : les copies dans le cloud de tous vos profils, votre clé de partage, chaque profil que vous avez partagé (les personnes avec qui vous l’avez partagé perdent l’accès), votre appartenance aux partages d’autres personnes, vos sessions, et les entrées du journal de votre compte. Les enregistrements que vous avez écrits dans le profil partagé de quelqu’un d’autre restent dans ce profil, sans nom d’auteur. Les profils présents sur vos appareils ne sont pas touchés.",
           "<strong>Les lignes de journal écrites ensuite</strong> (la suppression elle-même, qui ne comporte aucune adresse e-mail, et toute tentative de connexion ultérieure avec cette adresse e-mail) sont conservées jusqu’à {auditDays} jours. Les sauvegardes faites lors des mises à jour du logiciel du serveur ne sont conservées que peu de temps.",
           "<strong>Supprimez la copie dans le cloud d’un profil</strong> dans l’application : menu du profil dans la liste des profils, <em>Supprimer du cloud…</em>.",
           "<strong>Supprimer un message de commentaires</strong> avant ses {feedbackDays} jours : contactez-nous avec son numéro de rapport.",
@@ -829,7 +829,7 @@
       "Les lignes de journal écrites après la suppression (la suppression elle-même, sans votre adresse e-mail, et les tentatives de connexion ultérieures) sont conservées jusqu’à {auditDays} jours."
     ],
     "inAppTitle": "Dans l’application",
-    "inApp": "À partir de la version 0.4 : une fois connecté, ouvrez <em>Synchronisation cloud</em>, choisissez <em>Supprimer le compte…</em> et confirmez avec le mot de passe de votre compte.",
+    "inApp": "À partir de la version 0.5 : une fois connecté, ouvrez <em>Synchronisation cloud</em>, choisissez <em>Supprimer le compte…</em> et confirmez avec le mot de passe de votre compte.",
     "formTitle": "Sur cette page",
     "formLede": "Connectez-vous avec l’adresse e-mail et le mot de passe de votre compte de synchronisation. Votre compte est supprimé immédiatement.",
     "email": "Adresse e-mail",

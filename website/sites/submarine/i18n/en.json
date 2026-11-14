@@ -17,7 +17,7 @@
   },
   "common": {
     "tagline": "SSH, SFTP, RDP, VNC and Telnet client",
-    "newIn": "New in 0.4",
+    "newIn": "New in 0.5",
     "updated": "Last updated: {date}",
     "translationNote": "This page is a translation. If it differs from the English version, the English version is the one that counts.",
     "englishVersion": "English version",
@@ -45,7 +45,7 @@
     "title": "Submarine – free SSH & SFTP client with RDP, VNC and Telnet",
     "description": "Free, open-source SSH and SFTP client with RDP, VNC and Telnet, for Windows, macOS, Linux and Android. Your servers, passwords and keys stay encrypted.",
     "hero": {
-      "pillTag": "0.4",
+      "pillTag": "0.5",
       "pill": "Remote desktops with a shared clipboard and speed choices",
       "title": "All your servers in <em>one encrypted app</em>",
       "lede": "Submarine is an SSH, SFTP, RDP, VNC and Telnet client for Windows, macOS, Linux and Android. Your servers, passwords and keys are encrypted on your device, and they sync between your devices only if you want them to.",
@@ -246,7 +246,7 @@
       ]
     },
     "remote": {
-      "kicker": "New in 0.4",
+      "kicker": "New in 0.5",
       "title": "Remote desktops, <em>right next to your terminals</em>",
       "lede": "VNC and the built-in RDP client open in a tab, directly or through one of your SSH servers. RDP can also open in your computer's own RDP app.",
       "points": [
@@ -344,11 +344,11 @@
           "detail": "Android 7.0 and later · .apk"
         }
       ],
-      "betaNote": "This page describes version 0.4, which is in its last tests. Until then, the Download buttons give version 0.3.8, the latest release. A beta of 0.4 is on <a href=\"{releasesUrl}\">GitHub</a> as a pre-release, and for iPhone, iPad and Mac on <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>. Version 0.3.8 has the terminal, file transfer, tunnels, monitoring and sync, but not the remote desktops, Telnet, Windows Hello and fingerprint unlock, SSH agents, folder compare and the rest of what 0.4 adds. From 0.4, Windows also gets a portable .zip.",
+      "betaNote": "This page describes version 0.5, which is in its last tests. Until then, the Download buttons give version 0.3.8, the latest release. A beta of 0.5 is on <a href=\"{releasesUrl}\">GitHub</a> as a pre-release, and for iPhone, iPad and Mac on <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>. Version 0.3.8 has the terminal, file transfer, tunnels, monitoring and sync, but not the remote desktops, Telnet, Windows Hello and fingerprint unlock, SSH agents, folder compare and the rest of what 0.5 adds. From 0.5, Windows also gets a portable .zip.",
       "verifyTitle": "Check your download",
       "verify": [
-        "From version 0.4, every release has a SHA256SUMS file with the checksum of each download.",
-        "From version 0.4, the Android app is signed with the author's key. Its certificate's SHA-256 fingerprint is <code class=\"hash\">{certSha256}</code>.",
+        "From version 0.5, every release has a SHA256SUMS file with the checksum of each download.",
+        "From version 0.5, the Android app is signed with the author's key. Its certificate's SHA-256 fingerprint is <code class=\"hash\">{certSha256}</code>.",
         "The Windows and macOS builds are not code-signed yet, so your system may warn you the first time you open them."
       ]
     },
@@ -375,7 +375,7 @@
         },
         {
           "q": "Can I use RDP, VNC and Telnet?",
-          "a": "Yes, from version 0.4. VNC shows the screen in a tab and shares the clipboard (plain text). RDP opens in your computer's RDP app, or in a tab with the experimental built-in client, which shares the clipboard and, on a computer, a folder or a drive. In a Submarine tab, both show how the connection is doing and let you trade picture quality for less data. Telnet opens in a terminal tab. All three can go through an SSH server, and Telnet and plain VNC are marked as not encrypted."
+          "a": "Yes, from version 0.5. VNC shows the screen in a tab and shares the clipboard (plain text). RDP opens in your computer's RDP app, or in a tab with the experimental built-in client, which shares the clipboard and, on a computer, a folder or a drive. In a Submarine tab, both show how the connection is doing and let you trade picture quality for less data. Telnet opens in a terminal tab. All three can go through an SSH server, and Telnet and plain VNC are marked as not encrypted."
         },
         {
           "q": "What does a remote desktop get from my computer?",
@@ -387,7 +387,7 @@
         },
         {
           "q": "Which languages is the app in?",
-          "a": "From version 0.4, in {appLanguages} languages: {appLanguageList}. It follows your system's language, or the one you choose in <em>Settings → Language</em>. The translations are new, so if a word is wrong, please tell us with <em>Suggest a fix</em> there."
+          "a": "From version 0.5, in {appLanguages} languages: {appLanguageList}. It follows your system's language, or the one you choose in <em>Settings → Language</em>. The translations are new, so if a word is wrong, please tell us with <em>Suggest a fix</em> there."
         },
         {
           "q": "Can I use my own sync server?",
@@ -395,11 +395,11 @@
         },
         {
           "q": "How do I delete my account?",
-          "a": "In the app (version 0.4 and later), use Delete account… in Cloud sync. You can also do it on the <a href=\"{deleteUrl}\">delete account page</a>."
+          "a": "In the app (version 0.5 and later), use Delete account… in Cloud sync. You can also do it on the <a href=\"{deleteUrl}\">delete account page</a>."
         },
         {
           "q": "How do I report a problem or ask for something?",
-          "a": "From version 0.4, use <em>Send feedback</em> in Settings, or <em>Feedback</em> at the bottom of the profile list. It sends only what you type, and an email address only if you give one for an answer. You can also <a href=\"{issuesUrl}\">open an issue on GitHub</a>."
+          "a": "From version 0.5, use <em>Send feedback</em> in Settings, or <em>Feedback</em> at the bottom of the profile list. It sends only what you type, and an email address only if you give one for an answer. You can also <a href=\"{issuesUrl}\">open an issue on GitHub</a>."
         }
       ]
     }
@@ -590,7 +590,7 @@
         },
         {
           "title": "Check your download",
-          "text": "Compare the checksum with SHA256SUMS in the release (from version 0.4), check the Android app's certificate with apksigner, or build the app from source."
+          "text": "Compare the checksum with SHA256SUMS in the release (from version 0.5), check the Android app's certificate with apksigner, or build the app from source."
         }
       ],
       "paramsTitle": "The settings, for your own tools",
@@ -771,7 +771,7 @@
         "id": "deleting",
         "title": "Deleting your data",
         "list": [
-          "<strong>Delete your account</strong> in the app (version 0.4 and later): <em>Cloud sync → (signed in) → Delete account…</em>, or on the <a href=\"{deleteUrl}\">delete account page</a> of this website. You confirm with your account password. This removes, at once: the cloud copies of all your profiles, your sharing key, every profile you shared (the people you shared it with lose access), your membership in other people's shares, your sessions, and the log entries of your account. Records you wrote into someone else's shared profile stay with that profile, with no writer named. Profiles on your devices are not touched.",
+          "<strong>Delete your account</strong> in the app (version 0.5 and later): <em>Cloud sync → (signed in) → Delete account…</em>, or on the <a href=\"{deleteUrl}\">delete account page</a> of this website. You confirm with your account password. This removes, at once: the cloud copies of all your profiles, your sharing key, every profile you shared (the people you shared it with lose access), your membership in other people's shares, your sessions, and the log entries of your account. Records you wrote into someone else's shared profile stay with that profile, with no writer named. Profiles on your devices are not touched.",
           "<strong>Log lines written after that</strong> (the deletion itself, which carries no email, and any later sign-in attempt for that email) stay for up to {auditDays} days. Backups taken around updates of the server software are kept only briefly.",
           "<strong>Remove one profile's cloud copy</strong> in the app: the profile's menu on the profile list, <em>Delete from cloud…</em>.",
           "<strong>Delete a feedback message</strong> before its {feedbackDays} days: contact us with its report number.",
@@ -829,7 +829,7 @@
       "Log lines written after the deletion (the deletion itself, without your email, and later sign-in attempts) are kept for up to {auditDays} days."
     ],
     "inAppTitle": "In the app",
-    "inApp": "Version 0.4 and later: open <em>Cloud sync</em> while signed in, choose <em>Delete account…</em>, and confirm with your account password.",
+    "inApp": "Version 0.5 and later: open <em>Cloud sync</em> while signed in, choose <em>Delete account…</em>, and confirm with your account password.",
     "formTitle": "On this page",
     "formLede": "Sign in with your sync account's email address and password. Your account is deleted right away.",
     "email": "Email address",

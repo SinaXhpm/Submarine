@@ -465,7 +465,7 @@ ${site.translationNote(lang, "delete", t)}
 
 > ${stripTags(fill(t.home.description, v, "llms"))}
 
-Submarine is a free, open-source (MIT) remote-access client by Sina Xhpm: SSH terminal, two-pane SFTP, port forwarding, folder mirror, a built-in RDP client, VNC and Telnet, for Windows 10/11, macOS (Apple Silicon: M1 and later), Linux and Android 7.0+, with a beta for iPhone and iPad (iOS 15+) on TestFlight. From version 0.4 the app is in ${appLangs.length} languages (${appLangs.map((a) => a.name).join(", ")}). Built with Rust and Tauri. No ads, no analytics, no paid plan; the optional encrypted sync service is free within limits (${FACTS.limitMb} MB of encrypted data, ${FACTS.limitItems.toLocaleString("en")} items and ${FACTS.limitProfiles} profiles per account).
+Submarine is a free, open-source (MIT) remote-access client by Sina Xhpm: SSH terminal, two-pane SFTP, port forwarding, folder mirror, a built-in RDP client, VNC and Telnet, for Windows 10/11, macOS (Apple Silicon: M1 and later), Linux and Android 7.0+, with a beta for iPhone and iPad (iOS 15+) on TestFlight. From version 0.5 the app is in ${appLangs.length} languages (${appLangs.map((a) => a.name).join(", ")}). Built with Rust and Tauri. No ads, no analytics, no paid plan; the optional encrypted sync service is free within limits (${FACTS.limitMb} MB of encrypted data, ${FACTS.limitItems.toLocaleString("en")} items and ${FACTS.limitProfiles} profiles per account).
 
 ## Features
 

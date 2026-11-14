@@ -17,7 +17,7 @@
   },
   "common": {
     "tagline": "Cliente SSH, SFTP, RDP, VNC e Telnet",
-    "newIn": "Novo na 0.4",
+    "newIn": "Novo na 0.5",
     "updated": "Última atualização: {date}",
     "translationNote": "Esta página é uma tradução. Se ela divergir da versão em inglês, prevalece a versão em inglês.",
     "englishVersion": "Versão em inglês",
@@ -45,7 +45,7 @@
     "title": "Submarine – cliente SSH e SFTP grátis com RDP, VNC e Telnet",
     "description": "Cliente SSH e SFTP grátis e de código aberto para Windows, macOS, Linux e Android, com RDP, VNC e Telnet. Servidores, senhas e chaves ficam criptografados.",
     "hero": {
-      "pillTag": "0.4",
+      "pillTag": "0.5",
       "pill": "Áreas de trabalho remotas com área de transferência compartilhada e opções de velocidade",
       "title": "Todos os seus servidores em <em>um só app criptografado</em>",
       "lede": "O Submarine é um cliente SSH, SFTP, RDP, VNC e Telnet para Windows, macOS, Linux e Android. Seus servidores, senhas e chaves são criptografados no seu dispositivo e só são sincronizados entre os seus dispositivos se você quiser.",
@@ -246,7 +246,7 @@
       ]
     },
     "remote": {
-      "kicker": "Novo na 0.4",
+      "kicker": "Novo na 0.5",
       "title": "Áreas de trabalho remotas, <em>bem ao lado dos seus terminais</em>",
       "lede": "O VNC e o cliente RDP integrado abrem em uma aba, diretamente ou por meio de um dos seus servidores SSH. O RDP também pode abrir no app de RDP do seu computador.",
       "points": [
@@ -344,11 +344,11 @@
           "detail": "Android 7.0 ou posterior · .apk"
         }
       ],
-      "betaNote": "Esta página descreve a versão 0.4, que está nos últimos testes. Até ela ser lançada, os botões de download baixam a versão 0.3.8, a última lançada. Uma versão beta da 0.4 está no <a href=\"{releasesUrl}\">GitHub</a> como pré-lançamento e, para iPhone, iPad e Mac, no <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>. A versão 0.3.8 tem o terminal, a transferência de arquivos, os túneis, o monitoramento e a sincronização, mas não tem as áreas de trabalho remotas, o Telnet, o desbloqueio com Windows Hello e impressão digital, os agentes SSH, a comparação de pastas e o resto do que a 0.4 traz. A partir da 0.4, o Windows também ganha um .zip portátil.",
+      "betaNote": "Esta página descreve a versão 0.5, que está nos últimos testes. Até ela ser lançada, os botões de download baixam a versão 0.3.8, a última lançada. Uma versão beta da 0.5 está no <a href=\"{releasesUrl}\">GitHub</a> como pré-lançamento e, para iPhone, iPad e Mac, no <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>. A versão 0.3.8 tem o terminal, a transferência de arquivos, os túneis, o monitoramento e a sincronização, mas não tem as áreas de trabalho remotas, o Telnet, o desbloqueio com Windows Hello e impressão digital, os agentes SSH, a comparação de pastas e o resto do que a 0.5 traz. A partir da 0.5, o Windows também ganha um .zip portátil.",
       "verifyTitle": "Verifique seu download",
       "verify": [
-        "A partir da 0.4, cada versão publicada traz um arquivo SHA256SUMS com a soma de verificação de cada download.",
-        "A partir da 0.4, o app para Android é assinado com a chave do autor. A impressão digital SHA-256 do certificado é <code class=\"hash\">{certSha256}</code>.",
+        "A partir da 0.5, cada versão publicada traz um arquivo SHA256SUMS com a soma de verificação de cada download.",
+        "A partir da 0.5, o app para Android é assinado com a chave do autor. A impressão digital SHA-256 do certificado é <code class=\"hash\">{certSha256}</code>.",
         "Os apps para Windows e macOS ainda não têm assinatura de código, então o seu sistema pode mostrar um aviso na primeira vez que você os abrir."
       ]
     },
@@ -375,7 +375,7 @@
         },
         {
           "q": "Posso usar RDP, VNC e Telnet?",
-          "a": "Sim, a partir da versão 0.4. O VNC mostra a tela em uma aba e compartilha a área de transferência (texto simples). O RDP abre no app de RDP do seu computador ou em uma aba, com o cliente integrado experimental, que compartilha a área de transferência e, no computador, uma pasta ou uma unidade. Em uma aba do Submarine, os dois mostram como está a conexão e permitem trocar qualidade de imagem por menos dados. O Telnet abre em uma aba de terminal. Os três podem passar por um servidor SSH, e o Telnet e o VNC simples são sinalizados como sem criptografia."
+          "a": "Sim, a partir da versão 0.5. O VNC mostra a tela em uma aba e compartilha a área de transferência (texto simples). O RDP abre no app de RDP do seu computador ou em uma aba, com o cliente integrado experimental, que compartilha a área de transferência e, no computador, uma pasta ou uma unidade. Em uma aba do Submarine, os dois mostram como está a conexão e permitem trocar qualidade de imagem por menos dados. O Telnet abre em uma aba de terminal. Os três podem passar por um servidor SSH, e o Telnet e o VNC simples são sinalizados como sem criptografia."
         },
         {
           "q": "O que uma área de trabalho remota recebe do meu computador?",
@@ -387,7 +387,7 @@
         },
         {
           "q": "Em quais idiomas o app está disponível?",
-          "a": "A partir da versão 0.4, em {appLanguages} idiomas: {appLanguageList}. O app segue o idioma do seu sistema ou o que você escolher em <em>Configurações → Idioma</em>. As traduções são novas, então, se alguma palavra estiver errada, por favor, nos avise pelo botão <em>Sugerir uma correção</em>, que fica ali mesmo."
+          "a": "A partir da versão 0.5, em {appLanguages} idiomas: {appLanguageList}. O app segue o idioma do seu sistema ou o que você escolher em <em>Configurações → Idioma</em>. As traduções são novas, então, se alguma palavra estiver errada, por favor, nos avise pelo botão <em>Sugerir uma correção</em>, que fica ali mesmo."
         },
         {
           "q": "Posso usar meu próprio servidor de sincronização?",
@@ -395,11 +395,11 @@
         },
         {
           "q": "Como excluo minha conta?",
-          "a": "No app (versão 0.4 ou posterior), use “Excluir conta…” em “Sincronização na nuvem”. Você também pode fazer isso na <a href=\"{deleteUrl}\">página de exclusão de conta</a>."
+          "a": "No app (versão 0.5 ou posterior), use “Excluir conta…” em “Sincronização na nuvem”. Você também pode fazer isso na <a href=\"{deleteUrl}\">página de exclusão de conta</a>."
         },
         {
           "q": "Como relato um problema ou peço alguma coisa?",
-          "a": "A partir da versão 0.4, use <em>Enviar comentários</em> nas Configurações ou <em>Comentários</em> na parte de baixo da lista de perfis. Só é enviado o que você digitar, e um endereço de e-mail só se você informar um para receber uma resposta. Você também pode <a href=\"{issuesUrl}\">abrir uma issue no GitHub</a>."
+          "a": "A partir da versão 0.5, use <em>Enviar comentários</em> nas Configurações ou <em>Comentários</em> na parte de baixo da lista de perfis. Só é enviado o que você digitar, e um endereço de e-mail só se você informar um para receber uma resposta. Você também pode <a href=\"{issuesUrl}\">abrir uma issue no GitHub</a>."
         }
       ]
     }
@@ -590,7 +590,7 @@
         },
         {
           "title": "Verifique seu download",
-          "text": "Compare a soma de verificação com o arquivo SHA256SUMS da versão (a partir da 0.4), verifique o certificado do app para Android com o apksigner ou compile o app a partir do código-fonte."
+          "text": "Compare a soma de verificação com o arquivo SHA256SUMS da versão (a partir da 0.5), verifique o certificado do app para Android com o apksigner ou compile o app a partir do código-fonte."
         }
       ],
       "paramsTitle": "Os parâmetros, para as suas próprias ferramentas",
@@ -771,7 +771,7 @@
         "id": "deleting",
         "title": "Exclusão dos seus dados",
         "list": [
-          "<strong>Exclua sua conta</strong> no app (versão 0.4 ou posterior): <em>Sincronização na nuvem → (conectado) → Excluir conta…</em>, ou na <a href=\"{deleteUrl}\">página de exclusão de conta</a> deste site. Você confirma com a senha da conta. Isso remove imediatamente: as cópias na nuvem de todos os seus perfis, sua chave de compartilhamento, todos os perfis que você compartilhou (as pessoas com quem você os compartilhou perdem o acesso), sua participação nos compartilhamentos de outras pessoas, suas sessões e as entradas de log da sua conta. Os registros que você gravou no perfil compartilhado de outra pessoa ficam com esse perfil, sem identificar quem os escreveu. Os perfis nos seus dispositivos não são afetados.",
+          "<strong>Exclua sua conta</strong> no app (versão 0.5 ou posterior): <em>Sincronização na nuvem → (conectado) → Excluir conta…</em>, ou na <a href=\"{deleteUrl}\">página de exclusão de conta</a> deste site. Você confirma com a senha da conta. Isso remove imediatamente: as cópias na nuvem de todos os seus perfis, sua chave de compartilhamento, todos os perfis que você compartilhou (as pessoas com quem você os compartilhou perdem o acesso), sua participação nos compartilhamentos de outras pessoas, suas sessões e as entradas de log da sua conta. Os registros que você gravou no perfil compartilhado de outra pessoa ficam com esse perfil, sem identificar quem os escreveu. Os perfis nos seus dispositivos não são afetados.",
           "<strong>As linhas de log gravadas depois disso</strong> (a própria exclusão, que não contém nenhum e-mail, e qualquer tentativa de login posterior com esse e-mail) ficam guardadas por até {auditDays} dias. Os backups feitos quando o software do servidor é atualizado são mantidos só por pouco tempo.",
           "<strong>Remova a cópia na nuvem de um perfil</strong> no app: no menu do perfil, na lista de perfis, <em>Excluir da nuvem…</em>.",
           "<strong>Excluir uma mensagem de comentários</strong> antes dos {feedbackDays} dias: fale com a gente informando o número do relatório.",
@@ -829,7 +829,7 @@
       "As linhas de log gravadas depois da exclusão (a própria exclusão, sem o seu e-mail, e tentativas de login posteriores) são guardadas por até {auditDays} dias."
     ],
     "inAppTitle": "No app",
-    "inApp": "Versão 0.4 ou posterior: abra <em>Sincronização na nuvem</em> estando conectado à sua conta, escolha <em>Excluir conta…</em> e confirme com a senha da conta.",
+    "inApp": "Versão 0.5 ou posterior: abra <em>Sincronização na nuvem</em> estando conectado à sua conta, escolha <em>Excluir conta…</em> e confirme com a senha da conta.",
     "formTitle": "Nesta página",
     "formLede": "Entre com o endereço de e-mail e a senha da sua conta de sincronização. Sua conta é excluída na hora.",
     "email": "Endereço de e-mail",

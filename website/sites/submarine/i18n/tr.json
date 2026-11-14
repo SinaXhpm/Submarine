@@ -17,7 +17,7 @@
   },
   "common": {
     "tagline": "SSH, SFTP, RDP, VNC ve Telnet istemcisi",
-    "newIn": "0.4'te yeni",
+    "newIn": "0.5'te yeni",
     "updated": "Son güncelleme: {date}",
     "translationNote": "Bu sayfa bir çeviridir. İngilizce sürümden farklı olduğu durumlarda geçerli olan İngilizce sürümdür.",
     "englishVersion": "İngilizce sürüm",
@@ -45,7 +45,7 @@
     "title": "Submarine – ücretsiz SSH, SFTP, RDP, VNC ve Telnet istemcisi",
     "description": "Ücretsiz ve açık kaynaklı SSH, SFTP, RDP, VNC ve Telnet istemcisi. Windows, macOS, Linux ve Android için. Sunucu, parola ve anahtarlarınız şifreli kalır.",
     "hero": {
-      "pillTag": "0.4",
+      "pillTag": "0.5",
       "pill": "Ortak pano ve hız seçenekleriyle uzak masaüstleri",
       "title": "Tüm sunucularınız <em>tek bir şifreli uygulamada</em>",
       "lede": "Submarine; Windows, macOS, Linux ve Android için bir SSH, SFTP, RDP, VNC ve Telnet istemcisidir. Sunucularınız, parolalarınız ve anahtarlarınız cihazınızda şifrelenir ve yalnızca siz isterseniz cihazlarınız arasında eşitlenir.",
@@ -246,7 +246,7 @@
       ]
     },
     "remote": {
-      "kicker": "0.4'te yeni",
+      "kicker": "0.5'te yeni",
       "title": "Uzak masaüstleri, <em>terminallerinizin hemen yanında</em>",
       "lede": "VNC ve yerleşik RDP istemcisi, doğrudan ya da SSH sunucularınızdan biri üzerinden bir sekmede açılır. RDP, bilgisayarınızın kendi RDP uygulamasında da açılabilir.",
       "points": [
@@ -344,11 +344,11 @@
           "detail": "Android 7.0 ve üzeri · .apk"
         }
       ],
-      "betaNote": "Bu sayfa, son testleri süren 0.4 sürümünü anlatır. 0.4 yayımlanana kadar İndir düğmeleri, yayımlanmış son sürüm olan 0.3.8'i verir. 0.4'ün betası <a href=\"{releasesUrl}\">GitHub</a>'da ön sürüm olarak, iPhone, iPad ve Mac içinse <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>'ta sunulur. 0.3.8 sürümünde terminal, dosya aktarımı, tüneller, izleme ve eşitleme vardır; ancak uzak masaüstleri, Telnet, Windows Hello ve parmak iziyle kilit açma, SSH ajanları, klasör karşılaştırma ve 0.4'ün getirdiği diğer yenilikler yoktur. 0.4'ten itibaren Windows için taşınabilir bir .zip de sunulur.",
+      "betaNote": "Bu sayfa, son testleri süren 0.5 sürümünü anlatır. 0.5 yayımlanana kadar İndir düğmeleri, yayımlanmış son sürüm olan 0.3.8'i verir. 0.5'ün betası <a href=\"{releasesUrl}\">GitHub</a>'da ön sürüm olarak, iPhone, iPad ve Mac içinse <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>'ta sunulur. 0.3.8 sürümünde terminal, dosya aktarımı, tüneller, izleme ve eşitleme vardır; ancak uzak masaüstleri, Telnet, Windows Hello ve parmak iziyle kilit açma, SSH ajanları, klasör karşılaştırma ve 0.5'ün getirdiği diğer yenilikler yoktur. 0.5'ten itibaren Windows için taşınabilir bir .zip de sunulur.",
       "verifyTitle": "İndirdiğiniz dosyayı doğrulayın",
       "verify": [
-        "0.4 sürümünden itibaren her sürümde, indirilebilen her dosyanın sağlama toplamını içeren bir SHA256SUMS dosyası bulunur.",
-        "0.4 sürümünden itibaren Android uygulaması geliştiricinin anahtarıyla imzalanır. Sertifikanın SHA-256 parmak izi: <code class=\"hash\">{certSha256}</code>.",
+        "0.5 sürümünden itibaren her sürümde, indirilebilen her dosyanın sağlama toplamını içeren bir SHA256SUMS dosyası bulunur.",
+        "0.5 sürümünden itibaren Android uygulaması geliştiricinin anahtarıyla imzalanır. Sertifikanın SHA-256 parmak izi: <code class=\"hash\">{certSha256}</code>.",
         "Windows ve macOS derlemeleri henüz kod imzalı değil; bu yüzden onları ilk açtığınızda sisteminiz sizi uyarabilir."
       ]
     },
@@ -375,7 +375,7 @@
         },
         {
           "q": "RDP, VNC ve Telnet kullanabilir miyim?",
-          "a": "Evet, 0.4 sürümünden itibaren. VNC ekranı bir sekmede gösterir ve panoyu paylaşır (düz metin). RDP, bilgisayarınızın RDP uygulamasında ya da deneysel yerleşik istemciyle bir sekmede açılır; yerleşik istemci panoyu ve bilgisayarda bir klasörü ya da sürücüyü paylaşır. Bir Submarine sekmesinde ikisi de bağlantının durumunu gösterir ve daha az veri için görüntü kalitesinden ödün vermenizi sağlar. Telnet bir terminal sekmesinde açılır. Üçü de bir SSH sunucusu üzerinden geçebilir; Telnet ve düz VNC şifrelenmemiş olarak işaretlenir."
+          "a": "Evet, 0.5 sürümünden itibaren. VNC ekranı bir sekmede gösterir ve panoyu paylaşır (düz metin). RDP, bilgisayarınızın RDP uygulamasında ya da deneysel yerleşik istemciyle bir sekmede açılır; yerleşik istemci panoyu ve bilgisayarda bir klasörü ya da sürücüyü paylaşır. Bir Submarine sekmesinde ikisi de bağlantının durumunu gösterir ve daha az veri için görüntü kalitesinden ödün vermenizi sağlar. Telnet bir terminal sekmesinde açılır. Üçü de bir SSH sunucusu üzerinden geçebilir; Telnet ve düz VNC şifrelenmemiş olarak işaretlenir."
         },
         {
           "q": "Uzak masaüstü bilgisayarımdan neler alır?",
@@ -387,7 +387,7 @@
         },
         {
           "q": "Uygulama hangi dillerde kullanılabiliyor?",
-          "a": "0.4 sürümünden itibaren {appLanguages} dilde: {appLanguageList}. Uygulama sisteminizin dilini ya da <em>Ayarlar → Dil</em> bölümünde seçtiğiniz dili kullanır. Çeviriler yeni; bu yüzden yanlış bir kelime görürseniz lütfen bunu orada <em>Düzeltme önerin</em> düğmesiyle bize bildirin."
+          "a": "0.5 sürümünden itibaren {appLanguages} dilde: {appLanguageList}. Uygulama sisteminizin dilini ya da <em>Ayarlar → Dil</em> bölümünde seçtiğiniz dili kullanır. Çeviriler yeni; bu yüzden yanlış bir kelime görürseniz lütfen bunu orada <em>Düzeltme önerin</em> düğmesiyle bize bildirin."
         },
         {
           "q": "Kendi eşitleme sunucumu kullanabilir miyim?",
@@ -395,11 +395,11 @@
         },
         {
           "q": "Hesabımı nasıl silerim?",
-          "a": "Uygulamada (0.4 ve sonraki sürümler) Bulut eşitleme bölümündeki “Hesabı sil…” komutunu kullanın. Bunu <a href=\"{deleteUrl}\">hesap silme sayfasından</a> da yapabilirsiniz."
+          "a": "Uygulamada (0.5 ve sonraki sürümler) Bulut eşitleme bölümündeki “Hesabı sil…” komutunu kullanın. Bunu <a href=\"{deleteUrl}\">hesap silme sayfasından</a> da yapabilirsiniz."
         },
         {
           "q": "Bir sorunu nasıl bildiririm ya da nasıl istekte bulunurum?",
-          "a": "0.4 sürümünden itibaren Ayarlar'daki <em>Geri bildirim gönder</em> düğmesini ya da profil listesinin altındaki <em>Geri bildirim</em> düğmesini kullanın. Yalnızca yazdıklarınız gönderilir; e-posta adresi ise yalnızca yanıt almak için verirseniz gönderilir. Ayrıca <a href=\"{issuesUrl}\">GitHub'da bir issue açabilirsiniz</a>."
+          "a": "0.5 sürümünden itibaren Ayarlar'daki <em>Geri bildirim gönder</em> düğmesini ya da profil listesinin altındaki <em>Geri bildirim</em> düğmesini kullanın. Yalnızca yazdıklarınız gönderilir; e-posta adresi ise yalnızca yanıt almak için verirseniz gönderilir. Ayrıca <a href=\"{issuesUrl}\">GitHub'da bir issue açabilirsiniz</a>."
         }
       ]
     }
@@ -590,7 +590,7 @@
         },
         {
           "title": "İndirdiğiniz dosyayı doğrulayın",
-          "text": "Sağlama toplamını sürümdeki SHA256SUMS dosyasıyla karşılaştırın (0.4 sürümünden itibaren), Android uygulamasının sertifikasını apksigner ile denetleyin ya da uygulamayı kaynak koddan derleyin."
+          "text": "Sağlama toplamını sürümdeki SHA256SUMS dosyasıyla karşılaştırın (0.5 sürümünden itibaren), Android uygulamasının sertifikasını apksigner ile denetleyin ya da uygulamayı kaynak koddan derleyin."
         }
       ],
       "paramsTitle": "Kendi araçlarınız için ayarlar",
@@ -771,7 +771,7 @@
         "id": "deleting",
         "title": "Verilerinizi silme",
         "list": [
-          "<strong>Hesabınızı silmek için</strong> uygulamada (0.4 ve sonraki sürümler) <em>Bulut eşitleme → (giriş yapmışken) → Hesabı sil…</em> yolunu izleyin ya da bu web sitesindeki <a href=\"{deleteUrl}\">hesap silme sayfasını</a> kullanın. Hesap parolanızla onaylarsınız. Bu işlem şunları anında kaldırır: tüm profillerinizin buluttaki kopyaları, paylaşım anahtarınız, paylaştığınız her profil (paylaştığınız kişiler erişimini kaybeder), başkalarının paylaşımlarındaki üyeliğiniz, oturumlarınız ve hesabınızın günlük girdileri. Başka birinin paylaşılan profiline yazdığınız kayıtlar, yazan kişi belirtilmeden o profilde kalır. Cihazlarınızdaki profillere dokunulmaz.",
+          "<strong>Hesabınızı silmek için</strong> uygulamada (0.5 ve sonraki sürümler) <em>Bulut eşitleme → (giriş yapmışken) → Hesabı sil…</em> yolunu izleyin ya da bu web sitesindeki <a href=\"{deleteUrl}\">hesap silme sayfasını</a> kullanın. Hesap parolanızla onaylarsınız. Bu işlem şunları anında kaldırır: tüm profillerinizin buluttaki kopyaları, paylaşım anahtarınız, paylaştığınız her profil (paylaştığınız kişiler erişimini kaybeder), başkalarının paylaşımlarındaki üyeliğiniz, oturumlarınız ve hesabınızın günlük girdileri. Başka birinin paylaşılan profiline yazdığınız kayıtlar, yazan kişi belirtilmeden o profilde kalır. Cihazlarınızdaki profillere dokunulmaz.",
           "<strong>Silme işleminden sonra yazılan günlük satırları</strong> en fazla {auditDays} gün saklanır: silme işleminin kendisi (e-posta adresi içermez) ve o e-posta adresiyle sonradan yapılan her giriş denemesi. Sunucu yazılımının güncellemeleri sırasında alınan yedekler yalnızca kısa bir süre tutulur.",
           "<strong>Tek bir profilin buluttaki kopyasını kaldırmak için</strong> uygulamada, profil listesinde ilgili profilin menüsünden <em>Buluttan sil…</em> komutunu seçin.",
           "<strong>Bir geri bildirim mesajını {feedbackDays} gün dolmadan silmek</strong> için rapor numarasıyla bize yazın.",
@@ -829,7 +829,7 @@
       "Silme işleminden sonra yazılan günlük satırları en fazla {auditDays} gün saklanır: silme işleminin kendisi (e-posta adresiniz olmadan) ve sonraki giriş denemeleri."
     ],
     "inAppTitle": "Uygulamada",
-    "inApp": "0.4 ve sonraki sürümler: Giriş yapmışken <em>Bulut eşitleme</em> bölümünü açın, <em>Hesabı sil…</em> komutunu seçin ve hesap parolanızla onaylayın.",
+    "inApp": "0.5 ve sonraki sürümler: Giriş yapmışken <em>Bulut eşitleme</em> bölümünü açın, <em>Hesabı sil…</em> komutunu seçin ve hesap parolanızla onaylayın.",
     "formTitle": "Bu sayfada",
     "formLede": "Eşitleme hesabınızın e-posta adresi ve parolasıyla giriş yapın. Hesabınız hemen silinir.",
     "email": "E-posta adresi",
