@@ -257,7 +257,7 @@ function InterfaceFontSetting({ settings, setSettings }: any) {
   return (
     <div className="space-y-2 pt-6 border-t border-white/5">
       <div className="flex justify-between items-center gap-2">
-        <label htmlFor="ui-font-family" className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">{t("Interface font")}</label>
+        <label htmlFor="ui-font-family" className="text-[12px] font-semibold text-zinc-500">{t("Interface font")}</label>
         {draft && (
           <button
             type="button"
@@ -330,7 +330,7 @@ function TerminalFontSettings({ settings, setSettings }: any) {
       {/* Font face */}
       <div className="space-y-2">
         <div className="flex justify-between items-center gap-2">
-          <label htmlFor="term-font-family" className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">{t("Font")}</label>
+          <label htmlFor="term-font-family" className="text-[12px] font-semibold text-zinc-500">{t("Font")}</label>
           {familyDraft && (
             <button
               type="button"
@@ -360,7 +360,7 @@ function TerminalFontSettings({ settings, setSettings }: any) {
       {/* Font size */}
       <div className="space-y-3 pt-5 border-t border-white/5">
         <div className="flex justify-between items-center gap-3">
-          <label htmlFor="term-font-size" className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">{t("Font Size (px)")}</label>
+          <label htmlFor="term-font-size" className="text-[12px] font-semibold text-zinc-500">{t("Font size (px)")}</label>
           <div className="flex items-center gap-1.5">
             <button
               type="button"
@@ -523,7 +523,7 @@ function TerminalColoursSetting({ settings, setSettings }: any) {
   );
   return (
     <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
-      <div className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">{t("Colours")}</div>
+      <div className="text-[12px] font-semibold text-zinc-500">{t("Colours")}</div>
       <div role="radiogroup" aria-label={t("Colour scheme")} className="grid grid-cols-2 gap-2">
         {schemes.map(swatch)}
       </div>
@@ -604,7 +604,7 @@ function TerminalScrollbackSetting({ settings, setSettings }: any) {
   return (
     <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-3 shadow-xl">
       <div className="flex justify-between items-center gap-3">
-        <label htmlFor="term-scrollback" className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">{t("Scrollback (lines)")}</label>
+        <label htmlFor="term-scrollback" className="text-[12px] font-semibold text-zinc-500">{t("Scrollback (lines)")}</label>
         <div className="flex items-center gap-1.5">
           <button
             type="button"
@@ -869,15 +869,15 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
 
         {/* Appearance Section */}
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
-            <Palette size={14} /> {t("UI Customization")}
+          <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
+            <Palette size={14} /> {t("UI customization")}
           </div>
 
           <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-8 shadow-xl">
             {/* Accent Color */}
             <div className="space-y-4">
               <div className="flex justify-between items-center">
-                <label className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">{t("Primary Accent Color")}</label>
+                <label className="text-[12px] font-semibold text-zinc-500">{t("Primary accent color")}</label>
                 <div className="flex items-center gap-2">
                   <input 
                     type="color" 
@@ -909,7 +909,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
             {/* Background Theme */}
             <div className="space-y-4 pt-6 border-t border-white/5">
               <div className="flex justify-between items-center">
-                <label className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">{t("Background Theme")}</label>
+                <label className="text-[12px] font-semibold text-zinc-500">{t("Background theme")}</label>
                 <div className="flex items-center gap-2">
                   <input 
                     type="color" 
@@ -944,8 +944,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
 
         {/* Terminal Section */}
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
-            <Settings size={14} /> {t("Terminal Configuration")}
+          <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
+            <Settings size={14} /> {t("Terminal configuration")}
           </div>
 
           <TerminalFontSettings settings={settings} setSettings={setSettings} />
@@ -960,7 +960,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
         </section>
 
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+          <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
             <RefreshCw size={14} /> {t("Connections")}
           </div>
 
@@ -970,7 +970,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
         {/* Not on a phone or tablet, which has no ssh-agent or ~/.ssh/config to use. */}
         {!IS_MOBILE && (
           <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-            <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+            <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
               <KeyRound size={14} /> {t("Authentication")}
             </div>
 
@@ -986,7 +986,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
 
         {IS_ANDROID && (
           <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-            <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+            <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
               <EyeOff size={14} /> {t("Privacy")}
             </div>
 
@@ -1000,8 +1000,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
             mobile (six icons → five) without burying the data. */}
         {onOpenLogs && (
           <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-            <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
-              <List size={14} /> {t("Activity Log")}
+            <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
+              <List size={14} /> {t("Activity log")}
             </div>
 
             <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
@@ -1010,9 +1010,9 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
               </p>
               <button
                 onClick={onOpenLogs}
-                className="px-4 h-9 bg-primary/10 border border-primary/30 text-primary rounded-xl text-xs font-bold uppercase hover:bg-primary hover:text-zinc-950 transition-all w-full flex items-center justify-center gap-2"
+                className="px-4 h-9 bg-primary/10 border border-primary/30 text-primary rounded-xl text-xs font-semibold hover:bg-primary hover:text-zinc-950 transition-all w-full flex items-center justify-center gap-2"
               >
-                <List size={14} /> {t("View Activity Log")}
+                <List size={14} /> {t("View activity log")}
               </button>
             </div>
           </section>
@@ -1020,7 +1020,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
 
         {/* Help & feedback: a message to the developer (components/Feedback.tsx). */}
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+          <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
             <MessageSquare size={14} /> {t("Help & feedback")}
           </div>
           <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
@@ -1030,7 +1030,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
             <button
               type="button"
               onClick={() => openFeedback()}
-              className="px-4 min-h-[40px] h-10 sm:h-9 sm:min-h-0 bg-primary/10 border border-primary/30 text-primary rounded-xl text-xs font-bold uppercase hover:bg-primary hover:text-zinc-950 transition-all w-full flex items-center justify-center gap-2"
+              className="px-4 min-h-[40px] h-10 sm:h-9 sm:min-h-0 bg-primary/10 border border-primary/30 text-primary rounded-xl text-xs font-semibold hover:bg-primary hover:text-zinc-950 transition-all w-full flex items-center justify-center gap-2"
             >
               <MessageSquare size={14} /> {t("Send feedback")}
             </button>
@@ -1039,8 +1039,8 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
 
         {/* Cloud Section */}
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
-            <Cloud size={14} /> {t("Cloud Sync")}
+          <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
+            <Cloud size={14} /> {t("Cloud sync")}
           </div>
 
           <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
@@ -1074,7 +1074,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
 
         {/* Maintenance Section */}
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
-          <div className="flex items-center gap-2 text-zinc-400 font-bold uppercase tracking-widest text-xs">
+          <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
             <RefreshCw size={14} /> {t("Maintenance")}
           </div>
 
@@ -1082,7 +1082,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
             {storage && (
               <div className="space-y-1.5 pb-4 border-b border-white/5">
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-black text-zinc-500 uppercase tracking-wider">{t("Data folder")}</span>
+                  <span className="text-[12px] font-semibold text-zinc-500">{t("Data folder")}</span>
                   {storage.portable && (
                     <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider text-primary bg-primary/10 border border-primary/30">
                       {t("Portable")}
@@ -1106,9 +1106,9 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
                   setSettings((s: any) => ({ ...s, primaryColor: '#60a5fa', backgroundColor: '#0a0a0c', terminalFontSize: 14, terminalFontFamily: '' }));
                 }
               }}
-              className="px-4 h-9 bg-zinc-900 border border-white/5 text-zinc-300 rounded-xl text-xs font-bold uppercase hover:bg-white/5 transition-all w-full"
+              className="px-4 h-9 bg-zinc-900 border border-white/5 text-zinc-300 rounded-xl text-xs font-semibold hover:bg-white/5 transition-all w-full"
             >
-              {t("Reset to Defaults")}
+              {t("Reset to defaults")}
             </button>
           </div>
         </section>

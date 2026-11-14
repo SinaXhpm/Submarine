@@ -304,7 +304,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
       <div className="h-12 px-4 shrink-0 flex items-center justify-between border-b border-white/5 bg-white/5">
         <div className="flex items-center gap-2 min-w-0">
           <TabIcon size={14} className="text-primary shrink-0" />
-          <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-300 truncate">
+          <span className="text-[11px] font-semibold text-zinc-300 truncate">
             {tab === "node" && serverName ? t("Library · {tab} · {server}", { tab: tabLabel, server: serverName }) : t("Library · {tab}", { tab: tabLabel })}
           </span>
         </div>
@@ -337,7 +337,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
       <div className={`grid ${hasNode ? "grid-cols-3" : "grid-cols-2"} shrink-0 border-b border-white/5 bg-black/20`}>
         <button
           onClick={() => setTab("commands")}
-          className={`h-9 flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider transition-all ${
+          className={`h-9 flex items-center justify-center gap-1.5 text-[12px] font-semibold transition-all ${
             tab === "commands"
               ? "text-primary bg-primary/5 border-b border-primary"
               : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
@@ -348,7 +348,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         </button>
         <button
           onClick={() => setTab("notes")}
-          className={`h-9 flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider transition-all ${
+          className={`h-9 flex items-center justify-center gap-1.5 text-[12px] font-semibold transition-all ${
             tab === "notes"
               ? "text-primary bg-primary/5 border-b border-primary"
               : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
@@ -360,7 +360,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         {hasNode && (
           <button
             onClick={() => setTab("node")}
-            className={`h-9 flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider transition-all ${
+            className={`h-9 flex items-center justify-center gap-1.5 text-[12px] font-semibold transition-all ${
               tab === "node"
                 ? "text-primary bg-primary/5 border-b border-primary"
                 : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
@@ -454,7 +454,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
               return (
                 <Fragment key={c.id}>
                 {heading && (
-                  <div className="px-1 pt-1 text-[9.5px] font-bold uppercase tracking-widest text-zinc-500" data-command-group>
+                  <div className="px-1 pt-1 text-[11px] font-semibold text-zinc-500" data-command-group>
                     {heading}
                   </div>
                 )}

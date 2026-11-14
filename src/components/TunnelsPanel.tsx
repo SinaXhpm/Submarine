@@ -429,7 +429,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
   return (
     <div className="flex-1 flex flex-col h-full bg-[#09090b] overflow-hidden relative">
       {disabled && (
-        <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono uppercase">
+        <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono">
           <span className="px-3 py-1.5 bg-red-500/15 border border-red-500/30 rounded text-red-300">
             {t("Session disconnected")}
           </span>
@@ -438,14 +438,14 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
 
       {/* Header: counts + add button */}
       <div className="shrink-0 px-3 py-2 flex items-center justify-between gap-2 border-b border-white/5 bg-[#121214]">
-        <div className="flex items-center gap-2 min-w-0 text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+        <div className="flex items-center gap-2 min-w-0 text-[11px] font-semibold text-zinc-400">
           <Activity size={12} className="shrink-0" />
           <span className="whitespace-nowrap">{tn(total, "{count} forward", "{count} forwards")}</span>
           {total > 0 && <span className="text-zinc-600 font-normal whitespace-nowrap truncate">{t("· {count} running", { count: runningCount })}</span>}
         </div>
         <button
           onClick={() => { setAdding((a) => !a); setError(null); }}
-          className="h-6 px-2.5 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 flex items-center gap-1.5 shrink-0"
+          className="h-6 px-2.5 rounded text-[11px] font-semibold bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 flex items-center gap-1.5 shrink-0"
         >
           {adding ? <X size={11} /> : <Plus size={11} />}
           <span>{adding ? t("Cancel") : t("Add")}</span>
@@ -505,7 +505,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
             <button
               onClick={addTunnel}
               disabled={busy}
-              className="h-7 px-3 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 disabled:opacity-50 shrink-0"
+              className="h-7 px-3 rounded text-[11px] font-semibold bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 disabled:opacity-50 shrink-0"
             >
               {busy ? "…" : t("Start|forward")}
             </button>
@@ -546,7 +546,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
         <div className="px-3 py-1.5 flex items-center justify-between border-b border-white/5">
           <button
             onClick={() => setLogsOpen((o) => !o)}
-            className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-200 flex items-center gap-1.5"
+            className="text-[11px] font-semibold text-zinc-400 hover:text-zinc-200 flex items-center gap-1.5"
           >
             <FileText size={11} />
             <span>{t("Log")}</span>
@@ -562,7 +562,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
               <button
                 onClick={() => setLogFilter(null)}
                 title={t("Show all tunnels")}
-                className="px-1.5 text-[9px] uppercase tracking-wider text-zinc-500 hover:text-zinc-200"
+                className="px-1.5 text-[11px] text-zinc-500 hover:text-zinc-200"
               >
                 {t("Clear filter")}
               </button>

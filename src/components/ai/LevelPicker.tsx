@@ -284,7 +284,7 @@ export const FullAccessBanner = ({ serverName, serverUuid, sessionId, info, onCh
         type="button"
         onClick={() => void end()}
         title={`Back to ${LEVELS.find((l) => l.id === back)?.label ?? back}`}
-        className="shrink-0 h-10 sm:h-7 px-2.5 rounded-md text-[10.5px] font-bold uppercase tracking-wider border border-rose-300/60 bg-rose-500/30 text-rose-50 hover:bg-rose-500/45"
+        className="shrink-0 h-10 sm:h-7 px-2.5 rounded-md text-[11.5px] font-semibold border border-rose-300/60 bg-rose-500/30 text-rose-50 hover:bg-rose-500/45"
       >
         End now
       </button>
@@ -417,7 +417,7 @@ export const LevelMenu = ({ serverUuid, serverName, current, anchor, compact, on
         style={pos ?? { left: -9999, top: -9999 }}
         className="fixed z-[9997] w-60 max-w-[calc(100vw-1rem)] rounded-xl border border-white/10 bg-[#16161a] shadow-2xl shadow-black/60 p-1 text-[12px] outline-none"
       >
-        <div className="px-3 pt-1.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-zinc-500">AI permission level</div>
+        <div className="px-3 pt-1.5 pb-1 text-[11px] font-semibold text-zinc-500">AI permission level</div>
         {LEVELS.filter((l) => l.id !== "full").map((l) => {
           const checked = l.id === saved;
           const no = l.id === "auto" && !!info && noAuto(info) && !checked;

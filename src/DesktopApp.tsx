@@ -1789,7 +1789,7 @@ function DesktopApp() {
                           <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
                           <span className="text-[12px] font-semibold truncate flex-1">{tabLabel(s)}</span>
                           {isMerged && !isActive && (
-                            <span className="text-[9px] font-bold uppercase tracking-wider text-primary/60">{t("Split-in")}</span>
+                            <span className="text-[11px] font-semibold text-primary/60">{t("Split-in")}</span>
                           )}
                         </button>
                         {/* Merge/unmerge toggle — mobile equivalent of
@@ -1854,7 +1854,7 @@ function DesktopApp() {
                     <LayoutGrid size={13} className="shrink-0" />
                     <span className="text-[12px] font-semibold flex-1">{t("Wall")}</span>
                     {wallItems.length > 0 && (
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-primary/70">
+                      <span className="text-[11px] font-semibold text-primary/70">
                         {t("{count} pinned", { count: wallItems.length })}
                       </span>
                     )}
@@ -2199,7 +2199,7 @@ function DesktopApp() {
                       checked={broadcast.enabled}
                       onChange={broadcast.toggleEnabled}
                     />
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-200">
+                    <span className="text-[12px] font-semibold text-zinc-200">
                       {t("Broadcast input")}
                     </span>
                   </label>
@@ -2214,18 +2214,18 @@ function DesktopApp() {
                 <div className="flex items-center gap-1.5 px-1 pb-2 border-b border-white/5">
                   <button
                     onClick={() => broadcast.selectAll(sessions.map(s => s.id))}
-                    className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                    className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[11px] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
                   >
                     {t("All")}
                   </button>
                   <button
                     onClick={() => broadcast.selectNone()}
-                    className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[10px] uppercase tracking-wider text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+                    className="px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-[11px] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
                   >
                     {t("None")}
                   </button>
                   <div className="flex-1" />
-                  <span className={`text-[10px] font-bold uppercase tracking-wider ${
+                  <span className={`text-[11px] font-semibold ${
                     broadcast.enabled && broadcast.targetSessionIds.size >= 2
                       ? "text-orange-300"
                       : "text-zinc-500"
@@ -2413,13 +2413,13 @@ function DesktopApp() {
               <>
                 <div className="border-t border-white/5 my-1" />
                 <div className="px-3 pt-1 pb-1.5 flex items-center justify-between">
-                  <span className="text-[9.5px] font-bold uppercase tracking-widest text-zinc-500">
+                  <span className="text-[11px] font-semibold text-zinc-500">
                     {t("Split view with")}
                   </span>
                   {targetIsActive && currentMerges.length > 0 && (
                     <button
                       onClick={() => { setMergedSessionIds([]); setTabMenu(null); }}
-                      className="text-[9.5px] font-bold uppercase tracking-wider text-zinc-500 hover:text-white"
+                      className="text-[11px] font-semibold text-zinc-500 hover:text-white"
                     >
                       {t("Clear")}
                     </button>
@@ -2834,7 +2834,7 @@ function DesktopApp() {
                                 (sessionStatuses[sess.id] ?? 'connecting') === 'idle' ? 'bg-zinc-500' :
                                 'bg-rose-500'
                               }`} />
-                              <span className="font-bold text-zinc-200 uppercase tracking-wider truncate flex-1">
+                              <span className="font-semibold text-zinc-200 truncate flex-1">
                                 {tabLabel(sess)}
                               </span>
                               <button
@@ -2941,12 +2941,12 @@ function DesktopApp() {
                     scroll sideways. */}
                 <div className="h-10 shrink-0 border-b border-white/5 bg-[#111114] flex items-center gap-2 px-3">
                   <LayoutGrid size={12} className="text-primary/70 shrink-0" />
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 shrink-0">
+                  <span className="text-[11px] font-semibold text-zinc-400 shrink-0">
                     {wallItems.length > 0 ? t("Wall · {count}", { count: wallItems.length }) : t("Wall")}
                   </span>
                   <div className="flex-1 min-w-0 flex items-center gap-3 ml-2 overflow-x-auto no-scrollbar">
                     <div className="flex items-center gap-1 shrink-0" role="group" aria-label={t("Columns")}>
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">{t("Cols")}</span>
+                      <span className="text-[11px] font-semibold text-zinc-500">{t("Cols")}</span>
                       {[1, 2, 3, 4, 5, 6].map(n => (
                         <button
                           key={n}
@@ -2964,7 +2964,7 @@ function DesktopApp() {
                       ))}
                     </div>
                     <div className="flex items-center gap-1 shrink-0" role="group" aria-label={t("Rows")}>
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-500">{t("Rows")}</span>
+                      <span className="text-[11px] font-semibold text-zinc-500">{t("Rows")}</span>
                       {[0, 1, 2, 3, 4].map(n => (
                         <button
                           key={n}
@@ -2985,7 +2985,7 @@ function DesktopApp() {
                   <button
                     onClick={() => setWallPickerOpen(v => !v)}
                     title={t("Pick terminals to pin")}
-                    className="px-3 py-1 bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 rounded-md text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5"
+                    className="px-3 py-1 bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 rounded-md text-[11px] font-semibold flex items-center gap-1.5"
                   >
                     <Plus size={11} /> {t("Add")}
                   </button>
@@ -2993,7 +2993,7 @@ function DesktopApp() {
                     <button
                       onClick={() => setWallItems([])}
                       title={t("Unpin everything (terminals stay open in their sessions)")}
-                      className="px-3 py-1 bg-white/[0.04] hover:bg-rose-500/15 hover:text-rose-300 border border-white/10 rounded-md text-[10px] font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5"
+                      className="px-3 py-1 bg-white/[0.04] hover:bg-rose-500/15 hover:text-rose-300 border border-white/10 rounded-md text-[11px] font-semibold text-zinc-400 flex items-center gap-1.5"
                     >
                       <X size={11} /> {t("Clear")}
                     </button>
@@ -3041,7 +3041,7 @@ function DesktopApp() {
                                 so keystrokes go to xterm directly. */}
                             <div className="h-7 shrink-0 flex items-center gap-2 px-2 border-b border-white/5 bg-[#141418] text-[10.5px] select-none">
                               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotTone}`} />
-                              <span className="font-bold text-zinc-200 uppercase tracking-wider truncate">
+                              <span className="font-semibold text-zinc-200 truncate">
                                 {tabLabel(sess)}
                               </span>
                               <span className="text-zinc-600">·</span>
@@ -3083,7 +3083,7 @@ function DesktopApp() {
                                 </ErrorBoundary>
                               </div>
                             ) : (
-                              <div className="flex-1 flex items-center justify-center text-zinc-500 text-[10.5px] font-medium uppercase tracking-wider">
+                              <div className="flex-1 flex items-center justify-center text-zinc-500 text-[11.5px] font-medium">
                                 {t("Session {status}", { status: t(SESSION_STATUS[st] ?? st) })}
                               </div>
                             )}
@@ -3104,7 +3104,7 @@ function DesktopApp() {
                     <div className="fixed inset-0 z-[65]" onClick={() => setWallPickerOpen(false)} />
                     <div className="absolute top-12 right-3 z-[66] w-80 max-h-[70vh] bg-[#15151a] border border-white/10 rounded-xl shadow-2xl p-2 flex flex-col">
                       <div className="px-2 pb-2 flex items-center justify-between shrink-0">
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                        <span className="text-[11px] font-semibold text-zinc-500">
                           {t("Pin terminals")}
                         </span>
                         <button aria-label={t("Close")}
@@ -3134,7 +3134,7 @@ function DesktopApp() {
                                   <span className="text-[11px] font-bold text-zinc-200 truncate flex-1">
                                     {tabLabel(s)}
                                   </span>
-                                  <span className="text-[9px] uppercase tracking-wider text-zinc-500">
+                                  <span className="text-[11px] text-zinc-500">
                                     {tn(terms.length, "{count} term", "{count} terms")}
                                   </span>
                                 </div>
@@ -3258,7 +3258,7 @@ function DesktopApp() {
                     <div className="flex items-center gap-1 self-start bg-black/30 border border-white/5 rounded-xl p-0.5">
                       <button
                         onClick={() => setLibraryTab("commands")}
-                        className={`h-8 px-3 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                        className={`h-8 px-3 rounded-lg text-[12px] font-semibold transition-all flex items-center gap-1.5 ${
                           onCommandsTab
                             ? "bg-primary/15 text-primary shadow-inner"
                             : "text-zinc-400 hover:text-zinc-100"
@@ -3271,7 +3271,7 @@ function DesktopApp() {
                       </button>
                       <button
                         onClick={() => setLibraryTab("notes")}
-                        className={`h-8 px-3 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                        className={`h-8 px-3 rounded-lg text-[12px] font-semibold transition-all flex items-center gap-1.5 ${
                           !onCommandsTab
                             ? "bg-primary/15 text-primary shadow-inner"
                             : "text-zinc-400 hover:text-zinc-100"
