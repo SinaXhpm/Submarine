@@ -995,7 +995,7 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
             onClick={() => fetchSection(tab)}
             disabled={activeState.loading || disabled}
             title={t("Refresh this tab")}
-            className="h-9 sm:h-7 px-3 sm:px-2.5 rounded-md flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            className="h-9 sm:h-7 px-3 sm:px-2.5 rounded-md flex items-center gap-1.5 text-[11.5px] font-semibold text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           >
             {activeState.loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
             <span>{t("Refresh")}</span>
@@ -1018,7 +1018,7 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
             <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/20 text-red-300 text-[11px]">
               <AlertCircle size={14} className="mt-0.5 shrink-0" />
               <div className="min-w-0">
-                <div className="font-bold uppercase tracking-wider">{e.title}</div>
+                <div className="font-semibold">{e.title}</div>
                 {e.hint && <div className="text-red-200/80 mt-0.5">{e.hint}</div>}
                 <div className="opacity-70 mt-0.5 font-mono break-all">{activeState.error}</div>
               </div>
@@ -1197,7 +1197,7 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
         {filtered.length > NIC_INITIAL_CAP && (
           <button
             onClick={() => setShowAllNics(s => !s)}
-            className="mt-2 w-full h-8 rounded-lg border border-white/10 text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:bg-white/5 hover:text-white transition-all"
+            className="mt-2 w-full h-8 rounded-lg border border-white/10 text-[11px] font-semibold text-zinc-400 hover:bg-white/5 hover:text-white transition-all"
           >
             {showAllNics ? t("Show fewer") : t("Show all {count}", { count: filtered.length })}
           </button>
@@ -1305,7 +1305,7 @@ const FirewallCard = ({ sessionId, fw }: FirewallCardProps) => {
                 <div className="space-y-1">
                   {([[tk("services"), z.services, tk("none|services")], [tk("ports"), z.ports, tk("none|ports")]] as const).map(([label, items, none]) => (
                     <div key={label} className="flex items-start gap-2">
-                      <span className="text-[9px] text-zinc-500 uppercase tracking-wide w-12 shrink-0 pt-1">{t(label)}</span>
+                      <span className="text-[11px] text-zinc-500 capitalize w-12 shrink-0 pt-1">{t(label)}</span>
                       {items.length ? (
                         <div className="flex flex-wrap gap-1">
                           {items.map((it) => (
@@ -1588,7 +1588,7 @@ const PortsTab = ({ data, sessionId, onRefresh }: { data: PortsData; sessionId: 
           <div className="overflow-x-auto custom-scrollbar -mx-1 px-1">
             <table className="w-full min-w-[460px] table-fixed border-collapse text-[11px] font-mono">
               <thead>
-                <tr className="text-left text-[9px] uppercase tracking-wider text-zinc-500 border-b border-white/10">
+                <tr className="text-left text-[11px] text-zinc-500 border-b border-white/10">
                   <th className="font-bold px-2 py-1.5 w-[46px]">{t("Proto")}</th>
                   <th className="font-bold px-2 py-1.5 w-[54px]">{t("Port")}</th>
                   <th className="font-bold px-2 py-1.5">{t("Address")}</th>
@@ -1760,7 +1760,7 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
               onClick={fetchNow}
               disabled={loading || disabled}
               title={t("Refresh now")}
-              className="h-7 px-2 rounded-md flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 transition-all"
+              className="h-7 px-2 rounded-md flex items-center gap-1 text-[11px] font-semibold text-zinc-300 bg-white/[0.04] border border-white/10 hover:bg-white/[0.08] hover:text-white disabled:opacity-40 transition-all"
             >
               {loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
             </button>
@@ -1778,7 +1778,7 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
           <div className="overflow-x-auto custom-scrollbar -mx-1 px-1">
             <table className="w-full border-collapse text-[11px] font-mono whitespace-nowrap">
               <thead>
-                <tr className="text-left text-[9px] uppercase tracking-wider text-zinc-500 border-b border-white/10">
+                <tr className="text-left text-[11px] text-zinc-500 border-b border-white/10">
                   <th className="font-bold px-2 py-1.5">{t("PID")}</th>
                   <th className="font-bold px-2 py-1.5">{t("User")}</th>
                   <th onClick={() => setSortKey("cpu")} className={`font-bold px-2 py-1.5 cursor-pointer hover:text-zinc-300 ${sortKey === "cpu" ? "text-primary" : ""}`}>{t("CPU%")}</th>
@@ -1992,7 +1992,7 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
                   </div>
                   {result && (
                     <div className={`mt-1.5 text-[10px] px-2 py-1 rounded ${result.ok ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20" : "bg-red-500/10 text-red-300 border border-red-500/20"}`}>
-                      <span className="font-bold uppercase tracking-wider mr-1">{result.ok ? t("OK|status") : t("Error")}</span>
+                      <span className="font-semibold mr-1">{result.ok ? t("OK|status") : t("Error")}</span>
                       <span className="font-mono whitespace-pre-wrap break-words">{result.msg}</span>
                     </div>
                   )}
@@ -2030,7 +2030,7 @@ const InfoCard = ({ title, icon, actions, toolbar, children, className = "", bod
       {/* Title row never wraps: the title truncates, small actions stay pinned. */}
       <div className="px-3 py-2 flex items-center gap-2 min-w-0">
         {icon && <span className="text-zinc-500 shrink-0">{icon}</span>}
-        <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 select-text truncate min-w-0 flex-1">{title}</span>
+        <span className="text-[11px] font-semibold text-zinc-400 select-text truncate min-w-0 flex-1">{title}</span>
         {actions && <div className="shrink-0 flex items-center gap-1.5">{actions}</div>}
       </div>
       {toolbar && <div className="px-3 pb-2">{toolbar}</div>}
@@ -2048,7 +2048,7 @@ interface KVProps { label: string; value: string; icon?: React.ReactNode; copyab
 // width.
 const KV = ({ label, value, icon, copyable }: KVProps) => (
   <div className="py-1 first:pt-0 last:pb-0 border-b border-white/[0.03] last:border-0">
-    <div className="text-[9.5px] font-semibold uppercase tracking-wider text-zinc-500 flex items-center gap-1 mb-0.5">
+    <div className="text-[11px] font-semibold text-zinc-500 flex items-center gap-1 mb-0.5">
       {icon}{label}
     </div>
     <div className="text-[11px] font-mono text-zinc-200 select-text break-words leading-snug">
@@ -2068,7 +2068,7 @@ const Meter = ({ label, used, total, compact }: MeterProps) => {
     <div className={compact ? "" : "py-1 first:pt-0 last:pb-0"}>
       {label && (
         <div className="flex items-baseline justify-between text-[10px] mb-1">
-          <span className="font-bold uppercase tracking-wider text-zinc-500">{label}</span>
+          <span className="font-semibold text-zinc-500">{label}</span>
           <span className="font-mono text-zinc-300 select-text">{formatBytes(used)} <span className="text-zinc-500">/ {formatBytes(total)}</span></span>
         </div>
       )}
@@ -2111,7 +2111,7 @@ const FilterInput = ({ value, onChange, placeholder }: { value: string; onChange
 const ProtoPill = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) => (
   <button
     onClick={onClick}
-    className={`h-9 sm:h-7 px-3 sm:px-2 rounded-md text-[10.5px] font-bold uppercase tracking-wider transition-all border ${active ? "bg-primary/15 text-primary border-primary/30" : "bg-white/[0.04] text-zinc-400 border-white/10 hover:bg-white/[0.08] hover:text-white"}`}
+    className={`h-9 sm:h-7 px-3 sm:px-2 rounded-md text-[11.5px] font-semibold transition-all border ${active ? "bg-primary/15 text-primary border-primary/30" : "bg-white/[0.04] text-zinc-400 border-white/10 hover:bg-white/[0.08] hover:text-white"}`}
   >
     {children}
   </button>
@@ -2126,7 +2126,7 @@ const CountPill = ({ active, onClick, tone, count, children }: { active: boolean
   return (
     <button
       onClick={onClick}
-      className={`h-9 sm:h-7 px-3 sm:px-2 rounded-md text-[10.5px] font-bold uppercase tracking-wider transition-all border flex items-center gap-1.5 ${baseTone} hover:brightness-110`}
+      className={`h-9 sm:h-7 px-3 sm:px-2 rounded-md text-[11.5px] font-semibold transition-all border flex items-center gap-1.5 ${baseTone} hover:brightness-110`}
     >
       <span>{children}</span>
       <span className="text-[9.5px] opacity-70">{count}</span>

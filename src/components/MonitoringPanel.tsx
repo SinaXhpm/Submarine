@@ -436,7 +436,7 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
           same breakpoint since it's the lowest-value piece of chrome. */}
       <div className="shrink-0 px-4 sm:px-6 py-3 sm:py-5 border-b border-white/5 flex items-center justify-between gap-2 sm:gap-3">
         <div className="min-w-0">
-          <h2 className="text-[16px] sm:text-[22px] font-bold text-white uppercase tracking-tight flex items-center gap-2">
+          <h2 className="text-[16px] sm:text-[22px] font-bold text-white tracking-tight flex items-center gap-2">
             <Activity size={18} className="text-primary" /> {t("Monitoring")}
           </h2>
           <p className="hidden md:block text-[12px] text-zinc-300 mt-0.5">
@@ -447,9 +447,9 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
           <button
             onClick={() => setAddOpen(true)}
             title={t("Add node")}
-            className="h-9 px-2.5 sm:px-3.5 rounded-lg text-[12px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 flex items-center gap-1.5"
+            className="h-9 px-2.5 sm:px-3.5 rounded-lg text-[12px] font-semibold bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 flex items-center gap-1.5"
           >
-            <Plus size={14} /> <span className="hidden sm:inline">{t("Add Node")}</span>
+            <Plus size={14} /> <span className="hidden sm:inline">{t("Add node")}</span>
           </button>
           <div className="hidden sm:block h-7 w-px bg-white/10" />
           {anyRunning ? (
@@ -457,18 +457,18 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
               onClick={pauseAll}
               disabled={busy}
               title={t("Pause all")}
-              className="h-9 px-2.5 sm:px-3.5 rounded-lg text-[12px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-200 border border-amber-500/40 hover:bg-amber-500/25 disabled:opacity-50 flex items-center gap-1.5"
+              className="h-9 px-2.5 sm:px-3.5 rounded-lg text-[12px] font-semibold bg-amber-500/15 text-amber-200 border border-amber-500/40 hover:bg-amber-500/25 disabled:opacity-50 flex items-center gap-1.5"
             >
-              <Pause size={14} /> <span className="hidden sm:inline">{t("Pause All")}</span>
+              <Pause size={14} /> <span className="hidden sm:inline">{t("Pause all")}</span>
             </button>
           ) : (
             <button
               onClick={resumeAll}
               disabled={busy || rows.length === 0}
               title={allPaused ? t("Resume all") : t("Start all")}
-              className="h-9 px-2.5 sm:px-3.5 rounded-lg text-[12px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-200 border border-emerald-500/40 hover:bg-emerald-500/25 disabled:opacity-50 flex items-center gap-1.5"
+              className="h-9 px-2.5 sm:px-3.5 rounded-lg text-[12px] font-semibold bg-emerald-500/15 text-emerald-200 border border-emerald-500/40 hover:bg-emerald-500/25 disabled:opacity-50 flex items-center gap-1.5"
             >
-              <Play size={14} /> <span className="hidden sm:inline">{allPaused ? t("Resume All") : t("Start All")}</span>
+              <Play size={14} /> <span className="hidden sm:inline">{allPaused ? t("Resume all") : t("Start all")}</span>
             </button>
           )}
           <button
@@ -553,7 +553,7 @@ const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3" onClick={() => setAddOpen(false)}>
           <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
-              <span className="text-[12px] font-bold uppercase tracking-widest text-white">{t("Add Node to Monitor")}</span>
+              <span className="text-[12px] font-semibold text-white">{t("Add node to monitor")}</span>
               <button aria-label={t("Close")} onClick={() => setAddOpen(false)} className="text-zinc-400 hover:text-white"><X size={16} /></button>
             </div>
             <div className="p-2 flex-1 overflow-y-auto custom-scrollbar">
@@ -735,7 +735,7 @@ const CompactBuiltinRow = ({ metricKey, meta, value, hist }: {
   const t = useT();
   return (
     <div className="flex items-center gap-2 px-1.5 h-[22px] bg-white/[0.025] rounded hover:bg-white/[0.04] transition-colors">
-      <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-300 w-[58px] shrink-0 truncate">
+      <span className="text-[11px] font-semibold text-zinc-300 w-[58px] shrink-0 truncate">
         {meta?.label ? t(meta.label) : metricKey}
       </span>
       <span className="text-[11px] font-mono font-bold text-zinc-50 w-[82px] shrink-0 text-right tabular-nums">
@@ -753,7 +753,7 @@ const CompactCustomRow = ({ cm, value, text, err, hist }: {
   cm: CustomMetric; value?: number; text?: string; err?: string; hist: number[];
 }) => (
   <div className="flex items-center gap-2 px-1.5 h-[22px] bg-amber-500/[0.06] border border-amber-500/20 rounded">
-    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-200 w-[58px] shrink-0 truncate flex items-center gap-1" title={cm.name}>
+    <span className="text-[11px] font-semibold text-amber-200 w-[58px] shrink-0 truncate flex items-center gap-1" title={cm.name}>
       {cm.parse === "text" && <FileCode2 size={9} className="text-amber-300 shrink-0" />}
       <span className="truncate">{cm.name}</span>
     </span>
@@ -816,8 +816,8 @@ const SettingsModal = ({ onClose, onSaved }: {
     <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3" onClick={onClose}>
       <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
-          <span className="text-[12px] font-bold uppercase tracking-widest text-white flex items-center gap-2">
-            <SettingsIcon size={13} className="text-primary" /> {t("Monitor Settings")}
+          <span className="text-[12px] font-semibold text-white flex items-center gap-2">
+            <SettingsIcon size={13} className="text-primary" /> {t("Monitor settings")}
           </span>
           <button aria-label={t("Close")} onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
         </div>
@@ -881,7 +881,7 @@ const SettingsModal = ({ onClose, onSaved }: {
                     type="button"
                     onClick={(e) => { e.preventDefault(); beepNow(); }}
                     title={t("Play a test beep")}
-                    className="h-7 px-2 rounded text-[10px] font-bold uppercase tracking-wider bg-white/5 text-zinc-200 border border-white/10 hover:bg-white/10"
+                    className="h-7 px-2 rounded text-[11px] font-semibold bg-white/5 text-zinc-200 border border-white/10 hover:bg-white/10"
                   >
                     {t("Test")}
                   </button>
@@ -906,11 +906,11 @@ const SettingsModal = ({ onClose, onSaved }: {
                 <button
                   onClick={save}
                   disabled={saving}
-                  className="flex-1 h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/25 text-primary border border-primary/50 hover:bg-primary/35 disabled:opacity-50"
+                  className="flex-1 h-9 rounded text-[12px] font-semibold bg-primary/25 text-primary border border-primary/50 hover:bg-primary/35 disabled:opacity-50"
                 >
                   {saving ? t("Saving…") : t("Apply")}
                 </button>
-                <button onClick={onClose} className="h-9 px-3 rounded text-[11px] font-bold uppercase tracking-wider bg-white/5 text-zinc-200 border border-white/10 hover:bg-white/10">
+                <button onClick={onClose} className="h-9 px-3 rounded text-[12px] font-semibold bg-white/5 text-zinc-200 border border-white/10 hover:bg-white/10">
                   {t("Cancel")}
                 </button>
               </div>
@@ -990,7 +990,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
       <div className="w-full max-w-[480px] bg-[#121214] border-l border-white/10 h-full flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="shrink-0 px-4 py-3 border-b border-white/5 flex items-center justify-between">
           <div>
-            <div className="text-[12px] font-bold uppercase tracking-widest text-white">{t("Configure")}</div>
+            <div className="text-[12px] font-semibold text-white">{t("Configure")}</div>
             <div className="text-[12px] text-zinc-300 font-mono mt-0.5">{row.name} <span className="text-zinc-500">· {row.host}:{row.port}</span></div>
           </div>
           <button aria-label={t("Close")} onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
@@ -998,7 +998,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
 
         <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">
           <section>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-300 mb-2">{t("Built-in Metrics")}</div>
+            <div className="text-[11px] font-semibold text-zinc-300 mb-2">{t("Built-in metrics")}</div>
             <div className="flex flex-wrap gap-1.5">
               {TOGGLE_KEYS.map(({ key, label }) => {
                 const on = row.enabled_metrics.includes(key);
@@ -1007,7 +1007,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
                     key={key}
                     onClick={() => toggleBuiltin(key)}
                     disabled={busy}
-                    className={`h-7 px-2.5 rounded text-[10.5px] font-bold uppercase tracking-wider border transition-colors ${
+                    className={`h-7 px-2.5 rounded text-[11.5px] font-semibold border transition-colors ${
                       on
                         ? "bg-primary/15 text-primary border-primary/40 hover:bg-primary/25"
                         : "bg-white/[0.03] text-zinc-300 border-white/10 hover:bg-white/[0.06] hover:text-zinc-100"
@@ -1022,9 +1022,9 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
 
           <section>
             <div className="flex items-center justify-between mb-2">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-300">{t("Custom Commands")}</div>
+              <div className="text-[11px] font-semibold text-zinc-300">{t("Custom commands")}</div>
               <button onClick={addDraft}
-                className="h-6 px-2 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-200 border border-amber-500/40 hover:bg-amber-500/25 flex items-center gap-1">
+                className="h-6 px-2 rounded text-[11.5px] font-semibold bg-amber-500/15 text-amber-200 border border-amber-500/40 hover:bg-amber-500/25 flex items-center gap-1">
                 <Plus size={10} /> {t("Add")}
               </button>
             </div>
@@ -1058,7 +1058,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
                     />
                     <div className="grid grid-cols-3 gap-2 text-[10px]">
                       <label className="space-y-1">
-                        <span className="text-zinc-400 uppercase tracking-wider font-bold">{t("Parse")}</span>
+                        <span className="text-zinc-400 font-semibold">{t("Parse")}</span>
                         <select value={cm.parse}
                           onChange={(e) => updateDraft(idx, { parse: e.target.value as any })}
                           className="w-full h-7 px-1.5 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 outline-none">
@@ -1068,7 +1068,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
                         </select>
                       </label>
                       <label className="space-y-1">
-                        <span className="text-zinc-400 uppercase tracking-wider font-bold">{t("Display")}</span>
+                        <span className="text-zinc-400 font-semibold">{t("Display")}</span>
                         <select value={cm.display}
                           onChange={(e) => updateDraft(idx, { display: e.target.value as any })}
                           disabled={cm.parse === "text"}
@@ -1079,7 +1079,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
                         </select>
                       </label>
                       <label className="space-y-1">
-                        <span className="text-zinc-400 uppercase tracking-wider font-bold">{t("Unit")}</span>
+                        <span className="text-zinc-400 font-semibold">{t("Unit")}</span>
                         <input value={cm.unit || ""}
                           onChange={(e) => updateDraft(idx, { unit: e.target.value })}
                           placeholder="%"
@@ -1098,8 +1098,8 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
             )}
             {dirty && (
               <button onClick={() => onSetCustoms(draft)} disabled={busy}
-                className="mt-3 w-full h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/25 text-primary border border-primary/50 hover:bg-primary/35 disabled:opacity-50">
-                {t("Apply Custom Commands")}
+                className="mt-3 w-full h-9 rounded text-[12px] font-semibold bg-primary/25 text-primary border border-primary/50 hover:bg-primary/35 disabled:opacity-50">
+                {t("Apply custom commands")}
               </button>
             )}
           </section>

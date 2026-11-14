@@ -6,6 +6,8 @@ import {
 } from "lucide-react";
 import { useConfirm, useTextPrompt } from "../ui/confirm";
 import QuickUnlockCard from "./QuickUnlockCard";
+import FolderCopyCard from "./FolderCopyCard";
+import { IS_MOBILE } from "../util/platform";
 import { RoleBadge, roleBlurb } from "./shareRoles";
 import { hostOf } from "./SyncServerSetting";
 import { t, tk, tn, tx, useT } from "../i18n";
@@ -337,7 +339,7 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
   };
 
   const card = "bg-zinc-900/40 border border-white/5 rounded-xl p-4 space-y-3";
-  const label = "text-[11px] font-bold uppercase tracking-wider text-zinc-500";
+  const label = "text-[12px] font-semibold text-zinc-500";
 
   return (
     <div className="flex-1 flex flex-col p-4 sm:p-8 space-y-5 animate-in overflow-y-auto custom-scrollbar">
@@ -372,6 +374,9 @@ export default function ProfilePanel({ onSync, syncing, lastSyncLabel, autoSync,
 
       {/* ---- Quick unlock on this device (#166) ---- */}
       {st?.profile && <QuickUnlockCard profile={st.profile} card={card} label={label} />}
+
+      {/* ---- A copy in a folder, on a computer (#319) ---- */}
+      {st?.profile && !IS_MOBILE && <FolderCopyCard profile={st.profile} card={card} label={label} />}
 
       {/* ---- Cloud + sync ---- */}
       <section className={card}>

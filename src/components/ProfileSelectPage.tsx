@@ -951,7 +951,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
           /* ---- Your profiles (local + cloud, one list) ---- */
           <section aria-label={t("Your profiles")}>
             <div className="mb-2 flex h-7 items-center justify-between pl-1">
-              <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">{t("Your profiles")}</h2>
+              <h2 className="text-[12px] font-semibold text-zinc-500">{t("Your profiles")}</h2>
               {cloudStatus.signed_in && (
                 <button
                   type="button"

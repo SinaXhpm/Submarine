@@ -149,7 +149,7 @@ type MetaColumn = "size" | "modified" | "permissions" | "owner";
 type ColumnWidths = Record<MetaColumn, number>;
 const REMOTE_COLUMNS: MetaColumn[] = ["size", "modified", "permissions", "owner"];
 const LOCAL_COLUMNS: MetaColumn[] = ["size", "modified"]; // local entries carry no rights or owner here
-const COLUMN_LABEL: Record<MetaColumn, string> = { size: tk("SIZE"), modified: tk("CHANGED"), permissions: tk("RIGHTS"), owner: tk("OWNER") };
+const COLUMN_LABEL: Record<MetaColumn, string> = { size: tk("Size"), modified: tk("Changed"), permissions: tk("Rights"), owner: tk("Owner") };
 // The left-aligned columns keep a little room from the column before them
 // (COLUMN_LEAD, part of their width), so a size and a date don't run together.
 const COLUMN_CELL: Record<MetaColumn, string> = {
@@ -1933,7 +1933,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       className="group/pane flex-1 flex flex-col h-full bg-[#09090b] p-1.5 gap-1.5 overflow-hidden relative select-none"
     >
       {disabled && (
-        <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono uppercase">
+        <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono">
           <span className="px-3 py-1.5 bg-red-500/15 border border-red-500/30 rounded text-red-300">
             {t("Session disconnected")}
           </span>
@@ -1982,7 +1982,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             (HEADER_FITS), so side by side their lists start level. */}
         <div ref={headerRowRef} className={`relative flex flex-wrap items-center gap-y-1.5 ${fit.tight ? "gap-x-1" : "gap-x-2"}`}>
           <div className={`flex items-center gap-1.5 min-w-0 min-h-[22px] ${fit.rows === 2 ? "basis-full justify-between" : ""}`}>
-            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300 pl-1 shrink-0">
+            <span className="text-[11px] font-semibold text-zinc-300 pl-1 shrink-0">
               {t(provider.label)}
             </span>
             {viaShell && (
@@ -2058,14 +2058,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <div className="absolute top-full mt-1 inset-x-0 z-50 max-h-[320px] overflow-y-auto bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
               {recentShown.length > 0 && (
                 <>
-                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">{t("Recent")}</div>
+                  <div className="px-2 py-1 text-[11px] text-zinc-500 font-semibold">{t("Recent")}</div>
                   {recentShown.map((p) => dirRow(p, "recent"))}
                 </>
               )}
               {recentShown.length > 0 && bookmarks.length > 0 && <div className="my-1 h-px bg-white/10" />}
               {bookmarks.length > 0 && (
                 <>
-                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">{t("Bookmarks")}</div>
+                  <div className="px-2 py-1 text-[11px] text-zinc-500 font-semibold">{t("Bookmarks")}</div>
                   {bookmarks.map((p) => dirRow(p, "bookmark"))}
                 </>
               )}
@@ -2284,7 +2284,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           wraps (a left: 50% would leave it half of that). */}
       {selectedEntries.length > 0 && (
         <div ref={selBarRef} className="absolute bottom-3 inset-x-2 mx-auto w-fit z-20 flex flex-wrap items-center justify-center gap-1.5 px-2.5 py-1.5 bg-indigo-950/95 border border-indigo-500/40 rounded-lg shadow-2xl shadow-black/50 backdrop-blur-md text-[10.5px] text-indigo-100 font-mono">
-          <span className="font-bold uppercase tracking-wider text-[9.5px] text-indigo-300 shrink-0">
+          <span className="font-semibold text-[11px] text-indigo-300 shrink-0">
             {t("{count} selected", { count: selectedEntries.length })}
           </span>
           {!inMode && (
@@ -2378,7 +2378,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             </button>
           )}
           <div className="cursor-pointer hover:text-white py-1.5 truncate" onClick={() => toggleSort("name")}>
-            {t("NAME")} {sortIcon("name")}
+            {t("Name")} {sortIcon("name")}
           </div>
           {shownColumns.map((c) => (
             <div
@@ -2582,9 +2582,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setModal(null); } }}
             className="w-full max-w-[320px] bg-[#121214] border border-white/5 rounded-xl shadow-2xl p-4 font-mono text-[11px]">
             <div className="flex items-center justify-between mb-3">
-              <span className="font-black uppercase tracking-wider text-zinc-300">
+              <span className="font-semibold text-zinc-300">
                 {modal.type === "rename" ? t("Rename") :
-                 modal.type === "mkdir" ? t("New Directory") :
+                 modal.type === "mkdir" ? t("New directory") :
                  modal.type === "move" ? t("Move to…") :
                  modal.type === "archive" ? ((modal.items?.length ?? 0) > 1 ? t("Archive {count} items", { count: modal.items!.length }) : t("Add to archive")) :
                  modal.type === "move-bulk" ? t("Move {count} items to…", { count: selectedEntries.length }) : t("Properties")}
@@ -2627,7 +2627,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                     };
                     return (
                       <div className="pt-1">
-                        <label className="text-[10px] text-zinc-400 block mb-1.5 uppercase tracking-wider">{t("Permissions")}</label>
+                        <label className="text-[11px] text-zinc-400 block mb-1.5">{t("Permissions")}</label>
                         <div className="grid grid-cols-[60px_repeat(3,1fr)] gap-1 text-center text-[10px] text-zinc-400 font-mono">
                           <div />
                           {bits.map((b) => <div key={b.key} className="font-bold">{b.label}</div>)}

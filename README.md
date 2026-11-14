@@ -2,7 +2,7 @@
   <img src="src/assets/logo.png" alt="Submarine logo" width="120" />
   <h1>Submarine — SSH, SFTP, FTP, RDP, VNC &amp; Telnet Client</h1>
   <p><strong>A fast, free, open-source remote-access client for Windows, macOS, Linux and Android.</strong></p>
-  <p>Terminal, dual-pane SFTP and FTP, port forwarding, folder mirror, remote desktops and encrypted profile sync in one native window. Built with Rust and Tauri.</p>
+  <p>Terminal, dual-pane SFTP and FTP, port forwarding, folder mirror, remote desktops, encrypted profile sync and an optional AI assistant in one native window. Built with Rust and Tauri.</p>
   <p>
     <a href="https://github.com/sinaxhpm/submarine/releases"><img alt="release" src="https://img.shields.io/github/v/release/sinaxhpm/submarine?include_prereleases" /></a>
     <a href="https://github.com/sinaxhpm/submarine/releases"><img alt="downloads" src="https://img.shields.io/github/downloads/sinaxhpm/submarine/total" /></a>
@@ -19,20 +19,22 @@
   <img src="docs/screenshots/hero.png" alt="Submarine main window: an SSH terminal on the left and the dual-pane SFTP browser (local folder on top, remote folder below) open on the right" width="900" />
 </div>
 
-> **TL;DR** — Submarine is a free, open-source SSH, SFTP and FTP client for Windows, macOS, Linux and Android. It replaces the usual PuTTY + WinSCP + FileZilla + tunnel-manager (+ Remmina / VNC viewer) stack with one tabbed window per server: terminal, SFTP and FTP, port forwarding (SOCKS / HTTP / local / remote), folder mirror, server info, Docker, and RDP, VNC and Telnet sessions. Profiles are encrypted on your device, and optional cloud sync can keep them in step across your machines and your phone. Built with Rust and Tauri. MIT licensed.
+> **TL;DR** — Submarine is a free, open-source SSH, SFTP and FTP client for Windows, macOS, Linux and Android. It replaces the usual PuTTY + WinSCP + FileZilla + tunnel-manager (+ Remmina / VNC viewer) stack with one tabbed window per server: terminal, SFTP and FTP, port forwarding (SOCKS / HTTP / local / remote), folder mirror, server info, Docker, and RDP, VNC and Telnet sessions. Profiles are encrypted on your device, and optional cloud sync can keep them in step across your machines and your phone. An optional AI assistant works on a server with your own AI provider, and AI agents on your computer, such as Claude Code, can work through Submarine without getting your passwords, keys or the server's address. Built with Rust and Tauri. MIT licensed.
 
 ## At a glance
 
 - **SSH, SFTP, FTP and FTPS, Telnet, VNC and RDP in one app** — pick the type when you add a server; each opens as a tab (the terminal for SSH and Telnet, the file browser for FTP, the remote screen for VNC and RDP)
 - **In 15 languages** — English, Deutsch, Español, Français, Italiano, Polski, Português (Brasil), Türkçe, Русский, Українська, हिन्दी, 日本語, 한국어, 中文（简体）and 中文（繁體）; it follows the system's language, or pick one in Settings → Language
 - **One window, many tools per server** — terminal, SFTP, tunnels, folder mirror, Docker, live server info and a command library, all around the same session
+- **An AI assistant, if you want one** — chat about a server in its AI tab with your own AI provider (Anthropic, OpenAI, an OpenAI-compatible service or a model on your own machine); it reads and edits files and runs commands at the permission level you pick, and its file changes can be undone
+- **Access for AI agents** — an agent on your computer, such as Claude Code, can work on your servers through Submarine over MCP: you approve each access, and it never gets a password, a key or the server's address
 - **Watch many servers at once** — split view for two sessions, a **Wall** pinboard for any terminals across hosts, and **broadcast input** to several sessions at once
 - **Works with your existing SSH setup** — reads `~/.ssh/config` (Include, Match, ProxyJump, ProxyCommand, IdentityFile, certificates), logs in with keys from **ssh-agent / Pageant / the Windows OpenSSH agent**, trusts your `known_hosts`
 - **Native and cross-platform** — Windows, macOS (one app for Apple Silicon and Intel), Linux (`.deb` / `.rpm` / Arch / AppImage) and Android, with iPhone and iPad builds for the App Store, and the same encrypted vault on all of them
 - **Encrypted profiles** — Argon2id + AES-256-GCM on your device; open a profile with **Windows Hello** or an **Android fingerprint** if you turn that on
 - **Optional cloud sync** — records are encrypted before upload; use the hosted server, or [point Submarine at your own](#cloud-sync-optional)
 - **Import from anywhere** — PuTTY `.reg`, MobaXterm `.mxtsessions`, OpenSSH config and Submarine JSON exports
-- **Honest about risk** — Telnet and plain VNC are labelled *not encrypted*, and the built-in RDP client is marked *experimental*
+- **Honest about risk** — Telnet, plain FTP and plain VNC are labelled *not encrypted*, and the built-in RDP client is marked *experimental*
 
 ## Screenshots
 
@@ -139,6 +141,7 @@ If you're searching for one of these, Submarine is a direct fit:
 - a simple **Remmina or Remote Desktop Connection** launcher and **VNC viewer** that sits next to your SSH servers
 - an **rsync GUI** that mirrors a local folder to a remote SSH host with conflict resolution
 - an **Android SSH client** (ConnectBot / JuiceSSH style) that shares saved servers with your desktop
+- an **AI terminal** that also does SFTP and FTP, uses your own AI provider, and asks before it runs anything
 
 ## Why Submarine
 
@@ -148,6 +151,7 @@ Most SSH clients feel like they were built a decade ago and never updated. Subma
 - **One window, everything you need.** Terminal, SFTP file browser, port tunnels, folder sync, saved commands and remote desktops are tabs around each server. No more juggling PuTTY, WinSCP, a tunnel app and an RDP client.
 - **Fits the setup you already have.** Your `~/.ssh/config`, your agent, your `known_hosts`, your Teleport or OpenSSH certificates and ProxyJump / ProxyCommand hosts all work.
 - **Secure by default.** Saved servers are encrypted on disk. Cloud sync is optional and encrypts record contents before upload. Unencrypted protocols are labelled as such. See [Security and privacy](#security-and-privacy) for exactly what is and isn't protected.
+- **An AI assistant that asks first.** It is off until you add a provider, works at the permission level you choose for each server, shows every command it runs, and every file change it makes can be undone.
 - **Truly cross-platform.** Windows, macOS (Apple Silicon and Intel) and every major Linux distribution — `.deb`, `.rpm`, Arch package and AppImage — plus Android, and iPhone and iPad through the App Store.
 
 ## Key Features
@@ -246,6 +250,27 @@ A read-only inspection pane for the active session — no terminal commands need
 - **The Wall**: pin any terminals from any servers into a grid; choose the columns and the rows on screen
 - **Split view** to tile two sessions, and **broadcast input** to the sessions you select
 
+### AI assistant (optional)
+
+Off until you set it up in Settings → AI assistant.
+
+- **Your own provider**: Anthropic, OpenAI, another OpenAI-compatible service (OpenRouter, DeepSeek, Groq, Google Gemini and others) or a model on your own machine (Ollama, LM Studio). Keys and chats are kept in the profile, encrypted, and requests go straight from the app to the provider — nothing goes through a service of Submarine's
+- **Where**: an **AI tab** in each SSH and FTP session, and an **AI page** with all chats. A chat can change model or provider midway
+- **What it can do**: read files and folders, write and edit files (the diff is shown first) and, on SSH servers, run commands. The **AI terminal** shows each command and its output as it runs. On an FTP server it works with files only
+- **Permission levels, per server**: Suggest only, Ask for every command, **Ask** (the default: commands it can prove only read run by themselves), Auto, and Full access (never saved; you type the server's name to turn it on). Every file change is listed in **Activity** and can be undone there
+- **Before your first message goes to a provider**, the app asks, naming where it goes. A private key in command output or in a file is removed before anything is sent
+
+### AI agents (optional, on a computer)
+
+Off until you turn it on in Settings → AI agents, which shows how to add Submarine to an agent.
+
+- An AI agent on your computer, such as **Claude Code**, connects through `submarine mcp`, an **MCP** server the agent starts. It reaches the running app over a named pipe (Windows) or a Unix socket (macOS, Linux) that only your user account can open — there is no network port
+- An agent can't list your servers. It **asks for access**, and you choose in Submarine's window the server, the operations, the folders, how long (8 hours at most) and whether each operation asks you first. Deleting a file always asks
+- Commands on SSH servers; files (list, read, write, edit, delete) inside the folders you chose, on SSH and FTP servers. An FTP server never runs commands
+- An agent **never gets a password, a key or the server's address** (the address is replaced in what it reads). Each operation is listed in Activity with the agent's name, and its file changes can be undone
+
+The assistant's and the agents' screens are in English for now.
+
 ### Profiles and security conveniences
 
 - Each profile is its own vault with its own master password; several can live on one device
@@ -308,6 +333,7 @@ Submarine on Android is a native build of the same Rust core — same SSH stack,
 - **VNC and the built-in RDP client** show the remote screen with touch, zoom and a keyboard button, the connection mark and their speed and quality; a phone shares no files with an RDP server.
 - **Fingerprint unlock** for a profile, if you turn it on; the app stays out of Recents.
 - **Port forwarding** (SOCKS / local / remote) runs as long as the app is open.
+- **The AI assistant** is in each session's AI tab, as on the desktop. Access for AI agents is desktop-only.
 - **Folder mirror is desktop-only for now.**
 
 Built for Android 7.0 (API 24) and newer, on phones, tablets and Android-on-ChromeOS; the current builds are tested on Android 16.
@@ -319,7 +345,7 @@ Built for Android 7.0 (API 24) and newer, on phones, tablets and Android-on-Chro
 1. **Your master password becomes a vault key on your device.** When you unlock, the password is run through Argon2id to derive a key, and the Rust backend keeps that key in zeroized memory and drops it on lock (the sharing key of a signed-in account is locked with the profile too). (The password you type passes through the webview, so a copy can linger in its memory until garbage collection.)
 2. **Profiles are sealed with AES-256-GCM on your device.** Saved servers, credentials, keys, tunnels, notes, commands and mirrors are encrypted with that key; what reaches disk is ciphertext. Window position, the last-used profile name, recent folders and similar preferences are stored in the clear in the app's own settings.
 3. **Quick unlock is opt-in.** If you turn on Windows Hello or an Android fingerprint, the vault key is sealed to a key in the TPM or the Android Keystore — never the password.
-4. **Unencrypted protocols say so.** Telnet and plain VNC are labelled *not encrypted* in the form, the list and the tab. The built-in RDP client is labelled *experimental*.
+4. **Unencrypted protocols say so.** Telnet, plain FTP and plain VNC are labelled *not encrypted* in the form, the list and the tab. The built-in RDP client is labelled *experimental*.
 5. **Connections are checked.** SSH host keys are pinned after the first use, and a changed key (or a key of a different kind) is flagged before anything secret is sent. An RDP certificate is pinned the same way, and the built-in RDP client refuses a server without NLA unless you allow that server.
 
 **Cloud sync (optional) — what the server sees**
@@ -332,11 +358,18 @@ Built for Android 7.0 (API 24) and newer, on phones, tablets and Android-on-Chro
 - **You can delete your account from inside the app** (Cloud sync → *Delete account…*, confirmed with your password): everything the server holds for it goes at once. The full details, with retention times, are in the [privacy policy](PRIVACY.md).
 - [How your data is protected](https://submarine.sinaxhpm.com/security/) explains all of this with links to the code that does it, and ways to check it yourself.
 
+**The AI assistant and AI agents (optional)**
+
+- The assistant sends a chat to the AI provider you added, and nowhere else: your messages, and what it reads and does on the server in that chat. The app asks before the first message goes out, and removes private keys from what is sent. Providers, keys and chats stay in the profile, encrypted.
+- AI agents on your computer reach Submarine through a pipe or socket that only your user account can open, never over the network. Each access needs your approval in Submarine's window, lasts 8 hours at most, and ends when you revoke it, lock the profile or close the app. An agent never receives passwords, keys or the server's address.
+- The details, including what is kept on your device, are in the [privacy policy](PRIVACY.md).
+
 **Network traffic besides your servers**
 
 - No analytics SDK, no crash reporter and no advertising calls.
 - When the profile page opens, Submarine makes **one anonymous request to the GitHub releases API** to see whether a newer version exists (the request carries the app name and version, nothing else). There is a button to run the same check by hand.
 - If you sign in to cloud sync, it talks to the sync server (`submarine.sinaxhpm.com`, or the one you chose).
+- If you add an AI provider and use the assistant, it talks to that provider.
 
 **Other defences:** a strict Content Security Policy, a minimal Tauri permission ACL, and no shell or filesystem plugin exposed to the UI. The Windows build is not code-signed (see [Install](#install)); the Android APK is signed, and the App Store builds are signed by Apple's process.
 
@@ -368,6 +401,14 @@ Yes, read-only, and you can switch it off per device. It follows Include, Host a
 
 Yes, from version 0.5: an FTP server opens in a tab with the same file browser as SFTP, with FTPS (TLS) by default, directly, through an SSH server or through a proxy. Plain FTP is there if you pick it, and the app says it isn't encrypted.
 
+### Does Submarine have an AI assistant?
+
+Yes, from version 0.5, and it's off until you set it up in Settings → AI assistant. It uses your own AI provider — Anthropic, OpenAI, an OpenAI-compatible service, or a local model through Ollama or LM Studio — and works on a server from that session's AI tab, at the permission level you choose. Nothing goes to a provider until you add one and send a message.
+
+### Can Claude Code or another AI agent use my servers through Submarine?
+
+Yes, on a computer, from version 0.5. Turn it on in Settings → AI agents, which shows how to add Submarine to the agent (it speaks MCP). The agent asks for access, and you choose the server, the operations, the folders and the time. It never gets a password, a key or the server's address.
+
 ### Can I use RDP, VNC and Telnet?
 
 Yes. VNC shows the screen in the tab and shares the clipboard (plain text). RDP opens in your computer's RDP app by default, or in the tab with the experimental built-in client, which shares the clipboard and, on the PC, a folder or a drive. Both remote screens show how the connection is doing and let you trade picture quality for less data. Telnet opens in a terminal tab. All three can go through an SSH server, and Telnet and plain VNC are labelled as not encrypted.
@@ -386,7 +427,7 @@ In an encrypted file under your OS app-data directory — or in the `submarine-d
 
 ### Does Submarine collect telemetry or analytics?
 
-No analytics SDK and no crash reporter. Besides your own servers, it makes one anonymous request to the GitHub releases API when the profile page opens (to check for a new version; not in the iPhone and iPad app or the Mac App Store build, which the store updates), and talks to the sync server only if you sign in to cloud sync.
+No analytics SDK and no crash reporter. Besides your own servers, it makes one anonymous request to the GitHub releases API when the profile page opens (to check for a new version; not in the iPhone and iPad app or the Mac App Store build, which the store updates), and talks to the sync server only if you sign in to cloud sync, and to an AI provider only if you add one and use the assistant.
 
 ### Can I use Submarine on my Android phone with the same servers as my desktop?
 
@@ -465,7 +506,7 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 <sub>
-<b>Keywords</b>: SSH client, SFTP client, FTP client, FTPS client, FileZilla alternative, Telnet client, VNC viewer, RDP client, remote desktop client, terminal emulator, port forwarding, SSH tunnel manager, SOCKS proxy, HTTP proxy, jump host, ProxyJump, ssh-agent, Pageant, SSH certificates, Teleport, folder mirror, folder sync, remote file edit, encrypted profile sync, self-hosted sync, Windows Hello unlock, Argon2id, AES-256-GCM, TOFU host keys, Rust, Tauri, React, xterm.js, Windows SSH client, macOS SSH client, Linux SSH client, Android SSH client, open source SSH, MIT licensed, PuTTY alternative, WinSCP alternative, MobaXterm alternative, Bitvise alternative, Termius alternative, SecureCRT alternative, Royal TSX alternative, Remmina alternative, ConnectBot alternative, JuiceSSH alternative, rsync GUI, sshfs alternative, Tabby alternative.
+<b>Keywords</b>: SSH client, SFTP client, FTP client, FTPS client, FileZilla alternative, Telnet client, VNC viewer, RDP client, remote desktop client, terminal emulator, AI assistant, AI terminal, AI SSH client, MCP server, Claude Code, Ollama, port forwarding, SSH tunnel manager, SOCKS proxy, HTTP proxy, jump host, ProxyJump, ssh-agent, Pageant, SSH certificates, Teleport, folder mirror, folder sync, remote file edit, encrypted profile sync, self-hosted sync, Windows Hello unlock, Argon2id, AES-256-GCM, TOFU host keys, Rust, Tauri, React, xterm.js, Windows SSH client, macOS SSH client, Linux SSH client, Android SSH client, open source SSH, MIT licensed, PuTTY alternative, WinSCP alternative, MobaXterm alternative, Bitvise alternative, Termius alternative, SecureCRT alternative, Royal TSX alternative, Remmina alternative, ConnectBot alternative, JuiceSSH alternative, rsync GUI, sshfs alternative, Tabby alternative.
 <br/>
 <b>Echoes</b>: network toolkit, network tools, connection doctor, website not loading, DNS tampering test, SNI filtering test, ping, TCP ping, traceroute, MTR, WinMTR alternative, internet speed test, bufferbloat test, port scanner, nmap alternative, check host, Wi-Fi analyzer, DNS over HTTPS, DNS over TLS, DNS benchmark, SPF DKIM DMARC checker, WHOIS, RDAP, cURL GUI, Postman alternative, SSL checker, TLS inspector, IP lookup, GeoIP, Cloudflare manager, Cloudflare DDNS, dynamic DNS client, uptime monitor, Telegram alerts, netcat alternative, WebSocket client, webhook tester, LAN file sharing, QR code file transfer, SOCKS5 proxy server, proxy checker, JWT decoder, CyberChef alternative, encrypted notes.
 </sub>

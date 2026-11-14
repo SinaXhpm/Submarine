@@ -210,7 +210,7 @@ export function FeedbackHost() {
         >
           <div className="space-y-1.5">
             <div className="flex items-baseline justify-between gap-3">
-              <label htmlFor="feedback-message" className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">{t("Message")}</label>
+              <label htmlFor="feedback-message" className="text-[12px] font-semibold text-zinc-400">{t("Message")}</label>
               <span
                 data-testid="feedback-count"
                 aria-live="polite"
@@ -234,7 +234,7 @@ export function FeedbackHost() {
 
           <div className="space-y-1.5">
             <div className="flex items-baseline justify-between gap-3">
-              <label htmlFor="feedback-name" className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">{t("Your name (optional)")}</label>
+              <label htmlFor="feedback-name" className="text-[12px] font-semibold text-zinc-400">{t("Your name (optional)")}</label>
               {nameCount > NAME_MAX * 0.75 && (
                 <span className={`text-[11px] tabular-nums ${nameLong ? "text-red-400 font-bold" : "text-zinc-500"}`}>
                   {t("{count} / {max}", { count: fmt.format(nameCount), max: fmt.format(NAME_MAX) })}
@@ -254,7 +254,7 @@ export function FeedbackHost() {
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor="feedback-email" className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">{t("Email (optional)")}</label>
+            <label htmlFor="feedback-email" className="text-[12px] font-semibold text-zinc-400">{t("Email (optional)")}</label>
             <input
               id="feedback-email"
               type="email"
@@ -305,7 +305,7 @@ export function FeedbackHost() {
           <button
             type="submit"
             disabled={!canSend}
-            className="w-full min-h-[40px] h-10 rounded-xl bg-primary text-zinc-950 text-[12px] font-bold uppercase tracking-wider hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all"
+            className="w-full min-h-[40px] h-10 rounded-xl bg-primary text-zinc-950 text-[12px] font-semibold hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all"
           >
             {sending && <Loader2 size={14} className="animate-spin-brief" aria-hidden="true" />}
             {sending ? t("Sending…") : t("Send")}
