@@ -12,6 +12,9 @@ export { ICON };
 export const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const SHARED = path.join(HERE, "shared");
 export const AUTHOR = { "@type": "Person", name: "Sina Xhpm", url: "https://sinaxhpm.com" };
+// The address people write to: privacy and terms questions, account deletion help, security reports. Pages use it
+// through the {email} placeholder, so it is changed here and nowhere else.
+export const CONTACT_EMAIL = "sinaxhpm@gmail.com";
 
 // ---- languages --------------------------------------------------------------
 // No Persian or Arabic (taken off both sites in November 2026, the maintainer's choice; each site's .htaccess sends
@@ -47,7 +50,7 @@ export function rich(s, vals, where) {
   const out = fill(s, vals, where);
   for (const tag of out.match(/<[^>]*>/g) || []) {
     if (!ALLOWED.test(tag) && !LANG_SPAN.test(tag)) throw new Error(`tag not allowed in ${where}: ${tag}`);
-    if (/^<a\s/.test(tag) && !/^<a href="(https:\/\/[^"]+|\/[^"]*|#[^"]*)"( rel="noopener")?>$/.test(tag)) throw new Error(`link not allowed in ${where}: ${tag}`);
+    if (/^<a\s/.test(tag) && !/^<a href="(https:\/\/[^"]+|mailto:[^"@\s?]+@[^"@\s?]+|\/[^"]*|#[^"]*)"( rel="noopener")?>$/.test(tag)) throw new Error(`link not allowed in ${where}: ${tag}`);
   }
   if ((out.match(/</g) || []).length !== (out.match(/>/g) || []).length) throw new Error(`broken tag in ${where}`);
   return out;
@@ -327,8 +330,10 @@ Sitemap: ${this.origin}/sitemap.xml
 
   securityTxt(contact, policy) {
     const expires = new Date(Date.parse(`${this.date}T00:00:00Z`) + 365 * 864e5).toISOString();
-    return `# Found a security problem in ${this.name}? Please open an issue that only says
-# you found one (no details), and a private channel will be set up with you.
+    return `# Found a security problem in ${this.name}? Please email the details to the first
+# address below. If you can't, open an issue that only says you found one (no
+# details), and a private channel will be set up with you.
+Contact: mailto:${CONTACT_EMAIL}
 Contact: ${contact}
 Expires: ${expires}
 Preferred-Languages: en

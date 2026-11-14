@@ -631,7 +631,7 @@
         "id": "contact",
         "title": "お問い合わせ",
         "paragraphs": [
-          "ご質問やご懸念は、<a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>でIssueを作成してください。"
+          "ご質問やご懸念は、<a href=\"mailto:{email}\">{email}</a>までメールでご連絡いただくか、<a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>でIssueを作成してください。"
         ]
       }
     ]
@@ -702,7 +702,7 @@
         "id": "contact",
         "title": "お問い合わせ",
         "paragraphs": [
-          "本規約に関するご質問は、<a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>でIssueを作成してください。"
+          "本規約に関するご質問は、<a href=\"mailto:{email}\">{email}</a>までメールでご連絡いただくか、<a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>でIssueを作成してください。"
         ]
       }
     ]

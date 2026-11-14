@@ -658,7 +658,8 @@
       "Seus servidores, senhas, chaves SSH e notas ficam no seu dispositivo, criptografados com uma chave gerada a partir da senha do perfil. O app não tem análise de uso, publicidade, rastreamento nem relatórios de falhas.",
       "O recurso Sincronização na nuvem é opcional. Se você ativá-lo, o servidor de sincronização guarda o endereço de e-mail da sua conta e os seus perfis, criptografados. Ele não consegue ler o que há dentro deles.",
       "Você pode excluir sua conta, e tudo o que o servidor guarda vinculado a ela, pelo próprio app ou neste site.",
-      "Uma mensagem que você envia com <em>Enviar comentários</em> chega ao desenvolvedor só com o que você digitou."
+      "Uma mensagem que você envia com <em>Enviar comentários</em> chega ao desenvolvedor só com o que você digitou.",
+      "O assistente de IA é opcional e não faz nada até que você adicione um provedor de IA com a sua própria chave de API. As conversas dele vão do seu dispositivo para esse provedor, não para nós. Com um modelo na sua própria máquina ou rede, elas ficam lá."
     ],
     "sections": [
       {
@@ -674,18 +675,20 @@
         "list": [
           "<strong>Os seus perfis</strong> (servidores, logins, chaves SSH, túneis, notas, comandos, chaves de hosts conhecidos e as senhas que você decide salvar a partir de um prompt de login) são armazenados na pasta de dados do app. Eles são criptografados com AES-256-GCM, usando uma chave gerada a partir da senha do perfil com Argon2id. A senha do perfil nunca é armazenada e nunca é enviada a lugar nenhum. Não há como recuperá-la: se você esquecê-la, o perfil não pode ser aberto.",
           "<strong>O desbloqueio rápido</strong> (opcional, desativado por padrão): se você ativar o Windows Hello ou a impressão digital no Android, a chave do perfil é selada com uma chave mantida pelo sistema (o TPM ou o Android Keystore). O sistema verifica sua impressão digital ou seu PIN; o app nunca os vê. No Windows, você pode em vez disso escolher que um perfil abra automaticamente (também desativado por padrão): a chave dele passa a ser protegida pelo Windows para a sua conta, sem nenhuma verificação, então qualquer pessoa ou programa que use essa conta do Windows pode abri-lo.",
+          "<strong>Os dados do assistente de IA</strong> (opcional, veja abaixo): os seus provedores de IA e as chaves de API deles, as suas conversas, os níveis de permissão e os comandos sempre permitidos que você define, e o log de atividades do assistente. Eles ficam guardados em um arquivo próprio, ao lado do perfil, criptografados com AES-256-GCM usando uma chave gerada a partir da chave do perfil, e por isso são abertos quando o perfil é aberto. Esse arquivo nunca é sincronizado, nunca faz parte de um perfil compartilhado e nunca entra em um perfil exportado.",
           "<strong>As configurações</strong>, como a posição da janela, o nome do último perfil usado e o tema de cores, e as opções definidas só para este dispositivo (a velocidade e a qualidade de uma área de trabalho remota, se ela compartilha a área de transferência, a pasta ou unidade compartilhada com um servidor RDP e quais servidores sempre recebem um terminal com login próprio), são armazenadas nas configurações do próprio app, sem criptografia, e nunca são sincronizadas.",
           "<strong>A área de transferência</strong> só é lida quando você cola algo. O que você cola vai para o servidor em que você colou: um terminal ou a aba de uma área de trabalho remota. Com <em>Compartilhar a área de transferência</em> ativado (o padrão para servidores RDP e VNC), o texto copiado na área de trabalho remota é colocado na área de transferência deste dispositivo. Nada da área de transferência jamais é enviado a nós.",
           "<strong>A Conexão de Área de Trabalho Remota (Windows)</strong> recebe a senha salva de um servidor em um arquivo .rdp de curta duração. A senha nesse arquivo é criptografada com o Windows DPAPI para o seu usuário do Windows, e o arquivo é excluído assim que é lido. Se você deixar o próprio app de RDP lembrar um login, quem o guarda é o Windows, não o Submarine.",
-          "<strong>O log de atividades</strong> do app fica na memória e desaparece quando o app é fechado."
+          "<strong>O log de atividades</strong> do app fica na memória e desaparece quando o app é fechado. O assistente de IA mantém um log próprio (veja abaixo)."
         ]
       },
       {
         "id": "connects",
         "title": "A que o app se conecta",
         "list": [
-          "<strong>Os seus próprios servidores.</strong> O app só se conecta aos hosts que você adiciona ou abre, usando SSH, SFTP, Telnet, VNC ou RDP, por meio de qualquer proxy ou jump host que você configurar. O que você digita e transfere vai para esse servidor, não para nós. Em uma área de trabalho remota, isso inclui o texto da área de transferência que você cola nela e uma pasta ou unidade deste computador, se você decidir compartilhar uma com o cliente RDP integrado. O Telnet simples e o VNC simples não são criptografados, e o app avisa sobre isso.",
+          "<strong>Os seus próprios servidores.</strong> O app só se conecta aos hosts que você adiciona ou abre, usando SSH, SFTP, FTP ou FTPS, Telnet, VNC ou RDP, por meio de qualquer proxy ou jump host que você configurar. O que você digita e transfere vai para esse servidor, não para nós. Em uma área de trabalho remota, isso inclui o texto da área de transferência que você cola nela e uma pasta ou unidade deste computador, se você decidir compartilhar uma com o cliente RDP integrado. O FTP simples, o Telnet simples e o VNC simples não são criptografados, e o app avisa sobre isso.",
           "<strong>O serviço de sincronização</strong>, só se você entrar na sua conta de sincronização na nuvem (veja abaixo). Em vez dele, você pode apontar o app para um servidor próprio; nesse caso, os dados ficam a cargo de quem opera esse servidor.",
+          "<strong>Os provedores de IA que você adiciona</strong>, só se você usar o assistente de IA (veja abaixo). As requisições vão do seu dispositivo direto para o provedor, ou passam por um proxy ou por um dos seus servidores, conforme configurado para esse provedor. O Submarine não tem nenhum serviço de IA próprio, e o serviço de sincronização não participa disso.",
           "<strong>O GitHub</strong>, para procurar uma versão mais nova (exceto no app para iOS, na versão da Mac App Store e no Flatpak, que são atualizados pelas próprias lojas). Quando a lista de perfis abre e quando você aperta “Verificar atualizações”, o app consulta a lista pública de versões no GitHub (<code>api.github.com</code>) para saber se existe uma versão mais nova. A requisição leva o nome e a versão do app (<code>submarine-app/x.y.z</code>) e nada mais; o GitHub vê o seu endereço IP, como em qualquer requisição na web.",
           "<strong>O servidor do desenvolvedor, quando você envia comentários</strong> (veja abaixo), e só nesse momento.",
           "<strong>Os links</strong> em que você clica abrem no navegador padrão do sistema."
@@ -761,6 +764,37 @@
         ]
       },
       {
+        "id": "ai",
+        "title": "Assistente de IA (opcional)",
+        "paragraphs": [
+          "O assistente não faz nada até que você adicione um provedor de IA em <em>Configurações → AI assistant</em>: Anthropic, OpenAI, outro serviço compatível com OpenAI (como OpenRouter, DeepSeek, Groq ou Google Gemini) ou um modelo na sua própria máquina ou rede (como Ollama ou LM Studio). Você usa a sua própria conta e a sua própria chave de API com esse provedor, se ele precisar delas. O Submarine não tem nenhum serviço de IA próprio, e nunca vemos as suas conversas nem as suas chaves."
+        ],
+        "list": [
+          "<strong>Para onde vão as requisições.</strong> Do seu dispositivo direto para o provedor, ou pelo proxy do sistema ou por um proxy que você definir para esse provedor, ou saindo por um dos seus servidores, pela sessão SSH aberta dele. Quando passam por um servidor, o provedor vê o endereço desse servidor. As requisições usam HTTPS, que continua criptografado do seu dispositivo até o provedor, então um proxy ou servidor no meio do caminho vê só qual host é contatado e quantos dados passam. O http simples (sem criptografia) só é permitido para um endereço na sua própria máquina ou rede ou, por meio de um dos seus servidores, na própria máquina ou rede desse servidor. Pelo http simples, qualquer pessoa nessa rede pode ler a conversa e qualquer chave de API enviada com ela, e em outra rede o mesmo endereço pode pertencer a outra pessoa.",
+          "<strong>O que o provedor recebe.</strong> A cada requisição, a conversa até ali: as suas mensagens (com qualquer texto do terminal que você anexar) e as respostas do assistente. Em uma conversa sobre um servidor, também o que o assistente lê e faz nele (saída de comandos, conteúdo de arquivos, listagens de pastas, os resultados das alterações que ele fez) e as suas respostas quando ele pede aprovação. A requisição leva a sua chave de API e o nome e a versão do app e, como em qualquer requisição na web, o provedor vê o endereço de onde ela vem. Se você mudar uma conversa para outro provedor, a conversa inteira vai para esse provedor com a sua próxima mensagem. A requisição enviada por <em>Test</em> e as requisições que perguntam a um provedor sobre os modelos dele levam a sua chave e nada das suas conversas ou dos seus servidores.",
+          "<strong>Informações sobre o servidor.</strong> Quando começa uma conversa sobre um servidor, o app coleta algumas informações sobre o servidor e as envia com a conversa: o nome curto e o número da versão do sistema (como em <code>debian 12</code>), o nome e a versão do kernel, o tipo de processador, o nome do usuário de login e se ele está em um grupo de administradores (sudo, wheel ou admin), a pasta pessoal, o nome do shell de login e quais destes estão instalados: bash, systemctl, docker, apt, dnf, yum, apk e pacman. A conversa mostra essas informações em <em>Server facts sent to the assistant</em>. Elas não incluem o nome de host nem o endereço do servidor, nem o nome que você deu a ele, embora o assistente possa encontrar esses dados no que ele lê.",
+          "<strong>Chaves privadas.</strong> Um bloco de chave privada na saída de um comando (<code>-----BEGIN … PRIVATE KEY-----</code> e os formatos PGP, SSH2 e PuTTY) é substituído por <code>[private key removed by Submarine]</code> antes de ser mostrado ou enviado, e o mesmo vale para um bloco desses em um arquivo que o assistente lê. Isso detecta uma chave exibida ou lida como um bloco inteiro; um comando que exibe só parte de uma chave, ou uma chave em outro formato, não é detectado, então encare isso como uma proteção contra acidentes, e não como uma promessa de que nenhuma chave jamais possa ser enviada. O restante do conteúdo dos arquivos e o texto do terminal que você anexar são enviados como estão, sem caracteres Unicode Tag ocultos: eles não aparecem na tela e podem carregar instruções para um modelo, por isso são retirados de tudo o que é enviado ao assistente, inclusive das suas próprias mensagens (a conversa avisa quando uma mensagem sua continha algum). O assistente nunca recebe as senhas e chaves salvas no seu perfil: ele trabalha só no servidor, pela sessão aberta.",
+          "<strong>O seu consentimento.</strong> O que um provedor recebe fica sujeito aos termos e à política de privacidade do próprio provedor. Antes que a sua primeira mensagem vá para um provedor, o app pergunta a você, informando o endereço do provedor, e pergunta de novo se você mudar esse endereço para outro host, mudar o tipo do provedor ou permitir provedores que possam guardar dados. Uma chave de API salva para um host nunca é enviada a outro: quando você muda o host, o app pede a chave de novo. Para alguns provedores, ele acrescenta um aviso: Gemini (no plano gratuito do Google, o Google pode usar os dados para melhorar os próprios produtos, e pessoas podem lê-los), DeepSeek (ele armazena os dados na China) e OpenRouter (ele repassa as requisições a outros provedores; quando é adicionado com a predefinição OpenRouter, o Submarine pede que ele use só provedores que não guardam os dados nem treinam modelos com eles, a menos que você permita os demais nas configurações do provedor). Para retirar o seu consentimento, escolha <em>withdraw</em> ao lado do provedor em <em>Configurações → AI assistant</em>: uma conversa que estiver respondendo se interrompe antes da próxima requisição, e o app pergunta de novo antes da próxima mensagem. O que um provedor já recebeu continua sujeito às regras do próprio provedor.",
+          "<strong>Um modelo local</strong> (Ollama, LM Studio ou outro servidor na sua máquina ou rede) mantém os dados nessa máquina ou rede.",
+          "<strong>O que fica guardado no seu dispositivo</strong>: os seus provedores e as chaves de API deles, as suas conversas com tudo o que há nelas, o nível de permissão de cada servidor e os comandos que você escolheu executar sempre nele, e o log de atividades do assistente. O log lista cada comando que o assistente executou ou pediu para executar e cada pasta ou arquivo que ele abriu ou alterou, com o momento em que isso aconteceu e se e como foi permitido, e guarda o conteúdo anterior de cada arquivo alterado para que a alteração possa ser desfeita. As entradas do log com mais de 90 dias são removidas quando o arquivo do assistente é aberto e sempre que uma nova entrada é adicionada. Tudo isso fica no arquivo criptografado próprio do assistente (veja <em>O que fica no seu dispositivo</em>).",
+          "<strong>Reportar esta resposta</strong> (o ícone de bandeira “Report this reply” abaixo de cada resposta) copia a resposta para a sua área de transferência e, depois que você confirma, abre no seu navegador a página de issues do projeto no GitHub. O próprio app não envia nada. O que você publica lá é público, então deixe de fora dados privados dos seus servidores."
+        ]
+      },
+      {
+        "id": "agents",
+        "title": "Agentes de IA neste computador (opcional)",
+        "paragraphs": [
+          "Em um computador, <em>Configurações → AI agents</em> permite que um agente de IA executado no mesmo computador (como o Claude Code) trabalhe nos seus servidores por meio do Submarine. Isso fica desativado até que você o ative."
+        ],
+        "list": [
+          "<strong>Quem pode se conectar.</strong> Só programas executados com o seu usuário neste computador, por um canal que outros usuários e a rede não conseguem abrir. O Submarine mostra a você qual programa está pedindo acesso e o que o iniciou.",
+          "<strong>Nada sem a sua aprovação.</strong> Um agente pede acesso, e você escolhe na janela do Submarine o servidor, as operações, as pastas, por quanto tempo (no máximo 8 horas) e como as operações dele são executadas. O acesso termina quando esse tempo acaba, quando o agente se desconecta, quando você o revoga, bloqueia o perfil ou fecha o app.",
+          "<strong>O que um agente recebe.</strong> Os resultados das operações que você permitir: saída de comandos, e listagens de pastas e conteúdo de arquivos das pastas que você escolheu. Nunca as suas senhas, chaves ou outros segredos salvos. O endereço ao qual o Submarine se conecta é substituído no que o agente vê; outros endereços que um servidor exibir ainda podem aparecer.",
+          "<strong>Para onde isso vai depois.</strong> O que o agente faz com o que recebe, por exemplo, enviá-lo ao próprio provedor de IA, fica sujeito aos termos e à política de privacidade desse agente.",
+          "<strong>O que fica guardado no seu dispositivo.</strong> Cada operação que um agente pede é registrada no log de atividades do assistente, com o nome do agente, neste dispositivo."
+        ]
+      },
+      {
         "id": "website",
         "title": "Este site",
         "paragraphs": [
@@ -776,6 +810,7 @@
           "<strong>As linhas de log gravadas depois disso</strong> (a própria exclusão, que não contém nenhum e-mail, e qualquer tentativa de login posterior com esse e-mail) ficam guardadas por até {auditDays} dias. Os backups feitos quando o software do servidor é atualizado são mantidos só por pouco tempo.",
           "<strong>Remova a cópia na nuvem de um perfil</strong> no app: no menu do perfil, na lista de perfis, <em>Excluir da nuvem…</em>.",
           "<strong>Excluir uma mensagem de comentários</strong> antes dos {feedbackDays} dias: fale com a gente informando o número do relatório.",
+          "<strong>Exclua as conversas do assistente de IA</strong>: uma conversa pelo menu dela (<em>Delete</em>) ou todas com <em>Delete all</em> abaixo da lista de conversas na página do assistente de IA. O log de atividades do assistente continua existindo depois que as conversas são excluídas, a menos que você escolha <em>Clear them</em> ao excluir uma conversa; limpe-o a qualquer momento com <em>Clear the log</em> na tela <em>Activity</em>, para um servidor ou para todos os servidores. Para excluir a chave de API de um provedor, escolha <em>Remove</em> ao lado da chave nas configurações do provedor e salve, ou exclua o provedor, em <em>Configurações → AI assistant</em>. Excluir um perfil exclui junto o arquivo do assistente. Para o que um provedor recebeu, valem as regras do próprio provedor: fale com ele.",
           "<strong>Exclua o que está em um dispositivo</strong> removendo o app (na versão portátil para Windows, apagando a pasta ao lado do programa).",
           "Se você usa uma versão mais antiga ou não consegue mais abrir o app, entre em contato conosco (veja abaixo) e excluiremos a conta quando você puder mostrar que ela é sua."
         ]
@@ -805,7 +840,7 @@
         "id": "contact",
         "title": "Contato",
         "paragraphs": [
-          "Dúvidas ou pedidos sobre os seus dados: abra uma issue em <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (por favor, não publique informações privadas lá) ou escreva pelo site <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+          "Dúvidas ou pedidos sobre os seus dados: escreva para <a href=\"mailto:{email}\">{email}</a>. Você também pode abrir uma issue em <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (por favor, não publique informações privadas lá)."
         ]
       }
     ]
@@ -907,7 +942,7 @@
         "id": "contact",
         "title": "Contato",
         "paragraphs": [
-          "Dúvidas sobre estes termos: abra uma issue em <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> ou escreva pelo site <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+          "Dúvidas sobre estes termos: escreva para <a href=\"mailto:{email}\">{email}</a> ou abra uma issue em <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a>."
         ]
       }
     ]
@@ -951,7 +986,7 @@
       "confirm": "Por favor, marque a caixa para confirmar."
     },
     "helpTitle": "Sem senha ou sem acesso?",
-    "help": "Se você sempre entra com um código enviado por e-mail, primeiro defina uma senha no app (Sincronização na nuvem → Esqueceu a senha?). Se não conseguir usar o app nem este formulário, abra uma issue em <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> sem nenhum dado privado, e excluiremos a conta quando você puder mostrar que ela é sua."
+    "help": "Se você sempre entra com um código enviado por e-mail, primeiro defina uma senha no app (Sincronização na nuvem → Esqueceu a senha?). Se não conseguir usar o app nem este formulário, escreva para <a href=\"mailto:{email}\">{email}</a>, e excluiremos a conta quando você puder mostrar que ela é sua."
   },
   "notFound": {
     "title": "Página não encontrada – Submarine",

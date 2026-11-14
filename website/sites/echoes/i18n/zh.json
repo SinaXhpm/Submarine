@@ -631,7 +631,7 @@
         "id": "contact",
         "title": "联系方式",
         "paragraphs": [
-          "如有疑问或顾虑，请在 <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> 提交 issue。"
+          "如有疑问或顾虑，请发送邮件至 <a href=\"mailto:{email}\">{email}</a>，或在 <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> 提交 issue。"
         ]
       }
     ]
@@ -702,7 +702,7 @@
         "id": "contact",
         "title": "联系方式",
         "paragraphs": [
-          "如对本条款有疑问，请在 <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> 提交 issue。"
+          "如对本条款有疑问，请发送邮件至 <a href=\"mailto:{email}\">{email}</a>，或在 <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> 提交 issue。"
         ]
       }
     ]

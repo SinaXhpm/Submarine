@@ -631,7 +631,7 @@
         "id": "contact",
         "title": "संपर्क",
         "paragraphs": [
-          "सवाल या चिंताएँ: <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> पर एक इश्यू खोलें।"
+          "सवाल या चिंताएँ: <a href=\"mailto:{email}\">{email}</a> पर लिखें, या <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> पर एक इश्यू खोलें।"
         ]
       }
     ]
@@ -702,7 +702,7 @@
         "id": "contact",
         "title": "संपर्क",
         "paragraphs": [
-          "इन शर्तों के बारे में सवालों के लिए: <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> पर एक इश्यू खोलें।"
+          "इन शर्तों के बारे में सवालों के लिए: <a href=\"mailto:{email}\">{email}</a> पर लिखें, या <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> पर एक इश्यू खोलें।"
         ]
       }
     ]

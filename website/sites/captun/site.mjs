@@ -6,7 +6,7 @@
 // service are not claimed at all.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AUTHOR, ICON, LANGS, Site, esc, fill, plain, rich, stripTags } from "../../engine.mjs";
+import { AUTHOR, CONTACT_EMAIL, ICON, LANGS, Site, esc, fill, plain, rich, stripTags } from "../../engine.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ORIGIN = "https://captun.sinaxhpm.com";
@@ -83,7 +83,7 @@ export default function build({ out, date }) {
   site.copy(path.join(HERE, "img", "apple-touch-icon.png"), "apple-touch-icon.png");
   site.copy(path.join(HERE, "img", "og.png"), "og.png");
 
-  const valuesFor = () => ({ repoUrl: REPO_URL, issuesUrl: ISSUES_URL, buildUrl: BUILD_URL });
+  const valuesFor = () => ({ repoUrl: REPO_URL, issuesUrl: ISSUES_URL, buildUrl: BUILD_URL, email: CONTACT_EMAIL });
 
   const ul = (xs, v, where) => `<ul>${xs.map((x) => `<li>${rich(x, v, where)}</li>`).join("")}</ul>`;
   const ticks = (xs, v, where) => `<ul class="ticks">${xs.map((x) => `<li>${ICON.check}<span>${rich(x, v, where)}</span></li>`).join("")}</ul>`;
@@ -272,6 +272,7 @@ Per-device outbounds, rules, speed limits, data allowances, the usage history an
 - Source code: ${REPO_URL}
 - Issues: ${ISSUES_URL}
 - Author: https://sinaxhpm.com
+- Email: ${CONTACT_EMAIL} (security reports and questions)
 - Also by the author: Submarine, an SSH, SFTP, RDP, VNC and Telnet client (${SUBMARINE}/), and Echoes, 20 network tools in one app (${ECHOES}/)
 `;
   }

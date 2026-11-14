@@ -3,7 +3,7 @@
 // language that has strings in i18n/. The app itself is in English.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AUTHOR, ICON, LANGS, Site, esc, fill, plain, rich, stripTags } from "../../engine.mjs";
+import { AUTHOR, CONTACT_EMAIL, ICON, LANGS, Site, esc, fill, plain, rich, stripTags } from "../../engine.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ORIGIN = "https://echoes.sinaxhpm.com";
@@ -14,7 +14,7 @@ const POLICY_URL = `${REPO_URL}/blob/master/PRIVACY.md`;
 const APP_STORE = "https://apps.apple.com/app/id6824582968";
 const SUBMARINE = "https://submarine.sinaxhpm.com";
 // The date at the top of PRIVACY.md, which this site's policy follows word for word.
-const POLICY_DATE = "2026-10-21";
+const POLICY_DATE = "2026-11-14";
 // The date at the top of the terms of use.
 const TERMS_DATE = "2026-11-14";
 
@@ -116,6 +116,7 @@ export default function build({ out, date }) {
       termsDate: d.format(new Date(`${TERMS_DATE}T00:00:00Z`)),
       licenseUrl: `${REPO_URL}/blob/master/LICENSE`,
       appleEula: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/",
+      email: CONTACT_EMAIL,
       repoUrl: REPO_URL,
       issuesUrl: ISSUES_URL,
       policyUrl: POLICY_URL,
@@ -311,6 +312,7 @@ ${t.home.tools.groups.map((g) => `### ${g.title}\n\n${g.items.map((x) => `- ${x.
 - Releases and downloads: ${RELEASES_URL}
 - Issues: ${ISSUES_URL}
 - Author: https://sinaxhpm.com
+- Email: ${CONTACT_EMAIL} (privacy, terms, security reports)
 - Sister app: Submarine, an SSH, SFTP, RDP, VNC and Telnet client (${SUBMARINE}/)
 `;
   }

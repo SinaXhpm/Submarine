@@ -631,7 +631,7 @@
         "id": "contact",
         "title": "Contacto",
         "paragraphs": [
-          "Preguntas o dudas: abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
+          "Preguntas o dudas: escribe a <a href=\"mailto:{email}\">{email}</a> o abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
         ]
       }
     ]
@@ -702,7 +702,7 @@
         "id": "contact",
         "title": "Contacto",
         "paragraphs": [
-          "Preguntas sobre estas condiciones: abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
+          "Preguntas sobre estas condiciones: escribe a <a href=\"mailto:{email}\">{email}</a> o abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
         ]
       }
     ]

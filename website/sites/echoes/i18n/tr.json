@@ -631,7 +631,7 @@
         "id": "contact",
         "title": "İletişim",
         "paragraphs": [
-          "Sorularınız ya da endişeleriniz için <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> adresinde bir issue açın."
+          "Sorularınız ya da endişeleriniz için <a href=\"mailto:{email}\">{email}</a> adresine yazın ya da <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> adresinde bir issue açın."
         ]
       }
     ]
@@ -702,7 +702,7 @@
         "id": "contact",
         "title": "İletişim",
         "paragraphs": [
-          "Bu koşullarla ilgili sorularınız için <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> adresinde bir issue açın."
+          "Bu koşullarla ilgili sorularınız için <a href=\"mailto:{email}\">{email}</a> adresine yazın ya da <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> adresinde bir issue açın."
         ]
       }
     ]
