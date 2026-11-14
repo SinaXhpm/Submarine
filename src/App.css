@@ -31,12 +31,18 @@ select optgroup {
     --primary-hex: #60a5fa;
     --base-font-size: 15.5px;
     --border: 240 5.9% 15%;
+    /* The interface font, and the one for text set in columns (paths,
+       figures; Tailwind's font-mono). util/uiFont.ts sets both from
+       Settings; these are the defaults: the app's own font, and the
+       terminal's default stack. */
+    --ui-font: 'Inter', system-ui, -apple-system, sans-serif;
+    --ui-mono: Consolas, ui-monospace, Menlo, Monaco, "Cascadia Mono", "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", "Noto Sans Mono", "Droid Sans Mono", "Courier New", monospace;
   }
 
   body {
     @apply text-white select-none overflow-hidden;
     background-color: var(--background);
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family: var(--ui-font);
     font-size: var(--base-font-size);
     font-feature-settings: "cv11", "ss01";
     -webkit-font-smoothing: antialiased;
