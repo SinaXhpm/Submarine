@@ -4,7 +4,7 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <name>Submarine</name>
-  <summary>SSH, SFTP and remote desktop client</summary>
+  <summary>SSH, SFTP, FTP and remote desktop client</summary>
   <developer id="com.sinaxhpm">
     <name>Sina Xhpm</name>
   </developer>
