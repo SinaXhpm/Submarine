@@ -245,6 +245,15 @@ function DesktopApp() {
       return next;
     });
   }, []);
+  // Each saved server's open tab, as its dot shows it on the server's card.
+  const serverTabs = useMemo(() => {
+    const open: Record<number, string> = {};
+    for (const s of sessions) {
+      if (s.serverId == null) continue;
+      open[s.serverId] = promptSessions.has(s.id) ? "waiting" : (sessionStatuses[s.id] ?? "connecting");
+    }
+    return open;
+  }, [sessions, sessionStatuses, promptSessions]);
 
   // Maximize state mirrored from the OS window so the title-bar button can
   // swap its icon (single square = maximize, overlapping squares = restore)
@@ -2378,6 +2387,8 @@ function DesktopApp() {
               <NodeGrid
                 servers={servers}
                 folders={folders}
+                credentials={credentials}
+                serverTabs={serverTabs}
                 activeFolderId={activeFolderId}
                 onActiveFolderChange={setActiveFolderId}
                 onOpenServer={openServer}
