@@ -1,6 +1,8 @@
 import { Component, type CSSProperties, type ErrorInfo, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "../i18n";
+import { clearAiFocus, clearFeeds } from "../util/aiEvents";
+import { clearUrlCache } from "./ai/markdownParse";
 
 interface Props { children: ReactNode; }
 interface State { error: Error | null; info: ErrorInfo | null; }
@@ -23,9 +25,15 @@ export default class ErrorBoundary extends Component<Props, State> {
   }
 
   // The app starts over at the picker, and no page load tells the backend so
-  // (a reload does, see lib.rs): the profile left open behind it is closed here.
+  // (a reload does, see lib.rs): the profile left open behind it is closed
+  // here, and what the AI views kept of it goes, as on Lock.
   private reset = () => {
-    invoke("close_profile").catch(() => {}).finally(() => this.setState({ error: null, info: null }));
+    invoke("close_profile").catch(() => {}).finally(() => {
+      clearAiFocus();
+      clearFeeds();
+      clearUrlCache();
+      this.setState({ error: null, info: null });
+    });
   };
   private reload = () => window.location.reload();
 

@@ -46,6 +46,13 @@ const NAME_BATCH_BYTES: usize = 64 * 1024;
 
 const BUSY: &str = "The FTP server allows no more connections, and each is busy with a transfer; try again when one ends";
 
+/// READLINK's answer for a name that is there and isn't a link. The AI's
+/// file access (ai/files.rs) takes this answer, and only this one, as "not a
+/// link": any other failure means the adapter couldn't find out (all
+/// connections busy, a connection gone), and a path isn't taken past a name
+/// nobody could check.
+pub(crate) const NOT_A_LINK: &str = "Not a link";
+
 /// What it takes to make another logged-in connection to the server.
 pub struct Link {
     pub dial: Dial,
@@ -950,7 +957,7 @@ impl russh_sftp::server::Handler for FtpSftp {
                 files: vec![File { filename: target.clone(), longname: target, attrs: FileAttributes::default() }],
             }),
             Kind::Link(None) => Err(unsupported("This FTP server doesn't tell where a link leads")),
-            _ => Err(failure("Not a link")),
+            _ => Err(failure(NOT_A_LINK)),
         }
     }
 
@@ -994,6 +1001,8 @@ pub struct Info {
     /// The server tells a file's exact time (MDTM): with MLSD or this, a
     /// mirror can compare times.
     pub mdtm: bool,
+    /// Who is logged in ("anonymous" for an anonymous login).
+    pub user: String,
 }
 
 /// Starts file access over FTP on a logged-in connection: an SFTP session the
