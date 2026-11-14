@@ -50,9 +50,11 @@
     "Vault encrypted on disk with Argon2id and AES-256-GCM",
     "Optional quick unlock with Windows Hello or an Android fingerprint",
     "Optional cloud sync with client-side encryption of record contents, profile sharing and a self-hosted server option",
+    "Optional AI assistant with your own provider (Anthropic, OpenAI, OpenAI-compatible services, Ollama, LM Studio): reads and edits files and runs commands at a per-server permission level, with undo",
+    "MCP server for AI agents on the same computer, such as Claude Code: user-approved access per server, folders and time, without passwords, keys or server addresses",
     "Native Rust and Tauri app, no bundled Chromium"
   ],
-  "keywords": "ssh client, sftp client, ftp client, ftps client, telnet client, vnc viewer, rdp client, terminal, port forwarding, ssh tunnel, socks proxy, folder sync, ssh-agent, rust, tauri, putty alternative, winscp alternative, mobaxterm alternative, termius alternative, android ssh client",
+  "keywords": "ssh client, sftp client, ftp client, ftps client, telnet client, vnc viewer, rdp client, terminal, port forwarding, ssh tunnel, socks proxy, folder sync, ssh-agent, ai assistant, mcp server, claude code, rust, tauri, putty alternative, winscp alternative, mobaxterm alternative, termius alternative, android ssh client",
   "sameAs": [
     "https://github.com/sinaxhpm/submarine"
   ]

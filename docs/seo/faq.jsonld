@@ -71,7 +71,23 @@
       "name": "Does Submarine collect telemetry or analytics?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "No analytics SDK and no crash reporter. Besides your own servers, it makes one anonymous request to the GitHub releases API when the profile page opens, to check for a new version, and it talks to the sync server only if you sign in to cloud sync."
+        "text": "No analytics SDK and no crash reporter. Besides your own servers, it makes one anonymous request to the GitHub releases API when the profile page opens, to check for a new version, and it talks to the sync server only if you sign in to cloud sync, and to an AI provider only if you add one and use the assistant."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Submarine have an AI assistant?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes, from version 0.5, and it is off until you set it up. It uses your own AI provider (Anthropic, OpenAI, an OpenAI-compatible service, or a local model through Ollama or LM Studio) and works on a server from that session's AI tab, at the permission level you choose."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can Claude Code or another AI agent use my servers through Submarine?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes, on a computer, from version 0.5. Submarine is an MCP server for AI agents on the same computer. The agent asks for access, you choose the server, the operations, the folders and the time, and it never gets a password, a key or the server's address."
       }
     }
   ]
