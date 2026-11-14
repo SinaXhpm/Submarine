@@ -13,3 +13,32 @@ export function parseObjectList(text: unknown): any[] {
     return [];
   }
 }
+
+// One entry's fields are as unchecked as the list. React writes a text box's
+// value as `"" + value`, which throws for an object like {"toString":1}, and
+// `excludes` has to be a list for the form to join it: either one, on a synced
+// row, took the whole window down on Edit. Only what can't be shown is left
+// out, so a row in good order comes back as it was (the save compares them).
+export function normalizeTunnel(t: any): any {
+  const out = { ...t };
+  for (const field of ["rid", "type", "local", "remote", "name"]) {
+    if (out[field] !== null && typeof out[field] === "object") delete out[field];
+  }
+  return out;
+}
+
+export function normalizeMirror(m: any): any {
+  return {
+    ...m,
+    local: typeof m.local === "string" ? m.local : "",
+    remote: typeof m.remote === "string" ? m.remote : "",
+    excludes: Array.isArray(m.excludes) ? m.excludes.filter((s: unknown) => typeof s === "string") : [],
+    conflict_resolution: typeof m.conflict_resolution === "string" ? m.conflict_resolution : "local",
+  };
+}
+
+// A panel wrote a server row itself (its forwards, mirrors, notes): the app's
+// list is behind the table now. The event is the one it listens to for that.
+export function serverRowChanged() {
+  window.dispatchEvent(new Event("submarine-held-changed"));
+}

@@ -2,6 +2,10 @@ import { Fragment, useState, useEffect, useRef } from "react";
 import { parseCommandScope, scopeMatches, serverScopeIds } from "../util/commandScope";
 import { invoke } from "@tauri-apps/api/core";
 import { Play, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, ChevronDown, ChevronRight, Pencil, Check, Server } from "lucide-react";
+import { useConfirm } from "../ui/confirm";
+import { pasteIntoTerminal, withoutPasteControls } from "../util/pasteText";
+import { serverRowChanged } from "../util/serverJson";
+import { useT } from "../i18n";
 
 // Side panel that opens from a terminal session and surfaces *both* the
 // user's saved Quick Commands and their Notes. Two patterns for editing:
@@ -33,9 +37,19 @@ type EditTarget =
   | { kind: "command"; id: number; title: string; body: string }
   | { kind: "note"; id: number; title: string; body: string };
 
+// Whether the command of a card's Run button is cut short on that card. Measured,
+// not counted: a card shows about 30 characters in the narrowest panel and far
+// more in a wide one.
+const cutOnCard = (button: HTMLElement) => {
+  const line = button.closest("[data-command-card]")?.querySelector("pre");
+  return !line || line.scrollWidth > line.clientWidth;
+};
+
 // `headerActions`: extra title-bar buttons from the session view (full screen),
 // shown just before Close.
 export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverName }: { activeTab: string; onClose: () => void; headerActions?: React.ReactNode; serverId?: number; serverName?: string }) => {
+  const t = useT();
+  const confirm = useConfirm();
   const [tab, setTab] = useState<Tab>("commands");
   const [commands, setCommands] = useState<CommandItem[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
@@ -60,6 +74,8 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
 
   const [edit, setEdit] = useState<EditTarget | null>(null);
   const [saving, setSaving] = useState(false);
+  // Why the last save failed, until the next one.
+  const [saveError, setSaveError] = useState<string | null>(null);
   // Ref mirror of the edit slot so the cleanup logic in tab-switch /
   // refresh / unmount can read the latest draft without re-binding the
   // effect on every keystroke.
@@ -105,7 +121,8 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         const server = servers.find((s) => s.id === serverId);
         const text: string = server?.notes ?? "";
         setNodeOriginal(text);
-        setNodeDraft(text);
+        // A draft being typed stays: this also runs on Refresh.
+        setNodeDraft((draft) => (draft !== nodeOriginal ? draft : text));
         setScopeIds(server ? serverScopeIds(server, (out[3] as any[]) || []) : null);
       } else {
         setScopeIds(null);
@@ -120,14 +137,19 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   useEffect(() => { fetchAll(); }, [serverId]);
 
   const isNodeDirty = nodeDraft !== nodeOriginal;
+  // False when the notes couldn't be saved (the reason is on screen).
   const saveNodeNotes = async () => {
-    if (!hasNode || nodeSaving || !isNodeDirty) return;
+    if (!hasNode || nodeSaving || !isNodeDirty) return true;
     setNodeSaving(true);
+    setSaveError(null);
     try {
       await invoke("set_server_notes", { id: serverId, notes: nodeDraft });
       setNodeOriginal(nodeDraft);
+      serverRowChanged();
+      return true;
     } catch (e) {
-      console.error("Failed to save node notes:", e);
+      setSaveError(t("Couldn't save the notes: {error}", { error: String(e) }));
+      return false;
     } finally {
       setNodeSaving(false);
     }
@@ -136,11 +158,13 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   // Save the currently editing row (if dirty), without touching the edit
   // state itself — the caller decides whether to collapse afterwards. We
   // accept a target arg so callers that already cleared local state can
-  // still pass through their snapshot.
+  // still pass through their snapshot. False when the save failed: the text
+  // goes back into the editor, which may have closed already.
   const flushIfDirty = async (target: EditTarget | null) => {
-    if (!target) return;
+    if (!target) return true;
     const o = originalForEdit(target);
-    if (!o || (o.title === target.title && o.body === target.body)) return;
+    if (!o || (o.title === target.title && o.body === target.body)) return true;
+    setSaveError(null);
     try {
       if (target.kind === "command") {
         await invoke("edit_command", { id: target.id, title: target.title, content: target.body });
@@ -149,10 +173,41 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         await invoke("edit_note", { id: target.id, title: target.title, body: target.body });
         setNotes((prev) => prev.map((n) => n.id === target.id ? { ...n, title: target.title, body: target.body } : n));
       }
+      return true;
     } catch (e) {
-      console.error("Failed to auto-save:", e);
+      setEdit((cur) => cur ?? target);
+      setSaveError(t("Couldn't save \"{title}\": {error}", { title: target.title || t("Untitled"), error: String(e) }));
+      return false;
     }
   };
+
+  // Everything being typed, saved. False when something couldn't be.
+  const flushDrafts = async () => {
+    const saved = await flushIfDirty(editRef.current);
+    return (await saveNodeNotes()) && saved;
+  };
+
+  // Close, another tool and closing the tab all unmount this panel, and what
+  // is being typed would go with it. From refs, for the latest drafts and
+  // lists; X has saved them already. The panel can't show a failure any more,
+  // so a dialog does.
+  const flushRef = useRef(flushDrafts);
+  flushRef.current = flushDrafts;
+  const closedRef = useRef(false);
+  useEffect(() => () => {
+    if (closedRef.current) return;
+    void flushRef.current().then((saved) => {
+      if (!saved) void confirm({ title: t("Not saved"), message: t("What you were typing in the Library couldn't be saved."), okLabel: t("OK") });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Lock asks before the profile closes, while a save can still land
+  // (`saveDrafts` in DesktopApp).
+  useEffect(() => {
+    const onSaveDrafts = (e: Event) => { (e as CustomEvent<Promise<boolean>[]>).detail.push(flushRef.current()); };
+    window.addEventListener("submarine-save-drafts", onSaveDrafts);
+    return () => window.removeEventListener("submarine-save-drafts", onSaveDrafts);
+  }, []);
 
   // Tab switch: persist whatever's open in the current tab before clearing
   // the editor and search so the next tab starts clean. Also auto-saves
@@ -191,6 +246,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   const saveEdit = async () => {
     if (!edit || saving) return;
     setSaving(true);
+    setSaveError(null);
     try {
       if (edit.kind === "command") {
         await invoke("edit_command", { id: edit.id, title: edit.title, content: edit.body });
@@ -202,26 +258,38 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
       setEdit(null);
       fetchAll();
     } catch (e) {
-      console.error("Failed to save:", e);
+      setSaveError(t("Couldn't save: {error}", { error: String(e) }));
     } finally {
       setSaving(false);
     }
   };
 
-  // Write `text` into the active PTY. `execute=true` appends a CR so the
-  // shell runs the line immediately; false leaves the cursor at the end so
-  // the user can review / edit before pressing Enter themselves.
-  const writeToTerminal = async (text: string, execute: boolean) => {
+  // Put `text` in the active terminal as a paste: no control characters, and
+  // bracketed when the program there asked for that. `execute=true` presses
+  // Enter after it so the shell runs it; false leaves the cursor at the end so
+  // the user can review / edit before pressing Enter themselves. Library text
+  // isn't typed here (in a shared profile it can be anyone's) and a card shows
+  // only the start of it, so what the card can't show is shown whole first:
+  // more than one line, a line with a run of blanks, or a line to be run that
+  // the card cuts short (`cut`). A long line that is only pasted can be read at
+  // the prompt before anything runs.
+  const writeToTerminal = async (text: string, execute: boolean, cut = false) => {
     if (!activeTab) return;
-    try {
-      const payload = execute
-        ? (text.endsWith("\n") || text.endsWith("\r") ? text : text + "\r")
-        : text;
-      const dataBytes = Array.from(new TextEncoder().encode(payload));
-      await invoke("write_terminal_data", { terminalId: activeTab, data: dataBytes });
-    } catch (e) {
-      console.error("Failed to write to terminal:", e);
+    const clean = withoutPasteControls(text).replace(/[\r\n]+$/, "");
+    if (!clean) return;
+    const lines = clean.split(/\r\n|\r|\n/).length;
+    if (lines > 1 || cut || /[ \t]{16,}/.test(clean)) {
+      const ok = await confirm({
+        title: execute
+          ? (lines > 1 ? t("Run these {count} lines?", { count: lines }) : t("Run this line?"))
+          : (lines > 1 ? t("Paste these {count} lines?", { count: lines }) : t("Paste this line?")),
+        message: clean,
+        okLabel: execute ? t("Run") : t("Paste"),
+        safeDefault: true,
+      });
+      if (!ok) return;
     }
+    pasteIntoTerminal({ terminalId: activeTab, text: clean, enter: execute });
   };
 
   const copyToClipboard = async (text: string) => {
@@ -242,12 +310,12 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   });
   const filteredCommands = [...forThisServer, ...matching.filter((c) => !parseCommandScope(c.scope))];
   const headingAt = (i: number) =>
-    forThisServer.length === 0 ? null : i === 0 ? "For this server" : i === forThisServer.length ? "All servers" : null;
+    forThisServer.length === 0 ? null : i === 0 ? t("For this server") : i === forThisServer.length ? t("All servers") : null;
   const filteredNotes = notes.filter(
     (n) => (n.title || "").toLowerCase().includes(q) || (n.body || "").toLowerCase().includes(q)
   );
 
-  const tabLabel = tab === "commands" ? "Commands" : tab === "notes" ? "Notes" : "Node";
+  const tabLabel = tab === "commands" ? t("Commands") : tab === "notes" ? t("Notes") : t("Node");
   const TabIcon = tab === "commands" ? Terminal : tab === "notes" ? StickyNote : Server;
 
   return (
@@ -257,23 +325,26 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         <div className="flex items-center gap-2 min-w-0">
           <TabIcon size={14} className="text-primary shrink-0" />
           <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-300 truncate">
-            Library · {tabLabel}{tab === "node" && serverName ? ` · ${serverName}` : ""}
+            {tab === "node" && serverName ? t("Library · {tab} · {server}", { tab: tabLabel, server: serverName }) : t("Library · {tab}", { tab: tabLabel })}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={async () => { await flushIfDirty(editRef.current); fetchAll(); }}
+            onClick={async () => { await flushDrafts(); fetchAll(); }}
             disabled={loading}
             className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all disabled:opacity-50"
-            title="Refresh list"
+            title={t("Refresh list")}
           >
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
           </button>
           {headerActions}
           <button
-            onClick={async () => { await flushIfDirty(editRef.current); onClose(); }}
+            onClick={async () => {
+              // A failed save keeps the panel open, with the text and the reason.
+              if (await flushDrafts()) { closedRef.current = true; onClose(); }
+            }}
             className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all"
-            title="Close Panel"
+            title={t("Close Panel")}
           >
             <X size={14} />
           </button>
@@ -292,7 +363,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
               : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
           }`}
         >
-          <Terminal size={12} /> Commands
+          <Terminal size={12} /> {t("Commands")}
           <span className="text-[9px] opacity-60">{commands.length}</span>
         </button>
         <button
@@ -303,7 +374,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
               : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
           }`}
         >
-          <StickyNote size={12} /> Notes
+          <StickyNote size={12} /> {t("Notes")}
           <span className="text-[9px] opacity-60">{notes.length}</span>
         </button>
         {hasNode && (
@@ -315,11 +386,17 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                 : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
             }`}
           >
-            <Server size={12} /> Node
+            <Server size={12} /> {t("Node")}
             {isNodeDirty && <span className="text-[9px] text-amber-400">●</span>}
           </button>
         )}
       </div>
+
+      {saveError && (
+        <div role="alert" className="shrink-0 px-3 py-1.5 border-b border-white/5 bg-rose-500/10 text-[10.5px] text-rose-300 break-words">
+          {saveError}
+        </div>
+      )}
 
       {/* Search Input — only on list-shaped tabs; the Node tab is a single
           editor so search would have nothing to filter. */}
@@ -329,7 +406,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
             <input
               type="text"
-              placeholder={tab === "commands" ? "Search commands (title + body)..." : "Search notes (title + body)..."}
+              placeholder={tab === "commands" ? t("Search commands (title + body)...") : t("Search notes (title + body)...")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full h-8 pl-9 pr-3 bg-white/5 border border-white/5 rounded-lg text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-primary/50 focus:bg-white/10 transition-all"
@@ -343,22 +420,22 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         {loading ? (
           <div className="flex flex-col items-center justify-center py-12 text-zinc-500 gap-2">
             <RefreshCw size={24} className="animate-spin text-primary opacity-60" />
-            <span className="text-[11px]">Loading {tabLabel.toLowerCase()}...</span>
+            <span className="text-[11px]">{tab === "commands" ? t("Loading commands...") : tab === "notes" ? t("Loading notes...") : t("Loading node...")}</span>
           </div>
         ) : tab === "node" ? (
           <div className="flex flex-col h-full gap-2">
             <div className="flex items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2 min-w-0">
                 <Server size={12} className="text-primary shrink-0" />
-                <span className="text-[11px] font-bold text-zinc-200 truncate">{serverName || `Node #${serverId}`}</span>
+                <span className="text-[11px] font-bold text-zinc-200 truncate">{serverName || t("Node #{id}", { id: String(serverId) })}</span>
               </div>
               <button
                 onClick={() => copyToClipboard(nodeDraft || "")}
                 disabled={!nodeDraft}
                 className="h-7 px-2 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Copy current draft to clipboard"
+                title={t("Copy current draft to clipboard")}
               >
-                <ClipboardCopy size={11} /> Copy
+                <ClipboardCopy size={11} /> {t("Copy")}
               </button>
             </div>
             <textarea
@@ -367,7 +444,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
               onKeyDown={(e) => {
                 if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); void saveNodeNotes(); }
               }}
-              placeholder={`Notes for this node — paths, credentials hints, runbook steps…\nSaved on tab switch or Ctrl+Enter.`}
+              placeholder={t("Notes for this node — paths, credentials hints, runbook steps…\nSaved on tab switch or Ctrl+Enter.")}
               className="flex-1 w-full p-3 bg-black/40 border border-white/10 rounded-lg font-sans text-[12px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-none focus:outline-none focus:border-primary/50 custom-scrollbar"
             />
             <div className="flex gap-1.5 shrink-0">
@@ -375,17 +452,17 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                 onClick={() => setNodeDraft(nodeOriginal)}
                 disabled={nodeSaving || !isNodeDirty}
                 className="flex-1 h-8 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Revert to last saved version"
+                title={t("Revert to last saved version")}
               >
-                <X size={11} /> Revert
+                <X size={11} /> {t("Revert")}
               </button>
               <button
                 onClick={() => void saveNodeNotes()}
                 disabled={nodeSaving || !isNodeDirty}
                 className="flex-1 h-8 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Save (Ctrl+Enter, auto-saves on tab switch)"
+                title={t("Save (Ctrl+Enter, auto-saves on tab switch)")}
               >
-                {nodeSaving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} Save
+                {nodeSaving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {t("Save")}
               </button>
             </div>
           </div>
@@ -413,7 +490,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                         onKeyDown={(e) => {
                           if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
                         }}
-                        placeholder="Title"
+                        placeholder={t("Title")}
                         className="w-full h-7 px-2 bg-black/40 border border-white/10 rounded text-[11px] text-white placeholder-zinc-600 focus:outline-none focus:border-primary/50"
                         autoFocus
                       />
@@ -424,7 +501,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                           if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
                           if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
                         }}
-                        placeholder="Command body — runnable in shell"
+                        placeholder={t("Command body — runnable in shell")}
                         rows={5}
                         className="w-full p-2 bg-black/40 border border-white/10 rounded font-mono text-[11px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-y focus:outline-none focus:border-primary/50 custom-scrollbar"
                       />
@@ -434,20 +511,20 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                           disabled={saving}
                           className="flex-1 h-7 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-50"
                         >
-                          <X size={11} /> Cancel
+                          <X size={11} /> {t("Cancel")}
                         </button>
                         <button
                           onClick={saveEdit}
                           disabled={saving || !isDirty(edit)}
                           className="flex-1 h-7 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                          title="Save (Ctrl+Enter)"
+                          title={t("Save (Ctrl+Enter)")}
                         >
-                          {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} Save
+                          {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {t("Save")}
                         </button>
                       </div>
                     </div>
                   ) : (
-                    <div className="p-3">
+                    <div className="p-3" data-command-card>
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
                           <h4 className="text-xs font-bold text-zinc-200 truncate group-hover:text-primary transition-colors">
@@ -463,25 +540,25 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                       </div>
                       <div className="flex gap-1.5 mt-2">
                         <button
-                          onClick={() => writeToTerminal(c.content, true)}
+                          onClick={(e) => writeToTerminal(c.content, true, cutOnCard(e.currentTarget))}
                           className="flex-1 h-7 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
-                          title="Run in active terminal (writes + Enter)"
+                          title={t("Run in active terminal (writes + Enter)")}
                         >
-                          <Play size={11} fill="currentColor" /> Run
+                          <Play size={11} fill="currentColor" /> {t("Run")}
                         </button>
                         <button
                           onClick={() => writeToTerminal(c.content, false)}
                           className="flex-1 h-7 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
-                          title="Paste into active terminal (no Enter)"
+                          title={t("Paste into active terminal (no Enter)")}
                         >
-                          <ClipboardCopy size={11} /> Paste
+                          <ClipboardCopy size={11} /> {t("Paste")}
                         </button>
                         <button
                           onClick={() => beginEditCommand(c)}
                           className="flex-1 h-7 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
-                          title="Edit command inline"
+                          title={t("Edit command inline")}
                         >
-                          <Pencil size={11} /> Edit
+                          <Pencil size={11} /> {t("Edit")}
                         </button>
                       </div>
                     </div>
@@ -493,9 +570,9 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           ) : (
             <div className="flex flex-col items-center justify-center py-16 text-zinc-600 text-center px-4">
               <Terminal size={32} className="opacity-20 mb-2" />
-              <span className="text-xs font-bold text-zinc-500">No Commands Found</span>
+              <span className="text-xs font-bold text-zinc-500">{t("No Commands Found")}</span>
               <p className="text-[10px] mt-1 text-zinc-600 max-w-[200px]">
-                {searchQuery ? "No matches for your search query." : "Save commands in the main app to surface them here."}
+                {searchQuery ? t("No matches for your search query.") : t("Save commands in the main app to surface them here.")}
               </p>
             </div>
           )
@@ -508,13 +585,13 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                 className="group relative rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10 transition-all"
               >
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     if (expanded) {
                       // Click on row again → collapse + auto-save.
                       collapseEditedNote();
-                    } else {
-                      // Switching from one note to another also auto-saves.
-                      flushIfDirty(editRef.current);
+                    } else if (await flushIfDirty(editRef.current)) {
+                      // Switching from one note to another also auto-saves;
+                      // if that fails the editor stays on the unsaved note.
                       beginEditNote(n);
                     }
                   }}
@@ -525,11 +602,11 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                   </span>
                   <div className="flex-1 min-w-0">
                     <h4 className="text-xs font-bold text-zinc-200 truncate group-hover:text-primary transition-colors">
-                      {(expanded ? edit.title : n.title) || "Untitled"}
+                      {(expanded ? edit.title : n.title) || t("Untitled")}
                     </h4>
                     {!expanded && (
                       <p className="mt-1 text-[10px] text-zinc-500 truncate">
-                        {(n.body || "").split('\n')[0] || <span className="italic">(empty)</span>}
+                        {(n.body || "").split('\n')[0] || <span className="italic">{t("(empty)")}</span>}
                       </p>
                     )}
                   </div>
@@ -541,7 +618,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                       type="text"
                       value={edit.title}
                       onChange={(e) => setEdit({ ...edit, title: e.target.value })}
-                      placeholder="Title"
+                      placeholder={t("Title")}
                       className="w-full h-7 px-2 bg-black/40 border border-white/10 rounded text-[11px] text-white placeholder-zinc-600 focus:outline-none focus:border-primary/50"
                     />
                     <textarea
@@ -550,7 +627,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                       onKeyDown={(e) => {
                         if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
                       }}
-                      placeholder="Note body — markdown, paths, snippets…"
+                      placeholder={t("Note body — markdown, paths, snippets…")}
                       rows={6}
                       className="w-full p-2 bg-black/40 border border-white/10 rounded font-sans text-[11px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-y focus:outline-none focus:border-primary/50 custom-scrollbar"
                       autoFocus
@@ -559,24 +636,24 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                       <button
                         onClick={() => copyToClipboard(edit.body || "")}
                         className="flex-1 h-7 min-w-[64px] rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
-                        title="Copy current body to clipboard"
+                        title={t("Copy current body to clipboard")}
                       >
-                        <ClipboardCopy size={11} /> Copy
+                        <ClipboardCopy size={11} /> {t("Copy")}
                       </button>
                       <button
                         onClick={() => writeToTerminal(edit.body || "", false)}
                         className="flex-1 h-7 min-w-[64px] rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
-                        title="Paste body into active terminal (no Enter)"
+                        title={t("Paste body into active terminal (no Enter)")}
                       >
-                        <Play size={11} fill="currentColor" /> Paste
+                        <Play size={11} fill="currentColor" /> {t("Paste")}
                       </button>
                       <button
                         onClick={saveEdit}
                         disabled={saving || !isDirty(edit)}
                         className="flex-1 h-7 min-w-[64px] rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                        title={isDirty(edit) ? "Save changes (Ctrl+Enter)" : "No unsaved changes"}
+                        title={isDirty(edit) ? t("Save changes (Ctrl+Enter)") : t("No unsaved changes")}
                       >
-                        {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} Save
+                        {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {t("Save")}
                       </button>
                     </div>
                   </div>
@@ -587,9 +664,9 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         ) : (
           <div className="flex flex-col items-center justify-center py-16 text-zinc-600 text-center px-4">
             <StickyNote size={32} className="opacity-20 mb-2" />
-            <span className="text-xs font-bold text-zinc-500">No Notes Found</span>
+            <span className="text-xs font-bold text-zinc-500">{t("No Notes Found")}</span>
             <p className="text-[10px] mt-1 text-zinc-600 max-w-[200px]">
-              {searchQuery ? "No matches for your search query." : "Add notes from the Notes tab to surface them here."}
+              {searchQuery ? t("No matches for your search query.") : t("Add notes from the Notes tab to surface them here.")}
             </p>
           </div>
         )}

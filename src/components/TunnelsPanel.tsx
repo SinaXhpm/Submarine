@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, X, Activity, AlertTriangle, Globe, ArrowRight, ArrowDownLeft, Square, Play, Pencil, FileText, Trash2 } from "lucide-react";
 import { useConfirm } from "../ui/confirm";
+import { serverRowChanged } from "../util/serverJson";
+import { tk, tn, useT } from "../i18n";
 
 // Tunnels panel — the session's port-forwarding rules, running and stopped,
 // with start / stop / rename / remove. A node's saved rules start at connect
@@ -62,7 +64,13 @@ interface TunnelsPanelProps {
 }
 
 const KIND_LABEL: Record<TunnelRule["type"], string> = {
-  D: "dynamic", L: "local", R: "remote",
+  D: tk("dynamic"), L: tk("local"), R: tk("remote"),
+};
+
+// A row's state word, as shown; the values are compared above and below.
+const STATE_LABEL: Record<string, string> = {
+  listening: tk("listening"), starting: tk("starting"), error: tk("error"),
+  stopped: tk("stopped"), "not running": tk("not running"),
 };
 
 // The same forward: kind, local side and target match (a name or a stop
@@ -75,6 +83,7 @@ const ruleKey = (r: TunnelRule) => `${r.type}|${r.local}|${r.remote || ""}`;
 const isRunning = (t?: TunnelStatus) => !!t && (t.state === "listening" || t.state === "starting");
 
 const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelProps) => {
+  const t = useT();
   const [tunnels, setTunnels] = useState<Record<string, TunnelStatus>>({});
   const [rules, setRules] = useState<TunnelRule[]>([]);
   const rulesRef = useRef<TunnelRule[]>([]);
@@ -204,7 +213,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
   // never block the action the user just took).
   const persistTunnels = () => {
     if (!nodeId) return;
-    invoke("persist_session_tunnels", { sessionId, serverId: nodeId }).catch(() => {});
+    invoke("persist_session_tunnels", { sessionId, serverId: nodeId }).then(serverRowChanged).catch(() => {});
   };
 
   // Run one change to the rules: no two at once, the error (if any) shown,
@@ -238,7 +247,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
     const portPart = localStr.includes(":") ? localStr.slice(localStr.lastIndexOf(":") + 1) : localStr;
     const portNum = Number(portPart);
     if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
-      setError(`Listen port must be between 1 and 65535 (got "${portPart}")`);
+      setError(t("Listen port must be between 1 and 65535 (got \"{port}\")", { port: portPart }));
       return;
     }
     if (draft.type !== "D") {
@@ -246,7 +255,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
       const colonIdx = target.lastIndexOf(":");
       const targetPort = colonIdx > 0 ? Number(target.slice(colonIdx + 1)) : NaN;
       if (!target || colonIdx <= 0 || !Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) {
-        setError(`Target must be host:port with a valid port (got "${target}")`);
+        setError(t("Target must be host:port with a valid port (got \"{target}\")", { target }));
         return;
       }
     }
@@ -268,13 +277,13 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
     change(() => invoke("stop_tunnel", { tunnelId: t.id, serverId: nodeId }));
 
   const removeRule = async (rule: TunnelRule) => {
-    const what = rule.name ? `“${rule.name}”` : `${KIND_LABEL[rule.type]} ${rule.local}`;
+    const what = rule.name ? t("“{name}”", { name: rule.name }) : t("{kind} {local}", { kind: t(KIND_LABEL[rule.type]), local: rule.local });
     const ok = await confirmDialog({
-      title: "Remove forward",
+      title: t("Remove forward"),
       message: nodeId
-        ? `Remove ${what}? It is deleted from this server's saved forwards.`
-        : `Remove ${what}?`,
-      okLabel: "Remove",
+        ? t("Remove {what}? It is deleted from this server's saved forwards.", { what })
+        : t("Remove {what}?", { what }),
+      okLabel: t("Remove"),
       destructive: true,
     });
     if (!ok) return;
@@ -325,8 +334,8 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
               autoFocus
               value={renaming!.value}
               maxLength={NAME_MAX}
-              placeholder="Name"
-              aria-label="Forward name"
+              placeholder={t("Name")}
+              aria-label={t("Forward name")}
               onChange={(e) => setRenaming({ key, value: e.target.value })}
               onKeyDown={(e) => {
                 if (e.key === "Enter") finishRename(rule!);
@@ -338,13 +347,13 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
           ) : rule?.name ? (
             <span className="flex-1 min-w-0 truncate font-bold text-zinc-100" title={rule.name}>{rule.name}</span>
           ) : (
-            <span className="flex-1 min-w-0 truncate font-bold uppercase tracking-wider text-[10px] opacity-80">{KIND_LABEL[type]}</span>
+            <span className="flex-1 min-w-0 truncate font-bold uppercase tracking-wider text-[10px] opacity-80">{t(KIND_LABEL[type])}</span>
           )}
           {live && (
             <button
               onClick={() => setLogFilter(logFilter === live.id ? null : live.id)}
-              title={logFilter === live.id ? "Show all tunnels in log" : "Filter log to this tunnel"}
-              aria-label="Filter log"
+              title={logFilter === live.id ? t("Show all tunnels in log") : t("Filter log to this tunnel")}
+              aria-label={t("Filter log")}
               className={`p-0.5 rounded shrink-0 ${
                 logFilter === live.id
                   ? "bg-primary/20 text-primary"
@@ -355,21 +364,21 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
             </button>
           )}
           {running ? (
-            <button onClick={() => stopTunnel(live!)} disabled={busy} title="Stop (the forward stays in the list)" aria-label="Stop" className={`${iconButton} hover:text-amber-300`}>
+            <button onClick={() => stopTunnel(live!)} disabled={busy} title={t("Stop (the forward stays in the list)")} aria-label={t("Stop")} className={`${iconButton} hover:text-amber-300`}>
               <Square size={11} />
             </button>
           ) : rule ? (
-            <button onClick={() => startRule(rule)} disabled={busy} title="Start" aria-label="Start" className={`${iconButton} hover:text-emerald-300`}>
+            <button onClick={() => startRule(rule)} disabled={busy} title={t("Start|forward")} aria-label={t("Start|forward")} className={`${iconButton} hover:text-emerald-300`}>
               <Play size={11} fill="currentColor" />
             </button>
           ) : null}
           {rule && (
-            <button onClick={() => setRenaming({ key, value: rule.name || "" })} disabled={busy} title="Name this forward" aria-label="Rename" className={`${iconButton} hover:text-zinc-100`}>
+            <button onClick={() => setRenaming({ key, value: rule.name || "" })} disabled={busy} title={t("Name this forward")} aria-label={t("Rename")} className={`${iconButton} hover:text-zinc-100`}>
               <Pencil size={11} />
             </button>
           )}
           {rule && (
-            <button onClick={() => removeRule(rule)} disabled={busy} title="Remove" aria-label="Remove" className={`${iconButton} hover:text-rose-400`}>
+            <button onClick={() => removeRule(rule)} disabled={busy} title={t("Remove")} aria-label={t("Remove")} className={`${iconButton} hover:text-rose-400`}>
               <Trash2 size={11} />
             </button>
           )}
@@ -394,20 +403,19 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
                                       "bg-white/5 text-zinc-400"
           }`}
             title={
-              state === "stopped" ? "Kept, but not started on connect until you start it" :
-              state === "not running" ? "It starts with the connection; Start tries now" : undefined
+              state === "stopped" ? t("Kept, but not started on connect until you start it") :
+              state === "not running" ? t("It starts with the connection; Start tries now") : undefined
             }
           >
-            {state}
+            {t(STATE_LABEL[state] ?? state)}
           </span>
           {live && running && (
-            <span title="connections currently bridged / total accepted since start">
+            <span title={t("connections currently bridged / total accepted since start")}>
               <span className={live.conns_active > 0 ? "text-emerald-300" : "text-zinc-500"}>
-                {live.conns_active}
+                {tn(live.conns_active, "{count} active|connection", "{count} active|connections")}
               </span>
-              <span className="opacity-50"> active</span>
               <span className="opacity-30"> · </span>
-              <span>{live.conns_total} total</span>
+              <span>{t("{count} total", { count: live.conns_total })}</span>
             </span>
           )}
           {live?.error && state === "error" && (
@@ -423,7 +431,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
       {disabled && (
         <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono uppercase">
           <span className="px-3 py-1.5 bg-red-500/15 border border-red-500/30 rounded text-red-300">
-            Session disconnected
+            {t("Session disconnected")}
           </span>
         </div>
       )}
@@ -432,15 +440,15 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
       <div className="shrink-0 px-3 py-2 flex items-center justify-between gap-2 border-b border-white/5 bg-[#121214]">
         <div className="flex items-center gap-2 min-w-0 text-[10px] font-bold uppercase tracking-widest text-zinc-400">
           <Activity size={12} className="shrink-0" />
-          <span className="whitespace-nowrap">{total} {total === 1 ? "forward" : "forwards"}</span>
-          {total > 0 && <span className="text-zinc-600 font-normal whitespace-nowrap truncate">· {runningCount} running</span>}
+          <span className="whitespace-nowrap">{tn(total, "{count} forward", "{count} forwards")}</span>
+          {total > 0 && <span className="text-zinc-600 font-normal whitespace-nowrap truncate">{t("· {count} running", { count: runningCount })}</span>}
         </div>
         <button
           onClick={() => { setAdding((a) => !a); setError(null); }}
           className="h-6 px-2.5 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 flex items-center gap-1.5 shrink-0"
         >
           {adding ? <X size={11} /> : <Plus size={11} />}
-          <span>{adding ? "Cancel" : "Add"}</span>
+          <span>{adding ? t("Cancel") : t("Add")}</span>
         </button>
       </div>
 
@@ -452,8 +460,8 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
             value={draft.name}
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             maxLength={NAME_MAX}
-            placeholder="Name (optional)"
-            aria-label="Forward name"
+            placeholder={t("Name (optional)")}
+            aria-label={t("Forward name")}
             className="w-full h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-200"
           />
           <div className="flex items-center gap-2">
@@ -462,17 +470,17 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
               onChange={(e) => setDraft({ ...draft, type: e.target.value as "D" | "L" | "R" })}
               className="h-7 px-1.5 bg-white/[0.04] border border-white/10 rounded text-[11px] text-primary font-bold uppercase shrink-0"
             >
-              <option value="D" className="bg-[#1a1a1e]">Dynamic</option>
-              <option value="L" className="bg-[#1a1a1e]">Local</option>
-              <option value="R" className="bg-[#1a1a1e]">Remote</option>
+              <option value="D" className="bg-[#1a1a1e]">{t("Dynamic")}</option>
+              <option value="L" className="bg-[#1a1a1e]">{t("Local")}</option>
+              <option value="R" className="bg-[#1a1a1e]">{t("Remote")}</option>
             </select>
             <input
               value={draft.local}
               onChange={(e) => setDraft({ ...draft, local: e.target.value })}
               placeholder={
-                draft.type === "D" ? "Listen port (1080)" :
-                draft.type === "L" ? "Local addr (8080 or 0.0.0.0:8080)" :
-                                      "Server bind (8080 or 0.0.0.0:8080)"
+                draft.type === "D" ? t("Listen port (1080)") :
+                draft.type === "L" ? t("Local addr (8080 or 0.0.0.0:8080)") :
+                                      t("Server bind (8080 or 0.0.0.0:8080)")
               }
               className="flex-1 min-w-0 h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono text-zinc-200"
             />
@@ -483,23 +491,23 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
               <input
                 value={draft.remote}
                 onChange={(e) => setDraft({ ...draft, remote: e.target.value })}
-                placeholder={draft.type === "L" ? "Target host:port (eg intranet:80)" : "Local target host:port"}
+                placeholder={draft.type === "L" ? t("Target host:port (eg intranet:80)") : t("Local target host:port")}
                 className="flex-1 min-w-0 h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono text-zinc-200"
               />
             </div>
           )}
           <div className="flex items-start justify-between gap-2">
             <span className="text-[10px] text-zinc-500 font-mono flex-1 leading-snug">
-              {draft.type === "D" && "SOCKS5 proxy on this machine; traffic exits via the server."}
-              {draft.type === "L" && "Connections to your local addr are tunneled to the target through the server."}
-              {draft.type === "R" && "Server listens on bind addr (defaults to 0.0.0.0); incoming connections are forwarded back here. Needs GatewayPorts in sshd_config to listen externally."}
+              {draft.type === "D" && t("SOCKS5 proxy on this machine; traffic exits via the server.")}
+              {draft.type === "L" && t("Connections to your local addr are tunneled to the target through the server.")}
+              {draft.type === "R" && t("Server listens on bind addr (defaults to 0.0.0.0); incoming connections are forwarded back here. Needs GatewayPorts in sshd_config to listen externally.")}
             </span>
             <button
               onClick={addTunnel}
               disabled={busy}
               className="h-7 px-3 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 disabled:opacity-50 shrink-0"
             >
-              {busy ? "…" : "Start"}
+              {busy ? "…" : t("Start|forward")}
             </button>
           </div>
         </div>
@@ -509,7 +517,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
         <div className="shrink-0 px-3 py-1.5 border-b border-white/5 bg-rose-950/20 text-[10.5px] text-rose-400 font-mono flex items-start gap-1.5" role="alert">
           <AlertTriangle size={11} className="mt-0.5 shrink-0" />
           <span className="break-words flex-1 min-w-0">{error}</span>
-          <button onClick={() => setError(null)} aria-label="Dismiss" className="shrink-0 text-rose-300/70 hover:text-rose-200">
+          <button onClick={() => setError(null)} aria-label={t("Dismiss")} className="shrink-0 text-rose-300/70 hover:text-rose-200">
             <X size={11} />
           </button>
         </div>
@@ -519,8 +527,8 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
       <div className="flex-1 overflow-auto p-2 space-y-1.5">
         {total === 0 ? (
           <div className="text-center py-12 text-zinc-500 text-[11px] font-mono">
-            No port forwards.<br />
-            <span className="text-zinc-600 text-[10px]">Add one above, or define rules on the node.</span>
+            {t("No port forwards.")}<br />
+            <span className="text-zinc-600 text-[10px]">{t("Add one above, or define rules on the node.")}</span>
           </div>
         ) : (
           <>
@@ -541,34 +549,34 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
             className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-200 flex items-center gap-1.5"
           >
             <FileText size={11} />
-            <span>Log</span>
+            <span>{t("Log")}</span>
             <span className="text-zinc-600 font-normal">
               ({logFilter ? logs.filter((l) => l.tunnel_id === logFilter).length : logs.length})
             </span>
             {logFilter && (
-              <span className="ml-1 px-1.5 rounded bg-primary/15 text-primary text-[9px]">filtered</span>
+              <span className="ml-1 px-1.5 rounded bg-primary/15 text-primary text-[9px]">{t("filtered")}</span>
             )}
           </button>
           <div className="flex items-center gap-1">
             {logFilter && (
               <button
                 onClick={() => setLogFilter(null)}
-                title="Show all tunnels"
+                title={t("Show all tunnels")}
                 className="px-1.5 text-[9px] uppercase tracking-wider text-zinc-500 hover:text-zinc-200"
               >
-                Clear filter
+                {t("Clear filter")}
               </button>
             )}
             <button
               onClick={() => setLogs([])}
-              title="Clear log"
+              title={t("Clear log")}
               className="p-1 text-zinc-500 hover:text-rose-400 rounded hover:bg-white/5"
             >
               <Trash2 size={11} />
             </button>
             <button
               onClick={() => setLogsOpen((o) => !o)}
-              title={logsOpen ? "Collapse" : "Expand"}
+              title={logsOpen ? t("Collapse") : t("Expand")}
               className="p-1 text-zinc-500 hover:text-zinc-200 rounded hover:bg-white/5"
             >
               {logsOpen ? <ArrowDownLeft size={11} className="rotate-90" /> : <ArrowDownLeft size={11} className="-rotate-90" />}
@@ -586,7 +594,7 @@ const TunnelsPanel = ({ sessionId, serverId, disabled = false }: TunnelsPanelPro
               if (visible.length === 0) {
                 return (
                   <div className="text-zinc-600 text-center py-4">
-                    No log entries {logFilter ? "for this tunnel" : "yet"}.
+                    {logFilter ? t("No log entries for this tunnel.") : t("No log entries yet.")}
                   </div>
                 );
               }

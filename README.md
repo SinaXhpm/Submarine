@@ -1,8 +1,8 @@
 <div align="center">
   <img src="src/assets/logo.png" alt="Submarine logo" width="120" />
-  <h1>Submarine — SSH, SFTP, RDP, VNC &amp; Telnet Client</h1>
+  <h1>Submarine — SSH, SFTP, FTP, RDP, VNC &amp; Telnet Client</h1>
   <p><strong>A fast, free, open-source remote-access client for Windows, macOS, Linux and Android.</strong></p>
-  <p>Terminal, dual-pane SFTP, port forwarding, folder mirror, remote desktops and encrypted profile sync in one native window. Built with Rust and Tauri.</p>
+  <p>Terminal, dual-pane SFTP and FTP, port forwarding, folder mirror, remote desktops and encrypted profile sync in one native window. Built with Rust and Tauri.</p>
   <p>
     <a href="https://github.com/sinaxhpm/submarine/releases"><img alt="release" src="https://img.shields.io/github/v/release/sinaxhpm/submarine?include_prereleases" /></a>
     <a href="https://github.com/sinaxhpm/submarine/releases"><img alt="downloads" src="https://img.shields.io/github/downloads/sinaxhpm/submarine/total" /></a>
@@ -19,11 +19,12 @@
   <img src="docs/screenshots/hero.png" alt="Submarine main window: an SSH terminal on the left and the dual-pane SFTP browser (local folder on top, remote folder below) open on the right" width="900" />
 </div>
 
-> **TL;DR** — Submarine is a free, open-source SSH and SFTP client for Windows, macOS, Linux and Android. It replaces the usual PuTTY + WinSCP + tunnel-manager (+ Remmina / VNC viewer) stack with one tabbed window per server: terminal, SFTP, port forwarding (SOCKS / HTTP / local / remote), folder mirror, server info, Docker, and RDP, VNC and Telnet sessions. Profiles are encrypted on your device, and optional cloud sync can keep them in step across your machines and your phone. Built with Rust and Tauri. MIT licensed.
+> **TL;DR** — Submarine is a free, open-source SSH, SFTP and FTP client for Windows, macOS, Linux and Android. It replaces the usual PuTTY + WinSCP + FileZilla + tunnel-manager (+ Remmina / VNC viewer) stack with one tabbed window per server: terminal, SFTP and FTP, port forwarding (SOCKS / HTTP / local / remote), folder mirror, server info, Docker, and RDP, VNC and Telnet sessions. Profiles are encrypted on your device, and optional cloud sync can keep them in step across your machines and your phone. Built with Rust and Tauri. MIT licensed.
 
 ## At a glance
 
-- **SSH, SFTP, Telnet, VNC and RDP in one app** — pick the type when you add a server; each opens as a tab (the terminal for SSH and Telnet, the remote screen for VNC and RDP)
+- **SSH, SFTP, FTP and FTPS, Telnet, VNC and RDP in one app** — pick the type when you add a server; each opens as a tab (the terminal for SSH and Telnet, the file browser for FTP, the remote screen for VNC and RDP)
+- **In 15 languages** — English, Deutsch, Español, Français, Italiano, Polski, Português (Brasil), Türkçe, Русский, Українська, हिन्दी, 日本語, 한국어, 中文（简体）and 中文（繁體）; it follows the system's language, or pick one in Settings → Language
 - **One window, many tools per server** — terminal, SFTP, tunnels, folder mirror, Docker, live server info and a command library, all around the same session
 - **Watch many servers at once** — split view for two sessions, a **Wall** pinboard for any terminals across hosts, and **broadcast input** to several sessions at once
 - **Works with your existing SSH setup** — reads `~/.ssh/config` (Include, Match, ProxyJump, ProxyCommand, IdentityFile, certificates), logs in with keys from **ssh-agent / Pageant / the Windows OpenSSH agent**, trusts your `known_hosts`
@@ -199,6 +200,15 @@ Most SSH clients feel like they were built a decade ago and never updated. Subma
 - **Root mode through sudo** for file operations
 - **Works on servers without SFTP** (OpenWrt's Dropbear, an sshd without the SFTP subsystem): file access runs over ordinary shell commands, and the pane says "Shell"
 
+### FTP and FTPS
+
+- An **FTP or FTPS server** opens in a tab with the same file browser an SSH server has: transfers, folder upload and download, compare, live edit, rename, delete, new folder and permissions (`SITE CHMOD`, where the server has it)
+- **Encryption** per server: FTPS with TLS after connecting (`AUTH TLS`, the default), FTPS with TLS from the start (port 990), or plain FTP if you pick it — the form, the card and the tab say plain FTP isn't encrypted. Once FTPS is chosen, nothing goes in the clear: a server that refuses TLS isn't used
+- **Certificates**: one a public authority vouches for is accepted; any other is shown once with its SHA-256 fingerprint and remembered, like an SSH host key; a changed one is shown with a warning
+- **Directly, through one of your SSH servers, or through a SOCKS5 or HTTP proxy**; data connections are passive and go only to the saved host (no "FTP bounce")
+- An empty login name logs in as **anonymous**
+- The **folder mirror** works over FTP too (exact file times from MLSD or MDTM); **Quick Connect** takes `ftp://`, `ftps://` and `ftpes://` links, and the **server import** reads FileZilla's site list
+
 ### Folder mirror
 
 Pick a local folder, pick a remote folder, and Submarine keeps them in sync.
@@ -241,6 +251,7 @@ A read-only inspection pane for the active session — no terminal commands need
 - Each profile is its own vault with its own master password; several can live on one device
 - **Quick unlock** (off by default): open a profile with **Windows Hello** (needs a TPM) or an **Android fingerprint**. The password itself is never kept: the vault key is sealed to a key in the TPM or the Android Keystore. Not offered on Linux, macOS, iPhone or iPad, never synced or exported.
 - **Portable mode** on Windows: all data in a `submarine-data` folder next to the exe
+- **Send feedback** from the app (Settings → Help & feedback, or Feedback on the profile list): only what you type is sent, and a name and an email if you give them — no logs, no list of servers, no system details
 
 ### Cloud sync (optional)
 
@@ -261,12 +272,11 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | Debian / Ubuntu / Mint | `.deb` — `sudo apt install ./submarine_*.deb` |
 | Fedora / RHEL / openSUSE | `.rpm` — `sudo dnf install ./submarine-*.rpm` |
 | Arch / Manjaro / EndeavourOS | `.pkg.tar.zst` — `sudo pacman -U submarine-*.pkg.tar.zst` |
-| Any Linux | `.AppImage` — `chmod +x` and double-click |
+| Any Linux | `.AppImage` — `chmod +x` and double-click; a Flatpak can be built from `packaging/flatpak`, and the Flathub listing comes with the final 0.5.0 |
 | Android 7.0+ | `.apk` — sideload, no Play Store required |
+| iPhone / iPad (iOS 15+), and macOS signed by Apple | the beta on [TestFlight](https://testflight.apple.com/join/TmefAPrY) — install Apple's TestFlight app, then open the link |
 
-> iPhone and iPad (iOS and iPadOS 15 or later) get Submarine from the App Store once it is published there; the builds are made from this repository.
->
-> The Windows build is **not code-signed**. Windows SmartScreen will prompt — click "More info → Run anyway". The macOS download is signed with the author's Developer ID and notarized when the release was built with that certificate; if it isn't, macOS may need `xattr -d com.apple.quarantine /Applications/Submarine.app`. The Android APK **is signed** with the author's key: `apksigner verify --print-certs` should show the certificate SHA-256 `e9e350dc9f8628bee461be3424c0c2b2180f00685cc380de80c86808ae669f1c`. Android sideloading needs "Install unknown apps" enabled for the installer source. Releases from 0.4.0 on carry a `SHA256SUMS` file to check a download against.
+> The Windows build is **not code-signed**. Windows SmartScreen will prompt — click "More info → Run anyway". The macOS download isn't signed by Apple yet: macOS says the app is damaged until you move it to Applications and run `xattr -dr com.apple.quarantine /Applications/Submarine.app`, or take the TestFlight version, which Apple signs. The Android APK **is signed** with the author's key: `apksigner verify --print-certs` should show the certificate SHA-256 `e9e350dc9f8628bee461be3424c0c2b2180f00685cc380de80c86808ae669f1c`. Android sideloading needs "Install unknown apps" enabled for the installer source. Releases from v0.4.0-beta.1 on carry a `SHA256SUMS` file to check a download against.
 
 ### Portable mode (Windows)
 
@@ -354,6 +364,10 @@ Yes. File-based keys and pasted keys (OpenSSH, PEM, PKCS#8 and SEC1 formats) wit
 
 Yes, read-only, and you can switch it off per device. It follows Include, Host and Match (Match `exec` is never run), ProxyJump, ProxyCommand, IdentityFile, CertificateFile and IdentityAgent. Nothing from those files is synced.
 
+### Can I use FTP or FTPS?
+
+Yes, from version 0.5: an FTP server opens in a tab with the same file browser as SFTP, with FTPS (TLS) by default, directly, through an SSH server or through a proxy. Plain FTP is there if you pick it, and the app says it isn't encrypted.
+
 ### Can I use RDP, VNC and Telnet?
 
 Yes. VNC shows the screen in the tab and shares the clipboard (plain text). RDP opens in your computer's RDP app by default, or in the tab with the experimental built-in client, which shares the clipboard and, on the PC, a folder or a drive. Both remote screens show how the connection is doing and let you trade picture quality for less data. Telnet opens in a terminal tab. All three can go through an SSH server, and Telnet and plain VNC are labelled as not encrypted.
@@ -380,7 +394,7 @@ Yes. Install the APK, turn on cloud sync, and unlock with the same master passwo
 
 ### Is there an iPhone or iPad app?
 
-The same source builds for iPhone and iPad (iOS and iPadOS 15 or later), for the App Store. It works like the Android app: terminal, SFTP, port forwarding, VNC and the built-in RDP client, the same vault and sync. Exports land in the app's folder in the Files app; there are no folder mirrors, and no files are shared with an RDP server.
+The same source builds for iPhone and iPad (iOS and iPadOS 15 or later). The beta is on [TestFlight](https://testflight.apple.com/join/TmefAPrY), and the App Store version is with Apple's review. It works like the Android app: terminal, SFTP, port forwarding, VNC and the built-in RDP client, the same vault and sync. Exports land in the app's folder in the Files app; there are no folder mirrors, and no files are shared with an RDP server.
 
 ### Is Submarine on the Play Store?
 
@@ -451,7 +465,7 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 <sub>
-<b>Keywords</b>: SSH client, SFTP client, Telnet client, VNC viewer, RDP client, remote desktop client, terminal emulator, port forwarding, SSH tunnel manager, SOCKS proxy, HTTP proxy, jump host, ProxyJump, ssh-agent, Pageant, SSH certificates, Teleport, folder mirror, folder sync, remote file edit, encrypted profile sync, self-hosted sync, Windows Hello unlock, Argon2id, AES-256-GCM, TOFU host keys, Rust, Tauri, React, xterm.js, Windows SSH client, macOS SSH client, Linux SSH client, Android SSH client, open source SSH, MIT licensed, PuTTY alternative, WinSCP alternative, MobaXterm alternative, Bitvise alternative, Termius alternative, SecureCRT alternative, Royal TSX alternative, Remmina alternative, ConnectBot alternative, JuiceSSH alternative, rsync GUI, sshfs alternative, Tabby alternative.
+<b>Keywords</b>: SSH client, SFTP client, FTP client, FTPS client, FileZilla alternative, Telnet client, VNC viewer, RDP client, remote desktop client, terminal emulator, port forwarding, SSH tunnel manager, SOCKS proxy, HTTP proxy, jump host, ProxyJump, ssh-agent, Pageant, SSH certificates, Teleport, folder mirror, folder sync, remote file edit, encrypted profile sync, self-hosted sync, Windows Hello unlock, Argon2id, AES-256-GCM, TOFU host keys, Rust, Tauri, React, xterm.js, Windows SSH client, macOS SSH client, Linux SSH client, Android SSH client, open source SSH, MIT licensed, PuTTY alternative, WinSCP alternative, MobaXterm alternative, Bitvise alternative, Termius alternative, SecureCRT alternative, Royal TSX alternative, Remmina alternative, ConnectBot alternative, JuiceSSH alternative, rsync GUI, sshfs alternative, Tabby alternative.
 <br/>
 <b>Echoes</b>: network toolkit, network tools, connection doctor, website not loading, DNS tampering test, SNI filtering test, ping, TCP ping, traceroute, MTR, WinMTR alternative, internet speed test, bufferbloat test, port scanner, nmap alternative, check host, Wi-Fi analyzer, DNS over HTTPS, DNS over TLS, DNS benchmark, SPF DKIM DMARC checker, WHOIS, RDAP, cURL GUI, Postman alternative, SSL checker, TLS inspector, IP lookup, GeoIP, Cloudflare manager, Cloudflare DDNS, dynamic DNS client, uptime monitor, Telegram alerts, netcat alternative, WebSocket client, webhook tester, LAN file sharing, QR code file transfer, SOCKS5 proxy server, proxy checker, JWT decoder, CyberChef alternative, encrypted notes.
 </sub>

@@ -1,0 +1,426 @@
+{
+  "meta": {
+    "name": "Français",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "Aller au contenu",
+    "features": "Fonctionnalités",
+    "how": "Fonctionnement",
+    "platforms": "Plateformes",
+    "faq": "Questions",
+    "get": "Obtenir Captun",
+    "github": "Code source sur GitHub",
+    "language": "Langue",
+    "home": "Page d’accueil de Captun",
+    "menu": "Menu"
+  },
+  "common": {
+    "tagline": "Point d’accès Wi-Fi et partage de connexion, avec un capitaine à la barre",
+    "updated": "Dernière mise à jour : {date}",
+    "translationNote": "Cette page est une traduction. En cas de différence avec la version anglaise, c’est la version anglaise qui fait foi.",
+    "englishVersion": "Version anglaise",
+    "openFull": "Ouvrir l’image en taille réelle",
+    "close": "Fermer",
+    "onThisPage": "Sur cette page"
+  },
+  "footer": {
+    "product": "Captun",
+    "project": "Projet",
+    "more": "Autres applications",
+    "issues": "Signaler un problème",
+    "author": "sinaxhpm.com",
+    "sister": "Du même auteur : 20 outils réseau dans une seule application gratuite",
+    "license": "Le code source est sur GitHub.",
+    "madeWith": "Développé avec Rust et Tauri.",
+    "noTracking": "Ce site n’utilise aucun cookie, aucun outil de mesure d’audience et aucun script tiers."
+  },
+  "home": {
+    "title": "Captun – partager Internet, VPN ou proxy d’un PC en Wi-Fi",
+    "description": "Un PC Windows ou Linux devient un hotspot intelligent : partagez Internet, VPN ou proxy en Wi-Fi, câble ou USB, et choisissez la sortie de chaque appareil.",
+    "hero": {
+      "pillTag": "En développement",
+      "pill": "Pas encore de version publiée : compilez Captun à partir du code source sur GitHub",
+      "title": "Partagez votre connexion. <em>Pilotez chaque appareil.</em>",
+      "lede": "Captun transforme votre ordinateur en point d’accès intelligent. Téléphones, téléviseurs et consoles se connectent en Wi-Fi, par câble ou en USB, et vous décidez par où passe le trafic de chacun : directement, via un VPN ou via un proxy.",
+      "source": "Code source sur GitHub",
+      "how": "Comment ça marche",
+      "trust": [
+        "Pas de compte",
+        "Pas de root sur le téléphone",
+        "Votre propre VPN ou proxy",
+        "Règles, DNS et limites"
+      ],
+      "macos": "macOS (en cours)",
+      "chips": [
+        "Votre VPN pour tous les appareils",
+        "Internet sur un téléphone par USB",
+        "Blocage des publicités et des traqueurs"
+      ],
+      "imageAlt": "Captun sous Windows : partage en Wi-Fi, avec trois appareils connectés et un autre qui attend d’être autorisé"
+    },
+    "instead": {
+      "title": "Une seule application pour remplacer",
+      "items": [
+        "le point d’accès sans fil mobile de Windows",
+        "une application VPN sur chaque appareil",
+        "des scripts de partage de connexion inversé",
+        "un bloqueur de publicités DNS séparé",
+        "un routeur avec un firmware personnalisé"
+      ]
+    },
+    "uses": {
+      "kicker": "Ce que vous pouvez faire",
+      "title": "Un seul ordinateur, <em>tous vos appareils en ligne, à votre façon</em>",
+      "lede": "Captun (« captain » + TUN) vous met à la barre de tout ce qui se connecte à votre ordinateur.",
+      "items": [
+        {
+          "id": "vpn",
+          "title": "Partager un VPN avec des appareils qui ne peuvent pas en utiliser",
+          "text": "Connectez une seule fois votre ordinateur à un VPN ou à un proxy : votre téléviseur connecté, votre console ou le téléphone d’un invité l’utilise ensuite via le point d’accès."
+        },
+        {
+          "id": "usb",
+          "title": "Donner Internet à un téléphone par USB",
+          "text": "Pas de données mobiles, pas de Wi-Fi ? Branchez le téléphone Android sur votre ordinateur : il accède à Internet par son intermédiaire, sans root et sans application sur le téléphone."
+        },
+        {
+          "id": "rules",
+          "title": "Gérer un point d’accès avec vos propres règles",
+          "text": "Bloquez les publicités et les traqueurs pour tous les appareils, rendez certains sites inaccessibles, ou faites passer seulement certains sites par un proxy."
+        },
+        {
+          "id": "watch",
+          "title": "Garder un œil sur chaque appareil",
+          "text": "Voyez qui est connecté et combien chacun consomme, autorisez les nouveaux appareils avant qu’ils accèdent à Internet, bloquez-en un ou fixez une limite de débit."
+        }
+      ]
+    },
+    "how": {
+      "kicker": "Fonctionnement",
+      "title": "Les appareils à bord, <em>à vous de fixer le cap</em>",
+      "lede": "Un petit service doté des droits d’administrateur fait fonctionner le point d’accès, un serveur DNS et un moteur de paquets qui décide, connexion par connexion, par où passe le trafic de chaque appareil. L’application de bureau montre ce qui se passe et modifie les réglages.",
+      "devicesTitle": "Vos appareils",
+      "devices": [
+        {
+          "id": "phone",
+          "name": "Téléphones"
+        },
+        {
+          "id": "tv",
+          "name": "Téléviseurs et consoles"
+        },
+        {
+          "id": "laptop",
+          "name": "Ordinateurs portables"
+        },
+        {
+          "id": "tablet",
+          "name": "Tablettes"
+        }
+      ],
+      "links": "Point d’accès Wi-Fi, câble ou USB",
+      "hub": "Règles, DNS, limites",
+      "choose": "par appareil ou par règle",
+      "outTitle": "La sortie",
+      "outbounds": [
+        {
+          "id": "direct",
+          "name": "Direct",
+          "detail": "n’importe quelle carte réseau : Ethernet, Wi-Fi, la carte d’une application VPN"
+        },
+        {
+          "id": "vpn",
+          "name": "Lien VPN",
+          "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2"
+        },
+        {
+          "id": "proxy",
+          "name": "Proxy",
+          "detail": "SOCKS5, HTTP, HTTPS, aussi en chaîne"
+        }
+      ],
+      "caption": "Téléphones, téléviseurs, consoles, ordinateurs portables et tablettes se connectent à Captun par un point d’accès Wi-Fi, un câble ou l’USB. Captun applique vos règles, votre DNS et vos limites, puis fait sortir le trafic de chaque appareil directement, via un lien VPN ou via un proxy.",
+      "steps": [
+        {
+          "title": "Lancez le partage",
+          "text": "Appuyez sur le gouvernail : un point d’accès Wi-Fi avec le nom de réseau et le mot de passe de votre choix, ou l’USB vers un téléphone Android."
+        },
+        {
+          "title": "Ajoutez vos sorties",
+          "text": "Les cartes réseau de votre ordinateur sont déjà là. Ajoutez un proxy, ou collez un lien VPN."
+        },
+        {
+          "title": "Pilotez",
+          "text": "Choisissez la sortie de chaque appareil ou groupe, et ajoutez des règles, le blocage DNS, des limites de débit et des quotas de données."
+        }
+      ],
+      "note": "Sous Windows, le moteur capture le trafic des appareils avec WinDivert, dont le pilote est signé par Microsoft ; sous Linux, il utilise une carte réseau TUN et le routage par politique."
+    },
+    "share": {
+      "kicker": "Connexion",
+      "title": "Wi-Fi, câble <em>ou USB</em>",
+      "lede": "Trois façons pour un appareil d’accéder à Internet par votre ordinateur.",
+      "alt": "Captun prêt à partager sous le nom « Captun », avec le choix entre point d’accès Wi-Fi et USB vers le téléphone",
+      "points": [
+        {
+          "id": "wifi",
+          "title": "Point d’accès Wi-Fi",
+          "text": "Le nom de réseau et le mot de passe de votre choix, un nombre maximal d’appareils, et les nouveaux appareils qui attendent que vous les autorisiez."
+        },
+        {
+          "id": "cable",
+          "title": "Partage par câble",
+          "text": "Les appareils reliés par un câble réseau ou une carte réseau USB reçoivent votre connexion, avec des adresses attribuées automatiquement (DHCP)."
+        },
+        {
+          "id": "usb",
+          "title": "USB vers un téléphone Android",
+          "text": "Partage de connexion inversé, sans root ni application sur le téléphone : Captun intègre adb. Il donne seulement Internet au téléphone et n’utilise jamais la connexion de celui-ci. Le web et les applications fonctionnent ; les jeux et les appels, pas encore."
+        },
+        {
+          "id": "reach",
+          "title": "Ce que les appareils peuvent atteindre",
+          "text": "Tenez-les à l’écart de cet ordinateur, les uns des autres ou de votre réseau domestique."
+        }
+      ]
+    },
+    "features": {
+      "kicker": "En détail",
+      "title": "Chaque appareil, <em>sa propre sortie</em>",
+      "items": [
+        {
+          "id": "devices",
+          "title": "Tous les appareils dans une liste",
+          "text": "Voyez qui est connecté, avec les débits en direct, et intervenez avant qu’un nouvel appareil accède à Internet.",
+          "points": [
+            "Autorisez un nouvel appareil, ou bloquez-en un, en un clic.",
+            "Le débit descendant et montant de chaque appareil, en temps réel.",
+            "Pour chaque appareil, sa propre sortie, sa limite de débit et son quota de données.",
+            "Retrouvez un appareil par son nom ou son adresse."
+          ],
+          "alt": "La page des appareils : un appareil attend d’être autorisé, un téléphone approche de son quota de données et une tablette a une limite de débit"
+        },
+        {
+          "id": "outbound",
+          "title": "Direct, un VPN ou un proxy",
+          "badge": "Expérimental",
+          "text": "Chaque appareil ou groupe sort par le chemin que vous choisissez. Activez les sorties que vous voulez utiliser.",
+          "points": [
+            "N’importe quelle carte réseau de votre ordinateur : Ethernet, Wi-Fi ou la carte d’une application VPN.",
+            "Des proxys SOCKS5, HTTP et HTTPS, aussi en chaîne.",
+            "Les liens VPN que vous collez : VLESS (avec REALITY), VMess, Trojan, Shadowsocks et Hysteria2, gérés par le Xray-core fourni.",
+            "Si une sortie cesse de fonctionner, Captun peut couper Internet plutôt que d’envoyer le trafic par un autre chemin."
+          ],
+          "alt": "La page des sorties : direct, un lien VLESS, un proxy SOCKS5 et une sortie bloquée, avec les cartes Wi-Fi et Ethernet de l’ordinateur"
+        },
+        {
+          "id": "rules",
+          "title": "Des règles qui pilotent le trafic",
+          "badge": "Expérimental",
+          "text": "Faites passer un site par le VPN, bloquez les publicités ou coupez la tablette des enfants à l’heure du coucher. La première règle qui correspond l’emporte.",
+          "points": [
+            "Par appareil, nom de site, plage d’adresses, port, protocole et heure de la journée.",
+            "Des règles toutes prêtes pour bloquer les publicités et pour les applications populaires.",
+            "Des listes de blocage en ligne, mises à jour seulement quand vous appuyez sur <em>Update lists</em>.",
+            "Un testeur qui montre quelle règle s’applique à un site."
+          ],
+          "alt": "La page des règles : une règle qui bloque les publicités, une autre qui fait passer un site de streaming par le VPN et une règle d’heure du coucher pour une tablette"
+        },
+        {
+          "id": "dns",
+          "title": "Son propre serveur DNS, avec blocage des publicités",
+          "text": "Captun répond lui-même quand vos appareils cherchent l’adresse d’un site : le blocage et vos propres réponses fonctionnent ainsi sur tous.",
+          "points": [
+            "Un cache, des listes de blocage et des réponses personnalisées pour les noms de votre choix.",
+            "Des serveurs DNS en UDP, en TCP, en DNS over TLS ou en DNS over HTTPS, pour chaque appareil.",
+            "Une option pour obliger les appareils à l’utiliser, afin qu’ils ne puissent pas contourner les sites bloqués.",
+            "Un journal des requêtes en direct, si vous l’activez."
+          ],
+          "alt": "Les réglages DNS de Captun : réponse aux requêtes des appareils, serveur DNS par défaut et apparence des sites bloqués"
+        },
+        {
+          "id": "usage",
+          "title": "Ce que chaque appareil a consommé",
+          "badge": "Expérimental",
+          "text": "Par heure ou par jour, pour un appareil ou pour tous, en graphique ou en tableau.",
+          "points": [
+            "Des quotas de données par jour, semaine ou mois : par exemple 2 Go par jour, puis un débit réduit.",
+            "Des limites de débit pour chaque appareil, chaque groupe ou tous les appareils ensemble.",
+            "Le trafic descendant et montant compté séparément."
+          ],
+          "alt": "La page d’utilisation : ce que tous les appareils ont téléchargé et envoyé aujourd’hui, heure par heure"
+        }
+      ],
+      "note": "<em>Expérimental</em> : les sorties par appareil, les règles, les limites de débit, les quotas de données, les débits en direct et l’historique d’utilisation nécessitent « Route devices through Captun », le moteur de routage propre à Captun, encore expérimental."
+    },
+    "next": {
+      "kicker": "À venir",
+      "title": "Développées, <em>maintenant à l’essai</em>",
+      "lede": "Ces fonctionnalités sont déjà dans le code de Captun et réussissent ses tests. Elles arriveront avec la prochaine version, une fois qu’elles auront été essayées sur de vrais ordinateurs.",
+      "routing": "Nécessite le moteur de routage",
+      "items": [
+        {
+          "id": "qr",
+          "title": "Se connecter avec un QR code",
+          "text": "Les téléphones scannent un code pour rejoindre le point d’accès, sans rien taper.",
+          "routing": false,
+          "alt": "Captun affiche un QR code qui permet de rejoindre le réseau « Captun », avec son nom et son mot de passe"
+        },
+        {
+          "id": "kinds",
+          "title": "Identifier chaque appareil",
+          "text": "Le fabricant et le type de chaque appareil (téléphone, ordinateur portable, téléviseur), d’après la liste publique des préfixes d’adresses matérielles.",
+          "routing": false,
+          "alt": "La page des appareils avec un téléphone, une tablette et un téléviseur, leurs fabricants, et un téléviseur mis en pause pour le moment"
+        },
+        {
+          "id": "pause",
+          "title": "Mettre un appareil en pause ou définir ses horaires",
+          "text": "Pas d’Internet pendant 15 minutes, une heure ou jusqu’au matin, ou des horaires d’accès, sans Internet la nuit.",
+          "routing": true,
+          "alt": "Le menu de pause d’un appareil : pendant 15 minutes, pendant 1 heure ou jusqu’à 7:00"
+        },
+        {
+          "id": "backup",
+          "title": "Une sortie de secours",
+          "text": "Chaque sortie est vérifiée toutes les 30 secondes. Donnez une sortie de secours à l’une d’elles, et ses appareils y basculent tant qu’elle ne fonctionne pas.",
+          "routing": true,
+          "alt": "La page des sorties : un VPN qui ne fonctionne pas, si bien que ses appareils passent par la sortie Direct, et le temps de réponse de chaque sortie"
+        },
+        {
+          "id": "csv",
+          "title": "L’utilisation dans un tableur",
+          "text": "Enregistrez ce que chaque appareil a consommé dans un fichier CSV, par exemple pour un rapport mensuel.",
+          "routing": true,
+          "alt": "La page d’utilisation sur les 7 derniers jours, avec le menu pour enregistrer les totaux ou chaque jour par appareil"
+        },
+        {
+          "id": "alerts",
+          "title": "Notifications",
+          "text": "Quand un nouvel appareil se connecte ou attend d’être autorisé, quand un appareil a consommé 80 % ou la totalité de son quota de données, et la consommation de la semaine passée. Les notifications de quota et la notification hebdomadaire nécessitent le moteur de routage.",
+          "routing": false,
+          "alt": "Les réglages de Captun : un quota de données pour chaque appareil et les trois types de notifications"
+        }
+      ],
+      "note": "Pas encore sur GitHub : la version que vous pouvez compiler à partir du code source aujourd’hui ne les inclut pas."
+    },
+    "privacy": {
+      "kicker": "Confidentialité",
+      "title": "Captun oriente le trafic. <em>Il ne le lit pas.</em>",
+      "lede": "Il ne lit que ce dont vos règles ont besoin, comme le nom du site demandé par une connexion.",
+      "items": [
+        {
+          "title": "Le contenu reste chiffré",
+          "text": "Ce que vos appareils envoient reste chiffré comme avant. Captun l’achemine ; il ne l’ouvre pas."
+        },
+        {
+          "title": "Les réglages restent sur votre ordinateur",
+          "text": "Pas de compte. Les réglages sont enregistrés chiffrés, lisibles uniquement par votre compte sur cet ordinateur."
+        },
+        {
+          "title": "Pas un VPN à lui seul",
+          "text": "Captun ne chiffre ni ne masque le trafic par lui-même : cela vient du VPN ou du proxy que vous ajoutez, pour le trafic que vous y faites passer."
+        }
+      ]
+    },
+    "platforms": {
+      "kicker": "Plateformes",
+      "title": "Windows et Linux, <em>macOS en route</em>",
+      "lede": "Une seule base de code en Rust, avec une application de bureau Tauri.",
+      "items": [
+        {
+          "id": "windows",
+          "name": "Windows",
+          "text": "Point d’accès Wi-Fi, partage par câble et USB vers un téléphone Android. Le point d’accès de Windows accepte jusqu’à 8 appareils par défaut."
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "text": "Point d’accès Wi-Fi avec NetworkManager ou hostapd, partage par câble et USB vers un téléphone. Encore peu testé sur du vrai matériel."
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "badge": "En cours",
+          "text": "Le code compile, mais Captun n’a encore jamais tourné sur un Mac."
+        }
+      ],
+      "note": "Il n’existe pas d’application Android ou iOS : les téléphones, tablettes, téléviseurs et consoles se connectent à Captun, ils ne l’exécutent pas."
+    },
+    "source": {
+      "kicker": "Obtenir Captun",
+      "title": "Pas encore de version publiée. <em>Compilez-le à partir du code source.</em>",
+      "lede": "Captun est en développement actif. Vous pouvez déjà le compiler à partir du code source ; le README sur GitHub détaille chaque étape.",
+      "repo": "Code source sur GitHub",
+      "build": "Compiler à partir du code source",
+      "steps": [
+        {
+          "title": "Installez les outils",
+          "text": "Rust, Node.js 20 ou version ultérieure et un compilateur C, ainsi que <code>libwebkit2gtk-4.1-dev</code> sous Linux."
+        },
+        {
+          "title": "Récupérez les composants annexes",
+          "text": "Les scripts du dépôt téléchargent Xray-core pour les liens VPN, vérifié par une somme de contrôle fixée à l’avance, et, sous Windows, le pilote WinDivert."
+        },
+        {
+          "title": "Compilez et lancez",
+          "text": "Compilez le service et lancez l’application de bureau. L’application démarre elle-même le service, avec une demande de droits d’administrateur."
+        }
+      ],
+      "notes": [
+        "L’application est en anglais.",
+        "Les versions compilées incluent Xray-core pour les liens VPN, libusb pour l’adb intégré et, sous Windows, WinDivert. Leurs licences sont listées dans le README.",
+        "Vous avez trouvé un problème ? <a href=\"{issuesUrl}\">Ouvrez un ticket sur GitHub</a>."
+      ]
+    },
+    "faq": {
+      "kicker": "Aide",
+      "title": "Questions et réponses",
+      "items": [
+        {
+          "q": "Puis-je partager ma connexion VPN par un point d’accès Wi-Fi ?",
+          "a": "Oui. Choisissez la carte réseau du VPN, un proxy ou un lien VPN que vous collez (VLESS, VMess, Trojan, Shadowsocks, Hysteria2) comme sortie pour un appareil ou pour tous. Le choix par appareil utilise le moteur de routage de Captun, encore expérimental."
+        },
+        {
+          "q": "Le partage de connexion USB vers le téléphone nécessite-t-il un accès root ou une application ?",
+          "a": "Non. Activez le débogage USB sur le téléphone Android et branchez-le ; l’adb intégré de Captun fait le reste. Le téléphone utilise la connexion de votre ordinateur, jamais l’inverse. Le web et les applications fonctionnent en USB ; les jeux et les appels, pas encore."
+        },
+        {
+          "q": "Des appareils différents peuvent-ils utiliser des connexions différentes ?",
+          "a": "Oui. Chaque appareil ou groupe peut avoir sa propre sortie, ses propres serveurs DNS, sa propre limite de débit et son propre quota de données, et des règles peuvent faire passer certains sites par un autre chemin. Cela utilise le moteur de routage expérimental."
+        },
+        {
+          "q": "Captun lit-il le trafic de mes appareils ?",
+          "a": "Non. Il achemine le trafic et ne lit que ce dont il a besoin pour appliquer vos règles, comme le nom du site demandé par une connexion. Le contenu reste chiffré."
+        },
+        {
+          "q": "Captun rend-il mon trafic privé ?",
+          "a": "Pas à lui seul. Captun ne chiffre et n’anonymise rien ; c’est le VPN ou le proxy que vous ajoutez qui le fait, pour le trafic que vous y faites passer."
+        },
+        {
+          "q": "Combien d’appareils peuvent se connecter ?",
+          "a": "Sous Windows, le point d’accès du système accepte jusqu’à 8 appareils par défaut, et Captun a sa propre limite d’appareils, que vous pouvez régler. Il n’a pas été testé avec un grand nombre d’utilisateurs."
+        },
+        {
+          "q": "Sur quels systèmes fonctionne-t-il ?",
+          "a": "Windows et Linux ; la prise en charge de macOS est en cours. Il n’existe pas d’application Android ou iOS : les téléphones et les tablettes se connectent à Captun."
+        },
+        {
+          "q": "Où puis-je le télécharger ?",
+          "a": "Il n’y a pas encore de version publiée. Vous pouvez le compiler à partir du code source : les étapes sont dans le <a href=\"{buildUrl}\">README sur GitHub</a>."
+        },
+        {
+          "q": "L’application est-elle dans ma langue ?",
+          "a": "Pas encore : l’application est en anglais. Ce site est traduit pour que davantage de personnes puissent découvrir ce qu’elle propose."
+        }
+      ]
+    }
+  },
+  "notFound": {
+    "title": "Page introuvable – Captun",
+    "heading": "Cette page n’existe pas",
+    "text": "L’adresse est peut-être erronée, ou la page a été déplacée.",
+    "home": "Aller à la page d’accueil"
+  }
+}

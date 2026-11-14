@@ -1,12 +1,14 @@
 import { Search, Plus, Server, Globe, Folder, FolderPlus, ChevronLeft, ChevronRight, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound } from "lucide-react";
-import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
 import { HeldReview } from "./HeldReview";
 import { HeldDeletions } from "./HeldDeletions";
 import { folderTree } from "../util/folderTree";
+import { tn, useT } from "../i18n";
 
-export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCreateFolder, onMoveServer, onMoveFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, heldDeletions, onResolveDeletions, isMobile }: any) => {
+export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp, onActiveFolderChange, onOpenServer, onEditServer, onAddClick, onQuickConnect, onRemoveServer, onRemoveFolder, onRenameFolder, onCreateFolder, onMoveServer, onMoveFolder, onCloneServer, onReorderServers, onAllowHeld, keyChange, onAcceptKey, shareGrant, onUnlockSharing, heldDeletions, onResolveDeletions, isMobile }: any) => {
+  const t = useT();
   const [search, setSearch] = useState("");
   // Changes someone else made in a shared profile that this device holds
   // back until its user allows them (see HeldReview).
@@ -25,19 +27,19 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
   const confirm = useConfirm();
   // A shared profile's new key, waiting for the user's OK: they compare its
   // fingerprint with the one in the owner's Profile panel first. Cancel has
-  // the focus, so a stray Enter doesn't accept it.
+  // the focus, so a stray Enter doesn't accept it. The answer goes with the
+  // fingerprint shown: the waiting key can change while the dialog is open.
   const reviewKey = async () => {
     if (!keyChange || !onAcceptKey) return;
+    const shown: string = keyChange;
     const ok = await confirm({
-      title: "Use the new key?",
-      message:
-        `This shared profile's key was replaced, usually because its owner removed someone. The new key's fingerprint is ${keyChange}. ` +
-        "Ask the owner whether their Profile panel shows the same one. If it doesn't, the key didn't come from them: don't use it.",
-      okLabel: "Use the new key",
-      cancelLabel: "Not now",
+      title: t("Use the new key?"),
+      message: t("This shared profile's key was replaced, usually because its owner removed someone. The new key's fingerprint is {fingerprint}. Ask the owner whether their Profile panel shows the same one. If it doesn't, the key didn't come from them: don't use it.", { fingerprint: shown }),
+      okLabel: t("Use the new key"),
+      cancelLabel: t("Not now"),
       safeDefault: true,
     });
-    if (ok) onAcceptKey();
+    if (ok) onAcceptKey(shown);
   };
   // Folder navigation is controlled when the parent passes both props, so the
   // selection survives NodeGrid unmount/remount (the parent sticks it onto
@@ -63,7 +65,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
   // Folders nest (see util/folderTree): the grid shows the folders and
   // servers directly inside the open folder (or the top level).
-  const tree = folderTree(folders);
+  const tree = useMemo(() => folderTree(folders), [folders]);
   // The open folder was deleted (here or on another device): back to the top.
   useEffect(() => {
     if (activeFolderId !== null && folders && !tree.has(activeFolderId)) setActiveFolderId(null);
@@ -428,7 +430,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             tabIndex={-1}
             onPointerDown={(e) => beginDrag(e, s.id)}
             onClick={(e) => e.stopPropagation()}
-            title={onMoveServer ? "Drag to reorder, or onto a folder" : "Drag to reorder"}
+            title={onMoveServer ? t("Drag to reorder, or onto a folder") : t("Drag to reorder")}
             className="shrink-0 -ml-1.5 -mr-1 p-1 rounded-md text-zinc-600 hover:text-zinc-300 cursor-grab active:cursor-grabbing opacity-100 sm:opacity-0 sm:group-hover:opacity-100 [@media(hover:none)]:!opacity-100 transition-opacity"
             style={{ touchAction: 'none' }}
           >
@@ -452,12 +454,16 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           </h3>
           <div className="flex items-center gap-1 mt-0.5">
             {s.protocol === 'rdp'
-              ? <span title="RDP server" className="shrink-0 px-1 rounded text-[9px] font-bold tracking-wider leading-[14px] text-sky-300 bg-sky-500/10 border border-sky-500/20">RDP</span>
+              ? <span title={t("RDP server")} className="shrink-0 px-1 rounded text-[9px] font-bold tracking-wider leading-[14px] text-sky-300 bg-sky-500/10 border border-sky-500/20">RDP</span>
               : s.protocol === 'telnet'
-                ? <span title="Telnet server (not encrypted)" className="shrink-0 px-1 rounded text-[9px] font-bold tracking-wider leading-[14px] text-amber-300 bg-amber-500/10 border border-amber-500/20">TELNET</span>
+                ? <span title={t("Telnet server (not encrypted)")} className="shrink-0 px-1 rounded text-[9px] font-bold tracking-wider leading-[14px] text-amber-300 bg-amber-500/10 border border-amber-500/20">TELNET</span>
                 : s.protocol === 'vnc'
-                  ? <span title="VNC server" className="shrink-0 px-1 rounded text-[9px] font-bold tracking-wider leading-[14px] text-violet-300 bg-violet-500/10 border border-violet-500/20">VNC</span>
-                  : <Globe size={10} className="text-zinc-400 shrink-0" />}
+                  ? <span title={t("VNC server")} className="shrink-0 px-1 rounded text-[9px] font-bold tracking-wider leading-[14px] text-violet-300 bg-violet-500/10 border border-violet-500/20">VNC</span>
+                  : s.protocol === 'ftp'
+                    ? <span title={t("FTP server (not encrypted)")} className="shrink-0 px-1 rounded text-[9px] font-bold tracking-wider leading-[14px] text-amber-300 bg-amber-500/10 border border-amber-500/20">FTP</span>
+                    : s.protocol === 'ftps' || s.protocol === 'ftps-implicit'
+                      ? <span title={t("FTPS server (FTP over TLS)")} className="shrink-0 px-1 rounded text-[9px] font-bold tracking-wider leading-[14px] text-teal-300 bg-teal-500/10 border border-teal-500/20">FTPS</span>
+                      : <Globe size={10} className="text-zinc-400 shrink-0" />}
             <span className="text-[10.5px] text-zinc-300 font-mono truncate">{s.host}</span>
           </div>
         </div>
@@ -468,7 +474,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           {onCloneServer && (
             <button
               onClick={(e) => { e.stopPropagation(); onCloneServer(s.id); }}
-              title="Clone"
+              title={t("Clone")}
               className="p-1.5 rounded-lg text-zinc-500 hover:text-primary hover:bg-white/5 transition-all"
             >
               <Copy size={13} />
@@ -476,7 +482,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           )}
           <button
             onClick={(e) => { e.stopPropagation(); onEditServer(s); }}
-            title="Edit"
+            title={t("Edit")}
             className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all"
           >
             <Edit2 size={13} />
@@ -484,11 +490,11 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           <button
             onClick={async (e) => {
               e.stopPropagation();
-              if (await confirm({ title: 'Delete server?', message: `“${s.name}” will be removed from this profile.`, destructive: true })) {
+              if (await confirm({ title: t("Delete server?"), message: t("“{name}” will be removed from this profile.", { name: s.name }), destructive: true })) {
                 onRemoveServer(s.id);
               }
             }}
-            title="Delete"
+            title={t("Delete")}
             className="p-1.5 rounded-lg text-zinc-500 hover:text-red-500 hover:bg-white/5 transition-all"
           >
             <Trash2 size={13} />
@@ -500,8 +506,10 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
 
   // Folders share the compact horizontal language so the grid reads as one
   // surface: a tinted folder glyph, name + server count, inline rename in
-  // place, and the same hover lift as server cards.
-  const FolderCard = ({ f }: { f: any }) => {
+  // place, and the same hover lift as server cards. A function that returns
+  // the card, not a component: one defined in here would be a new type on each
+  // render, and React would rebuild every card, the rename field with them.
+  const renderFolder = (f: any) => {
     const serverCount = servers?.filter((s: any) => tree.serverFolder(s) === f.id).length || 0;
     const folderCount = tree.childrenOf(f.id).length;
     const isRenaming = renaming?.id === f.id;
@@ -509,11 +517,12 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
     const isTarget = dropTarget === f.id;
     const isDragged = folderDragId === f.id;
     const contents = [
-      folderCount > 0 ? (folderCount === 1 ? '1 folder' : `${folderCount} folders`) : null,
-      serverCount === 1 ? '1 server' : `${serverCount} servers`,
+      folderCount > 0 ? tn(folderCount, "{count} folder", "{count} folders") : null,
+      tn(serverCount, "{count} server", "{count} servers"),
     ].filter(Boolean).join(' · ');
     return (
       <div
+        key={`folder-${f.id}`}
         data-drop-folder={f.id}
         onClick={() => { if (!isRenaming && !draggedRef.current) setActiveFolderId(f.id); }}
         className={`group relative flex items-center gap-3 h-16 pl-3.5 pr-2 rounded-xl bg-gradient-to-br from-[#1c1c22] to-[#141418] border transition-colors duration-150 cursor-pointer overflow-hidden ${
@@ -528,7 +537,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             tabIndex={-1}
             onPointerDown={(e) => beginFolderDrag(e, f.id)}
             onClick={(e) => e.stopPropagation()}
-            title="Drag into another folder"
+            title={t("Drag into another folder")}
             className="shrink-0 -ml-1.5 -mr-1 p-1 rounded-md text-zinc-600 hover:text-zinc-300 cursor-grab active:cursor-grabbing opacity-100 sm:opacity-0 sm:group-hover:opacity-100 [@media(hover:none)]:!opacity-100 transition-opacity"
             style={{ touchAction: 'none' }}
           >
@@ -575,14 +584,14 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
           <div className="flex items-center gap-0.5 shrink-0">
             <button
               onClick={(e) => { e.stopPropagation(); commitRename(); }}
-              title="Save name"
+              title={t("Save name")}
               className="p-1.5 text-emerald-400 hover:bg-white/10 rounded-lg"
             >
               <Check size={14} />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); setRenaming(null); }}
-              title="Cancel"
+              title={t("Cancel")}
               className="p-1.5 text-zinc-400 hover:text-rose-400 hover:bg-white/10 rounded-lg"
             >
               <X size={14} />
@@ -594,7 +603,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             <div className="absolute right-0 flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 [@media(hover:none)]:!opacity-100 transition-all bg-gradient-to-l from-[#16161b] via-[#16161b] to-transparent pl-6">
               <button
                 onClick={(e) => { e.stopPropagation(); setRenaming({ id: f.id, draft: f.name || "" }); }}
-                title="Rename folder"
+                title={t("Rename folder")}
                 className="p-1.5 rounded-lg text-zinc-500 hover:text-primary hover:bg-white/5 transition-all"
               >
                 <Edit2 size={13} />
@@ -606,18 +615,18 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                   const inside = tree.subtreeOf(f.id);
                   const subfolders = inside.size - 1;
                   const allServers = servers?.filter((s: any) => inside.has(tree.serverFolder(s) as number)).length || 0;
-                  const what = [
-                    subfolders > 0 ? (subfolders === 1 ? '1 folder' : `${subfolders} folders`) : null,
-                    allServers === 1 ? '1 server' : `${allServers} servers`,
-                  ].filter(Boolean).join(' and ');
+                  const serversText = tn(allServers, "{count} server", "{count} servers");
+                  const what = subfolders > 0
+                    ? t("{folders} and {servers}", { folders: tn(subfolders, "{count} folder", "{count} folders"), servers: serversText })
+                    : serversText;
                   const message = subfolders > 0
-                    ? `“${f.name}” and everything inside it (${what}) will be removed.`
-                    : `“${f.name}” and every server inside it (${what}) will be removed.`;
-                  if (await confirm({ title: 'Delete folder?', message, destructive: true })) {
+                    ? t("“{name}” and everything inside it ({what}) will be removed.", { name: f.name, what })
+                    : t("“{name}” and every server inside it ({what}) will be removed.", { name: f.name, what });
+                  if (await confirm({ title: t("Delete folder?"), message, destructive: true })) {
                     onRemoveFolder(f.id);
                   }
                 }}
-                title="Delete folder"
+                title={t("Delete folder")}
                 className="p-1.5 rounded-lg text-zinc-500 hover:text-red-500 hover:bg-white/5 transition-all"
               >
                 <Trash2 size={13} />
@@ -635,7 +644,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={14} />
         <input
           type="text"
-          placeholder="Search servers…"
+          placeholder={t("Search servers…")}
           className="w-full h-9 bg-[#1c1c21] border border-white/10 rounded-lg pl-9 pr-4 text-[13px] text-zinc-100 outline-none focus:border-primary/50 focus:bg-[#16161a] transition-all placeholder:text-zinc-600 shadow-inner"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -646,15 +655,13 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
         <div role="status" className="max-w-xl w-full mx-auto -mt-3 mb-5 shrink-0 flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-100/90">
           <ShieldAlert size={14} className="text-amber-400 shrink-0" />
           <span className="flex-1 min-w-0">
-            {heldCount === 1
-              ? "A change from someone you share this profile with is waiting for your OK."
-              : `${heldCount} changes from people you share this profile with are waiting for your OK.`}
+            {tn(heldCount, "A change made elsewhere is waiting for your OK.", "{count} changes made elsewhere are waiting for your OK.")}
           </span>
           <button
             onClick={() => setReviewOpen(true)}
             className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
           >
-            Review
+            {t("Review")}
           </button>
         </div>
       )}
@@ -665,14 +672,15 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
         <div role="status" className="max-w-xl w-full mx-auto -mt-3 mb-5 shrink-0 flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-100/90">
           <Trash2 size={14} className="text-amber-400 shrink-0" />
           <span className="flex-1 min-w-0">
-            {deletionCount === 1 ? "An item was" : `${deletionCount} items were`} deleted by someone you share this
-            profile with. {deletionCount === 1 ? "It stays" : "They stay"} here until you decide.
+            {(heldDeletions || []).some((d: any) => d.emptied)
+              ? tn(deletionCount, "An item was deleted or emptied by someone you share this profile with. It stays here until you decide.", "{count} items were deleted or emptied by someone you share this profile with. They stay here until you decide.")
+              : tn(deletionCount, "An item was deleted by someone you share this profile with. It stays here until you decide.", "{count} items were deleted by someone you share this profile with. They stay here until you decide.")}
           </span>
           <button
             onClick={() => setDeletionsOpen(true)}
             className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
           >
-            Review
+            {t("Review")}
           </button>
         </div>
       )}
@@ -683,14 +691,36 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
         <div role="status" className="max-w-xl w-full mx-auto -mt-3 mb-5 shrink-0 flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-100/90">
           <KeyRound size={14} className="text-amber-400 shrink-0" />
           <span className="flex-1 min-w-0">
-            This shared profile's key has changed. Your changes aren't uploaded until you accept the new key.
+            {t("This shared profile's key has changed. Your changes aren't uploaded until you accept the new key.")}
           </span>
           <button
             onClick={reviewKey}
             className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
           >
-            Review
+            {t("Review")}
           </button>
+        </div>
+      )}
+      {/* The grant changed and this device couldn't open it (note_share_grant):
+          it only pulls until that's sorted out. */}
+      {shareGrant && (
+        <div role="status" className="max-w-xl w-full mx-auto -mt-3 mb-5 shrink-0 flex items-center gap-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-100/90">
+          <KeyRound size={14} className="text-amber-400 shrink-0" />
+          <span className="flex-1 min-w-0">
+            {shareGrant === "locked"
+              ? t("This shared profile's key may have changed. Unlock sharing to check. Until then you can't see what's new, and your changes aren't uploaded.")
+              : shareGrant === "checking"
+                ? t("Sharing is unlocked. The next sync checks this shared profile's key. Until then you can't see what's new, and your changes aren't uploaded.")
+                : t("This shared profile has a new key your sharing key can't open. Ask its owner to invite you again. Until then your changes aren't uploaded.")}
+          </span>
+          {shareGrant === "locked" && onUnlockSharing && (
+            <button
+              onClick={onUnlockSharing}
+              className="shrink-0 px-2.5 h-7 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20"
+            >
+              {t("Unlock sharing")}
+            </button>
+          )}
         </div>
       )}
 
@@ -699,8 +729,8 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
         {/* Header navigation if in folder */}
         {!isSearching && activeFolderId !== null && (
           <div className="flex items-center gap-3 mb-6 flex-wrap">
-            <button aria-label="Back"
-              title="Up one level"
+            <button aria-label={t("Back")}
+              title={t("Up one level")}
               onClick={() => setActiveFolderId(tree.parentOf(activeFolderId))}
               className="w-8 h-8 bg-black rounded-xl border border-white/5 flex items-center justify-center hover:bg-white/10 hover:text-white text-zinc-500 transition-all shadow-inner shrink-0"
             >
@@ -710,8 +740,8 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                 level, and takes a server or folder dropped on it. */}
             {/* At least 12rem wide: on a narrow window the buttons wrap below
                 it rather than squeezing the path to nothing. */}
-            <nav aria-label="Folder path" className="flex items-center gap-1 flex-1 min-w-[12rem] flex-wrap text-[13px]">
-              {[{ id: "root", name: "All servers" }, ...tree.pathOf(activeFolderId)].map((step: any, i: number, all: any[]) => {
+            <nav aria-label={t("Folder path")} className="flex items-center gap-1 flex-1 min-w-[12rem] flex-wrap text-[13px]">
+              {[{ id: "root", name: t("All servers") }, ...tree.pathOf(activeFolderId)].map((step: any, i: number, all: any[]) => {
                 const last = i === all.length - 1;
                 const target: DropTarget = step.id === "root" ? "root" : step.id;
                 const hot = dropTarget === target;
@@ -740,10 +770,10 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             {onCreateFolder && (
               <button
                 onClick={() => setNewFolder((v) => v ?? "")}
-                title="Make a folder inside this one"
+                title={t("Make a folder inside this one")}
                 className="h-8 px-3 bg-primary/10 text-primary border border-primary/25 hover:bg-primary/20 rounded-lg flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider shrink-0"
               >
-                <FolderPlus size={13} /> Add folder
+                <FolderPlus size={13} /> {t("Add folder")}
               </button>
             )}
             {/* Adding a server from inside a folder pre-selects this folder
@@ -753,7 +783,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
               onClick={() => onAddClick(activeFolderId)}
               className="h-8 px-3 bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 rounded-lg flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider shrink-0"
             >
-              <Plus size={13} /> Add server
+              <Plus size={13} /> {t("Add server")}
             </button>
           </div>
         )}
@@ -768,8 +798,8 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                 <Plus size={28} />
               </div>
               <div className="text-center">
-                <h3 className="text-[15px] font-bold text-white tracking-tight">Add your first server</h3>
-                <p className="text-[12px] text-zinc-500 mt-1">Tap here to get started.</p>
+                <h3 className="text-[15px] font-bold text-white tracking-tight">{t("Add your first server")}</h3>
+                <p className="text-[12px] text-zinc-500 mt-1">{t("Tap here to get started.")}</p>
               </div>
             </button>
           </div>
@@ -783,15 +813,15 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                   onClick={onAddClick}
                   className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-primary/10 border border-primary/25 text-primary text-[11px] font-bold uppercase tracking-wider hover:bg-primary/20 transition-colors"
                 >
-                  <Plus size={13} /> Add server
+                  <Plus size={13} /> {t("Add server")}
                 </button>
                 {onCreateFolder && (
                   <button
                     onClick={() => setNewFolder((v) => v ?? "")}
-                    title="Group servers in a folder"
+                    title={t("Group servers in a folder")}
                     className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-primary/10 border border-primary/25 text-primary text-[11px] font-bold uppercase tracking-wider hover:bg-primary/20 transition-colors"
                   >
-                    <FolderPlus size={13} /> Add folder
+                    <FolderPlus size={13} /> {t("Add folder")}
                   </button>
                 )}
                 {onQuickConnect && (
@@ -799,7 +829,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                     onClick={onQuickConnect}
                     className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300/90 text-[11px] font-bold uppercase tracking-wider hover:bg-amber-500/20 hover:text-amber-200 transition-colors"
                   >
-                    <Zap size={13} /> Quick connect
+                    <Zap size={13} /> {t("Quick connect")}
                   </button>
                 )}
               </div>
@@ -817,8 +847,8 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                 </div>
                 <input
                   autoFocus
-                  aria-label="New folder name"
-                  placeholder="Folder name…"
+                  aria-label={t("New folder name")}
+                  placeholder={t("Folder name…")}
                   value={newFolder}
                   onChange={(e) => setNewFolder(e.target.value)}
                   onKeyDown={(e) => {
@@ -831,16 +861,16 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
                   <button
                     onClick={commitNewFolder}
                     disabled={!newFolder.trim()}
-                    title="Create folder"
-                    aria-label="Create folder"
+                    title={t("Create folder")}
+                    aria-label={t("Create folder")}
                     className="p-1.5 text-emerald-400 hover:bg-white/10 rounded-lg disabled:opacity-40 disabled:hover:bg-transparent"
                   >
                     <Check size={14} />
                   </button>
                   <button
                     onClick={() => setNewFolder(null)}
-                    title="Cancel"
-                    aria-label="Cancel new folder"
+                    title={t("Cancel")}
+                    aria-label={t("Cancel new folder")}
                     className="p-1.5 text-zinc-400 hover:text-rose-400 hover:bg-white/10 rounded-lg"
                   >
                     <X size={14} />
@@ -850,9 +880,7 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             )}
 
             {/* The folders inside the open one (or the top level); none while searching. */}
-            {displayedFolders.map((f: any) => (
-              <FolderCard key={`folder-${f.id}`} f={f} />
-            ))}
+            {displayedFolders.map((f: any) => renderFolder(f))}
 
             {/* Render Servers — honours the live drag order while reordering. */}
             {orderedServers.map((s: any) => renderServer(s))}
@@ -860,14 +888,14 @@ export const NodeGrid = ({ servers, folders, activeFolderId: activeFolderIdProp,
             {/* Empty Folder State */}
             {!isSearching && activeFolderId !== null && displayedServers.length === 0 && displayedFolders.length === 0 && newFolder === null && (
               <div className="col-span-full py-10 text-center text-zinc-600 text-xs italic">
-                Nothing in this folder yet. Add a server or folder here, or drag a server onto this folder from the level above.
+                {t("Nothing in this folder yet. Add a server or folder here, or drag a server onto this folder from the level above.")}
               </div>
             )}
 
             {/* Empty Search State */}
             {isSearching && displayedServers.length === 0 && (
               <div className="col-span-full py-10 text-center text-zinc-600 text-xs italic">
-                No matches.
+                {t("No matches.")}
               </div>
             )}
 

@@ -1,4 +1,6 @@
 import { Component, type CSSProperties, type ErrorInfo, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { t } from "../i18n";
 
 interface Props { children: ReactNode; }
 interface State { error: Error | null; info: ErrorInfo | null; }
@@ -20,7 +22,11 @@ export default class ErrorBoundary extends Component<Props, State> {
     console.error("[ui] uncaught render error:", error, info?.componentStack);
   }
 
-  private reset = () => this.setState({ error: null, info: null });
+  // The app starts over at the picker, and no page load tells the backend so
+  // (a reload does, see lib.rs): the profile left open behind it is closed here.
+  private reset = () => {
+    invoke("close_profile").catch(() => {}).finally(() => this.setState({ error: null, info: null }));
+  };
   private reload = () => window.location.reload();
 
   render() {
@@ -35,21 +41,19 @@ export default class ErrorBoundary extends Component<Props, State> {
     return (
       <div style={S.wrap} role="alert">
         <div style={S.card}>
-          <div style={S.badge}>Something broke in the interface</div>
-          <h1 style={S.h1}>The window hit an unexpected error</h1>
+          <div style={S.badge}>{t("Something broke in the interface")}</div>
+          <h1 style={S.h1}>{t("The window hit an unexpected error")}</h1>
           <p style={S.lede}>
-            Your connections and saved profiles are untouched — this is only the on-screen
-            interface. Reloading almost always clears it. If it keeps happening, copy the
-            details below when reporting the bug.
+            {t("Your saved profiles and servers are untouched, but this closed your open sessions: what ran in their terminals has ended and their scrollback is gone. Reloading almost always clears the error and takes you back to the profile picker. If it keeps happening, copy the details below when reporting the bug.")}
           </p>
           <div style={S.row}>
-            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={this.reload}>Reload the app</button>
-            <button style={S.btn} onClick={this.reset}>Try to continue</button>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={this.reload}>{t("Reload the app")}</button>
+            <button style={S.btn} onClick={this.reset}>{t("Try to continue")}</button>
             <button
               style={S.btn}
               onClick={() => { navigator.clipboard?.writeText(`${error.message}\n\n${detail}`).catch(() => {}); }}
             >
-              Copy details
+              {t("Copy details")}
             </button>
           </div>
           <pre style={S.pre}>{error.message}{"\n\n"}{detail}</pre>

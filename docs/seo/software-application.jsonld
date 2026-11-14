@@ -6,7 +6,7 @@
   "applicationCategory": "DeveloperApplication",
   "applicationSubCategory": "SSH Client",
   "operatingSystem": "Windows, macOS, Linux, Android",
-  "description": "Free, open-source SSH and SFTP client for Windows, macOS, Linux and Android. Tabbed terminal, dual-pane SFTP browser, local/remote/dynamic port forwarding (SOCKS4/5, HTTP CONNECT), two-way folder mirror, server info, Docker and monitoring panels, and VNC, RDP and Telnet sessions, with encrypted profiles and optional cloud sync.",
+  "description": "Free, open-source SSH, SFTP and FTP client for Windows, macOS, Linux and Android. Tabbed terminal, dual-pane file browser for SFTP and FTP/FTPS, local/remote/dynamic port forwarding (SOCKS4/5, HTTP CONNECT), two-way folder mirror, server info, Docker and monitoring panels, and VNC, RDP and Telnet sessions, with encrypted profiles and optional cloud sync.",
   "url": "https://submarine.sinaxhpm.com/",
   "downloadUrl": "https://github.com/sinaxhpm/submarine/releases",
   "license": "https://opensource.org/licenses/MIT",
@@ -52,7 +52,7 @@
     "Optional cloud sync with client-side encryption of record contents, profile sharing and a self-hosted server option",
     "Native Rust and Tauri app, no bundled Chromium"
   ],
-  "keywords": "ssh client, sftp client, telnet client, vnc viewer, rdp client, terminal, port forwarding, ssh tunnel, socks proxy, folder sync, ssh-agent, rust, tauri, putty alternative, winscp alternative, mobaxterm alternative, termius alternative, android ssh client",
+  "keywords": "ssh client, sftp client, ftp client, ftps client, telnet client, vnc viewer, rdp client, terminal, port forwarding, ssh tunnel, socks proxy, folder sync, ssh-agent, rust, tauri, putty alternative, winscp alternative, mobaxterm alternative, termius alternative, android ssh client",
   "sameAs": [
     "https://github.com/sinaxhpm/submarine"
   ]

@@ -27,14 +27,21 @@
 //!      depends only on the *current* state of the path.
 //!
 //!   3. `stop` fires the oneshot signal and the worker tears down cleanly,
-//!      awaiting any in-flight upload to finish before returning.
+//!      awaiting any in-flight upload to finish before returning. A worker
+//!      that takes longer than `STOP_WAIT` is cut off where it stands.
+//!
+//! An FTP server's tab mirrors the same way, through its file access
+//! (ftp_sftp.rs, `Files::Ftp`). Where the server's listings give file times
+//! only to the minute and in its own time zone (LIST), each file both sides
+//! have is asked about on its own (MDTM, exact and in UTC) before it is
+//! compared; a server that gives no exact times at all isn't mirrored (lib.rs).
 //!
 //! Deletes go to a `.submarine-trash/` directory on the remote by default
 //! (rename instead of remove), so a fat-fingered local `rm -rf` doesn't
 //! nuke the remote copy. The user can flip `soft_delete = false` per
 //! mirror if they actually want hard deletes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -48,7 +55,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::task::JoinSet;
 
 use crate::ssh_manager::ClientHandler;
@@ -136,6 +143,8 @@ pub struct DryRunReport {
 pub struct ActiveMirror {
     pub status: Arc<Mutex<MirrorStatus>>,
     pub stop_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Ends the worker where it stands, for one that doesn't stop when told.
+    pub abort_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub join: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
@@ -156,13 +165,18 @@ fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
 }
 
+/// What a file being moved is called until it is whole. Stop, or a lost
+/// connection, can leave one behind, on either side. It is never the user's
+/// file: it doesn't move, and the next start clears it away.
+const MIRROR_TEMP: &str = ".submarine-tmp";
+
 /// True if `rel` (a relative path under the mirror root) matches any of the
 /// exclude patterns. Supports two forms: `*.<ext>` (suffix match) and bare
 /// substring. Hard-coded defaults that are basically always wanted —
 /// `.git`, `node_modules`, editor swap files — are layered in for free.
 fn is_excluded(rel: &str, user_excludes: &[String]) -> bool {
     const DEFAULTS: &[&str] = &[".git/", "node_modules/", ".DS_Store", "Thumbs.db"];
-    const DEFAULT_EXT: &[&str] = &[".swp", ".swo", ".tmp", ".part"];
+    const DEFAULT_EXT: &[&str] = &[".swp", ".swo", ".tmp", ".part", MIRROR_TEMP];
     let rel_norm = rel.replace('\\', "/");
     for d in DEFAULTS {
         if rel_norm.contains(d) { return true; }
@@ -244,9 +258,34 @@ async fn set_state(app: &AppHandle, status: &Arc<Mutex<MirrorStatus>>, new: &str
 /// Open a dedicated SFTP session on the SSH handle. Each mirror gets its
 /// own subsystem channel so it doesn't contend with the file browser or
 /// another mirror task on a shared one.
-async fn open_sftp(handle: &Arc<Mutex<russh::client::Handle<ClientHandler>>>) -> Result<SftpSession, String> {
+async fn open_sftp(handle: &Arc<RwLock<russh::client::Handle<ClientHandler>>>) -> Result<SftpSession, String> {
     // A server without SFTP gets file access over shell commands.
     crate::open_sftp(handle).await.map(|(sftp, _)| sftp).map_err(|e| format!("sftp init: {}", e))
+}
+
+/// Where a mirror's file access comes from.
+#[derive(Clone)]
+pub enum Files {
+    /// An SFTP session of its own on the tab's SSH connection.
+    Ssh(Arc<RwLock<russh::client::Handle<ClientHandler>>>),
+    /// An FTP tab's file access, shared with the tab (it keeps to the
+    /// server's limit on connections). `exact`: its listings give exact
+    /// times (MLSD); otherwise each file is asked about (see the module).
+    Ftp { sftp: Arc<SftpSession>, exact: bool },
+}
+
+impl Files {
+    async fn open(&self) -> Result<Arc<SftpSession>, String> {
+        match self {
+            Files::Ssh(handle) => Ok(Arc::new(open_sftp(handle).await?)),
+            Files::Ftp { sftp, .. } => Ok(Arc::clone(sftp)),
+        }
+    }
+
+    /// The listing's times can't be compared as they are.
+    fn coarse_times(&self) -> bool {
+        matches!(self, Files::Ftp { exact: false, .. })
+    }
 }
 
 /// Equivalent of `mkdir -p` over SFTP. Walks the path components and
@@ -254,6 +293,11 @@ async fn open_sftp(handle: &Arc<Mutex<russh::client::Handle<ClientHandler>>>) ->
 /// to be there after all counts as success, since two mirror tasks may race
 /// to create the same parent.
 async fn sftp_mkdir_p(sftp: &SftpSession, path: &str) -> Result<(), String> {
+    // Nearly always it is there: every upload comes through here, and a round
+    // trip per level of the path, per file, is most of what a small file costs.
+    if sftp.metadata(path).await.is_ok() {
+        return Ok(());
+    }
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').filter(|p| !p.is_empty()).collect();
     let mut cur = String::from("/");
     for p in parts {
@@ -281,10 +325,23 @@ async fn sftp_remote_mtime(sftp: &SftpSession, path: &str) -> Option<u64> {
     attr.mtime.map(|t| t as u64)
 }
 
-/// Stream a file to SFTP in 64 KiB chunks. We do NOT set the remote mtime
-/// after upload — some SFTP servers truncated the file on a round-tripped
-/// SETSTAT. Subsequent dry-runs fall back to hash compare, which catches
-/// real changes correctly.
+/// The attributes that give a copy the local file's times and nothing else.
+/// A SETSTAT carrying only these (ACMODTIME) can't touch the size; what some
+/// SFTP servers truncated a file on was every attribute sent back. Both times
+/// go: with one of them alone the other would be sent as 0.
+fn times_of(meta: &std::fs::Metadata) -> Option<FileAttributes> {
+    let secs = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok()?.duration_since(UNIX_EPOCH).ok().and_then(|d| u32::try_from(d.as_secs()).ok())
+    };
+    let mtime = secs(meta.modified())?;
+    Some(FileAttributes { atime: Some(secs(meta.accessed()).unwrap_or(mtime)), mtime: Some(mtime), ..FileAttributes::empty() })
+}
+
+/// Stream a file to SFTP in 64 KiB chunks. The copy gets the local file's
+/// times (`times_of`), set on the temporary file before it is renamed in:
+/// with the upload's own time, every later start found "same size, other
+/// time" and downloaded the copy to hash it (compare_files). A server that
+/// refuses the times leaves the copy with its own, as before.
 ///
 /// Atomic write: we stream into `<remote>.submarine-tmp`, then rename onto
 /// the real destination on success. Without this a mid-write SSH channel
@@ -300,7 +357,11 @@ async fn sftp_upload_file(sftp: &SftpSession, local: &Path, remote: &str) -> Res
         }
     }
     let tmp = format!("{}.submarine-tmp", remote);
+    let local_meta = tokio::fs::metadata(local).await.ok();
     sftp_stream_file(sftp, local, &tmp, FileAttributes::empty()).await?;
+    if let Some(times) = local_meta.as_ref().and_then(times_of) {
+        let _ = sftp.set_metadata(tmp.as_str(), times).await;
+    }
     // Rename over the destination. On POSIX SFTP servers `sftp.rename` errors
     // if the destination already exists, so we unlink the previous copy first.
     // The lost-atomicity window here (destination missing between remove and
@@ -360,6 +421,9 @@ async fn sftp_download_file(
     local: &Path,
     remote_mtime_secs: Option<u64>,
 ) -> Result<(), String> {
+    // The root passed the path policy; what the server has under it hasn't: a
+    // mirror of the home folder and a remote `.config/autostart`, say.
+    crate::check_local_path_policy(local.to_path_buf())?;
     if let Some(parent) = local.parent() {
         tokio::fs::create_dir_all(parent).await
             .map_err(|e| format!("local mkdir {:?}: {}", parent, e))?;
@@ -530,12 +594,17 @@ async fn sftp_sha256(sftp: &SftpSession, remote: &str) -> Result<[u8; 32], Strin
     Ok(hasher.finalize().into())
 }
 
+/// `settle`: when the hashes say "the same" across two times, the copy gets
+/// the local file's times, so the next start needn't hash it again (a copy
+/// uploaded before uploads set them). Only in a real run: a dry run or a
+/// scan changes nothing on the server.
 async fn compare_files(
     sftp: &SftpSession,
     local: &Path,
     remote: &str,
     local_meta: &std::fs::Metadata,
     remote_attr: &FileAttributes,
+    settle: bool,
 ) -> Result<CompareResult, String> {
     let local_size = local_meta.len();
     let remote_size = remote_attr.size.unwrap_or(0);
@@ -559,6 +628,11 @@ async fn compare_files(
     let lh = local_sha256(local).await?;
     let rh = sftp_sha256(sftp, remote).await?;
     if lh == rh {
+        if settle {
+            if let Some(times) = times_of(local_meta) {
+                let _ = sftp.set_metadata(remote, times).await;
+            }
+        }
         return Ok(CompareResult::Identical);
     }
     Ok(if local_secs >= remote_secs { CompareResult::LocalNewer }
@@ -570,30 +644,32 @@ async fn compare_files(
 // ---------------------------------------------------------------------------
 
 pub async fn dry_run(
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    files: Files,
     spec: MirrorSpec,
 ) -> Result<DryRunReport, String> {
     let local_root = PathBuf::from(&spec.local);
     if !local_root.is_dir() {
         return Err(format!("local path not a directory: {}", spec.local));
     }
-    let sftp = open_sftp(&handle).await?;
+    let sftp = files.open().await?;
 
     let mut entries = Vec::new();
     let mut total_bytes: u64 = 0;
     let mut seen = HashSet::new();
-    // walk_local does the bulk of the work: for every local file it
+    // walk_remote goes first and only takes down what the server has.
+    // walk_local then does the bulk of the work: for every local file it
     // decides upload-* / download-* / skip via compare_files (size,
-    // mtime, hash-on-tie). walk_remote then only fills in the gap —
-    // files that exist on the server but not in `seen`, i.e. truly
-    // remote-only paths. This split avoids hashing each ambiguous
-    // file twice.
+    // mtime, hash-on-tie). remote_only fills in the gap — files that exist
+    // on the server but not in `seen`, i.e. truly remote-only paths. This
+    // split avoids hashing each ambiguous file twice.
     let mut scanned = 0u32;
+    let mut tree = RemoteTree { coarse_times: files.coarse_times(), ..RemoteTree::default() };
+    walk_remote(&sftp, &spec.remote, &spec.remote, &spec.excludes,
+                &mut tree, &mut scanned, &mut HashSet::new(), false).await?;
     walk_local(&local_root, &local_root, &spec.remote, &spec.excludes, &sftp,
-               &spec.conflict_resolution,
-               &mut entries, &mut total_bytes, &mut seen, &mut scanned, &mut Vec::new()).await?;
-    walk_remote(&sftp, &local_root, &spec.remote, &spec.remote, &spec.excludes,
-                &mut entries, &mut total_bytes, &seen, &mut scanned, &mut HashSet::new()).await?;
+               &spec.conflict_resolution, &tree,
+               &mut entries, &mut total_bytes, &mut seen, &mut scanned, &mut Vec::new(), false).await?;
+    remote_only(&tree, &seen, &mut entries, &mut total_bytes);
     Ok(DryRunReport { entries, total_bytes })
 }
 
@@ -960,7 +1036,7 @@ async fn shell_sync_scan(sftp: &SftpSession, targets: &[ShellSyncTarget]) -> Res
                 Some(a) if a.is_symlink() => "skip-link",
                 Some(a) if a.is_dir() => "skip-folder",
                 Some(a) if a.permissions.is_some() && !a.is_regular() => "skip-other",
-                Some(a) => match compare_files(sftp, &local, &remote, &meta, a).await? {
+                Some(a) => match compare_files(sftp, &local, &remote, &meta, a, false).await? {
                     CompareResult::Identical => continue,
                     CompareResult::LocalNewer => "update",
                     CompareResult::RemoteNewer => "server-newer",
@@ -1053,7 +1129,7 @@ async fn shell_sync_put(sftp: &SftpSession, item: &ShellSyncItem, backup_root: &
 
 /// Preview-only: what `shell_sync_push` would do, with nothing transferred.
 pub async fn shell_sync_preview(
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     targets: Vec<ShellSyncTarget>,
 ) -> Result<ShellSyncReport, String> {
     let sftp = open_sftp(&handle).await?;
@@ -1068,7 +1144,7 @@ pub async fn shell_sync_preview(
 /// Scans again, then pushes every file that needs it. A file that fails is
 /// reported and the rest still go.
 pub async fn shell_sync_push(
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
     targets: Vec<ShellSyncTarget>,
 ) -> Result<ShellSyncPushReport, String> {
     use chrono::{Datelike, Timelike};
@@ -1101,9 +1177,13 @@ pub async fn shell_sync_push(
 /// Recursive walk over the LOCAL tree. For each file we ask compare_files
 /// whether the remote copy is missing / equal / newer / older, then pick a
 /// direction using the mirror's `conflict_resolution` setting. Every
-/// visited rel path goes into `seen` so walk_remote can identify which
+/// visited rel path goes into `seen` so remote_only can identify which
 /// remote files weren't covered here and need a download-new entry.
 /// `scanned` increments once per file visited (for progress UI).
+///
+/// An explicit stack, as in walk_remote: a recursive `async fn` polls one more
+/// frame per level, and a deep enough tree overflows the worker's stack. The
+/// tree is the user's own, so nothing here caps its size.
 async fn walk_local(
     root: &Path,
     dir: &Path,
@@ -1111,117 +1191,219 @@ async fn walk_local(
     excludes: &[String],
     sftp: &SftpSession,
     conflict_mode: &str,
+    tree: &RemoteTree,
     out: &mut Vec<DryRunEntry>,
     total: &mut u64,
     seen: &mut HashSet<String>,
     scanned: &mut u32,
     dirs: &mut Vec<String>,
+    settle: bool,
 ) -> Result<(), String> {
-    let mut rd = tokio::fs::read_dir(dir).await.map_err(|e| format!("read_dir {:?}: {}", dir, e))?;
-    while let Some(entry) = rd.next_entry().await.map_err(|e| format!("dir iter: {}", e))? {
-        let path = entry.path();
-        let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-        if is_excluded(&rel, excludes) { continue; }
-        let meta = match entry.metadata().await { Ok(m) => m, Err(_) => continue };
-        if meta.is_dir() {
-            // A folder pattern names it with its "/" (`node_modules/`).
-            if is_excluded(&format!("{}/", rel), excludes) { continue; }
-            dirs.push(rel);
-            Box::pin(walk_local(root, &path, remote_root, excludes, sftp, conflict_mode, out, total, seen, scanned, dirs)).await?;
-            continue;
-        }
-        if !meta.is_file() { continue; } // skip symlinks / sockets / pipes
-        *scanned = scanned.saturating_add(1);
-        let remote_path = match local_to_remote(&path, root, remote_root) {
-            Some(r) => r, None => continue,
-        };
-        seen.insert(rel.clone());
-        let size = meta.len();
-        let remote_attr = sftp.metadata(&remote_path).await.ok();
-        let action = match remote_attr {
-            // Missing on the other side is never a conflict — copy across.
-            None => "upload-new",
-            Some(attr) => {
-                let cmp = compare_files(sftp, &path, &remote_path, &meta, &attr).await?;
-                match cmp {
-                    CompareResult::Identical => continue,
-                    // Same-content cases that *do* differ — pick a side per mode.
-                    CompareResult::LocalNewer | CompareResult::RemoteNewer => {
-                        let local_wins = match conflict_mode {
-                            "remote" => false,
-                            "newer"  => matches!(cmp, CompareResult::LocalNewer),
-                            _        => true,  // "local" or unknown → safe default
-                        };
-                        if local_wins { "upload-modified" } else { "download-modified" }
+    // With each folder, whether the walk of the server saw into it.
+    let mut stack = vec![(dir.to_path_buf(), tree.hides(""))];
+    while let Some((dir, hidden)) = stack.pop() {
+        let mut rd = tokio::fs::read_dir(&dir).await.map_err(|e| format!("read_dir {:?}: {}", dir, e))?;
+        while let Some(entry) = rd.next_entry().await.map_err(|e| format!("dir iter: {}", e))? {
+            let path = entry.path();
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            if settle && rel.ends_with(MIRROR_TEMP) {
+                let _ = tokio::fs::remove_file(&path).await;
+                continue;
+            }
+            if is_excluded(&rel, excludes) { continue; }
+            let meta = match entry.metadata().await { Ok(m) => m, Err(_) => continue };
+            if meta.is_dir() {
+                // A folder pattern names it with its "/" (`node_modules/`).
+                if is_excluded(&format!("{}/", rel), excludes) { continue; }
+                let hidden = hidden || tree.hides(&rel);
+                dirs.push(rel);
+                stack.push((path, hidden));
+                continue;
+            }
+            if !meta.is_file() { continue; } // skip symlinks / sockets / pipes
+            *scanned = scanned.saturating_add(1);
+            let remote_path = match local_to_remote(&path, root, remote_root) {
+                Some(r) => r, None => continue,
+            };
+            seen.insert(rel.clone());
+            let size = meta.len();
+            // The listing answers for most files, in no time. The server is
+            // asked about those it can't speak for.
+            let remote_attr = match tree.found.get(&rel) {
+                Some(attr) if RemoteTree::describes_a_file(attr) && !tree.coarse_times => Some(attr.clone()),
+                None if !hidden && !tree.hides(&rel) => None,
+                _ => sftp.metadata(&remote_path).await.ok(),
+            };
+            let action = match remote_attr {
+                // Missing on the other side is never a conflict — copy across.
+                None => "upload-new",
+                Some(attr) => {
+                    let cmp = compare_files(sftp, &path, &remote_path, &meta, &attr, settle).await?;
+                    match cmp {
+                        CompareResult::Identical => continue,
+                        // Same-content cases that *do* differ — pick a side per mode.
+                        CompareResult::LocalNewer | CompareResult::RemoteNewer => {
+                            let local_wins = match conflict_mode {
+                                "remote" => false,
+                                "newer"  => matches!(cmp, CompareResult::LocalNewer),
+                                _        => true,  // "local" or unknown → safe default
+                            };
+                            if local_wins { "upload-modified" } else { "download-modified" }
+                        }
                     }
                 }
-            }
-        };
-        out.push(DryRunEntry { path: rel, size, action: action.into() });
-        *total = total.saturating_add(size);
+            };
+            out.push(DryRunEntry { path: rel, size, action: action.into() });
+            *total = total.saturating_add(size);
+        }
     }
     Ok(())
 }
 
-/// Recursive walk over the remote tree via SFTP. walk_local already
-/// covered every file that exists locally (and chose Identical / upload /
-/// download for it via compare_files). All that's left for walk_remote is
-/// the remote-only files: anything whose rel path isn't in `seen` is a
-/// file the local tree doesn't have, so it becomes a download-new entry.
+/// Caps on the walk of a remote tree, against a broken or hostile server: a
+/// tree without end is refused rather than held in memory. Its depth goes by
+/// the folder download's cap. What the walk keeps is paths, so they have a cap
+/// of their own: in a deep folder each file costs far more than its name.
+const WALK_MAX_ENTRIES: usize = 1_000_000;
+const WALK_MAX_PATH_BYTES: usize = 256 * 1024 * 1024;
+
+/// Why the remote walk can't go on, if it can't.
+fn walk_refused(depth: usize, entries: usize, path_bytes: usize) -> Option<String> {
+    if depth > crate::DOWNLOAD_DIR_MAX_DEPTH {
+        Some(format!("the server's folders nest deeper than {} levels", crate::DOWNLOAD_DIR_MAX_DEPTH))
+    } else if entries > WALK_MAX_ENTRIES || path_bytes > WALK_MAX_PATH_BYTES {
+        Some(format!("the server's folder has more than {} entries", WALK_MAX_ENTRIES))
+    } else {
+        None
+    }
+}
+
+/// What the server has under a mirror's root, from walk_remote. A folder's
+/// listing already holds the size and time of each file in it, so walk_local
+/// looks files up here: asking the server about each, one after the other, took
+/// a round trip per file before anything moved (5,000 files at 100 ms: 8
+/// minutes), for the preview as well.
+#[derive(Default)]
+struct RemoteTree {
+    /// Everything found, by its path below the root, as its folder listed it.
+    found: BTreeMap<String, FileAttributes>,
+    /// The listings' times are to the minute (an FTP server's LIST): a file
+    /// both sides have is asked about before it is compared.
+    coarse_times: bool,
+    /// What may be there though the walk didn't look: a folder that wouldn't
+    /// list (the root as ""), and the trash, which it leaves out.
+    unread: HashSet<String>,
+}
+
+impl RemoteTree {
+    /// Whether a listing's entry says all compare_files needs. READDIR
+    /// describes a link and not what it leads to, and a server may leave out
+    /// what it likes.
+    fn describes_a_file(attr: &FileAttributes) -> bool {
+        attr.file_type().is_file() && attr.size.is_some() && attr.mtime.is_some()
+    }
+
+    /// Whether what is at or below `rel` may be there though `found` doesn't
+    /// have it: a link may lead to a folder, and an entry with no type may be
+    /// one. A file has nothing below it.
+    fn hides(&self, rel: &str) -> bool {
+        self.unread.contains(rel)
+            || self.found.get(rel).is_some_and(|attr| !matches!(attr.file_type(), FileType::Dir | FileType::File))
+    }
+}
+
+/// Walk over the remote tree via SFTP, into `tree`. It goes first, so that
+/// walk_local can look files up in it.
 ///
 /// A missing remote root is treated as "nothing to do" rather than an
 /// error — the user may legitimately be mirroring into a fresh remote
 /// path that the upload pass will create. We hard-skip `.submarine-trash`
 /// so the soft-delete archive never gets dragged back into the local
 /// tree.
+///
+/// An explicit stack of (folder, depth), as in sftp_download_dir. Boxed
+/// recursion moves the future to the heap but not the polling: every wake goes
+/// through one frame per level, so a server that lists one more folder in every
+/// folder overflows the worker's stack, which kills the whole app.
 async fn walk_remote(
     sftp: &SftpSession,
-    local_root: &Path,
     remote_root: &str,
     remote_dir: &str,
     excludes: &[String],
-    out: &mut Vec<DryRunEntry>,
-    total: &mut u64,
-    seen: &HashSet<String>,
+    tree: &mut RemoteTree,
     scanned: &mut u32,
     dirs: &mut HashSet<String>,
+    settle: bool,
 ) -> Result<(), String> {
-    let read = match sftp.read_dir(remote_dir).await {
-        Ok(r) => r,
-        Err(_) => return Ok(()),
-    };
     let trimmed_root = remote_root.trim_end_matches('/').to_string();
     let prefix = format!("{}/", trimmed_root);
-    let items: Vec<_> = read.collect();
-    for entry in items {
-        let name = entry.file_name();
-        // Skip any entry whose name isn't a single plain component. A hostile
-        // SFTP server can return `../../x` or `..\x`; that rel path later feeds
-        // local_root.join(...) in the transfer pool and would escape the mirror
-        // root (zip-slip → arbitrary local write). See is_safe_dir_entry_name.
-        if !crate::is_safe_dir_entry_name(&name) { continue; }
-        let remote_path = format!("{}/{}", remote_dir.trim_end_matches('/'), name);
-        let rel = remote_path.strip_prefix(&prefix)
-            .unwrap_or(remote_path.as_str())
-            .to_string();
-        if rel.starts_with(".submarine-trash") { continue; }
-        if is_excluded(&rel, excludes) { continue; }
-
-        if entry.file_type().is_dir() {
-            if is_excluded(&format!("{}/", rel), excludes) { continue; }
-            dirs.insert(rel);
-            Box::pin(walk_remote(sftp, local_root, remote_root, &remote_path, excludes, out, total, seen, scanned, dirs)).await?;
-            continue;
+    let mut entries = 0usize;
+    let mut path_bytes = 0usize;
+    let mut stack = vec![(remote_dir.to_string(), 0usize)];
+    while let Some((remote_dir, depth)) = stack.pop() {
+        if let Some(why) = walk_refused(depth, entries, path_bytes) {
+            return Err(why);
         }
-        *scanned = scanned.saturating_add(1);
-        // walk_local already decided this file's fate — don't double-emit.
-        if seen.contains(&rel) { continue; }
-        let attr = entry.metadata();
-        let size = attr.size.unwrap_or(0);
-        out.push(DryRunEntry { path: rel, size, action: "download-new".into() });
-        *total = total.saturating_add(size);
+        let read = match crate::sftp_listing::read_dir(sftp, &remote_dir).await {
+            Ok(r) => r,
+            // Too big or too slow, the user hears about. A folder that can't
+            // be listed is left out, as one that isn't there. Unless the
+            // server said just that, walk_local still asks about its files.
+            Err(e @ SftpError::Limited(_)) => return Err(format!("{}: {}", remote_dir, e)),
+            Err(e) => {
+                if !is_no_such_file(&e) {
+                    tree.unread.insert(remote_dir.strip_prefix(&prefix).unwrap_or("").to_string());
+                }
+                continue;
+            }
+        };
+        let items: Vec<_> = read.collect();
+        entries = entries.saturating_add(items.len());
+        for entry in items {
+            let name = entry.file_name();
+            // Skip any entry whose name isn't a single plain component. A hostile
+            // SFTP server can return `../../x` or `..\x`; that rel path later feeds
+            // local_root.join(...) in the transfer pool and would escape the mirror
+            // root (zip-slip → arbitrary local write). See is_safe_dir_entry_name.
+            if !crate::is_safe_dir_entry_name(&name) { continue; }
+            let remote_path = format!("{}/{}", remote_dir.trim_end_matches('/'), name);
+            let rel = remote_path.strip_prefix(&prefix)
+                .unwrap_or(remote_path.as_str())
+                .to_string();
+            if rel.starts_with(".submarine-trash") {
+                tree.unread.insert(rel);
+                continue;
+            }
+            if settle && rel.ends_with(MIRROR_TEMP) {
+                let _ = sftp.remove_file(remote_path.as_str()).await;
+                continue;
+            }
+            if is_excluded(&rel, excludes) { continue; }
+            path_bytes = path_bytes.saturating_add(rel.len());
+            tree.found.insert(rel.clone(), entry.metadata());
+
+            if entry.file_type().is_dir() {
+                if is_excluded(&format!("{}/", rel), excludes) { continue; }
+                dirs.insert(rel);
+                path_bytes = path_bytes.saturating_add(remote_path.len());
+                stack.push((remote_path, depth + 1));
+                continue;
+            }
+            *scanned = scanned.saturating_add(1);
+        }
     }
     Ok(())
+}
+
+/// The files only the server has: walk_local already decided the fate of the
+/// others (`seen`), and what is left becomes a download-new entry.
+fn remote_only(tree: &RemoteTree, seen: &HashSet<String>, out: &mut Vec<DryRunEntry>, total: &mut u64) {
+    for (rel, attr) in &tree.found {
+        if attr.file_type().is_dir() || seen.contains(rel) { continue; }
+        let size = attr.size.unwrap_or(0);
+        out.push(DryRunEntry { path: rel.clone(), size, action: "download-new".into() });
+        *total = total.saturating_add(size);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,7 +1413,7 @@ async fn walk_remote(
 pub async fn start(
     app: AppHandle,
     session_id: String,
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    files: Files,
     map: MirrorMap,
     spec: MirrorSpec,
 ) -> Result<String, String> {
@@ -1259,6 +1441,7 @@ pub async fn start(
     };
     let status_arc = Arc::new(Mutex::new(status.clone()));
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    let (abort_tx, abort_rx) = oneshot::channel::<()>();
 
     emit_update(&app, &status).await;
     emit_log(&app, &session_id, &id, "info", "start",
@@ -1272,8 +1455,15 @@ pub async fn start(
     let id_t = id.clone();
     let spec_t = spec.clone();
     let join = tauri::async_runtime::spawn(async move {
-        let res = run_mirror(app_t.clone(), session_t.clone(), id_t.clone(), handle,
-                              spec_t, Arc::clone(&status_t), stop_rx).await;
+        let run = run_mirror(app_t.clone(), session_t.clone(), id_t.clone(), files,
+                             spec_t, Arc::clone(&status_t), stop_rx);
+        // A worker cut off by `stop` ends like one that stopped: the card and
+        // the map entry go the same way. `Ok` alone: a sender dropped unused
+        // is no signal.
+        let res = tokio::select! {
+            res = run => res,
+            Ok(()) = abort_rx => Ok(()),
+        };
         match res {
             Ok(()) => {
                 set_state(&app_t, &status_t, "stopped", None).await;
@@ -1290,24 +1480,40 @@ pub async fn start(
     map.lock().await.insert(id.clone(), ActiveMirror {
         status: Arc::clone(&status_arc),
         stop_tx: Mutex::new(Some(stop_tx)),
+        abort_tx: Mutex::new(Some(abort_tx)),
         join: Mutex::new(Some(join)),
     });
     Ok(id)
 }
 
+/// How long a worker gets to stop by itself. It hears the signal at its next
+/// step, and a step can be an upload to a server that stopped answering, while
+/// Stop, Disconnect and Lock all wait here.
+const STOP_WAIT: Duration = Duration::from_secs(2);
+
 pub async fn stop(map: &MirrorMap, id: &str) -> Result<(), String> {
+    stop_within(map, id, STOP_WAIT).await
+}
+
+async fn stop_within(map: &MirrorMap, id: &str, wait: Duration) -> Result<(), String> {
     // Snapshot the per-mirror handles under the outer map lock so we can
     // release the map and then await the stop / join without holding
     // multiple locks across the .await points.
-    let (stop_tx, join) = {
+    let (stop_tx, abort_tx, join) = {
         let guard = map.lock().await;
         let m = guard.get(id).ok_or_else(|| format!("no mirror {}", id))?;
         let stop_tx = m.stop_tx.lock().await.take();
+        let abort_tx = m.abort_tx.lock().await.take();
         let join = m.join.lock().await.take();
-        (stop_tx, join)
+        (stop_tx, abort_tx, join)
     };
     if let Some(tx) = stop_tx { let _ = tx.send(()); }
-    if let Some(j) = join { let _ = j.await; }
+    if let Some(mut j) = join {
+        if tokio::time::timeout(wait, &mut j).await.is_err() {
+            if let Some(tx) = abort_tx { let _ = tx.send(()); }
+            let _ = j.await;
+        }
+    }
     Ok(())
 }
 
@@ -1338,11 +1544,23 @@ pub async fn stop_all_for_session(map: &MirrorMap, session_id: &str) {
 // Worker: initial sync + watcher
 // ---------------------------------------------------------------------------
 
+/// `work` to its end, or `None` as soon as the stop signal comes.
+async fn unless_stopped<T>(
+    stop_rx: &mut oneshot::Receiver<()>,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = stop_rx => None,
+        done = work => Some(done),
+    }
+}
+
 async fn run_mirror(
     app: AppHandle,
     session_id: String,
     mirror_id: String,
-    handle: Arc<Mutex<russh::client::Handle<ClientHandler>>>,
+    files: Files,
     spec: MirrorSpec,
     status: Arc<Mutex<MirrorStatus>>,
     mut stop_rx: oneshot::Receiver<()>,
@@ -1351,7 +1569,8 @@ async fn run_mirror(
     // Shared so the parallel transfer pool can hold references concurrently.
     // SftpSession is internally async-safe — concurrent ops multiplex over
     // request IDs on the same channel.
-    let sftp = Arc::new(open_sftp(&handle).await?);
+    let sftp = files.open().await?;
+    let coarse_times = files.coarse_times();
 
     // --- Scan phase: walk both sides, decide what moves where -----------------
     // Separate from initial-sync state so a big tree doesn't look hung while
@@ -1365,11 +1584,22 @@ async fn run_mirror(
     let mut scanned = 0u32;
     let mut local_dirs = Vec::new();
     let mut remote_dirs = HashSet::new();
-    walk_local(&local_root, &local_root, &spec.remote, &spec.excludes,
-               &*sftp, &spec.conflict_resolution,
-               &mut work, &mut total, &mut seen, &mut scanned, &mut local_dirs).await?;
-    walk_remote(&*sftp, &local_root, &spec.remote, &spec.remote, &spec.excludes,
-                &mut work, &mut total, &seen, &mut scanned, &mut remote_dirs).await?;
+    // A big tree over a slow link takes hours, and Stop, Disconnect and Lock
+    // all wait for this worker.
+    let scan = async {
+        let mut tree = RemoteTree { coarse_times, ..RemoteTree::default() };
+        walk_remote(&*sftp, &spec.remote, &spec.remote, &spec.excludes,
+                    &mut tree, &mut scanned, &mut remote_dirs, true).await?;
+        walk_local(&local_root, &local_root, &spec.remote, &spec.excludes,
+                   &*sftp, &spec.conflict_resolution, &tree,
+                   &mut work, &mut total, &mut seen, &mut scanned, &mut local_dirs, true).await?;
+        remote_only(&tree, &seen, &mut work, &mut total);
+        Ok::<(), String>(())
+    };
+    match unless_stopped(&mut stop_rx, scan).await {
+        Some(scanned_all) => scanned_all?,
+        None => return Ok(()),
+    }
     // Folders, empty ones too, end up on both sides: one with files would
     // come with its first file anyway, an empty one only this way (the
     // watcher does the same for a folder made while it runs).
@@ -1799,6 +2029,18 @@ mod tests {
     }
     use Node::*;
 
+    /// The time of everything on the test server. Files are all empty.
+    const SERVER_TIME: u32 = 1_000_000_000;
+
+    fn attrs_of(node: Node) -> FileAttributes {
+        let mode = match node {
+            Dir => 0o040755,
+            File => 0o100644,
+            Link => 0o120777,
+        };
+        FileAttributes { permissions: Some(mode), size: Some(0), mtime: Some(SERVER_TIME), ..Default::default() }
+    }
+
     /// A server that answers the way OpenSSH on Linux does. MKDIR of a
     /// directory that is there, REMOVE of a directory and RMDIR of one that
     /// is not empty all get a bare "Failure".
@@ -1807,8 +2049,12 @@ mod tests {
         links: HashMap<String, String>,
         /// REMOVE of these is refused with "Permission denied".
         remove_denied: HashSet<String>,
+        /// Listing these is refused with "Permission denied".
+        list_denied: Arc<StdMutex<HashSet<String>>>,
         /// Every request, as "OP path", with " refused" added when it was.
         log: Arc<StdMutex<Vec<String>>>,
+        /// The folders open for listing, and whether they have been sent.
+        listing: HashMap<String, bool>,
     }
 
     fn ok(id: u32) -> Status {
@@ -1831,12 +2077,7 @@ mod tests {
             if follow && node == Some(Link) {
                 node = self.links.get(path).and_then(|target| self.node(target));
             }
-            let mode = match node.ok_or(StatusCode::NoSuchFile)? {
-                Dir => 0o040755,
-                File => 0o100644,
-                Link => 0o120777,
-            };
-            Ok(Attrs { id, attrs: FileAttributes { permissions: Some(mode), ..Default::default() } })
+            Ok(Attrs { id, attrs: attrs_of(node.ok_or(StatusCode::NoSuchFile)?) })
         }
     }
 
@@ -1853,6 +2094,36 @@ mod tests {
 
         async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, StatusCode> {
             self.answer("LSTAT", &path, self.attrs(id, &path, false))
+        }
+
+        async fn opendir(&mut self, id: u32, path: String) -> Result<russh_sftp::protocol::Handle, StatusCode> {
+            if self.node(&path) != Some(Dir) {
+                return Err(StatusCode::NoSuchFile);
+            }
+            if self.list_denied.lock().unwrap().contains(&path) {
+                return Err(StatusCode::PermissionDenied);
+            }
+            self.listing.insert(path.clone(), false);
+            Ok(russh_sftp::protocol::Handle { id, handle: path })
+        }
+
+        async fn readdir(&mut self, id: u32, handle: String) -> Result<russh_sftp::protocol::Name, StatusCode> {
+            let sent = self.listing.get_mut(&handle).ok_or(StatusCode::Failure)?;
+            if *sent {
+                return Err(StatusCode::Eof);
+            }
+            *sent = true;
+            let below = format!("{}/", handle);
+            let files = self.tree.lock().unwrap().iter().filter_map(|(path, node)| {
+                let name = path.strip_prefix(&below).filter(|name| !name.contains('/'))?;
+                Some(russh_sftp::protocol::File::new(name, attrs_of(*node)))
+            }).collect();
+            Ok(russh_sftp::protocol::Name { id, files })
+        }
+
+        async fn close(&mut self, id: u32, handle: String) -> Result<Status, StatusCode> {
+            self.listing.remove(&handle);
+            Ok(ok(id))
         }
 
         async fn mkdir(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, StatusCode> {
@@ -1903,6 +2174,7 @@ mod tests {
         sftp: SftpSession,
         tree: Arc<StdMutex<BTreeMap<String, Node>>>,
         log: Arc<StdMutex<Vec<String>>>,
+        list_denied: Arc<StdMutex<HashSet<String>>>,
     }
 
     impl Lab {
@@ -1911,16 +2183,19 @@ mod tests {
                 entries.iter().map(|(path, node)| (path.to_string(), *node)).collect::<BTreeMap<_, _>>(),
             ));
             let log = Arc::new(StdMutex::new(Vec::new()));
+            let list_denied = Arc::new(StdMutex::new(HashSet::new()));
             let (client, server) = tokio::io::duplex(64 * 1024);
             let handler = Server {
                 tree: Arc::clone(&tree),
                 links: links.iter().map(|(from, to)| (from.to_string(), to.to_string())).collect(),
                 remove_denied: remove_denied.iter().map(|path| path.to_string()).collect(),
+                list_denied: Arc::clone(&list_denied),
                 log: Arc::clone(&log),
+                listing: HashMap::new(),
             };
             russh_sftp::server::run(server, handler).await;
             let sftp = SftpSession::new(client).await.unwrap();
-            Lab { sftp, tree, log }
+            Lab { sftp, tree, log, list_denied }
         }
 
         fn left(&self) -> Vec<String> {
@@ -1929,6 +2204,11 @@ mod tests {
 
         fn log(&self) -> Vec<String> {
             self.log.lock().unwrap().clone()
+        }
+
+        /// What was asked about one path at a time.
+        fn stats(&self) -> Vec<String> {
+            self.log().into_iter().filter(|line| line.starts_with("STAT ")).collect()
         }
     }
 
@@ -1949,6 +2229,15 @@ mod tests {
         // The race did happen here: the server refused a MKDIR for a folder
         // another transfer had just made.
         assert!(lab.log().iter().any(|line| line == "MKDIR /srv/site refused"), "{:?}", lab.log());
+    }
+
+    // Each upload comes through here, once per level of the path as it was:
+    // at 100 ms and depth 5, half a second a file before anything moved.
+    #[tokio::test]
+    async fn a_folder_that_is_there_takes_one_question() {
+        let lab = Lab::new(&[("/srv", Dir), ("/srv/a", Dir), ("/srv/a/b", Dir), ("/srv/a/b/c", Dir)], &[], &[]).await;
+        sftp_mkdir_p(&lab.sftp, "/srv/a/b/c").await.unwrap();
+        assert_eq!(lab.stats(), ["STAT /srv/a/b/c"]);
     }
 
     #[tokio::test]
@@ -2168,5 +2457,380 @@ mod tests {
         let (ppk, n) = check("k", b"PuTTY-User-Key-File-3: ssh-ed25519\n");
         assert_eq!(shell_sync_inspect(&ppk, n).await, (false, true));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A server with one more folder in every folder, for ever.
+    #[derive(Default)]
+    struct Endless {
+        open: HashMap<String, bool>,
+        next: u32,
+    }
+
+    impl russh_sftp::server::Handler for Endless {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> StatusCode {
+            StatusCode::OpUnsupported
+        }
+
+        async fn opendir(&mut self, id: u32, _path: String) -> Result<russh_sftp::protocol::Handle, StatusCode> {
+            self.next += 1;
+            let handle = format!("h{}", self.next);
+            self.open.insert(handle.clone(), false);
+            Ok(russh_sftp::protocol::Handle { id, handle })
+        }
+
+        async fn readdir(&mut self, id: u32, handle: String) -> Result<russh_sftp::protocol::Name, StatusCode> {
+            let sent = self.open.get_mut(&handle).ok_or(StatusCode::Failure)?;
+            if *sent {
+                return Err(StatusCode::Eof);
+            }
+            *sent = true;
+            let attrs = FileAttributes { permissions: Some(0o040755), ..Default::default() };
+            Ok(russh_sftp::protocol::Name { id, files: vec![russh_sftp::protocol::File::new("d", attrs)] })
+        }
+
+        async fn close(&mut self, id: u32, handle: String) -> Result<Status, StatusCode> {
+            self.open.remove(&handle);
+            Ok(ok(id))
+        }
+    }
+
+    // Followed by recursion, this tree overflowed the worker's stack and took
+    // the whole app with it.
+    #[tokio::test]
+    async fn a_tree_without_end_is_refused_not_followed() {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        russh_sftp::server::run(server, Endless::default()).await;
+        let sftp = SftpSession::new(client).await.unwrap();
+        let (mut tree, mut scanned, mut dirs) = (RemoteTree::default(), 0, HashSet::new());
+        let walk = walk_remote(&sftp, "/srv", "/srv", &[], &mut tree, &mut scanned, &mut dirs, false);
+        let err = tokio::time::timeout(Duration::from_secs(30), walk).await.expect("the walk ended").unwrap_err();
+        assert_eq!(err, format!("the server's folders nest deeper than {} levels", crate::DOWNLOAD_DIR_MAX_DEPTH));
+        assert_eq!(dirs.len(), crate::DOWNLOAD_DIR_MAX_DEPTH + 1);
+    }
+
+    #[test]
+    fn a_remote_walk_ends_on_any_of_its_limits() {
+        assert!(walk_refused(crate::DOWNLOAD_DIR_MAX_DEPTH, WALK_MAX_ENTRIES, WALK_MAX_PATH_BYTES).is_none());
+        assert!(walk_refused(crate::DOWNLOAD_DIR_MAX_DEPTH + 1, 0, 0).is_some());
+        assert!(walk_refused(0, WALK_MAX_ENTRIES + 1, 0).is_some());
+        assert!(walk_refused(0, 0, WALK_MAX_PATH_BYTES + 1).is_some());
+    }
+
+    #[tokio::test]
+    async fn the_local_walk_finds_the_whole_tree() {
+        let root = std::env::temp_dir().join(format!("sub-mirror-walk-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
+        std::fs::write(root.join("top.txt"), b"1").unwrap();
+        std::fs::write(root.join("a/b/deep.txt"), b"22").unwrap();
+        std::fs::write(root.join("node_modules/x/skip.txt"), b"3").unwrap();
+        let lab = Lab::new(&[("/srv", Dir)], &[], &[]).await;
+        let (mut out, mut total, mut seen, mut scanned, mut dirs) = (Vec::new(), 0, HashSet::new(), 0, Vec::new());
+        walk_local(&root, &root, "/srv", &[], &lab.sftp, "local", &RemoteTree::default(), &mut out, &mut total, &mut seen, &mut scanned, &mut dirs, false)
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let mut found: Vec<(String, u64, String)> = out.into_iter().map(|e| (e.path, e.size, e.action)).collect();
+        found.sort();
+        let new = |path: &str, size: u64| (path.to_string(), size, "upload-new".to_string());
+        assert_eq!(found, [new("a/b/deep.txt", 2), new("top.txt", 1)]);
+        dirs.sort();
+        assert_eq!(dirs, ["a", "a/b", "empty"]);
+        assert_eq!((total, scanned, seen.len()), (3, 2, 2));
+    }
+
+    /// What both walks would move, as the preview (`settle` false) or a real
+    /// start sees it.
+    async fn scan(lab: &Lab, root: &Path, settle: bool) -> Vec<(String, String)> {
+        scan_of(lab, root, "/srv", settle).await
+    }
+
+    async fn scan_of(lab: &Lab, root: &Path, remote: &str, settle: bool) -> Vec<(String, String)> {
+        let (mut out, mut total, mut seen, mut scanned, mut tree) = (Vec::new(), 0, HashSet::new(), 0, RemoteTree::default());
+        walk_remote(&lab.sftp, remote, remote, &[], &mut tree, &mut scanned, &mut HashSet::new(), settle)
+            .await
+            .unwrap();
+        walk_local(root, root, remote, &[], &lab.sftp, "local", &tree, &mut out, &mut total, &mut seen, &mut scanned, &mut Vec::new(), settle)
+            .await
+            .unwrap();
+        remote_only(&tree, &seen, &mut out, &mut total);
+        let mut found: Vec<(String, String)> = out.into_iter().map(|e| (e.path, e.action)).collect();
+        found.sort();
+        found
+    }
+
+    /// A folder for a test, removed by the test.
+    fn scan_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("sub-mirror-{}-{}-{}", name, std::process::id(), now_ms()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// A local file that compares as the same as the test server's copy.
+    fn as_on_the_server(root: &Path, rel: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"").unwrap();
+        filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(SERVER_TIME as i64, 0)).unwrap();
+    }
+
+    fn moved(path: &str, action: &str) -> (String, String) {
+        (path.to_string(), action.to_string())
+    }
+
+    // One round trip per file, in a row, before anything moved. A folder's
+    // listing has them all; a link is the one thing it can't speak for.
+    #[tokio::test]
+    async fn a_scan_asks_the_server_only_about_links() {
+        let root = scan_root("links");
+        for rel in ["a.txt", "sub/b.txt", "sub/deep/c.txt", "link.txt"] {
+            as_on_the_server(&root, rel);
+        }
+        std::fs::write(root.join("mine.txt"), b"1").unwrap();
+        let lab = Lab::new(
+            &[
+                ("/srv", Dir),
+                ("/srv/a.txt", File),
+                ("/srv/sub", Dir),
+                ("/srv/sub/b.txt", File),
+                ("/srv/sub/deep", Dir),
+                ("/srv/sub/deep/c.txt", File),
+                ("/srv/link.txt", Link),
+                ("/srv/theirs.txt", File),
+            ],
+            &[("/srv/link.txt", "/srv/a.txt")],
+            &[],
+        )
+        .await;
+        let found = scan(&lab, &root, false).await;
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(found, [moved("mine.txt", "upload-new"), moved("theirs.txt", "download-new")]);
+        assert_eq!(lab.stats(), ["STAT /srv/link.txt"]);
+    }
+
+    // Through a link to a folder on the server there are files the walk
+    // doesn't see: not asked about, they would all look new and go up again.
+    #[tokio::test]
+    async fn what_is_behind_a_link_on_the_server_is_asked_about() {
+        let root = scan_root("behind");
+        as_on_the_server(&root, "data/x.txt");
+        as_on_the_server(&root, "data/deeper/y.txt");
+        std::fs::write(root.join("data/mine.txt"), b"1").unwrap();
+        let lab = Lab::new(
+            &[
+                ("/srv", Dir),
+                ("/srv/data", Link),
+                ("/srv/data/x.txt", File),
+                ("/srv/data/deeper", Dir),
+                ("/srv/data/deeper/y.txt", File),
+            ],
+            &[],
+            &[],
+        )
+        .await;
+        let found = scan(&lab, &root, false).await;
+        std::fs::remove_dir_all(&root).unwrap();
+        // (The link itself counts as a file only the server has, as ever.)
+        assert_eq!(found, [moved("data", "download-new"), moved("data/mine.txt", "upload-new")]);
+    }
+
+    // It may hold copies a look at each one still finds, and calling those new
+    // would overwrite them.
+    #[tokio::test]
+    async fn a_folder_that_will_not_list_is_compared_file_by_file() {
+        let root = scan_root("closed");
+        as_on_the_server(&root, "closed/x.txt");
+        let lab = Lab::new(&[("/srv", Dir), ("/srv/closed", Dir), ("/srv/closed/x.txt", File)], &[], &[]).await;
+        lab.list_denied.lock().unwrap().insert("/srv/closed".to_string());
+        let found = scan(&lab, &root, false).await;
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(found.is_empty(), "{found:?}");
+        assert_eq!(lab.stats(), ["STAT /srv/closed/x.txt"]);
+    }
+
+    #[tokio::test]
+    async fn a_root_that_will_not_list_is_compared_file_by_file_too() {
+        let root = scan_root("closedroot");
+        as_on_the_server(&root, "x.txt");
+        let lab = Lab::new(&[("/srv", Dir), ("/srv/x.txt", File)], &[], &[]).await;
+        lab.list_denied.lock().unwrap().insert("/srv".to_string());
+        let found = scan(&lab, &root, false).await;
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    // A mirror into a new folder: all of it goes up, and nothing needs asking.
+    #[tokio::test]
+    async fn a_remote_folder_that_is_not_there_takes_no_questions() {
+        let root = scan_root("fresh");
+        std::fs::write(root.join("a.txt"), b"1").unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/b.txt"), b"2").unwrap();
+        let lab = Lab::new(&[("/srv", Dir)], &[], &[]).await;
+        let found = scan_of(&lab, &root, "/srv/fresh", false).await;
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(found, [moved("a.txt", "upload-new"), moved("sub/b.txt", "upload-new")]);
+        assert!(lab.stats().is_empty(), "{:?}", lab.stats());
+    }
+
+    // The walk of the server leaves the trash out: a local folder of that name
+    // is still compared with what is there.
+    #[tokio::test]
+    async fn what_the_remote_walk_leaves_out_is_still_compared() {
+        let root = scan_root("trash");
+        as_on_the_server(&root, ".submarine-trash/1/old.txt");
+        let lab = Lab::new(&[("/srv", Dir), ("/srv/.submarine-trash", Dir), ("/srv/.submarine-trash/1", Dir), ("/srv/.submarine-trash/1/old.txt", File)], &[], &[]).await;
+        let found = scan(&lab, &root, false).await;
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_listing_speaks_for_a_plain_file_with_a_size_and_a_time() {
+        let plain = FileAttributes { permissions: Some(0o100644), size: Some(1), mtime: Some(2), ..Default::default() };
+        assert!(RemoteTree::describes_a_file(&plain));
+        let without = |change: fn(&mut FileAttributes)| {
+            let mut attr = plain.clone();
+            change(&mut attr);
+            RemoteTree::describes_a_file(&attr)
+        };
+        assert!(!without(|a| a.size = None));
+        assert!(!without(|a| a.mtime = None));
+        assert!(!without(|a| a.permissions = None), "a server that sends no type");
+        assert!(!without(|a| a.permissions = Some(0o120777)), "a link");
+        assert!(!without(|a| a.permissions = Some(0o040755)), "a folder");
+    }
+
+    // What a local folder may meet on the server without the walk having seen
+    // what is in it.
+    #[test]
+    fn what_a_remote_entry_may_hide() {
+        let mut tree = RemoteTree::default();
+        let with_mode = |mode| FileAttributes { permissions: mode, ..Default::default() };
+        tree.found.insert("dir".into(), with_mode(Some(0o040755)));
+        tree.found.insert("file".into(), with_mode(Some(0o100644)));
+        tree.found.insert("link".into(), with_mode(Some(0o120777)));
+        tree.found.insert("untyped".into(), with_mode(None));
+        tree.unread.insert("closed".into());
+        for rel in ["link", "untyped", "closed"] {
+            assert!(tree.hides(rel), "{rel}");
+        }
+        for rel in ["dir", "file", "not-there"] {
+            assert!(!tree.hides(rel), "{rel}");
+        }
+    }
+
+    // Stop can cut a transfer in two. What that leaves must not come back as a
+    // file of the user's, on either side, and a real start clears it away.
+    #[tokio::test]
+    async fn what_a_cut_transfer_left_never_moves_and_is_cleared_away() {
+        assert!(is_excluded("a/b.txt.submarine-tmp", &[]));
+        let root = std::env::temp_dir().join(format!("sub-mirror-left-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("mine.txt"), b"1").unwrap();
+        let cut_down = root.join("cut.txt.submarine-tmp");
+        std::fs::write(&cut_down, b"part").unwrap();
+        let cut_up = "/srv/up.txt.submarine-tmp";
+        let lab = Lab::new(&[("/srv", Dir), ("/srv/theirs.txt", File), (cut_up, File)], &[], &[]).await;
+        let moved = [
+            ("mine.txt".to_string(), "upload-new".to_string()),
+            ("theirs.txt".to_string(), "download-new".to_string()),
+        ];
+        // A preview changes nothing.
+        assert_eq!(scan(&lab, &root, false).await, moved);
+        assert!(cut_down.exists());
+        assert!(lab.left().iter().any(|path| path == cut_up));
+        assert_eq!(scan(&lab, &root, true).await, moved);
+        let gone = !cut_down.exists();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(gone, "the local leftover");
+        assert_eq!(lab.left(), ["/srv", "/srv/theirs.txt"]);
+    }
+
+    #[tokio::test]
+    async fn a_scan_hears_the_stop_signal() {
+        let (tx, mut rx) = oneshot::channel();
+        tx.send(()).unwrap();
+        assert_eq!(unless_stopped(&mut rx, std::future::pending::<u32>()).await, None);
+        let (_tx, mut rx) = oneshot::channel::<()>();
+        assert_eq!(unless_stopped(&mut rx, async { 7 }).await, Some(7));
+    }
+
+    /// A mirror whose worker is `work`, in the map as `start` would put it.
+    async fn running(work: impl std::future::Future<Output = ()> + Send + 'static) -> (MirrorMap, oneshot::Receiver<()>, oneshot::Receiver<()>) {
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let (abort_tx, abort_rx) = oneshot::channel();
+        let map: MirrorMap = Arc::new(Mutex::new(HashMap::new()));
+        let status = MirrorStatus {
+            id: "m".into(),
+            session_id: "s".into(),
+            local: String::new(),
+            remote: String::new(),
+            state: "scanning".into(),
+            queue_depth: 0,
+            uploaded: 0,
+            downloaded: 0,
+            deleted: 0,
+            scanned: 0,
+            transfer_total: 0,
+            transfer_done: 0,
+            last_event_ms: 0,
+            error: None,
+        };
+        map.lock().await.insert("m".into(), ActiveMirror {
+            status: Arc::new(Mutex::new(status)),
+            stop_tx: Mutex::new(Some(stop_tx)),
+            abort_tx: Mutex::new(Some(abort_tx)),
+            join: Mutex::new(Some(tauri::async_runtime::spawn(work))),
+        });
+        (map, stop_rx, abort_rx)
+    }
+
+    // A worker stuck on a server that stopped answering must not hold up Stop,
+    // Disconnect or Lock: it is cut off once its time is up.
+    #[tokio::test]
+    async fn a_worker_that_does_not_stop_is_cut_off() {
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        let (map, _stop_rx, abort_rx) = running(async move {
+            let _ = done_rx.await;
+        })
+        .await;
+        // What `start` does with the signal: here it ends the "worker".
+        tokio::spawn(async move {
+            if abort_rx.await.is_ok() {
+                let _ = done_tx.send(());
+            }
+        });
+        let stopped = stop_within(&map, "m", Duration::from_millis(50));
+        tokio::time::timeout(Duration::from_secs(10), stopped).await.expect("didn't hang").unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_stops_in_time_is_left_to_finish() {
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        let (map, stop_rx, mut abort_rx) = running(async move {
+            let _ = done_rx.await;
+        })
+        .await;
+        tokio::spawn(async move {
+            if stop_rx.await.is_ok() {
+                let _ = done_tx.send(());
+            }
+        });
+        stop_within(&map, "m", Duration::from_secs(10)).await.unwrap();
+        assert!(matches!(abort_rx.try_recv(), Err(oneshot::error::TryRecvError::Closed)), "never told to abort");
+    }
+
+    #[tokio::test]
+    async fn a_mirror_does_not_write_where_the_path_policy_says_no() {
+        let lab = Lab::new(&[("/srv", Dir), ("/srv/x.desktop", File)], &[], &[]).await;
+        let root = std::env::temp_dir().join(format!("sub-mirror-policy-{}", std::process::id()));
+        let local = root.join(".config").join("autostart").join("x.desktop");
+        let err = sftp_download_file(&lab.sftp, "/srv/x.desktop", &local, None).await.unwrap_err();
+        assert!(err.contains("auto-run"), "{}", err);
+        assert!(!root.exists());
     }
 }

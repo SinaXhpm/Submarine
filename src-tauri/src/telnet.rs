@@ -15,7 +15,9 @@
 //! 23 nothing is asked first (a mail or web server would take the requests
 //! for garbage), as the classic telnet client does: it only answers.
 
-use crate::ssh_manager::{emit_terminal_batch, ClientHandler, PtySize, TerminalCommand};
+use crate::ssh_manager::{
+    emit_terminal_batch, page_end, ClientHandler, Outflow, PageDrawn, PtySize, TerminalCommand,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -359,7 +361,7 @@ pub fn address(host: &str, port: u16) -> String {
 
 /// Straight to the server, as the telnet client would.
 pub async fn connect_direct(host: &str, port: u16) -> Result<Box<dyn Duplex>, String> {
-    let connect = tokio::net::TcpStream::connect((host.trim(), port));
+    let connect = crate::dial::connect((host.trim(), port));
     let sock = match tokio::time::timeout(std::time::Duration::from_secs(15), connect).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => return Err(format!("Couldn't reach {}: {e}", address(host, port))),
@@ -396,12 +398,15 @@ pub async fn run_pump(
     app: AppHandle,
     session_id: String,
     terminal_id: String,
+    page: Arc<PageDrawn>,
     conn: Conn,
     mut rx: mpsc::Receiver<TerminalCommand>,
     mut resize_rx: watch::Receiver<PtySize>,
 ) {
     let Conn { stream, route, telnet_port } = conn;
     let size = *resize_rx.borrow();
+    // The terminal's size, for the output filter below.
+    let sizes = resize_rx.clone();
     let telnet = Arc::new(std::sync::Mutex::new(Telnet::new(size.cols, size.rows)));
     let (mut read_half, mut write_half) = tokio::io::split(stream);
     // Answers the reader owes the server, and text typed here that the
@@ -414,6 +419,7 @@ pub async fn run_pump(
 
     let first = if telnet_port { telnet.lock().map(|mut t| t.start()).unwrap_or_default() } else { Vec::new() };
     let writer_telnet = Arc::clone(&telnet);
+    let writer_page = Arc::clone(&page);
     let writer = tokio::spawn(async move {
         let mut ok = first.is_empty() || write_half.write_all(&first).await.is_ok();
         let mut closed_here = false;
@@ -421,6 +427,7 @@ pub async fn run_pump(
             tokio::select! {
                 cmd = rx.recv() => match cmd {
                     Some(TerminalCommand::Data(keys)) => {
+                        writer_page.keys(&keys);
                         let (mut net, mut echo) = (Vec::new(), Vec::new());
                         if let Ok(t) = writer_telnet.lock() {
                             t.send(&keys, &mut net, &mut echo);
@@ -466,6 +473,8 @@ pub async fn run_pump(
     // Numbers in control sequences are cut down, as in an SSH terminal (term_filter.rs).
     let mut limiter = crate::term_filter::CsiLimiter::default();
     let mut buf = vec![0u8; 16 * 1024];
+    let mut flow = Outflow::default();
+    let mut flush = |b: &mut Vec<u8>| emit_terminal_batch(&app, &terminal_id, b);
     // Whether the server (or the route) ended it, rather than the tab.
     let server_ended = loop {
         let was_empty = out.is_empty();
@@ -478,6 +487,8 @@ pub async fn run_pump(
                     if let Ok(mut t) = telnet.lock() {
                         t.receive(&buf[..n], &mut text, &mut reply);
                     }
+                    let size = *sizes.borrow();
+                    limiter.set_size(size.cols, size.rows);
                     limiter.filter(&text, &mut out);
                     // A server that floods requests past the queue loses the
                     // answers; one that negotiates gets each.
@@ -488,21 +499,40 @@ pub async fn run_pump(
             },
             Some(echo) = echo_rx.recv() => out.extend_from_slice(&echo),
             _ = &mut flush_timer => {
-                emit_terminal_batch(&app, &terminal_id, &mut out);
-                flush_timer.as_mut().reset(park());
+                let next = if flow.send(&mut out, &page, &mut flush) { park() } else { flow.wait_until() };
+                flush_timer.as_mut().reset(next);
+                continue;
+            }
+            // The page drew some, or keys were typed.
+            _ = page.news.notified() => {
+                if page.take_typed() {
+                    flow.typed(&page);
+                }
+                if page.take_interrupt() {
+                    flow.interrupted(&mut out, &page);
+                }
+                if flow.holds() {
+                    let next = if flow.send(&mut out, &page, &mut flush) { park() } else { flow.wait_until() };
+                    flush_timer.as_mut().reset(next);
+                }
                 continue;
             }
             failed = &mut stop_rx => break failed.unwrap_or(false),
         }
         if out.len() >= FLUSH_CAP {
-            emit_terminal_batch(&app, &terminal_id, &mut out);
-            flush_timer.as_mut().reset(park());
+            let next = if flow.send(&mut out, &page, &mut flush) { park() } else { flow.wait_until() };
+            flush_timer.as_mut().reset(next);
         } else if was_empty && !out.is_empty() {
             flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_WINDOW);
         }
     };
-    emit_terminal_batch(&app, &terminal_id, &mut out);
+    flow.finish(&mut out, &page, &mut flush);
+    page_end(&terminal_id, &page);
     writer.abort();
+    // A Reconnect on a live tab: the terminal is the new pump's now, and open.
+    if page.superseded() {
+        return;
+    }
     let _ = app.emit(&format!("terminal-closed-{terminal_id}"), serde_json::json!({}));
     if server_ended {
         let reason = if route.iter().any(|h| h.is_closed()) {

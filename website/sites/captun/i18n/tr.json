@@ -1,0 +1,426 @@
+{
+  "meta": {
+    "name": "Türkçe",
+    "translationNote": ""
+  },
+  "nav": {
+    "skip": "İçeriğe geç",
+    "features": "Özellikler",
+    "how": "Nasıl çalışır",
+    "platforms": "Platformlar",
+    "faq": "Sorular",
+    "get": "Captun'u edinin",
+    "github": "GitHub'daki kaynak kodu",
+    "language": "Dil",
+    "home": "Captun ana sayfası",
+    "menu": "Menü"
+  },
+  "common": {
+    "tagline": "Dümende bir kaptanla Wi-Fi hotspot ve internet paylaşımı",
+    "updated": "Son güncelleme: {date}",
+    "translationNote": "Bu sayfa bir çeviridir. İngilizce sürümden farklı olduğu durumlarda geçerli olan İngilizce sürümdür.",
+    "englishVersion": "İngilizce sürüm",
+    "openFull": "Görseli tam boyutta açın",
+    "close": "Kapat",
+    "onThisPage": "Bu sayfada"
+  },
+  "footer": {
+    "product": "Captun",
+    "project": "Proje",
+    "more": "Diğer uygulamalar",
+    "issues": "Sorun bildirin",
+    "author": "sinaxhpm.com",
+    "sister": "Aynı geliştiriciden: tek bir ücretsiz uygulamada 20 ağ aracı",
+    "license": "Kaynak kodu GitHub'da.",
+    "madeWith": "Rust ve Tauri ile yapıldı.",
+    "noTracking": "Bu web sitesi çerez, analitik ya da üçüncü taraf betik kullanmaz."
+  },
+  "home": {
+    "title": "Captun – Wi-Fi ile PC'den internet, VPN veya proxy paylaşın",
+    "description": "Windows ya da Linux PC'nizi akıllı hotspot'a çevirin: İnterneti, VPN'i ya da proxy'yi Wi-Fi, kablo veya USB ile paylaşın, her cihazın trafiğine yön verin.",
+    "hero": {
+      "pillTag": "Geliştiriliyor",
+      "pill": "Henüz sürüm yok: GitHub'daki kaynak kodundan derleyin",
+      "title": "İnternetinizi paylaşın. <em>Her cihazın rotasını siz belirleyin.</em>",
+      "lede": "Captun, bilgisayarınızı akıllı bir hotspot'a dönüştürür. Telefonlar, televizyonlar ve oyun konsolları Wi-Fi, kablo ya da USB ile bağlanır; her birinin trafiğinin nereye gideceğine siz karar verirsiniz: doğrudan, bir VPN üzerinden ya da bir proxy üzerinden.",
+      "source": "GitHub'daki kaynak kodu",
+      "how": "Nasıl çalışır",
+      "trust": [
+        "Hesap yok",
+        "Telefonda root gerekmez",
+        "Kendi VPN'iniz ya da proxy'niz",
+        "Kurallar, DNS ve sınırlar"
+      ],
+      "macos": "macOS (üzerinde çalışılıyor)",
+      "chips": [
+        "VPN'iniz her cihaz için",
+        "USB ile telefona internet",
+        "Reklam ve izleyici engelleme"
+      ],
+      "imageAlt": "Windows'ta Captun: Wi-Fi üzerinden paylaşım; üç cihaz bağlı, biri izin bekliyor"
+    },
+    "instead": {
+      "title": "Şunların yerine tek bir uygulama",
+      "items": [
+        "Windows'un Mobil etkin noktası",
+        "her cihazda bir VPN uygulaması",
+        "ters tethering betikleri",
+        "ayrı bir DNS reklam engelleyici",
+        "özel firmware yüklü bir router"
+      ]
+    },
+    "uses": {
+      "kicker": "Neler yapabilirsiniz",
+      "title": "Tek bilgisayar, <em>her cihaz istediğiniz gibi internette</em>",
+      "lede": "Captun adı, captain (“kaptan”) ve TUN sözcüklerinden gelir. Captun ile bilgisayarınıza bağlanan her şeyin dümenine siz geçersiniz.",
+      "items": [
+        {
+          "id": "vpn",
+          "title": "VPN çalıştıramayan cihazlarla VPN paylaşın",
+          "text": "Bilgisayarınızı bir kez VPN'e ya da proxy'ye bağlayın; akıllı televizyonunuz, oyun konsolunuz ya da bir misafirin telefonu hotspot üzerinden bu bağlantıyı kullanır."
+        },
+        {
+          "id": "usb",
+          "title": "USB ile bir telefona internet verin",
+          "text": "Mobil veri yok, Wi-Fi yok mu? Android telefonu bilgisayarınıza takın, telefon bilgisayar üzerinden internete çıkar; telefonda root ya da uygulama gerekmez."
+        },
+        {
+          "id": "rules",
+          "title": "Kendi kurallarınızla bir hotspot yönetin",
+          "text": "Tüm cihazlarda reklamları ve izleyicileri engelleyin, bazı web sitelerine erişimi kapatın ya da yalnızca belirli siteleri bir proxy üzerinden gönderin."
+        },
+        {
+          "id": "watch",
+          "title": "Her cihazı göz önünde tutun",
+          "text": "Kimin bağlı olduğunu ve her birinin ne kadar kullandığını görün, yeni cihazları internete çıkmadan önce onaylayın, birini engelleyin ya da hız sınırı koyun."
+        }
+      ]
+    },
+    "how": {
+      "kicker": "Nasıl çalışır",
+      "title": "Cihazlar girer, <em>çıkış rotası sizin</em>",
+      "lede": "Yönetici haklarına sahip küçük bir hizmet; hotspot'u, bir DNS sunucusunu ve her cihazın trafiğinin hangi yoldan gideceğine bağlantı bağlantı karar veren bir paket motorunu çalıştırır. Masaüstü uygulaması olup biteni gösterir ve ayarları değiştirir.",
+      "devicesTitle": "Cihazlarınız",
+      "devices": [
+        {
+          "id": "phone",
+          "name": "Telefonlar"
+        },
+        {
+          "id": "tv",
+          "name": "Televizyonlar ve konsollar"
+        },
+        {
+          "id": "laptop",
+          "name": "Dizüstü bilgisayarlar"
+        },
+        {
+          "id": "tablet",
+          "name": "Tabletler"
+        }
+      ],
+      "links": "Wi-Fi hotspot, kablo ya da USB",
+      "hub": "Kurallar, DNS, sınırlar",
+      "choose": "cihaza ya da kurala göre",
+      "outTitle": "Çıkış",
+      "outbounds": [
+        {
+          "id": "direct",
+          "name": "Doğrudan",
+          "detail": "herhangi bir ağ bağdaştırıcısı: Ethernet, Wi-Fi, bir VPN uygulamasının bağdaştırıcısı"
+        },
+        {
+          "id": "vpn",
+          "name": "VPN linki",
+          "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2"
+        },
+        {
+          "id": "proxy",
+          "name": "Proxy",
+          "detail": "SOCKS5, HTTP, HTTPS, zincirleme de"
+        }
+      ],
+      "caption": "Telefonlar, televizyonlar, konsollar, dizüstü bilgisayarlar ve tabletler Captun'a Wi-Fi hotspot, kablo ya da USB ile bağlanır. Captun kurallarınızı, DNS ayarlarınızı ve sınırlarınızı uygular; her cihazın trafiğini doğrudan, bir VPN linki üzerinden ya da bir proxy üzerinden dışarı gönderir.",
+      "steps": [
+        {
+          "title": "Paylaşımı başlatın",
+          "text": "Dümene basın: kendi ağ adınız ve parolanızla bir Wi-Fi hotspot ya da Android telefona USB ile paylaşım."
+        },
+        {
+          "title": "Çıkışlarınızı ekleyin",
+          "text": "Bilgisayarınızın ağ bağdaştırıcıları zaten orada. Bir proxy ekleyin ya da bir VPN linki yapıştırın."
+        },
+        {
+          "title": "Rotayı belirleyin",
+          "text": "Her cihaz ya da grup için çıkışı seçin; kurallar, DNS engelleme, hız sınırları ve veri kotaları ekleyin."
+        }
+      ],
+      "note": "Windows'ta motor, cihazların trafiğini sürücüsü Microsoft tarafından imzalanmış olan WinDivert ile yakalar; Linux'ta bir TUN ağ bağdaştırıcısı ve politika tabanlı yönlendirme (policy routing) kullanır."
+    },
+    "share": {
+      "kicker": "Bağlanın",
+      "title": "Wi-Fi, kablo <em>ya da USB</em>",
+      "lede": "Bir cihazın bilgisayarınız üzerinden internete çıkmasının üç yolu.",
+      "alt": "“Captun” adıyla paylaşıma hazır Captun; Wi-Fi hotspot ya da telefona USB seçeneğiyle",
+      "points": [
+        {
+          "id": "wifi",
+          "title": "Wi-Fi hotspot",
+          "text": "Kendi ağ adınız ve parolanız, kaç cihazın katılabileceğine dair bir sınır ve siz izin verene kadar bekleyen yeni cihazlar."
+        },
+        {
+          "id": "cable",
+          "title": "Kablo ile paylaşım",
+          "text": "Ağ kablosuyla ya da USB ağ bağdaştırıcısıyla bağlı cihazlar internetinizi kullanır; adresleri otomatik olarak dağıtılır (DHCP)."
+        },
+        {
+          "id": "usb",
+          "title": "Android telefona USB",
+          "text": "Telefonda root ya da uygulama olmadan ters tethering: Captun'da adb yerleşik olarak bulunur. Captun telefona yalnızca internet verir, telefonun internetini asla kullanmaz. Web ve uygulamalar çalışır; oyunlar ve aramalar henüz çalışmaz."
+        },
+        {
+          "id": "reach",
+          "title": "Cihazlar nerelere erişebilir",
+          "text": "Onları bu bilgisayardan, birbirlerinden ya da ev ağınızdan uzak tutun."
+        }
+      ]
+    },
+    "features": {
+      "kicker": "Daha yakından",
+      "title": "Her cihazın <em>kendi çıkışı</em>",
+      "items": [
+        {
+          "id": "devices",
+          "title": "Tüm cihazlar tek listede",
+          "text": "Kimin bağlı olduğunu canlı hızlarla görün ve yeni bir cihaz internete çıkmadan önce müdahale edin.",
+          "points": [
+            "Tek tıkla yeni bir cihaza izin verin ya da birini engelleyin.",
+            "Her cihaz için anlık indirme ve yükleme hızı.",
+            "Her cihaz için kendi çıkışı, hız sınırı ve veri kotası.",
+            "Bir cihazı adına ya da adresine göre bulun."
+          ],
+          "alt": "Devices sayfası: izin bekleyen bir cihaz, veri kotasına yaklaşan bir telefon ve hız sınırı olan bir tablet"
+        },
+        {
+          "id": "outbound",
+          "title": "Doğrudan, VPN ya da proxy",
+          "badge": "Deneysel",
+          "text": "Her cihaz ya da grup sizin seçtiğiniz yoldan çıkar. Kullanmak istediğiniz çıkışları açın.",
+          "points": [
+            "Bilgisayarınızın herhangi bir ağ bağdaştırıcısı: Ethernet, Wi-Fi ya da bir VPN uygulamasının bağdaştırıcısı.",
+            "SOCKS5, HTTP ve HTTPS proxy'leri, zincirleme de.",
+            "Yapıştırdığınız VPN linkleri: VLESS (REALITY ile), VMess, Trojan, Shadowsocks ve Hysteria2; bunları birlikte gelen Xray-core çalıştırır.",
+            "Bir çıkış çalışmayı bırakırsa Captun, trafiği başka bir yoldan göndermek yerine interneti kesebilir."
+          ],
+          "alt": "Outbound sayfası: doğrudan çıkış, bir VLESS linki, bir SOCKS5 proxy ve engelleyen bir çıkış; bilgisayarın Wi-Fi ve Ethernet bağdaştırıcılarıyla birlikte"
+        },
+        {
+          "id": "rules",
+          "title": "Rotayı çizen kurallar",
+          "badge": "Deneysel",
+          "text": "Bir siteyi VPN üzerinden gönderin, reklamları engelleyin ya da çocukların tabletini yatma saatinde kapatın. Uyan ilk kural karar verir.",
+          "points": [
+            "Cihaza, site adına, adres aralığına, porta, protokole ve günün saatine göre.",
+            "Reklam engelleme ve popüler uygulamalar için hazır kurallar.",
+            "Yalnızca <em>Update lists</em> düğmesine bastığınızda güncellenen çevrimiçi engelleme listeleri.",
+            "Bir siteye hangi kuralın uygulandığını gösteren bir test aracı."
+          ],
+          "alt": "Rules sayfası: reklamları engelleyen bir kural, bir yayın sitesini VPN üzerinden gönderen bir kural ve bir tablet için yatma saati kuralı"
+        },
+        {
+          "id": "dns",
+          "title": "Reklam engellemeli kendi DNS sunucusu",
+          "text": "Captun, cihazlarınızın web sitesi sorgularını kendisi yanıtlar; böylece engelleme ve kendi yanıtlarınız hepsinde çalışır.",
+          "points": [
+            "Önbellek, engelleme listeleri ve seçtiğiniz adlar için özel yanıtlar.",
+            "Her cihaz için UDP, TCP, DNS over TLS ya da DNS over HTTPS üzerinden DNS sunucuları.",
+            "Cihazları onu kullanmaya zorlayan bir seçenek; böylece engellenen siteleri atlatamazlar.",
+            "Açarsanız canlı bir sorgu günlüğü."
+          ],
+          "alt": "Captun'un DNS ayarları: cihazların sorgularını yanıtlama, varsayılan DNS sunucusu ve engellenen sitelerin nasıl göründüğü"
+        },
+        {
+          "id": "usage",
+          "title": "Her cihaz ne kadar kullandı",
+          "badge": "Deneysel",
+          "text": "Saatlik ya da günlük, tek bir cihaz ya da hepsi için, grafik ya da tablo olarak.",
+          "points": [
+            "Günlük, haftalık ya da aylık veri kotaları: örneğin günde 2 GB, sonrasında hız düşürülür.",
+            "Her cihaz, her grup ya da tüm cihazların toplamı için hız sınırları.",
+            "İndirme ve yükleme ayrı ayrı sayılır."
+          ],
+          "alt": "Usage sayfası: tüm cihazların bugün saat saat ne kadar indirip yüklediği"
+        }
+      ],
+      "note": "<em>Deneysel</em>: Cihaz başına çıkışlar, kurallar, hız sınırları, veri kotaları, canlı hızlar ve kullanım geçmişi için Captun'un kendi yönlendirme motoru olan “Route devices through Captun” gerekir; bu motor hâlâ deneyseldir."
+    },
+    "next": {
+      "kicker": "Bir sonraki sürümde",
+      "title": "Geliştirildi, <em>şimdi test ediliyor</em>",
+      "lede": "Bu özellikler Captun'un kodunda zaten var ve testlerini geçiyor. Gerçek bilgisayarlarda denendikten sonra bir sonraki sürümle gelecekler.",
+      "routing": "Yönlendirme motoru gerekir",
+      "items": [
+        {
+          "id": "qr",
+          "title": "QR koduyla bağlanın",
+          "text": "Telefonlar bir kodu tarayarak hotspot'a bağlanır, hiçbir şey yazmaya gerek kalmaz.",
+          "routing": false,
+          "alt": "Captun, “Captun” ağına bağlanmak için bir QR kodu, ağın adı ve parolasıyla birlikte gösteriyor"
+        },
+        {
+          "id": "kinds",
+          "title": "Her cihazı tanıyın",
+          "text": "Her cihazın üreticisi ve türü (telefon, dizüstü bilgisayar, televizyon), herkese açık donanım adresi önekleri listesine göre.",
+          "routing": false,
+          "alt": "Devices sayfası: bir telefon, bir tablet ve bir televizyon, üreticileri ve daha sonraki bir saate kadar duraklatılmış bir televizyon"
+        },
+        {
+          "id": "pause",
+          "title": "Bir cihazı duraklatın ya da internet saatlerini belirleyin",
+          "text": "15 dakika, bir saat ya da sabaha kadar internetsiz kalsın; ya da internet belirli saatlerde açık, geceleri kapalı olsun.",
+          "routing": true,
+          "alt": "Bir cihazın duraklatma menüsü: 15 dakika, 1 saat ya da saat 7:00'ye kadar"
+        },
+        {
+          "id": "backup",
+          "title": "Yedek bir çıkış",
+          "text": "Her çıkış 30 saniyede bir kontrol edilir. Bir çıkışa yedek atayın; çıkış çalışmadığı sürece cihazları yedeğe geçer.",
+          "routing": true,
+          "alt": "Outbound sayfası: çalışmayan bir VPN (bu yüzden cihazları Direct üzerinden çıkıyor) ve her çıkışın yanıt verme süresi"
+        },
+        {
+          "id": "csv",
+          "title": "Kullanım verileri elektronik tabloda",
+          "text": "Her cihazın ne kadar kullandığını bir CSV dosyası olarak kaydedin; örneğin aylık bir rapor için.",
+          "routing": true,
+          "alt": "Son 7 günü gösteren Usage sayfası; toplamları ya da her cihazın gün gün kullanımını kaydetme menüsüyle"
+        },
+        {
+          "id": "alerts",
+          "title": "Bildirimler",
+          "text": "Yeni bir cihaz bağlandığında ya da izin beklediğinde, bir cihaz veri kotasının %80'ini ya da tamamını kullandığında haber verir; geçen haftanın kullanımını da bildirir. Kota ve haftalık bildirimler için yönlendirme motoru gerekir.",
+          "routing": false,
+          "alt": "Captun'un ayarları: her cihaz için bir veri kotası ve üç tür bildirim"
+        }
+      ],
+      "note": "Henüz GitHub'da yok: Bugün kaynak kodundan derleyebileceğiniz sürümde bu özellikler bulunmuyor."
+    },
+    "privacy": {
+      "kicker": "Gizlilik",
+      "title": "Captun trafiği yönlendirir. <em>Okumaz.</em>",
+      "lede": "Yalnızca kurallarınızın ihtiyaç duyduğunu okur; örneğin bir bağlantının istediği web sitesinin adını.",
+      "items": [
+        {
+          "title": "İçerik şifreli kalır",
+          "text": "Cihazlarınızın gönderdikleri ne kadar şifreliyse öyle kalır. Captun bunları yönlendirir ama açmaz."
+        },
+        {
+          "title": "Ayarlar bilgisayarınızda kalır",
+          "text": "Hesap yok. Ayarlar şifreli olarak kaydedilir ve yalnızca o bilgisayardaki kullanıcı hesabınız tarafından okunabilir."
+        },
+        {
+          "title": "Tek başına bir VPN değildir",
+          "text": "Captun trafiği kendi başına şifrelemez ya da gizlemez: Bunu eklediğiniz VPN ya da proxy yapar, onun üzerinden gönderdiğiniz trafik için."
+        }
+      ]
+    },
+    "platforms": {
+      "kicker": "Platformlar",
+      "title": "Windows ve Linux, <em>macOS yolda</em>",
+      "lede": "Tek bir Rust kod tabanı ve Tauri ile yapılmış bir masaüstü uygulaması.",
+      "items": [
+        {
+          "id": "windows",
+          "name": "Windows",
+          "text": "Wi-Fi hotspot, kablo ile paylaşım ve Android telefona USB. Windows'un kendi hotspot'u varsayılan olarak en fazla 8 cihaz kabul eder."
+        },
+        {
+          "id": "linux",
+          "name": "Linux",
+          "text": "NetworkManager ya da hostapd ile Wi-Fi hotspot, kablo ile paylaşım ve telefona USB. Şimdiye kadar gerçek donanımda az test edildi."
+        },
+        {
+          "id": "macos",
+          "name": "macOS",
+          "badge": "Üzerinde çalışılıyor",
+          "text": "Kod derleniyor, ancak henüz bir Mac'te çalıştırılmadı."
+        }
+      ],
+      "note": "Android ya da iOS uygulaması yoktur: Telefonlar, tabletler, televizyonlar ve konsollar Captun'a bağlanır, onu çalıştırmaz."
+    },
+    "source": {
+      "kicker": "Captun'u edinin",
+      "title": "Henüz sürüm yok. <em>Kaynak kodundan derleyin.</em>",
+      "lede": "Captun aktif olarak geliştiriliyor. Bugün kaynak kodundan derleyebilirsiniz; tüm adımlar GitHub'daki README dosyasında.",
+      "repo": "GitHub'daki kaynak kodu",
+      "build": "Kaynak kodundan derleme",
+      "steps": [
+        {
+          "title": "Araçları kurun",
+          "text": "Rust, Node.js 20 ya da daha yenisi ve bir C derleyicisi; Linux'ta ayrıca <code>libwebkit2gtk-4.1-dev</code>."
+        },
+        {
+          "title": "Yardımcıları indirin",
+          "text": "Deponun betikleri, VPN linkleri için Xray-core'u indirip sabitlenmiş bir sağlama toplamıyla doğrular; Windows'ta ayrıca WinDivert sürücüsünü indirir."
+        },
+        {
+          "title": "Derleyin ve başlatın",
+          "text": "Hizmeti derleyin ve masaüstü uygulamasını başlatın. Uygulama hizmeti kendisi başlatır ve bunun için yönetici izni ister."
+        }
+      ],
+      "notes": [
+        "Uygulama İngilizcedir.",
+        "Derlemelerde VPN linkleri için Xray-core, yerleşik adb için libusb ve Windows'ta WinDivert bulunur. Bunların lisansları README dosyasında listelenmiştir.",
+        "Bir sorun mu buldunuz? <a href=\"{issuesUrl}\">GitHub'da bir issue açın</a>."
+      ]
+    },
+    "faq": {
+      "kicker": "Yardım",
+      "title": "Sorular ve yanıtlar",
+      "items": [
+        {
+          "q": "VPN bağlantımı Wi-Fi hotspot üzerinden paylaşabilir miyim?",
+          "a": "Evet. Bir cihaz ya da herkes için çıkış olarak VPN'in ağ bağdaştırıcısını, bir proxy'yi ya da yapıştırdığınız bir VPN linkini (VLESS, VMess, Trojan, Shadowsocks, Hysteria2) seçin. Cihaz başına seçim, Captun'un hâlâ deneysel olan yönlendirme motorunu kullanır."
+        },
+        {
+          "q": "Telefona USB ile internet vermek için root ya da uygulama gerekir mi?",
+          "a": "Hayır. Android telefonda USB hata ayıklamayı açın ve telefonu takın; gerisini Captun'daki yerleşik adb halleder. Telefon bilgisayarınızın internetini kullanır, asla tersi olmaz. USB üzerinden web ve uygulamalar çalışır; oyunlar ve aramalar henüz çalışmaz."
+        },
+        {
+          "q": "Farklı cihazlar farklı bağlantılar kullanabilir mi?",
+          "a": "Evet. Her cihazın ya da grubun kendi çıkışı, kendi DNS sunucuları, kendi hız sınırı ve kendi veri kotası olabilir; kurallar da tek tek siteleri başka bir yoldan gönderebilir. Bu, deneysel yönlendirme motorunu kullanır."
+        },
+        {
+          "q": "Captun cihazlarımın trafiğini okuyor mu?",
+          "a": "Hayır. Trafiği yönlendirir ve yalnızca kurallarınızı uygulamak için gerekeni okur; örneğin bir bağlantının istediği web sitesinin adını. İçerik şifreli kalır."
+        },
+        {
+          "q": "Captun trafiğimi gizli hale getirir mi?",
+          "a": "Tek başına hayır. Captun hiçbir şeyi şifrelemez ya da anonim hale getirmez; bunu eklediğiniz VPN ya da proxy, onun üzerinden gönderdiğiniz trafik için yapar."
+        },
+        {
+          "q": "Kaç cihaz bağlanabilir?",
+          "a": "Windows'ta sistemin hotspot'u varsayılan olarak en fazla 8 cihaz kabul eder; Captun'un da ayarlayabileceğiniz kendi cihaz sınırı vardır. Çok sayıda kullanıcıyla test edilmedi."
+        },
+        {
+          "q": "Hangi sistemlerde çalışıyor?",
+          "a": "Windows ve Linux; macOS üzerinde çalışılıyor. Android ya da iOS uygulaması yoktur: Telefonlar ve tabletler Captun'a bağlanır."
+        },
+        {
+          "q": "Nereden indirebilirim?",
+          "a": "Henüz sürüm yok. Kaynak kodundan derleyebilirsiniz: Adımlar <a href=\"{buildUrl}\">GitHub'daki README dosyasında</a>."
+        },
+        {
+          "q": "Uygulama benim dilimde mi?",
+          "a": "Henüz değil: Uygulama İngilizcedir. Bu web sitesi, daha fazla kişi uygulama hakkında okuyabilsin diye çevrildi."
+        }
+      ]
+    }
+  },
+  "notFound": {
+    "title": "Sayfa bulunamadı – Captun",
+    "heading": "Böyle bir sayfa yok",
+    "text": "Adres yanlış olabilir ya da sayfa taşınmış olabilir.",
+    "home": "Ana sayfaya gidin"
+  }
+}

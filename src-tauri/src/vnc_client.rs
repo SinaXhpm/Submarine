@@ -74,6 +74,19 @@ fn over_corner(r: Rect) -> bool {
 const DRAIN_BUDGET: Duration = Duration::from_millis(10);
 const DRAIN_WAIT: Duration = Duration::from_millis(2);
 
+/// The tick while nothing is going on: the tab is hidden, or the screen holds
+/// still. The session then waits for the server's next message, which brings
+/// the tick forward at once, so all this paces is the ask kept out at the
+/// server, every sixth tick: 1.5 s. A server holds an ask until it has something
+/// to send, so that is for one that doesn't. At TICK_MS such a tab woke the CPU
+/// 30-60 times a second and asked 10 times a second for nothing: on a phone,
+/// battery, and a radio that never goes idle.
+const QUIET_TICK: Duration = Duration::from_millis(250);
+/// How long after the user's input the tick stays at TICK_MS, whatever the
+/// screen does: an answer is on its way, and with a server that doesn't hold
+/// asks, an ask every 1.5 s would be how long it takes to show.
+const INPUT_WATCH: Duration = Duration::from_secs(1);
+
 /// The desktop's size the tab wants, asked of the server one request at a
 /// time (the VNC library refuses a second while one is out), the latest
 /// wanted size winning. A request goes once the server has said its layout
@@ -152,18 +165,19 @@ pub const MAX_PASTE: usize = 1_000_000;
 /// The server's copies reach the tab at most this often, the latest one
 /// winning: a server that copies over and over (up to 1 MiB each time) can't
 /// keep the page busy.
-const COPY_EVERY: Duration = Duration::from_millis(250);
+pub const COPY_EVERY: Duration = Duration::from_millis(250);
 
-/// The server's copy waiting for the tab, and when the last one went.
+/// The server's copy waiting for the tab, and when the last one went (the
+/// built-in RDP client's too).
 #[derive(Default)]
-struct Copies {
-    due: Option<String>,
+pub struct Copies {
+    pub due: Option<String>,
     sent_at: Option<Instant>,
 }
 
 impl Copies {
     /// The copy to hand on at `now`, if one is due and the last went long enough ago.
-    fn take(&mut self, now: Instant) -> Option<String> {
+    pub fn take(&mut self, now: Instant) -> Option<String> {
         if self.sent_at.is_some_and(|at| now.saturating_duration_since(at) < COPY_EVERY) {
             return None;
         }
@@ -388,8 +402,8 @@ impl Wire {
     }
 }
 
-/// When to ask the server for the next update: right after one came, else a few
-/// times a second; never closer than `gap` to the last ask (the page's "updates a
+/// When to ask the server for the next update: right after one came, else every
+/// sixth tick; never closer than `gap` to the last ask (the page's "updates a
 /// second" choice, kept in time and not in ticks: the tick is only as even as the
 /// system's timer, which on Windows is 16 ms at best and often 31); and never
 /// while the page is behind (`held`), the ask being made once it has caught up.
@@ -786,6 +800,7 @@ where
     let client = started.finish().map_err(|e| explain(&e))?;
 
     let mut screen = Screen::with_wire(wire);
+    let mut page_size = crate::screen_flow::PageSize::default();
     let mut pointer = Pointer::default();
     let mut connected = Some(connected);
     let mut asked_size: Option<(u16, u16)> = None;
@@ -811,6 +826,11 @@ where
     probe.whole_picture();
     let mut meter = Meter::new(std::sync::Arc::clone(&traffic));
     let mut paused = false;
+    // Between two ticks at QUIET_TICK, waiting for the server's next message:
+    // `early` holds it for the tick it brings forward.
+    let mut quiet = false;
+    let mut early = None;
+    let mut watch_until = tokio::time::Instant::now();
     let outcome = loop {
         tokio::select! {
             cmd = rx.recv() => match cmd {
@@ -819,6 +839,11 @@ where
                         if client.input(ev).await.is_err() {
                             break;
                         }
+                    }
+                    watch_until = tokio::time::Instant::now() + INPUT_WATCH;
+                    if quiet {
+                        quiet = false;
+                        tick.reset_immediately();
                     }
                 }
                 Some(Cmd::Resize(w, h)) => {
@@ -842,6 +867,8 @@ where
                         paused = !shown;
                         if shown {
                             probe.whole_picture();
+                            // Back to TICK_MS at once (see QUIET_TICK).
+                            tick.reset_immediately();
                         } else {
                             probe.out = None;
                         }
@@ -872,7 +899,17 @@ where
                     probe.out = Some(asked);
                 }
             }
+            // Only while quiet: otherwise the tick sets the pace of the frames.
+            // The wait holds the client's lock, and `select!` drops it before
+            // any other branch runs, so their calls to the client still go. A
+            // message is only taken if this branch wins.
+            next = client.recv_event(), if quiet => {
+                early = Some(next);
+                quiet = false;
+                tick.reset_immediately();
+            }
             _ = tick.tick() => {
+                quiet = false;
                 let mut ended = None;
                 // An answer to the probe came this tick: a part over its
                 // corner, or the layout a server like TigerVNC answers a
@@ -886,22 +923,25 @@ where
                     if got && left.is_zero() {
                         break;
                     }
-                    let next = match client.poll_event().await {
-                        Ok(None) if got => match tokio::time::timeout(left.min(DRAIN_WAIT), client.recv_event()).await {
-                            Ok(next) => next.map(Some),
-                            Err(_) => Ok(None),
+                    let next = match early.take() {
+                        Some(next) => next.map(Some),
+                        None => match client.poll_event().await {
+                            Ok(None) if got => match tokio::time::timeout(left.min(DRAIN_WAIT), client.recv_event()).await {
+                                Ok(next) => next.map(Some),
+                                Err(_) => Ok(None),
+                            },
+                            next => next,
                         },
-                        next => next,
                     };
                     match next {
                         Ok(Some(ev)) => { got = true; match ev {
                             VncEvent::SetResolution(s) => {
-                                screen.resize(s.width, s.height);
-                                probe.whole_picture();
-                                if !frame(size_frame(s.width, s.height)) {
-                                    ended = Some(Ok("closed".to_string()));
-                                    break;
+                                // The same size again keeps the picture, which the page keeps too.
+                                if (s.width, s.height) != (screen.w, screen.h) {
+                                    screen.resize(s.width, s.height);
                                 }
+                                probe.whole_picture();
+                                page_size.set((s.width, s.height));
                                 if let Some(c) = connected.take() {
                                     c(s.width, s.height);
                                     // The tab's size, asked once the server
@@ -918,10 +958,7 @@ where
                                     if (l.width, l.height) != (screen.w, screen.h) {
                                         screen.resize(l.width, l.height);
                                         probe.whole_picture();
-                                        if !frame(size_frame(l.width, l.height)) {
-                                            ended = Some(Ok("closed".to_string()));
-                                            break;
-                                        }
+                                        page_size.set((l.width, l.height));
                                     }
                                     resize(&client, resizer.layout());
                                 }
@@ -978,6 +1015,12 @@ where
                 // new update is asked for: the server, which only sends on a
                 // request, waits too.
                 let held = !flow.has_room();
+                // The size first: the frames below are drawn on it.
+                if let Some((w, h)) = if held { None } else { page_size.next() } {
+                    if !frame(size_frame(w, h)) {
+                        break Ok("closed".to_string());
+                    }
+                }
                 let sent = if held { Vec::new() } else { screen.frames() };
                 let changed = !sent.is_empty();
                 for f in sent {
@@ -985,13 +1028,21 @@ where
                         break;
                     }
                 }
-                // The next incremental update: right after one came, else a
-                // few times a second, and not oftener than the page chose;
-                // none while the tab is hidden.
+                // The next incremental update: right after one came, else now
+                // and then, and not oftener than the page chose; none while
+                // the tab is hidden.
                 if pacer.tick(Instant::now(), changed, held || paused) {
                     if client.input(X11Event::Refresh).await.is_err() {
                         break Ok("The VNC server closed the connection.".to_string());
                     }
+                }
+                // Another tick soon, if one can be of use: something came, so
+                // more may; an ask, a frame, a size or a copy waits its turn; or
+                // the user just did something.
+                let busy = got || held || pacer.wanted || page_size.waiting() || copies.due.is_some() || tokio::time::Instant::now() < watch_until;
+                if paused || !busy {
+                    quiet = true;
+                    tick.reset_after(QUIET_TICK);
                 }
             }
         }
@@ -1437,18 +1488,8 @@ mod tests {
         if pf[2] != 0 { all[4 - n..].to_vec() } else { all[..n].to_vec() }
     }
 
-    /// A server with no password and a 4×2 desktop. It writes down the pixel
-    /// format and the encodings the client asks for, and answers the first ask
-    /// for an update with a row of `pixels` in the format that was asked for,
-    /// then with each of `copied` on its clipboard (ServerCutText), one after the
-    /// other. Later it answers only an ask for a part afresh (a probe), with
-    /// that part; the rest wait, as for a desktop where nothing changes.
-    async fn scripted_server(
-        mut s: tokio::io::DuplexStream,
-        pixels: [(u8, u8, u8); 2],
-        heard: Arc<Mutex<Heard>>,
-        copied: Vec<&'static [u8]>,
-    ) -> std::io::Result<()> {
+    /// The start of a server with no password and a 4×2 desktop.
+    async fn greet(s: &mut tokio::io::DuplexStream) -> std::io::Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         s.write_all(b"RFB 003.008\n").await?;
         s.read_exact(&mut [0u8; 12]).await?;
@@ -1462,7 +1503,112 @@ mod tests {
         init.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
         init.extend_from_slice(&5u32.to_be_bytes());
         init.extend_from_slice(b"fake!");
-        s.write_all(&init).await?;
+        s.write_all(&init).await
+    }
+
+    /// A server that says a new desktop size `sizes.len()` times in one update,
+    /// 12 bytes each, unasked, and then just listens.
+    async fn resizing_server(mut s: tokio::io::DuplexStream, sizes: Vec<(u16, u16)>) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        greet(&mut s).await?;
+        let mut update = vec![0u8, 0];
+        update.extend_from_slice(&u16::try_from(sizes.len()).unwrap().to_be_bytes());
+        for (w, h) in sizes {
+            for v in [0, 0, w, h] {
+                update.extend_from_slice(&v.to_be_bytes());
+            }
+            update.extend_from_slice(&(-223i32).to_be_bytes());
+        }
+        s.write_all(&update).await?;
+        tokio::io::copy(&mut s, &mut tokio::io::sink()).await?;
+        Ok(())
+    }
+
+    /// The real session against `resizing_server`, and the frames the page gets.
+    fn resizing_session(
+        sizes: Vec<(u16, u16)>,
+        flow: Arc<crate::screen_flow::Flow>,
+    ) -> (Arc<Mutex<Vec<Vec<u8>>>>, mpsc::UnboundedSender<Cmd>, tokio::task::JoinHandle<Result<String, String>>) {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        tokio::spawn(resizing_server(server, sizes));
+        let frames = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let sink = Arc::clone(&frames);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let run = tokio::spawn(run(
+            client,
+            std::future::ready(None::<Zeroizing<String>>),
+            |_, _| {},
+            move |f| {
+                sink.lock().unwrap().push(f);
+                true
+            },
+            flow,
+            rx,
+            (4, 2),
+            Options::default(),
+            false,
+            |_| {},
+            |_| {},
+        ));
+        (frames, tx, run)
+    }
+
+    // No login is needed for this, and 12 bytes make a frame the page has to
+    // answer by resetting its canvas: one a tick, the newest, reaches it.
+    #[tokio::test]
+    async fn a_flood_of_sizes_is_one_frame_a_tick() {
+        let mut sizes: Vec<(u16, u16)> = (0..4000u16).map(|i| (640 + i % 2, 480)).collect();
+        sizes.push((700, 500));
+        let last = size_frame(700, 500);
+        let (frames, tx, run) = resizing_session(sizes, Arc::default());
+        for _ in 0..1000 {
+            if frames.lock().unwrap().last() == Some(&last) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let _ = tx.send(Cmd::Close);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10), run).await.unwrap().unwrap(), Ok("closed".to_string()));
+        let frames = frames.lock().unwrap().clone();
+        assert_eq!(frames.last(), Some(&last), "the newest size");
+        assert!(frames.len() < 500, "{} frames for 4000 sizes", frames.len());
+    }
+
+    // A page that is far behind gets no more of them, and the newest when it has caught up.
+    #[tokio::test]
+    async fn no_size_goes_while_the_page_is_behind() {
+        let flow = Arc::new(crate::screen_flow::Flow::default());
+        flow.sent(crate::screen_flow::HIGH as usize + 1);
+        let (frames, tx, run) = resizing_session(vec![(800, 600), (1024, 768), (640, 480)], Arc::clone(&flow));
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(frames.lock().unwrap().is_empty(), "held");
+        flow.drawn(u64::MAX);
+        for _ in 0..500 {
+            if !frames.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = tx.send(Cmd::Close);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10), run).await.unwrap().unwrap(), Ok("closed".to_string()));
+        assert_eq!(*frames.lock().unwrap(), [size_frame(640, 480)]);
+    }
+
+    /// A server with no password and a 4×2 desktop. It writes down the pixel
+    /// format and the encodings the client asks for, and answers the first ask
+    /// for an update with a row of `pixels` in the format that was asked for,
+    /// then with each of `copied` on its clipboard (ServerCutText), one after the
+    /// other. Later it answers only an ask for a part afresh (a probe), with
+    /// that part; the rest wait, as for a desktop where nothing changes.
+    async fn scripted_server(
+        mut s: tokio::io::DuplexStream,
+        pixels: [(u8, u8, u8); 2],
+        heard: Arc<Mutex<Heard>>,
+        copied: Vec<&'static [u8]>,
+    ) -> std::io::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        greet(&mut s).await?;
         loop {
             let mut t = [0u8; 1];
             s.read_exact(&mut t).await?;
@@ -1772,6 +1918,111 @@ mod tests {
         assert!(heard.lock().unwrap().requests.len() > asked, "asking again");
         tokio::time::sleep(LINK_EVERY).await;
         assert!(!latest().paused);
+        let _ = tx.send(Cmd::Close);
+        assert_eq!(run.await.expect("no panic"), Ok("closed".to_string()));
+        srv.abort();
+    }
+
+    // A desktop where nothing changes, on tokio's paused clock: an update is
+    // asked for now and then, not ten times a second, until the user does
+    // something, when the asks go at the full pace for a moment.
+    #[tokio::test(start_paused = true)]
+    async fn a_still_screen_is_left_alone_until_the_user_does_something() {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let heard = Arc::new(Mutex::new(Heard::default()));
+        let srv = tokio::spawn(scripted_server(server, [(255, 0, 0), (0, 0, 255)], Arc::clone(&heard), Vec::new()));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let run = tokio::spawn(run(
+            client,
+            std::future::ready(None::<Zeroizing<String>>),
+            |_, _| {},
+            |_| true,
+            Arc::new(crate::screen_flow::Flow::default()),
+            rx,
+            (4, 2),
+            Options::default(),
+            false,
+            |_| {},
+            |_| {},
+        ));
+        let asks = || heard.lock().unwrap().requests.iter().filter(|r| r.0 == 1).count();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let before = asks();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        // One each 1.5 s, and one behind each probe's corner, each 2 s. Over 300 at TICK_MS.
+        let still = asks() - before;
+        assert!((10..=40).contains(&still), "{still} asks in 30 s of a still screen");
+        let before = asks();
+        let _ = tx.send(Cmd::Input(vec![InputEvent::Move { x: 1, y: 1 }]));
+        tokio::time::sleep(INPUT_WATCH / 2).await;
+        let watching = asks() - before;
+        assert!(watching >= 4, "{watching} asks in the half second after the user's input");
+        let _ = tx.send(Cmd::Close);
+        assert_eq!(run.await.expect("no panic"), Ok("closed".to_string()));
+        srv.abort();
+    }
+
+    /// A desktop that holds still until `change` is told, then changes a pixel.
+    /// What the client says goes unread.
+    async fn server_with_a_change(mut s: tokio::io::DuplexStream, change: Arc<tokio::sync::Notify>) -> std::io::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        greet(&mut s).await?;
+        let mut said = [0u8; 256];
+        loop {
+            tokio::select! {
+                n = s.read(&mut said) => if n? == 0 {
+                    return Ok(());
+                },
+                _ = change.notified() => {
+                    // One raw rectangle: a pixel, in the full colour asked for.
+                    let mut u = vec![0u8, 0, 0, 1];
+                    for v in [0u16, 0, 1, 1] {
+                        u.extend_from_slice(&v.to_be_bytes());
+                    }
+                    u.extend_from_slice(&0i32.to_be_bytes());
+                    u.extend_from_slice(&[9, 9, 9, 0]);
+                    s.write_all(&u).await?;
+                }
+            }
+        }
+    }
+
+    // What the server sends to a session that went quiet doesn't wait for the
+    // slow tick, wherever between two of those ticks it comes.
+    #[tokio::test(start_paused = true)]
+    async fn a_change_on_a_still_screen_shows_at_once() {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let change = Arc::new(tokio::sync::Notify::new());
+        let srv = tokio::spawn(server_with_a_change(server, Arc::clone(&change)));
+        let frames = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&frames);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let run = tokio::spawn(run(
+            client,
+            std::future::ready(None::<Zeroizing<String>>),
+            |_, _| {},
+            move |_| {
+                *sink.lock().unwrap() += 1;
+                true
+            },
+            Arc::new(crate::screen_flow::Flow::default()),
+            rx,
+            (4, 2),
+            Options::default(),
+            false,
+            |_| {},
+            |_| {},
+        ));
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        for wait in [1, 61, 127, 191] {
+            tokio::time::sleep(Duration::from_millis(wait)).await;
+            let before = *frames.lock().unwrap();
+            change.notify_one();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            assert!(*frames.lock().unwrap() > before, "not drawn {wait} ms after the last look");
+            // Quiet again.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         let _ = tx.send(Cmd::Close);
         assert_eq!(run.await.expect("no panic"), Ok("closed".to_string()));
         srv.abort();

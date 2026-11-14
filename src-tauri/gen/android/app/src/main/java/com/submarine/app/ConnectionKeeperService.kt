@@ -23,10 +23,12 @@ import androidx.core.app.NotificationCompat
 // We deliberately do NOT observe SSH state from here — that would require an
 // IPC bridge from Rust and buy us little (the notification is low priority
 // and non-dismissible either way). Instead the lifecycle is:
-//   MainActivity.onCreate  -> startForegroundService(this)  -> onStartCommand
-//   MainActivity.onDestroy -> stopSelf()                    -> onDestroy
-// so the service exists exactly while the Activity does. The user swiping the
-// app away from Recents kills the process, which is the intended exit path.
+//   MainActivity.onStart   -> startForegroundService(this)  -> onStartCommand
+//   MainActivity.onDestroy -> stopService()                 -> onDestroy
+//   Android's time limit   -> onTimeout -> stopSelf()       -> onDestroy
+// so the service exists while the Activity does, until Android's limit for
+// background work (see onTimeout). The user swiping the app away from Recents
+// kills the process, which is the intended exit path.
 class ConnectionKeeperService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -74,6 +76,16 @@ class ConnectionKeeperService : Service() {
         // will re-arm the service. Auto-restart with no Activity would leave
         // a phantom notification with no way for the user to interact.
         return START_NOT_STICKY
+    }
+
+    // Android 15+ gives a dataSync foreground service 6 hours in the
+    // background per day. At the limit it calls this, and a service still
+    // running a few seconds later crashes the whole app, sessions and all.
+    // Stop instead: the process then lives as long as Android lets any
+    // background app live. Opening the app again starts the service anew
+    // (MainActivity.onStart), which Android allows once the app is in front.
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopSelf()
     }
 
     private fun ensureNotificationChannel(): String {

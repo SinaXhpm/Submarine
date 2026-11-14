@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Mac App Store build (apple.yml, mac-appstore-sign). The store requires
+     Apple's sandbox; the rest is what the app needs inside it. -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- SSH, SFTP, RDP, VNC, telnet and the sync server. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Port forwarding listens on this Mac. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<!-- Files and folders the user picks, and Downloads, where the local pane starts. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
+	<key>com.apple.application-identifier</key>
+	<string>3KBG9ZP99C.com.sinaxhpm.submarine</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>3KBG9ZP99C</string>
+</dict>
+</plist>

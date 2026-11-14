@@ -12,10 +12,10 @@
          values on notch / gesture-nav devices — used by MobileKeyBar and
          the mobile Sidebar dock to sit above the system pill. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content, viewport-fit=cover" />
-    <title>Submarine — SSH, SFTP, RDP, VNC &amp; Telnet Client for Windows, macOS, Linux, Android</title>
+    <title>Submarine — SSH, SFTP, FTP, RDP, VNC &amp; Telnet Client for Windows, macOS, Linux, Android</title>
 
-    <meta name="description" content="Submarine is a free, open-source SSH and SFTP client with RDP, VNC and Telnet. Terminal, dual-pane SFTP, port forwarding (SOCKS/HTTP/local/remote), folder mirror, server info, Docker and monitoring in one native window, with encrypted profiles and optional cloud sync. Built with Rust + Tauri. MIT licensed. Windows, macOS, Linux and Android." />
-    <meta name="keywords" content="ssh client, sftp client, telnet client, vnc viewer, rdp client, remote desktop, terminal, port forwarding, ssh tunnel, socks proxy, folder mirror, ssh-agent, rsync alternative, putty alternative, winscp alternative, mobaxterm alternative, bitvise alternative, termius alternative, remmina alternative, rust ssh client, tauri ssh client, android ssh client, encrypted profile sync, open source ssh, sinaxhpm, submarine" />
+    <meta name="description" content="Submarine is a free, open-source SSH, SFTP and FTP client with RDP, VNC and Telnet. Terminal, dual-pane SFTP and FTP, port forwarding (SOCKS/HTTP/local/remote), folder mirror, server info, Docker and monitoring in one native window, with encrypted profiles and optional cloud sync. Built with Rust + Tauri. MIT licensed. Windows, macOS, Linux and Android." />
+    <meta name="keywords" content="ssh client, sftp client, ftp client, ftps client, telnet client, vnc viewer, rdp client, remote desktop, terminal, port forwarding, ssh tunnel, socks proxy, folder mirror, ssh-agent, rsync alternative, putty alternative, winscp alternative, mobaxterm alternative, bitvise alternative, termius alternative, remmina alternative, rust ssh client, tauri ssh client, android ssh client, encrypted profile sync, open source ssh, sinaxhpm, submarine" />
     <meta name="author" content="Sina" />
     <meta name="robots" content="index, follow, max-image-preview:large" />
     <link rel="canonical" href="https://submarine.sinaxhpm.com/" />
@@ -23,16 +23,16 @@
     <!-- Open Graph (Facebook, LinkedIn, Discord, Slack previews + many AI crawlers) -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Submarine" />
-    <meta property="og:title" content="Submarine — SSH, SFTP, RDP, VNC &amp; Telnet Client" />
-    <meta property="og:description" content="Free, open-source SSH and SFTP client for Windows, macOS, Linux, and Android, with RDP, VNC and Telnet. Terminal + SFTP + tunnels + folder mirror in one native window. MIT licensed." />
+    <meta property="og:title" content="Submarine — SSH, SFTP, FTP, RDP, VNC &amp; Telnet Client" />
+    <meta property="og:description" content="Free, open-source SSH, SFTP and FTP client for Windows, macOS, Linux, and Android, with RDP, VNC and Telnet. Terminal + SFTP + tunnels + folder mirror in one native window. MIT licensed." />
     <meta property="og:url" content="https://submarine.sinaxhpm.com/" />
     <meta property="og:image" content="https://submarine.sinaxhpm.com/og.png" />
     <meta property="og:locale" content="en_US" />
 
     <!-- Twitter / X card -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Submarine — SSH, SFTP, RDP, VNC &amp; Telnet Client" />
-    <meta name="twitter:description" content="Free SSH + SFTP client with RDP, VNC and Telnet for Windows, macOS, Linux, Android. Terminal, SFTP, tunnels, folder mirror. Built with Rust + Tauri. MIT licensed." />
+    <meta name="twitter:title" content="Submarine — SSH, SFTP, FTP, RDP, VNC &amp; Telnet Client" />
+    <meta name="twitter:description" content="Free SSH + SFTP + FTP client with RDP, VNC and Telnet for Windows, macOS, Linux, Android. Terminal, SFTP, tunnels, folder mirror. Built with Rust + Tauri. MIT licensed." />
     <meta name="twitter:image" content="https://submarine.sinaxhpm.com/og.png" />
 
     <!-- Theme color so Android Chrome / installable PWAs match the dark shell -->
@@ -52,13 +52,13 @@
          transition is invisible. -->
     <style>
       html, body { margin: 0; height: 100%; background: #0a0a0c; color-scheme: dark; }
-      /* #root height is driven by the --vv-h custom property that main.tsx
-         keeps in sync with window.visualViewport.height. On desktop the
+      /* 100vh is for the pre-JS paint: main.tsx sets #root's height from
+         window.visualViewport.height and keeps it in sync. On desktop the
          value equals innerHeight and never changes; on Android when the
          soft keyboard opens the visualViewport shrinks and the whole app
          tree (which uses h-full / flex-1 / min-h-0) cascades correctly
-         above the keyboard. Falls back to 100vh for the pre-JS paint. */
-      #root { height: var(--vv-h, 100vh); background: #0a0a0c; }
+         above the keyboard. */
+      #root { height: 100vh; background: #0a0a0c; }
     </style>
   </head>
   <body>

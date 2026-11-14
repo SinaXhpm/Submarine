@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
-import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { File as FileIcon, Download, Upload, AlertTriangle, Check, X, Ban, Folder, Rows, Columns, LayoutPanelTop, Shield, ShieldAlert, Trash2, GitCompare } from "lucide-react";
 import FilePanel, { ActiveDrag, FilePanelHandle } from "./FilePanel";
@@ -10,23 +9,29 @@ import { createLocalProvider } from "../fs/localProvider";
 import { createRemoteProvider } from "../fs/remoteProvider";
 import { useTextPrompt } from "../ui/confirm";
 import { useIsNarrow } from "../hooks/useViewport";
+import { useTauriListen } from "../hooks/useTauriListen";
 import { bookmarksKey } from "../util/sftpBookmarks";
+import { FOLLOW_SETUP, type ShellFolderState } from "../util/shellFolder";
+import { t, tk, tn, useT } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // Root (sudo) mode for the remote pane — see `sftp_set_elevated` in lib.rs.
 type ElevationStatus = { elevated: boolean; passwordless: boolean };
 
 const SUDO_MESSAGES: Record<string, string> = {
-  "[SUDO] NEED_PASSWORD": "sudo needs a password.",
-  "[SUDO] WRONG_PASSWORD": "Wrong sudo password.",
-  "[SUDO] NOT_ALLOWED": "This user isn't allowed to run sftp-server with sudo.",
-  "[SUDO] REQUIRETTY": "sudo on this server requires a terminal (requiretty), so it can't be used for file access.",
-  "[SUDO] NO_SUDO": "sudo isn't installed on this server.",
-  "[SUDO] NO_SFTP_SERVER": "Couldn't find the sftp-server program on this server.",
+  "[SUDO] NEED_PASSWORD": tk("sudo needs a password."),
+  "[SUDO] WRONG_PASSWORD": tk("Wrong sudo password."),
+  "[SUDO] NOT_ALLOWED": tk("This user isn't allowed to run sftp-server with sudo."),
+  "[SUDO] REQUIRETTY": tk("sudo on this server requires a terminal (requiretty), so it can't be used for file access."),
+  "[SUDO] NO_SUDO": tk("sudo isn't installed on this server."),
+  "[SUDO] NO_SFTP_SERVER": tk("Couldn't find the sftp-server program on this server."),
 };
 
 const describeSudoError = (raw: string) => {
   const code = Object.keys(SUDO_MESSAGES).find((k) => raw.includes(k));
-  return code ? SUDO_MESSAGES[code] : raw.replace(/^\[SUDO\] FAILED:?\s*/, "sudo failed: ");
+  if (code) return t(SUDO_MESSAGES[code]);
+  const failed = raw.match(/^\[SUDO\] FAILED:?\s*([\s\S]*)$/);
+  return failed ? t("sudo failed: {reason}", { reason: failed[1] }) : raw;
 };
 
 // Dual-pane SFTP workspace. Owns the two FilePanels, the cross-pane drag
@@ -50,6 +55,15 @@ interface SftpWorkspaceProps {
   // The unlocked profile: with the server id it keys the panes' bookmarks
   // (util/sftpBookmarks). A server that isn't saved (Quick Connect) has none.
   profile?: string | null;
+  // Follow (#245), the button in the SFTP panel's title bar: the folder the
+  // active terminal's shell reported, where the remote pane goes. Null while
+  // the shell hasn't said (the pane shows how to make it); undefined while
+  // Follow is off.
+  follow?: ShellFolderState | null;
+  // An FTP server's tab (FtpSessionView): its files go over FTP, so nothing
+  // that runs commands on the server is offered (root mode, archives, the
+  // owners' names). The mirror works over FTP too (mirror.rs, Files::Ftp).
+  ftp?: boolean;
 }
 // "split" is Local above Remote; the name predates "side" and stays because
 // it is what earlier versions saved.
@@ -57,9 +71,9 @@ type FilesLayout = "tabs" | "split" | "side";
 type FilesSide = "local" | "remote";
 
 const LAYOUT_OPTIONS: { id: FilesLayout; title: string; Icon: typeof Rows }[] = [
-  { id: "tabs", title: "One panel at a time", Icon: LayoutPanelTop },
-  { id: "split", title: "Both panels, Local above Remote (drag-drop between them)", Icon: Rows },
-  { id: "side", title: "Both panels side by side (drag-drop between them)", Icon: Columns },
+  { id: "tabs", title: tk("One panel at a time"), Icon: LayoutPanelTop },
+  { id: "split", title: tk("Both panels, Local above Remote (drag-drop between them)"), Icon: Rows },
+  { id: "side", title: tk("Both panels side by side (drag-drop between them)"), Icon: Columns },
 ];
 
 // Cursor-following drag ghost, isolated into its own component so that the
@@ -96,7 +110,7 @@ const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
         ? <Folder size={12} className="text-indigo-300 shrink-0" />
         : <FileIcon size={12} className="text-indigo-300 shrink-0" />}
       <span className="truncate max-w-[260px]">
-        {drag.entries.length === 1 ? drag.entries[0].name : `${drag.entries.length} items`}
+        {drag.entries.length === 1 ? drag.entries[0].name : tn(drag.entries.length, "{count} item", "{count} items")}
       </span>
     </div>,
     document.body
@@ -104,7 +118,177 @@ const DragGhost = forwardRef<DragGhostHandle>((_props, ref) => {
 });
 DragGhost.displayName = "DragGhost";
 
-const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files", profile }: SftpWorkspaceProps) => {
+// Live transfer progress, keyed by the backend-assigned id. The Rust
+// commands stream events at ~10Hz; we replace the entry on each update so
+// a single growing progress bar shows per transfer. A folder delete that
+// takes a while comes through here too (kind "delete"): for it `bytes` is
+// the number of entries removed so far, and there is no total.
+interface Transfer {
+  id: string;
+  name: string;
+  kind: "upload" | "download" | "delete";
+  bytes: number;
+  total: number;
+  status: "progress" | "done" | "error" | "cancelled";
+  error?: string;
+  /** A folder download still listing its tree: the files found so far. */
+  listed?: number;
+}
+
+const formatBytes = (n: number) => {
+  if (!n) return "0 B";
+  const k = 1024, units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(k)));
+  return `${(n / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+};
+
+// The live transfer cards: one growing progress bar per active upload or
+// download; a card fades out shortly after its transfer ends. A component of
+// its own for the same reason as DragGhost: an event re-renders only this, not
+// the whole SftpWorkspace and both FilePanels, ten times a second per transfer,
+// on the thread the terminal beside them draws and takes keys on.
+function TransferCards({ sessionId }: { sessionId: string }) {
+  const t = useT();
+  const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
+
+  useTauriListen<Transfer>(`sftp-transfer-${sessionId}`, (event) => {
+    const tr = event.payload;
+    if (!tr || !tr.id) return;
+    setTransfers((prev) => ({ ...prev, [tr.id]: tr }));
+    if (tr.status === "done" || tr.status === "error" || tr.status === "cancelled") {
+      // Leave the final state visible briefly before clearing the card so
+      // the user sees the success tick / failure colour / cancel notice.
+      const linger = tr.status === "error" || tr.error ? 6000 : tr.status === "cancelled" ? 3000 : 1800;
+      setTimeout(() => {
+        setTransfers((prev) => {
+          const { [tr.id]: _, ...rest } = prev;
+          return rest;
+        });
+      }, linger);
+    }
+  }, [sessionId]);
+
+  const cancelTransfer = (id: string) => {
+    // Fire-and-forget: the backend emits its own "cancelled" event when the
+    // loop notices the flag, which is what wipes the card.
+    invoke("sftp_cancel_transfer", { transferId: id }).catch(() => {});
+  };
+
+  return (
+    <>
+      {Object.values(transfers).map((tr) => {
+        const pct = tr.total > 0 ? Math.min(100, Math.round((tr.bytes * 100) / tr.total)) : 0;
+        const tone =
+          tr.status === "error"     ? "border-rose-500/40 bg-rose-950/85 text-rose-200" :
+          tr.status === "done"      ? "border-emerald-500/40 bg-emerald-950/85 text-emerald-200" :
+          tr.status === "cancelled" ? "border-amber-500/40 bg-amber-950/85 text-amber-200" :
+                                      "border-indigo-500/40 bg-indigo-950/85 text-indigo-100";
+        const barTone =
+          tr.status === "error"     ? "bg-rose-500" :
+          tr.status === "done"      ? "bg-emerald-500" :
+          tr.status === "cancelled" ? "bg-amber-500" :
+                                      "bg-indigo-500";
+        const Icon =
+          tr.status === "error"     ? AlertTriangle :
+          tr.status === "done"      ? Check :
+          tr.status === "cancelled" ? Ban :
+          tr.kind   === "upload"    ? Upload :
+          tr.kind   === "delete"    ? Trash2 :
+                                      Download;
+        const statusLabel =
+          tr.status === "error"     ? t("failed")
+          : tr.status === "cancelled" ? t("cancelled")
+          : tr.kind === "delete"      ? t("{count} removed", { count: tr.bytes.toLocaleString() })
+          : tr.listed !== undefined   ? tn(tr.listed, "{count} file found", "{count} files found", { count: tr.listed.toLocaleString() })
+          : tr.total > 0              ? `${pct}%`
+                                      : formatBytes(tr.bytes);
+        return (
+          <div key={tr.id} className={`w-full max-w-[280px] pointer-events-auto px-2.5 py-1.5 rounded border ${tone} font-mono text-[10.5px] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4`}>
+            <div className="flex items-center gap-1.5 mb-1">
+              <Icon size={11} className="shrink-0" />
+              <span className="truncate flex-1" title={tr.name}>{tr.name}</span>
+              <span className="text-[9.5px] opacity-80 shrink-0">{statusLabel}</span>
+              {/* Stop button — only while the transfer is still running.
+                  Finished / failed / cancelled cards fade out on their
+                  own timer; no button needed. */}
+              {tr.status === "progress" && (
+                <button
+                  onClick={() => cancelTransfer(tr.id)}
+                  title={t("Cancel")}
+                  className="shrink-0 p-0.5 rounded hover:bg-white/15 text-zinc-300 hover:text-rose-300"
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+            {tr.status !== "error" && (
+              <div className="h-1 bg-white/10 rounded overflow-hidden">
+                {/* No transition: with a step every 100 ms, an animated width
+                    is a layout and a paint at every frame for as long as the
+                    transfer runs, a whole core beside a long file list. */}
+                <div
+                  className={`h-full ${barTone} ${tr.kind === "delete" && tr.status === "progress" ? "animate-pulse" : ""}`}
+                  style={{ width: tr.total > 0 ? `${pct}%` : "100%" }}
+                />
+              </div>
+            )}
+            {/* Why it failed: up to three lines, so the reason can be
+                read without hovering; the tooltip has all of it. */}
+            {tr.status === "error" && tr.error && (
+              <div className="text-[9.5px] opacity-80 line-clamp-3 [overflow-wrap:anywhere]" title={tr.error}>{tr.error}</div>
+            )}
+            {/* A finished folder download can carry a note, e.g. names
+                this computer can't store were skipped; a cancelled
+                upload says what it left on the server. */}
+            {(tr.status === "done" || tr.status === "cancelled") && tr.error && (
+              <div className="text-[9.5px] text-amber-300/90 line-clamp-3 [overflow-wrap:anywhere]" title={tr.error}>{tr.error}</div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// Follow is on but the terminal's shell hasn't said which folder it is in:
+// the one line that makes it, for the shell picked.
+function FollowSetup({ onCopy }: { onCopy: (line: string) => void }) {
+  const t = useT();
+  const [picked, setPicked] = useState(0);
+  const setup = FOLLOW_SETUP[picked];
+  return (
+    <div className="px-1 flex flex-col gap-1 text-[10px] leading-snug text-zinc-400">
+      <span>
+        {t("The terminal hasn't said which folder it is in. Add this line to {file}, then open a new terminal.", { file: setup.file })}
+        {setup.note ? sentenceGap() + t(setup.note) : ""}
+      </span>
+      <div className="flex items-center gap-1">
+        {FOLLOW_SETUP.map((s, i) => (
+          <button
+            key={s.shell}
+            type="button"
+            aria-pressed={i === picked}
+            onClick={() => setPicked(i)}
+            className={`h-5 px-1.5 rounded border ${i === picked ? "text-primary bg-primary/10 border-primary/30" : "text-zinc-400 border-white/10 hover:text-white"}`}
+          >
+            {s.shell}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => onCopy(setup.line)}
+          className="ml-auto h-5 px-1.5 rounded border border-white/10 text-zinc-300 hover:text-white hover:bg-white/5"
+        >
+          {t("Copy")}
+        </button>
+      </div>
+      <code className="block px-1.5 py-1 rounded bg-black/30 font-mono text-zinc-300 break-all select-text">{setup.line}</code>
+    </div>
+  );
+}
+
+const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfig = [], view = "files", profile, follow, ftp = false }: SftpWorkspaceProps) => {
+  const t = useT();
   // Mirror needs a saved server; without one the files always show.
   const shownView: SftpView = view === "mirror" && serverId ? "mirror" : "files";
   // Files layout: "tabs" (one side full height) is the default because the
@@ -126,14 +310,17 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
     setLayout(l);
     try { localStorage.setItem("submarine-sftp-layout", l); } catch { /* quota — ignore */ }
   };
-  // Active side in tabs mode. We persist it per (session) so the user
-  // returns to the side they were last using, not always Local.
-  const sideStorageKey = `submarine-sftp-side-${sessionId}`;
+  // Active side in tabs mode. We persist it per (profile, session) so the user
+  // returns to the side they were last using, not always Local. With the
+  // profile: session ids come from each profile's server ids, so another
+  // profile reuses them.
+  const sideStorageKey = `submarine-sftp-side:${profile}:${sessionId}`;
   const [activeSide, setActiveSide] = useState<FilesSide>(() => {
     try {
       const v = localStorage.getItem(sideStorageKey);
-      return v === "remote" ? "remote" : "local";
-    } catch { return "local"; }
+      // An FTP tab is there for the server's files: they come first.
+      return v === "remote" || v === "local" ? v : ftp ? "remote" : "local";
+    } catch { return ftp ? "remote" : "local"; }
   });
   const setActiveSidePersisted = (s: FilesSide) => {
     setActiveSide(s);
@@ -142,7 +329,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   // Providers are created once per session so the panels' provider identity
   // is stable across renders (the FilePanel's load-on-mount effect keys off it).
   const localProvider = useMemo(() => createLocalProvider(), []);
-  const remoteProvider = useMemo(() => createRemoteProvider(sessionId), [sessionId]);
+  const remoteProvider = useMemo(() => createRemoteProvider(sessionId, { ftp }), [sessionId, ftp]);
 
   const localRef = useRef<FilePanelHandle | null>(null);
   const remoteRef = useRef<FilePanelHandle | null>(null);
@@ -164,6 +351,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   const [elevError, setElevError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (ftp) return;
     let cancelled = false;
     invoke<ElevationStatus>("sftp_elevation_status", { sessionId })
       .then((s) => { if (!cancelled) setElevation(s); })
@@ -172,7 +360,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   }, [sessionId]);
 
   useEffect(() => {
-    if (disabled) return;
+    if (disabled || ftp) return;
     let cancelled = false;
     invoke<string>("sftp_login_user", { sessionId })
       .then((u) => { if (!cancelled) setLoginUser(u || null); })
@@ -205,14 +393,14 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
             if (!wrong && !raw.includes("[SUDO] NEED_PASSWORD")) throw e;
             if (wrong && ++wrongTries >= 3) throw e;
             password = await textPrompt({
-              title: "Run file operations as root",
+              title: t("Run file operations as root"),
               message: wrong
-                ? "Wrong sudo password, try again."
-                : "Enter your sudo password. It's kept in memory for this tab only and never saved.",
+                ? t("Wrong sudo password, try again.")
+                : t("Enter your sudo password. It's kept in memory for this tab only and never saved."),
               password: true,
               keepWhitespace: true,
-              okLabel: "Use sudo",
-              validate: (v) => (v ? null : "Enter the password"),
+              okLabel: t("Use sudo"),
+              validate: (v) => (v ? null : t("Enter the password")),
             });
             if (password === null) return;
           }
@@ -238,7 +426,9 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
     <button
       onClick={toggleElevation}
       disabled={elevBusy}
-      title={`File operations run as root via sudo${elevation.passwordless ? " (passwordless)" : ""}. Click to go back to ${loginUser || "your login user"}.`}
+      title={elevation.passwordless
+        ? t("File operations run as root via sudo (passwordless). Click to go back to {user}.", { user: loginUser || t("your login user") })
+        : t("File operations run as root via sudo. Click to go back to {user}.", { user: loginUser || t("your login user") })}
       aria-label="root (sudo)"
       className={`${rootBadgeClass} hover:bg-rose-500/30 disabled:opacity-50`}
     >
@@ -246,7 +436,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
       <span className={elevWord}>root<span className={elevMore}> · sudo</span></span>
     </button>
   ) : rootByLogin ? (
-    <span title="Logged in as root: file operations run with full privileges." className={rootBadgeClass}>
+    <span title={t("Logged in as root: file operations run with full privileges.")} className={rootBadgeClass}>
       <ShieldAlert size={11} className="shrink-0" />
       <span className={elevWord}>root</span>
     </span>
@@ -254,7 +444,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
     <button
       onClick={toggleElevation}
       disabled={elevBusy || disabled}
-      title="Run file operations as root (sudo)"
+      title={t("Run file operations as root (sudo)")}
       aria-label="sudo"
       className={`${elevBox} font-bold bg-white/[0.04] text-zinc-300 border-white/10 hover:bg-white/10 hover:text-white disabled:opacity-40`}
     >
@@ -271,7 +461,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   // Persist the last directory each panel was in per (session, side) so the
   // user lands on the same path next time they open this server. If the
   // saved path no longer exists, FilePanel falls back to provider.homePath().
-  const storageKey = `submarine-server-dirs-${sessionId}`;
+  const storageKey = `submarine-server-dirs:${profile}:${sessionId}`;
   const savedDirsRef = useRef<{ local?: string; remote?: string }>(
     (() => {
       try {
@@ -306,60 +496,45 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
     setTimeout(() => setNotification(null), 4000);
   };
 
+  // Follow (#245): the remote pane goes where the active terminal's shell says
+  // it is, whenever that changes (and when Follow is turned on). A folder it
+  // can't list (no rights, gone) leaves it where it is, and so does a terminal
+  // that is on another host now (an ssh onward); the note under the pane's
+  // header says which.
+  const [followMiss, setFollowMiss] = useState<string | null>(null);
+  const followPath = follow && !follow.away ? follow.path : null;
+  useEffect(() => {
+    setFollowMiss(null);
+    const pane = remoteRef.current;
+    if (!followPath || disabled || !pane || pane.currentDir() === followPath) return;
+    let current = true;
+    pane.goTo(followPath).then((ok) => { if (current && !ok) setFollowMiss(followPath); });
+    return () => { current = false; };
+  }, [followPath, disabled]);
+  const copyLine = async (line: string) => {
+    try {
+      await navigator.clipboard.writeText(line);
+      notify(t("Copied"), "success");
+    } catch {
+      notify(t("Couldn't copy it: select the line and copy it from there."), "error");
+    }
+  };
+  const followNote = follow === undefined ? null
+    : follow === null ? <FollowSetup onCopy={copyLine} />
+    : follow.away ? (
+      <div className="px-1 text-[10px] leading-snug text-amber-300 break-words">
+        {t("The terminal is on {host} now; the files stay on this server.", { host: follow.away })}
+      </div>
+    ) : followMiss ? (
+      <div role="alert" className="px-1 text-[10px] leading-snug text-amber-300 break-words">
+        {t("Can't open {path}, the terminal's folder.", { path: followMiss })}
+      </div>
+    ) : null;
+
   const handleDragMove = (drag: ActiveDrag | null) => {
     dragRef.current = drag;
     if (drag) ghostRef.current?.show(drag);
     else ghostRef.current?.hide();
-  };
-
-  // Live transfer progress, keyed by the backend-assigned id. The Rust
-  // commands stream events at ~10Hz; we replace the entry on each update so
-  // a single growing progress bar shows per transfer. A folder delete that
-  // takes a while comes through here too (kind "delete"): for it `bytes` is
-  // the number of entries removed so far, and there is no total.
-  interface Transfer {
-    id: string;
-    name: string;
-    kind: "upload" | "download" | "delete";
-    bytes: number;
-    total: number;
-    status: "progress" | "done" | "error" | "cancelled";
-    error?: string;
-  }
-  const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
-
-  useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    listen<Transfer>(`sftp-transfer-${sessionId}`, (event) => {
-      const t = event.payload;
-      if (!t || !t.id) return;
-      setTransfers((prev) => ({ ...prev, [t.id]: t }));
-      if (t.status === "done" || t.status === "error" || t.status === "cancelled") {
-        // Leave the final state visible briefly before clearing the card so
-        // the user sees the success tick / failure colour / cancel notice.
-        const linger = t.status === "error" || t.error ? 6000 : t.status === "cancelled" ? 3000 : 1800;
-        setTimeout(() => {
-          setTransfers((prev) => {
-            const { [t.id]: _, ...rest } = prev;
-            return rest;
-          });
-        }, linger);
-      }
-    }).then((fn) => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
-  }, [sessionId]);
-
-  const cancelTransfer = (id: string) => {
-    // Fire-and-forget: the backend emits its own "cancelled" event when the
-    // loop notices the flag, which is what wipes the card.
-    invoke("sftp_cancel_transfer", { transferId: id }).catch(() => {});
-  };
-
-  const formatBytes = (n: number) => {
-    if (!n) return "0 B";
-    const k = 1024, units = ["B", "KB", "MB", "GB"];
-    const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(k)));
-    return `${(n / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
   };
 
   // The workspace's own element: a drop counts only on its panes.
@@ -392,7 +567,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
       if (!targetDir) return;
 
       const source = active.paneId === "local" ? localRef.current : remoteRef.current;
-      source?.sendTo(active.entries, targetDir).catch((err) => notify(`Transfer failed: ${err}`, "error"));
+      source?.sendTo(active.entries, targetDir).catch((err) => notify(t("Transfer failed: {error}", { error: String(err) }), "error"));
     };
     window.addEventListener("mouseup", onMouseUp);
     return () => window.removeEventListener("mouseup", onMouseUp);
@@ -420,7 +595,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
                     : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
                 }`}
               >
-                <Folder size={11} /> Local
+                <Folder size={11} /> {t("Local")}
               </button>
               <button
                 onClick={() => setActiveSidePersisted("remote")}
@@ -430,12 +605,12 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
                     : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03] border-b border-transparent"
                 }`}
               >
-                <Folder size={11} /> Remote
+                <Folder size={11} /> {t("Remote")}
               </button>
             </div>
           ) : (
             <div className="flex-1 flex items-center px-3 text-[9.5px] font-bold uppercase tracking-widest text-zinc-500">
-              Local + Remote
+              {t("Local + Remote")}
             </div>
           )}
           {/* Compare (#18): marks in both panes what differs from the other. */}
@@ -443,20 +618,20 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
             type="button"
             onClick={() => setCompareOn((v) => !v)}
             aria-pressed={compareOn}
-            title={compareOn ? "Stop comparing" : "Compare: mark what differs between the two folders"}
+            title={compareOn ? t("Stop comparing") : t("Compare: mark what differs between the two folders")}
             className={`shrink-0 flex items-center gap-1.5 px-2.5 border-l border-white/5 text-[10px] font-bold uppercase tracking-wider transition-all ${
               compareOn ? "text-primary bg-primary/10" : "text-zinc-500 hover:bg-white/5 hover:text-white"
             }`}
           >
             <GitCompare size={12} />
-            <span className="hidden sm:inline">Compare</span>
+            <span className="hidden sm:inline">{t("Compare")}</span>
           </button>
-          <div role="group" aria-label="Files layout" className="flex items-stretch border-l border-white/5 shrink-0">
+          <div role="group" aria-label={t("Files layout")} className="flex items-stretch border-l border-white/5 shrink-0">
             {LAYOUT_OPTIONS.filter((o) => o.id !== "side" || !isNarrow).map(({ id, title, Icon }) => (
               <button
                 key={id}
                 onClick={() => setLayoutPersisted(id)}
-                title={title}
+                title={t(title)}
                 aria-pressed={shownLayout === id}
                 className={`w-9 sm:w-7 flex items-center justify-center transition-all ${
                   shownLayout === id
@@ -472,11 +647,11 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
 
         {compareOn && (
           <div className="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 border-b border-white/5 bg-black/20 text-[10.5px] text-zinc-400">
-            <span className="text-zinc-500">Each folder against the other, by name, size and time:</span>
-            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-amber-400" /> only here</span>
-            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-rose-400" /> another size or kind</span>
-            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-emerald-400" /> newer</span>
-            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-zinc-500" /> older</span>
+            <span className="text-zinc-500">{t("Each folder against the other, by name, size and time:")}</span>
+            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-amber-400" /> {t("only here")}</span>
+            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-rose-400" /> {t("another size or kind")}</span>
+            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-emerald-400" /> {t("newer")}</span>
+            <span className="flex items-center gap-1"><span className="w-1 h-3 rounded-sm bg-zinc-500" /> {t("older")}</span>
             <label className="ml-auto flex items-center gap-1.5 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -484,7 +659,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
                 onChange={(e) => setHideSame(e.target.checked)}
                 className="accent-[var(--primary-hex)]"
               />
-              Hide files that are the same
+              {t("Hide files that are the same")}
             </label>
           </div>
         )}
@@ -543,10 +718,12 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
               onEntriesChange={setRemoteEntries}
               compareWith={compareOn ? localEntries : null}
               hideSame={hideSame}
-              headerExtra={elevationControl}
-              headerNote={elevationNote}
-              rootMode={elevation.elevated || rootByLogin}
-              archiveOff={elevation.elevated ? "Archive and extract aren't available in root mode: they run as the login user, not through sudo" : undefined}
+              headerExtra={ftp ? undefined : elevationControl}
+              headerNote={<>{elevationNote}{followNote}</>}
+              rootMode={!ftp && (elevation.elevated || rootByLogin)}
+              archiveOff={ftp
+                ? t("Archive and extract need an SSH server: they run commands on it")
+                : elevation.elevated ? t("Archive and extract aren't available in root mode: they run as the login user, not through sudo") : undefined}
             />
           </div>
         </div>
@@ -566,88 +743,19 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
       )}
 
       {/* Notices along the bottom of the workspace: the toast, then the live
-          transfer cards (one growing progress bar per active upload or
-          download; a card fades out shortly after its transfer ends). The
-          stack spans the workspace, so nothing in it can be wider than a
-          narrow panel and end up cut off at the panel's edge. Clicks go
-          through it everywhere but on a card. */}
-      {(notification || Object.values(transfers).length > 0) && (
-        <div className="absolute bottom-3 inset-x-3 z-50 flex flex-col items-end gap-1.5 pointer-events-none">
-          {notification && (
-            <div className={`self-center max-w-full px-3 py-1.5 rounded-lg border text-[11px] font-mono [overflow-wrap:anywhere] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-4 duration-300 ${
-              notification.type === "success" ? "bg-emerald-950/90 border-emerald-500/30 text-emerald-400" :
-              notification.type === "error"   ? "bg-rose-950/90 border-rose-500/30 text-rose-400" :
-                                                "bg-indigo-950/90 border-indigo-500/30 text-indigo-400"
-            }`}>{notification.msg}</div>
-          )}
-          {Object.values(transfers).map((t) => {
-            const pct = t.total > 0 ? Math.min(100, Math.round((t.bytes * 100) / t.total)) : 0;
-            const tone =
-              t.status === "error"     ? "border-rose-500/40 bg-rose-950/85 text-rose-200" :
-              t.status === "done"      ? "border-emerald-500/40 bg-emerald-950/85 text-emerald-200" :
-              t.status === "cancelled" ? "border-amber-500/40 bg-amber-950/85 text-amber-200" :
-                                         "border-indigo-500/40 bg-indigo-950/85 text-indigo-100";
-            const barTone =
-              t.status === "error"     ? "bg-rose-500" :
-              t.status === "done"      ? "bg-emerald-500" :
-              t.status === "cancelled" ? "bg-amber-500" :
-                                         "bg-indigo-500";
-            const Icon =
-              t.status === "error"     ? AlertTriangle :
-              t.status === "done"      ? Check :
-              t.status === "cancelled" ? Ban :
-              t.kind   === "upload"    ? Upload :
-              t.kind   === "delete"    ? Trash2 :
-                                         Download;
-            const statusLabel =
-              t.status === "error"     ? "failed"
-              : t.status === "cancelled" ? "cancelled"
-              : t.kind === "delete"      ? `${t.bytes.toLocaleString()} removed`
-              : t.total > 0              ? `${pct}%`
-                                         : formatBytes(t.bytes);
-            return (
-              <div key={t.id} className={`w-full max-w-[280px] pointer-events-auto px-2.5 py-1.5 rounded border ${tone} font-mono text-[10.5px] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4`}>
-                <div className="flex items-center gap-1.5 mb-1">
-                  <Icon size={11} className="shrink-0" />
-                  <span className="truncate flex-1" title={t.name}>{t.name}</span>
-                  <span className="text-[9.5px] opacity-80 shrink-0">{statusLabel}</span>
-                  {/* Stop button — only while the transfer is still running.
-                      Finished / failed / cancelled cards fade out on their
-                      own timer; no button needed. */}
-                  {t.status === "progress" && (
-                    <button
-                      onClick={() => cancelTransfer(t.id)}
-                      title="Cancel"
-                      className="shrink-0 p-0.5 rounded hover:bg-white/15 text-zinc-300 hover:text-rose-300"
-                    >
-                      <X size={11} />
-                    </button>
-                  )}
-                </div>
-                {t.status !== "error" && (
-                  <div className="h-1 bg-white/10 rounded overflow-hidden">
-                    <div
-                      className={`h-full ${barTone} transition-[width] duration-150 ${t.kind === "delete" && t.status === "progress" ? "animate-pulse" : ""}`}
-                      style={{ width: t.total > 0 ? `${pct}%` : "100%" }}
-                    />
-                  </div>
-                )}
-                {/* Why it failed: up to three lines, so the reason can be
-                    read without hovering; the tooltip has all of it. */}
-                {t.status === "error" && t.error && (
-                  <div className="text-[9.5px] opacity-80 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
-                )}
-                {/* A finished folder download can carry a note, e.g. names
-                    this computer can't store were skipped; a cancelled
-                    upload says what it left on the server. */}
-                {(t.status === "done" || t.status === "cancelled") && t.error && (
-                  <div className="text-[9.5px] text-amber-300/90 line-clamp-3 [overflow-wrap:anywhere]" title={t.error}>{t.error}</div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+          transfer cards. The stack spans the workspace, so nothing in it can
+          be wider than a narrow panel and end up cut off at the panel's edge.
+          Clicks go through it everywhere but on a card. */}
+      <div className="absolute bottom-3 inset-x-3 z-50 flex flex-col items-end gap-1.5 pointer-events-none">
+        {notification && (
+          <div className={`self-center max-w-full px-3 py-1.5 rounded-lg border text-[11px] font-mono [overflow-wrap:anywhere] shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-4 duration-300 ${
+            notification.type === "success" ? "bg-emerald-950/90 border-emerald-500/30 text-emerald-400" :
+            notification.type === "error"   ? "bg-rose-950/90 border-rose-500/30 text-rose-400" :
+                                              "bg-indigo-950/90 border-indigo-500/30 text-indigo-400"
+          }`}>{notification.msg}</div>
+        )}
+        <TransferCards sessionId={sessionId} />
+      </div>
 
       {/* Cursor-following drag ghost. Self-contained so its per-mousemove
           position updates don't re-render this workspace or the FilePanels. */}

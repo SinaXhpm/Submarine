@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -7,6 +7,8 @@ import {
 } from "lucide-react";
 import Sparkline from "./Sparkline";
 import { useConfirm } from "../ui/confirm";
+import { usePageShown } from "../hooks/usePageShown";
+import { t, tk, tn, tx, useT } from "../i18n";
 
 // ---------- shared types ------------------------------------------------------
 
@@ -122,22 +124,22 @@ const HISTORY = 60;
 // all "Mbps", not MB/s. Showing the same units the user sees on their
 // router makes the value immediately comparable.
 const BUILTINS: Record<string, { label: string; unit: string; is_pct: boolean; color: string }> = {
-  cpu:     { label: "CPU",       unit: "%",    is_pct: true,  color: "rgb(96,165,250)" },
-  mem:     { label: "Memory",    unit: "%",    is_pct: true,  color: "rgb(129,140,248)" },
-  swap:    { label: "Swap",      unit: "%",    is_pct: true,  color: "rgb(192,132,252)" },
-  disk:    { label: "Disk /",    unit: "%",    is_pct: true,  color: "rgb(251,191,36)" },
-  load:    { label: "Load 1m",   unit: "",     is_pct: false, color: "rgb(244,114,182)" },
-  net_in:  { label: "Net In",    unit: "Mbps", is_pct: false, color: "rgb(34,211,238)" },
-  net_out: { label: "Net Out",   unit: "Mbps", is_pct: false, color: "rgb(251,113,133)" },
+  cpu:     { label: tk("CPU"),       unit: "%",    is_pct: true,  color: "rgb(96,165,250)" },
+  mem:     { label: tk("Memory"),    unit: "%",    is_pct: true,  color: "rgb(129,140,248)" },
+  swap:    { label: tk("Swap"),      unit: "%",    is_pct: true,  color: "rgb(192,132,252)" },
+  disk:    { label: tk("Disk /"),    unit: "%",    is_pct: true,  color: "rgb(251,191,36)" },
+  load:    { label: tk("Load 1m"),   unit: "",     is_pct: false, color: "rgb(244,114,182)" },
+  net_in:  { label: tk("Net In"),    unit: "Mbps", is_pct: false, color: "rgb(34,211,238)" },
+  net_out: { label: tk("Net Out"),   unit: "Mbps", is_pct: false, color: "rgb(251,113,133)" },
 };
 
 const TOGGLE_KEYS: { key: string; sub_keys: string[]; label: string }[] = [
-  { key: "cpu",  sub_keys: ["cpu"],            label: "CPU" },
-  { key: "mem",  sub_keys: ["mem"],            label: "Memory" },
-  { key: "swap", sub_keys: ["swap"],           label: "Swap" },
-  { key: "disk", sub_keys: ["disk"],           label: "Disk /" },
-  { key: "load", sub_keys: ["load"],           label: "Load 1m" },
-  { key: "net",  sub_keys: ["net_in", "net_out"], label: "Network" },
+  { key: "cpu",  sub_keys: ["cpu"],            label: tk("CPU") },
+  { key: "mem",  sub_keys: ["mem"],            label: tk("Memory") },
+  { key: "swap", sub_keys: ["swap"],           label: tk("Swap") },
+  { key: "disk", sub_keys: ["disk"],           label: tk("Disk /") },
+  { key: "load", sub_keys: ["load"],           label: tk("Load 1m") },
+  { key: "net",  sub_keys: ["net_in", "net_out"], label: tk("Network") },
 ];
 
 const CUSTOM_COLOR = "rgb(251,191,36)";
@@ -156,38 +158,41 @@ const formatBitsPerSec = (bytesPerSec: number) => {
   if (bits >= 1e3) return `${(bits / 1e3).toFixed(1)} Kbps`;
   return `${Math.round(bits)} bps`;
 };
+// A value that isn't a number arrives as null (JSON has no NaN), and the global
+// isFinite calls null finite: it has to be the strict one here.
+const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const formatBuiltin = (key: string, v: number | undefined) => {
-  if (v === undefined || !isFinite(v)) return "—";
+  if (!isNumber(v)) return "—";
   if (key === "net_in" || key === "net_out") return formatBitsPerSec(v);
   if (BUILTINS[key]?.is_pct) return `${v.toFixed(1)}%`;
   return v.toFixed(2);
 };
 const formatCustomNumber = (v: number | undefined, unit?: string) => {
-  if (v === undefined || !isFinite(v)) return "—";
+  if (!isNumber(v)) return "—";
   const num = Math.abs(v) >= 100 ? v.toFixed(0)
             : Math.abs(v) >= 1   ? v.toFixed(2)
                                  : v.toFixed(3);
   return unit ? `${num} ${unit}` : num;
 };
 const timeAgo = (ts?: number | null) => {
-  if (!ts) return "never";
+  if (!ts) return t("never");
   // Floor (not round) so the display advances cleanly: 0s shows "just now",
   // 1s shows "1s ago", 2s shows "2s ago" — no jitter at the .5 boundary.
   // Previously this clamped the first 5 seconds to "just now" which made
   // the counter look frozen because polling fires every 5s.
   const dt = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (dt === 0) return "just now";
-  if (dt < 60) return `${dt}s ago`;
-  if (dt < 3600) return `${Math.floor(dt / 60)}m ago`;
-  return `${Math.floor(dt / 3600)}h ago`;
+  if (dt === 0) return t("just now");
+  if (dt < 60) return t("{seconds}s ago", { seconds: dt });
+  if (dt < 3600) return t("{minutes}m ago", { minutes: Math.floor(dt / 60) });
+  return t("{hours}h ago", { hours: Math.floor(dt / 3600) });
 };
 const formatDuration = (ms: number) => {
   const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 60) return t("{seconds}s", { seconds: s });
+  if (s < 3600) return t("{minutes}m {seconds}s", { minutes: Math.floor(s / 60), seconds: s % 60 });
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  return `${h}h ${m}m`;
+  return t("{hours}h {minutes}m", { hours: h, minutes: m });
 };
 const randomId = () => Math.random().toString(36).slice(2, 10);
 
@@ -200,9 +205,13 @@ interface Props {
   /// every outage / recovered event is recorded there too so the user has
   /// a persistent history beyond the transient toast.
   addLog?: (msg: string, type: "info" | "success" | "warn" | "error") => void;
+  /// The Monitor view is the one shown. It stays mounted behind the others
+  /// (DesktopApp), and its once-a-second display tick is only for eyes on it.
+  active?: boolean;
 }
 
-const MonitoringPanel = ({ servers, addLog }: Props) => {
+const MonitoringPanel = ({ servers, addLog, active = true }: Props) => {
+  const t = useT();
   const confirm = useConfirm();
   const [rows, setRows] = useState<MonitorRow[]>([]);
   const [addOpen, setAddOpen] = useState(false);
@@ -252,23 +261,20 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
   };
 
   // Tick once per second so "offline for Xs" badges advance even without
-  // a new event firing. Pause while the OS window is hidden/minimized — nobody
-  // is watching the badges then, and the backend keeps monitoring regardless
-  // (this tick is display-only). Re-showing does an immediate tick so the
-  // badges are current the instant the window comes back.
+  // a new event firing. Only while the Monitor view is the one shown and the
+  // window is (not minimized, and on a phone the app not in the background) —
+  // nobody is watching the badges otherwise, and the backend keeps monitoring
+  // regardless (this tick is display-only). Coming back does an immediate tick
+  // so the badges are current the instant the view shows again.
   const [, forceTick] = useState(0);
-  const [winShown, setWinShown] = useState(() => typeof document === "undefined" || !document.hidden);
+  const pageShown = usePageShown();
+  const ticking = active && pageShown;
   useEffect(() => {
-    const onVis = () => setWinShown(!document.hidden);
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, []);
-  useEffect(() => {
-    if (!winShown) return;
+    if (!ticking) return;
     forceTick((n) => n + 1);
     const id = window.setInterval(() => forceTick((n) => n + 1), 1000);
     return () => window.clearInterval(id);
-  }, [winShown]);
+  }, [ticking]);
 
   // ---- data load + live listeners --------------------------------------------
 
@@ -281,6 +287,36 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
     }
   };
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
+
+  const addSample = (s: Sample) => {
+    setLatest((prev) => ({ ...prev, [s.node_id]: s }));
+    setHistory((prev) => {
+      const nodeHist = { ...(prev[s.node_id] || {}) };
+      for (const [k, v] of Object.entries(s.values)) {
+        if (!isNumber(v)) continue;
+        const arr = nodeHist[k] ? [...nodeHist[k], v] : [v];
+        if (arr.length > HISTORY) arr.splice(0, arr.length - HISTORY);
+        nodeHist[k] = arr;
+      }
+      return { ...prev, [s.node_id]: nodeHist };
+    });
+  };
+
+  // While the view is behind another one nobody sees the cards, so a sample
+  // waits here (a history's worth per node) rather than render them all. What
+  // waited goes in before the view is painted, and the rows ask the backend,
+  // which knows what came after those samples (a node that dropped since).
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const waitingSamplesRef = useRef(new Map<number, Sample[]>());
+  useLayoutEffect(() => {
+    const waiting = waitingSamplesRef.current;
+    if (!active || waiting.size === 0) return;
+    waiting.forEach((samples) => samples.forEach(addSample));
+    waiting.clear();
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   useEffect(() => {
     // Async cleanup guard: listen() returns its unlisten via a Promise. If
@@ -305,16 +341,14 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
       track(listen<Sample>(`monitor-sample-${r.node_id}`, (event) => {
         const s = event.payload;
         if (!s) return;
-        setLatest((prev) => ({ ...prev, [s.node_id]: s }));
-        setHistory((prev) => {
-          const nodeHist = { ...(prev[s.node_id] || {}) };
-          for (const [k, v] of Object.entries(s.values)) {
-            const arr = nodeHist[k] ? [...nodeHist[k], v] : [v];
-            if (arr.length > HISTORY) arr.splice(0, arr.length - HISTORY);
-            nodeHist[k] = arr;
-          }
-          return { ...prev, [s.node_id]: nodeHist };
-        });
+        if (!activeRef.current) {
+          const waiting = waitingSamplesRef.current.get(s.node_id) ?? [];
+          waiting.push(s);
+          if (waiting.length > HISTORY) waiting.shift();
+          waitingSamplesRef.current.set(s.node_id, waiting);
+          return;
+        }
+        addSample(s);
         // Keep `row.last_sample_ts` in sync so the "Xs ago" indicator
         // ticks immediately on each new sample instead of waiting for the
         // next status event / reload(). Without this the timer would
@@ -331,9 +365,9 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
       track(listen<OutageEvent>(`monitor-outage-${r.node_id}`, (event) => {
         const o = event.payload;
         if (!o) return;
-        const msg = `[Monitor] ${o.node_name} is OFFLINE — ${o.last_error}`;
+        const msg = t("[Monitor] {name} is OFFLINE — {error}", { name: o.node_name, error: o.last_error });
         addLog?.(msg, "error");
-        if (o.notify) showToast(`${o.node_name} offline · ${o.last_error}`, "err");
+        if (o.notify) showToast(t("{name} offline · {error}", { name: o.node_name, error: o.last_error }), "err");
         if (o.beep) tryBeep();
         // Status reload so the card re-renders with the outage badge.
         reload();
@@ -341,9 +375,9 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
       track(listen<RecoveredEvent>(`monitor-recovered-${r.node_id}`, (event) => {
         const o = event.payload;
         if (!o) return;
-        const msg = `[Monitor] ${o.node_name} recovered after ${formatDuration(o.duration_ms)}`;
+        const msg = t("[Monitor] {name} recovered after {duration}", { name: o.node_name, duration: formatDuration(o.duration_ms) });
         addLog?.(msg, "success");
-        if (o.notify) showToast(`${o.node_name} back online · was down ${formatDuration(o.duration_ms)}`, "ok");
+        if (o.notify) showToast(t("{name} back online · was down {duration}", { name: o.node_name, duration: formatDuration(o.duration_ms) }), "ok");
         reload();
       }));
     });
@@ -403,48 +437,48 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
       <div className="shrink-0 px-4 sm:px-6 py-3 sm:py-5 border-b border-white/5 flex items-center justify-between gap-2 sm:gap-3">
         <div className="min-w-0">
           <h2 className="text-[16px] sm:text-[22px] font-bold text-white uppercase tracking-tight flex items-center gap-2">
-            <Activity size={18} className="text-primary" /> Monitoring
+            <Activity size={18} className="text-primary" /> {t("Monitoring")}
           </h2>
           <p className="hidden md:block text-[12px] text-zinc-300 mt-0.5">
-            Per-node SSH polling. Outages are logged and (optionally) surfaced as toasts.
+            {t("Per-node SSH polling. Outages are logged and (optionally) surfaced as toasts.")}
           </p>
         </div>
         <div className="flex items-center gap-1.5 sm:gap-2">
           <button
             onClick={() => setAddOpen(true)}
-            title="Add node"
+            title={t("Add node")}
             className="h-9 px-2.5 sm:px-3.5 rounded-lg text-[12px] font-bold uppercase tracking-wider bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 flex items-center gap-1.5"
           >
-            <Plus size={14} /> <span className="hidden sm:inline">Add Node</span>
+            <Plus size={14} /> <span className="hidden sm:inline">{t("Add Node")}</span>
           </button>
           <div className="hidden sm:block h-7 w-px bg-white/10" />
           {anyRunning ? (
             <button
               onClick={pauseAll}
               disabled={busy}
-              title="Pause all"
+              title={t("Pause all")}
               className="h-9 px-2.5 sm:px-3.5 rounded-lg text-[12px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-200 border border-amber-500/40 hover:bg-amber-500/25 disabled:opacity-50 flex items-center gap-1.5"
             >
-              <Pause size={14} /> <span className="hidden sm:inline">Pause All</span>
+              <Pause size={14} /> <span className="hidden sm:inline">{t("Pause All")}</span>
             </button>
           ) : (
             <button
               onClick={resumeAll}
               disabled={busy || rows.length === 0}
-              title={allPaused ? "Resume all" : "Start all"}
+              title={allPaused ? t("Resume all") : t("Start all")}
               className="h-9 px-2.5 sm:px-3.5 rounded-lg text-[12px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-200 border border-emerald-500/40 hover:bg-emerald-500/25 disabled:opacity-50 flex items-center gap-1.5"
             >
-              <Play size={14} /> <span className="hidden sm:inline">{allPaused ? "Resume All" : "Start All"}</span>
+              <Play size={14} /> <span className="hidden sm:inline">{allPaused ? t("Resume All") : t("Start All")}</span>
             </button>
           )}
           <button
             onClick={() => setSettingsOpen(true)}
             className="h-9 w-9 rounded-lg text-zinc-300 hover:text-primary hover:bg-white/5 flex items-center justify-center"
-            title="Monitor settings"
+            title={t("Monitor settings")}
           >
             <SettingsIcon size={15} />
           </button>
-          <button onClick={reload} className="h-9 w-9 rounded-lg text-zinc-300 hover:text-primary hover:bg-white/5 flex items-center justify-center" title="Refresh">
+          <button onClick={reload} className="h-9 w-9 rounded-lg text-zinc-300 hover:text-primary hover:bg-white/5 flex items-center justify-center" title={t("Refresh")}>
             <RefreshCw size={14} />
           </button>
         </div>
@@ -462,8 +496,8 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
       <div className="flex-1 overflow-y-auto custom-scrollbar p-3 sm:p-6">
         {rows.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-zinc-300 text-[12px] font-mono gap-1 text-center px-4">
-            <span>No monitored nodes yet.</span>
-            <span className="text-zinc-500 text-[11px]">Click "+ Add Node" to pick from your saved nodes.</span>
+            <span>{t("No monitored nodes yet.")}</span>
+            <span className="text-zinc-500 text-[11px]">{t("Click \"+ Add Node\" to pick from your saved nodes.")}</span>
           </div>
         ) : (
           <div className="grid gap-2 sm:gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 290px), 1fr))" }}>
@@ -478,7 +512,7 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
                 onResume={() => resumeNode(r.node_id)}
                 onConfig={() => setConfigFor(r.node_id)}
                 onRemove={async () => {
-                  if (!(await confirm({ title: "Stop monitoring this node?", message: "Custom metrics on this node will be lost.", destructive: true }))) return;
+                  if (!(await confirm({ title: t("Stop monitoring this node?"), message: t("Custom metrics on this node will be lost."), destructive: true }))) return;
                   removeNode(r.node_id);
                 }}
               />
@@ -519,13 +553,13 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3" onClick={() => setAddOpen(false)}>
           <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
-              <span className="text-[12px] font-bold uppercase tracking-widest text-white">Add Node to Monitor</span>
-              <button aria-label="Close" onClick={() => setAddOpen(false)} className="text-zinc-400 hover:text-white"><X size={16} /></button>
+              <span className="text-[12px] font-bold uppercase tracking-widest text-white">{t("Add Node to Monitor")}</span>
+              <button aria-label={t("Close")} onClick={() => setAddOpen(false)} className="text-zinc-400 hover:text-white"><X size={16} /></button>
             </div>
             <div className="p-2 flex-1 overflow-y-auto custom-scrollbar">
               {availableToAdd.length === 0 ? (
                 <div className="text-center text-zinc-300 text-[12px] font-mono py-6">
-                  All saved nodes are already being monitored.
+                  {t("All saved nodes are already being monitored.")}
                 </div>
               ) : (
                 availableToAdd.map((s: any) => (
@@ -546,7 +580,10 @@ const MonitoringPanel = ({ servers, addLog }: Props) => {
             </div>
             <div className="px-4 py-3 border-t border-white/5">
               <p className="text-[11px] text-zinc-400 leading-snug">
-                Node must already be approved (known-hosts). Added entries start <span className="text-zinc-200">paused</span> — click <span className="text-emerald-300">Resume</span> to begin polling.
+                {tx("Node must already be approved (known-hosts). Added entries start {paused} — click {resume} to begin polling.", {
+                  paused: <span className="text-zinc-200">{t("paused")}</span>,
+                  resume: <span className="text-emerald-300">{t("Resume")}</span>,
+                })}
               </p>
             </div>
           </div>
@@ -582,14 +619,15 @@ interface ServerCardProps {
 }
 
 const ServerCard = ({ row, sample, history, busy, onPause, onResume, onConfig, onRemove }: ServerCardProps) => {
+  const t = useT();
   // The outage badge is what makes a disconnection actionable — it stays
   // visible while the streak is active and shows the running duration.
   const inOutage = !!row.outage_since_ms && !row.paused;
   const stateChip =
-    row.paused      ? { tone: "bg-zinc-500/15 border-zinc-500/40 text-zinc-300", Icon: Pause, label: "paused" }
-    : inOutage      ? { tone: "bg-rose-500/20 border-rose-500/50 text-rose-200", Icon: WifiOff, label: "outage" }
-    : !row.connected ? { tone: "bg-amber-500/15 border-amber-500/40 text-amber-200", Icon: WifiOff, label: "offline" }
-                     : { tone: "bg-emerald-500/15 border-emerald-500/40 text-emerald-200", Icon: Wifi, label: "live" };
+    row.paused      ? { tone: "bg-zinc-500/15 border-zinc-500/40 text-zinc-300", Icon: Pause, label: t("paused") }
+    : inOutage      ? { tone: "bg-rose-500/20 border-rose-500/50 text-rose-200", Icon: WifiOff, label: t("outage") }
+    : !row.connected ? { tone: "bg-amber-500/15 border-amber-500/40 text-amber-200", Icon: WifiOff, label: t("offline") }
+                     : { tone: "bg-emerald-500/15 border-emerald-500/40 text-emerald-200", Icon: Wifi, label: t("live") };
   const Chip = stateChip.Icon;
   const cardBorder = inOutage ? "border-rose-500/40 shadow-[0_0_0_1px_rgba(244,63,94,0.15)_inset]" : "border-white/5";
 
@@ -615,21 +653,21 @@ const ServerCard = ({ row, sample, history, busy, onPause, onResume, onConfig, o
         </div>
         <div className="flex items-center shrink-0">
           {row.paused ? (
-            <button onClick={onResume} disabled={busy} title="Resume"
+            <button onClick={onResume} disabled={busy} title={t("Resume")}
               className="w-6 h-6 rounded text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50 flex items-center justify-center">
               <Play size={11} />
             </button>
           ) : (
-            <button onClick={onPause} disabled={busy} title="Pause"
+            <button onClick={onPause} disabled={busy} title={t("Pause")}
               className="w-6 h-6 rounded text-amber-200 hover:bg-amber-500/20 disabled:opacity-50 flex items-center justify-center">
               <Pause size={11} />
             </button>
           )}
-          <button onClick={onConfig} title="Configure"
+          <button onClick={onConfig} title={t("Configure")}
             className="w-6 h-6 rounded text-zinc-300 hover:bg-white/5 hover:text-primary flex items-center justify-center">
             <Settings2 size={11} />
           </button>
-          <button onClick={onRemove} disabled={busy} title="Remove"
+          <button onClick={onRemove} disabled={busy} title={t("Remove")}
             className="w-6 h-6 rounded text-zinc-300 hover:bg-rose-500/20 hover:text-rose-200 disabled:opacity-50 flex items-center justify-center">
             <Trash2 size={11} />
           </button>
@@ -641,7 +679,7 @@ const ServerCard = ({ row, sample, history, busy, onPause, onResume, onConfig, o
         <div className="px-2 py-1 bg-amber-400/[0.06] border border-amber-400/25 rounded text-[10.5px] text-amber-100/90 font-mono flex items-center gap-1.5">
           <ShieldAlert size={11} className="shrink-0 text-amber-400" />
           <span className="truncate">
-            {row.held_metric_ids!.length === 1 ? "A custom command is" : `${row.held_metric_ids!.length} custom commands are`} waiting for your OK (Servers → Review)
+            {tn(row.held_metric_ids!.length, "A custom command is waiting for your OK (Servers → Review)", "{count} custom commands are waiting for your OK (Servers → Review)")}
           </span>
         </div>
       )}
@@ -650,8 +688,8 @@ const ServerCard = ({ row, sample, history, busy, onPause, onResume, onConfig, o
       {inOutage && (
         <div className="px-2 py-1 bg-rose-500/15 border border-rose-500/40 rounded text-[10.5px] text-rose-100 font-mono flex items-center gap-1.5">
           <WifiOff size={11} className="shrink-0" />
-          <span className="font-bold">Offline {formatDuration(Date.now() - (row.outage_since_ms || Date.now()))}</span>
-          <span className="text-rose-200/80 truncate flex-1" title={row.last_error || ""}>· {row.last_error || "no error reported"}</span>
+          <span className="font-bold">{t("Offline {duration}", { duration: formatDuration(Date.now() - (row.outage_since_ms || Date.now())) })}</span>
+          <span className="text-rose-200/80 truncate flex-1" title={row.last_error || ""}>· {row.last_error || t("no error reported")}</span>
         </div>
       )}
 
@@ -665,7 +703,7 @@ const ServerCard = ({ row, sample, history, busy, onPause, onResume, onConfig, o
       {/* Metric rows — one per metric, full-width, label/value/sparkline inline */}
       {builtinCells.length + customCells.length === 0 ? (
         <div className="text-[11px] text-zinc-300 font-mono text-center py-3">
-          No metrics. Click <Settings2 size={10} className="inline mb-0.5" /> to enable.
+          {tx("No metrics. Click {icon} to enable.", { icon: <Settings2 size={10} className="inline mb-0.5" /> })}
         </div>
       ) : (
         <div className="flex flex-col gap-[3px]">
@@ -693,20 +731,23 @@ const ServerCard = ({ row, sample, history, busy, onPause, onResume, onConfig, o
 /// gets a wider sparkline without changing the rest of the layout.
 const CompactBuiltinRow = ({ metricKey, meta, value, hist }: {
   metricKey: string; meta?: any; value?: number; hist: number[];
-}) => (
-  <div className="flex items-center gap-2 px-1.5 h-[22px] bg-white/[0.025] rounded hover:bg-white/[0.04] transition-colors">
-    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-300 w-[58px] shrink-0 truncate">
-      {meta?.label || metricKey}
-    </span>
-    <span className="text-[11px] font-mono font-bold text-zinc-50 w-[82px] shrink-0 text-right tabular-nums">
-      {formatBuiltin(metricKey, value)}
-    </span>
-    <div className="flex-1 min-w-0">
-      <Sparkline data={hist} width={140} height={16} color={meta?.color}
-        min={meta?.is_pct ? 0 : undefined} max={meta?.is_pct ? 100 : undefined} />
+}) => {
+  const t = useT();
+  return (
+    <div className="flex items-center gap-2 px-1.5 h-[22px] bg-white/[0.025] rounded hover:bg-white/[0.04] transition-colors">
+      <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-300 w-[58px] shrink-0 truncate">
+        {meta?.label ? t(meta.label) : metricKey}
+      </span>
+      <span className="text-[11px] font-mono font-bold text-zinc-50 w-[82px] shrink-0 text-right tabular-nums">
+        {formatBuiltin(metricKey, value)}
+      </span>
+      <div className="flex-1 min-w-0">
+        <Sparkline data={hist} width={140} height={16} color={meta?.color}
+          min={meta?.is_pct ? 0 : undefined} max={meta?.is_pct ? 100 : undefined} />
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const CompactCustomRow = ({ cm, value, text, err, hist }: {
   cm: CustomMetric; value?: number; text?: string; err?: string; hist: number[];
@@ -745,6 +786,7 @@ const SettingsModal = ({ onClose, onSaved }: {
   onClose: () => void;
   onSaved?: (s: MonitorSettings) => void;
 }) => {
+  const t = useT();
   const [s, setS] = useState<MonitorSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -775,45 +817,45 @@ const SettingsModal = ({ onClose, onSaved }: {
       <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-[#121214] border border-white/10 rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
           <span className="text-[12px] font-bold uppercase tracking-widest text-white flex items-center gap-2">
-            <SettingsIcon size={13} className="text-primary" /> Monitor Settings
+            <SettingsIcon size={13} className="text-primary" /> {t("Monitor Settings")}
           </span>
-          <button aria-label="Close" onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
+          <button aria-label={t("Close")} onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
         </div>
         <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-4">
           {!s ? (
-            <div className="text-center text-zinc-300 text-[12px] py-4 font-mono">Loading…</div>
+            <div className="text-center text-zinc-300 text-[12px] py-4 font-mono">{t("Loading…")}</div>
           ) : (
             <>
               <NumberRow
-                label="Poll Interval"
-                hint="Seconds between samples (per node). Changes apply on next cycle."
+                label={t("Poll Interval")}
+                hint={t("Seconds between samples (per node). Changes apply on next cycle.")}
                 value={s.interval_secs} min={1} max={600} step={1} suffix="s"
                 onChange={(v) => setS({ ...s, interval_secs: v })}
               />
               <NumberRow
-                label="Connect Timeout"
-                hint="How long to wait for TCP + SSH handshake before giving up."
+                label={t("Connect Timeout")}
+                hint={t("How long to wait for TCP + SSH handshake before giving up.")}
                 value={s.connect_timeout_secs} min={2} max={120} step={1} suffix="s"
                 onChange={(v) => setS({ ...s, connect_timeout_secs: v })}
               />
               <NumberRow
-                label="Poll Timeout"
-                hint="How long to wait for the probe script's stdout each cycle."
+                label={t("Poll Timeout")}
+                hint={t("How long to wait for the probe script's stdout each cycle.")}
                 value={s.poll_timeout_secs} min={2} max={120} step={1} suffix="s"
                 onChange={(v) => setS({ ...s, poll_timeout_secs: v })}
               />
               <NumberRow
-                label="Outage Threshold"
-                hint="Consecutive failures before declaring an outage and logging it."
-                value={s.outage_threshold} min={1} max={100} step={1} suffix="× polls"
+                label={t("Outage Threshold")}
+                hint={t("Consecutive failures before declaring an outage and logging it.")}
+                value={s.outage_threshold} min={1} max={100} step={1} suffix={t("× polls")}
                 onChange={(v) => setS({ ...s, outage_threshold: v })}
               />
               <label className="flex items-center justify-between gap-3 px-3 py-2 rounded bg-white/[0.03] border border-white/10 cursor-pointer">
                 <div className="flex items-center gap-2">
                   {s.notify_on_outage ? <Bell size={14} className="text-amber-300" /> : <BellOff size={14} className="text-zinc-400" />}
                   <div>
-                    <div className="text-[12px] font-bold text-zinc-100">Toast on Outage</div>
-                    <div className="text-[10.5px] text-zinc-400">Show a popup when a node goes offline or recovers (always logs regardless).</div>
+                    <div className="text-[12px] font-bold text-zinc-100">{t("Toast on Outage")}</div>
+                    <div className="text-[10.5px] text-zinc-400">{t("Show a popup when a node goes offline or recovers (always logs regardless).")}</div>
                   </div>
                 </div>
                 <input
@@ -830,18 +872,18 @@ const SettingsModal = ({ onClose, onSaved }: {
                 <div className="flex items-center gap-2">
                   <Volume2 size={14} className={s.beep_on_outage ? "text-amber-300" : "text-zinc-400"} />
                   <div>
-                    <div className="text-[12px] font-bold text-zinc-100">Beep on Outage</div>
-                    <div className="text-[10.5px] text-zinc-400">Play a short tone when a node goes offline. Cross-platform synth — no system sound file required.</div>
+                    <div className="text-[12px] font-bold text-zinc-100">{t("Beep on Outage")}</div>
+                    <div className="text-[10.5px] text-zinc-400">{t("Play a short tone when a node goes offline. Cross-platform synth — no system sound file required.")}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
                     onClick={(e) => { e.preventDefault(); beepNow(); }}
-                    title="Play a test beep"
+                    title={t("Play a test beep")}
                     className="h-7 px-2 rounded text-[10px] font-bold uppercase tracking-wider bg-white/5 text-zinc-200 border border-white/10 hover:bg-white/10"
                   >
-                    Test
+                    {t("Test")}
                   </button>
                   <input
                     type="checkbox"
@@ -852,8 +894,8 @@ const SettingsModal = ({ onClose, onSaved }: {
                 </div>
               </label>
               <NumberRow
-                label="Beep Cooldown"
-                hint="Minimum seconds between consecutive beeps — collapses a burst of outages into a single alert."
+                label={t("Beep Cooldown")}
+                hint={t("Minimum seconds between consecutive beeps — collapses a burst of outages into a single alert.")}
                 value={s.beep_cooldown_secs} min={0} max={600} step={1} suffix="s"
                 onChange={(v) => setS({ ...s, beep_cooldown_secs: v })}
               />
@@ -866,10 +908,10 @@ const SettingsModal = ({ onClose, onSaved }: {
                   disabled={saving}
                   className="flex-1 h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/25 text-primary border border-primary/50 hover:bg-primary/35 disabled:opacity-50"
                 >
-                  {saving ? "Saving…" : "Apply"}
+                  {saving ? t("Saving…") : t("Apply")}
                 </button>
                 <button onClick={onClose} className="h-9 px-3 rounded text-[11px] font-bold uppercase tracking-wider bg-white/5 text-zinc-200 border border-white/10 hover:bg-white/10">
-                  Cancel
+                  {t("Cancel")}
                 </button>
               </div>
             </>
@@ -919,6 +961,7 @@ interface ConfigureProps {
 }
 
 const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: ConfigureProps) => {
+  const t = useT();
   const [draft, setDraft] = useState<CustomMetric[]>(row.custom_metrics);
   useEffect(() => {
     setDraft(row.custom_metrics);
@@ -938,7 +981,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
   const addDraft = () =>
     setDraft((prev) => [
       ...prev,
-      { id: randomId(), name: "New metric", command: "echo 0", parse: "number", display: "sparkline" },
+      { id: randomId(), name: t("New metric"), command: "echo 0", parse: "number", display: "sparkline" },
     ]);
   const dirty = JSON.stringify(draft) !== JSON.stringify(row.custom_metrics);
 
@@ -947,15 +990,15 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
       <div className="w-full max-w-[480px] bg-[#121214] border-l border-white/10 h-full flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="shrink-0 px-4 py-3 border-b border-white/5 flex items-center justify-between">
           <div>
-            <div className="text-[12px] font-bold uppercase tracking-widest text-white">Configure</div>
+            <div className="text-[12px] font-bold uppercase tracking-widest text-white">{t("Configure")}</div>
             <div className="text-[12px] text-zinc-300 font-mono mt-0.5">{row.name} <span className="text-zinc-500">· {row.host}:{row.port}</span></div>
           </div>
-          <button aria-label="Close" onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
+          <button aria-label={t("Close")} onClick={onClose} className="text-zinc-400 hover:text-white"><X size={16} /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">
           <section>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-300 mb-2">Built-in Metrics</div>
+            <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-300 mb-2">{t("Built-in Metrics")}</div>
             <div className="flex flex-wrap gap-1.5">
               {TOGGLE_KEYS.map(({ key, label }) => {
                 const on = row.enabled_metrics.includes(key);
@@ -970,7 +1013,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
                         : "bg-white/[0.03] text-zinc-300 border-white/10 hover:bg-white/[0.06] hover:text-zinc-100"
                     }`}
                   >
-                    {label}
+                    {t(label)}
                   </button>
                 );
               })}
@@ -979,15 +1022,15 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
 
           <section>
             <div className="flex items-center justify-between mb-2">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-300">Custom Commands</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-300">{t("Custom Commands")}</div>
               <button onClick={addDraft}
                 className="h-6 px-2 rounded text-[10.5px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-200 border border-amber-500/40 hover:bg-amber-500/25 flex items-center gap-1">
-                <Plus size={10} /> Add
+                <Plus size={10} /> {t("Add")}
               </button>
             </div>
             {draft.length === 0 ? (
               <div className="text-[11px] text-zinc-400 font-mono text-center py-4 border border-dashed border-white/10 rounded">
-                No custom commands. Click <span className="text-amber-200">+ Add</span> to define one.
+                {tx("No custom commands. Click {add} to define one.", { add: <span className="text-amber-200">{t("+ Add")}</span> })}
               </div>
             ) : (
               <div className="space-y-3">
@@ -997,46 +1040,46 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
                       <input
                         value={cm.name}
                         onChange={(e) => updateDraft(idx, { name: e.target.value })}
-                        placeholder="Display name"
+                        placeholder={t("Display name")}
                         className="flex-1 h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11.5px] text-zinc-50 outline-none focus:border-primary/40"
                       />
                       <button onClick={() => removeDraft(idx)}
                         className="w-7 h-7 rounded text-zinc-300 hover:text-rose-200 hover:bg-rose-500/15 flex items-center justify-center"
-                        title="Remove">
+                        title={t("Remove")}>
                         <Trash2 size={12} />
                       </button>
                     </div>
                     <textarea
                       value={cm.command}
                       onChange={(e) => updateDraft(idx, { command: e.target.value })}
-                      placeholder="shell command, e.g.  ps -e | wc -l"
+                      placeholder={t("shell command, e.g.  ps -e | wc -l")}
                       rows={2}
                       className="w-full px-2 py-1.5 bg-black/40 border border-white/10 rounded text-[11.5px] font-mono text-zinc-100 outline-none focus:border-primary/40 resize-y"
                     />
                     <div className="grid grid-cols-3 gap-2 text-[10px]">
                       <label className="space-y-1">
-                        <span className="text-zinc-400 uppercase tracking-wider font-bold">Parse</span>
+                        <span className="text-zinc-400 uppercase tracking-wider font-bold">{t("Parse")}</span>
                         <select value={cm.parse}
                           onChange={(e) => updateDraft(idx, { parse: e.target.value as any })}
                           className="w-full h-7 px-1.5 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 outline-none">
-                          <option className="bg-[#1a1a1e]" value="number">First number</option>
-                          <option className="bg-[#1a1a1e]" value="regex">Regex capture</option>
-                          <option className="bg-[#1a1a1e]" value="text">Raw text</option>
+                          <option className="bg-[#1a1a1e]" value="number">{t("First number")}</option>
+                          <option className="bg-[#1a1a1e]" value="regex">{t("Regex capture")}</option>
+                          <option className="bg-[#1a1a1e]" value="text">{t("Raw text")}</option>
                         </select>
                       </label>
                       <label className="space-y-1">
-                        <span className="text-zinc-400 uppercase tracking-wider font-bold">Display</span>
+                        <span className="text-zinc-400 uppercase tracking-wider font-bold">{t("Display")}</span>
                         <select value={cm.display}
                           onChange={(e) => updateDraft(idx, { display: e.target.value as any })}
                           disabled={cm.parse === "text"}
                           className="w-full h-7 px-1.5 bg-white/[0.04] border border-white/10 rounded text-[11px] text-zinc-100 outline-none disabled:opacity-50">
-                          <option className="bg-[#1a1a1e]" value="sparkline">Sparkline</option>
-                          <option className="bg-[#1a1a1e]" value="big_number">Big number</option>
-                          <option className="bg-[#1a1a1e]" value="text">Text</option>
+                          <option className="bg-[#1a1a1e]" value="sparkline">{t("Sparkline")}</option>
+                          <option className="bg-[#1a1a1e]" value="big_number">{t("Big number")}</option>
+                          <option className="bg-[#1a1a1e]" value="text">{t("Text")}</option>
                         </select>
                       </label>
                       <label className="space-y-1">
-                        <span className="text-zinc-400 uppercase tracking-wider font-bold">Unit</span>
+                        <span className="text-zinc-400 uppercase tracking-wider font-bold">{t("Unit")}</span>
                         <input value={cm.unit || ""}
                           onChange={(e) => updateDraft(idx, { unit: e.target.value })}
                           placeholder="%"
@@ -1046,7 +1089,7 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
                     {cm.parse === "regex" && (
                       <input value={cm.regex || ""}
                         onChange={(e) => updateDraft(idx, { regex: e.target.value })}
-                        placeholder="regex with one capture group, e.g.   load average:\s*([0-9.]+)"
+                        placeholder={t("regex with one capture group, e.g.   load average:\\s*([0-9.]+)")}
                         className="w-full h-7 px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono text-zinc-100 outline-none focus:border-primary/40" />
                     )}
                   </div>
@@ -1056,13 +1099,16 @@ const ConfigureSlideover = ({ row, busy, onClose, onSetMetrics, onSetCustoms }: 
             {dirty && (
               <button onClick={() => onSetCustoms(draft)} disabled={busy}
                 className="mt-3 w-full h-9 rounded text-[11px] font-bold uppercase tracking-wider bg-primary/25 text-primary border border-primary/50 hover:bg-primary/35 disabled:opacity-50">
-                Apply Custom Commands
+                {t("Apply Custom Commands")}
               </button>
             )}
           </section>
 
           <p className="text-[11px] text-zinc-400 leading-snug">
-            Custom commands run on the remote shell every poll cycle alongside the built-in probe. <span className="text-amber-200">Regex</span> captures the first group as a number; <span className="text-amber-200">Raw text</span> shows the trimmed stdout as-is (no history).
+            {tx("Custom commands run on the remote shell every poll cycle alongside the built-in probe. {regex} captures the first group as a number; {rawText} shows the trimmed stdout as-is (no history).", {
+              regex: <span className="text-amber-200">{t("Regex")}</span>,
+              rawText: <span className="text-amber-200">{t("Raw text")}</span>,
+            })}
           </p>
         </div>
       </div>

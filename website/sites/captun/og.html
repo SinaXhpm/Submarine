@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- The link-preview picture (1200 x 630), rendered to img/og.png with a
+     headless browser (see the README). Not part of the site itself. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    background: radial-gradient(700px 420px at 92% 100%, rgba(79, 143, 214, 0.26), transparent 65%),
+                radial-gradient(700px 420px at 0% 0%, rgba(227, 176, 78, 0.24), transparent 65%), #050c14;
+    color: #e7edf6; font-family: "Inter", "Segoe UI", system-ui, sans-serif; position: relative;
+  }
+  .text { position: absolute; left: 70px; top: 76px; width: 540px; }
+  .brand { display: flex; align-items: center; gap: 18px; }
+  .brand img { width: 84px; height: 84px; border-radius: 20px; }
+  .brand span { font-size: 58px; font-weight: 800; letter-spacing: -2px; }
+  h1 { font-size: 46px; line-height: 1.12; margin: 34px 0 18px; font-weight: 750; letter-spacing: -1px; color: #fff; }
+  h1 em { font-style: normal; background: linear-gradient(100deg, #e3b04e, #f6d98b); -webkit-background-clip: text; color: transparent; }
+  p { font-size: 22px; line-height: 1.45; margin: 0; color: #95a3b8; }
+  .tags { margin-top: 26px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .tags span { font-size: 19px; padding: 7px 15px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.16); color: #c6d0de; }
+  .tags span.gold { color: #e3b04e; border-color: rgba(227, 176, 78, 0.5); }
+  .win { position: absolute; left: 640px; top: 96px; width: 620px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.18);
+         box-shadow: 0 30px 80px rgba(0,0,0,0.6), 0 0 120px rgba(227, 176, 78, 0.18); }
+</style>
+</head>
+<body>
+  <div class="text">
+    <div class="brand"><img src="img/icon-512.png" alt=""><span>Captun</span></div>
+    <h1>Share your internet. <em>Steer every device.</em></h1>
+    <p>Wi-Fi hotspot, cable or USB · Windows and Linux</p>
+    <div class="tags"><span class="gold">VPN for every device</span><span>Proxy</span><span>DNS ad blocking</span></div>
+  </div>
+  <img class="win" src="img/home-1440.webp" alt="">
+</body>
+</html>

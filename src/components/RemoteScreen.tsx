@@ -1,8 +1,9 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { Keyboard, Loader2 } from "lucide-react";
-import { IS_ANDROID } from "../util/platform";
-import { scancodeFor } from "../util/scancodes";
+import { IS_MOBILE } from "../util/platform";
+import { codeForKey, scancodeFor } from "../util/scancodes";
+import { useT } from "../i18n";
 
 // The screen of a remote desktop in its tab (VNC, vnc_client.rs) and its
 // mouse and keyboard. The backend sends frames over a channel: [1, w, h] when
@@ -29,7 +30,7 @@ const PHONE_SHORT_SIDE = 720;
 const MAX_ZOOM = 5;
 function desktopFor(w: number, h: number, scale: number): { width: number; height: number } {
   let k = scale;
-  if (IS_ANDROID) {
+  if (IS_MOBILE) {
     const short = Math.max(1, Math.min(w, h));
     k *= Math.min(Math.max(1, PHONE_SHORT_SIDE / short), Math.max(1, window.devicePixelRatio || 1));
   }
@@ -39,6 +40,9 @@ function desktopFor(w: number, h: number, scale: number): { width: number; heigh
 /** The most input events the backend takes in one call (`vnc_input`,
  *  `rdp_builtin_input`). */
 const MAX_EVENTS = 512;
+
+/** The least one frame counts for, as in the backend (screen_flow.rs). */
+const MIN_FRAME = 4096;
 
 type Ev =
   | { t: "key"; code: number; key: string; down: boolean }
@@ -62,6 +66,7 @@ type Props = {
 
 const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
   ({ sessionId, active, connected, inputCommand, resizeCommand, scale = 1 }, ref) => {
+    const t = useT();
     const boxRef = useRef<HTMLDivElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const imeRef = useRef<HTMLTextAreaElement | null>(null);
@@ -164,7 +169,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
           if (gen !== channelGen.current) return;
           // Every frame of this session is told to the backend, whatever it
           // turns out to hold: it counts the bytes it sent.
-          ack(raw instanceof ArrayBuffer ? raw.byteLength : Array.isArray(raw) ? raw.length : 0);
+          ack(Math.max(MIN_FRAME, raw instanceof ArrayBuffer ? raw.byteLength : Array.isArray(raw) ? raw.length : 0));
           // Bytes, or a list of numbers when Tauri had to fall back from its
           // binary IPC (slower, still drawn).
           const buf = raw instanceof ArrayBuffer ? raw : Array.isArray(raw) ? new Uint8Array(raw).buffer : null;
@@ -250,7 +255,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
 
     // Keys focus here when the tab is shown.
     useEffect(() => {
-      if (active && connected && !IS_ANDROID) canvasRef.current?.focus();
+      if (active && connected && !IS_MOBILE) canvasRef.current?.focus();
     }, [active, connected]);
 
     // A point on the canvas as a point of the remote desktop.
@@ -408,28 +413,67 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
       if (s.moved) send({ t: "button", b: 0, down: false });
     };
 
-    // A phone's keyboard types into a hidden box; what it inserts is sent
-    // as text, and its delete / enter as those keys.
-    const onImeInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
-      const native = e.nativeEvent as InputEvent;
-      const tap = (key: "Backspace" | "Enter") => {
-        const code = scancodeFor(key) ?? 0;
-        send({ t: "key", code, key, down: true });
-        send({ t: "key", code, key, down: false });
-      };
-      if (native.inputType === "deleteContentBackward") tap("Backspace");
-      else if (native.inputType === "insertLineBreak") tap("Enter");
-      else if (native.data) {
-        for (const ch of native.data) {
-          if (ch === "\n") tap("Enter");
-          else {
-            send({ t: "text", ch, down: true });
-            send({ t: "text", ch, down: false });
-          }
+    // A phone's keyboard types into a hidden box. What the box holds is kept
+    // in step with what was sent: each change goes as the keys that make it
+    // (the letters added, a Backspace for each one taken away). A keyboard
+    // that builds a word up and corrects it as it goes (Chinese, Japanese and
+    // Korean ones, swipe typing, some others) then types it once, as it shows
+    // it; sending each step's text, as before, typed "hhehelhellhello".
+    // The box starts with one character, so a delete always has something to
+    // remove, and starts over after a line or when it gets long.
+    const imeSent = useRef(" ");
+    // A new connection's box is a new one, holding its one character.
+    useEffect(() => { imeSent.current = " "; }, [connected]);
+    const tap = (key: "Backspace" | "Enter") => {
+      const code = scancodeFor(key) ?? 0;
+      send({ t: "key", code, key, down: true });
+      send({ t: "key", code, key, down: false });
+    };
+    const resetIme = (box: HTMLTextAreaElement) => {
+      box.value = " ";
+      box.setSelectionRange(1, 1);
+      imeSent.current = " ";
+    };
+    const syncIme = (box: HTMLTextAreaElement) => {
+      const now = box.value;
+      const was = imeSent.current;
+      let same = 0;
+      while (same < now.length && same < was.length && now[same] === was[same]) same++;
+      for (let i = was.length; i > same; i--) tap("Backspace");
+      for (const ch of now.slice(same)) {
+        if (ch === "\n") tap("Enter");
+        else {
+          send({ t: "text", ch, down: true });
+          send({ t: "text", ch, down: false });
         }
       }
-      // Kept with one character in it, so the next delete has something to remove.
-      e.currentTarget.value = " ";
+      imeSent.current = now;
+    };
+    const onImeInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+      const box = e.currentTarget;
+      const native = e.nativeEvent as InputEvent;
+      syncIme(box);
+      // An Enter that left no line break in the box (some keyboards) is still an Enter.
+      if (native.inputType === "insertLineBreak" && !box.value.includes("\n")) tap("Enter");
+      if (native.isComposing) return;
+      if (native.inputType === "insertLineBreak" || box.value === "" || box.value.includes("\n") || box.value.length > 200) resetIme(box);
+    };
+    // Keys that type nothing (Tab, Esc, the arrows, F1-F12, Delete…), and any
+    // key held with Ctrl, Alt or Meta, go as keys, as the canvas sends them;
+    // the box keeps the focus (Tab would move it away, and the keys after it
+    // were lost; on Android, Esc too). What types text comes through the box
+    // (above). A phone's keys have no code (no scan code): found from the key.
+    const onImeKey = (down: boolean) => (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      const n = e.nativeEvent;
+      if (n.isComposing || n.keyCode === 229 || e.key === "Unidentified" || e.key === "Process" || e.key === "Dead") return;
+      if (e.key === "Backspace" || e.key === "Enter" || e.key === "Shift" || e.key === "CapsLock") return;
+      const named = e.key.length > 1;
+      const held = (e.ctrlKey || e.altKey || e.metaKey) && !e.getModifierState("AltGraph");
+      if (!named && !held) return;
+      const code = scancodeFor(e.code || codeForKey(e.key));
+      if (code === null) return;
+      send({ t: "key", code, key: e.key, down });
+      e.preventDefault();
     };
 
     return (
@@ -437,7 +481,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
         <canvas
           ref={canvasRef}
           tabIndex={0}
-          aria-label="Remote desktop"
+          aria-label={t("Remote desktop")}
           className="outline-none touch-none"
           style={fit ? { width: fit.w, height: fit.h, transform: view.z === 1 ? undefined : `translate(${view.x}px, ${view.y}px) scale(${view.z})`, transformOrigin: "center" } : { display: "none" }}
           onMouseMove={onMouseMove}
@@ -455,22 +499,29 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
         />
         {connected && !painted && (
           <div className="absolute inset-0 flex items-center justify-center gap-2 text-[12px] text-zinc-500 pointer-events-none" role="status">
-            <Loader2 size={14} className="animate-spin" />
-            Waiting for the desktop…
+            <Loader2 size={14} className="animate-spin-brief" />
+            {t("Waiting for the desktop…")}
           </div>
         )}
-        {IS_ANDROID && connected && (
+        {IS_MOBILE && connected && (
           <>
             <textarea
               ref={imeRef}
-              aria-label="Type on the remote desktop"
+              aria-label={t("Type on the remote desktop")}
               defaultValue=" "
               autoCapitalize="off"
               autoCorrect="off"
               spellCheck={false}
               onInput={onImeInput}
-              onFocus={() => { typing.current = true; }}
-              onBlur={() => { typing.current = false; }}
+              onKeyDown={onImeKey(true)}
+              onKeyUp={onImeKey(false)}
+              onFocus={(e) => {
+                typing.current = true;
+                // Typing goes on at the end of what the box holds.
+                const end = e.currentTarget.value.length;
+                e.currentTarget.setSelectionRange(end, end);
+              }}
+              onBlur={() => { typing.current = false; send({ t: "releaseall" }); }}
               className="absolute opacity-0 w-px h-px -left-10 top-0"
             />
             <button
@@ -487,7 +538,7 @@ const RemoteScreen = forwardRef<RemoteScreenHandle, Props>(
                   window.setTimeout(() => t.focus(), 60);
                 }
               }}
-              aria-label="Show the keyboard"
+              aria-label={t("Show the keyboard")}
               className="absolute right-3 bottom-3 w-11 h-11 rounded-full bg-zinc-800/90 border border-white/10 text-zinc-200 flex items-center justify-center shadow-lg"
             >
               <Keyboard size={18} />

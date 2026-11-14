@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.sinaxhpm.Submarine</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Submarine</name>
+  <summary>SSH, SFTP, FTP and remote desktop client</summary>
+  <developer id="com.sinaxhpm">
+    <name>Sina Xhpm</name>
+  </developer>
+  <description>
+    <p>
+      Submarine keeps your servers in one window. Each server opens as a tab with its terminal,
+      files, tunnels and tools around the same session, and your profile stays encrypted on your
+      device.
+    </p>
+    <ul>
+      <li>SSH terminals with split views, a wall of terminals across servers, and input broadcast to several sessions</li>
+      <li>SFTP file browser, folder transfers, and folder mirrors that follow changes</li>
+      <li>Local, remote and SOCKS tunnels, jump hosts and SSH agent logins</li>
+      <li>Built-in RDP and VNC clients, and Telnet</li>
+      <li>Docker containers, logs and shells, live server monitoring, and a per-server command library</li>
+      <li>Optional cloud sync, encrypted on your device before it is sent</li>
+    </ul>
+    <p>
+      This version runs in a sandbox, so it can't start programs installed on your system. A
+      ProxyCommand runs inside the sandbox, and RDP servers use the built-in client, not an RDP app
+      such as Remmina.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.sinaxhpm.Submarine.desktop</launchable>
+  <url type="homepage">https://submarine.sinaxhpm.com/</url>
+  <url type="bugtracker">https://github.com/SinaXhpm/Submarine/issues</url>
+  <url type="vcs-browser">https://github.com/SinaXhpm/Submarine</url>
+  <branding>
+    <color type="primary" scheme_preference="light">#93c5fd</color>
+    <color type="primary" scheme_preference="dark">#1e3a5f</color>
+  </branding>
+  <screenshots>
+    <screenshot type="default">
+      <caption>A terminal with the SFTP file browser beside it</caption>
+      <image>https://raw.githubusercontent.com/SinaXhpm/Submarine/main/docs/screenshots/hero.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Live monitoring of several servers</caption>
+      <image>https://raw.githubusercontent.com/SinaXhpm/Submarine/main/docs/screenshots/monitoring.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>A server's connection settings</caption>
+      <image>https://raw.githubusercontent.com/SinaXhpm/Submarine/main/docs/screenshots/server-edit.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="0.4.0" date="2026-10-30">
+      <description>
+        <p>First version on Flathub.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <provides>
+    <binary>submarine</binary>
+  </provides>
+</component>

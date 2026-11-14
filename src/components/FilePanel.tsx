@@ -16,16 +16,55 @@ import {
 import { localDir, localJoin, pathCrumbs } from "../fs/localPath";
 import { COMPARE_LABEL, CompareMark, compareListings } from "../fs/compare";
 import { useConfirm, useOverwritePrompt, OverwriteChoice } from "../ui/confirm";
-import { IS_ANDROID } from "../util/platform";
+import { IS_ANDROID, IS_IOS, IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import { nameFilterMatcher } from "../util/nameFilter";
 import { BOOKMARKS_MAX, readBookmarks, writeBookmarks } from "../util/sftpBookmarks";
+import { t, tk, tn, tx, useLanguage, useT } from "../i18n";
 
 // Batch overwrite state shared across items in a single download/upload run.
-// Once the user picks "Overwrite all" or "Skip all" the kind is sticky and we
-// stop prompting; "ask" means we prompt on each individual conflict. Mutated
-// in place inside the helper so the loop sees updates immediately.
-type OverwriteBatchKind = "ask" | "overwrite-all" | "skip-all";
-interface OverwriteBatch { kind: OverwriteBatchKind; }
+// Once the user picks "Overwrite all", "Skip all" or Cancel the kind is sticky
+// and we stop prompting; "ask" means we prompt on each individual conflict.
+// Mutated in place inside the helper so the loop sees updates immediately.
+// `asking` is the question on screen, for those side by side to wait for.
+type OverwriteBatchKind = "ask" | "overwrite-all" | "skip-all" | "cancel";
+interface OverwriteBatch { kind: OverwriteBatchKind; asking?: Promise<unknown>; }
+
+// What the backend allows a selection on this session (`sftp_batch_limits`).
+interface BatchLimits { at_once: number; alone_up: number; alone_down: number; }
+const ONE_BY_ONE: BatchLimits = { at_once: 1, alone_up: 0, alone_down: 0 };
+
+// Which of a selection move alone, as the backend moves a folder's files. A
+// folder has its own pool, a link's size says nothing of what it leads to, a
+// big file would put the others' requests behind its data, and names that
+// differ only in case are one file on a disk or server that ignores case.
+function aloneInBatch(items: FileEntry[], limit: number) {
+  const names = new Map<string, number>();
+  for (const e of items) names.set(e.name.toLowerCase(), (names.get(e.name.toLowerCase()) ?? 0) + 1);
+  return (e: FileEntry) => e.isDir || !!e.isSymlink || e.size > limit || names.get(e.name.toLowerCase())! > 1;
+}
+
+// `move` each item in turn, up to `atOnce` at a time: selected files one by one
+// cost a few round trips each, in a row. An item that `alone` picks out waits
+// for those moving and has the line to itself. Once `stopped` says so nothing
+// new starts; what is moving finishes. `move` must not throw.
+async function moveInTurn<T>(
+  items: T[],
+  atOnce: number,
+  alone: (item: T) => boolean,
+  stopped: () => boolean,
+  move: (item: T) => Promise<void>,
+): Promise<void> {
+  const moving = new Set<Promise<void>>();
+  for (const item of items) {
+    const solo = alone(item);
+    while (moving.size > 0 && (solo || moving.size >= atOnce)) await Promise.race(moving);
+    if (stopped()) break;
+    const turn: Promise<void> = move(item).finally(() => { moving.delete(turn); });
+    moving.add(turn);
+    if (solo) await turn;
+  }
+  await Promise.all(moving);
+}
 
 // Run a single transfer that may trip the backend's `EXISTS:<path>` sentinel.
 // First attempt is always with overwrite=false unless the batch state already
@@ -49,12 +88,17 @@ async function transferWithOverwriteCheck(
   } catch (err: any) {
     const msg = String(err);
     if (!msg.startsWith("EXISTS:")) throw err;
-    if (batch.kind === "skip-all") return "skipped";
-    const choice = await overwritePrompt({ name, direction, batchSize });
+    // One question at a time, and the answer before may settle this one too.
+    const answer = (batch.asking ?? Promise.resolve()).then(async (): Promise<OverwriteChoice> => {
+      if (batch.kind !== "ask") return batch.kind;
+      const choice = await overwritePrompt({ name, direction, batchSize });
+      if (choice !== "overwrite" && choice !== "skip") batch.kind = choice;
+      return choice;
+    });
+    batch.asking = answer.catch(() => {});
+    const choice = await answer;
     if (choice === "cancel") return "cancelled";
-    if (choice === "skip") return "skipped";
-    if (choice === "skip-all") { batch.kind = "skip-all"; return "skipped"; }
-    if (choice === "overwrite-all") batch.kind = "overwrite-all";
+    if (choice === "skip" || choice === "skip-all") return "skipped";
     await invokeFn(true);
     return "done";
   }
@@ -105,7 +149,7 @@ type MetaColumn = "size" | "modified" | "permissions" | "owner";
 type ColumnWidths = Record<MetaColumn, number>;
 const REMOTE_COLUMNS: MetaColumn[] = ["size", "modified", "permissions", "owner"];
 const LOCAL_COLUMNS: MetaColumn[] = ["size", "modified"]; // local entries carry no rights or owner here
-const COLUMN_LABEL: Record<MetaColumn, string> = { size: "SIZE", modified: "CHANGED", permissions: "RIGHTS", owner: "OWNER" };
+const COLUMN_LABEL: Record<MetaColumn, string> = { size: tk("SIZE"), modified: tk("CHANGED"), permissions: tk("RIGHTS"), owner: tk("OWNER") };
 // The left-aligned columns keep a little room from the column before them
 // (COLUMN_LEAD, part of their width), so a size and a date don't run together.
 const COLUMN_CELL: Record<MetaColumn, string> = {
@@ -178,7 +222,7 @@ const measureColumns = (family: string): ColumnWidths => {
     ctx.font = `400 ${size}px ${family}`;
     const value = ctx.measureText(sample).width;
     ctx.font = `700 10.5px ${family}`;
-    const heading = ctx.measureText(`${COLUMN_LABEL[column]} `).width + SORT_ARROW;
+    const heading = ctx.measureText(`${t(COLUMN_LABEL[column])} `).width + SORT_ARROW;
     widths[column] = Math.ceil(Math.max(value, heading)) + 2 + COLUMN_LEAD[column];
   }
   return widths;
@@ -273,6 +317,8 @@ export interface FilePanelHandle {
   currentDir: () => string;
   /** Send `items` of this pane into `dir` of the other one: a download from the remote pane, an upload from the local one. */
   sendTo: (items: FileEntry[], dir: string) => Promise<void>;
+  /** Go to `path` without a message when it can't be listed: false then (the pane stays where it was). */
+  goTo: (path: string) => Promise<boolean>;
 }
 
 const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
@@ -293,6 +339,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   hideSame = false,
   onEntriesChange,
 }, ref) => {
+  const t = useT();
+  const language = useLanguage();
   const [currentPath, setCurrentPath] = useState("");
   // The server has no SFTP: the remote pane works over shell commands.
   const [viaShell, setViaShell] = useState(false);
@@ -487,7 +535,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     if (!bookmarksKey || !path) return;
     const marked = bookmarks.includes(path);
     if (!marked && bookmarks.length >= BOOKMARKS_MAX) {
-      notify(`Up to ${BOOKMARKS_MAX} bookmarks: remove one to add another`, "info");
+      notify(t("Up to {max} bookmarks: remove one to add another", { max: BOOKMARKS_MAX }), "info");
       return;
     }
     const next = marked ? bookmarks.filter((p) => p !== path) : [...bookmarks, path];
@@ -508,12 +556,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   // `reveal`: a row to select in the new folder if it is there (going up
   // selects the folder just left).
   // `fallback`: another path to list if this one can't be (see the path box).
-  const fetch = async (path: string, reveal?: string, fallback?: string) => {
+  // `quiet`: no message when it can't be listed (the caller says it its way).
+  // True when this listing is the one shown.
+  const fetch = async (path: string, reveal?: string, fallback?: string, quiet = false): Promise<boolean> => {
     const seq = ++listSeqRef.current;
     setLoading(true);
     try {
       const result = await provider.list(path);
-      if (seq !== listSeqRef.current) return;
+      if (seq !== listSeqRef.current) return false;
       const present = new Set(result.entries.map((e) => e.path));
       setEntries(result.entries);
       setViaShell(!!result.viaShell);
@@ -540,15 +590,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       }
       onPathChange?.(result.currentPath);
       pushRecent(result.currentPath);
+      return true;
     } catch (err: any) {
-      if (seq !== listSeqRef.current) return;
+      if (seq !== listSeqRef.current) return false;
       if (fallback !== undefined && fallback !== path) {
         // Its `finally` sees a newer listing under way and leaves the
         // spinner to that one.
-        fetch(fallback, reveal);
-        return;
+        return fetch(fallback, reveal);
       }
-      notify(`List failed: ${err}`, "error");
+      if (!quiet) notify(t("List failed: {error}", { error: String(err) }), "error");
+      return false;
     } finally {
       if (seq === listSeqRef.current) setLoading(false);
     }
@@ -583,7 +634,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         const home = await provider.homePath();
         await tryFetch(home);
       } catch (err: any) {
-        if (seq === listSeqRef.current) notify(`Failed to load: ${err}`, "error");
+        if (seq === listSeqRef.current) notify(t("Failed to load: {error}", { error: String(err) }), "error");
       } finally {
         if (seq === listSeqRef.current) setLoading(false);
       }
@@ -592,12 +643,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   }, [provider]);
 
   // `sendTo` goes through a ref that every render points at its own
-  // upload/download, so the handle (made once) never runs a stale one.
+  // upload/download, so the handle (made once) never runs a stale one;
+  // `goTo` the same for the listing.
   const sendToRef = useRef<(items: FileEntry[], dir: string) => Promise<void>>(async () => {});
+  const fetchRef = useRef(fetch);
+  fetchRef.current = fetch;
   useImperativeHandle(ref, () => ({
-    refresh: () => fetch(currentPathRef.current),
+    refresh: async () => { await fetch(currentPathRef.current); },
     currentDir: () => currentPathRef.current,
     sendTo: (items, dir) => sendToRef.current(items, dir),
+    goTo: (path) => fetchRef.current(path, undefined, undefined, true),
   }), []);
 
   const goUp = () => fetch(provider.parentPath(currentPath), currentPath);
@@ -834,9 +889,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       (event) => {
         const { status, message } = event.payload || ({} as any);
         if (status === "success") {
-          notify(message || "Changes uploaded", "success");
+          notify(message || t("Changes uploaded"), "success");
         } else if (status === "error") {
-          notify(message || "Auto-sync failed", "error");
+          notify(message || t("Auto-sync failed"), "error");
         }
       },
     ).then((u) => { unlisten = u; });
@@ -862,28 +917,41 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       async (event) => {
         const { paths, position } = event.payload || ({} as any);
         if (!paths?.length || !paneRef.current) return;
-        const hit = document.elementFromPoint(position.x, position.y);
+        // Physical pixels on Windows; elementFromPoint takes CSS pixels, which
+        // is what macOS and Linux report. At another scale than 100% this
+        // tested a point further out: the other pane, or another server's.
+        const scale = IS_WINDOWS ? window.devicePixelRatio : 1;
+        const hit = document.elementFromPoint(position.x / scale, position.y / scale);
         if (!hit || !paneRef.current.contains(hit)) return;
         setDragOver(false);
         const dir = currentPathRef.current;
         const batch: OverwriteBatch = { kind: "ask" };
+        let count = 0;
         let cancelled = false;
         for (const p of paths) {
           if (cancelled) break;
           const name = p.split(/[\\/]/).pop() || "file";
-          notify(`Uploading ${name}...`, "info");
+          notify(t("Uploading {name}...", { name }), "info");
           try {
-            const remote = dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
+            // A folder goes as in uploadItems: it is given the folder it goes
+            // into. As a file, Unix opens it, and the remote file is created
+            // or emptied before the first read fails.
+            const isDir = await invoke<boolean>("local_is_dir", { path: p }).catch(() => false);
+            const cmd = isDir ? "sftp_upload_dir" : "sftp_upload_file";
+            const remote = isDir ? dir : dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
             const res = await transferWithOverwriteCheck(
-              (ow) => invoke("sftp_upload_file", { sessionId, localPath: p, remotePath: remote, overwrite: ow }),
+              (ow) => invoke(cmd, { sessionId, localPath: p, remotePath: remote, overwrite: ow }),
               name, "upload", paths.length, batch, overwritePrompt
             );
-            if (res === "done") notify(`Uploaded ${name}`, "success");
-            if (res === "cancelled") { cancelled = true; notify("Upload batch cancelled", "info"); }
+            if (res === "done") { count++; notify(t("Uploaded {name}", { name }), "success"); }
+            if (res === "cancelled") { cancelled = true; }
           } catch (err: any) {
-            notify(`Upload failed: ${err}`, "error");
+            // Stopped from its card: the rest of the batch stops with it.
+            if (String(err) === "cancelled") { cancelled = true; break; }
+            notify(t("Upload failed: {error}", { error: String(err) }), "error");
           }
         }
+        if (cancelled) notify(count > 0 ? t("Upload stopped after {count} of {total} items", { count, total: paths.length }) : t("Upload batch cancelled"), "info");
         await fetch(dir);
       }
     ).then((fn) => { unlisten = fn; });
@@ -905,7 +973,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       try {
         ({ permissions, uid } = await provider.stat(entry.path));
       } catch (err: any) {
-        notify(`Properties: ${err}`, "error");
+        notify(t("Properties: {error}", { error: String(err) }), "error");
         return;
       }
     }
@@ -913,13 +981,22 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     setModal({ type: "properties", entry, v1: mode.toString(8).padStart(3, "0"), v2: uid?.toString(), orig: { mode, uid } });
   };
 
+  // The dialog stays up until the server answers: a second Enter on a slow
+  // link would run the rename or mkdir again, and report a failure over one
+  // that worked.
+  const submittingRef = useRef(false);
   const submitModal = async () => {
-    if (!modal) return;
+    if (!modal || submittingRef.current) return;
+    submittingRef.current = true;
     const { type, entry, v1, v2 } = modal;
     if (type === "archive") {
       // The dialog stays open when the name is refused; the job itself runs
       // on after it closes.
-      if (await startArchive(modal.items ?? [], v1 || "", (v2 || "zip") as ArchiveFormat)) setModal(null);
+      try {
+        if (await startArchive(modal.items ?? [], v1 || "", (v2 || "zip") as ArchiveFormat)) setModal(null);
+      } finally {
+        submittingRef.current = false;
+      }
       return;
     }
     try {
@@ -938,7 +1015,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (lastSelectedPathRef.current === entry.path) setAnchor(dest);
         setCursor(dest);
         revealRef.current = { path: dest, block: "nearest" };
-        notify(`Renamed to ${v1}`, "success");
+        notify(t("Renamed to {name}", { name: v1 }), "success");
       } else if (type === "move" && entry && v1) {
         // v1 is the destination *directory* the user typed (matches the
         // bulk-move semantics so users have a single mental model). We
@@ -946,9 +1023,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         // change the filename, the user picks "Rename" instead.
         const destDir = typedFolder(v1);
         const dest = provider.joinPath(destDir, entry.name);
-        if (dest === entry.path) throw new Error("Destination is the current location — nothing to move.");
+        if (dest === entry.path) throw new Error(t("Destination is the current location — nothing to move."));
         await provider.rename(entry.path, dest);
-        notify(`Moved ${entry.name} → ${destDir}`, "success");
+        notify(t("Moved {name} → {dir}", { name: entry.name, dir: destDir }), "success");
       } else if (type === "move-bulk" && v1) {
         // v1 is the destination *directory*; each selected item keeps its
         // own name under it.
@@ -960,13 +1037,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             await provider.rename(it.path, provider.joinPath(dest, it.name));
             count++;
           } catch (err: any) {
-            notify(`Move failed for ${it.name}: ${err}`, "error");
+            notify(t("Move failed for {name}: {error}", { name: it.name, error: String(err) }), "error");
           }
         }
         if (count > 0) {
           setSelected(new Set());
           setAnchor(null);
-          notify(items.length === 1 ? `Moved ${items[0].name} → ${dest}` : `Moved ${count} of ${items.length} items → ${dest}`, "success");
+          notify(items.length === 1 ? t("Moved {name} → {dir}", { name: items[0].name, dir: dest }) : t("Moved {count} of {total} items → {dir}", { count, total: items.length, dir: dest }), "success");
         }
       } else if (type === "mkdir" && v1) {
         const made = provider.joinPath(currentPath, v1);
@@ -974,10 +1051,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         selectOnly(made);
         setCursor(made);
         revealRef.current = { path: made, block: "nearest" };
-        notify(`Created ${v1}`, "success");
+        notify(t("Created {name}", { name: v1 }), "success");
       } else if (type === "properties" && entry && v1 && provider.chmod) {
         const mode = parseInt(v1, 8);
-        if (isNaN(mode) || mode < 0 || mode > 0o7777) throw new Error("Invalid octal mode");
+        if (isNaN(mode) || mode < 0 || mode > 0o7777) throw new Error(t("Invalid octal mode"));
         const orig = modal.orig;
         // Only what changed. Owner first: Linux clears setuid/setgid on a
         // chown, so the mode goes on after it (again, if it has those bits).
@@ -991,12 +1068,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         }
         const chmodded = mode !== orig?.mode || (chowned && (mode & 0o6000) !== 0);
         if (chmodded) await provider.chmod(entry.path, mode);
-        notify(chowned || chmodded ? "Properties updated" : "Nothing changed", chowned || chmodded ? "success" : "info");
+        notify(chowned || chmodded ? t("Properties updated") : t("Nothing changed"), chowned || chmodded ? "success" : "info");
       }
       await fetch(currentPath);
     } catch (err: any) {
-      notify(`Failed: ${err}`, "error");
+      notify(t("Failed: {error}", { error: String(err) }), "error");
     } finally {
+      submittingRef.current = false;
       setModal(null);
     }
   };
@@ -1025,15 +1103,15 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const removeItems = async (items: FileEntry[]) => {
     if (items.length === 0) return;
     const ok = await confirmDialog({
-      title: items.length === 1 ? "Delete item" : `Delete ${items.length} items`,
+      title: items.length === 1 ? t("Delete item") : t("Delete {count} items", { count: items.length }),
       message: items.length === 1
         ? (items[0].isSymlink
-            ? `Delete the link “${items[0].name}”? Only the link is removed; what it points to is not touched.`
+            ? t("Delete the link “{name}”? Only the link is removed; what it points to is not touched.", { name: items[0].name })
             : items[0].isDir
-            ? `Permanently delete folder “${items[0].name}” and everything inside?`
-            : `Permanently delete “${items[0].name}”?`)
-        : `Permanently delete ${items.length} items? Folders include their contents; links are removed without touching what they point to.`,
-      okLabel: "Delete",
+            ? t("Permanently delete folder “{name}” and everything inside?", { name: items[0].name })
+            : t("Permanently delete “{name}”?", { name: items[0].name }))
+        : t("Permanently delete {count} items? Folders include their contents; links are removed without touching what they point to.", { count: items.length }),
+      okLabel: t("Delete"),
       destructive: true,
     });
     if (!ok) return;
@@ -1058,16 +1136,18 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       setAnchor(null);
     }
     if (stopped) {
-      notify(count > 0 ? `Delete stopped after ${count} of ${items.length} items` : "Delete stopped. What was already removed is gone.", "info");
+      notify(count > 0 ? t("Delete stopped after {count} of {total} items", { count, total: items.length }) : t("Delete stopped. What was already removed is gone."), "info");
     } else if (failure) {
       notify(
         items.length === 1
-          ? `Delete failed for ${failure.name}: ${failure.reason}`
-          : `Deleted ${count} of ${items.length} items. ${failed === 1 ? "" : `${failed} failed; the first: `}${failure.name}: ${failure.reason}`,
+          ? t("Delete failed for {name}: {reason}", { name: failure.name, reason: failure.reason })
+          : failed === 1
+          ? t("Deleted {count} of {total} items. {name}: {reason}", { count, total: items.length, name: failure.name, reason: failure.reason })
+          : t("Deleted {count} of {total} items. {failed} failed; the first: {name}: {reason}", { count, total: items.length, failed, name: failure.name, reason: failure.reason }),
         "error",
       );
     } else {
-      notify(items.length === 1 ? `Deleted ${items[0].name}` : `Deleted ${count} of ${items.length} items`, "success");
+      notify(items.length === 1 ? t("Deleted {name}", { name: items[0].name }) : t("Deleted {count} of {total} items", { count, total: items.length }), "success");
     }
     // A folder that could not be removed completely, or whose delete was
     // stopped, may have lost part of its contents: show what is there now.
@@ -1124,10 +1204,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     await fetch(dir);
   };
 
-  const jobFailed = (what: string, err: unknown) => {
+  const jobFailed = (what: "archive" | "extract", err: unknown) => {
     const reason = String(err);
-    if (reason === JOB_CANCELLED) notify(`${what} cancelled`, "info");
-    else notify(`${what} failed: ${reason}`, "error", 8000);
+    if (reason === JOB_CANCELLED) notify(what === "archive" ? t("Archive cancelled") : t("Extract cancelled"), "info");
+    else notify(what === "archive" ? t("Archive failed: {reason}", { reason }) : t("Extract failed: {reason}", { reason }), "error", 8000);
   };
 
   const openArchiveDialog = (items: FileEntry[]) => {
@@ -1154,23 +1234,23 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const startArchive = async (items: FileEntry[], base: string, format: ArchiveFormat): Promise<boolean> => {
     const name = base.trim() ? archiveFileName(base, format) : "";
     if (!name || /[\\/\0]/.test(name)) {
-      notify("Invalid archive name", "error");
+      notify(t("Invalid archive name"), "error");
       return false;
     }
     if (items.some((it) => sameName(it.name, name))) {
-      notify(`${name} is one of the items being archived`, "error");
+      notify(t("{name} is one of the items being archived", { name }), "error");
       return false;
     }
     const clash = entries.filter((e) => sameName(e.name, name));
     // A folder is never replaced, so it isn't offered.
     if (clash.some((e) => e.isDir)) {
-      notify(`A folder named ${name} is already here`, "error");
+      notify(t("A folder named {name} is already here", { name }), "error");
       return false;
     }
     const replace = () => confirmDialog({
-      title: "Replace archive",
-      message: `“${name}” already exists in this folder. Replace it?`,
-      okLabel: "Replace",
+      title: t("Replace archive"),
+      message: t("“{name}” already exists in this folder. Replace it?", { name }),
+      okLabel: t("Replace"),
       destructive: true,
     });
     let overwrite = false;
@@ -1181,8 +1261,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     try { localStorage.setItem(archiveFormatKey(provider.id), format); } catch { /* not remembered */ }
     const dir = currentPath;
     const names = items.map((it) => it.name);
-    const label = items.length === 1 ? items[0].name : `${items.length} items`;
-    void runJob(`Archiving ${label} → ${name}`, async (nextId) => {
+    const label = items.length === 1 ? items[0].name : tn(items.length, "{count} item", "{count} items");
+    void runJob(t("Archiving {label} → {name}", { label, name }), async (nextId) => {
       try {
         let warning: string | null;
         try {
@@ -1193,11 +1273,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           if (!(await replace())) return;
           warning = await provider.archive(dir, names, name, format, true, nextId());
         }
-        if (warning) notify(`Created ${name}, with a warning:\n${warning}`, "info", 10000);
-        else notify(`Created ${name}`, "success");
+        if (warning) notify(t("Created {name}, with a warning:\n{warning}", { name, warning }), "info", 10000);
+        else notify(t("Created {name}", { name }), "success");
         await refreshAfterJob(dir, provider.joinPath(dir, name));
       } catch (err) {
-        jobFailed("Archive", err);
+        jobFailed("archive", err);
       }
     });
     return true;
@@ -1214,20 +1294,20 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const fresh = folder !== null && !entries.some((e) => sameName(e.name, folder));
     if (!fresh) {
       const ok = await confirmDialog({
-        title: "Extract archive",
-        message: `Extract “${entry.name}” into ${destDir}? Files with the same names are replaced.`,
-        okLabel: "Extract",
+        title: t("Extract archive"),
+        message: t("Extract “{name}” into {dir}? Files with the same names are replaced.", { name: entry.name, dir: destDir }),
+        okLabel: t("Extract"),
       });
       if (!ok) return;
     }
-    void runJob(`Extracting ${entry.name}`, async (nextId) => {
+    void runJob(t("Extracting {name}", { name: entry.name }), async (nextId) => {
       try {
         const warning = await provider.extract(dir, entry.name, folder, nextId());
-        if (warning) notify(`Extracted ${entry.name}, with a warning:\n${warning}`, "info", 10000);
-        else notify(`Extracted ${entry.name}`, "success");
+        if (warning) notify(t("Extracted {name}, with a warning:\n{warning}", { name: entry.name, warning }), "info", 10000);
+        else notify(t("Extracted {name}", { name: entry.name }), "success");
         await refreshAfterJob(dir, folder ? destDir : undefined);
       } catch (err) {
-        jobFailed("Extract", err);
+        jobFailed("extract", err);
       }
     });
   };
@@ -1256,10 +1336,13 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       // blocks it, app-scoped external files). Users can navigate from
       // there if they want a different subfolder.
       try {
+        // iOS: the app's Documents folder (Files › On My iPhone › Submarine).
         dest = IS_ANDROID
           ? ((await invoke<string>("android_default_local_dir")) || undefined)
-          : ((await invoke<string | null>("select_local_folder")) || undefined);
-      } catch (err: any) { notify(`Pick folder failed: ${err}`, "error"); return; }
+          : IS_IOS
+            ? ((await invoke<string>("local_home_dir")) || undefined)
+            : ((await invoke<string | null>("select_local_folder")) || undefined);
+      } catch (err: any) { notify(t("Pick folder failed: {error}", { error: String(err) }), "error"); return; }
       if (!dest) return;
     }
     const destDir = localDir(dest);
@@ -1267,14 +1350,21 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const dirCount  = items.filter(e =>  e.isDir).length;
     const summary =
       items.length === 1
-        ? `Downloading ${items[0].isDir ? "folder " : ""}${items[0].name}…`
-        : `Downloading ${fileCount} files${dirCount ? ` + ${dirCount} folder${dirCount === 1 ? "" : "s"}` : ""}…`;
+        ? (items[0].isDir ? t("Downloading folder {name}…", { name: items[0].name }) : t("Downloading {name}…", { name: items[0].name }))
+        : !dirCount
+          ? tn(fileCount, "Downloading {count} file…", "Downloading {count} files…")
+          : !fileCount
+            ? tn(dirCount, "Downloading {count} folder…", "Downloading {count} folders…")
+            : t("Downloading {files} and {folders}…", {
+                files: tn(fileCount, "{count} file", "{count} files"),
+                folders: tn(dirCount, "{count} folder", "{count} folders"),
+              });
     notify(summary, "info");
     const batch: OverwriteBatch = { kind: "ask" };
     let count = 0;
     let cancelled = false;
-    for (const e of items) {
-      if (cancelled) break;
+    const limits = await invoke<BatchLimits>("sftp_batch_limits", { sessionId }).catch(() => ONE_BY_ONE);
+    await moveInTurn(items, limits.at_once, aloneInBatch(items, limits.alone_down), () => cancelled, async (e) => {
       try {
         // A folder is given the folder it goes into (the backend adds its
         // name), a file the full path it is saved as.
@@ -1287,14 +1377,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (res === "done") count++;
         if (res === "cancelled") { cancelled = true; }
       } catch (err: any) {
-        notify(`Download failed for ${e.name}: ${err}`, "error");
+        // Stopped from its card: the rest of the batch stops with it.
+        if (String(err) === "cancelled") { cancelled = true; return; }
+        notify(t("Download failed for {name}: {error}", { name: e.name, error: String(err) }), "error");
       }
-    }
-    if (count > 0) {
-      notify(items.length === 1 ? `Downloaded ${items[0].name}` : `Downloaded ${count} of ${items.length} items`, "success");
-      onTransferred?.();
-    } else if (cancelled) {
-      notify("Download batch cancelled", "info");
+    });
+    if (count > 0) onTransferred?.();
+    if (cancelled) {
+      notify(count > 0 ? t("Download stopped after {count} of {total} items", { count, total: items.length }) : t("Download batch cancelled"), "info");
+    } else if (count > 0) {
+      notify(items.length === 1 ? t("Downloaded {name}", { name: items[0].name }) : t("Downloaded {count} of {total} items", { count, total: items.length }), "success");
     }
   };
 
@@ -1307,19 +1399,23 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const uploadItems = async (items: FileEntry[], into?: string) => {
     if (!sessionId || items.length === 0) return;
     const dest = into ?? getOppositeDir?.();
-    if (!dest) { notify("Open a directory in the remote pane first.", "error"); return; }
+    if (!dest) { notify(t("Open a directory in the remote pane first."), "error"); return; }
     const trimmed = dest.replace(/[\\/]+$/, "");
     const fileCount = items.filter((e) => !e.isDir).length;
     const dirCount = items.filter((e) => e.isDir).length;
     const summary = items.length === 1
-      ? `Uploading ${items[0].isDir ? "folder " : ""}${items[0].name}…`
-      : `Uploading ${fileCount} file${fileCount === 1 ? "" : "s"}${dirCount ? ` + ${dirCount} folder${dirCount === 1 ? "" : "s"}` : ""}…`;
+      ? (items[0].isDir ? t("Uploading folder {name}…", { name: items[0].name }) : t("Uploading {name}…", { name: items[0].name }))
+      : !dirCount
+        ? tn(fileCount, "Uploading {count} file…", "Uploading {count} files…")
+        : fileCount === 1
+          ? tn(dirCount, "Uploading {files} file + {count} folder…", "Uploading {files} file + {count} folders…", { files: fileCount })
+          : tn(dirCount, "Uploading {files} files + {count} folder…", "Uploading {files} files + {count} folders…", { files: fileCount });
     notify(summary, "info");
     const batch: OverwriteBatch = { kind: "ask" };
     let count = 0;
     let cancelled = false;
-    for (const e of items) {
-      if (cancelled) break;
+    const limits = await invoke<BatchLimits>("sftp_batch_limits", { sessionId }).catch(() => ONE_BY_ONE);
+    await moveInTurn(items, limits.at_once, aloneInBatch(items, limits.alone_up), () => cancelled, async (e) => {
       try {
         // For files we pass the remote target as a full file path; for dirs
         // we pass the remote PARENT and sftp_upload_dir hangs the source
@@ -1333,14 +1429,16 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         if (res === "done") count++;
         if (res === "cancelled") { cancelled = true; }
       } catch (err: any) {
-        notify(`Upload failed for ${e.name}: ${err}`, "error");
+        // Stopped from its card: the rest of the batch stops with it.
+        if (String(err) === "cancelled") { cancelled = true; return; }
+        notify(t("Upload failed for {name}: {error}", { name: e.name, error: String(err) }), "error");
       }
-    }
-    if (count > 0) {
-      notify(items.length === 1 ? `Uploaded ${items[0].name}` : `Uploaded ${count} of ${items.length} items`, "success");
-      onTransferred?.();
-    } else if (cancelled) {
-      notify("Upload batch cancelled", "info");
+    });
+    if (count > 0) onTransferred?.();
+    if (cancelled) {
+      notify(count > 0 ? t("Upload stopped after {count} of {total} items", { count, total: items.length }) : t("Upload batch cancelled"), "info");
+    } else if (count > 0) {
+      notify(items.length === 1 ? t("Uploaded {name}", { name: items[0].name }) : t("Uploaded {count} of {total} items", { count, total: items.length }), "success");
     }
   };
   sendToRef.current = (items, dir) => (provider.id === "remote" ? downloadItems(items, dir) : uploadItems(items, dir));
@@ -1350,10 +1448,10 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
   const liveEditEntry = async (entry: FileEntry) => {
     if (!sessionId || entry.isDir) return;
     try {
-      notify(`Opening ${entry.name} in default editor…`, "info");
+      notify(t("Opening {name} in default editor…", { name: entry.name }), "info");
       await invoke("sftp_open_remote_file", { sessionId, remotePath: entry.path });
     } catch (err: any) {
-      notify(`Open failed: ${err}`, "error");
+      notify(t("Open failed: {error}", { error: String(err) }), "error");
     }
   };
 
@@ -1363,17 +1461,17 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     try {
       await invoke("local_open_file", { localPath: entry.path });
     } catch (err: any) {
-      notify(`Open failed: ${err}`, "error");
+      notify(t("Open failed: {error}", { error: String(err) }), "error");
     }
   };
 
-  // Copy name / Copy path in a row's menu.
-  const copyText = async (text: string, what: string) => {
+  // Copy name / Copy path in a row's menu. `done` is the message once copied.
+  const copyText = async (text: string, done: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      notify(`Copied ${what}`, "success");
+      notify(done, "success");
     } catch (err: any) {
-      notify(`Copy failed: ${err}`, "error");
+      notify(t("Copy failed: {error}", { error: String(err) }), "error");
     }
   };
 
@@ -1382,19 +1480,19 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     try {
       await invoke("local_open_in_explorer", { localPath: entry.path });
     } catch (err: any) {
-      notify(`Reveal failed: ${err}`, "error");
+      notify(t("Reveal failed: {error}", { error: String(err) }), "error");
     }
   };
 
   // A double-click or Enter on a row.
   const openEntry = (entry: FileEntry) => {
     if (entry.isDir) { fetch(entry.path); return; }
-    if (entry.brokenLink) { notify(`“${entry.name}” is a broken link: its target is missing or not accessible.`, "error"); return; }
+    if (entry.brokenLink) { notify(t("“{name}” is a broken link: its target is missing or not accessible.", { name: entry.name }), "error"); return; }
     // For files: remote → live-edit (download + open editor + auto-upload on
     // save); local → open in the OS default app. Both are desktop-only — on
     // Android opening a file is a no-op (there's no OS default editor to hand
     // off to).
-    if (IS_ANDROID) return;
+    if (IS_MOBILE) return;
     if (provider.id === "remote") liveEditEntry(entry);
     else openLocalEntry(entry);
   };
@@ -1443,7 +1541,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
   // ---- sorting ----------------------------------------------------------------
 
-  const sortedEntries = (() => {
+  // Kept between renders, and so are the rows: the pane renders for many things
+  // that leave the list as it is (a key in the path box, the divider of the tool
+  // panel), and sorting and building thousands of rows for each of them took
+  // the thread from the terminal beside it.
+  const sortedEntries = useMemo(() => {
     const sorted = [...entries].sort((a, b) => {
       if (a.isDir !== b.isDir) return b.isDir ? 1 : -1;
       let va: any, vb: any;
@@ -1461,7 +1563,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     const matches = nameFilterMatcher(nameFilter);
     const named = matches ? sorted.filter(e => matches(e.name)) : sorted;
     return compareMarks && hideSame ? named.filter((e) => e.isDir || compareMarks.has(e.path)) : named;
-  })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries, sort, nameFilter, compareMarks, hideSame, owners]);
   const filteredOut = nameFilter.trim() || (compareMarks && hideSame) ? entries.length - sortedEntries.length : 0;
 
   // As wide as the folder's longest name needs (see NAME_MIN). Measured on
@@ -1698,8 +1801,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => toggleBookmark(path)}
-            title={marked ? "Remove the bookmark" : "Bookmark this folder"}
-            aria-label={marked ? `Remove the bookmark for ${path}` : `Bookmark ${path}`}
+            title={marked ? t("Remove the bookmark") : t("Bookmark this folder")}
+            aria-label={marked ? t("Remove the bookmark for {path}", { path }) : t("Bookmark {path}", { path })}
             aria-pressed={marked}
             className={`p-1.5 shrink-0 ${marked ? "text-amber-300 hover:text-amber-200" : "text-zinc-500 hover:text-zinc-200"}`}
           >
@@ -1726,6 +1829,101 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
     : column === "owner" ? ownerName(entry)
     : formatRights(entry.isDir, entry.permissions, entry.isSymlink);
 
+  // The rows, kept between renders with sortedEntries above: `columnsFit`
+  // stands for shownColumns and movedColumns, new arrays on each render. What a
+  // row does when used goes through rowActions, as it depends on far more than
+  // the row shows, and has to see the pane as it is by then.
+  const rowActions = useRef({ handleRowMouseDown, openMenu, onRowClick, openEntry });
+  rowActions.current = { handleRowMouseDown, openMenu, onRowClick, openEntry };
+  const rows = useMemo(() => sortedEntries.map((entry) => {
+    const isSel = selected.has(entry.path);
+    const isCursor = entry.path === cursor;
+    const moved = movedColumns.map((c) => columnText(c, entry)).filter(Boolean).join(" · ");
+    const mark = compareMarks?.get(entry.path);
+    return (
+    <div
+      key={entry.path}
+      onMouseDown={(e) => rowActions.current.handleRowMouseDown(e, entry)}
+      onContextMenu={(e) => rowActions.current.openMenu(e, entry)}
+      onClick={(e) => rowActions.current.onRowClick(e, entry, sortedEntries)}
+      onDoubleClick={() => rowActions.current.openEntry(entry)}
+      data-fs-row-path={entry.path}
+      data-fs-row-isdir={entry.isDir ? "1" : "0"}
+      data-fs-row-selected={isSel ? "1" : "0"}
+      style={{ gridTemplateColumns }}
+      className={`group grid gap-x-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center scroll-mt-8 ${
+        barUp ? "scroll-mb-16" : ""
+      } ${
+        isSel
+          ? "bg-indigo-500/15 border-indigo-400 text-indigo-100"
+          : mark
+            ? `${COMPARE_ROW[mark]} text-zinc-200 hover:bg-white/5 hover:text-white`
+            : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
+      } ${keyNav && isCursor ? "ring-1 ring-inset ring-indigo-400/60" : ""}`}
+      title={mark ? t(COMPARE_LABEL[mark]) : undefined}
+      data-fs-compare={mark}
+    >
+      {/* Selection mode only. A click anywhere on the row does what
+          a click on its box would. */}
+      {inMode && (
+        <span className="flex items-center justify-center">
+          {isSel
+            ? <CheckSquare size={12} className="text-indigo-300" />
+            : <Square size={12} className="text-zinc-500 group-hover:text-zinc-300" />}
+        </span>
+      )}
+      <div className="flex items-center gap-2 min-w-0 pr-1">
+        <span
+          className="relative inline-flex shrink-0"
+          title={entry.isSymlink ? (entry.brokenLink ? t("Broken link: target is missing or not accessible") : t("Symbolic link")) : undefined}
+        >
+          {entry.isDir
+            ? <Folder size={12} className="text-indigo-300" />
+            : <File size={12} className={entry.brokenLink ? "text-rose-400/70" : "text-zinc-500"} />}
+          {entry.isSymlink && (
+            <Link2
+              size={8}
+              className={`absolute -bottom-1 -right-1.5 rounded-sm bg-zinc-950 ${entry.brokenLink ? "text-rose-400" : "text-sky-300"}`}
+            />
+          )}
+        </span>
+        <div title={entry.name} className={`min-w-0 flex-1 truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
+        {mark && <span className="sr-only">{t(COMPARE_LABEL[mark])}</span>}
+      </div>
+      {shownColumns.map((c) => (
+        <div key={c} className={`truncate ${COLUMN_CELL[c]}`} title={c === "owner" ? columnText(c, entry) : undefined}>{columnText(c, entry)}</div>
+      ))}
+      {/* The row's menu, for a pointer without a right button. Shown
+          on hover, on the selected rows and on the keyboard's row
+          (always on Android, which has no hover). */}
+      <button
+        type="button"
+        tabIndex={-1}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => rowActions.current.openMenu(e, entry)}
+        title={t("Options")}
+        aria-label={t("Options")}
+        className={`flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-white/10 hover:!opacity-100 ${
+          IS_MOBILE || isSel || isCursor ? "opacity-60" : "opacity-0 group-hover:opacity-60"
+        }`}
+      >
+        <MoreVertical size={11} />
+      </button>
+      {/* What the columns that gave way show: a line of its own
+          under the name, as wide as the row. */}
+      {moved && (
+        <div
+          style={{ gridColumn: `${inMode ? 2 : 1} / -1` }}
+          className="row-start-2 pl-5 truncate text-[10px] text-zinc-500"
+        >
+          {moved}
+        </div>
+      )}
+    </div>
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [sortedEntries, selected, cursor, keyNav, inMode, barUp, gridTemplateColumns, columnsFit, compareMarks, owners, language]);
+
   return (
     <div
       ref={paneRef}
@@ -1737,7 +1935,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       {disabled && (
         <div className="absolute inset-0 z-30 bg-black/55 backdrop-blur-[1px] flex items-center justify-center text-zinc-300 text-xs font-mono uppercase">
           <span className="px-3 py-1.5 bg-red-500/15 border border-red-500/30 rounded text-red-300">
-            Session disconnected
+            {t("Session disconnected")}
           </span>
         </div>
       )}
@@ -1753,9 +1951,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           {jobs.map((job) => (
             <div key={job.id} className="pointer-events-auto max-w-full flex items-center gap-2 pl-3 pr-1 py-1 rounded-lg border text-[11px] font-mono shadow-2xl backdrop-blur-md bg-indigo-950/90 border-indigo-500/30 text-indigo-300">
               <RefreshCw size={11} className="shrink-0 animate-spin" />
-              <span className="min-w-0 truncate" title={job.label}>{job.cancelling ? `Cancelling… ${job.label}` : `${job.label}…`}</span>
+              <span className="min-w-0 truncate" title={job.label}>{job.cancelling ? t("Cancelling… {label}", { label: job.label }) : `${job.label}…`}</span>
               <button onClick={() => cancelJob(job.id)} disabled={job.cancelling}
-                title="Cancel" aria-label={`Cancel: ${job.label}`}
+                title={t("Cancel")} aria-label={t("Cancel: {label}", { label: job.label })}
                 className="shrink-0 p-1 rounded hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:hover:bg-transparent">
                 <X size={11} />
               </button>
@@ -1785,18 +1983,18 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
         <div ref={headerRowRef} className={`relative flex flex-wrap items-center gap-y-1.5 ${fit.tight ? "gap-x-1" : "gap-x-2"}`}>
           <div className={`flex items-center gap-1.5 min-w-0 min-h-[22px] ${fit.rows === 2 ? "basis-full justify-between" : ""}`}>
             <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300 pl-1 shrink-0">
-              {provider.label}
+              {t(provider.label)}
             </span>
             {viaShell && (
               <span
-                title={"This server has no SFTP, so files go over shell commands. Everything works the same, " +
-                  "just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP."}
+                title={t("This server has no SFTP, so files go over shell commands. Everything works the same, just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP.")}
                 className="text-[9px] font-bold uppercase tracking-wider text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-1 shrink-0 cursor-help"
               >
-                Shell
+                {t("Shell")}
               </span>
             )}
-            {provider.id === "local" && (
+            {/* iOS has no folder picker: the pane stays in the app's own folders. */}
+            {provider.id === "local" && !IS_IOS && (
               <button
                 onClick={async () => {
                   if (IS_ANDROID) {
@@ -1808,7 +2006,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                         const dirs = await invoke<{ label: string; path: string }[]>("android_quick_dirs");
                         setAndroidQuickDirs(dirs);
                       } catch (err: any) {
-                        notify(`Browse failed: ${err}`, "error");
+                        notify(t("Browse failed: {error}", { error: String(err) }), "error");
                         return;
                       }
                     }
@@ -1819,11 +2017,11 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                     const picked = await invoke<string | null>("select_local_folder");
                     if (picked) await fetch(picked);
                   } catch (err: any) {
-                    notify(`Browse failed: ${err}`, "error");
+                    notify(t("Browse failed: {error}", { error: String(err) }), "error");
                   }
                 }}
-                title="Browse for folder"
-                aria-label="Browse for folder"
+                title={t("Browse for folder")}
+                aria-label={t("Browse for folder")}
                 className={`${headerBtn} text-emerald-300`}
               >
                 <FolderSearch size={11} />
@@ -1832,25 +2030,25 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             {headerExtra}
           </div>
           <div className={`flex items-center shrink-0 ${fit.tight ? "gap-0.5" : "gap-1"}`}>
-            <button onClick={goUp} title="Up" aria-label="Up" className={`${headerBtn} text-zinc-200`}>
+            <button onClick={goUp} title={t("Up")} aria-label={t("Up")} className={`${headerBtn} text-zinc-200`}>
               <ArrowUp size={11} />
             </button>
             <button
               onClick={() => setRecentOpen((p) => !p)}
               onBlur={() => setTimeout(() => setRecentOpen(false), 200)}
               disabled={recentShown.length === 0 && bookmarks.length === 0}
-              title="Recent and bookmarked folders"
-              aria-label="Recent directories"
+              title={t("Recent and bookmarked folders")}
+              aria-label={t("Recent directories")}
               className={`${headerBtn} text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed`}
             >
               <ChevronDown size={11} />
             </button>
-            <button onClick={() => fetch(currentPath)} title="Refresh" aria-label="Refresh"
+            <button onClick={() => fetch(currentPath)} title={t("Refresh")} aria-label={t("Refresh")}
               className={`${headerBtn} text-zinc-200`}>
               <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
             </button>
           </div>
-          <button onClick={() => setModal({ type: "mkdir", v1: "" })} title="New Folder" aria-label="New Folder"
+          <button onClick={() => setModal({ type: "mkdir", v1: "" })} title={t("New Folder")} aria-label={t("New Folder")}
             className={`${headerBtn} text-indigo-300 ml-auto`}>
             <FolderPlus size={11} />
           </button>
@@ -1860,14 +2058,14 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <div className="absolute top-full mt-1 inset-x-0 z-50 max-h-[320px] overflow-y-auto bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px] text-zinc-200 no-scrollbar">
               {recentShown.length > 0 && (
                 <>
-                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">Recent</div>
+                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">{t("Recent")}</div>
                   {recentShown.map((p) => dirRow(p, "recent"))}
                 </>
               )}
               {recentShown.length > 0 && bookmarks.length > 0 && <div className="my-1 h-px bg-white/10" />}
               {bookmarks.length > 0 && (
                 <>
-                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">Bookmarks</div>
+                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-zinc-500 font-bold">{t("Bookmarks")}</div>
                   {bookmarks.map((p) => dirRow(p, "bookmark"))}
                 </>
               )}
@@ -1877,9 +2075,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <div className="absolute top-full mt-1 inset-x-0 z-50 bg-[#0c0c0e]/95 border border-white/10 rounded-lg shadow-2xl p-1 backdrop-blur-md font-mono text-[11px]">
               {androidQuickDirs.length === 0 ? (
                 <div className="p-2 text-zinc-400 text-[10.5px]">
-                  No writable locations found. On Android 11+ shared storage
-                  requires SAF — the app can only read/write its own scoped
-                  storage directly.
+                  {t("No writable locations found. On Android 11+ shared storage requires SAF — the app can only read/write its own scoped storage directly.")}
                 </div>
               ) : androidQuickDirs.map((d) => (
                 <button
@@ -1953,7 +2149,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 e.currentTarget.blur();
               }
             }}
-            placeholder="Path…"
+            placeholder={t("Path…")}
             className={`w-full h-full px-2 bg-white/[0.04] border border-white/10 rounded text-[11px] font-mono focus:outline-none focus:border-indigo-400/50 focus:bg-white/10 ${inputFocused ? "text-zinc-100" : "text-transparent placeholder:text-transparent"}`}
           />
           {!inputFocused && (
@@ -1968,7 +2164,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               className="absolute inset-0 flex items-center px-2 text-[11px] font-mono overflow-x-auto no-scrollbar cursor-text"
             >
               {crumbs.length === 0 && (
-                <span className="shrink-0 whitespace-nowrap text-zinc-500">{currentPath || "Path…"}</span>
+                <span className="shrink-0 whitespace-nowrap text-zinc-500">{currentPath || t("Path…")}</span>
               )}
               {crumbs.map((c, i) => (
                 <React.Fragment key={c.path}>
@@ -1996,8 +2192,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             <button
               onClick={() => toggleBookmark(currentPath)}
               disabled={!currentPath}
-              title={currentBookmarked ? "Remove this folder's bookmark" : "Bookmark this folder"}
-              aria-label="Bookmark this folder"
+              title={currentBookmarked ? t("Remove this folder's bookmark") : t("Bookmark this folder")}
+              aria-label={t("Bookmark this folder")}
               aria-pressed={currentBookmarked}
               className={`${HEADER_BUTTON_BASE} h-6 w-6 disabled:opacity-30 ${currentBookmarked ? "text-amber-300" : "text-zinc-200"}`}
             >
@@ -2006,8 +2202,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           )}
           <button
             onClick={() => (filterOpen ? closeFilter() : openFilter())}
-            title={filterOpen ? "Close the name filter" : "Filter by name (Ctrl+F)"}
-            aria-label="Filter by name"
+            title={filterOpen ? t("Close the name filter") : t("Filter by name (Ctrl+F)")}
+            aria-label={t("Filter by name")}
             aria-pressed={filterOpen}
             className={`${HEADER_BUTTON_BASE} h-6 w-6 ${filterOpen ? "text-indigo-200 bg-indigo-500/20 border-indigo-400/40" : "text-zinc-200"}`}
           >
@@ -2024,7 +2220,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                     {s.isDir ? <Folder size={11} className="text-indigo-300 shrink-0" /> : <File size={11} className="text-zinc-500 shrink-0" />}
                     <span className="truncate">{s.name}</span>
                   </div>
-                  {s.isDir && <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-1 rounded">dir</span>}
+                  {s.isDir && <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-1 rounded">{t("dir")}</span>}
                 </button>
               ))}
             </div>
@@ -2057,8 +2253,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 moveCursor(0, { shiftKey: false, ctrlKey: false, metaKey: false });
               }
             }}
-            placeholder="Filter by name…"
-            title="Filter by name. Wildcards match the whole name: * any characters, ? one character (e.g. *.sh)"
+            placeholder={t("Filter by name…")}
+            title={t("Filter by name. Wildcards match the whole name: * any characters, ? one character (e.g. *.sh)")}
             className="flex-1 min-w-0 h-5 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
           />
           {nameFilter && (
@@ -2068,7 +2264,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               </span>
               <button
                 onClick={() => { setNameFilter(""); filterInputRef.current?.focus(); }}
-                title="Clear filter"
+                title={t("Clear filter")}
                 className="shrink-0 p-0.5 rounded text-zinc-400 hover:text-white hover:bg-white/10"
               >
                 <X size={10} />
@@ -2089,59 +2285,60 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       {selectedEntries.length > 0 && (
         <div ref={selBarRef} className="absolute bottom-3 inset-x-2 mx-auto w-fit z-20 flex flex-wrap items-center justify-center gap-1.5 px-2.5 py-1.5 bg-indigo-950/95 border border-indigo-500/40 rounded-lg shadow-2xl shadow-black/50 backdrop-blur-md text-[10.5px] text-indigo-100 font-mono">
           <span className="font-bold uppercase tracking-wider text-[9.5px] text-indigo-300 shrink-0">
-            {selectedEntries.length} selected
+            {t("{count} selected", { count: selectedEntries.length })}
           </span>
           {!inMode && (
             <button
               onClick={() => setSelectMode(true)}
-              title="Add rows with a click (Ctrl+click, Shift+click and Space do it too)"
+              title={t("Add rows with a click (Ctrl+click, Shift+click and Space do it too)")}
               className="px-2 py-0.5 rounded bg-white/5 text-indigo-200 hover:bg-white/10 flex items-center gap-1"
             >
-              <CheckSquare size={10} /> Select more
+              <CheckSquare size={10} /> {t("Select more")}
             </button>
           )}
           <div className="flex-1" />
           {isRemote && (
             <button
-              onClick={() => downloadItems(selectedEntries)}
+              // The second click of a double click: not a second batch.
+              onClick={(ev) => { if (ev.detail < 2) downloadItems(selectedEntries); }}
               title={getOppositeDir?.()
-                ? `Download to ${getOppositeDir!()}`
-                : "Pick a destination folder…"}
+                ? t("Download to {dir}", { dir: getOppositeDir!()! })
+                : t("Pick a destination folder…")}
               className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 flex items-center gap-1"
             >
-              <Download size={10} /> Download
+              <Download size={10} /> {t("Download")}
             </button>
           )}
           {!isRemote && (
             <button
-              onClick={() => uploadItems(selectedEntries)}
+              onClick={(ev) => { if (ev.detail < 2) uploadItems(selectedEntries); }}
               title={getOppositeDir?.()
-                ? `Upload to ${getOppositeDir!()}`
-                : "Open a remote directory first…"}
+                ? t("Upload to {dir}", { dir: getOppositeDir!()! })
+                : t("Open a remote directory first…")}
               disabled={!getOppositeDir?.()}
               className="px-2 py-0.5 rounded bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <Upload size={10} /> Upload
+              <Upload size={10} /> {t("Upload")}
             </button>
           )}
           <button
             onClick={() => setModal({ type: "move-bulk", v1: currentPath })}
             className="px-2 py-0.5 rounded bg-white/5 text-zinc-200 hover:bg-white/10 flex items-center gap-1"
           >
-            <Move size={10} /> Move…
+            <Move size={10} /> {t("Move…")}
           </button>
           <button
             onClick={() => removeItems(selectedEntries)}
             className="px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 hover:bg-rose-500/25 flex items-center gap-1"
           >
-            <Trash2 size={10} /> Delete
+            <Trash2 size={10} /> {t("Delete")}
           </button>
           <button
             onClick={clearSelection}
-            title="Clear the selection (Esc)"
+            title={t("Clear the selection (Esc)")}
             className="px-2 py-0.5 rounded bg-white/5 text-zinc-400 hover:bg-white/10 flex items-center gap-1"
           >
-            <X size={10} /> Clear
+            <X size={10} /> {t("Clear")}
           </button>
         </div>
       )}
@@ -2151,7 +2348,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
       <div
         ref={dropTargetRef}
         tabIndex={0}
-        aria-label={`${provider.label} files`}
+        aria-label={t("{pane} files", { pane: t(provider.label) })}
         onKeyDown={onListKeyDown}
         onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setKeyNav(false); }}
         onDragOver={onDragOver}
@@ -2173,15 +2370,15 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               role="checkbox"
               aria-checked={allSelected ? "true" : "mixed"}
               onClick={() => (allSelected ? clearSelection() : selectAllVisible())}
-              title={allSelected ? "Clear the selection (Esc)" : "Select all (Ctrl+A)"}
-              aria-label={allSelected ? "Clear the selection" : "Select all"}
+              title={allSelected ? t("Clear the selection (Esc)") : t("Select all (Ctrl+A)")}
+              aria-label={allSelected ? t("Clear the selection") : t("Select all")}
               className="flex items-center justify-center py-1.5 text-indigo-300 hover:text-indigo-100"
             >
               {allSelected ? <CheckSquare size={12} /> : <MinusSquare size={12} />}
             </button>
           )}
           <div className="cursor-pointer hover:text-white py-1.5 truncate" onClick={() => toggleSort("name")}>
-            NAME {sortIcon("name")}
+            {t("NAME")} {sortIcon("name")}
           </div>
           {shownColumns.map((c) => (
             <div
@@ -2189,7 +2386,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               className={`cursor-pointer hover:text-white py-1.5 truncate ${c === "size" ? "text-right" : "pl-1.5"}`}
               onClick={() => toggleSort(c)}
             >
-              {COLUMN_LABEL[c]} {sortIcon(c)}
+              {t(COLUMN_LABEL[c])} {sortIcon(c)}
             </div>
           ))}
         </div>
@@ -2203,101 +2400,15 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           onClick={(e) => { if (e.target === e.currentTarget) clearSelection(); }}
         >
           {loading && sortedEntries.length === 0 ? (
-            <div className="text-center py-14 text-zinc-400">Loading…</div>
+            <div className="text-center py-14 text-zinc-400">{t("Loading…")}</div>
           ) : sortedEntries.length === 0 ? (
             <div className="text-center py-14 px-3 text-zinc-500 break-words">
               {filteredOut && nameFilter.trim()
-                ? `No names match “${nameFilter.trim()}”`
-                : filteredOut ? "Every file here looks the same on the other side" : "Empty"}
+                ? t("No names match “{filter}”", { filter: nameFilter.trim() })
+                : filteredOut ? t("Every file here looks the same on the other side") : t("Empty")}
             </div>
           ) : (
-            sortedEntries.map((entry) => {
-              const isSel = selected.has(entry.path);
-              const isCursor = entry.path === cursor;
-              const moved = movedColumns.map((c) => columnText(c, entry)).filter(Boolean).join(" · ");
-              const mark = compareMarks?.get(entry.path);
-              return (
-              <div
-                key={entry.path}
-                onMouseDown={(e) => handleRowMouseDown(e, entry)}
-                onContextMenu={(e) => openMenu(e, entry)}
-                onClick={(e) => onRowClick(e, entry, sortedEntries)}
-                onDoubleClick={() => openEntry(entry)}
-                data-fs-row-path={entry.path}
-                data-fs-row-isdir={entry.isDir ? "1" : "0"}
-                data-fs-row-selected={isSel ? "1" : "0"}
-                style={{ gridTemplateColumns }}
-                className={`group grid gap-x-1.5 px-2.5 py-1 border-l-2 cursor-pointer transition-colors items-center scroll-mt-8 ${
-                  selectedEntries.length > 0 ? "scroll-mb-16" : ""
-                } ${
-                  isSel
-                    ? "bg-indigo-500/15 border-indigo-400 text-indigo-100"
-                    : mark
-                      ? `${COMPARE_ROW[mark]} text-zinc-200 hover:bg-white/5 hover:text-white`
-                      : "border-transparent text-zinc-200 hover:bg-white/5 hover:text-white"
-                } ${keyNav && isCursor ? "ring-1 ring-inset ring-indigo-400/60" : ""}`}
-                title={mark ? COMPARE_LABEL[mark] : undefined}
-                data-fs-compare={mark}
-              >
-                {/* Selection mode only. A click anywhere on the row does what
-                    a click on its box would. */}
-                {inMode && (
-                  <span className="flex items-center justify-center">
-                    {isSel
-                      ? <CheckSquare size={12} className="text-indigo-300" />
-                      : <Square size={12} className="text-zinc-500 group-hover:text-zinc-300" />}
-                  </span>
-                )}
-                <div className="flex items-center gap-2 min-w-0 pr-1">
-                  <span
-                    className="relative inline-flex shrink-0"
-                    title={entry.isSymlink ? (entry.brokenLink ? "Broken link: target is missing or not accessible" : "Symbolic link") : undefined}
-                  >
-                    {entry.isDir
-                      ? <Folder size={12} className="text-indigo-300" />
-                      : <File size={12} className={entry.brokenLink ? "text-rose-400/70" : "text-zinc-500"} />}
-                    {entry.isSymlink && (
-                      <Link2
-                        size={8}
-                        className={`absolute -bottom-1 -right-1.5 rounded-sm bg-zinc-950 ${entry.brokenLink ? "text-rose-400" : "text-sky-300"}`}
-                      />
-                    )}
-                  </span>
-                  <div title={entry.name} className={`min-w-0 flex-1 truncate text-[11px] ${entry.brokenLink ? "text-zinc-400 line-through decoration-rose-400/50" : "text-zinc-100"}`}>{entry.name}</div>
-                  {mark && <span className="sr-only">{COMPARE_LABEL[mark]}</span>}
-                </div>
-                {shownColumns.map((c) => (
-                  <div key={c} className={`truncate ${COLUMN_CELL[c]}`} title={c === "owner" ? columnText(c, entry) : undefined}>{columnText(c, entry)}</div>
-                ))}
-                {/* The row's menu, for a pointer without a right button. Shown
-                    on hover, on the selected rows and on the keyboard's row
-                    (always on Android, which has no hover). */}
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => openMenu(e, entry)}
-                  title="Options"
-                  aria-label="Options"
-                  className={`flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-white/10 hover:!opacity-100 ${
-                    IS_ANDROID || isSel || isCursor ? "opacity-60" : "opacity-0 group-hover:opacity-60"
-                  }`}
-                >
-                  <MoreVertical size={11} />
-                </button>
-                {/* What the columns that gave way show: a line of its own
-                    under the name, as wide as the row. */}
-                {moved && (
-                  <div
-                    style={{ gridColumn: `${inMode ? 2 : 1} / -1` }}
-                    className="row-start-2 pl-5 truncate text-[10px] text-zinc-500"
-                  >
-                    {moved}
-                  </div>
-                )}
-              </div>
-              );
-            })
+            rows
           )}
         </div>
       </div>
@@ -2320,45 +2431,45 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           {!multi && contextMenu.entry.isDir && (
             <button onClick={() => { setContextMenu(null); fetch(contextMenu.entry.path); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-              <Folder size={11} className="text-indigo-400" /><span>Open</span>
+              <Folder size={11} className="text-indigo-400" /><span>{t("Open")}</span>
             </button>
           )}
-          {!multi && !contextMenu.entry.isDir && !isRemote && !IS_ANDROID && (
+          {!multi && !contextMenu.entry.isDir && !isRemote && !IS_MOBILE && (
             <button onClick={() => { setContextMenu(null); openLocalEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-              <ExternalLink size={11} className="text-indigo-400" /><span>Open</span>
+              <ExternalLink size={11} className="text-indigo-400" /><span>{t("Open")}</span>
             </button>
           )}
           {isRemote ? (
             <button onClick={() => { setContextMenu(null); downloadItems(acting); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
               <Download size={11} className="text-emerald-400" />
-              <span>Download{multi ? ` (${acting.length})` : "…"}</span>
+              <span>{multi ? t("Download ({count})", { count: acting.length }) : t("Download…")}</span>
             </button>
           ) : (
             <button onClick={() => { setContextMenu(null); uploadItems(acting); }}
               disabled={!uploadDir}
-              title={uploadDir ? `Upload to ${uploadDir}` : "Open a remote directory first…"}
+              title={uploadDir ? t("Upload to {dir}", { dir: uploadDir }) : t("Open a remote directory first…")}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed">
               <Upload size={11} className="text-sky-400" />
-              <span>Upload{multi ? ` (${acting.length})` : ""}</span>
+              <span>{multi ? t("Upload ({count})", { count: acting.length }) : t("Upload")}</span>
             </button>
           )}
           {/* Live-edit needs a local temp file + a native OS editor + a
               filesystem watcher. Android has none of those in a form we
               can bridge, so the backend command returns an error there
               — hide the menu item entirely rather than surface it. */}
-          {isRemote && !multi && !contextMenu.entry.isDir && !IS_ANDROID && (
+          {isRemote && !multi && !contextMenu.entry.isDir && !IS_MOBILE && (
             <button onClick={() => { setContextMenu(null); liveEditEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-              <ExternalLink size={11} className="text-indigo-400" /><span>Edit (auto-upload)</span>
+              <ExternalLink size={11} className="text-indigo-400" /><span>{t("Edit (auto-upload)")}</span>
             </button>
           )}
 
-          {!isRemote && !multi && !IS_ANDROID && (
+          {!isRemote && !multi && !IS_MOBILE && (
             <button onClick={() => { setContextMenu(null); revealLocalEntry(contextMenu.entry); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-              <FolderSearch size={11} className="text-emerald-300" /><span>Reveal in Explorer</span>
+              <FolderSearch size={11} className="text-emerald-300" /><span>{t("Reveal in Explorer")}</span>
             </button>
           )}
 
@@ -2367,12 +2478,12 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           {!inMode ? (
             <button onClick={() => { setContextMenu(null); setSelectMode(true); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-              <CheckSquare size={11} className="text-indigo-300" /><span>Select</span>
+              <CheckSquare size={11} className="text-indigo-300" /><span>{t("Select")}</span>
             </button>
           ) : !allSelected && (
             <button onClick={() => { setContextMenu(null); selectAllVisible(); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-              <CheckSquare size={11} className="text-indigo-300" /><span>Select all</span>
+              <CheckSquare size={11} className="text-indigo-300" /><span>{t("Select all")}</span>
             </button>
           )}
 
@@ -2380,12 +2491,12 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
           <button onClick={() => { setContextMenu(null); setModal({ type: "mkdir", v1: "" }); }}
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-            <Plus size={11} className="text-indigo-300" /><span>New Folder</span>
+            <Plus size={11} className="text-indigo-300" /><span>{t("New Folder")}</span>
           </button>
           {!multi && (
             <button onClick={() => { setContextMenu(null); setModal({ type: "rename", entry: contextMenu.entry, v1: contextMenu.entry.name }); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-              <Edit3 size={11} /><span>Rename</span>
+              <Edit3 size={11} /><span>{t("Rename")}</span>
             </button>
           )}
           <button onClick={() => {
@@ -2398,31 +2509,31 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               else setModal({ type: "move", entry: contextMenu.entry, v1: currentPath });
             }}
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-            <Move size={11} /><span>{multi ? `Move (${acting.length}) to…` : "Move to…"}</span>
+            <Move size={11} /><span>{multi ? t("Move ({count}) to…", { count: acting.length }) : t("Move to…")}</span>
           </button>
           {/* A row's name or full path; for several rows, their paths, one
               per line. */}
           {!multi ? (
             <>
-              <button onClick={() => { setContextMenu(null); copyText(contextMenu.entry.name, "name"); }}
+              <button onClick={() => { setContextMenu(null); copyText(contextMenu.entry.name, t("Copied name")); }}
                 className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-                <Copy size={11} /><span>Copy name</span>
+                <Copy size={11} /><span>{t("Copy name")}</span>
               </button>
-              <button onClick={() => { setContextMenu(null); copyText(contextMenu.entry.path, "path"); }}
+              <button onClick={() => { setContextMenu(null); copyText(contextMenu.entry.path, t("Copied path")); }}
                 className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-                <Copy size={11} /><span>Copy path</span>
+                <Copy size={11} /><span>{t("Copy path")}</span>
               </button>
             </>
           ) : (
-            <button onClick={() => { setContextMenu(null); copyText(acting.map((e) => e.path).join("\n"), `${acting.length} paths`); }}
+            <button onClick={() => { setContextMenu(null); copyText(acting.map((e) => e.path).join("\n"), t("Copied {count} paths", { count: acting.length })); }}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-              <Copy size={11} /><span>Copy {acting.length} paths</span>
+              <Copy size={11} /><span>{t("Copy {count} paths", { count: acting.length })}</span>
             </button>
           )}
           {!multi && provider.chmod && (
             <button onClick={() => openProperties(contextMenu.entry)}
               className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-              <Shield size={11} /><span>Properties</span>
+              <Shield size={11} /><span>{t("Properties")}</span>
             </button>
           )}
 
@@ -2433,21 +2544,21 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             disabled={!!archiveOff} title={archiveOff}
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed">
             <Archive size={11} className="text-amber-300" />
-            <span>{multi ? `Add ${acting.length} to archive…` : "Add to archive…"}</span>
+            <span>{multi ? t("Add {count} to archive…", { count: acting.length }) : t("Add to archive…")}</span>
           </button>
           {!multi && !contextMenu.entry.isDir && archiveKind(contextMenu.entry.name) && (
             <>
               <button onClick={() => { setContextMenu(null); extractEntry(contextMenu.entry, false); }}
                 disabled={!!archiveOff} title={archiveOff}
                 className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed">
-                <PackageOpen size={11} className="text-amber-300" /><span>Extract here</span>
+                <PackageOpen size={11} className="text-amber-300" /><span>{t("Extract here")}</span>
               </button>
               {extractFolderName(contextMenu.entry.name) && (
                 <button onClick={() => { setContextMenu(null); extractEntry(contextMenu.entry, true); }}
                   disabled={!!archiveOff} title={archiveOff}
                   className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed">
                   <PackageOpen size={11} className="text-amber-300 shrink-0" />
-                  <span className="truncate max-w-[220px]">Extract to “{extractFolderName(contextMenu.entry.name)}{provider.pathSep}”</span>
+                  <span className="truncate max-w-[220px]">{t("Extract to “{folder}”", { folder: `${extractFolderName(contextMenu.entry.name)}${provider.pathSep}` })}</span>
                 </button>
               )}
             </>
@@ -2456,7 +2567,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
           <div className="h-px bg-white/5 my-1" />
           <button onClick={() => { setContextMenu(null); removeItems(acting); }}
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-rose-950/20 text-left text-rose-400">
-            <Trash2 size={11} /><span>Delete{multi ? ` (${acting.length})` : ""}</span>
+            <Trash2 size={11} /><span>{multi ? t("Delete ({count})", { count: acting.length }) : t("Delete")}</span>
           </button>
         </div>
         );
@@ -2472,22 +2583,22 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
             className="w-full max-w-[320px] bg-[#121214] border border-white/5 rounded-xl shadow-2xl p-4 font-mono text-[11px]">
             <div className="flex items-center justify-between mb-3">
               <span className="font-black uppercase tracking-wider text-zinc-300">
-                {modal.type === "rename" ? "Rename" :
-                 modal.type === "mkdir" ? "New Directory" :
-                 modal.type === "move" ? "Move to…" :
-                 modal.type === "archive" ? ((modal.items?.length ?? 0) > 1 ? `Archive ${modal.items!.length} items` : "Add to archive") :
-                 modal.type === "move-bulk" ? `Move ${selectedEntries.length} items to…` : "Properties"}
+                {modal.type === "rename" ? t("Rename") :
+                 modal.type === "mkdir" ? t("New Directory") :
+                 modal.type === "move" ? t("Move to…") :
+                 modal.type === "archive" ? ((modal.items?.length ?? 0) > 1 ? t("Archive {count} items", { count: modal.items!.length }) : t("Add to archive")) :
+                 modal.type === "move-bulk" ? t("Move {count} items to…", { count: selectedEntries.length }) : t("Properties")}
               </span>
-              <button aria-label="Close" onClick={() => setModal(null)} className="text-zinc-500 hover:text-white"><X size={12} /></button>
+              <button aria-label={t("Close")} onClick={() => setModal(null)} className="text-zinc-500 hover:text-white"><X size={12} /></button>
             </div>
             <div className="space-y-3">
               {modal.type === "properties" ? (
                 <>
-                  <div>Name: <span className="text-zinc-100 font-bold">{modal.entry?.name}</span></div>
-                  <div>Path: <span className="text-zinc-400 text-[10px] block truncate">{modal.entry?.path}</span></div>
+                  <div>{tx("Name: {name}", { name: <span className="text-zinc-100 font-bold">{modal.entry?.name}</span> })}</div>
+                  <div>{tx("Path: {path}", { path: <span className="text-zinc-400 text-[10px] block truncate">{modal.entry?.path}</span> })}</div>
                   {modal.entry?.isSymlink && (
                     <div className="text-[10px] text-amber-300/80">
-                      This is a link: these are the settings of the file it points to, and changes apply to that file.
+                      {t("This is a link: these are the settings of the file it points to, and changes apply to that file.")}
                     </div>
                   )}
 
@@ -2501,9 +2612,9 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                     const full = isNaN(parsed) ? 0 : parsed & 0o7777;
                     const mode = full & 0o777;
                     const roles: { key: "owner" | "group" | "other"; label: string; shift: number }[] = [
-                      { key: "owner", label: "Owner", shift: 6 },
-                      { key: "group", label: "Group", shift: 3 },
-                      { key: "other", label: "Other", shift: 0 },
+                      { key: "owner", label: t("Owner"), shift: 6 },
+                      { key: "group", label: t("Group"), shift: 3 },
+                      { key: "other", label: t("Other"), shift: 0 },
                     ];
                     const bits: { key: "r" | "w" | "x"; label: string; bit: number }[] = [
                       { key: "r", label: "R", bit: 4 },
@@ -2516,7 +2627,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                     };
                     return (
                       <div className="pt-1">
-                        <label className="text-[10px] text-zinc-400 block mb-1.5 uppercase tracking-wider">Permissions</label>
+                        <label className="text-[10px] text-zinc-400 block mb-1.5 uppercase tracking-wider">{t("Permissions")}</label>
                         <div className="grid grid-cols-[60px_repeat(3,1fr)] gap-1 text-center text-[10px] text-zinc-400 font-mono">
                           <div />
                           {bits.map((b) => <div key={b.key} className="font-bold">{b.label}</div>)}
@@ -2549,7 +2660,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
                   <div className="flex gap-2 pt-1">
                     <div className="flex-1">
-                      <label className="text-[10px] text-zinc-400 block mb-1">Octal</label>
+                      <label className="text-[10px] text-zinc-400 block mb-1">{t("Octal")}</label>
                       <input type="text" value={modal.v1 || ""}
                         onChange={(e) => {
                           // Only accept up to 4 digits (setuid/setgid/sticky
@@ -2561,7 +2672,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                         className="w-full h-7 px-2 bg-white/5 border border-white/5 rounded text-zinc-200 focus:outline-none focus:border-indigo-400/40 text-[11.5px] font-mono" />
                     </div>
                     <div className="flex-1">
-                      <label className="text-[10px] text-zinc-400 block mb-1">Owner UID</label>
+                      <label className="text-[10px] text-zinc-400 block mb-1">{t("Owner UID")}</label>
                       <input type="text" value={modal.v2 || ""} onChange={(e) => setModal({ ...modal, v2: e.target.value })}
                         className="w-full h-7 px-2 bg-white/5 border border-white/5 rounded text-zinc-200 focus:outline-none focus:border-indigo-400/40 text-[11.5px]" />
                     </div>
@@ -2570,7 +2681,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               ) : modal.type === "archive" ? (
                 <>
                   <div>
-                    <label className="text-[10px] text-zinc-400 block mb-1">Archive name</label>
+                    <label className="text-[10px] text-zinc-400 block mb-1">{t("Archive name")}</label>
                     <input type="text" autoFocus value={modal.v1 || ""}
                       onFocus={(e) => e.currentTarget.select()}
                       onChange={(e) => setModal({ ...modal, v1: e.target.value })}
@@ -2578,8 +2689,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                       className="w-full h-7 px-2 bg-white/5 border border-white/5 rounded text-zinc-200 focus:outline-none focus:border-indigo-400/40 text-[11.5px] font-mono" />
                   </div>
                   <div>
-                    <label className="text-[10px] text-zinc-400 block mb-1">Format</label>
-                    <div role="radiogroup" aria-label="Format" className="grid grid-cols-3 gap-1">
+                    <label className="text-[10px] text-zinc-400 block mb-1">{t("Format")}</label>
+                    <div role="radiogroup" aria-label={t("Format")} className="grid grid-cols-3 gap-1">
                       {ARCHIVE_FORMATS.map((f) => (
                         <button key={f.format} type="button" role="radio" aria-checked={modal.v2 === f.format}
                           onClick={() => setModal({ ...modal, v2: f.format })}
@@ -2595,15 +2706,15 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                   </div>
                   <div className="text-[10px] text-zinc-500 truncate"
                     title={provider.joinPath(currentPath, archiveFileName(modal.v1 || "", (modal.v2 || "zip") as ArchiveFormat))}>
-                    Saved here as <span className="text-zinc-300">{archiveFileName(modal.v1 || "", (modal.v2 || "zip") as ArchiveFormat)}</span>
+                    {tx("Saved here as {name}", { name: <span className="text-zinc-300">{archiveFileName(modal.v1 || "", (modal.v2 || "zip") as ArchiveFormat)}</span> })}
                   </div>
                 </>
               ) : (
                 <div>
                   <label className="text-[10px] text-zinc-400 block mb-1">
                     {modal.type === "move" || modal.type === "move-bulk"
-                      ? "Destination directory"
-                      : "Name"}
+                      ? t("Destination directory")
+                      : t("Name")}
                   </label>
                   <input type="text" autoFocus value={modal.v1 || ""}
                     onChange={(e) => setModal({ ...modal, v1: e.target.value })}
@@ -2612,8 +2723,8 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
                 </div>
               )}
               <div className="flex gap-2 justify-end pt-2">
-                <button onClick={() => setModal(null)} className="px-3 h-7 rounded border border-white/5 text-zinc-400 hover:text-white">Cancel</button>
-                <button onClick={submitModal} className="px-3 h-7 rounded bg-indigo-500 text-white font-bold hover:bg-indigo-600">{modal.type === "archive" ? "Create" : "Apply"}</button>
+                <button onClick={() => setModal(null)} className="px-3 h-7 rounded border border-white/5 text-zinc-400 hover:text-white">{t("Cancel")}</button>
+                <button onClick={submitModal} className="px-3 h-7 rounded bg-indigo-500 text-white font-bold hover:bg-indigo-600">{modal.type === "archive" ? t("Create") : t("Apply")}</button>
               </div>
             </div>
           </div>

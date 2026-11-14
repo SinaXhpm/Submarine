@@ -23,7 +23,7 @@ pub struct SystemFont {
 /// Names are de-duplicated case-insensitively (first spelling wins), and names
 /// CSS can't use are dropped: empty ones, and macOS's hidden system faces
 /// (`.SF NS`, …). The result is sorted case-insensitively.
-#[cfg_attr(target_os = "android", allow(dead_code))]
+#[cfg_attr(mobile, allow(dead_code))]
 pub(crate) fn summarize<I: IntoIterator<Item = (String, bool)>>(faces: I) -> Vec<SystemFont> {
     let mut by_key: BTreeMap<String, SystemFont> = BTreeMap::new();
     for (family, monospace) in faces {
@@ -39,16 +39,16 @@ pub(crate) fn summarize<I: IntoIterator<Item = (String, bool)>>(faces: I) -> Vec
     by_key.into_values().collect()
 }
 
-/// Every font family installed on this device (empty on Android). Parsing the
+/// Every font family installed on this device (empty on Android and iOS). Parsing the
 /// font folder takes a moment on a machine with many fonts, so it runs off the
 /// async runtime.
 #[tauri::command]
 pub async fn list_system_fonts() -> Result<Vec<SystemFont>, String> {
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     {
         Ok(Vec::new())
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(desktop)]
     {
         tauri::async_runtime::spawn_blocking(|| {
             let mut db = fontdb::Database::new();

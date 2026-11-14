@@ -47,6 +47,16 @@ pub(crate) struct TestServer {
     kill: std::collections::HashMap<ChannelId, Arc<tokio::sync::Notify>>,
     /// Commands started, then still running (shared with their tasks).
     pub running: Arc<AtomicUsize>,
+    /// Commands started in all.
+    pub started: Arc<AtomicUsize>,
+    /// Answer every `exec`, whatever the command, with these bytes and then
+    /// output that doesn't end until the channel is gone.
+    flood_exec: Option<Vec<u8>>,
+    /// Channels the client has closed.
+    pub closed: Arc<AtomicUsize>,
+    /// Leave every channel open unanswered, as a wedged server does that still
+    /// answers keepalives.
+    no_answer_to_opens: bool,
 }
 
 /// How the test server runs `exec` commands with the local `sh` (unix only).
@@ -98,10 +108,21 @@ impl TestServer {
         Self { sftp: answer, ..Self::default() }
     }
 
+    /// A server that never answers a channel open.
+    pub(crate) fn not_answering_opens() -> Self {
+        Self { no_answer_to_opens: true, ..Self::default() }
+    }
+
     /// A server without SFTP that runs commands with this machine's `sh`.
     #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn with_shell(opts: ShellOpts) -> Self {
         Self { sftp: SftpAnswer::Refuse, shell: Some(opts), ..Self::default() }
+    }
+
+    /// A server that answers every command with `start` and then output
+    /// without end.
+    pub(crate) fn flooding_every_exec(start: Vec<u8>) -> Self {
+        Self { flood_exec: Some(start), ..Self::default() }
     }
 
     /// Run `command` with `sh -c` for the channel: stdin from the client's
@@ -129,6 +150,7 @@ impl TestServer {
             }
         }
         let running = Arc::clone(&self.running);
+        let started = Arc::clone(&self.started);
         tokio::spawn(async move {
             let Ok(mut child) = cmd.kill_on_drop(true).spawn() else {
                 let _ = handle.exit_status_request(channel, 127).await;
@@ -136,6 +158,7 @@ impl TestServer {
                 return;
             };
             running.fetch_add(1, Ordering::SeqCst);
+            started.fetch_add(1, Ordering::SeqCst);
             let mut stdin = child.stdin.take().unwrap();
             let mut stdout = child.stdout.take().unwrap();
             let mut stderr = child.stderr.take().unwrap();
@@ -196,14 +219,14 @@ impl server::Handler for TestServer {
     async fn auth_publickey_offered(
         &mut self,
         _user: &str,
-        key: &russh::keys::PublicKey,
+        offer: russh::server::PublicKeyOffer<'_>,
     ) -> Result<Auth, Self::Error> {
         self.pk_offers.fetch_add(1, Ordering::SeqCst);
-        Ok(if self.accepts(key) { Auth::Accept } else { Auth::reject() })
+        Ok(if self.accepts(offer.public_key) { Auth::Accept } else { Auth::reject() })
     }
 
-    async fn auth_publickey(&mut self, _user: &str, key: &russh::keys::PublicKey) -> Result<Auth, Self::Error> {
-        if !self.accepts(key) {
+    async fn auth_publickey(&mut self, _user: &str, key: russh::server::VerifiedPublicKey<'_>) -> Result<Auth, Self::Error> {
+        if !self.accepts(key.public_key) {
             return Ok(Auth::reject());
         }
         if self.second_factor {
@@ -224,6 +247,11 @@ impl server::Handler for TestServer {
         // Client data is consumed through the `data` callback; the channel
         // object is dropped so its (never read) queue can't stall this server.
         drop(channel);
+        if self.no_answer_to_opens {
+            // Dropped, the reply would be a refusal.
+            std::mem::forget(reply);
+            return Ok(());
+        }
         reply.accept().await;
         Ok(())
     }
@@ -238,6 +266,10 @@ impl server::Handler for TestServer {
         reply: server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.no_answer_to_opens {
+            std::mem::forget(reply);
+            return Ok(());
+        }
         reply.accept().await;
         let (jump_end, target_end) = tokio::io::duplex(256 * 1024);
         let target = TestServer {
@@ -289,6 +321,14 @@ impl server::Handler for TestServer {
             self.spawn_shell(channel, command, session.handle());
             return Ok(());
         }
+        if let Some(start) = self.flood_exec.clone() {
+            let handle = session.handle();
+            tokio::spawn(async move {
+                let _ = handle.data(channel, start).await;
+                while handle.data(channel, vec![b'x'; 16 * 1024]).await.is_ok() {}
+            });
+            return Ok(());
+        }
         if command == "echo" {
             self.echo.insert(channel);
         } else if let Some(total) = command
@@ -337,6 +377,7 @@ impl server::Handler for TestServer {
     }
 
     async fn channel_close(&mut self, channel: ChannelId, _session: &mut Session) -> Result<(), Self::Error> {
+        self.closed.fetch_add(1, Ordering::SeqCst);
         self.stdin.remove(&channel);
         if self.shell.as_ref().is_some_and(|s| s.keep_running_on_close) {
             return Ok(());
@@ -431,6 +472,15 @@ where
     Ok(session)
 }
 
+/// Each way of the in-memory pipe between a test client and server. Both are
+/// russh, whose session loop reads nothing while it writes what is pending:
+/// with a big upload and a big download at once, both ends could wait on a
+/// full pipe for good (a real server, OpenSSH or Dropbear, keeps reading).
+/// Room for all the SSH windows let be on the way (8 MiB a channel from the
+/// server to this app's client, 2 MiB back) keeps them from waiting on each
+/// other; only what is waiting in it takes memory.
+const PIPE: usize = 64 * 1024 * 1024;
+
 /// Run `server` on one end of an in-memory pipe and connect a client with
 /// `client_config` to the other; returns the authenticated client handle.
 pub(crate) async fn connect(
@@ -447,7 +497,7 @@ pub(crate) async fn connect_with_client(
     client_config: client::Config,
     client: TestClient,
 ) -> Result<client::Handle<TestClient>, russh::Error> {
-    let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+    let (client_io, server_io) = tokio::io::duplex(PIPE);
     serve(server, tweak, server_io);
     client_over(client_io, client_config, client).await
 }
@@ -459,7 +509,7 @@ pub(crate) async fn handshake(
     server: TestServer,
     client_config: client::Config,
 ) -> Result<client::Handle<TestClient>, russh::Error> {
-    let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+    let (client_io, server_io) = tokio::io::duplex(PIPE);
     serve(
         server,
         |c| {

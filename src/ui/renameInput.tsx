@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useT } from "../i18n";
 
 // The inline name editor in the session-tab and terminal-tab menus: it opens
 // focused with the name selected; Enter keeps the name, Esc goes back to the
@@ -10,6 +11,7 @@ export const RenameInput = ({ initialValue, placeholder, onCommit, onCancel }: {
   onCommit: (value: string) => void;
   onCancel: () => void;
 }) => {
+  const t = useT();
   const [draft, setDraft] = useState(initialValue);
   return (
     <div className="px-2 py-1.5 flex items-center gap-1.5">
@@ -24,9 +26,9 @@ export const RenameInput = ({ initialValue, placeholder, onCommit, onCancel }: {
           if (e.key === "Enter") onCommit(draft);
           else if (e.key === "Escape") onCancel();
         }}
-        placeholder={placeholder ?? "Name…"}
+        placeholder={placeholder ?? t("Name…")}
         maxLength={60}
-        aria-label="New name"
+        aria-label={t("New name")}
         className="flex-1 min-w-0 bg-black/40 border border-primary/40 rounded px-2 py-1 text-[11px] text-zinc-100 outline-none"
       />
     </div>
