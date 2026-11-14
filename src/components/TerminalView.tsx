@@ -1542,15 +1542,16 @@ const TerminalView = ({
       }
       const primaryModifier = ev.ctrlKey || ev.metaKey;
 
-      // Ctrl+W is reserved for the shell while it is running.
-      // After the shell has ended, Ctrl+W and Ctrl+Shift+W close the session.
+      // Ctrl+Shift+W always closes the current terminal tab.
+      // Plain Ctrl+W does so only after its shell has ended; while the shell
+      // is running, ^W remains available to readline and other applications.
       if (
-        shellEndedRef.current &&
         ev.type === 'keydown' &&
         !ev.repeat &&
         primaryModifier &&
         !ev.altKey &&
-        ev.code === 'KeyW'
+        ev.code === 'KeyW' &&
+        (ev.shiftKey || shellEndedRef.current)
       ) {
         ev.preventDefault();
         onCloseRef.current?.();

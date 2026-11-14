@@ -995,6 +995,58 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   // panes redistributes those two panes' share and leaves the rest
   // alone. Reset (double-click a divider) flattens back to all-equal.
   const [splitRatios, setSplitRatios] = useState<number[]>([]);
+  const closeTerminal = useCallback((terminalId: string) => {
+    // Closing the only terminal closes the complete session.
+    if (terminals.length <= 1) {
+      onClose();
+      return;
+    }
+
+    const closingIndex = terminals.findIndex(term => term.id === terminalId);
+
+    const splitReplacement =
+      splitTerminals.find(id => id !== terminalId);
+
+    const adjacentReplacement =
+      terminals[closingIndex + 1]?.id ??
+      terminals[closingIndex - 1]?.id;
+
+    const nextActiveTab =
+      splitReplacement ??
+      adjacentReplacement;
+
+    setTerminals(prev =>
+      prev.filter(term => term.id !== terminalId)
+    );
+
+    if (activeTab === terminalId && nextActiveTab) {
+      setActiveTab(nextActiveTab);
+    }
+
+    if (splitTerminals.includes(terminalId)) {
+      const index = splitTerminals.indexOf(terminalId);
+
+      const nextTerms =
+        splitTerminals.filter(id => id !== terminalId);
+
+      const nextRatios =
+        splitRatios.filter((_, ratioIndex) => ratioIndex !== index);
+
+      if (nextTerms.length < 2) {
+        setSplitTerminals([]);
+        setSplitRatios([]);
+      } else {
+        setSplitTerminals(nextTerms);
+        setSplitRatios(nextRatios);
+      }
+    }
+  }, [
+    terminals,
+    activeTab,
+    splitTerminals,
+    splitRatios,
+    onClose,
+  ]);
   // "+" button's secondary menu — the arrow beside "+", or a right-click /
   // long-press on "+", so the primary click stays a fast "new tab" without
   // stealing the advanced flows (split view, compare across servers).
@@ -1996,30 +2048,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  setTerminals(prev => prev.filter(x => x.id !== term.id));
-                  // The active one goes: a pane of the split takes over if
-                  // there is one, it's on screen already.
-                  if (activeTab === term.id) {
-                    const next = splitTerminals.find(id => id !== term.id) ?? terminals.find(x => x.id !== term.id)?.id;
-                    if (next) setActiveTab(next);
-                  }
-                  // Closing a terminal that's participating in the split
-                  // has to drop it from splitTerminals AND splitRatios or
-                  // the layout keeps a hole for a torn-down partner.
-                  if (splitTerminals.includes(term.id)) {
-                    const idx = splitTerminals.indexOf(term.id);
-                    const nextTerms = splitTerminals.filter(id => id !== term.id);
-                    const nextRatios = splitRatios.filter((_, i) => i !== idx);
-                    // Falling below 2 members collapses back to the plain
-                    // absolute-overlap layout.
-                    if (nextTerms.length < 2) {
-                      setSplitTerminals([]);
-                      setSplitRatios([]);
-                    } else {
-                      setSplitTerminals(nextTerms);
-                      setSplitRatios(nextRatios);
-                    }
-                  }
+                  closeTerminal(term.id);
                 }}
                 aria-label={t("Close terminal")}
                 className="absolute right-0 sm:right-1 top-1/2 -translate-y-1/2 w-8 h-10 sm:w-5 sm:h-5 flex items-center justify-center rounded opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 hover:bg-white/5 hover:text-red-400 text-zinc-500 transition-all"
@@ -2532,7 +2561,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   ownLogin={term.ownLogin}
                   quickAuth={session.quickAuth}
                   onFolder={term.container ? undefined : onTerminalFolder}
-                  onClose={onClose}
+                  onClose={() => closeTerminal(term.id)}
                   onNewTerminal={openNewTerminal}
                 />
                 )}
