@@ -556,6 +556,29 @@ function DesktopApp() {
     return h;
   }, [broadcast]);
 
+  // Close the active session tab with Ctrl+Shift+W / Cmd+Shift+W.
+  // Ctrl+W remains available to a running terminal shell.
+  useEffect(() => {
+    const handleCloseTabShortcut = (event: KeyboardEvent) => {
+      const closeShortcut =
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "w";
+
+      if (!closeShortcut || !activeView.startsWith("session-")) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      getCloseHandler(activeView)();
+    };
+
+    window.addEventListener("keydown", handleCloseTabShortcut);
+
+    return () => {
+      window.removeEventListener("keydown", handleCloseTabShortcut);
+    };
+  }, [activeView, getCloseHandler]);
+
   // Stable identity matters: SessionView memoises on prop equality, so a
   // fresh `addLog` reference on every DesktopApp render would force every
   // session subtree to re-render when one session's status flips. Same

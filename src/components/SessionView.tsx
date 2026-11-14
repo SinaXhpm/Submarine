@@ -763,6 +763,20 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
   const [aiPending, setAiPending] = useState(0);
   // New terminals of this server log in on their own (its choice on this device).
   const [ownLoginDefault, setOwnLoginDefault] = useState(() => readOwnLogin(session.serverUuid));
+  // open new terminal: the next number no open terminal has, and the default login mode.
+  const openNewTerminal = useCallback(() => {
+    const newId = `${session.id}-term-${Date.now()}`;
+    setTerminals(prev => [
+      ...prev,
+      {
+        id: newId,
+        title: nextTerminalNumber(prev),
+        ownLogin: ownLoginDefault,
+      },
+    ]);
+    setActiveTab(newId);
+    setActiveTool(null);
+  }, [session.id, ownLoginDefault]);
   // SFTP's Follow, and the folder each terminal's shell last reported (a
   // container's terminal reports none: its folders aren't the server's).
   const [follow, setFollow] = useState(readFollow);
@@ -2025,11 +2039,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
               went unnoticed (#243); the arrow also lets the keyboard in. */}
           <div ref={plusGroupRef} className="ml-1 shrink-0 flex items-stretch rounded-lg border border-dashed border-white/10">
             <button
-              onClick={() => {
-                const newId = `${session.id}-term-${Date.now()}`;
-                setTerminals(prev => [...prev, { id: newId, title: nextTerminalNumber(prev), ownLogin: ownLoginDefault }]);
-                setActiveTab(newId);
-              }}
+              onClick={openNewTerminal}
               onContextMenu={(e) => {
                 e.preventDefault();
                 openPlusMenu(false);
@@ -2522,6 +2532,8 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                   ownLogin={term.ownLogin}
                   quickAuth={session.quickAuth}
                   onFolder={term.container ? undefined : onTerminalFolder}
+                  onClose={onClose}
+                  onNewTerminal={openNewTerminal}
                 />
                 )}
                 {/* Per-pane detach affordance — pulls the pane out of
