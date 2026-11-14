@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { invoke } from "@tauri-apps/api/core";
 import { Send, Square, RotateCcw, Flag, ChevronDown, ChevronUp, MoreHorizontal, Pencil, Trash2, Loader2, ArrowLeft, Paperclip, SlidersHorizontal, MessageSquarePlus } from "lucide-react";
 import { useConfirm, useTextPrompt } from "../../ui/confirm";
+import { openFeedback } from "../Feedback";
 import { Markdown } from "./Markdown";
 import { ToolCard, fromRecord, LIVE_CAP, type LiveCall } from "./ToolCard";
 import { effortChoices, effortLabel } from "./AiSettings";
@@ -40,7 +41,9 @@ const fresh = (model: string): Live => ({ runId: null, segs: [], calls: {}, card
 
 const fmt = (n: number) => (n >= 10000 ? `${Math.round(n / 1000)}k` : n.toLocaleString());
 
-const REPORT_URL = "https://github.com/SinaXhpm/Submarine/issues/new";
+/** How much of a reply a report quotes, in code points: the feedback form
+ *  takes 4,000 (MESSAGE_MAX), and the person's own words need room. */
+const REPORT_QUOTE_MAX = 3000;
 
 /** Text from the user's terminal, for the composer's Attach (AI tab only). */
 export interface Attach {
@@ -539,22 +542,22 @@ export const ChatPanel = ({
     if (ok) invoke("open_external_url", { url }).catch((e) => setError(errText(e)));
   };
 
+  // Into the feedback form, inside the app: Google Play asks that an AI reply
+  // can be reported without leaving it. The reply is in the message, where
+  // the person can change it; nothing goes until they press Send.
   const report = async (item: ChatItem) => {
-    const text = item.text?.trim() ? item.text : "";
+    const text = item.text?.trim() ?? "";
     const ok = await confirm({
       title: "Report this reply?",
       message:
-        (text ? "The reply is copied to your clipboard, and " : "This reply has no text to copy; ") +
-        "Submarine's issue page opens in your browser: write or paste what you want to report there. Nothing is sent by the app. Don't include private data from your servers.",
-      okLabel: "Open the issue page",
+        "The form for writing to the developer opens with this reply in it. Say what's wrong with it, and take out anything private from your servers. Nothing is sent until you press Send.",
+      okLabel: "Open the form",
       safeDefault: true,
     });
     if (!ok) return;
-    // Copied only now, once the user agreed.
-    if (text) {
-      try { await navigator.clipboard.writeText(text); } catch { setError("The reply couldn't be copied: select it in the chat and copy it."); }
-    }
-    invoke("open_external_url", { url: REPORT_URL }).catch((e) => setError(errText(e)));
+    const points = Array.from(text);
+    const quoted = points.length > REPORT_QUOTE_MAX ? `${points.slice(0, REPORT_QUOTE_MAX).join("")}…` : text;
+    openFeedback({ append: `Report of an AI reply.\n\nThe reply:\n${quoted || "(no text)"}\n\nWhat's wrong with it: ` });
   };
 
   const addAttachment = async (what: "selection" | "tail") => {

@@ -5,7 +5,6 @@ import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.view.View
-import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
@@ -64,17 +63,15 @@ class MainActivity : TauriActivity() {
   }
 
   // Keep the OS from killing our process while the user is in another
-  // app. All SSH state lives in the Rust backend in this same process,
-  // so a foreground service with a persistent notification is the only
-  // sanctioned way to keep sockets open across a background trip.
-  // Started each time the app comes to the front, not only on create: after
-  // Android's background time limit has stopped it (ConnectionKeeperService
-  // .onTimeout), coming back starts it again. A start while it runs only
-  // repeats its notification. ContextCompat handles the pre-O / O+
-  // startForegroundService split.
+  // app. All connection state lives in the Rust backend in this same
+  // process, so a foreground service with a persistent notification is the
+  // only sanctioned way to keep sockets open across a background trip. It
+  // runs only while a connection is open (ConnectionKeeperService.setWanted);
+  // coming to the front starts it again if Android stopped it or refused it
+  // while the app was in the background.
   override fun onStart() {
     super.onStart()
-    ContextCompat.startForegroundService(this, Intent(this, ConnectionKeeperService::class.java))
+    ConnectionKeeperService.resume(this)
   }
 
   // Explicitly stop the keeper when the Activity finishes. Android will

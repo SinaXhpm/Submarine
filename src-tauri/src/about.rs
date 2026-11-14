@@ -41,7 +41,8 @@ pub fn app_info() -> AppInfo {
     }
 }
 
-/// See `AppInfo::updates`: off in the App Store's builds, and in a Flatpak.
+/// See `AppInfo::updates`: off in the App Store's and Google Play's builds
+/// (both with the `app-store` feature), and in a Flatpak.
 const UPDATES: bool = !cfg!(any(target_os = "ios", feature = "app-store"));
 fn updates() -> bool {
     UPDATES && !in_flatpak()
