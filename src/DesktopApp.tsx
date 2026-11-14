@@ -555,7 +555,7 @@ function DesktopApp() {
     }
     return h;
   }, [broadcast]);
-  
+
   // Stable identity matters: SessionView memoises on prop equality, so a
   // fresh `addLog` reference on every DesktopApp render would force every
   // session subtree to re-render when one session's status flips. Same
