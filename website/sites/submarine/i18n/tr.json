@@ -33,6 +33,7 @@
     "faq": "Sorular",
     "releases": "Sürümler",
     "deleteAccount": "Hesabınızı silin",
+    "terms": "Kullanım koşulları",
     "verify": "İndirdiğiniz dosyayı doğrulayın",
     "issues": "Sorun bildirin",
     "author": "sinaxhpm.com",
@@ -805,6 +806,108 @@
         "title": "İletişim",
         "paragraphs": [
           "Verilerinizle ilgili soru ve talepleriniz için <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> adresinde bir issue açın (lütfen oraya özel bilgi yazmayın) ya da <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a> üzerinden yazın."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Kullanım koşulları – Submarine",
+    "description": "Submarine uygulaması ve isteğe bağlı eşitleme hizmetinin koşulları: MIT lisansı, sunucularınız, hesabınızın adil kullanımı, garanti yokluğu, değişiklikler.",
+    "heading": "Kullanım koşulları",
+    "intro": "Bu koşullar Submarine uygulamasını, isteğe bağlı Submarine eşitleme hizmetini ve bu web sitesini kapsar. Kısacası: uygulama MIT lisansıyla ücretsiz ve açık kaynaklıdır, eşitleme hizmeti ücretsizdir ve olduğu gibi sunulur; ikisini de riski size ait olmak üzere ve yasalara uygun olarak kullanırsınız. Verilerinizi nasıl işlediğimiz <a href=\"{privacyUrl}\">gizlilik politikasında</a> açıklanır.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Biz kimiz",
+        "paragraphs": [
+          "Submarine'i ve eşitleme hizmetini Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) geliştirir ve işletir. Bu koşullarda “biz” ve “bize” derken kastedilen odur."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "Uygulama",
+        "paragraphs": [
+          "Uygulama, <a href=\"{licenseUrl}\">MIT lisansıyla</a> ücretsiz ve açık kaynaklıdır. Uygulamayı bu lisansın izin verdiği şekilde kullanabilir, kopyalayabilir, değiştirebilir ve paylaşabilirsiniz. Bu koşullardaki hiçbir hüküm, lisansın size tanıdığı bir hakkı elinizden almaz.",
+          "Uygulamayı Apple'ın App Store ya da TestFlight hizmeti üzerinden edindiyseniz bu hizmetler için geçerli olan <a href=\"{appleTerms}\">Apple koşulları</a> da o kopya için geçerlidir."
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Sunucularınız ve onlarda yaptıklarınız",
+        "list": [
+          "Yalnızca size ait olan ya da kullanma izniniz bulunan sunuculara ve cihazlara bağlanın.",
+          "Bunlarda yaptıklarınızdan siz sorumlusunuz: çalıştırdığınız komutlar (aynı anda birçok sunucuya yazdığınızda da), değiştirdiğiniz ya da sildiğiniz dosyalar ve açtığınız tüneller ile paylaşılan klasörler.",
+          "Düz Telnet ve düz VNC şifrelenmez; bir bağlantı bunlardan birini kullandığında uygulama bunu belirtir.",
+          "Sunucularınızdaki önemli her şeyin kendi kopyalarını saklayın."
+        ]
+      },
+      {
+        "id": "account",
+        "title": "Eşitleme hizmeti ve hesabınız",
+        "list": [
+          "Bulut eşitleme isteğe bağlıdır ve makul sınırlar içinde ücretsizdir: hesap başına {limitMb} MB şifreli veri, {limitItems} öğe ve {limitProfiles} profil.",
+          "E-posta alabildiğiniz bir e-posta adresi gerekir. Hiç doğrulanmayan yeni hesaplar {unverifiedDays} gün sonra silinir.",
+          "Hesap parolanızı ve profil parolanızı güvende tutun. Profilleriniz cihazınızda şifrelenir; bu yüzden onları okuyamayız ve unutulan bir profil parolasını kurtaramayız.",
+          "Bunun yerine uygulamayı kendi eşitleme sunucunuza yönlendirebilirsiniz. Bu koşullar o sunucuyu kapsamaz: o sunucu için işletmecisinin kuralları geçerlidir."
+        ]
+      },
+      {
+        "id": "fair",
+        "title": "Eşitleme hizmetinin adil kullanımı",
+        "paragraphs": [
+          "Hizmet, kendi Submarine profillerinizi ve ekibinizinkileri eşitlenmiş tutmak için vardır. Lütfen şunları yapmayın:"
+        ],
+        "list": [
+          "hakkınız olmayan herhangi bir şeyi saklamak ya da paylaşmak veya hizmeti yasalara aykırı biçimde kullanmak;",
+          "başkalarının hesaplarına ya da verilerine erişmeye çalışmak;",
+          "hizmete saldırmak, hizmeti aşırı yüklemek ya da yoklamak veya sınırlarını atlatmak;",
+          "toplu hâlde ya da size ait olmayan e-posta adresleriyle hesap açmak."
+        ],
+        "after": [
+          "Bu kuralları ihlal eden ya da hizmete veya hizmeti kullanan kişilere zarar veren bir hesabı sınırlayabilir, askıya alabilir ya da silebiliriz. Mümkün olduğunda önce size e-postayla haber veririz."
+        ]
+      },
+      {
+        "id": "ending",
+        "title": "Hesabınızı silme ve hizmet sona ererse",
+        "paragraphs": [
+          "Hesabınızı istediğiniz zaman silebilirsiniz: uygulamada (Bulut eşitleme bölümündeki <em>Hesabı sil…</em>) ya da <a href=\"{deleteUrl}\">silme sayfasında</a>. Nelerin ne zaman silindiği <a href=\"{privacyUrl}\">gizlilik politikasında</a> açıklanır.",
+          "Eşitleme hizmetini değiştirebilir ya da durdurabiliriz. Profilleriniz cihazlarınızda şifreli olarak kalır; bu yüzden hizmetin durdurulması onları oradan silmez. Hizmet bir gün durursa bunu bu web sitesinde önceden, olabildiğince erken duyururuz."
+        ]
+      },
+      {
+        "id": "feedback",
+        "title": "Geri bildirim",
+        "paragraphs": [
+          "Gönderdiğiniz geri bildirimlerdeki fikirleri Submarine'i geliştirmek için kullanabiliriz. Bir geri bildirim mesajının neleri içerdiği ve ne kadar süre saklandığı <a href=\"{privacyUrl}\">gizlilik politikasında</a> açıklanır."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Garanti yok",
+        "paragraphs": [
+          "Uygulama ve eşitleme hizmeti, MIT lisansında belirtildiği gibi, hiçbir garanti olmaksızın “olduğu gibi” sunulur. Hizmetin çalışır durumda kalması ve verilerinizin güvende olması için elimizden geleni yaparız; ancak hizmetin her zaman kullanılabilir, hatasız ya da belirli bir amaca uygun olacağını vaat etmeyiz."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Sorumluluğun sınırlandırılması",
+        "paragraphs": [
+          "Yasaların izin verdiği ölçüde, uygulamayı ya da hizmeti kullanmaktan veya kullanamamaktan doğan hiçbir kayıp ya da zarardan sorumlu değiliz: örneğin veri kaybı, bir sunucuya erişimin kaybedilmesi ya da bağlandığınız sunucularda olup bitenler. Bazı yasalar bu sınırlamalara izin vermez; izin vermedikleri yerlerde sınırlamalar yalnızca o yasaların izin verdiği ölçüde uygulanır."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Bu koşullardaki değişiklikler",
+        "paragraphs": [
+          "Bu koşullar değiştiğinde en üstteki tarih de değişir. Bir değişiklik hesabınız açısından önemliyse bunu bu web sitesinde belirtiriz. Bir değişiklikten sonra uygulamayı ya da hizmeti kullanmak, yeni koşulları kabul ettiğiniz anlamına gelir."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "İletişim",
+        "paragraphs": [
+          "Bu koşullarla ilgili sorularınız için <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> adresinde bir issue açın ya da <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a> üzerinden yazın."
         ]
       }
     ]

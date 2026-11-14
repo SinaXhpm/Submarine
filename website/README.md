@@ -2,8 +2,8 @@
 
 Two static sites, built from this folder:
 
-- [submarine.sinaxhpm.com](https://submarine.sinaxhpm.com) (`sites/submarine/`): what Submarine is, how it protects your data, the privacy policy and the account deletion page.
-- [echoes.sinaxhpm.com](https://echoes.sinaxhpm.com) (`sites/echoes/`): Echoes, the network toolkit by the same author (its source is [SinaXhpm/Echoes](https://github.com/SinaXhpm/Echoes)), and its privacy policy, which follows that repository's PRIVACY.md word for word.
+- [submarine.sinaxhpm.com](https://submarine.sinaxhpm.com) (`sites/submarine/`): what Submarine is, how it protects your data, the privacy policy, the terms of use and the account deletion page.
+- [echoes.sinaxhpm.com](https://echoes.sinaxhpm.com) (`sites/echoes/`): Echoes, the network toolkit by the same author (its source is [SinaXhpm/Echoes](https://github.com/SinaXhpm/Echoes)), and its privacy policy, which follows that repository's PRIVACY.md word for word, and its terms of use.
 - [captun.sinaxhpm.com](https://captun.sinaxhpm.com) (`sites/captun/`): Captun, the Wi-Fi hotspot and internet-sharing app by the same author (its source is [SinaXhpm/captun](https://github.com/SinaXhpm/captun)). One page: it has no release and no licence yet, so the page links the source, offers no download and never calls it open source; the routing engine is marked experimental.
 
 All three sites are in English and 9 translations (no Persian or Arabic since November 2026: their old addresses go to the English pages). Static HTML with one style sheet and one small script (plus the delete form on the Submarine site); fonts are served from the site itself; no cookies, no analytics, no third-party requests. The servers send a strict Content-Security-Policy (`script-src 'self'; style-src 'self'`), so the pages have no inline script or style.
@@ -53,7 +53,7 @@ node website/tools/shoot.mjs http://127.0.0.1:8790 out / /de/ /security/        
 
 ## Translations
 
-`sites/<site>/i18n/en.json` is the source. Each language is `<code>.json` with the same keys; a missing string falls back to English (the build lists them), and a list of things with ids (features, sections) that doesn't match the English one is taken from English whole. Keep `{placeholders}` and the HTML tags as they are. Submarine's app is translated (since 0.4), so a translated Submarine page names the app's buttons and settings as the app does in that language (`src/i18n/<lang>.json`; `check-i18n.mjs` checks the ones the pages name), except in picture descriptions: the screenshots show the app in English. Echoes and Captun are in English only, so their sites keep the names of their tools, buttons and settings in English (`check-i18n.mjs` knows them). Don't make any claim stronger or weaker than the English one. The privacy policies' translations say that the English text is the one that counts. A new language is a line in `LANGS` in `engine.mjs` plus its JSON files.
+`sites/<site>/i18n/en.json` is the source. Each language is `<code>.json` with the same keys; a missing string falls back to English (the build lists them), and a list of things with ids (features, sections) that doesn't match the English one is taken from English whole. Keep `{placeholders}` and the HTML tags as they are. Submarine's app is translated (since 0.4), so a translated Submarine page names the app's buttons and settings as the app does in that language (`src/i18n/<lang>.json`; `check-i18n.mjs` checks the ones the pages name), except in picture descriptions: the screenshots show the app in English. Echoes and Captun are in English only, so their sites keep the names of their tools, buttons and settings in English (`check-i18n.mjs` knows them). Don't make any claim stronger or weaker than the English one. The privacy policies' and the terms' translations say that the English text is the one that counts. A new language is a line in `LANGS` in `engine.mjs` plus its JSON files.
 
 ## Hosting
 

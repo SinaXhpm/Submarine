@@ -33,6 +33,7 @@
     "faq": "Questions",
     "releases": "Releases",
     "deleteAccount": "Delete your account",
+    "terms": "Terms of use",
     "verify": "Check your download",
     "issues": "Report a problem",
     "author": "sinaxhpm.com",
@@ -805,6 +806,108 @@
         "title": "Contact",
         "paragraphs": [
           "Questions or requests about your data: open an issue at <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (please don't post private information there), or write through <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Terms of use – Submarine",
+    "description": "The terms for the Submarine app and its optional sync service: the MIT license, your servers, fair use of your account, no warranty, and changes.",
+    "heading": "Terms of use",
+    "intro": "These terms cover the Submarine app, the optional Submarine sync service and this website. In short: the app is free and open source under the MIT license, the sync service is free and offered as it is, and you use both at your own risk and within the law. How we handle your data is in the <a href=\"{privacyUrl}\">privacy policy</a>.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Who we are",
+        "paragraphs": [
+          "Submarine and its sync service are made and run by Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>). “We” and “us” in these terms mean him."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "The app",
+        "paragraphs": [
+          "The app is free and open source under the <a href=\"{licenseUrl}\">MIT license</a>. You may use, copy, change and share it as that license allows. Nothing in these terms takes away a right the license gives you.",
+          "If you got the app through Apple's App Store or TestFlight, <a href=\"{appleTerms}\">Apple's terms</a> for those services also apply to that copy."
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Your servers, and what you do on them",
+        "list": [
+          "Connect only to servers and devices that are yours, or that you are allowed to use.",
+          "You are responsible for what you do on them: the commands you run (also when you type into many servers at once), the files you change or delete, and the tunnels and shared folders you open.",
+          "Plain Telnet and plain VNC are not encrypted, and the app says so when a connection uses one of them.",
+          "Keep your own copies of anything important on your servers."
+        ]
+      },
+      {
+        "id": "account",
+        "title": "The sync service and your account",
+        "list": [
+          "Cloud sync is optional, and free within fair limits: {limitMb} MB of encrypted data, {limitItems} items and {limitProfiles} profiles per account.",
+          "You need an email address you can receive mail at. Sign-ups that are never verified are deleted after {unverifiedDays} days.",
+          "Keep your account password and your profile password safe. Your profiles are encrypted on your device, so we can't read them, and we can't recover a forgotten profile password.",
+          "You can point the app at a sync server of your own instead. These terms don't cover that server: its operator's rules do."
+        ]
+      },
+      {
+        "id": "fair",
+        "title": "Fair use of the sync service",
+        "paragraphs": [
+          "The service is there to keep your own and your team's Submarine profiles in step. Please don't:"
+        ],
+        "list": [
+          "store or share anything you have no right to, or use the service against the law;",
+          "try to reach other people's accounts or data;",
+          "attack, overload or probe the service, or get around its limits;",
+          "make accounts in bulk, or with email addresses that aren't yours."
+        ],
+        "after": [
+          "We may limit, suspend or delete an account that breaks these rules or harms the service or the people who use it. When we can, we tell you first by email."
+        ]
+      },
+      {
+        "id": "ending",
+        "title": "Deleting your account, and if the service ends",
+        "paragraphs": [
+          "You can delete your account at any time: in the app (<em>Delete account…</em> in Cloud sync) or on the <a href=\"{deleteUrl}\">delete page</a>. The <a href=\"{privacyUrl}\">privacy policy</a> says what is deleted and when.",
+          "We may change the sync service, or stop it. Your profiles stay on your devices, encrypted, so stopping the service doesn't delete them there. If it ever stops, we'll say so on this website ahead of time, as early as we can."
+        ]
+      },
+      {
+        "id": "feedback",
+        "title": "Feedback",
+        "paragraphs": [
+          "We may use the ideas in feedback you send to improve Submarine. What a feedback message contains, and how long it is kept, is in the <a href=\"{privacyUrl}\">privacy policy</a>."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "No warranty",
+        "paragraphs": [
+          "The app and the sync service are provided “as is”, without any warranty, as the MIT license says. We do our best to keep the service running and your data safe, but we don't promise that it will always be available, free of errors, or right for a particular purpose."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Limits of liability",
+        "paragraphs": [
+          "As far as the law allows, we are not liable for any loss or damage from using the app or the service, or from not being able to use them: for example lost data, lost access to a server, or what happens on servers you connect to. Some laws don't allow these limits; where they don't, the limits apply only as far as those laws allow."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Changes to these terms",
+        "paragraphs": [
+          "When these terms change, the date at the top changes too. If a change matters for your account, we'll say so on this website. Using the app or the service after a change means you accept the new terms."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Contact",
+        "paragraphs": [
+          "Questions about these terms: open an issue at <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a>, or write through <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
         ]
       }
     ]

@@ -15,6 +15,8 @@ const APP_STORE = "https://apps.apple.com/app/id6824582968";
 const SUBMARINE = "https://submarine.sinaxhpm.com";
 // The date at the top of PRIVACY.md, which this site's policy follows word for word.
 const POLICY_DATE = "2026-10-21";
+// The date at the top of the terms of use.
+const TERMS_DATE = "2026-11-14";
 
 // Where each download button goes. GitHub's "latest" link works for every file
 // whose name has no version in it; the .rpm's has, so it goes to the release.
@@ -71,7 +73,7 @@ export default function build({ out, date }) {
     out,
     date,
     langs: LANGS.map((l) => l.code),
-    slugs: { home: "", privacy: "privacy/" },
+    slugs: { home: "", privacy: "privacy/", terms: "terms/" },
     themeColor: "#04070f",
     ogAlt: "Echoes: 20 network tools in one free app",
     nav: (lang, page, t) => [
@@ -87,7 +89,7 @@ export default function build({ out, date }) {
       const f = t.footer;
       const cols = [
         { title: f.product, links: [[`${home}#doctor`, t.nav.doctor], [`${home}#tools`, t.nav.tools], [`${home}#devices`, t.nav.devices], [`${home}#download`, t.nav.download], [`${home}#faq`, f.faq]] },
-        { title: f.trust, links: [[site.pagePath(lang, "privacy"), f.privacyPolicy], [APP_STORE, f.appStore], [RELEASES_URL, f.releases]] },
+        { title: f.trust, links: [[site.pagePath(lang, "privacy"), f.privacyPolicy], [site.pagePath(lang, "terms"), f.terms], [APP_STORE, f.appStore], [RELEASES_URL, f.releases]] },
         { title: f.project, links: [[REPO_URL, t.nav.github], [ISSUES_URL, f.issues], ["https://sinaxhpm.com", f.author]] },
       ];
       const sisterPath = lang.code === "en" ? "/" : `/${lang.code}/`;
@@ -111,6 +113,9 @@ export default function build({ out, date }) {
     const d = new Intl.DateTimeFormat(lang.locale, { dateStyle: "long", timeZone: "UTC" });
     return {
       date: d.format(new Date(`${POLICY_DATE}T00:00:00Z`)),
+      termsDate: d.format(new Date(`${TERMS_DATE}T00:00:00Z`)),
+      licenseUrl: `${REPO_URL}/blob/master/LICENSE`,
+      appleEula: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/",
       repoUrl: REPO_URL,
       issuesUrl: ISSUES_URL,
       policyUrl: POLICY_URL,
@@ -296,6 +301,7 @@ ${t.home.tools.groups.map((g) => `### ${g.title}\n\n${g.items.map((x) => `- ${x.
 
 - [Home](${ORIGIN}/): tools, screenshots, downloads, questions
 - [Privacy policy](${ORIGIN}/privacy/): Echoes collects no data; the services some tools use
+- [Terms of use](${ORIGIN}/terms/): the licence, using the tools only where you are allowed to, no warranty
 - Translations: ${site.built.filter((l) => l.code !== "en").map((l) => `[${l.name}](${site.abs(site.pagePath(l, "home"))})`).join(", ")}
 
 ## Links
@@ -315,10 +321,11 @@ ${t.home.tools.groups.map((g) => `### ${g.title}\n\n${g.items.map((x) => `- ${x.
     const base = lang.code === "en" ? "" : `${lang.code}/`;
     site.file(`${base}index.html`, homePage(lang, t, v));
     site.file(`${base}privacy/index.html`, privacyPage(lang, t, v));
+    site.file(`${base}terms/index.html`, site.textPage({ lang, page: "terms", t, doc: t.terms, v, date: v.termsDate }));
   }
   const vEn = valuesFor(LANGS[0]);
   site.file("404.html", notFoundPage(site.en, vEn));
-  site.file("sitemap.xml", site.sitemap(["home", "privacy"]));
+  site.file("sitemap.xml", site.sitemap(["home", "privacy", "terms"]));
   site.file("robots.txt", site.robots());
   site.file("llms.txt", llms(vEn));
   site.file("manifest.webmanifest", site.manifest(stripTags(site.en.home.description)));

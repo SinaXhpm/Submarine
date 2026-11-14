@@ -32,6 +32,7 @@
     "appStore": "App Store",
     "releases": "GitHub 上的发布版本",
     "privacyPolicy": "隐私政策",
+    "terms": "使用条款",
     "issues": "报告问题",
     "author": "sinaxhpm.com",
     "sister": "同一作者的另一作品：SSH、SFTP、RDP、VNC 和 Telnet，都在一个加密应用里",
@@ -631,6 +632,77 @@
         "title": "联系方式",
         "paragraphs": [
           "如有疑问或顾虑，请在 <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> 提交 issue。"
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "使用条款 – Echoes",
+    "description": "Echoes 的使用条款：MIT 许可证、只在获得允许的地方使用其网络工具、部分工具所使用的服务，以及不提供担保。",
+    "heading": "使用条款",
+    "intro": "本条款适用于 Echoes 应用和本网站。简而言之：Echoes 免费开源，采用 MIT 许可证；它没有账户，也没有由我们运营的服务；你使用其工具须自行承担风险，并须遵守法律。Echoes 不收集任何数据：请见<a href=\"{privacyUrl}\">隐私政策</a>。",
+    "sections": [
+      {
+        "id": "who",
+        "title": "我们是谁",
+        "paragraphs": [
+          "Echoes 由 Sina Xhpm（<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>）及其贡献者开发。本条款中的“我们”均指他们。"
+        ]
+      },
+      {
+        "id": "app",
+        "title": "应用",
+        "paragraphs": [
+          "Echoes 免费开源，采用 <a href=\"{licenseUrl}\">MIT 许可证</a>。你可以在该许可证允许的范围内使用、复制、修改和分享它。本条款中的任何内容都不会剥夺该许可证授予你的权利。",
+          "如果你是从 App Store 获得 Echoes 的，那么 Apple 的<a href=\"{appleEula}\">标准应用许可协议</a>也适用于这份副本。"
+        ]
+      },
+      {
+        "id": "allowed",
+        "title": "只在获得允许的地方使用这些工具",
+        "paragraphs": [
+          "Echoes 会发送真实的网络流量。因此："
+        ],
+        "list": [
+          "只扫描、ping、测试和检查属于你的网络、服务器和网站，或你已获准测试的网络、服务器和网站。在你所在的地方，扫描他人的网络可能违法。",
+          "不要使用 Echoes 攻击、洪泛或侵入任何目标。",
+          "当你启动 Web 服务器、代理或套接字监听器时，由你决定谁可以连接以及共享什么，并由你对经过它们的内容负责。",
+          "Doctor 可以告诉你另一个应用中的某项设置能否绕过过滤。这样做是否被允许，取决于你所在的地方；是否采纳该建议，由你自己决定。"
+        ]
+      },
+      {
+        "id": "services",
+        "title": "部分工具使用的服务",
+        "paragraphs": [
+          "部分工具基于公共服务（例如 check-host.net、测速服务器、DNS 解析器和 IP 信息提供商），或基于你自己的账户（Cloudflare、Telegram）。每项服务都有各自的条款，当 Echoes 代你使用该服务时，这些条款即适用。<a href=\"{privacyUrl}\">隐私政策</a>列出了这些服务。"
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "不提供担保",
+        "paragraphs": [
+          "如 MIT 许可证所述，Echoes 按“原样”提供，不附带任何担保。网络结果可能有误或不完整：测试可能因 Echoes 以外的原因失败，而 Doctor 的结论是它根据自己测得的数据作出的最佳判断。"
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "责任限制",
+        "paragraphs": [
+          "在法律允许的范围内，对于因使用或无法使用 Echoes 而造成的任何损失或损害，包括你测试或连接的网络和服务器上发生的事情，我们均不承担责任。有些法律不允许这些限制；在不允许的情况下，这些限制仅在相关法律允许的范围内适用。"
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "本条款的变更",
+        "paragraphs": [
+          "本条款变更时，页面顶部的日期也会随之更新。在变更后使用 Echoes，即表示你接受新条款。"
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "联系方式",
+        "paragraphs": [
+          "如对本条款有疑问，请在 <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> 提交 issue。"
         ]
       }
     ]

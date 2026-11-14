@@ -32,6 +32,7 @@
     "appStore": "App Store",
     "releases": "Versions publiées sur GitHub",
     "privacyPolicy": "Politique de confidentialité",
+    "terms": "Conditions d’utilisation",
     "issues": "Signaler un problème",
     "author": "sinaxhpm.com",
     "sister": "Du même auteur : SSH, SFTP, RDP, VNC et Telnet dans une seule application chiffrée",
@@ -631,6 +632,77 @@
         "title": "Contact",
         "paragraphs": [
           "Questions ou préoccupations : ouvrez un ticket sur <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Conditions d’utilisation – Echoes",
+    "description": "Les conditions d’Echoes : licence MIT, n’utiliser ses outils réseau que là où c’est permis, services qu’utilisent certains outils, aucune garantie.",
+    "heading": "Conditions d’utilisation",
+    "intro": "Ces conditions s’appliquent à l’application Echoes et à ce site web. En bref : Echoes est gratuit et open source, sous licence MIT, il n’a ni compte ni service exploité par nous, et vous utilisez ses outils à vos propres risques et dans le respect de la loi. Echoes ne collecte aucune donnée : voir la <a href=\"{privacyUrl}\">politique de confidentialité</a>.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Qui nous sommes",
+        "paragraphs": [
+          "Echoes est développé par Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) et les contributeurs du projet. Dans les présentes conditions, « nous » désigne Sina Xhpm et ces contributeurs."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "L’application",
+        "paragraphs": [
+          "Echoes est gratuit et open source, sous <a href=\"{licenseUrl}\">licence MIT</a>. Vous pouvez l’utiliser, le copier, le modifier et le partager comme le permet cette licence. Rien dans ces conditions ne vous retire un droit que la licence vous accorde.",
+          "Si vous avez obtenu Echoes sur l’App Store, le <a href=\"{appleEula}\">contrat de licence standard pour les apps</a> d’Apple s’applique également à cette copie."
+        ]
+      },
+      {
+        "id": "allowed",
+        "title": "N’utilisez les outils que là où vous en avez le droit",
+        "paragraphs": [
+          "Echoes envoie du trafic réseau réel. Par conséquent :"
+        ],
+        "list": [
+          "Ne lancez de scans, pings, tests et vérifications que sur des réseaux, serveurs et sites web qui vous appartiennent, ou que vous avez l’autorisation de tester. Scanner les réseaux d’autres personnes peut être contraire à la loi là où vous vous trouvez.",
+          "N’utilisez pas Echoes pour attaquer, submerger ou pirater quoi que ce soit.",
+          "Quand vous lancez le serveur web, le proxy ou un socket en écoute, c’est vous qui décidez qui peut s’y connecter et ce que vous partagez, et vous êtes responsable de ce qui y transite.",
+          "Le Doctor peut vous dire si un réglage dans une autre application permettrait de contourner un filtre. Que cela soit autorisé ou non dépend de l’endroit où vous vous trouvez ; suivre ce conseil relève de votre choix."
+        ]
+      },
+      {
+        "id": "services",
+        "title": "Services utilisés par certains outils",
+        "paragraphs": [
+          "Certains outils s’appuient sur des services publics (par exemple check-host.net, des serveurs de test de débit, des résolveurs DNS et des fournisseurs d’informations sur les adresses IP), ou sur vos propres comptes (Cloudflare, Telegram). Chacun a ses propres conditions, qui s’appliquent quand Echoes l’utilise pour vous. La <a href=\"{privacyUrl}\">politique de confidentialité</a> les énumère."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Aucune garantie",
+        "paragraphs": [
+          "Echoes est fourni « en l’état », sans aucune garantie, comme l’indique la licence MIT. Les résultats réseau peuvent être faux ou incomplets : un test peut échouer pour des raisons extérieures à Echoes, et le verdict du Doctor est sa meilleure interprétation de ce qu’il a mesuré."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Limitation de responsabilité",
+        "paragraphs": [
+          "Dans la mesure permise par la loi, nous ne sommes responsables d’aucune perte ni d’aucun dommage résultant de l’utilisation d’Echoes ou de l’impossibilité de l’utiliser, y compris ce qui se passe sur les réseaux et les serveurs que vous testez ou auxquels vous vous connectez. Certaines lois n’autorisent pas ces limitations ; là où elles ne les autorisent pas, les limitations ne s’appliquent que dans la mesure où ces lois le permettent."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Modifications de ces conditions",
+        "paragraphs": [
+          "Quand ces conditions changent, la date indiquée en haut de la page change aussi. Utiliser Echoes après une modification signifie que vous acceptez les nouvelles conditions."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Contact",
+        "paragraphs": [
+          "Pour toute question sur ces conditions : ouvrez un ticket sur <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
         ]
       }
     ]

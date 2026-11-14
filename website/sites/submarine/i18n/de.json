@@ -33,6 +33,7 @@
     "faq": "Fragen",
     "releases": "Releases",
     "deleteAccount": "Konto löschen",
+    "terms": "Nutzungsbedingungen",
     "verify": "Ihren Download prüfen",
     "issues": "Problem melden",
     "author": "sinaxhpm.com",
@@ -805,6 +806,108 @@
         "title": "Kontakt",
         "paragraphs": [
           "Fragen oder Anliegen zu Ihren Daten: Erstellen Sie ein Issue unter <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (bitte veröffentlichen Sie dort keine privaten Informationen) oder schreiben Sie über <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Nutzungsbedingungen – Submarine",
+    "description": "Die Bedingungen für die Submarine-App und den optionalen Sync-Dienst: MIT-Lizenz, Ihre Server, angemessene Kontonutzung, keine Gewährleistung, Änderungen.",
+    "heading": "Nutzungsbedingungen",
+    "intro": "Diese Nutzungsbedingungen gelten für die Submarine-App, den optionalen Submarine-Sync-Dienst und diese Website. Kurz gesagt: Die App ist kostenlos und Open Source unter der MIT-Lizenz, der Sync-Dienst ist kostenlos und wird so angeboten, wie er ist, und Sie nutzen beides auf eigenes Risiko und im Rahmen der Gesetze. Wie wir mit Ihren Daten umgehen, steht in der <a href=\"{privacyUrl}\">Datenschutzerklärung</a>.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Wer wir sind",
+        "paragraphs": [
+          "Submarine und sein Sync-Dienst werden von Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) entwickelt und betrieben. Wenn in diesen Bedingungen von „wir“ oder „uns“ die Rede ist, ist er gemeint."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "Die App",
+        "paragraphs": [
+          "Die App ist kostenlos und Open Source unter der <a href=\"{licenseUrl}\">MIT-Lizenz</a>. Sie dürfen sie nutzen, kopieren, ändern und weitergeben, wie es diese Lizenz erlaubt. Nichts in diesen Bedingungen entzieht Ihnen ein Recht, das Ihnen die Lizenz einräumt.",
+          "Wenn Sie die App über den App Store oder TestFlight von Apple bezogen haben, gelten für diese Kopie auch die <a href=\"{appleTerms}\">Bedingungen von Apple</a> für diese Dienste."
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Ihre Server und was Sie darauf tun",
+        "list": [
+          "Verbinden Sie sich nur mit Servern und Geräten, die Ihnen gehören oder die Sie nutzen dürfen.",
+          "Sie sind für das verantwortlich, was Sie darauf tun: die Befehle, die Sie ausführen (auch wenn Sie in viele Server gleichzeitig tippen), die Dateien, die Sie ändern oder löschen, und die Tunnel und freigegebenen Ordner, die Sie öffnen.",
+          "Einfaches Telnet und einfaches VNC sind nicht verschlüsselt, und die App weist darauf hin, wenn eine Verbindung eines davon nutzt.",
+          "Legen Sie von allem Wichtigen auf Ihren Servern eigene Kopien an."
+        ]
+      },
+      {
+        "id": "account",
+        "title": "Der Sync-Dienst und Ihr Konto",
+        "list": [
+          "Die Cloud-Synchronisierung ist optional und in fairen Grenzen kostenlos: {limitMb} MB verschlüsselte Daten, {limitItems} Einträge und {limitProfiles} Profile pro Konto.",
+          "Sie benötigen eine E-Mail-Adresse, unter der Sie E-Mails empfangen können. Registrierungen, die nie bestätigt werden, werden nach {unverifiedDays} Tagen gelöscht.",
+          "Bewahren Sie Ihr Kontopasswort und Ihr Profilpasswort sicher auf. Ihre Profile werden auf Ihrem Gerät verschlüsselt, daher können wir sie nicht lesen, und ein vergessenes Profilpasswort können wir nicht wiederherstellen.",
+          "Sie können die App stattdessen auf einen eigenen Sync-Server einstellen. Für diesen Server gelten nicht diese Bedingungen, sondern die Regeln seines Betreibers."
+        ]
+      },
+      {
+        "id": "fair",
+        "title": "Angemessene Nutzung des Sync-Dienstes",
+        "paragraphs": [
+          "Der Dienst ist dazu da, Ihre eigenen Submarine-Profile und die Ihres Teams auf demselben Stand zu halten. Bitte unterlassen Sie Folgendes:"
+        ],
+        "list": [
+          "etwas speichern oder teilen, wozu Sie nicht berechtigt sind, oder den Dienst rechtswidrig nutzen;",
+          "versuchen, auf Konten oder Daten anderer Personen zuzugreifen;",
+          "den Dienst angreifen, überlasten oder sondieren oder seine Grenzen umgehen;",
+          "Konten massenhaft oder mit E-Mail-Adressen anlegen, die nicht Ihnen gehören."
+        ],
+        "after": [
+          "Verstößt ein Konto gegen diese Regeln oder schadet es dem Dienst oder den Menschen, die ihn nutzen, können wir es einschränken, sperren oder löschen. Wenn wir können, informieren wir Sie vorher per E-Mail."
+        ]
+      },
+      {
+        "id": "ending",
+        "title": "Löschung Ihres Kontos und mögliche Einstellung des Dienstes",
+        "paragraphs": [
+          "Sie können Ihr Konto jederzeit löschen: in der App (<em>Konto löschen…</em> unter Cloud-Synchronisierung) oder auf der <a href=\"{deleteUrl}\">Seite zum Löschen des Kontos</a>. Die <a href=\"{privacyUrl}\">Datenschutzerklärung</a> beschreibt, was gelöscht wird und wann.",
+          "Wir können den Sync-Dienst ändern oder einstellen. Ihre Profile bleiben verschlüsselt auf Ihren Geräten, sodass sie dort nicht gelöscht werden, wenn der Dienst eingestellt wird. Sollte er je eingestellt werden, kündigen wir das auf dieser Website im Voraus an, so früh wir können."
+        ]
+      },
+      {
+        "id": "feedback",
+        "title": "Feedback",
+        "paragraphs": [
+          "Wir können die Ideen aus Feedback, das Sie senden, nutzen, um Submarine zu verbessern. Was eine Feedback-Nachricht enthält und wie lange sie aufbewahrt wird, steht in der <a href=\"{privacyUrl}\">Datenschutzerklärung</a>."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Keine Gewährleistung",
+        "paragraphs": [
+          "Die App und der Sync-Dienst werden „wie besehen“ und ohne jegliche Gewährleistung bereitgestellt, wie es die MIT-Lizenz besagt. Wir tun unser Bestes, damit der Dienst läuft und Ihre Daten sicher sind, versprechen aber nicht, dass er immer verfügbar, fehlerfrei oder für einen bestimmten Zweck geeignet ist."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Haftungsbeschränkung",
+        "paragraphs": [
+          "Soweit gesetzlich zulässig, haften wir für keinerlei Verluste oder Schäden, die aus der Nutzung der App oder des Dienstes entstehen oder daraus, dass Sie sie nicht nutzen können: zum Beispiel Datenverlust, den Verlust des Zugangs zu einem Server oder das, was auf Servern geschieht, mit denen Sie sich verbinden. Manche Gesetze lassen diese Beschränkungen nicht zu; wo das der Fall ist, gelten die Beschränkungen nur so weit, wie diese Gesetze es erlauben."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Änderungen dieser Bedingungen",
+        "paragraphs": [
+          "Wenn sich diese Bedingungen ändern, ändert sich auch das Datum oben. Ist eine Änderung für Ihr Konto von Bedeutung, weisen wir auf dieser Website darauf hin. Mit der Nutzung der App oder des Dienstes nach einer Änderung akzeptieren Sie die neuen Bedingungen."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Kontakt",
+        "paragraphs": [
+          "Fragen zu diesen Bedingungen: Erstellen Sie ein Issue unter <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> oder schreiben Sie über <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
         ]
       }
     ]

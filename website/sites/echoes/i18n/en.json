@@ -32,6 +32,7 @@
     "appStore": "App Store",
     "releases": "Releases on GitHub",
     "privacyPolicy": "Privacy policy",
+    "terms": "Terms of use",
     "issues": "Report a problem",
     "author": "sinaxhpm.com",
     "sister": "Also by the author: SSH, SFTP, RDP, VNC and Telnet in one encrypted app",
@@ -631,6 +632,77 @@
         "title": "Contact",
         "paragraphs": [
           "Questions or concerns: open an issue at <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Terms of use – Echoes",
+    "description": "The terms for Echoes: the MIT license, using its network tools only where you are allowed to, the services some tools use, and no warranty.",
+    "heading": "Terms of use",
+    "intro": "These terms cover the Echoes app and this website. In short: Echoes is free and open source under the MIT license, it has no account and no service of ours, and you use its tools at your own risk and within the law. Echoes collects no data: see the <a href=\"{privacyUrl}\">privacy policy</a>.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Who we are",
+        "paragraphs": [
+          "Echoes is made by Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) and its contributors. “We” and “us” in these terms mean them."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "The app",
+        "paragraphs": [
+          "Echoes is free and open source under the <a href=\"{licenseUrl}\">MIT license</a>. You may use, copy, change and share it as that license allows. Nothing in these terms takes away a right the license gives you.",
+          "If you got Echoes from the App Store, Apple's <a href=\"{appleEula}\">standard license agreement for apps</a> also applies to that copy."
+        ]
+      },
+      {
+        "id": "allowed",
+        "title": "Use the tools only where you are allowed to",
+        "paragraphs": [
+          "Echoes sends real network traffic. So:"
+        ],
+        "list": [
+          "Scan, ping, test and check only networks, servers and websites that are yours, or that you have permission to test. Scanning other people's networks may be against the law where you are.",
+          "Don't use Echoes to attack, flood or break into anything.",
+          "When you start the web server, the proxy or a socket listener, you decide who can connect and what you share, and you are responsible for what passes through them.",
+          "The Doctor can tell you whether a setting in another app would get around a filter. Whether that is allowed depends on where you are; following that advice is your choice."
+        ]
+      },
+      {
+        "id": "services",
+        "title": "Services some tools use",
+        "paragraphs": [
+          "Some tools are built on public services (for example check-host.net, speed test servers, DNS resolvers and IP information providers), or on accounts of your own (Cloudflare, Telegram). Each has its own terms, which apply when Echoes uses it for you. The <a href=\"{privacyUrl}\">privacy policy</a> lists them."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "No warranty",
+        "paragraphs": [
+          "Echoes is provided “as is”, without any warranty, as the MIT license says. Network results can be wrong or incomplete: a test can fail for reasons outside Echoes, and the Doctor's verdict is its best reading of what it measured."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Limits of liability",
+        "paragraphs": [
+          "As far as the law allows, we are not liable for any loss or damage from using Echoes, or from not being able to use it, including what happens on networks and servers you test or connect to. Some laws don't allow these limits; where they don't, the limits apply only as far as those laws allow."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Changes to these terms",
+        "paragraphs": [
+          "When these terms change, the date at the top changes too. Using Echoes after a change means you accept the new terms."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Contact",
+        "paragraphs": [
+          "Questions about these terms: open an issue at <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a>."
         ]
       }
     ]
