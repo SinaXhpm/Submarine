@@ -1,5 +1,5 @@
-import { Search, Plus, Server, Folder, FolderPlus, ChevronLeft, ChevronRight, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound, Sparkles, Terminal, Monitor, ScreenShare, Cable, FolderSync, LayoutGrid, List } from "lucide-react";
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, type CSSProperties } from "react";
+import { Search, Plus, Server, Folder, FolderPlus, ChevronLeft, ChevronRight, Trash2, Edit2, Zap, Check, X, Copy, GripVertical, ShieldAlert, KeyRound, Sparkles, LayoutGrid, List } from "lucide-react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useConfirm } from "../ui/confirm";
 import { HeldReview } from "./HeldReview";
@@ -8,40 +8,7 @@ import { folderTree } from "../util/folderTree";
 import { tn, useT } from "../i18n";
 import { ai, AI_LEVEL_EVENT, type Level } from "../util/aiApi";
 import { LevelMenu } from "./ai/LevelPicker";
-
-// The kind of connection as a server's avatar shows it, and the port each one
-// uses by default: another port is shown after the host.
-const PROTOCOL_ICON: Record<string, typeof Terminal> = {
-  ssh: Terminal, telnet: Cable, rdp: Monitor, vnc: ScreenShare,
-  ftp: FolderSync, ftps: FolderSync, "ftps-implicit": FolderSync,
-};
-const USUAL_PORT: Record<string, number> = { ssh: 22, telnet: 23, rdp: 3389, vnc: 5900, ftp: 21, ftps: 21, "ftps-implicit": 990 };
-const protocolOf = (s: any): string => (s?.protocol && PROTOCOL_ICON[s.protocol] ? s.protocol : "ssh");
-
-// A server's or folder's own colour as its avatar's fill, edge and glyph, the
-// glyph a little lighter so it reads on the dark card; the accent without one.
-const hexRgb = (c?: string | null): [number, number, number] | null => {
-  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec((c || "").trim());
-  if (!m) return null;
-  const h = m[1].length === 3 ? m[1].replace(/./g, (x) => x + x) : m[1];
-  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
-};
-const avatarStyle = (color?: string | null): CSSProperties => {
-  const rgb = hexRgb(color);
-  if (!rgb) return { background: "rgb(var(--primary) / 0.16)", borderColor: "rgb(var(--primary) / 0.4)", color: "rgb(var(--primary))" };
-  const [r, g, b] = rgb;
-  const lift = (v: number) => Math.round(v + (255 - v) * 0.35);
-  return { background: `rgba(${r}, ${g}, ${b}, 0.16)`, borderColor: `rgba(${r}, ${g}, ${b}, 0.4)`, color: `rgb(${lift(r)}, ${lift(g)}, ${lift(b)})` };
-};
-
-// The dot of a server whose tab is open, in the colours of the tab's own dot.
-const TAB_DOT: Record<string, string> = {
-  waiting: "bg-primary animate-pulse-brief",
-  connected: "bg-emerald-400",
-  connecting: "bg-amber-400 animate-pulse-brief",
-  failed: "bg-rose-500",
-  disconnected: "bg-rose-500",
-};
+import { PROTOCOL_ICON, USUAL_PORT, TAB_DOT, avatarStyle, protocolOf } from "../util/serverLook";
 
 // The servers as a grid of cards or as a list, kept on this device.
 const VIEW_KEY = "submarine-servers-view";

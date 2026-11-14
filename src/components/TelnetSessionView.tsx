@@ -180,7 +180,7 @@ export default function TelnetSessionView({ session, displayName, onClose, onSta
 
   return (
     <div className="relative flex-1 flex flex-col min-h-0 bg-[#0a0a0c] text-white overflow-hidden" data-telnet-status={status}>
-      <div className="h-10 shrink-0 flex items-center gap-2 px-3 border-b border-white/5 bg-[#111114]">
+      <div className="h-10 shrink-0 flex items-center gap-2 px-3 border-b border-white/5 bg-[#141417]">
         <span className={`shrink-0 ${broken ? "text-red-400" : "text-primary"}`} aria-hidden="true">
           {working ? <Loader2 size={14} className="animate-spin-brief" /> : broken ? <AlertTriangle size={14} /> : <TerminalSquare size={14} />}
         </span>

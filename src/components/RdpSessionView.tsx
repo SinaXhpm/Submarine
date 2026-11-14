@@ -496,7 +496,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
       <div data-rdp-status={status} className="relative flex-1 flex flex-col bg-[#0a0a0c] text-white overflow-hidden">
         {/* The labels show by the bar's own width, not the window's: in a split
             view the tab is a part of the window. */}
-        <div className="shrink-0 h-9 px-2 sm:px-3 flex items-center gap-2 border-b border-white/5 bg-[#0e0e10] [container-type:inline-size]">
+        <div className="shrink-0 h-9 px-2 sm:px-3 flex items-center gap-2 border-b border-white/5 bg-[#141417] [container-type:inline-size]">
           <span className={`shrink-0 ${broken ? "text-red-400" : "text-primary"}`} aria-hidden="true">
             {working ? <Loader2 size={14} className="animate-spin-brief" /> : broken ? <AlertTriangle size={14} /> : <MonitorSmartphone size={14} />}
           </span>

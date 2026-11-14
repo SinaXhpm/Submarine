@@ -1927,7 +1927,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           full chrome and 2-3 sessions side-by-side would fight for
           vertical space with duplicate toolbars. */}
       {!chromeless && (
-      <div inert={shellSyncOpen ? "" : undefined} className="h-12 border-b border-white/5 bg-[#121214]/50 flex items-center px-2 sm:px-4 shrink-0 justify-between gap-1">
+      <div inert={shellSyncOpen ? "" : undefined} className="h-12 border-b border-white/5 bg-[#141417] flex items-center px-2 sm:px-4 shrink-0 justify-between gap-1">
         <div
           className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 mr-1 sm:mr-4 mask-fade-right"
           onWheel={(e) => { e.currentTarget.scrollLeft += e.deltaY; }}
