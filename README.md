@@ -69,7 +69,7 @@
   </tr>
   <tr>
     <td colspan="2" align="center">
-      <a href="docs/screenshots/servers-home-lab.png"><img src="docs/screenshots/servers-home-lab.png" alt="A folder of servers with colour tags and badges for RDP, VNC and Telnet servers" /></a>
+      <a href="docs/screenshots/servers-home-lab.png"><img src="docs/screenshots/servers-home-lab.png" alt="A folder of servers as cards: each with its protocol icon in its own colour and a badge for SSH, RDP, VNC or Telnet" /></a>
       <br/><sub><b>Servers</b> — nested, colour-tagged folders with drag and drop; RDP, VNC and Telnet servers carry a badge</sub>
     </td>
   </tr>
@@ -123,7 +123,7 @@
   <img src="docs/screenshots/servers.png" alt="The server list with colour-tagged folders and two servers outside any folder" width="560" />
 </p>
 <p align="center">
-  <img src="docs/screenshots/settings.png" alt="Settings: accent colour, background theme, ssh-agent and ssh config switches, terminal font" width="560" />
+  <img src="docs/screenshots/settings.png" alt="Settings: the language, keepalives and reconnecting, the ssh-agent switch, the accent colour and the background theme" width="560" />
   <img src="docs/screenshots/terminal.png" alt="A full-width terminal session with coloured output" width="320" />
 </p>
 
@@ -321,9 +321,9 @@ Not portable: the Microsoft Edge WebView2 runtime (a Windows system component, p
 Submarine on Android is a native build of the same Rust core — same SSH stack, same encrypted vault format, same profile sync. Reach a server from your phone with the credentials you saved on your desktop.
 
 <p align="center">
-  <img src="docs/screenshots/android-terminal.png" alt="Submarine on Android: an SSH terminal session with the key bar (Ctrl, Alt, Shift, Esc, Tab, arrows) above the keyboard and the bottom navigation bar" width="240" />
+  <img src="docs/screenshots/android-terminal.png" alt="Submarine on Android: an SSH terminal session with the key bar (Ctrl, Alt, Shift, Esc, Tab, arrows) and the bottom navigation bar" width="240" />
   &nbsp;&nbsp;
-  <img src="docs/screenshots/android-server-form.png" alt="Submarine on Android: the server form with the tag colour picker wrapping into rows to fit a narrow screen" width="240" />
+  <img src="docs/screenshots/android-servers.png" alt="Submarine on Android: the server list, with folders and servers as cards in one column, and the bottom navigation bar" width="240" />
 </p>
 
 - **Same encrypted vault.** With cloud sync on, your profiles appear on the phone as they were on the desktop.
