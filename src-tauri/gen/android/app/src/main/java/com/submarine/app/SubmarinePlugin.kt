@@ -152,11 +152,14 @@ class SubmarinePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   // The keep-alive service runs while a connection is open: the Rust side
-  // says when that changes (android_bridge::watch_connections).
+  // says when that changes (android_bridge::watch_connections). With a
+  // connection open the app asks to show notifications (Android 13+), or the
+  // service's notification stays hidden.
   @Command
   fun setKeepAlive(invoke: Invoke) {
     val open = invoke.parseArgs(KeepAliveArgs::class.java).open
     ConnectionKeeperService.setWanted(activity, open)
+    if (open) activity.runOnUiThread { (activity as? MainActivity)?.askForNotifications() }
     invoke.resolve(JSObject().apply { put("open", open) })
   }
 

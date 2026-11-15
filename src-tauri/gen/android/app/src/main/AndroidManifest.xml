@@ -12,8 +12,10 @@
         14+): an interactive connection held open fits none of the fixed
         types. The service runs only while a connection is open (see
         ConnectionKeeperService).
-        POST_NOTIFICATIONS is opt-in on Android 13+. If the user declines, the
-        service still runs; only the persistent notification is hidden.
+        POST_NOTIFICATIONS is opt-in on Android 13+: the app asks when the
+        first connection opens (MainActivity.askForNotifications). If the
+        user declines, the service still runs; only the persistent
+        notification is hidden.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />

@@ -1,12 +1,17 @@
 package com.submarine.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
 
 class MainActivity : TauriActivity() {
   // Android 15+ (API 35) forces edge-to-edge — `setDecorFitsSystemWindows`
@@ -72,6 +77,30 @@ class MainActivity : TauriActivity() {
   override fun onStart() {
     super.onStart()
     ConnectionKeeperService.resume(this)
+  }
+
+  // Android 13+ shows the keep-alive notification only if the person allowed
+  // notifications for the app, so the app asks: when the first connection
+  // opens (SubmarinePlugin.setKeepAlive), once per run of the app, and only
+  // while it is in front. Android itself stops showing the question once it
+  // was declined twice. On "Allow" the service's start is repeated, so its
+  // notification, dropped a moment ago, is posted.
+  private var askedForNotifications = false
+  private val notificationsQuestion =
+    registerForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
+      if (allowed) ConnectionKeeperService.resume(this)
+    }
+
+  fun askForNotifications() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || askedForNotifications) return
+    if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+      == PackageManager.PERMISSION_GRANTED
+    ) return
+    // A connection that opens while the app is in the background can't ask;
+    // the next one does.
+    if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
+    askedForNotifications = true
+    notificationsQuestion.launch(Manifest.permission.POST_NOTIFICATIONS)
   }
 
   // Explicitly stop the keeper when the Activity finishes. Android will

@@ -26,6 +26,7 @@ import androidx.core.content.ContextCompat
 //   a connection opens       -> setWanted(true)  -> startForegroundService
 //   the last one closes      -> setWanted(false) -> stopService
 //   MainActivity.onStart     -> resume()         -> start again if wanted
+//   notifications allowed    -> resume()         -> the notification is posted
 //   MainActivity.onDestroy   -> stopService
 // Google Play allows a foreground service only for work the user started and
 // still has going, so an app that is merely open shows no notification.
@@ -137,7 +138,8 @@ class ConnectionKeeperService : Service() {
         /** From MainActivity.onStart: start again if a connection is open and
          *  Android stopped the service, or refused to start it while the app
          *  was in the background. A start while it runs only repeats its
-         *  notification. */
+         *  notification, which is what MainActivity wants when the person
+         *  has just allowed notifications. */
         fun resume(context: Context) {
             if (wanted) start(context)
         }
