@@ -1560,13 +1560,15 @@ const TerminalView = ({
       // Ctrl+Shift+Plus opens another terminal while the shell is running.
       // Once the shell has ended, Ctrl+Plus works as well.
       //
-      // Equal covers common US layouts, BracketRight the physical plus key
-      // on German layouts, and NumpadAdd the numeric keypad.
+      // Matched by the key's character, so only the plus key counts: "+" itself,
+      // the keypad's plus, the US "=/+" key unshifted (Ctrl+= once the shell has
+      // ended), and the German plus key with Shift, which gives "*". A key in
+      // the same place on another layout ("]" or "}" on a US keyboard) doesn't.
       const isPlusKey =
         ev.key === '+' ||
-        ev.code === 'Equal' ||
-        ev.code === 'BracketRight' ||
-        ev.code === 'NumpadAdd';
+        ev.code === 'NumpadAdd' ||
+        (ev.code === 'Equal' && ev.key === '=') ||
+        (ev.code === 'BracketRight' && ev.key === '*');
 
       if (
         ev.type === 'keydown' &&

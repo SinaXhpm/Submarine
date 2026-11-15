@@ -775,7 +775,6 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
       },
     ]);
     setActiveTab(newId);
-    setActiveTool(null);
   }, [session.id, ownLoginDefault]);
   // SFTP's Follow, and the folder each terminal's shell last reported (a
   // container's terminal reports none: its folders aren't the server's).
