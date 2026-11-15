@@ -129,8 +129,8 @@ const BUILTINS: Record<string, { label: string; unit: string; is_pct: boolean; c
   swap:    { label: tk("Swap"),      unit: "%",    is_pct: true,  color: "rgb(192,132,252)" },
   disk:    { label: tk("Disk /"),    unit: "%",    is_pct: true,  color: "rgb(251,191,36)" },
   load:    { label: tk("Load 1m"),   unit: "",     is_pct: false, color: "rgb(244,114,182)" },
-  net_in:  { label: tk("Net In"),    unit: "Mbps", is_pct: false, color: "rgb(34,211,238)" },
-  net_out: { label: tk("Net Out"),   unit: "Mbps", is_pct: false, color: "rgb(251,113,133)" },
+  net_in:  { label: tk("Net in"),    unit: "Mbps", is_pct: false, color: "rgb(34,211,238)" },
+  net_out: { label: tk("Net out"),   unit: "Mbps", is_pct: false, color: "rgb(251,113,133)" },
 };
 
 const TOGGLE_KEYS: { key: string; sub_keys: string[]; label: string }[] = [
@@ -827,25 +827,25 @@ const SettingsModal = ({ onClose, onSaved }: {
           ) : (
             <>
               <NumberRow
-                label={t("Poll Interval")}
+                label={t("Poll interval")}
                 hint={t("Seconds between samples (per node). Changes apply on next cycle.")}
                 value={s.interval_secs} min={1} max={600} step={1} suffix="s"
                 onChange={(v) => setS({ ...s, interval_secs: v })}
               />
               <NumberRow
-                label={t("Connect Timeout")}
+                label={t("Connect timeout")}
                 hint={t("How long to wait for TCP + SSH handshake before giving up.")}
                 value={s.connect_timeout_secs} min={2} max={120} step={1} suffix="s"
                 onChange={(v) => setS({ ...s, connect_timeout_secs: v })}
               />
               <NumberRow
-                label={t("Poll Timeout")}
+                label={t("Poll timeout")}
                 hint={t("How long to wait for the probe script's stdout each cycle.")}
                 value={s.poll_timeout_secs} min={2} max={120} step={1} suffix="s"
                 onChange={(v) => setS({ ...s, poll_timeout_secs: v })}
               />
               <NumberRow
-                label={t("Outage Threshold")}
+                label={t("Outage threshold")}
                 hint={t("Consecutive failures before declaring an outage and logging it.")}
                 value={s.outage_threshold} min={1} max={100} step={1} suffix={t("× polls")}
                 onChange={(v) => setS({ ...s, outage_threshold: v })}
@@ -894,7 +894,7 @@ const SettingsModal = ({ onClose, onSaved }: {
                 </div>
               </label>
               <NumberRow
-                label={t("Beep Cooldown")}
+                label={t("Beep cooldown")}
                 hint={t("Minimum seconds between consecutive beeps — collapses a burst of outages into a single alert.")}
                 value={s.beep_cooldown_secs} min={0} max={600} step={1} suffix="s"
                 onChange={(v) => setS({ ...s, beep_cooldown_secs: v })}

@@ -95,6 +95,23 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
     holdTimer.current = window.setTimeout(again, HOLD_DELAY);
   };
 
+  // A held arrow keeps the keyboard up (#324). React listens to touchstart
+  // passively, so the buttons' onTouchStart can't cancel anything; a tap gets
+  // by on its mousedown, but a long press is a gesture of the webview's own,
+  // which takes the focus from the terminal and the keyboard goes. A touch
+  // that starts on an arrow is cancelled here, before the webview sees it:
+  // the arrow works from its pointer events, which still come.
+  const barRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const onTouch = (e: TouchEvent) => {
+      if ((e.target as Element | null)?.closest?.("[data-held-key]")) e.preventDefault();
+    };
+    bar.addEventListener("touchstart", onTouch, { passive: false });
+    return () => bar.removeEventListener("touchstart", onTouch);
+  }, []);
+
   // Render functions, not components: a component made anew on each render
   // would be a new kind of element each time, and React would replace the
   // key under the finger while it's held.
@@ -135,6 +152,7 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
       onContextMenu={held ? (e) => e.preventDefault() : undefined}
       onMouseDown={(e) => e.preventDefault()}
       onTouchStart={(e) => e.preventDefault()}
+      data-held-key={held ? "" : undefined}
       title={title}
       aria-label={title}
       className={`flex-1 min-w-0 h-9 rounded-md font-bold border border-transparent bg-white/[0.05] text-zinc-300 hover:bg-white/10 active:bg-white/15 transition-colors ${
@@ -147,6 +165,7 @@ export function MobileKeyBar({ modifiers, onToggleModifier, onSpecialKey }: Mobi
 
   return (
     <div
+      ref={barRef}
       // Pointer events: see preventDefault notes on each button — together
       // they ensure tapping the bar doesn't blur the terminal input target
       // (which on Android would hide the soft keyboard).

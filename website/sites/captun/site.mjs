@@ -6,7 +6,7 @@
 // service are not claimed at all.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AUTHOR, ICON, LANGS, Site, esc, fill, plain, rich, stripTags } from "../../engine.mjs";
+import { AUTHOR, CONTACT_EMAIL, ICON, LANGS, Site, esc, fill, plain, rich, stripTags } from "../../engine.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ORIGIN = "https://captun.sinaxhpm.com";
@@ -15,6 +15,8 @@ const REPO_URL = "https://github.com/SinaXhpm/captun";
 const ISSUES_URL = `${REPO_URL}/issues`;
 const BUILD_URL = `${REPO_URL}#build-from-source`;
 const SUBMARINE = "https://submarine.sinaxhpm.com";
+// The date at the top of the terms of use.
+const TERMS_DATE = "2026-11-14";
 const ECHOES = "https://echoes.sinaxhpm.com";
 
 // Screenshots: img/<name>-<width>.webp, made by tools/images.sh captun from the app's own pages drawn with
@@ -47,7 +49,7 @@ export default function build({ out, date }) {
     out,
     date,
     langs: LANGS.map((l) => l.code),
-    slugs: { home: "" },
+    slugs: { home: "", terms: "terms/" },
     themeColor: "#07111b",
     ogAlt: "Captun: share your computer's internet, VPN or proxy with every device",
     nav: (lang, page, t) => [
@@ -64,7 +66,7 @@ export default function build({ out, date }) {
       const sisterPath = lang.code === "en" ? "/" : `/${lang.code}/`;
       const cols = [
         { title: f.product, links: [[`${home}#tour`, t.nav.features], [`${home}#how`, t.nav.how], [`${home}#platforms`, t.nav.platforms], [`${home}#source`, t.nav.get], [`${home}#faq`, t.nav.faq]] },
-        { title: f.project, links: [[REPO_URL, t.nav.github], [ISSUES_URL, f.issues], ["https://sinaxhpm.com", f.author]] },
+        { title: f.project, links: [[REPO_URL, t.nav.github], [ISSUES_URL, f.issues], [site.pagePath(lang, "terms"), f.terms], ["https://sinaxhpm.com", f.author]] },
         { title: f.more, links: [[`${SUBMARINE}${sisterPath}`, "Submarine"], [`${ECHOES}${sisterPath}`, "Echoes"]] },
       ];
       const sister = `<a class="sister" href="${ECHOES}${sisterPath}" hreflang="${lang.hreflang}"><img src="${site.assets["assets/echoes.png"]}" width="44" height="44" alt=""><span><b>Echoes</b><span>${esc(f.sister)}</span></span></a>`;
@@ -83,7 +85,7 @@ export default function build({ out, date }) {
   site.copy(path.join(HERE, "img", "apple-touch-icon.png"), "apple-touch-icon.png");
   site.copy(path.join(HERE, "img", "og.png"), "og.png");
 
-  const valuesFor = () => ({ repoUrl: REPO_URL, issuesUrl: ISSUES_URL, buildUrl: BUILD_URL });
+  const valuesFor = () => ({ repoUrl: REPO_URL, issuesUrl: ISSUES_URL, buildUrl: BUILD_URL, email: CONTACT_EMAIL });
 
   const ul = (xs, v, where) => `<ul>${xs.map((x) => `<li>${rich(x, v, where)}</li>`).join("")}</ul>`;
   const ticks = (xs, v, where) => `<ul class="ticks">${xs.map((x) => `<li>${ICON.check}<span>${rich(x, v, where)}</span></li>`).join("")}</ul>`;
@@ -265,6 +267,7 @@ Per-device outbounds, rules, speed limits, data allowances, the usage history an
 ## Pages
 
 - [Home](${ORIGIN}/): what Captun does, how it works, features, platforms, building it, questions
+- [Terms of use](${ORIGIN}/terms/): your responsibility for the connection you share, no warranty, disclaimer of liability
 - Translations: ${site.built.filter((l) => l.code !== "en").map((l) => `[${l.name}](${site.abs(site.pagePath(l, "home"))})`).join(", ")}
 
 ## Links
@@ -272,6 +275,7 @@ Per-device outbounds, rules, speed limits, data allowances, the usage history an
 - Source code: ${REPO_URL}
 - Issues: ${ISSUES_URL}
 - Author: https://sinaxhpm.com
+- Email: ${CONTACT_EMAIL} (security reports and questions)
 - Also by the author: Submarine, an SSH, SFTP, RDP, VNC and Telnet client (${SUBMARINE}/), and Echoes, 20 network tools in one app (${ECHOES}/)
 `;
   }
@@ -280,9 +284,11 @@ Per-device outbounds, rules, speed limits, data allowances, the usage history an
     const t = site.str[lang.code];
     const base = lang.code === "en" ? "" : `${lang.code}/`;
     site.file(`${base}index.html`, homePage(lang, t, valuesFor()));
+    const termsDate = new Intl.DateTimeFormat(lang.locale, { dateStyle: "long", timeZone: "UTC" }).format(new Date(`${TERMS_DATE}T00:00:00Z`));
+    site.file(`${base}terms/index.html`, site.textPage({ lang, page: "terms", t, doc: t.terms, v: valuesFor(), date: termsDate }));
   }
   site.file("404.html", notFoundPage(site.en));
-  site.file("sitemap.xml", site.sitemap(["home"]));
+  site.file("sitemap.xml", site.sitemap(["home", "terms"]));
   site.file("robots.txt", site.robots());
   site.file("llms.txt", llms(valuesFor()));
   site.file("manifest.webmanifest", site.manifest(stripTags(site.en.home.description)));

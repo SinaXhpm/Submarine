@@ -32,6 +32,7 @@
     "appStore": "App Store",
     "releases": "GitHub'daki sürümler",
     "privacyPolicy": "Gizlilik politikası",
+    "terms": "Kullanım koşulları",
     "issues": "Sorun bildirin",
     "author": "sinaxhpm.com",
     "sister": "Aynı geliştiriciden: SSH, SFTP, RDP, VNC ve Telnet tek bir şifreli uygulamada",
@@ -630,7 +631,88 @@
         "id": "contact",
         "title": "İletişim",
         "paragraphs": [
-          "Sorularınız ya da endişeleriniz için <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> adresinde bir issue açın."
+          "Sorularınız ya da endişeleriniz için <a href=\"mailto:{email}\">{email}</a> adresine yazın ya da <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> adresinde bir issue açın."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Kullanım koşulları – Echoes",
+    "description": "Echoes için koşullar: MIT lisansı, ağ araçlarını yalnızca izniniz olan yerlerde kullanmak, bazı araçların kullandığı hizmetler ve garanti olmaması.",
+    "heading": "Kullanım koşulları",
+    "intro": "Bu koşullar Echoes uygulamasını ve bu web sitesini kapsar. Kısacası: Echoes MIT lisansıyla ücretsiz ve açık kaynaklıdır, hesap ya da bize ait bir hizmet içermez ve araçlarını riski size ait olmak üzere ve yasalara uygun olarak kullanırsınız. Echoes hiçbir veri toplamaz: <a href=\"{privacyUrl}\">gizlilik politikasına</a> bakın.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Biz kimiz",
+        "paragraphs": [
+          "Echoes'u Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) ve projeye katkıda bulunanlar geliştirir. Bu koşullarda “biz” ve “bize” derken kastedilen onlardır."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "Uygulama",
+        "paragraphs": [
+          "Echoes, <a href=\"{licenseUrl}\">MIT lisansıyla</a> ücretsiz ve açık kaynaklıdır. Echoes'u bu lisansın izin verdiği şekilde kullanabilir, kopyalayabilir, değiştirebilir ve paylaşabilirsiniz. Bu koşullardaki hiçbir hüküm, lisansın size tanıdığı bir hakkı elinizden almaz.",
+          "Echoes'u App Store'dan edindiyseniz Apple'ın <a href=\"{appleEula}\">uygulamalar için standart lisans sözleşmesi</a> de o kopya için geçerlidir."
+        ]
+      },
+      {
+        "id": "allowed",
+        "title": "Araçları yalnızca izniniz olan yerlerde kullanın",
+        "paragraphs": [
+          "Echoes gerçek ağ trafiği gönderir. Bu nedenle:"
+        ],
+        "list": [
+          "Yalnızca size ait olan ya da test etme izniniz bulunan ağlarda, sunucularda ve web sitelerinde tarama, ping, test ve denetim yapın. Başkalarının ağlarını taramak, bulunduğunuz yerde yasalara aykırı olabilir.",
+          "Echoes'u hiçbir şeye saldırmak, hiçbir şeyi trafiğe boğmak ya da hiçbir yere izinsiz girmek için kullanmayın.",
+          "Web sunucusunu, proxy'yi ya da bir soket dinleyicisini başlattığınızda kimin bağlanabileceğine ve neyi paylaşacağınıza siz karar verirsiniz; bunların üzerinden geçenlerden de siz sorumlusunuz.",
+          "Doctor, başka bir uygulamadaki bir ayarın bir filtreyi atlatıp atlatmayacağını size söyleyebilir. Buna izin verilip verilmediği bulunduğunuz yere bağlıdır; bu tavsiyeye uymak sizin tercihinizdir."
+        ]
+      },
+      {
+        "id": "services",
+        "title": "Bazı araçların kullandığı hizmetler",
+        "paragraphs": [
+          "Bazı araçlar herkese açık hizmetler (örneğin check-host.net, hız testi sunucuları, DNS çözümleyicileri ve IP bilgisi sağlayıcıları) ya da size ait hesaplar (Cloudflare, Telegram) üzerine kuruludur. Her birinin kendi koşulları vardır ve Echoes onu sizin için kullandığında bu koşullar geçerli olur. Bunlar <a href=\"{privacyUrl}\">gizlilik politikasında</a> listelenir."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Garanti yok",
+        "paragraphs": [
+          "Echoes, MIT lisansında belirtildiği gibi, ticari elverişlilik, belirli bir amaca uygunluk ve üçüncü tarafların haklarını ihlal etmeme konusundaki zımni garantiler de dâhil olmak üzere, açık ya da zımni hiçbir türden garanti olmaksızın “olduğu gibi” sunulur. Ağ sonuçları yanlış ya da eksik olabilir: bir test Echoes dışındaki nedenlerle başarısız olabilir ve Doctor aracının vardığı sonuç, ölçtüklerine ilişkin en iyi yorumudur."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Sorumluluk reddi",
+        "paragraphs": [
+          "Echoes'u riski size ait olmak üzere kullanırsınız. Yasaların izin verdiği ölçüde, Echoes'u kullanmaktan, kullanamamaktan ya da ona güvenmekten doğan, doğrudan ya da dolaylı, arızi, özel ya da sonuç olarak ortaya çıkan her türlü kayıp veya zarardan ne biz sorumluyuz ne de Echoes'a katkıda bulunmuş herhangi biri. Buna örneğin şunlar dâhildir:"
+        ],
+        "list": [
+          "yanlış ya da eksik sonuçlar ve bunlara dayanılarak verilen kararlar;",
+          "test ettiğiniz, taradığınız ya da bağlandığınız ağlarda, sunucularda ve web sitelerinde olup biten her şey ve bunları test etmenin sonuçları;",
+          "web sunucusu üzerinden paylaşılan dosyalar ve proxy'den geçenler de dâhil olmak üzere kaybolan ya da sızan veriler;",
+          "check-host.net, hız testi sunucuları, DNS çözümleyicileri, Cloudflare ve Telegram gibi üçüncü taraf hizmetlerin yaptıkları ya da sakladıkları;",
+          "Doctor aracının tavsiyelerine uymanın sonuçları, örneğin bir filtreyi atlatan bir ayarın kullanılması."
+        ],
+        "after": [
+          "Bu koşullardaki hiçbir hüküm, yasaların sınırlandırılmasına izin vermediği bir sorumluluğu, örneğin kasıt ya da ağır ihmalden doğan sorumluluğu veya ihmal sonucu meydana gelen ölüm ya da bedensel zarardan doğan sorumluluğu sınırlamaz. Ülkenizin yasaları size feragat edilemeyen haklar tanıyorsa bu koşullar bu hakları elinizden almaz."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Bu koşullardaki değişiklikler",
+        "paragraphs": [
+          "Bu koşullar değiştiğinde en üstteki tarih de değişir. Bir değişiklikten sonra Echoes'u kullanmak, yeni koşulları kabul ettiğiniz anlamına gelir."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "İletişim",
+        "paragraphs": [
+          "Bu koşullarla ilgili sorularınız için <a href=\"mailto:{email}\">{email}</a> adresine yazın ya da <a href=\"{issuesUrl}\">github.com/SinaXhpm/Echoes/issues</a> adresinde bir issue açın."
         ]
       }
     ]

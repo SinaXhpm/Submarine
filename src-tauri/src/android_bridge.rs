@@ -1,6 +1,7 @@
 //! The app's own Android plugin (gen/android/.../SubmarinePlugin.kt): profile
-//! export through the system's "Save to" picker, and the "Block screenshots"
-//! switch. Only Rust reaches it. The plugin has no permissions in the
+//! export through the system's "Save to" picker, the "Block screenshots"
+//! switch, quick unlock, and the keep-alive service while a connection is
+//! open. Only Rust reaches it. The plugin has no permissions in the
 //! capabilities, and Tauri refuses a plugin command without one, so the page
 //! can't call it directly.
 
@@ -90,6 +91,46 @@ pub async fn secure_screen(app: &AppHandle, enabled: Option<bool>) -> Result<boo
         None => handle.run_mobile_plugin_async::<SecureScreenResult>("getSecureScreen", ()).await,
     };
     res.map(|r| r.enabled).map_err(|e| format!("Couldn't change the screenshot setting: {}", e))
+}
+
+#[derive(Serialize)]
+struct KeepAliveArgs {
+    open: bool,
+}
+
+/// Android's keep-alive service (ConnectionKeeperService) runs only while a
+/// connection is open: Google Play allows a foreground service for work the
+/// user started and still has going, not for an app that is merely open.
+/// Checked every 2 s. When the last connection goes, the service stays for
+/// `STOP_AFTER` first, so a reconnect (the old connection gone, the new one
+/// not in yet) doesn't stop it: Android won't let it start again while the
+/// app is in the background.
+pub fn watch_connections(app: AppHandle) {
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+    const STOP_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+    tauri::async_runtime::spawn(async move {
+        // What the plugin was last told, once it took it.
+        let mut told: Option<bool> = None;
+        let mut none_since: Option<std::time::Instant> = None;
+        loop {
+            tokio::time::sleep(EVERY).await;
+            let want = if crate::any_connection_open(&app).await {
+                none_since = None;
+                true
+            } else {
+                let since = *none_since.get_or_insert_with(std::time::Instant::now);
+                told == Some(true) && since.elapsed() < STOP_AFTER
+            };
+            if told == Some(want) {
+                continue;
+            }
+            let Ok(handle) = bridge(&app) else { continue };
+            // Not taken (the plugin not ready yet): asked again next round.
+            if handle.run_mobile_plugin_async::<serde_json::Value>("setKeepAlive", KeepAliveArgs { open: want }).await.is_ok() {
+                told = Some(want);
+            }
+        }
+    });
 }
 
 /// A call for quick unlock (quick_unlock.rs): the Keystore key behind

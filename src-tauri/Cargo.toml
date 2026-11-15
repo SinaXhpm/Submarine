@@ -255,10 +255,10 @@ ironrdp-rdpdr-native = { path = "vendor/ironrdp-rdpdr-native" }
 libz-sys = { version = "1.1", features = ["static"] }
 
 [features]
-# The Mac App Store build (release.yml's mac-appstore job). The store updates
-# the app, so the GitHub update check is off, as it is on iOS; and the app runs
-# in Apple's sandbox, so the local pane starts in Downloads, which the
-# sandbox lets it use.
+# The Mac App Store build (release.yml's mac-appstore job) and the Google Play
+# bundle (play.yml). The store updates the app, so the GitHub update check is
+# off, as it is on iOS; and the Mac app runs in Apple's sandbox, so its local
+# pane starts in Downloads, which the sandbox lets it use (desktop only).
 app-store = []
 
 [dev-dependencies]

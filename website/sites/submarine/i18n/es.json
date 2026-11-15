@@ -33,6 +33,7 @@
     "faq": "Preguntas frecuentes",
     "releases": "Versiones",
     "deleteAccount": "Eliminar tu cuenta",
+    "terms": "Condiciones de uso",
     "verify": "Comprueba tu descarga",
     "issues": "Informar de un problema",
     "author": "sinaxhpm.com",
@@ -657,7 +658,8 @@
       "Tus servidores, contraseñas, claves SSH y notas se quedan en tu dispositivo, cifrados con una clave generada a partir de la contraseña de tu perfil. La aplicación no tiene analítica, ni publicidad, ni rastreo, ni informes de fallos.",
       "La función «Sincronización en la nube» es opcional. Si la activas, el servidor de sincronización guarda la dirección de correo electrónico de tu cuenta y tus perfiles cifrados. No puede leer lo que contienen.",
       "Puedes eliminar tu cuenta, y todo lo que el servidor guarda de ella, desde la propia aplicación o en este sitio web.",
-      "Un mensaje que envíes con <em>Enviar comentarios</em> llega al desarrollador solo con lo que escribiste."
+      "Un mensaje que envíes con <em>Enviar comentarios</em> llega al desarrollador solo con lo que escribiste.",
+      "El asistente de IA es opcional y no hace nada hasta que añadas un proveedor de IA con tu propia clave de API. Sus chats van de tu dispositivo a ese proveedor, no a nosotros. Con un modelo en tu propia máquina o en tu propia red, se quedan allí."
     ],
     "sections": [
       {
@@ -673,18 +675,20 @@
         "list": [
           "<strong>Tus perfiles</strong> (servidores, credenciales, claves SSH, túneles, notas, comandos, claves de host conocidas y las contraseñas que decidas guardar desde una ventana de inicio de sesión) se guardan en la carpeta de datos de la aplicación. Están cifrados con AES-256-GCM, con una clave generada a partir de la contraseña de tu perfil mediante Argon2id. La contraseña del perfil nunca se guarda ni se envía a ningún sitio. No hay forma de recuperarla: si la olvidas, el perfil no se puede abrir.",
           "<strong>Desbloqueo rápido</strong> (opcional, desactivado de forma predeterminada): si activas Windows Hello o la huella dactilar en Android, la clave del perfil se sella con una clave que guarda el sistema (el TPM o el Android Keystore). El sistema comprueba tu huella dactilar o tu PIN; la aplicación nunca los ve. En Windows puedes elegir, en su lugar, que un perfil se abra automáticamente (también desactivado de forma predeterminada): su clave queda entonces protegida por Windows para tu cuenta, sin ninguna comprobación, así que cualquier persona o programa que use esa cuenta de Windows puede abrirlo.",
+          "<strong>Los datos del asistente de IA</strong> (opcional, ver más abajo): tus proveedores de IA y sus claves de API, tus chats, los niveles de permiso que configures y los comandos que elijas ejecutar siempre, y el registro de actividad del asistente. Se guardan en un archivo propio junto al perfil, cifrados con AES-256-GCM mediante una clave generada a partir de la clave del perfil, de modo que se abren cuando se abre el perfil. Este archivo nunca se sincroniza, nunca forma parte de un perfil compartido y nunca se incluye en un perfil exportado.",
           "<strong>Los ajustes</strong>, como la posición de la ventana, el nombre del último perfil usado y el tema de color, y las opciones elegidas solo para este dispositivo (la velocidad y la calidad de un escritorio remoto, si comparte el portapapeles, la carpeta o la unidad compartida con un servidor RDP, y qué servidores reciben siempre una terminal con su propio inicio de sesión), se guardan en la configuración propia de la aplicación, sin cifrar, y nunca se sincronizan.",
           "<strong>El portapapeles</strong> solo se lee cuando pegas. Lo que pegas va al servidor en el que lo pegas: una terminal o la pestaña de un escritorio remoto. Con <em>Compartir el portapapeles</em> activado (la opción predeterminada para los servidores RDP y VNC), el texto copiado en el escritorio remoto se pone en el portapapeles de este dispositivo. Nunca se nos envía nada del portapapeles.",
           "<strong>Conexión a Escritorio remoto (Windows)</strong> recibe la contraseña guardada de un servidor en un archivo .rdp de corta duración. La contraseña que contiene está cifrada con DPAPI de Windows para tu usuario de Windows, y el archivo se elimina en cuanto se ha leído. Si dejas que la propia aplicación de RDP recuerde unas credenciales, las guarda Windows, no Submarine.",
-          "<strong>El registro de actividad</strong> de la aplicación se guarda en memoria y desaparece al cerrarla."
+          "<strong>El registro de actividad</strong> de la aplicación se guarda en memoria y desaparece al cerrarla. El asistente de IA lleva un registro propio (ver más abajo)."
         ]
       },
       {
         "id": "connects",
         "title": "A qué se conecta la aplicación",
         "list": [
-          "<strong>Tus propios servidores.</strong> La aplicación solo se conecta a los hosts que añades o abres, mediante SSH, SFTP, Telnet, VNC o RDP, a través de cualquier proxy o servidor de salto que configures. Lo que escribes y transfieres va a ese servidor, no a nosotros. En el caso de un escritorio remoto, eso incluye el texto del portapapeles que pegas en él y una carpeta o unidad de esta computadora si decides compartirla con el cliente RDP integrado. Telnet y VNC en su forma básica no están cifrados, y la aplicación lo indica.",
+          "<strong>Tus propios servidores.</strong> La aplicación solo se conecta a los hosts que añades o abres, mediante SSH, SFTP, FTP o FTPS, Telnet, VNC o RDP, a través de cualquier proxy o servidor de salto que configures. Lo que escribes y transfieres va a ese servidor, no a nosotros. En el caso de un escritorio remoto, eso incluye el texto del portapapeles que pegas en él y una carpeta o unidad de esta computadora si decides compartirla con el cliente RDP integrado. FTP, Telnet y VNC en su forma básica no están cifrados, y la aplicación lo indica.",
           "<strong>El servicio de sincronización</strong>, solo si inicias sesión en la sincronización en la nube (ver más abajo). En su lugar, puedes configurar la aplicación para que use un servidor propio; en ese caso, los datos los gestiona el operador de ese servidor.",
+          "<strong>Los proveedores de IA que añadas</strong>, solo si usas el asistente de IA (ver más abajo). Las solicitudes van de tu dispositivo directamente al proveedor, o a través de un proxy o de uno de tus servidores, según lo que se haya configurado para ese proveedor. Submarine no tiene ningún servicio de IA propio, y el servicio de sincronización no interviene.",
           "<strong>GitHub</strong>, para buscar una versión más reciente (no en la aplicación para iOS, ni en la versión del Mac App Store, ni en el Flatpak, que sus tiendas mantienen actualizados). Cuando se abre la lista de perfiles, y cuando pulsas «Buscar actualizaciones», la aplicación consulta en la lista pública de versiones de GitHub (<code>api.github.com</code>) si existe una versión más reciente. La solicitud lleva el nombre y la versión de la aplicación (<code>submarine-app/x.y.z</code>) y nada más; GitHub ve tu dirección IP, como en cualquier solicitud web.",
           "<strong>El servidor del desarrollador, cuando envías comentarios</strong> (ver más abajo), y solo entonces.",
           "<strong>Los enlaces</strong> en los que haces clic se abren en el navegador de tu sistema."
@@ -760,6 +764,37 @@
         ]
       },
       {
+        "id": "ai",
+        "title": "Asistente de IA (opcional)",
+        "paragraphs": [
+          "El asistente no hace nada hasta que añadas un proveedor de IA en <em>Configuración → AI assistant</em>: Anthropic, OpenAI, otro servicio compatible con OpenAI (como OpenRouter, DeepSeek, Groq o Google Gemini) o un modelo en tu propia máquina o red (como Ollama o LM Studio). Con ese proveedor usas tu propia cuenta y tu propia clave de API, si las necesita. Submarine no tiene ningún servicio de IA propio, y nunca vemos tus chats ni tus claves."
+        ],
+        "list": [
+          "<strong>Adónde van las solicitudes.</strong> De tu dispositivo directamente al proveedor, o a través del proxy del sistema o de uno que configures para ese proveedor, o hacia fuera a través de uno de tus servidores, por su sesión SSH abierta. Cuando una solicitud pasa por un servidor, el proveedor ve la dirección de ese servidor. Las solicitudes usan HTTPS, que va cifrado desde tu dispositivo hasta el proveedor, así que un proxy o servidor intermedio solo ve con qué host se contacta y cuántos datos pasan. El http simple (sin cifrar) solo se permite hacia una dirección en tu propia máquina o en tu propia red o bien, a través de uno de tus servidores, en la propia máquina o en la propia red de ese servidor. Con http simple, cualquiera en esa red puede leer el chat y cualquier clave de API que se envíe con él, y en otra red la misma dirección puede pertenecer a otra persona.",
+          "<strong>Qué recibe el proveedor.</strong> Con cada solicitud, el chat hasta ese momento: tus mensajes (con el texto de terminal que adjuntes, si lo hay) y las respuestas del asistente. En un chat sobre un servidor, también lo que el asistente lee y hace allí (salida de comandos, contenido de archivos, listados de carpetas, los resultados de sus cambios) y tus respuestas cuando pide tu aprobación. La solicitud lleva tu clave de API y el nombre y la versión de la aplicación, y, como en cualquier solicitud web, el proveedor ve la dirección desde la que llega. Si cambias un chat a otro proveedor, el chat completo va a ese proveedor con tu siguiente mensaje. <em>Test</em> y las solicitudes que preguntan a un proveedor por sus modelos llevan tu clave y nada de tus chats ni de tus servidores.",
+          "<strong>Datos del servidor.</strong> Cuando empieza un chat sobre un servidor, la aplicación recopila algunos datos del servidor y los envía con el chat: el nombre corto y el número de versión del sistema (como en <code>debian 12</code>), el nombre y la versión del kernel, el tipo de procesador, el nombre del usuario con el que se inicia sesión y si pertenece a un grupo de administración (sudo, wheel o admin), la carpeta personal, el nombre del shell de inicio de sesión y cuáles de los programas bash, systemctl, docker, apt, dnf, yum, apk y pacman están instalados. El chat los muestra en <em>Server facts sent to the assistant</em>. No incluyen el nombre de host ni la dirección del servidor, ni el nombre que le diste, aunque el asistente puede toparse con ellos en lo que lee.",
+          "<strong>Claves privadas.</strong> Un bloque de clave privada en la salida de un comando (<code>-----BEGIN … PRIVATE KEY-----</code>, y los formatos de PGP, SSH2 y PuTTY) se sustituye por <code>[private key removed by Submarine]</code> antes de mostrarse o enviarse, y lo mismo ocurre con uno que esté en un archivo que lea el asistente. Esto detecta una clave que se muestra o se lee como un bloque completo; un comando que muestra solo parte de una clave, o una clave en otro formato, no se detecta, así que tómalo como una salvaguarda contra accidentes y no como una promesa de que nunca se pueda enviar ninguna clave. El resto del contenido de los archivos, y el texto de terminal que adjuntes, se envían tal cual, sin los caracteres Unicode Tag ocultos: no se ven en pantalla y pueden llevar instrucciones para un modelo, así que se eliminan de todo lo que se envía al asistente, incluidos tus propios mensajes (el chat te avisa cuando un mensaje tuyo contenía alguno). El asistente nunca recibe las contraseñas ni las claves guardadas en tu perfil: solo trabaja en el servidor, a través de la sesión abierta.",
+          "<strong>Tu consentimiento.</strong> Lo que recibe un proveedor queda sujeto a las condiciones y la política de privacidad propias de ese proveedor. Antes de que tu primer mensaje vaya a un proveedor, la aplicación te pide tu consentimiento indicando la dirección del proveedor, y te lo vuelve a pedir si cambias esa dirección a otro host, cambias el tipo del proveedor o permites proveedores que pueden conservar datos. Una clave de API guardada para un host nunca se envía a otro: cuando cambias el host, la aplicación vuelve a pedirte la clave. Para algunos proveedores añade una nota: Gemini (en el nivel gratuito de Google, Google puede usar los datos para mejorar sus productos, y es posible que los lean personas), DeepSeek (guarda los datos en China) y OpenRouter (pasa las solicitudes a otros proveedores; cuando se añade con la configuración predefinida de OpenRouter, Submarine le pide que use solo proveedores que no conserven datos ni entrenen con ellos, salvo que permitas los demás en los ajustes del proveedor). Para retirar tu consentimiento, elige <em>withdraw</em> junto al proveedor en <em>Configuración → AI assistant</em>: un chat que esté respondiendo se detiene antes de su siguiente solicitud, y la aplicación te lo vuelve a pedir antes del siguiente mensaje. Lo que un proveedor ya haya recibido sigue sujeto a sus propias reglas.",
+          "<strong>Un modelo local</strong> (Ollama, LM Studio u otro servidor en tu máquina o tu red) mantiene los datos en esa máquina o esa red.",
+          "<strong>Qué se guarda en tu dispositivo</strong>: tus proveedores y sus claves de API, tus chats con todo su contenido, el nivel de permiso de cada servidor y los comandos que elegiste ejecutar siempre allí, y el registro de actividad del asistente. El registro anota cada comando que el asistente ejecutó o pidió ejecutar y cada carpeta o archivo que abrió o modificó, con el momento en que ocurrió y si se permitió y cómo, y conserva el contenido anterior de cada archivo modificado para que el cambio se pueda deshacer. Las entradas del registro con más de 90 días de antigüedad se eliminan al abrirse el archivo del asistente y cada vez que se añade una entrada nueva. Todo ello está en el archivo cifrado propio del asistente (ver <em>Lo que se queda en tu dispositivo</em>).",
+          "<strong>Informar sobre esta respuesta</strong> (la bandera debajo de cada respuesta) copia la respuesta en tu portapapeles y, una vez que lo confirmas, abre en tu navegador la página de incidencias del proyecto en GitHub. La aplicación no envía nada por sí misma. Lo que publiques allí es público, así que no incluyas datos privados de tus servidores."
+        ]
+      },
+      {
+        "id": "agents",
+        "title": "Agentes de IA en esta computadora (opcional)",
+        "paragraphs": [
+          "En una computadora, <em>Configuración → AI agents</em> permite que un agente de IA que se ejecuta en esa misma computadora (como Claude Code) trabaje en tus servidores a través de Submarine. Esta función está desactivada hasta que la actives."
+        ],
+        "list": [
+          "<strong>Quién puede conectarse.</strong> Solo los programas que se ejecutan con tu usuario en esta computadora, a través de un canal que ni los demás usuarios ni la red pueden abrir. Submarine te muestra qué programa hace la solicitud y qué lo inició.",
+          "<strong>Nada sin tu aprobación.</strong> Un agente pide acceso, y tú eliges en la ventana de Submarine el servidor, las operaciones, las carpetas, durante cuánto tiempo (8 horas como máximo) y cómo se ejecutan sus operaciones. El acceso termina cuando se acaba ese tiempo, cuando el agente se desconecta, cuando lo revocas, bloqueas el perfil o cierras la aplicación.",
+          "<strong>Qué recibe un agente.</strong> Los resultados de las operaciones que permitas: la salida de los comandos, y los listados de carpetas y el contenido de los archivos de las carpetas que elegiste. Nunca tus contraseñas, claves u otros secretos guardados. La dirección a la que se conecta Submarine se sustituye en lo que ve el agente; otras direcciones que muestre un servidor aún pueden aparecer.",
+          "<strong>Adónde van los datos después.</strong> Lo que el agente haga con lo que recibe, por ejemplo enviarlo a su propio proveedor de IA, queda sujeto a las condiciones y la política de privacidad de ese agente.",
+          "<strong>Qué se guarda en tu dispositivo.</strong> Cada operación que pide un agente queda anotada en el registro de actividad del asistente, con el nombre del agente, en este dispositivo."
+        ]
+      },
+      {
         "id": "website",
         "title": "Este sitio web",
         "paragraphs": [
@@ -775,6 +810,7 @@
           "<strong>Las entradas del registro de eventos escritas después</strong> (la propia eliminación, que no incluye ninguna dirección de correo electrónico, y cualquier intento posterior de iniciar sesión con esa dirección) se conservan durante un máximo de {auditDays} días. Las copias de seguridad hechas en torno a las actualizaciones del software del servidor solo se conservan durante poco tiempo.",
           "<strong>Quita la copia en la nube de un perfil</strong> en la aplicación: el menú del perfil en la lista de perfiles, <em>Eliminar de la nube…</em>.",
           "<strong>Eliminar un mensaje de comentarios</strong> antes de sus {feedbackDays} días: escríbenos con su número de informe.",
+          "<strong>Elimina los chats del asistente de IA</strong>: un chat desde su menú (<em>Delete</em>), o todos con <em>Delete all</em> debajo de la lista de chats, en la página de IA. El registro de actividad del asistente sobrevive a sus chats, salvo que elijas <em>Clear them</em> al eliminar un chat; vacíalo en cualquier momento con <em>Clear the log</em> en su vista <em>Activity</em>, para un servidor o para todos los servidores. Para eliminar la clave de API de un proveedor, en <em>Configuración → AI assistant</em>, elige <em>Remove</em> junto a la clave en los ajustes del proveedor y guarda, o elimina el proveedor. Al eliminar un perfil se elimina también el archivo del asistente. Para lo que haya recibido un proveedor, se aplican sus propias reglas: consulta al proveedor.",
           "<strong>Elimina lo que hay en un dispositivo</strong> desinstalando la aplicación (en la versión portable de Windows, borrando la carpeta que está junto al programa).",
           "Si usas una versión anterior o ya no puedes abrir la aplicación, ponte en contacto con nosotros (ver más abajo) y eliminaremos la cuenta cuando puedas demostrar que es tuya."
         ]
@@ -804,7 +840,119 @@
         "id": "contact",
         "title": "Contacto",
         "paragraphs": [
-          "Preguntas o solicitudes sobre tus datos: abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (por favor, no publiques ahí información privada) o escribe a través de <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>."
+          "Preguntas o solicitudes sobre tus datos: escribe a <a href=\"mailto:{email}\">{email}</a>. También puedes abrir una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> (por favor, no publiques ahí información privada)."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Condiciones de uso – Submarine",
+    "description": "Las condiciones de Submarine y su servicio opcional de sincronización: licencia MIT, tus servidores, uso razonable de tu cuenta, sin garantía y cambios.",
+    "heading": "Condiciones de uso",
+    "intro": "Estas condiciones se aplican a la aplicación Submarine, al servicio opcional de sincronización de Submarine y a este sitio web. En resumen: la aplicación es gratuita y de código abierto, con licencia MIT; el servicio de sincronización es gratuito y se ofrece tal como es, y usas ambos por tu cuenta y riesgo y dentro de la ley. Cómo tratamos tus datos se explica en la <a href=\"{privacyUrl}\">política de privacidad</a>.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Quiénes somos",
+        "paragraphs": [
+          "Submarine y su servicio de sincronización los desarrolla y gestiona Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>). En estas condiciones de uso, «nosotros» y «nos» se refieren a él."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "La aplicación",
+        "paragraphs": [
+          "La aplicación es gratuita y de código abierto, con la <a href=\"{licenseUrl}\">licencia MIT</a>. Puedes usarla, copiarla, modificarla y compartirla tal como lo permite esa licencia. Nada en estas condiciones te priva de un derecho que te conceda la licencia.",
+          "Si obtuviste la aplicación a través de la App Store o de TestFlight de Apple, a esa copia también se aplican las <a href=\"{appleTerms}\">condiciones de Apple</a> para esos servicios."
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Tus servidores y lo que haces en ellos",
+        "list": [
+          "Conéctate solo a servidores y dispositivos que sean tuyos o que tengas permiso para usar.",
+          "Eres responsable de lo que haces en ellos: los comandos que ejecutas (también cuando escribes en muchos servidores a la vez), los archivos que modificas o eliminas, y los túneles y carpetas compartidas que abres.",
+          "Telnet y VNC en su forma básica no están cifrados, y la aplicación lo indica cuando una conexión usa uno de ellos.",
+          "Guarda tus propias copias de todo lo importante que tengas en tus servidores."
+        ]
+      },
+      {
+        "id": "account",
+        "title": "El servicio de sincronización y tu cuenta",
+        "list": [
+          "La función «Sincronización en la nube» es opcional y gratuita dentro de unos límites razonables: {limitMb} MB de datos cifrados, {limitItems} elementos y {limitProfiles} perfiles por cuenta.",
+          "Necesitas una dirección de correo electrónico en la que puedas recibir correo. Las cuentas creadas que nunca se verifican se eliminan pasados {unverifiedDays} días.",
+          "Mantén a salvo la contraseña de tu cuenta y la de tu perfil. Tus perfiles se cifran en tu dispositivo, así que no podemos leerlos, y no podemos recuperar una contraseña de perfil olvidada.",
+          "En su lugar, puedes configurar la aplicación para que use un servidor de sincronización propio. Estas condiciones no cubren ese servidor: lo cubren las normas de su operador."
+        ]
+      },
+      {
+        "id": "fair",
+        "title": "Uso razonable del servicio de sincronización",
+        "paragraphs": [
+          "El servicio existe para mantener sincronizados tus propios perfiles de Submarine y los de tu equipo. Por favor, no hagas lo siguiente:"
+        ],
+        "list": [
+          "guardar o compartir algo sin tener derecho a ello, o usar el servicio en contra de la ley;",
+          "intentar acceder a cuentas o datos de otras personas;",
+          "atacar, sobrecargar o sondear el servicio, o eludir sus límites;",
+          "crear cuentas de forma masiva o con direcciones de correo electrónico que no sean tuyas."
+        ],
+        "after": [
+          "Podemos limitar, suspender o eliminar una cuenta que incumpla estas normas o que perjudique al servicio o a las personas que lo usan. Cuando podemos, te avisamos antes por correo electrónico."
+        ]
+      },
+      {
+        "id": "ending",
+        "title": "Eliminar tu cuenta, y si el servicio termina",
+        "paragraphs": [
+          "Puedes eliminar tu cuenta en cualquier momento: en la aplicación (<em>Eliminar cuenta…</em> en «Sincronización en la nube») o en la <a href=\"{deleteUrl}\">página para eliminar la cuenta</a>. La <a href=\"{privacyUrl}\">política de privacidad</a> explica qué se elimina y cuándo.",
+          "Podemos cambiar el servicio de sincronización o detenerlo. Tus perfiles se quedan cifrados en tus dispositivos, así que detener el servicio no los elimina de allí. Si alguna vez se detiene, lo anunciaremos con antelación en este sitio web, tan pronto como podamos."
+        ]
+      },
+      {
+        "id": "feedback",
+        "title": "Comentarios",
+        "paragraphs": [
+          "Podemos usar las ideas de los comentarios que envíes para mejorar Submarine. Qué contiene un mensaje de comentarios y cuánto tiempo se conserva se explica en la <a href=\"{privacyUrl}\">política de privacidad</a>."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Sin garantía",
+        "paragraphs": [
+          "La aplicación y el servicio de sincronización se proporcionan «tal cual» y «según disponibilidad», sin garantía de ningún tipo, expresa o implícita, incluidas las garantías implícitas de comerciabilidad, idoneidad para un fin determinado y no infracción de derechos de terceros, como indica la licencia MIT. Hacemos todo lo posible por mantener el servicio en funcionamiento y tus datos seguros, pero no prometemos que vaya a estar siempre disponible, ni que esté libre de errores, ni que sea adecuado para un fin determinado."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Exención de responsabilidad",
+        "paragraphs": [
+          "Usas la aplicación y el servicio de sincronización por tu cuenta y riesgo. En la medida en que lo permita la ley, ni nosotros ni ninguna persona que haya contribuido a Submarine somos responsables de ninguna pérdida ni daño de ningún tipo, ya sean directos o indirectos, incidentales, especiales o consecuentes, derivados del uso de la aplicación y del servicio de sincronización, de no poder usarlos o de confiar en ellos. Esto incluye, por ejemplo:"
+        ],
+        "list": [
+          "datos perdidos, dañados o filtrados, incluidos perfiles, claves y contraseñas;",
+          "cualquier cosa que se haga en los servidores y dispositivos a los que te conectes, la haga quien la haga: tú, las personas con las que compartes un perfil, el asistente de IA o un agente de IA al que hayas dado acceso;",
+          "la pérdida de acceso a un servidor, el tiempo de inactividad y la pérdida de trabajo, de negocio o de beneficios;",
+          "lo que hagan o conserven terceros, como los servidores a los que te conectes, tus proveedores de IA y los proveedores de red y de alojamiento;",
+          "la falta de disponibilidad, la modificación o la finalización del servicio de sincronización."
+        ],
+        "after": [
+          "Nada en estas condiciones limita una responsabilidad que la ley no permite limitar, como la responsabilidad por dolo o negligencia grave, o por muerte o lesiones personales causadas por negligencia. Cuando la ley de tu país te otorga derechos irrenunciables, estas condiciones no te privan de ellos."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Cambios en estas condiciones",
+        "paragraphs": [
+          "Cuando estas condiciones cambian, también cambia la fecha que aparece arriba. Si un cambio es relevante para tu cuenta, lo indicaremos en este sitio web. Usar la aplicación o el servicio después de un cambio significa que aceptas las nuevas condiciones."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Contacto",
+        "paragraphs": [
+          "Preguntas sobre estas condiciones: escribe a <a href=\"mailto:{email}\">{email}</a> o abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a>."
         ]
       }
     ]
@@ -848,7 +996,7 @@
       "confirm": "Marca la casilla para confirmar."
     },
     "helpTitle": "¿Sin contraseña o sin acceso?",
-    "help": "Si siempre inicias sesión con un código que recibes por correo electrónico, primero establece una contraseña en la aplicación (Sincronización en la nube → ¿Olvidaste la contraseña?). Si no puedes usar la aplicación ni este formulario, abre una incidencia en <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> sin ningún dato privado, y eliminaremos la cuenta cuando puedas demostrar que es tuya."
+    "help": "Si siempre inicias sesión con un código que recibes por correo electrónico, primero establece una contraseña en la aplicación (Sincronización en la nube → ¿Olvidaste la contraseña?). Si no puedes usar la aplicación ni este formulario, escribe a <a href=\"mailto:{email}\">{email}</a> y eliminaremos la cuenta cuando puedas demostrar que es tuya."
   },
   "notFound": {
     "title": "Página no encontrada – Submarine",

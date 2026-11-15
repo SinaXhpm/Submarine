@@ -71,9 +71,15 @@ const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
 
-/** Opens the form. `prefill` starts an empty message (Suggest a fix: the language). */
-export function openFeedback(opts: { prefill?: string } = {}) {
+/** Opens the form. `prefill` starts an empty message (Suggest a fix: the
+ *  language); `append` goes after what is written already, or starts it
+ *  (Report this reply: the reply), so a draft isn't lost. */
+export function openFeedback(opts: { prefill?: string; append?: string } = {}) {
   if (opts.prefill && !draft.message.trim()) draft = { ...draft, message: opts.prefill };
+  if (opts.append) {
+    const before = draft.message.trimEnd();
+    draft = { ...draft, message: before ? `${before}\n\n${opts.append}` : opts.append };
+  }
   open = true;
   emit();
 }

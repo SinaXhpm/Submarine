@@ -6452,6 +6452,26 @@ async fn close_after_reload(app: tauri::AppHandle, _closing: tokio::sync::OwnedM
     let _ = tokio::time::timeout(std::time::Duration::from_secs(10), teardown).await;
 }
 
+/// Whether any connection is open, connecting or connected: an SSH session
+/// (with its files, forwards and terminals), an FTP session, a telnet
+/// connection, an RDP or VNC screen. The same places `close_after_reload`
+/// gathers from. Android's keep-alive service runs while this is true
+/// (android_bridge::watch_connections).
+#[cfg(target_os = "android")]
+pub(crate) async fn any_connection_open(app: &tauri::AppHandle) -> bool {
+    let ssh = app.state::<SshState>();
+    if !ssh.connections.lock().await.is_empty()
+        || !ssh.ftp_sessions.lock().await.is_empty()
+        || !ssh.terminal_txs.lock().await.is_empty()
+    {
+        return true;
+    }
+    !app.state::<rdp::RdpSessions>().lock().await.is_empty()
+        || !app.state::<vnc_client::VncClients>().lock().await.is_empty()
+        || !app.state::<RdpClients>().lock().await.is_empty()
+        || !app.state::<telnet::Pending>().lock().await.is_empty()
+}
+
 /// What closing a profile takes down, see `close_profile`. `opened` is the
 /// generation of the profile that closes.
 async fn teardown_profile(
@@ -17393,6 +17413,10 @@ async fn rdp_builtin_open(
             }
         });
         let (login_user, domain) = rdp_client::split_domain(&user);
+        let keyboard_layout = rdp_client::keyboard_layout();
+        if keyboard_layout != 0 {
+            log(&format!("Keyboard layout told to the server: {keyboard_layout:08X}, this computer's default."), "info");
+        }
         let login = rdp_client::Login {
             host: host.clone(),
             username: login_user,
@@ -17404,6 +17428,7 @@ async fn rdp_builtin_open(
             graphics,
             clipboard: clipboard.unwrap_or(false),
             drive,
+            keyboard_layout,
         };
         let connected = {
             let (app, attempt, sid, target) = (app.clone(), attempt.clone(), session_id.clone(), target.clone());
@@ -26162,6 +26187,9 @@ pub fn run() {
             gateway::hub::setup(app.handle());
             // .rdp files an earlier run left behind (issue #3).
             std::thread::spawn(rdp::clear_old_files);
+            // The keep-alive service, while a connection is open.
+            #[cfg(target_os = "android")]
+            android_bridge::watch_connections(app.handle().clone());
             #[cfg(windows)]
             open_main_window(app);
             Ok(())

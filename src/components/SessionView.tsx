@@ -16,7 +16,7 @@ import { AiPanel } from "./ai/AiPanel";
 import { AiTerminal } from "./ai/AiTerminal";
 import { createFeed, registerFeed, AI_FOCUS_EVENT, takeAiFocus } from "../util/aiEvents";
 import { ai, AI_LEVEL_EVENT, type AiLevelDetail } from "../util/aiApi";
-import { writeToTerminal } from "../util/pasteText";
+import { clearTerminal, writeToTerminal } from "../util/pasteText";
 import { readTerminal } from "../util/terminalRead";
 import { RenameInput } from "../ui/renameInput";
 import { useIsCompact } from "../hooks/useViewport";
@@ -2329,12 +2329,21 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
                 onCancel={() => setTermRename(null)}
               />
             ) : (
-              <button
-                onClick={() => setTermRename(termMenu.termId)}
-                className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
-              >
-                <span className="flex-1">{t("Rename tab")}</span>
-              </button>
+              <>
+                <button
+                  onClick={() => setTermRename(termMenu.termId)}
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
+                >
+                  <span className="flex-1">{t("Rename tab")}</span>
+                </button>
+                <button
+                  onClick={() => { clearTerminal(termMenu.termId); setTermMenu(null); requestTerminalFocus(); }}
+                  title={t("Clears the display and scrollback in this app (Ctrl+Shift+K, Cmd+Shift+K on a Mac) and keeps the line with the cursor. Sends nothing to the server.")}
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/[0.06] text-zinc-200 hover:text-white text-left"
+                >
+                  <span className="flex-1">{t("Clear terminal")}</span>
+                </button>
+              </>
             )}
           </div>
         </>,
@@ -2735,7 +2744,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           {activeTool === 'tunnels' && (
             <div className="flex-1 flex flex-col overflow-hidden">
               <ToolTitleBar
-                title={t("Port Forwarding")}
+                title={t("Port forwarding")}
                 shortTitle={t("Ports")}
                 toggle={
                   <SepToggle
