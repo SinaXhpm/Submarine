@@ -230,6 +230,13 @@ function DesktopApp() {
   // dropdown gives the tab strip predictable width and matches iOS/
   // Android convention of "current context on top, tap to switch".
   const [mobileSessionPickerOpen, setMobileSessionPickerOpen] = useState(false);
+  // The list hangs under the session pill, which a phone shows only while a
+  // session is open. Closing the last session from the list took the pill
+  // away with the list still marked open, so the next session started with
+  // the list up and its backdrop over the whole screen.
+  useEffect(() => {
+    if (sessions.length === 0) setMobileSessionPickerOpen(false);
+  }, [sessions.length]);
   const handleSessionStatus = useCallback((sessionId: string, status: string) => {
     setSessionStatuses((prev) => (prev[sessionId] === status ? prev : { ...prev, [sessionId]: status }));
   }, []);
