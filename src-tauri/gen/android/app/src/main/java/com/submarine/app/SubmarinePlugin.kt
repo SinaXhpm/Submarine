@@ -44,6 +44,11 @@ class SecureScreenArgs {
 }
 
 @InvokeArg
+class KeepAliveArgs {
+  var open: Boolean = false
+}
+
+@InvokeArg
 class QuickUnlockSealArgs {
   lateinit var alias: String
   lateinit var data: String
@@ -144,6 +149,18 @@ class SubmarinePlugin(private val activity: Activity) : Plugin(activity) {
       applySecureScreen(activity, enabled)
       invoke.resolve(JSObject().apply { put("enabled", enabled) })
     }
+  }
+
+  // The keep-alive service runs while a connection is open: the Rust side
+  // says when that changes (android_bridge::watch_connections). With a
+  // connection open the app asks to show notifications (Android 13+), or the
+  // service's notification stays hidden.
+  @Command
+  fun setKeepAlive(invoke: Invoke) {
+    val open = invoke.parseArgs(KeepAliveArgs::class.java).open
+    ConnectionKeeperService.setWanted(activity, open)
+    if (open) activity.runOnUiThread { (activity as? MainActivity)?.askForNotifications() }
+    invoke.resolve(JSObject().apply { put("open", open) })
   }
 
   // Quick unlock (#166, quick_unlock.rs): the profile's vault key, sealed by
