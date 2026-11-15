@@ -11,7 +11,7 @@ README picks it up; no code changes needed.
 | `rdp.png` | An RDP desktop in its tab (the experimental built-in client), with the "Experimental" label and the tab's bar: Paste, the connection mark (Good, 6 ms), Files, Settings. |
 | `wall.png` | The Wall: three terminals from different servers side by side (cropped to the tiles). |
 | `monitor.png` | Monitoring: CPU, memory, disk and load graphs for three nodes (cropped). |
-| `servers-home-lab.png` | A folder of servers with colour tags and RDP / VNC / Telnet badges (cropped). |
+| `servers-home-lab.png` | A folder of servers as cards, each with its protocol icon and an SSH / RDP / VNC / Telnet badge (cropped). |
 | `servers.png` | The server list at its top level (cropped). |
 | `ports.png` | Port forwarding panel: a local forward, a SOCKS5 proxy, a remote forward (panel only). |
 | `mirror.png` | Folder Mirror panel with one saved mirror (panel only). |
@@ -20,11 +20,11 @@ README picks it up; no code changes needed.
 | `logins.png` | Saved passwords and SSH keys. |
 | `add-server.png` | The server form: type, folder, tag colour, host, login (panel only). |
 | `profiles.png` | The profile picker (cropped to the card). |
-| `settings.png` | Settings: accent colour, background, ssh-agent and ssh config switches, terminal font. |
+| `settings.png` | Settings: language, keepalives and reconnecting, the ssh-agent switch, accent colour, background. |
 | `terminal-colours.png` | Settings: terminal colour schemes with a live preview (cropped). |
 | `terminal.png` | A full-width terminal session with coloured output. |
 | `android-terminal.png` | Android: an SSH session with the key bar and the bottom navigation (the app's own screen, no status bar). |
-| `android-server-form.png` | Android: the server form; the tag colours wrap into rows on a narrow screen. |
+| `android-servers.png` | Android: the server list, folders and servers as cards in one column (the app's own screen, no status bar). |
 
 ## How they are made
 
