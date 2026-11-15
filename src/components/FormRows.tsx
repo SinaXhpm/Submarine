@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useT } from "../i18n";
 
 // A row of a server's options: its label and control, and under them what it
 // does. The server form and the RDP and VNC tabs' panels use the same ones.
@@ -11,11 +12,12 @@ export function QuickChoiceRow<T extends string>({ choices, current, onPick, hin
   onPick: (value: T) => void;
   hint: string;
 }) {
+  const t = useT();
   return (
     <div className="space-y-1">
       <div className="flex justify-between items-center gap-3">
-        <span className="text-[11px] font-bold text-zinc-400 shrink-0">Quick choice</span>
-        <div role="radiogroup" aria-label="Quick choice" className="flex-1 min-w-0 grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-[#1a1a1e] border border-white/10">
+        <span className="text-[11px] font-bold text-zinc-400 shrink-0">{t("Quick choice")}</span>
+        <div role="radiogroup" aria-label={t("Quick choice")} className="flex-1 min-w-0 grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-[#1a1a1e] border border-white/10">
           {choices.map((p) => (
             <button
               key={p.value}
@@ -25,7 +27,7 @@ export function QuickChoiceRow<T extends string>({ choices, current, onPick, hin
               onClick={() => onPick(p.value)}
               className={`h-8 px-1 rounded-md text-[11px] font-semibold truncate transition-colors ${current === p.value ? "bg-primary/20 text-primary" : "text-zinc-400 hover:text-zinc-200"}`}
             >
-              {p.label}
+              {t(p.label)}
             </button>
           ))}
         </div>
@@ -43,6 +45,7 @@ export function ChoiceRow({ label, hint, value, onChange, choices }: {
   onChange: (value: string) => void;
   choices: { value: string | number; label: string; disabled?: boolean }[];
 }) {
+  const t = useT();
   return (
     <div className="space-y-1">
       <div className="flex justify-between items-center gap-3">
@@ -54,7 +57,7 @@ export function ChoiceRow({ label, hint, value, onChange, choices }: {
           onChange={(e) => onChange(e.target.value)}
         >
           {choices.map((c) => (
-            <option key={c.value} value={c.value} disabled={c.disabled} className="bg-[#1a1a1e]">{c.label}</option>
+            <option key={c.value} value={c.value} disabled={c.disabled} className="bg-[#1a1a1e]">{t(c.label)}</option>
           ))}
         </select>
       </div>

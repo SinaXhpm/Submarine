@@ -1262,7 +1262,7 @@ pub async fn bridge_forwarded_channel(
 
     let connect = tokio::time::timeout(
         FORWARDED_CONNECT_TIMEOUT,
-        tokio::net::TcpStream::connect(&entry.target),
+        crate::dial::connect(entry.target.as_str()),
     )
     .await;
     match connect {

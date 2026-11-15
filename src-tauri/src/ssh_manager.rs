@@ -959,6 +959,9 @@ pub struct SshState {
     /// answers, and the prompt takes it with the answer. The password is saved
     /// only once the login with it worked.
     pub kbi_save: Arc<Mutex<HashMap<String, bool>>>,
+    /// FTP tabs, by session id: their file access, which every `sftp_*`
+    /// command finds through `get_sftp_session` (see ftp_sftp.rs).
+    pub ftp_sessions: Arc<Mutex<HashMap<String, crate::ftp_sftp::Live>>>,
 }
 
 /// How an elevated SFTP channel is started. The sudo password (if any) lives
@@ -1019,6 +1022,7 @@ impl SshState {
             sftp_shell: Arc::new(Mutex::new(std::collections::HashSet::new())),
             prompted_secrets: Arc::new(Mutex::new(HashMap::new())),
             kbi_save: Arc::new(Mutex::new(HashMap::new())),
+            ftp_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -1031,6 +1035,25 @@ impl SshState {
 /// wait is alive.
 #[derive(Clone, Default)]
 pub struct LastHeard(Arc<std::sync::atomic::AtomicU64>);
+
+/// What the server said when it closed the connection, for the message the
+/// session watcher gives once it sees the connection gone. It's the server's text:
+/// no control characters, and not all of it if it runs long.
+#[derive(Clone, Default)]
+pub struct ServerGoodbye(Arc<std::sync::Mutex<Option<String>>>);
+
+impl ServerGoodbye {
+    pub fn set(&self, message: &str) {
+        let clean: String = message.chars().filter(|c| !c.is_control()).take(200).collect();
+        if let Ok(mut said) = self.0.lock() {
+            *said = Some(clean.trim().to_string());
+        }
+    }
+
+    pub fn take(&self) -> Option<String> {
+        self.0.lock().ok().and_then(|mut said| said.take())
+    }
+}
 
 impl LastHeard {
     /// The clock `stamp` writes and `heard_since` compares against. Starts at
@@ -1098,6 +1121,8 @@ pub struct ClientHandler {
     /// Stamped on every packet of channel data or window adjustment the
     /// server sends; the session watcher holds a clone (see `LastHeard`).
     pub last_heard: LastHeard,
+    /// Set when the server says goodbye; the session watcher holds a clone.
+    pub server_goodbye: ServerGoodbye,
     /// What the user's known_hosts files say about this host (CAs, listed
     /// and revoked keys), when "Use settings from ~/.ssh/config" is on.
     pub(crate) host_trust: Option<Arc<crate::known_hosts::HostTrust>>,
@@ -1565,6 +1590,23 @@ impl client::Handler for ClientHandler {
         Ok(())
     }
 
+    // Keeps what the server said when it closed the connection (see
+    // `ServerGoodbye`). An error must be handed back as it came, as russh's
+    // own default does: the session then ends with that error instead of a
+    // plain `Disconnect`.
+    async fn disconnected(
+        &mut self,
+        reason: client::DisconnectReason<Self::Error>,
+    ) -> Result<(), Self::Error> {
+        match reason {
+            client::DisconnectReason::ReceivedDisconnect(info) => {
+                self.server_goodbye.set(&info.message);
+                Ok(())
+            }
+            client::DisconnectReason::Error(e) => Err(e),
+        }
+    }
+
     // The next three only note that the server is talking (see `LastHeard`).
     // russh hands the data itself to the channel's own stream as well; the
     // default implementations do nothing.
@@ -1916,6 +1958,17 @@ mod tests {
         page_end("t-reports", &new);
         page_drew("t-reports", 5);
         assert_eq!(new.drawn(), 10, "gone");
+    }
+
+    #[test]
+    fn server_goodbye_is_clean_short_and_said_once() {
+        let goodbye = ServerGoodbye::default();
+        assert_eq!(goodbye.take(), None);
+        goodbye.set(" Idle timeout\x1b[31m\r\n");
+        assert_eq!(goodbye.take().as_deref(), Some("Idle timeout[31m"));
+        assert_eq!(goodbye.take(), None);
+        goodbye.set(&"x".repeat(500));
+        assert_eq!(goodbye.take().map(|m| m.len()), Some(200));
     }
 
     #[test]

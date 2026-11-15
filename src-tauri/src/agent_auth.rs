@@ -15,16 +15,17 @@
 //!
 //! The node's own credentials are tried exactly as before. The agent is used
 //! only (a) where a passphrase or password would otherwise have to be asked
-//! for, and (b) after the node's own key was turned down. See the callers in
-//! lib.rs.
+//! for, (b) after the node's own key was turned down, and (c) for a security
+//! key the node or `~/.ssh/config` names, whose file can't sign. See the
+//! callers in lib.rs.
 
 use std::time::Duration;
 
 use russh::client::{self, AuthResult};
 use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::agent::AgentIdentity;
-use russh::keys::{HashAlg, PublicKey};
-use russh::{AgentAuthError, MethodKind, MethodSet};
+use russh::keys::{Algorithm, HashAlg, PublicKey};
+use russh::{AgentAuthError, MethodKind, MethodSet, Signer};
 
 /// How long an agent may take to answer while we look for one (connect and
 /// list its keys). A missing agent fails at once; this only bounds a hung one.
@@ -40,6 +41,36 @@ pub(crate) const AGENT_SIGN_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const AGENT_MAX_ATTEMPTS: usize = 3;
 
 type AgentConn = AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>;
+
+/// A FIDO security key. Its private key file holds only a handle: the device
+/// itself signs, so such a key can be used through an agent and not from a file.
+pub(crate) fn is_security_key(algorithm: &Algorithm) -> bool {
+    matches!(algorithm, Algorithm::SkEd25519 | Algorithm::SkEcdsaSha2NistP256)
+}
+
+/// The agent, with a note at the moment it's asked to sign. An agent says nothing
+/// while a security key waits for a touch or a PIN. Not earlier than this: a key
+/// the server doesn't know gets no signature, so it asks for no touch.
+struct NoteWhenAsked<'a, S, F> {
+    agent: &'a mut S,
+    note: F,
+    asked: bool,
+}
+
+impl<S: Signer + Send, F: FnMut() + Send> Signer for NoteWhenAsked<'_, S, F> {
+    type Error = S::Error;
+
+    fn auth_sign(
+        &mut self,
+        key: &AgentIdentity,
+        hash_alg: Option<HashAlg>,
+        to_sign: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>> + Send {
+        self.asked = true;
+        (self.note)();
+        self.agent.auth_sign(key, hash_alg, to_sign)
+    }
+}
 
 /// A connected agent and the keys it holds, for one login.
 pub(crate) struct AgentSession {
@@ -82,6 +113,16 @@ impl AgentSession {
                 self.offered.push(blob);
             }
         }
+    }
+
+    /// Whether the agent holds `key` itself (see `is_copy_of`).
+    pub(crate) fn holds(&self, key: &PublicKey) -> bool {
+        self.identities.iter().any(|identity| is_copy_of(identity, key))
+    }
+
+    /// Whether `key` was offered on this connection already.
+    pub(crate) fn was_offered(&self, key: &PublicKey) -> bool {
+        key_blob(key).is_some_and(|blob| self.offered.contains(&blob))
     }
 }
 
@@ -221,10 +262,20 @@ pub(crate) fn key_file_public_key(private_key: &str) -> Option<PublicKey> {
         .map(|key| key.public_key().clone())
 }
 
+/// The public key in a security key's file: its private key file, which holds
+/// only a handle, or its `.pub`. `None` for a file of any other key, or one
+/// this reads no key from.
+pub(crate) fn security_key_file(text: &str) -> Option<PublicKey> {
+    key_file_public_key(text)
+        .or_else(|| PublicKey::from_openssh(text.trim()).ok())
+        .filter(|key| is_security_key(&key.algorithm()))
+}
+
 /// Which of the agent's keys to offer.
 pub(crate) enum Offer<'a> {
     /// Only the agent's copy of this key: the node's own key, which the agent
-    /// holds unlocked, so no passphrase has to be asked for.
+    /// holds unlocked, so no passphrase has to be asked for, or a security key
+    /// whose file can't sign.
     Only(&'a PublicKey),
     /// The keys not offered yet, within `AGENT_MAX_ATTEMPTS` per connection.
     Rest,
@@ -292,22 +343,37 @@ pub(crate) async fn offer_keys<H: client::Handler>(
         agent.attempts += 1;
         let hash_alg = if identity.public_key().algorithm().is_rsa() { rsa_hash } else { None };
         let label = describe(&identity);
+        let security_key = is_security_key(&identity.public_key().algorithm());
+        let source = agent.source;
+        let mut signer = NoteWhenAsked {
+            agent: &mut agent.client,
+            note: || {
+                if security_key {
+                    log(format!(
+                        "Waiting for {} to sign with the {}: touch the key, or enter its PIN, if it asks.",
+                        source, label
+                    ));
+                }
+            },
+            asked: false,
+        };
         let attempt = match &identity {
             AgentIdentity::PublicKey { key, .. } => {
                 tokio::time::timeout(
                     AGENT_SIGN_TIMEOUT,
-                    session.authenticate_publickey_with(user, key.clone(), hash_alg, &mut agent.client),
+                    session.authenticate_publickey_with(user, key.clone(), hash_alg, &mut signer),
                 )
                 .await
             }
             AgentIdentity::Certificate { certificate, .. } => {
                 tokio::time::timeout(
                     AGENT_SIGN_TIMEOUT,
-                    session.authenticate_certificate_with(user, certificate.clone(), hash_alg, &mut agent.client),
+                    session.authenticate_certificate_with(user, certificate.clone(), hash_alg, &mut signer),
                 )
                 .await
             }
         };
+        let signed = signer.asked;
         let result = match attempt {
             Err(_) => {
                 log(format!(
@@ -334,6 +400,14 @@ pub(crate) async fn offer_keys<H: client::Handler>(
         if matches!(result, AuthResult::Failure { .. }) && session.is_closed() {
             return Err(russh::Error::Disconnect);
         }
+        // Otherwise it looks as if the key was never tried: the next thing on
+        // screen may be a password prompt.
+        if security_key && signature_refused(signed, &result) {
+            log(format!(
+                "The server refused the signature from the {}. A security key may not have seen a touch or a PIN.",
+                label
+            ));
+        }
         match interpret(result) {
             Some(AgentOutcome::Authenticated) => {
                 log(format!("Logged in with the {} from {}.", label, agent.source));
@@ -350,16 +424,37 @@ pub(crate) async fn offer_keys<H: client::Handler>(
             None => {}
         }
     }
-    if skipped > 0 {
+    if !skipped.is_empty() {
+        // A security key can't be saved on the node (its file can't sign), but
+        // an IdentityFile that names it has it offered first.
+        let security_keys = skipped
+            .iter()
+            .filter(|&&i| is_security_key(&agent.identities[i].public_key().algorithm()))
+            .count();
+        let mut how = String::new();
+        if security_keys < skipped.len() {
+            how.push_str(" Save the key for this server on the node to use it directly.");
+        }
+        if security_keys > 0 {
+            how.push_str(" To have a security key tried first, name its file with IdentityFile in ~/.ssh/config.");
+        }
         log(format!(
-            "{} holds {} more key{} that {} not tried: the server limits failed attempts. Save the key for this server on the node to use it directly.",
+            "{} holds {} more key{} that {} not tried: the server limits failed attempts.{}",
             capitalized(agent.source),
-            skipped,
-            if skipped == 1 { "" } else { "s" },
-            if skipped == 1 { "was" } else { "were" }
+            skipped.len(),
+            if skipped.len() == 1 { "" } else { "s" },
+            if skipped.len() == 1 { "was" } else { "were" },
+            how
         ));
     }
     Ok(AgentOutcome::NotAccepted)
+}
+
+/// Whether the server turned a key down after asking for its signature: not a
+/// key it never asked to sign (one it doesn't know), nor one it accepted with
+/// another factor to follow, which russh reports as a failure too.
+fn signature_refused(signed: bool, result: &AuthResult) -> bool {
+    signed && matches!(result, AuthResult::Failure { partial_success: false, .. })
 }
 
 /// What the server's answer to one offered key means: an outcome to stop on,
@@ -378,31 +473,33 @@ fn interpret(result: AuthResult) -> Option<AgentOutcome> {
     }
 }
 
-/// The identities to offer now (indices, in the agent's order) and how many
-/// fresh ones the attempt budget left out.
+/// The identities to offer now (indices, in the agent's order) and the fresh
+/// ones the attempt budget left out.
 fn pick(
     identities: &[AgentIdentity],
     offered: &[Vec<u8>],
     which: &Offer<'_>,
     attempts: usize,
-) -> (Vec<usize>, usize) {
+) -> (Vec<usize>, Vec<usize>) {
     let fresh = |i: usize| identity_blob(&identities[i]).is_some_and(|blob| !offered.contains(&blob));
     match which {
         Offer::Only(wanted) => {
-            let hit = (0..identities.len()).find(|&i| {
-                fresh(i)
-                    && matches!(&identities[i],
-                        AgentIdentity::PublicKey { key, .. } if key.key_data() == wanted.key_data())
-            });
-            (hit.into_iter().collect(), 0)
+            let hit = (0..identities.len()).find(|&i| fresh(i) && is_copy_of(&identities[i], wanted));
+            (hit.into_iter().collect(), Vec::new())
         }
         Offer::Rest => {
-            let fresh: Vec<usize> = (0..identities.len()).filter(|&i| fresh(i)).collect();
+            let mut fresh: Vec<usize> = (0..identities.len()).filter(|&i| fresh(i)).collect();
             let room = AGENT_MAX_ATTEMPTS.saturating_sub(attempts);
-            let skipped = fresh.len().saturating_sub(room);
-            (fresh.into_iter().take(room).collect(), skipped)
+            let skipped = fresh.split_off(room.min(fresh.len()));
+            (fresh, skipped)
         }
     }
+}
+
+/// Whether `identity` is the agent's copy of `key`, whatever its comment. A
+/// certificate for the key isn't.
+fn is_copy_of(identity: &AgentIdentity, key: &PublicKey) -> bool {
+    matches!(identity, AgentIdentity::PublicKey { key: held, .. } if held.key_data() == key.key_data())
 }
 
 /// `source` at the start of a sentence ("the agent at …" → "The agent at …").
@@ -460,6 +557,16 @@ mod tests {
     fn key(seed: u8) -> PrivateKey {
         use russh::keys::ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
         PrivateKey::from(Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[seed; 32])))
+    }
+
+    /// A made-up FIDO key per seed: an agent can hold and list it, but nothing
+    /// can sign with it.
+    fn security_key(seed: u8) -> PrivateKey {
+        use russh::keys::ssh_key::private::{KeypairData, SkEd25519};
+        use russh::keys::ssh_key::public;
+        let public = public::SkEd25519::new(*key(seed).public_key().key_data().ed25519().unwrap(), "ssh:");
+        let keypair = SkEd25519::new(public, 0x01, vec![seed; 16]).unwrap();
+        PrivateKey::new(KeypairData::SkEd25519(keypair), "").unwrap()
     }
 
     /// russh's own agent server; `refuse_signing` makes it turn down every
@@ -549,10 +656,48 @@ mod tests {
         assert!(matches!(out, AgentOutcome::NotAccepted));
         assert_eq!(offers.load(Ordering::SeqCst), AGENT_MAX_ATTEMPTS);
         assert!(logged.iter().any(|m| m.contains("2 more keys")), "{logged:?}");
+        assert!(logged.iter().any(|m| m.contains("Save the key") && !m.contains("IdentityFile")), "{logged:?}");
         // The budget is per connection: a later round offers nothing more.
         let again = offer_keys(&mut session, "u", &mut agent, Offer::Rest, |_| {}).await.unwrap();
         assert!(matches!(again, AgentOutcome::NothingToOffer));
         assert_eq!(offers.load(Ordering::SeqCst), AGENT_MAX_ATTEMPTS);
+    }
+
+    // A security key left out can't be saved on the node: the way to reach it
+    // is an IdentityFile naming it, which has it offered first.
+    #[tokio::test]
+    async fn security_keys_left_out_by_the_budget_are_pointed_to_identity_file() {
+        let keys: Vec<PrivateKey> = (1..=4).map(security_key).collect();
+        let (mut session, offers) = session_to(None, false).await;
+        let mut agent = agent_holding(&keys, false).await;
+        let mut logged = Vec::new();
+        let out = offer_keys(&mut session, "u", &mut agent, Offer::Rest, |m| logged.push(m)).await.unwrap();
+        assert!(matches!(out, AgentOutcome::NotAccepted));
+        assert_eq!(offers.load(Ordering::SeqCst), AGENT_MAX_ATTEMPTS);
+        let hint = logged.iter().find(|m| m.contains("1 more key that was not tried")).expect("the hint");
+        assert!(hint.contains("IdentityFile") && !hint.contains("Save the key"), "{hint}");
+    }
+
+    // An IdentityFile naming a security key gets the agent's copy offered. A
+    // server that doesn't know the key asks for no signature, so nothing tries
+    // to sign and the session goes on.
+    #[tokio::test]
+    async fn a_security_key_the_server_doesnt_know_is_offered_without_signing() {
+        let (plain, sk) = (key(1), security_key(2));
+        let (mut session, offers) = session_to(Some(&plain), false).await;
+        let mut agent = agent_holding(&[plain, sk.clone()], false).await;
+        assert!(agent.holds(sk.public_key()) && !agent.holds(key(3).public_key()));
+        let mut logged = Vec::new();
+        let out = offer_keys(&mut session, "u", &mut agent, Offer::Only(sk.public_key()), |m| logged.push(m))
+            .await
+            .unwrap();
+        assert!(matches!(out, AgentOutcome::NotAccepted));
+        assert_eq!(offers.load(Ordering::SeqCst), 1, "only the security key is offered");
+        assert!(agent.was_offered(sk.public_key()));
+        assert!(logged.iter().all(|m| !m.contains("touch")), "no signature was asked for: {logged:?}");
+        // The agent's other keys still follow on the same session.
+        let rest = offer_keys(&mut session, "u", &mut agent, Offer::Rest, |_| {}).await.unwrap();
+        assert!(matches!(rest, AgentOutcome::Authenticated));
     }
 
     #[tokio::test]
@@ -629,6 +774,16 @@ mod tests {
         assert!(matches!(interpret(AuthResult::Success), Some(AgentOutcome::Authenticated)));
     }
 
+    // A key accepted with another factor to follow comes back as a failure
+    // too: that isn't a refused signature.
+    #[test]
+    fn only_a_signed_key_turned_down_is_a_refused_signature() {
+        assert!(signature_refused(true, &failure(&[MethodKind::PublicKey], false)));
+        assert!(!signature_refused(true, &failure(&[MethodKind::Password], true)));
+        assert!(!signature_refused(false, &failure(&[MethodKind::PublicKey], false)));
+        assert!(!signature_refused(true, &AuthResult::Success));
+    }
+
     #[test]
     fn an_encrypted_key_file_shows_its_public_key_without_the_passphrase() {
         let plain = key(9);
@@ -644,6 +799,25 @@ mod tests {
     fn a_non_openssh_key_file_shows_nothing() {
         assert!(key_file_public_key("-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n").is_none());
         assert!(key_file_public_key("").is_none());
+    }
+
+    #[test]
+    fn a_security_key_is_known_by_its_private_key_file_or_its_pub() {
+        let sk = security_key(5);
+        let wanted = sk.public_key().key_data();
+        let file = sk.to_openssh(russh::keys::ssh_key::LineEnding::LF).unwrap().to_string();
+        assert_eq!(security_key_file(&file).unwrap().key_data(), wanted);
+        // Encrypted: still known without the passphrase.
+        let encrypted = sk.encrypt(&mut rand::rng(), "pw").expect("encrypt");
+        let file = encrypted.to_openssh(russh::keys::ssh_key::LineEnding::LF).unwrap().to_string();
+        assert_eq!(security_key_file(&file).unwrap().key_data(), wanted);
+        let pub_file = format!("{}\r\n", sk.public_key().to_openssh().unwrap());
+        assert_eq!(security_key_file(&pub_file).unwrap().key_data(), wanted);
+        // Any other key isn't one.
+        let plain = key(6);
+        assert!(security_key_file(&plain.to_openssh(russh::keys::ssh_key::LineEnding::LF).unwrap()).is_none());
+        assert!(security_key_file(&plain.public_key().to_openssh().unwrap()).is_none());
+        assert!(security_key_file("").is_none());
     }
 
     #[cfg(windows)]

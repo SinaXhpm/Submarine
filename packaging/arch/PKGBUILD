@@ -1,4 +1,4 @@
-# Maintainer: Sina <https://sinaxhpm.com>
+# Maintainer: Sina Xhpm <sinaxhpm@gmail.com>
 #
 # This PKGBUILD is intended to be driven by the GitHub Actions release
 # workflow, not built standalone from an unpacked tarball. CI stamps the
@@ -14,7 +14,7 @@
 pkgname=submarine
 pkgver=0.0.0
 pkgrel=1
-pkgdesc='A modern, secure SSH/SFTP desktop client'
+pkgdesc='SSH, SFTP, FTP, RDP, VNC and Telnet client with port forwarding and folder mirror'
 arch=('x86_64')
 url='https://github.com/sinaxhpm/submarine'
 license=('MIT')

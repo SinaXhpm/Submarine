@@ -320,8 +320,11 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       # The NDK this job installs and builds with (the runner image has its
-      # own, newer one as ANDROID_NDK_ROOT).
-      NDK_VERSION: "27.1.12297006"
+      # own as ANDROID_NDK_ROOT). r28 or later: it aligns the 64-bit library
+      # to 16 KB pages by default, which Google Play requires and 16 KB
+      # devices need (27.1 gave 4 KB; checked after the build). play.yml
+      # uses the same one.
+      NDK_VERSION: "28.2.13676358"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         # Nothing here pushes — see the build job.
@@ -361,6 +364,9 @@ jobs:
             conf.version=v;
             fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2)+'\n');
           "
+          # The version code: new and higher for every release, beta or final,
+          # and the same as the Google Play bundle's (see the script).
+          node scripts/android-version-code.mjs "$VERSION" --stamp src-tauri/tauri.conf.json
 
       - name: Install Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -417,7 +423,7 @@ jobs:
 
       # Some C build scripts in the tree (cc-rs driven, e.g. ring / zstd /
       # sqlite) may spawn binutils via the legacy `<target>-ranlib` /
-      # `<target>-ar` / `<target>-strip` names. NDK 27 ships only the
+      # `<target>-ar` / `<target>-strip` names. NDK 27 and 28 ship only the
       # unprefixed `llvm-ranlib` / `llvm-ar` (the prefixed symlinks were
       # dropped around NDK 23), which surfaces as "<target>-ranlib: not
       # found" and make exiting 127.
@@ -453,11 +459,8 @@ jobs:
       # matching base.apk installed at the same time (the Play Store
       # mechanism). For direct sideload only a universal APK works.
       #
-      # AAB was dropped in v0.2.30 — we don't ship through Google Play, so
-      # the .aab artifact was dead weight (users can't sideload it) and
-      # doubled the Android build time on CI. If Play Store distribution
-      # becomes a goal later, re-add `android:build:aab` to package.json
-      # and the matching find/copy loop here.
+      # The Google Play bundle (AAB) is built by play.yml, by hand: users
+      # can't sideload it, and building it here too would double this job.
       #
       # No signing secret in this step or this job (see the comment on the
       # job): Gradle leaves the release APK unsigned.
@@ -491,6 +494,11 @@ jobs:
             exit 1
           fi
           ls -la artifacts/
+
+      # 16 KB pages: every loadable segment of the 64-bit library aligned to
+      # 16 KB, or a 16 KB device can't load it and Google Play refuses it.
+      - name: Check 16 KB page alignment
+        run: node scripts/check-android-16k.mjs artifacts/*.apk
 
       - name: Upload the unsigned APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -563,8 +571,9 @@ jobs:
             name="$(basename "$apk")"
             out="artifacts/${name%-unsigned.apk}.apk"
             # Gradle aligns what it writes; a signature over a file that isn't
-            # would break the alignment later, so check it first.
-            "$zipalign" -c 4 "$apk"
+            # would break the alignment later, so check it first. -P 16: the
+            # stored libraries on 16 KB page boundaries too.
+            "$zipalign" -c -P 16 4 "$apk"
             "$apksigner" sign \
               --ks "$ks" --ks-key-alias "$SUBMARINE_KEY_ALIAS" \
               --ks-pass env:SUBMARINE_KEYSTORE_PASSWORD --key-pass env:SUBMARINE_KEY_PASSWORD \

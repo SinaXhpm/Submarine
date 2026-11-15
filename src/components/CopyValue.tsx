@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Copy, Check } from "lucide-react";
+import { useT } from "../i18n";
 
 // Touch-friendly copy affordance for value-heavy fields (IP addresses,
 // ports, PIDs, unit names, etc). On desktop the icon is visible-on-hover
@@ -14,6 +15,7 @@ interface Props {
 }
 
 export default function CopyValue({ value, className, children }: Props) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = () => {
     navigator.clipboard.writeText(value).then(() => {
@@ -26,7 +28,7 @@ export default function CopyValue({ value, className, children }: Props) {
       <span>{children ?? value}</span>
       <button
         type="button"
-        aria-label="Copy to clipboard"
+        aria-label={t("Copy to clipboard")}
         onClick={copy}
         className="opacity-100 sm:opacity-40 sm:group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-white/10 shrink-0"
       >

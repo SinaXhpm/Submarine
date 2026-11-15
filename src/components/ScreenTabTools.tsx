@@ -7,6 +7,7 @@ import { VncSpeedFields } from "./VncOptionFields";
 import { formatBytes, formatRate, GOOD_BELOW_MS, LINK_WORDS, linkQuality, WEAK_FROM_MS, type LinkQuality, type LinkStats } from "../util/screenLink";
 import type { RdpOptions } from "../util/rdpOptions";
 import type { VncOptions } from "../util/vncOptions";
+import { t, tk, tx, useT } from "../i18n";
 
 // The tools in the bar of a remote screen tab (the built-in RDP client, VNC):
 // how the link is doing, the speed and quality, and for RDP what of this
@@ -26,30 +27,32 @@ const QUALITY_LOOK: Record<LinkQuality, { icon: typeof Signal; colour: string }>
 };
 
 const QUALITY_SAYS: Record<LinkQuality, string> = {
-  good: "The server answers quickly.",
-  fair: "Clicks and keys may show a short wait.",
-  weak: "Clicks and keys show a wait. Less data may help.",
-  silent: "The server isn't answering. The link may be down, or very slow.",
-  unknown: "Measuring…",
+  good: tk("The server answers quickly."),
+  fair: tk("Clicks and keys may show a short wait."),
+  weak: tk("Clicks and keys show a wait. Less data may help."),
+  silent: tk("The server isn't answering. The link may be down, or very slow."),
+  unknown: tk("Measuring…"),
 };
 
 /** The connection mark: the link's quality, and its delay where there's room. */
 export function LinkMark({ link, open, onClick }: { link: LinkStats | null; open: boolean; onClick: () => void }) {
+  const t = useT();
   const q = linkQuality(link);
   const { icon: Icon, colour } = QUALITY_LOOK[q];
-  const delay = q !== "silent" && link?.rttMs != null ? `${link.rttMs} ms` : "";
-  const said = `Connection: ${LINK_WORDS[q]}${delay ? `, ${delay} round trip` : ""}`;
+  const delay = q !== "silent" && link?.rttMs != null ? t("{ms} ms", { ms: link.rttMs }) : "";
+  const quality = t(LINK_WORDS[q]);
+  const said = delay ? t("Connection: {quality}, {delay} round trip", { quality, delay }) : t("Connection: {quality}", { quality });
   return (
     <button
       onClick={onClick}
       aria-expanded={open}
       aria-label={said}
-      title={`${said}. Details`}
+      title={delay ? t("Connection: {quality}, {delay} round trip. Details", { quality, delay }) : t("Connection: {quality}. Details", { quality })}
       data-link-quality={q}
       className={`h-7 px-2 flex items-center gap-1.5 rounded-md text-[11px] font-semibold transition-colors ${open ? "bg-primary/15" : "bg-white/5 hover:bg-white/10"}`}
     >
       <Icon size={13} className={colour} aria-hidden="true" />
-      <span className={`hidden [@container(min-width:560px)]:inline ${colour}`}>{LINK_WORDS[q]}</span>
+      <span className={`hidden [@container(min-width:560px)]:inline ${colour}`}>{quality}</span>
       {delay && <span className="hidden [@container(min-width:700px)]:inline text-zinc-500 font-medium tabular-nums">{delay}</span>}
     </button>
   );
@@ -57,6 +60,7 @@ export function LinkMark({ link, open, onClick }: { link: LinkStats | null; open
 
 /** A panel over the desktop, under the tab's bar; a click beside it or Esc closes it. */
 export function ToolPanel({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  const t = useT();
   const box = useRef<HTMLDivElement | null>(null);
   // The keys go to the panel now, not to the server.
   useEffect(() => { box.current?.focus(); }, []);
@@ -73,7 +77,7 @@ export function ToolPanel({ title, onClose, children }: { title: string; onClose
       >
         <div className="flex items-center justify-between gap-2">
           <h3 className="text-[12px] font-bold text-zinc-200">{title}</h3>
-          <button onClick={onClose} aria-label="Close" className="h-6 w-6 flex items-center justify-center rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-white/5">
+          <button onClick={onClose} aria-label={t("Close")} className="h-6 w-6 flex items-center justify-center rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-white/5">
             <X size={12} />
           </button>
         </div>
@@ -85,17 +89,19 @@ export function ToolPanel({ title, onClose, children }: { title: string; onClose
 
 // A change the session now open hasn't got: it takes a new connection.
 function ReconnectBar({ onReconnect }: { onReconnect: () => void }) {
+  const t = useT();
   return (
     <div role="status" className="flex items-center gap-2 p-2 rounded-lg border border-primary/25 bg-primary/5 text-[11px] leading-snug text-zinc-300">
-      <span className="flex-1 min-w-0">Some of this applies when the tab connects again.</span>
+      <span className="flex-1 min-w-0">{t("Some of this applies when the tab connects again.")}</span>
       <button onClick={onReconnect} className="shrink-0 h-7 px-2.5 rounded-md bg-primary/15 text-primary hover:bg-primary/25 font-semibold transition-colors">
-        Reconnect now
+        {t("Reconnect now")}
       </button>
     </div>
   );
 }
 
-const KEPT = <p className="text-[10.5px] text-zinc-600 leading-snug">Kept for this server on this device.</p>;
+// Made where it is shown, so a language change reaches it.
+const kept = () => <p className="text-[10.5px] text-zinc-600 leading-snug">{t("Kept for this server on this device.")}</p>;
 
 function Figure({ label, value }: { label: string; value: string }) {
   return (
@@ -107,39 +113,40 @@ function Figure({ label, value }: { label: string; value: string }) {
 }
 
 export function LinkPanel({ link, onLessData }: { link: LinkStats | null; onLessData: () => void }) {
+  const t = useT();
   const q = linkQuality(link);
   const { icon: Icon, colour } = QUALITY_LOOK[q];
-  const says = q === "unknown" && link && !link.canMeasure ? "This server doesn't answer the question the delay is measured with." : QUALITY_SAYS[q];
-  const delay = link?.rttMs != null ? `${link.rttMs} ms` : link && !link.canMeasure ? "Can't be measured" : "Measuring…";
+  const says = q === "unknown" && link && !link.canMeasure ? t("This server doesn't answer the question the delay is measured with.") : t(QUALITY_SAYS[q]);
+  const delay = link?.rttMs != null ? t("{ms} ms", { ms: link.rttMs }) : link && !link.canMeasure ? t("Can't be measured") : t("Measuring…");
   return (
     <>
       <div className="flex items-start gap-2.5">
         <Icon size={18} className={`shrink-0 mt-0.5 ${colour}`} aria-hidden="true" />
         <div className="min-w-0">
-          <div className={`text-[13px] font-bold ${colour}`}>{q === "unknown" ? "Connection" : `${LINK_WORDS[q]} connection`}</div>
+          <div className={`text-[13px] font-bold ${colour}`}>{q === "unknown" ? t("Connection") : t("{quality} connection", { quality: t(LINK_WORDS[q]) })}</div>
           <p className="text-[11px] text-zinc-400 leading-snug">
-            {q === "silent" && link ? `No answer for ${Math.round(link.waitingMs / 1000)} s. ` : ""}
+            {q === "silent" && link ? t("No answer for {seconds} s.", { seconds: Math.round(link.waitingMs / 1000) }) + " " : ""}
             {says}
           </p>
         </div>
       </div>
       <div className="space-y-1.5 p-2.5 rounded-lg bg-[#1a1a1e] border border-white/5">
-        <Figure label="Delay (there and back)" value={delay} />
-        <Figure label="Receiving" value={link ? formatRate(link.inRate) : "–"} />
-        <Figure label="Sending" value={link ? formatRate(link.outRate) : "–"} />
-        <Figure label="This session" value={link ? `${formatBytes(link.bytesIn)} in, ${formatBytes(link.bytesOut)} out` : "–"} />
+        <Figure label={t("Delay (there and back)")} value={delay} />
+        <Figure label={t("Receiving")} value={link ? formatRate(link.inRate) : "–"} />
+        <Figure label={t("Sending")} value={link ? formatRate(link.outRate) : "–"} />
+        <Figure label={t("This session")} value={link ? t("{received} in, {sent} out", { received: formatBytes(link.bytesIn), sent: formatBytes(link.bytesOut) }) : "–"} />
       </div>
-      {link?.paused && <p className="text-[11px] text-zinc-400">The picture is paused while the tab is hidden.</p>}
+      {link?.paused && <p className="text-[11px] text-zinc-400">{t("The picture is paused while the tab is hidden.")}</p>}
       {(q === "weak" || q === "silent") && (
         <button
           onClick={onLessData}
           className="w-full h-8 rounded-lg bg-primary/15 text-primary hover:bg-primary/25 text-[11.5px] font-semibold transition-colors"
         >
-          Use less data…
+          {t("Use less data…")}
         </button>
       )}
       <p className="text-[10.5px] text-zinc-600 leading-snug">
-        The delay is how long the server takes to answer, through everything on the way (SSH servers, VPNs). Under {GOOD_BELOW_MS} ms is good; from {WEAK_FROM_MS} ms on, every click shows the wait.
+        {t("The delay is how long the server takes to answer, through everything on the way (SSH servers, VPNs). Under {good} ms is good; from {weak} ms on, every click shows the wait.", { good: GOOD_BELOW_MS, weak: WEAK_FROM_MS })}
       </p>
     </>
   );
@@ -153,55 +160,61 @@ export function FilesPanel({ shared, o, set, drives, reconnect }: {
   drives: string[];
   reconnect: (() => void) | null;
 }) {
+  const t = useT();
+  const share = shared ? <span className="font-mono">\\tsclient\{shared.name}</span> : null;
   return (
     <>
       {shared !== undefined && (
         <div className="p-2.5 rounded-lg bg-[#1a1a1e] border border-white/5 text-[11.5px] leading-snug">
-          <div className="text-zinc-500">Shared now</div>
+          <div className="text-zinc-500">{t("Shared now")}</div>
           {shared ? (
             <div className="text-zinc-200 break-all">
-              <span className="font-mono">\\tsclient\{shared.name}</span>: {shared.path}{shared.readOnly ? ", read only" : ""}
+              {shared.readOnly
+                ? tx("{share}: {path}, read only", { share, path: shared.path })
+                : tx("{share}: {path}", { share, path: shared.path })}
             </div>
           ) : (
-            <div className="text-zinc-300">Nothing of this computer's.</div>
+            <div className="text-zinc-300">{t("Nothing of this computer's.")}</div>
           )}
         </div>
       )}
       <RdpShareFields o={o} set={set} drives={drives} />
       {reconnect && <ReconnectBar onReconnect={reconnect} />}
-      {KEPT}
+      {kept()}
     </>
   );
 }
 
 export function RdpSettingsPanel({ o, set, reconnect }: { o: RdpOptions; set: (patch: Partial<RdpOptions>) => void; reconnect: (() => void) | null }) {
+  const t = useT();
   return (
     <>
       <RdpSpeedFields o={o} set={set} />
       <SwitchRow
-        label="Share the clipboard"
-        hint="Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there."
+        label={t("Share the clipboard")}
+        hint={t("Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there.")}
         checked={o.clipboard}
         onChange={(clipboard) => set({ clipboard })}
       />
       {reconnect && <ReconnectBar onReconnect={reconnect} />}
-      {KEPT}
+      {kept()}
     </>
   );
 }
 
 export function VncSettingsPanel({ o, set, reconnect }: { o: VncOptions; set: (patch: Partial<VncOptions>) => void; reconnect: (() => void) | null }) {
+  const t = useT();
   return (
     <>
       <VncSpeedFields o={o} set={set} />
       <SwitchRow
-        label="Share the clipboard"
-        hint="Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there. Plain ASCII text only, such as links and commands."
+        label={t("Share the clipboard")}
+        hint={t("Text you copy on the server comes to this device, by itself while the tab is in front; this device's goes to the server when you paste it there. Plain ASCII text only, such as links and commands.")}
         checked={o.clipboard}
         onChange={(clipboard) => set({ clipboard })}
       />
       {reconnect && <ReconnectBar onReconnect={reconnect} />}
-      {KEPT}
+      {kept()}
     </>
   );
 }

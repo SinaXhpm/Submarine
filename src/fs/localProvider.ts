@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { FileEntry, ListResult, LocalFileProvider } from "./types";
 import { localParent } from "./localPath";
+import { tk } from "../i18n";
 
 // Local filesystem provider. All paths are OS-native (backslashes on Windows,
 // forward slashes elsewhere). Backed by the small set of `local_*` Tauri
@@ -33,7 +34,7 @@ export function createLocalProvider(): LocalFileProvider {
 
   return {
     id: "local",
-    label: "Local",
+    label: tk("Local"),
     get pathSep() {
       return cachedSep ?? "\\";
     },

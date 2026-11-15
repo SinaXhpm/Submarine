@@ -1,5 +1,8 @@
 import { Component, type CSSProperties, type ErrorInfo, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { t } from "../i18n";
+import { clearAiFocus, clearFeeds } from "../util/aiEvents";
+import { clearUrlCache } from "./ai/markdownParse";
 
 interface Props { children: ReactNode; }
 interface State { error: Error | null; info: ErrorInfo | null; }
@@ -22,9 +25,15 @@ export default class ErrorBoundary extends Component<Props, State> {
   }
 
   // The app starts over at the picker, and no page load tells the backend so
-  // (a reload does, see lib.rs): the profile left open behind it is closed here.
+  // (a reload does, see lib.rs): the profile left open behind it is closed
+  // here, and what the AI views kept of it goes, as on Lock.
   private reset = () => {
-    invoke("close_profile").catch(() => {}).finally(() => this.setState({ error: null, info: null }));
+    invoke("close_profile").catch(() => {}).finally(() => {
+      clearAiFocus();
+      clearFeeds();
+      clearUrlCache();
+      this.setState({ error: null, info: null });
+    });
   };
   private reload = () => window.location.reload();
 
@@ -40,22 +49,19 @@ export default class ErrorBoundary extends Component<Props, State> {
     return (
       <div style={S.wrap} role="alert">
         <div style={S.card}>
-          <div style={S.badge}>Something broke in the interface</div>
-          <h1 style={S.h1}>The window hit an unexpected error</h1>
+          <div style={S.badge}>{t("Something broke in the interface")}</div>
+          <h1 style={S.h1}>{t("The window hit an unexpected error")}</h1>
           <p style={S.lede}>
-            Your saved profiles and servers are untouched, but this closed your open sessions:
-            what ran in their terminals has ended and their scrollback is gone. Reloading
-            almost always clears the error and takes you back to the profile picker. If it
-            keeps happening, copy the details below when reporting the bug.
+            {t("Your saved profiles and servers are untouched, but this closed your open sessions: what ran in their terminals has ended and their scrollback is gone. Reloading almost always clears the error and takes you back to the profile picker. If it keeps happening, copy the details below when reporting the bug.")}
           </p>
           <div style={S.row}>
-            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={this.reload}>Reload the app</button>
-            <button style={S.btn} onClick={this.reset}>Try to continue</button>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={this.reload}>{t("Reload the app")}</button>
+            <button style={S.btn} onClick={this.reset}>{t("Try to continue")}</button>
             <button
               style={S.btn}
               onClick={() => { navigator.clipboard?.writeText(`${error.message}\n\n${detail}`).catch(() => {}); }}
             >
-              Copy details
+              {t("Copy details")}
             </button>
           </div>
           <pre style={S.pre}>{error.message}{"\n\n"}{detail}</pre>

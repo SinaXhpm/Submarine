@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { BUNDLED_FONTS, fontFamilyCss } from "../util/terminalFont";
+import { uiFontCss } from "../util/uiFont";
 import { loadInstalledFonts, SystemFont } from "../util/systemFonts";
+import { useT } from "../i18n";
 
 type Row = { key: string; family: string; label: string; monospace?: boolean };
 
@@ -11,21 +13,34 @@ const BUNDLED_KEYS = new Set(BUNDLED_FONTS.map((f) => f.toLowerCase()));
 // terminal. (The live preview under the picker shows 0O / 1lI for telling
 // look-alike glyphs apart.)
 const SAMPLE = "root@localhost:~$";
+// For the interface: a few letters and figures. The name beside it stays in
+// the interface font, so a symbol font's row can still be read.
+const UI_SAMPLE = "Aa Bb 123";
 
-// Terminal font picker: "Default", then the fonts shipped with the app, a
-// divider, then every other font installed on this device. Typing filters both
-// lists; Enter on typed text uses it as-is (any family, or a CSS list).
+// Font picker. For the terminal: "Default", then the fonts shipped with the
+// app, a divider, then every other font installed on this device. For the
+// interface: "Default", then the installed fonts, each name shown in its own
+// face (the shipped fonts are terminal faces). Typing filters the lists; Enter
+// on typed text uses it as-is (any family, or a CSS list).
 export default function FontPicker({
   value,
   onChange,
   onCommit,
   placeholder,
+  kind = "terminal",
+  id = "term-font-family",
 }: {
   value: string;
   onChange: (v: string) => void;
   onCommit: (v: string) => void;
   placeholder?: string;
+  kind?: "terminal" | "interface";
+  /** The input's id, for its label; the list's is made from it. */
+  id?: string;
 }) {
+  const t = useT();
+  const forTerminal = kind === "terminal";
+  const listId = `${id}-list`;
   const [open, setOpen] = useState(false);
   // Filter only by what the user typed after opening, not by the current
   // value — opening the list should show everything.
@@ -59,27 +74,30 @@ export default function FontPicker({
   const q = (query ?? "").trim().toLowerCase();
   const match = (name: string) => !q || name.toLowerCase().includes(q);
   const builtInRows: Row[] = useMemo(
-    () => BUNDLED_FONTS.filter(match).map((f) => ({ key: `b:${f}`, family: f, label: f, monospace: true })),
+    () => (forTerminal ? BUNDLED_FONTS.filter(match).map((f) => ({ key: `b:${f}`, family: f, label: f, monospace: true })) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [q],
+    [q, forTerminal],
   );
   // A family the app ships (Cascadia Code comes with Windows 11, too) is
   // listed once, under Built-in: that row already uses the installed copy when
   // there is one (see bundledAlias), so both rows would be the same face.
   const installedOnly = useMemo(
-    () => (installed ?? []).filter((f) => !BUNDLED_KEYS.has(f.family.toLowerCase())),
-    [installed],
+    () => (installed ?? []).filter((f) => !forTerminal || !BUNDLED_KEYS.has(f.family.toLowerCase())),
+    [installed, forTerminal],
   );
   const installedRows: Row[] = useMemo(
     () => installedOnly.filter((f) => match(f.family)).map((f) => ({ key: `i:${f.family}`, family: f.family, label: f.family, monospace: f.monospace })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [installedOnly, q],
   );
-  // Monospace families first — the ones whose columns line up in a terminal,
-  // usually a handful among a hundred or more — then everything else.
-  const installedMono = installedRows.filter((r) => r.monospace);
-  const installedProp = installedRows.filter((r) => !r.monospace);
-  const defaultRow: Row | null = !q ? { key: "default", family: "", label: "Default (system monospace)" } : null;
+  // For the terminal, monospace families first — the ones whose columns line
+  // up in a terminal, usually a handful among a hundred or more — then
+  // everything else. For the interface, all of them as they come.
+  const installedMono = forTerminal ? installedRows.filter((r) => r.monospace) : installedRows;
+  const installedProp = forTerminal ? installedRows.filter((r) => !r.monospace) : [];
+  const defaultRow: Row | null = !q
+    ? { key: "default", family: "", label: forTerminal ? t("Default (system monospace)") : t("Default (the app's own font)") }
+    : null;
   const rows: Row[] = [...(defaultRow ? [defaultRow] : []), ...builtInRows, ...installedMono, ...installedProp];
 
   const close = (keepTyped: boolean) => {
@@ -140,10 +158,10 @@ export default function FontPicker({
         {row.family && (
           <span
             className="shrink-0 text-[12px] text-zinc-400 whitespace-pre"
-            // The same stack the terminal would use for this row.
-            style={{ fontFamily: fontFamilyCss(row.family) }}
+            // The same stack the terminal, or the interface, would use for this row.
+            style={{ fontFamily: forTerminal ? fontFamilyCss(row.family) : uiFontCss(row.family) }}
           >
-            {SAMPLE}
+            {forTerminal ? SAMPLE : UI_SAMPLE}
           </span>
         )}
       </button>
@@ -155,10 +173,10 @@ export default function FontPicker({
     <div ref={rootRef} className="space-y-1.5">
       <div className="relative">
         <input
-          id="term-font-family"
+          id={id}
           role="combobox"
           aria-expanded={open}
-          aria-controls="term-font-list"
+          aria-controls={listId}
           aria-autocomplete="list"
           value={value}
           onFocus={() => setOpen(true)}
@@ -179,7 +197,7 @@ export default function FontPicker({
         <button
           type="button"
           tabIndex={-1}
-          aria-label={open ? "Close font list" : "Open font list"}
+          aria-label={open ? t("Close font list") : t("Open font list")}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => (open ? close(true) : setOpen(true))}
           className="absolute right-1 top-1 w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-white"
@@ -190,41 +208,45 @@ export default function FontPicker({
 
       {open && (
         <div
-          id="term-font-list"
+          id={listId}
           ref={listRef}
           role="listbox"
           className="max-h-72 overflow-y-auto custom-scrollbar rounded-lg border border-white/10 bg-[#0c0c0f] py-1"
         >
           {defaultRow && renderRow(defaultRow, index++)}
 
-          <div className="px-3 pt-2 pb-1 text-[10px] font-black text-zinc-500 uppercase tracking-wider">Built-in</div>
-          {builtInRows.length ? builtInRows.map((r) => renderRow(r, index++)) : (
-            <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">No match</div>
+          {forTerminal && (
+            <>
+              <div className="px-3 pt-2 pb-1 text-[11px] font-semibold text-zinc-500">{t("Built-in")}</div>
+              {builtInRows.length ? builtInRows.map((r) => renderRow(r, index++)) : (
+                <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">{t("No match")}</div>
+              )}
+
+              <div className="my-1.5 border-t border-white/10" role="separator" />
+            </>
           )}
 
-          <div className="my-1.5 border-t border-white/10" role="separator" />
-
-          <div className="px-3 pt-1 pb-1 text-[10px] font-black text-zinc-500 uppercase tracking-wider">
-            Installed on this device{installedOnly.length ? ` · ${installedOnly.length}` : ""}
+          <div className="px-3 pt-1 pb-1 text-[11px] font-semibold text-zinc-500">
+            {t("Installed on this device")}{installedOnly.length ? ` · ${installedOnly.length}` : ""}
           </div>
           {installed === null && !loadError && (
-            <div className="px-3 py-1.5 text-[11.5px] text-zinc-500">Reading installed fonts…</div>
+            <div className="px-3 py-1.5 text-[11.5px] text-zinc-500">{t("Reading installed fonts…")}</div>
           )}
           {loadError && (
-            <div className="px-3 py-1.5 text-[11.5px] text-amber-400/90">Couldn't read the installed fonts.</div>
+            <div className="px-3 py-1.5 text-[11.5px] text-amber-400/90">{t("Couldn't read the installed fonts.")}</div>
           )}
-          {installed && installed.length === 0 && (
+          {forTerminal && installed && installed.length === 0 && (
             <div className="px-3 py-1.5 text-[11.5px] text-zinc-500">
-              Installed fonts can't be listed on this device — the built-in fonts above work everywhere.
+              {t("Installed fonts can't be listed on this device — the built-in fonts above work everywhere.")}
             </div>
           )}
           {installedOnly.length > 0 && !installedRows.length && (
-            <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">No match</div>
+            <div className="px-3 py-1.5 text-[11.5px] text-zinc-600">{t("No match")}</div>
           )}
           {installedMono.map((r) => renderRow(r, index++))}
           {installedProp.length > 0 && (
             <div className="px-3 pt-2.5 pb-1 text-[10px] font-semibold text-zinc-600">
-              Proportional — columns may not line up in a terminal
+              {t("Proportional — columns may not line up in a terminal")}
             </div>
           )}
           {installedProp.map((r) => renderRow(r, index++))}

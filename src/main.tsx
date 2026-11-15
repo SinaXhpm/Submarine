@@ -2,10 +2,17 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { IS_MOBILE } from "./util/platform";
+import { IS_IOS, IS_MOBILE } from "./util/platform";
+import { initI18n } from "./i18n";
 import "./App.css";
 // Registers the bundled terminal fonts (@font-face) before any terminal mounts.
 import "./util/bundledFonts";
+import { readFontFamily } from "./util/terminalFont";
+import { applyFonts, readUiFontFamily } from "./util/uiFont";
+
+// The fonts picked in Settings, before the first screen draws: the profile
+// list shows in them too, and nothing changes face once the app is up.
+applyFonts(readFontFamily(), readUiFontFamily());
 
 // Last-resort global handlers so a failure that escapes React (an async reject,
 // a listener throw) is at least recorded instead of vanishing silently. The
@@ -52,6 +59,19 @@ if (!IS_MOBILE) {
   }, true);
 }
 
+// ── iOS: the page stays inside the safe area ────────────────────────────────
+// index.html asks for `viewport-fit=cover`, for Android's insets (the gesture
+// pill under MobileKeyBar and the Sidebar dock). On iPhone and iPad that lays
+// the page out under the status bar and the Dynamic Island too, and only the
+// bottom bars pad for it: the session bar, panels and menus at the top went
+// under the clock. Without it, WKWebView keeps the whole page inside the safe
+// area (fixed panels and menus included) and the insets read 0.
+if (IS_IOS) {
+  const viewport = document.querySelector('meta[name="viewport"]');
+  const content = viewport?.getAttribute("content");
+  if (viewport && content) viewport.setAttribute("content", content.replace(/,\s*viewport-fit=cover/, ""));
+}
+
 // ── Android soft-keyboard sizing (visualViewport → #root's height) ──────────
 // The Android on-screen keyboard covers our fixed-bottom UI (MobileKeyBar,
 // Sidebar dock) unless the layout root shrinks with the keyboard. The
@@ -83,8 +103,12 @@ if (window.visualViewport) {
 window.addEventListener("resize", syncVvHeight);
 window.addEventListener("orientationchange", syncVvHeight);
 
-ReactDOM.createRoot(root).render(
-  <ErrorBoundary>
-    <App />
-  </ErrorBoundary>,
-);
+// The device's language is loaded before the first screen, so the app never
+// shows English first (src/i18n). It renders even if that fails.
+void initI18n().finally(() => {
+  ReactDOM.createRoot(root).render(
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>,
+  );
+});

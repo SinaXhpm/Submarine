@@ -471,7 +471,7 @@ fn type_bits(c: char) -> Option<u32> {
 }
 
 /// `-rwsr-x--T` -> the mode bits (type, permissions, set-id, sticky).
-fn parse_mode_string(s: &str) -> Option<u32> {
+pub(crate) fn parse_mode_string(s: &str) -> Option<u32> {
     let c: Vec<char> = s.chars().collect();
     if c.len() < 10 {
         return None;

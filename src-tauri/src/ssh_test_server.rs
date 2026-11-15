@@ -15,7 +15,15 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// A minimal SSH server. On a session channel the client's `exec` command
 /// picks the behaviour:
 ///   * `flood <N>` — send N bytes of output in 16 KiB chunks, then EOF + close;
-///   * `echo`      — echo every byte the client sends back to it.
+///   * `echo`      — echo every byte the client sends back to it;
+///   * `status <code>` / `signal <name>` — a line on stdout and one on
+///     stderr, then that exit status or exit signal, EOF and close;
+///   * `held`, `mute`, `trickle`, `stalled <ms>`, `slow <n> <ms>` — a command
+///     that has ended (exit status 0) on a channel that stays open after it
+///     (`after_exit`);
+///   * `dropped` — exit status 0, then the connection goes;
+///   * `polite` — runs until a `signal` request, then says a last line and
+///     ends with status 143.
 ///
 /// Every byte the client sends on any session channel is counted in
 /// `received`. A `direct-tcpip` open makes it a jump host: the channel is
@@ -54,9 +62,33 @@ pub(crate) struct TestServer {
     flood_exec: Option<Vec<u8>>,
     /// Channels the client has closed.
     pub closed: Arc<AtomicUsize>,
+    /// `signal` requests the client has sent.
+    pub signals: Arc<AtomicUsize>,
     /// Leave every channel open unanswered, as a wedged server does that still
     /// answers keepalives.
     no_answer_to_opens: bool,
+    /// Turn every channel open down, as a server at its MaxSessions limit does.
+    refuse_opens: bool,
+    /// Answer every `exec` with what the client sends on stdin, then exit
+    /// status 0 at its EOF.
+    echo_stdin: bool,
+    stdin_back: HashSet<ChannelId>,
+    /// Channels whose command has ended and that stay open: how a request
+    /// that wants a reply (the client's `env`) is answered there.
+    after_exit: std::collections::HashMap<ChannelId, Answers>,
+    /// `env` requests the client has sent.
+    pub asks: Arc<AtomicUsize>,
+}
+
+/// How a request is answered on a channel whose command has ended.
+#[derive(Clone)]
+enum Answers {
+    /// At once: the server has nothing else to send.
+    AtOnce,
+    /// After the output still to come, as an answer that queues behind it.
+    Queued(tokio::sync::mpsc::UnboundedSender<()>),
+    /// Not at all.
+    Never,
 }
 
 /// How the test server runs `exec` commands with the local `sh` (unix only).
@@ -111,6 +143,17 @@ impl TestServer {
     /// A server that never answers a channel open.
     pub(crate) fn not_answering_opens() -> Self {
         Self { no_answer_to_opens: true, ..Self::default() }
+    }
+
+    /// A server that turns every channel open down.
+    pub(crate) fn refusing_opens() -> Self {
+        Self { refuse_opens: true, ..Self::default() }
+    }
+
+    /// A server that answers every command with what the client sends on
+    /// stdin, then exit status 0 once stdin ends.
+    pub(crate) fn echoing_stdin() -> Self {
+        Self { echo_stdin: true, ..Self::default() }
     }
 
     /// A server without SFTP that runs commands with this machine's `sh`.
@@ -252,6 +295,10 @@ impl server::Handler for TestServer {
             std::mem::forget(reply);
             return Ok(());
         }
+        if self.refuse_opens {
+            drop(reply);
+            return Ok(());
+        }
         reply.accept().await;
         Ok(())
     }
@@ -329,6 +376,122 @@ impl server::Handler for TestServer {
             });
             return Ok(());
         }
+        if self.echo_stdin {
+            self.stdin_back.insert(channel);
+            return Ok(());
+        }
+        // `status <code>` and `signal <name>`: a line on stdout and one on
+        // stderr, then that ending, EOF and close.
+        let ending = match (command.strip_prefix("status "), command.strip_prefix("signal ")) {
+            (Some(code), _) => code.trim().parse::<u32>().ok().map(Ok),
+            (_, Some(name)) => Some(Err(name.trim().to_string())),
+            _ => None,
+        };
+        if let Some(ending) = ending {
+            let handle = session.handle();
+            tokio::spawn(async move {
+                let _ = handle.data(channel, b"out\n".to_vec()).await;
+                let _ = handle.extended_data(channel, 1, b"err\n".to_vec()).await;
+                match ending {
+                    Ok(code) => {
+                        let _ = handle.exit_status_request(channel, code).await;
+                    }
+                    Err(name) => {
+                        let sig = if name == "KILL" { russh::Sig::KILL } else { russh::Sig::Custom(name) };
+                        let _ = handle.exit_signal_request(channel, sig, false, String::new(), String::new()).await;
+                    }
+                }
+                let _ = handle.eof(channel).await;
+                let _ = handle.close(channel).await;
+            });
+            return Ok(());
+        }
+        // `dropped`: a line and exit status 0, then the connection goes, with
+        // the server's close still owed.
+        if command == "dropped" {
+            session.channel_success(channel)?;
+            let handle = session.handle();
+            tokio::spawn(async move {
+                let _ = handle.data(channel, b"out\n".to_vec()).await;
+                let _ = handle.exit_status_request(channel, 0).await;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let _ = handle.disconnect(russh::Disconnect::ByApplication, String::new(), String::new()).await;
+            });
+            return Ok(());
+        }
+        // `polite`: a line, then nothing until a `signal` request; then a last
+        // line, exit status 143, EOF and close: a command that tidies up
+        // when it is told to end.
+        if command == "polite" {
+            session.channel_success(channel)?;
+            let told = Arc::new(tokio::sync::Notify::new());
+            self.kill.insert(channel, Arc::clone(&told));
+            let handle = session.handle();
+            tokio::spawn(async move {
+                let _ = handle.data(channel, b"out\n".to_vec()).await;
+                told.notified().await;
+                let _ = handle.data(channel, b"cleaning up\n".to_vec()).await;
+                let _ = handle.exit_status_request(channel, 143).await;
+                let _ = handle.eof(channel).await;
+                let _ = handle.close(channel).await;
+            });
+            return Ok(());
+        }
+        // A command that has ended on a channel that doesn't close by itself.
+        // Each starts as a real server does (the `exec` is answered), prints
+        // a line and gives exit status 0. Then:
+        //   `held`           nothing more: something holds the output open;
+        //   `mute`           the same, on a server that answers no request;
+        //   `trickle`        a short line every 200 ms, without end: what
+        //                    holds the output goes on writing;
+        //   `stalled <ms>`   nothing for <ms>, then 64 KiB, EOF and close: the
+        //                    end of the output over a link that stalled;
+        //   `slow <n> <ms>`  <n> blocks of 64 KiB, one every <ms>, EOF and
+        //                    close: the end of a big output over a slow link.
+        // In the last two the output is queued at the server, so an answer to
+        // a request queues behind it: it goes out after the last block.
+        let mut words = command.split(' ');
+        let after = match (words.next(), words.next().and_then(|n| n.parse::<u64>().ok()), words.next().and_then(|n| n.parse::<u64>().ok())) {
+            (Some("held"), _, _) => Some((Answers::AtOnce, Vec::new(), false)),
+            (Some("mute"), _, _) => Some((Answers::Never, Vec::new(), false)),
+            (Some("trickle"), _, _) => Some((Answers::AtOnce, vec![(200, 16)], true)),
+            (Some("stalled"), Some(ms), _) => Some((Answers::Never, vec![(ms, 64 * 1024)], false)),
+            (Some("slow"), Some(n), Some(ms)) => Some((Answers::Never, vec![(ms, 64 * 1024); n as usize], false)),
+            _ => None,
+        };
+        if let Some((mut answers, blocks, forever)) = after {
+            session.channel_success(channel)?;
+            let (tx, mut queued) = tokio::sync::mpsc::unbounded_channel::<()>();
+            let ends = !blocks.is_empty() && !forever;
+            if ends {
+                answers = Answers::Queued(tx);
+            }
+            self.after_exit.insert(channel, answers);
+            let handle = session.handle();
+            tokio::spawn(async move {
+                let _ = handle.data(channel, b"out\n".to_vec()).await;
+                let _ = handle.exit_status_request(channel, 0).await;
+                loop {
+                    for (wait, size) in &blocks {
+                        tokio::time::sleep(std::time::Duration::from_millis(*wait)).await;
+                        if handle.data(channel, vec![b'x'; *size]).await.is_err() {
+                            return;
+                        }
+                    }
+                    if !forever {
+                        break;
+                    }
+                }
+                if ends {
+                    while queued.try_recv().is_ok() {
+                        let _ = handle.channel_failure(channel).await;
+                    }
+                    let _ = handle.eof(channel).await;
+                    let _ = handle.close(channel).await;
+                }
+            });
+            return Ok(());
+        }
         if command == "echo" {
             self.echo.insert(channel);
         } else if let Some(total) = command
@@ -360,7 +523,7 @@ impl server::Handler for TestServer {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         self.received.fetch_add(data.len(), Ordering::SeqCst);
-        if self.echo.contains(&channel) {
+        if self.echo.contains(&channel) || self.stdin_back.contains(&channel) {
             session.data(channel, data.to_vec())?;
         }
         if let Some(stdin) = self.stdin.get(&channel) {
@@ -369,9 +532,14 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
-    async fn channel_eof(&mut self, channel: ChannelId, _session: &mut Session) -> Result<(), Self::Error> {
+    async fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
         if let Some(stdin) = self.stdin.remove(&channel) {
             let _ = stdin.send(None);
+        }
+        if self.stdin_back.remove(&channel) {
+            session.exit_status_request(channel, 0)?;
+            session.eof(channel)?;
+            session.close(channel)?;
         }
         Ok(())
     }
@@ -388,7 +556,22 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
+    /// A variable for a command that has already started: no server sets one
+    /// then. OpenSSH and Dropbear say no; russh's own default says nothing.
+    async fn env_request(&mut self, channel: ChannelId, _name: &str, _value: &str, session: &mut Session) -> Result<(), Self::Error> {
+        self.asks.fetch_add(1, Ordering::SeqCst);
+        match self.after_exit.get(&channel) {
+            Some(Answers::AtOnce) => session.channel_failure(channel)?,
+            Some(Answers::Queued(behind)) => {
+                let _ = behind.send(());
+            }
+            Some(Answers::Never) | None => {}
+        }
+        Ok(())
+    }
+
     async fn signal(&mut self, channel: ChannelId, _signal: russh::Sig, _session: &mut Session) -> Result<(), Self::Error> {
+        self.signals.fetch_add(1, Ordering::SeqCst);
         if let Some(kill) = self.kill.remove(&channel) {
             kill.notify_one();
         }

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Submarine
+GenericName=SSH Client
+Comment=SSH terminal, SFTP, tunnels, RDP and VNC in one window
+Exec=submarine
+Icon=com.sinaxhpm.Submarine
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=ssh;sftp;terminal;tunnel;rdp;vnc;telnet;docker;
+StartupNotify=true
+StartupWMClass=submarine

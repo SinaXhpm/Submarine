@@ -1,4 +1,5 @@
-import { Server, KeyRound, Library, Activity, Settings, LogOut, UserCircle } from "lucide-react";
+import { Server, KeyRound, Library, Activity, Settings, LogOut, UserCircle, Sparkles, Bot } from "lucide-react";
+import { useT } from "../i18n";
 
 // Vertical rail on desktop, horizontal bottom dock on mobile. Layout swap is
 // driven by `isMobile` so the terminal/session views can use the full screen
@@ -6,7 +7,8 @@ import { Server, KeyRound, Library, Activity, Settings, LogOut, UserCircle } fro
 // a 360px-wide viewport. The parent in DesktopApp uses `flex-col-reverse` on
 // mobile so this component visually lands at the bottom while staying first
 // in DOM order (keyboard tab-order stays intuitive).
-export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileName, syncing }: any) => {
+export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileName, syncing, agentsOn, agentsWaiting = 0 }: any) => {
+  const t = useT();
   // The profile rail is deliberately apart from the content rails below. Those
   // switch what you're looking at INSIDE the open profile; this one is about the
   // profile itself — its cloud sync and who else can get into it. It used to
@@ -20,7 +22,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
           ? 'text-primary bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.15)]'
           : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'
       }`}
-      title={profileName ? `Profile — ${profileName}` : 'Profile'}
+      title={profileName ? t("Profile — {name}", { name: profileName }) : t("Profile")}
     >
       <UserCircle size={20} className={activeTab === 'profile' ? "drop-shadow-[0_0_8px_rgba(var(--primary),0.5)]" : ""} />
       {/* Sync moved into the panel, so the rail carries the only cue that it's
@@ -40,10 +42,10 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
   // Logins, Library, Monitor) so it isn't padded with a workflow that
   // only makes sense while sessions are open.
   const items = [
-    { id: 'nodes', icon: Server, label: 'Servers' },
-    { id: 'vault', icon: KeyRound, label: 'Logins' },
-    { id: 'library', icon: Library, label: 'Library' },
-    { id: 'monitor', icon: Activity, label: 'Monitor' },
+    { id: 'nodes', icon: Server, label: t("Servers") },
+    { id: 'vault', icon: KeyRound, label: t("Logins") },
+    { id: 'library', icon: Library, label: t("Library") },
+    { id: 'monitor', icon: Activity, label: t("Monitor") },
   ];
 
   if (isMobile) {
@@ -85,7 +87,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
             <button
               onClick={onLogout}
               className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-amber-300 hover:bg-amber-500/10"
-              title="Lock & switch profile"
+              title={t("Lock & switch profile")}
             >
               <LogOut size={20} />
             </button>
@@ -97,7 +99,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
                 ? 'text-primary bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.15)]'
                 : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'
             }`}
-            title="Settings"
+            title={t("Settings")}
           >
             <Settings size={20} className={activeTab === 'settings' ? "drop-shadow-[0_0_8px_rgba(var(--primary),0.5)]" : ""} />
           </button>
@@ -117,7 +119,12 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
       </div>
 
       <nav className="flex flex-col gap-3 w-full px-2 shrink-0">
-        {items.map((item) => (
+        {/* The AI page is a desktop rail item only: the phone dock has no
+            room for an eighth icon, so there it opens from the AI tab's chat
+            menu and from Settings → AI. */}
+        {/* The Agents page shows only while the gateway is on (Settings → AI
+            agents), or while something still waits there. */}
+        {[...items, { id: 'ai', icon: Sparkles, label: 'AI assistant' }, ...(agentsOn || agentsWaiting > 0 ? [{ id: 'agents', icon: Bot, label: agentsWaiting > 0 ? `AI agents — ${agentsWaiting} waiting` : 'AI agents' }] : [])].map((item) => (
           <button
             key={item.id}
             onClick={() => setActiveTab(item.id)}
@@ -130,6 +137,9 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
           >
             <item.icon size={20} className={activeTab === item.id ? "drop-shadow-[0_0_8px_rgba(var(--primary),0.5)]" : ""} />
             {activeTab === item.id && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-1/2 bg-primary rounded-r-full shadow-[0_0_10px_rgba(var(--primary),1)]" />}
+            {item.id === 'agents' && agentsWaiting > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-primary text-[10px] font-bold text-black flex items-center justify-center">{agentsWaiting > 9 ? '9+' : agentsWaiting}</span>
+            )}
           </button>
         ))}
       </nav>
@@ -143,7 +153,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
           <button
             onClick={onLogout}
             className="p-2.5 rounded-xl transition-all flex items-center justify-center text-zinc-300 hover:text-amber-300 hover:bg-amber-500/10"
-            title="Lock & switch profile"
+            title={t("Lock & switch profile")}
           >
             <LogOut size={20} />
           </button>
@@ -155,7 +165,7 @@ export const Sidebar = ({ activeTab, setActiveTab, isMobile, onLogout, profileNa
               ? 'text-primary bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.15)]'
               : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'
           }`}
-          title="Settings"
+          title={t("Settings")}
         >
           <Settings size={20} className={activeTab === 'settings' ? "drop-shadow-[0_0_8px_rgba(var(--primary),0.5)]" : ""} />
         </button>

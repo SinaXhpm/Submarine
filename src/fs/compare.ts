@@ -2,6 +2,7 @@
 // comparison: each name in one pane against the same name in the other.
 // Nothing is read beyond the listings: a file's size and its modified time.
 import type { FileEntry } from "./types";
+import { tk } from "../i18n";
 
 // only:   no entry of that name on the other side
 // type:   a file on one side, a folder on the other
@@ -35,9 +36,9 @@ export function compareListings(mine: FileEntry[], other: FileEntry[]): Map<stri
 }
 
 export const COMPARE_LABEL: Record<CompareMark, string> = {
-  only: "Only here",
-  type: "A file on one side, a folder on the other",
-  size: "A different size on the other side",
-  newer: "Newer than the other side's",
-  older: "Older than the other side's",
+  only: tk("Only here"),
+  type: tk("A file on one side, a folder on the other"),
+  size: tk("A different size on the other side"),
+  newer: tk("Newer than the other side's"),
+  older: tk("Older than the other side's"),
 };

@@ -1,9 +1,14 @@
 [package]
 name = "submarine"
-version = "0.4.0"
-description = "Submarine SSH Client"
+version = "0.5.0"
+description = "Free, open-source SSH, SFTP and FTP client with RDP, VNC and Telnet: terminal, dual-pane SFTP and FTP, port forwarding, folder mirror and encrypted profile sync"
 authors = ["Sina Xhpm (sinaxhpm.com)"]
 license = "MIT"
+homepage = "https://submarine.sinaxhpm.com"
+repository = "https://github.com/sinaxhpm/submarine"
+readme = "../README.md"
+keywords = ["ssh", "sftp", "rdp", "vnc", "terminal"]
+categories = ["network-programming", "command-line-utilities"]
 edition = "2021"
 rust-version = "1.90"
 
@@ -90,7 +95,6 @@ russh = { version = "0.65", default-features = false, features = ["flate2", "rin
 # key generation / validation code and russh's auth API.
 ssh-key = { version = "=0.7.0-rc.11", features = ["alloc", "encryption", "ed25519", "rsa"] }
 tokio-socks = "0.5"
-async-http-proxy = { version = "1.2", features = ["runtime-tokio"] }
 russh-sftp = "3"
 notify = "8.2"
 # Debounces filesystem events so we don't try to upload a file mid-write.
@@ -166,6 +170,14 @@ vnc-rs = { path = "vendor/vnc-rs" }
 ironrdp = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31", default-features = false, features = ["core", "pdu", "connector", "session", "graphics", "input", "displaycontrol", "dvc", "svc", "cliprdr", "rdpdr"] }
 ironrdp-tokio = { git = "https://github.com/Devolutions/IronRDP", rev = "62246b364a0282bab85087f658a81fe4207b6b31", default-features = false }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+# FTPS (ftp.rs): a server certificate valid by the public certificate
+# authorities is taken without asking; any other is pinned the way RDP's is.
+# Mozilla's list, already in the tree through reqwest's rustls-tls.
+webpki-roots = "1"
+# FileZilla's site list (sitemanager.xml), read for the server import. No DTD
+# is allowed (its default), so no entity can grow a list or reach outside it.
+# Already in the tree through fontdb.
+roxmltree = "0.20"
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 
 # ---------------------------------------------------------------------------
@@ -206,7 +218,9 @@ gdk = "0.18"
 # version, nothing new to download); these are its parts used here. Also
 # DPAPI and WaitForInputIdle: Remote Desktop Connection gets the saved
 # password in its .rdp file, encrypted for this Windows user, and the file
-# goes once it has read it (rdp.rs, launch_rdp_app).
+# goes once it has read it (rdp.rs, launch_rdp_app). And the agent
+# gateway's pipe (gateway/ipc.rs): an access list for this user alone, the
+# process on the pipe's other end, its program file and what started it.
 # ---------------------------------------------------------------------------
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -215,8 +229,12 @@ windows = { version = "0.62", features = [
     "Security_Cryptography",
     "Storage_Streams",
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Pipes",
     "Win32_System_Threading",
     "Win32_System_TpmBaseServices",
     "Win32_UI_WindowsAndMessaging",
@@ -237,10 +255,10 @@ ironrdp-rdpdr-native = { path = "vendor/ironrdp-rdpdr-native" }
 libz-sys = { version = "1.1", features = ["static"] }
 
 [features]
-# The Mac App Store build (release.yml's mac-appstore job). The store updates
-# the app, so the GitHub update check is off, as it is on iOS; and the app runs
-# in Apple's sandbox, so the local pane starts in Downloads, which the
-# sandbox lets it use.
+# The Mac App Store build (release.yml's mac-appstore job) and the Google Play
+# bundle (play.yml). The store updates the app, so the GitHub update check is
+# off, as it is on iOS; and the Mac app runs in Apple's sandbox, so its local
+# pane starts in Downloads, which the sandbox lets it use (desktop only).
 app-store = []
 
 [dev-dependencies]

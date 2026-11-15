@@ -214,17 +214,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-http-proxy"
-version = "1.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29faa5d4d308266048bd7505ba55484315a890102f9345b9ff4b87de64201592"
-dependencies = [
- "httparse",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
 name = "async-io"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5882,11 +5871,10 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "submarine"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "argon2",
- "async-http-proxy",
  "base64 0.22.1",
  "chrono",
  "directories",
@@ -5910,6 +5898,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rfd",
+ "roxmltree",
  "rusqlite",
  "russh",
  "russh-sftp",
@@ -5928,6 +5917,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-socks",
  "vnc-rs",
+ "webpki-roots",
  "windows 0.62.2",
  "x25519-dalek",
  "x509-cert",

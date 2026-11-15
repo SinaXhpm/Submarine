@@ -1,19 +1,19 @@
-// Serves website/dist like the production server does for the site: the same
+// Serves website/dist/<site> like the production server does for the site: the same
 // security headers and CSP per file type, folder index pages, the 404 page,
 // and the API path answered by a stand-in (or passed to API_URL, e.g. a
 // staging server), so pages and their CSP can be checked before a deploy.
-//   node website/tools/serve.mjs [port]        API_URL=http://127.0.0.1:18100 node ...
+//   node website/tools/serve.mjs [port] [site]        API_URL=http://127.0.0.1:18100 node ...
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
+const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", process.argv[3] || "submarine");
 const PORT = Number(process.argv[2] || 8790);
 const API = process.env.API_URL || "";
 const TYPES = {
   ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-  ".png": "image/png", ".webp": "image/webp", ".ico": "image/x-icon", ".svg": "image/svg+xml; charset=utf-8",
+  ".png": "image/png", ".woff2": "font/woff2", ".webp": "image/webp", ".ico": "image/x-icon", ".svg": "image/svg+xml; charset=utf-8",
   ".xml": "application/xml; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".webmanifest": "application/manifest+json; charset=utf-8",
 };
 const SITE_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";

@@ -30,6 +30,12 @@
 //!      awaiting any in-flight upload to finish before returning. A worker
 //!      that takes longer than `STOP_WAIT` is cut off where it stands.
 //!
+//! An FTP server's tab mirrors the same way, through its file access
+//! (ftp_sftp.rs, `Files::Ftp`). Where the server's listings give file times
+//! only to the minute and in its own time zone (LIST), each file both sides
+//! have is asked about on its own (MDTM, exact and in UTC) before it is
+//! compared; a server that gives no exact times at all isn't mirrored (lib.rs).
+//!
 //! Deletes go to a `.submarine-trash/` directory on the remote by default
 //! (rename instead of remove), so a fat-fingered local `rm -rf` doesn't
 //! nuke the remote copy. The user can flip `soft_delete = false` per
@@ -255,6 +261,31 @@ async fn set_state(app: &AppHandle, status: &Arc<Mutex<MirrorStatus>>, new: &str
 async fn open_sftp(handle: &Arc<RwLock<russh::client::Handle<ClientHandler>>>) -> Result<SftpSession, String> {
     // A server without SFTP gets file access over shell commands.
     crate::open_sftp(handle).await.map(|(sftp, _)| sftp).map_err(|e| format!("sftp init: {}", e))
+}
+
+/// Where a mirror's file access comes from.
+#[derive(Clone)]
+pub enum Files {
+    /// An SFTP session of its own on the tab's SSH connection.
+    Ssh(Arc<RwLock<russh::client::Handle<ClientHandler>>>),
+    /// An FTP tab's file access, shared with the tab (it keeps to the
+    /// server's limit on connections). `exact`: its listings give exact
+    /// times (MLSD); otherwise each file is asked about (see the module).
+    Ftp { sftp: Arc<SftpSession>, exact: bool },
+}
+
+impl Files {
+    async fn open(&self) -> Result<Arc<SftpSession>, String> {
+        match self {
+            Files::Ssh(handle) => Ok(Arc::new(open_sftp(handle).await?)),
+            Files::Ftp { sftp, .. } => Ok(Arc::clone(sftp)),
+        }
+    }
+
+    /// The listing's times can't be compared as they are.
+    fn coarse_times(&self) -> bool {
+        matches!(self, Files::Ftp { exact: false, .. })
+    }
 }
 
 /// Equivalent of `mkdir -p` over SFTP. Walks the path components and
@@ -613,14 +644,14 @@ async fn compare_files(
 // ---------------------------------------------------------------------------
 
 pub async fn dry_run(
-    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
+    files: Files,
     spec: MirrorSpec,
 ) -> Result<DryRunReport, String> {
     let local_root = PathBuf::from(&spec.local);
     if !local_root.is_dir() {
         return Err(format!("local path not a directory: {}", spec.local));
     }
-    let sftp = open_sftp(&handle).await?;
+    let sftp = files.open().await?;
 
     let mut entries = Vec::new();
     let mut total_bytes: u64 = 0;
@@ -632,7 +663,7 @@ pub async fn dry_run(
     // on the server but not in `seen`, i.e. truly remote-only paths. This
     // split avoids hashing each ambiguous file twice.
     let mut scanned = 0u32;
-    let mut tree = RemoteTree::default();
+    let mut tree = RemoteTree { coarse_times: files.coarse_times(), ..RemoteTree::default() };
     walk_remote(&sftp, &spec.remote, &spec.remote, &spec.excludes,
                 &mut tree, &mut scanned, &mut HashSet::new(), false).await?;
     walk_local(&local_root, &local_root, &spec.remote, &spec.excludes, &sftp,
@@ -1199,7 +1230,7 @@ async fn walk_local(
             // The listing answers for most files, in no time. The server is
             // asked about those it can't speak for.
             let remote_attr = match tree.found.get(&rel) {
-                Some(attr) if RemoteTree::describes_a_file(attr) => Some(attr.clone()),
+                Some(attr) if RemoteTree::describes_a_file(attr) && !tree.coarse_times => Some(attr.clone()),
                 None if !hidden && !tree.hides(&rel) => None,
                 _ => sftp.metadata(&remote_path).await.ok(),
             };
@@ -1256,6 +1287,9 @@ fn walk_refused(depth: usize, entries: usize, path_bytes: usize) -> Option<Strin
 struct RemoteTree {
     /// Everything found, by its path below the root, as its folder listed it.
     found: BTreeMap<String, FileAttributes>,
+    /// The listings' times are to the minute (an FTP server's LIST): a file
+    /// both sides have is asked about before it is compared.
+    coarse_times: bool,
     /// What may be there though the walk didn't look: a folder that wouldn't
     /// list (the root as ""), and the trash, which it leaves out.
     unread: HashSet<String>,
@@ -1379,7 +1413,7 @@ fn remote_only(tree: &RemoteTree, seen: &HashSet<String>, out: &mut Vec<DryRunEn
 pub async fn start(
     app: AppHandle,
     session_id: String,
-    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
+    files: Files,
     map: MirrorMap,
     spec: MirrorSpec,
 ) -> Result<String, String> {
@@ -1421,7 +1455,7 @@ pub async fn start(
     let id_t = id.clone();
     let spec_t = spec.clone();
     let join = tauri::async_runtime::spawn(async move {
-        let run = run_mirror(app_t.clone(), session_t.clone(), id_t.clone(), handle,
+        let run = run_mirror(app_t.clone(), session_t.clone(), id_t.clone(), files,
                              spec_t, Arc::clone(&status_t), stop_rx);
         // A worker cut off by `stop` ends like one that stopped: the card and
         // the map entry go the same way. `Ok` alone: a sender dropped unused
@@ -1526,7 +1560,7 @@ async fn run_mirror(
     app: AppHandle,
     session_id: String,
     mirror_id: String,
-    handle: Arc<RwLock<russh::client::Handle<ClientHandler>>>,
+    files: Files,
     spec: MirrorSpec,
     status: Arc<Mutex<MirrorStatus>>,
     mut stop_rx: oneshot::Receiver<()>,
@@ -1535,7 +1569,8 @@ async fn run_mirror(
     // Shared so the parallel transfer pool can hold references concurrently.
     // SftpSession is internally async-safe — concurrent ops multiplex over
     // request IDs on the same channel.
-    let sftp = Arc::new(open_sftp(&handle).await?);
+    let sftp = files.open().await?;
+    let coarse_times = files.coarse_times();
 
     // --- Scan phase: walk both sides, decide what moves where -----------------
     // Separate from initial-sync state so a big tree doesn't look hung while
@@ -1552,7 +1587,7 @@ async fn run_mirror(
     // A big tree over a slow link takes hours, and Stop, Disconnect and Lock
     // all wait for this worker.
     let scan = async {
-        let mut tree = RemoteTree::default();
+        let mut tree = RemoteTree { coarse_times, ..RemoteTree::default() };
         walk_remote(&*sftp, &spec.remote, &spec.remote, &spec.excludes,
                     &mut tree, &mut scanned, &mut remote_dirs, true).await?;
         walk_local(&local_root, &local_root, &spec.remote, &spec.excludes,

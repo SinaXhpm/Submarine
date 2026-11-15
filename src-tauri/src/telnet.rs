@@ -361,7 +361,7 @@ pub fn address(host: &str, port: u16) -> String {
 
 /// Straight to the server, as the telnet client would.
 pub async fn connect_direct(host: &str, port: u16) -> Result<Box<dyn Duplex>, String> {
-    let connect = tokio::net::TcpStream::connect((host.trim(), port));
+    let connect = crate::dial::connect((host.trim(), port));
     let sock = match tokio::time::timeout(std::time::Duration::from_secs(15), connect).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => return Err(format!("Couldn't reach {}: {e}", address(host, port))),

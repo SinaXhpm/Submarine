@@ -9,6 +9,7 @@
 // servers with different user names. Servers are kept by their sync id
 // (`uuid`), which no other profile's server shares.
 import { useEffect, useState } from "react";
+import { t } from "../i18n";
 
 export const SHELL_SYNC_PAIRS_KEY = "submarine-shell-sync-pairs";
 export const SHELL_SYNC_SERVERS_KEY = "submarine-shell-sync-servers";
@@ -88,16 +89,16 @@ const isFullPath = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p)
 export function localPathProblem(local: string): string | null {
   const p = local.trim();
   if (!p) return null;
-  if (p === "~" || p === "~/" || p === "~\\") return "Pick files or folders in the home folder, not all of it.";
+  if (p === "~" || p === "~/" || p === "~\\") return t("Pick files or folders in the home folder, not all of it.");
   if (p.startsWith("~/") || p.startsWith("~\\") || isFullPath(p)) return null;
-  return "Give a full path, or one that starts with ~.";
+  return t("Give a full path, or one that starts with ~.");
 }
 
 export function remotePathProblem(remote: string): string | null {
-  const t = remote.trim().replace(/\\/g, "/");
-  const rest = t === "~" ? "" : t.startsWith("~/") ? t.slice(2) : t;
-  if (rest.startsWith("/")) return "Give it below the home folder on the server, like .zshrc or ~/.zshrc.";
-  if (rest.startsWith("~")) return "~user isn't supported: give it below the home folder.";
-  if (rest.split("/").includes("..")) return "`..` isn't allowed: everything stays in the home folder.";
+  const r = remote.trim().replace(/\\/g, "/");
+  const rest = r === "~" ? "" : r.startsWith("~/") ? r.slice(2) : r;
+  if (rest.startsWith("/")) return t("Give it below the home folder on the server, like .zshrc or ~/.zshrc.");
+  if (rest.startsWith("~")) return t("~user isn't supported: give it below the home folder.");
+  if (rest.split("/").includes("..")) return t("`..` isn't allowed: everything stays in the home folder.");
   return null;
 }

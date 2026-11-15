@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- The link-preview picture (1200 x 630), rendered to img/og.png with a
+     headless browser (see the README). Not part of the site itself. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    background: radial-gradient(700px 420px at 90% 100%, rgba(129, 140, 248, 0.26), transparent 65%),
+                radial-gradient(700px 420px at 0% 0%, rgba(45, 212, 191, 0.24), transparent 65%), #04070f;
+    color: #e7edf6; font-family: "Inter", "Segoe UI", system-ui, sans-serif; position: relative;
+  }
+  .text { position: absolute; left: 70px; top: 70px; width: 560px; }
+  .brand { display: flex; align-items: center; gap: 18px; }
+  .brand img { width: 84px; height: 84px; }
+  .brand span { font-size: 58px; font-weight: 800; letter-spacing: -2px; }
+  h1 { font-size: 44px; line-height: 1.15; margin: 32px 0 18px; font-weight: 750; letter-spacing: -1px; color: #fff; }
+  h1 em { font-style: normal; background: linear-gradient(100deg, #2dd4bf, #818cf8); -webkit-background-clip: text; color: transparent; }
+  p { font-size: 22px; line-height: 1.45; margin: 0; color: #95a3b8; }
+  .tags { margin-top: 26px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .tags span { font-size: 19px; padding: 7px 15px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.16); color: #c6d0de; }
+  .tags span.free { color: #2dd4bf; border-color: rgba(45, 212, 191, 0.5); }
+  .mac { position: absolute; left: 680px; top: 70px; width: 600px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.18);
+         box-shadow: 0 30px 80px rgba(0,0,0,0.6), 0 0 120px rgba(45, 212, 191, 0.16); }
+  .phone { position: absolute; left: 610px; top: 250px; width: 170px; border-radius: 22px; border: 5px solid #1b2436; box-shadow: 0 24px 60px rgba(0,0,0,0.7); }
+</style>
+</head>
+<body>
+  <div class="text">
+    <div class="brand"><img src="img/icon-512.png" alt=""><span>Echoes</span></div>
+    <h1>20 network tools. <em>One free app.</em></h1>
+    <p>iPhone · iPad · Mac · Windows · Linux · Android</p>
+    <div class="tags"><span class="free">Free &amp; open source</span><span>No account</span><span>No tracking</span></div>
+  </div>
+  <img class="mac" src="img/hero-1290.webp" alt="">
+  <img class="phone" src="img/heroPhone-360.webp" alt="">
+</body>
+</html>
