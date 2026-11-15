@@ -38,7 +38,7 @@ const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
 const APP_LANG = { zh: "zh-CN", "pt-br": "pt-BR" };
 const APP_LABELS = {
   submarine: [
-    ["Cloud sync", (d) => d["Cloud Sync"]],
+    ["Cloud sync", (d) => d["Cloud sync"] ?? d["Cloud Sync"]],   // the app's key is "Cloud sync" since #341 (sentence case)
     ...["Delete account…", "Delete from cloud…", "Check for updates", "Forgot password?", "Save password", "Share the clipboard",
       "Less data", "Send feedback", "Suggest a fix"].map((k) => [k, (d) => d[k]]),
     ["<em>Feedback</em>", (d) => `<em>${d.Feedback}</em>`],

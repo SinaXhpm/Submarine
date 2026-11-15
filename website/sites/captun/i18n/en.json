@@ -29,6 +29,7 @@
     "project": "Project",
     "more": "More apps",
     "issues": "Report a problem",
+    "terms": "Terms of use",
     "author": "sinaxhpm.com",
     "sister": "Also by the author: 20 network tools in one free app",
     "license": "The source code is on GitHub.",
@@ -102,19 +103,43 @@
       "lede": "A small service with administrator rights runs the hotspot, a DNS server and a packet engine that decides, connection by connection, which way each device's traffic goes. The desktop app shows what is happening and changes the settings.",
       "devicesTitle": "Your devices",
       "devices": [
-        { "id": "phone", "name": "Phones" },
-        { "id": "tv", "name": "TVs and consoles" },
-        { "id": "laptop", "name": "Laptops" },
-        { "id": "tablet", "name": "Tablets" }
+        {
+          "id": "phone",
+          "name": "Phones"
+        },
+        {
+          "id": "tv",
+          "name": "TVs and consoles"
+        },
+        {
+          "id": "laptop",
+          "name": "Laptops"
+        },
+        {
+          "id": "tablet",
+          "name": "Tablets"
+        }
       ],
       "links": "Wi-Fi hotspot, cable or USB",
       "hub": "Rules, DNS, limits",
       "choose": "per device or rule",
       "outTitle": "The way out",
       "outbounds": [
-        { "id": "direct", "name": "Direct", "detail": "any network adapter: Ethernet, Wi-Fi, a VPN app's adapter" },
-        { "id": "vpn", "name": "VPN link", "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2" },
-        { "id": "proxy", "name": "Proxy", "detail": "SOCKS5, HTTP, HTTPS, also chained" }
+        {
+          "id": "direct",
+          "name": "Direct",
+          "detail": "any network adapter: Ethernet, Wi-Fi, a VPN app's adapter"
+        },
+        {
+          "id": "vpn",
+          "name": "VPN link",
+          "detail": "VLESS, VMess, Trojan, Shadowsocks, Hysteria2"
+        },
+        {
+          "id": "proxy",
+          "name": "Proxy",
+          "detail": "SOCKS5, HTTP, HTTPS, also chained"
+        }
       ],
       "caption": "Phones, TVs, consoles, laptops and tablets connect to Captun over a Wi-Fi hotspot, a cable or USB. Captun applies your rules, DNS and limits, and sends each device's traffic out directly, through a VPN link or through a proxy.",
       "steps": [
@@ -392,6 +417,84 @@
         }
       ]
     }
+  },
+  "terms": {
+    "title": "Terms of use – Captun",
+    "description": "The terms for Captun: it is in development, you share your connection at your own risk and within the law, no warranty, and a disclaimer of liability.",
+    "heading": "Terms of use",
+    "intro": "These terms cover Captun and this website. In short: Captun is in development and has no release yet; if you build and run it, you do so at your own risk, and you are responsible for the connection you share and for what passes through it.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Who we are",
+        "paragraphs": [
+          "Captun is made by Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>). “We” and “us” in these terms mean him."
+        ]
+      },
+      {
+        "id": "software",
+        "title": "The software",
+        "paragraphs": [
+          "Captun is in active development and there is no release yet. Its source code is on <a href=\"{repoUrl}\">GitHub</a>; if you build and run it, these terms apply. Some features are experimental, and this website says which."
+        ]
+      },
+      {
+        "id": "responsible",
+        "title": "Your connection, and the devices you let in",
+        "list": [
+          "Share only a connection you are allowed to share: the rules of your internet provider, your VPN service or your employer may forbid it.",
+          "You decide which devices may connect, and you are responsible for what they do through your connection.",
+          "Use VPN links, proxies and blocking only where that is allowed, and only for traffic you have the right to route.",
+          "Captun runs a service with administrator rights and changes this computer's network settings; on Windows it uses the WinDivert driver. Know how to stop Captun before you rely on it."
+        ]
+      },
+      {
+        "id": "thirdparty",
+        "title": "Third-party software and services",
+        "paragraphs": [
+          "Captun includes Xray-core, libusb and, on Windows, WinDivert, each under its own license (listed in the README). VPN and proxy providers, and the publishers of the block lists you use, have their own terms, which apply when Captun uses them for you."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "No warranty",
+        "paragraphs": [
+          "Captun is provided “as is”, without warranty of any kind, express or implied, including the implied warranties of merchantability, fitness for a particular purpose and non-infringement. It is unfinished: expect bugs, and don't rely on it where a failure would cause harm."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Disclaimer of liability",
+        "paragraphs": [
+          "You use Captun at your own risk. As far as the law allows, neither we nor anyone who has contributed to Captun is liable for any loss or damage of any kind, direct or indirect, incidental, special or consequential, that comes from using Captun, from not being able to use it, or from relying on it. This includes, for example:"
+        ],
+        "list": [
+          "lost connectivity, or devices that can't get online, also after Captun stops or crashes;",
+          "traffic that goes the wrong way, or is blocked, slowed down or exposed, also through a VPN link or proxy you add;",
+          "what the devices that use your connection do, and what you are held responsible for as the one who shares it;",
+          "breaking the terms of your internet provider, network or VPN service, or the law where you are, by sharing a connection or using a VPN or proxy;",
+          "changes Captun makes to this computer's network settings, drivers and firewall rules;",
+          "what third parties do or keep, such as VPN and proxy providers and the publishers of block lists."
+        ],
+        "after": [
+          "Nothing in these terms limits a liability that the law does not allow to be limited, such as liability for intent or gross negligence, or for death or personal injury caused by negligence. Where the law of your country gives you rights that can't be waived, these terms don't take them away."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Changes to these terms",
+        "paragraphs": [
+          "When these terms change, the date at the top changes too. Using Captun after a change means you accept the new terms."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "Contact",
+        "paragraphs": [
+          "Questions about these terms: write to <a href=\"mailto:{email}\">{email}</a>, or open an issue at <a href=\"{issuesUrl}\">github.com/SinaXhpm/captun/issues</a>."
+        ]
+      }
+    ]
   },
   "notFound": {
     "title": "Page not found – Captun",

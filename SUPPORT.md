@@ -18,8 +18,8 @@ The newest versions are on the [releases page](https://github.com/SinaXhpm/Subma
 
 ## Your data and your account
 
-The [privacy policy](PRIVACY.md) says what is kept and for how long. To delete your sync account and everything the server holds for it, open **Cloud sync → Delete account…** in the app, or use the [delete account page](https://submarine.sinaxhpm.com/delete-account/).
+The [privacy policy](PRIVACY.md) says what is kept and for how long. To delete your sync account and everything the server holds for it, open **Cloud sync → Delete account…** in the app, or use the [delete account page](https://submarine.sinaxhpm.com/delete-account/). For other requests about your data, or if you can't reach your account from the app, write to [sinaxhpm@gmail.com](mailto:sinaxhpm@gmail.com).
 
 ## Security problems
 
-Please don't post a security problem in a public issue. Write through [sinaxhpm.com](https://sinaxhpm.com) instead.
+Please don't post a security problem in a public issue. Write to [sinaxhpm@gmail.com](mailto:sinaxhpm@gmail.com) instead.

@@ -29,6 +29,7 @@
     "project": "Proje",
     "more": "Diğer uygulamalar",
     "issues": "Sorun bildirin",
+    "terms": "Kullanım koşulları",
     "author": "sinaxhpm.com",
     "sister": "Aynı geliştiriciden: tek bir ücretsiz uygulamada 20 ağ aracı",
     "license": "Kaynak kodu GitHub'da.",
@@ -416,6 +417,84 @@
         }
       ]
     }
+  },
+  "terms": {
+    "title": "Kullanım koşulları – Captun",
+    "description": "Captun için koşullar: geliştiriliyor olması, bağlantınızı riski size ait olmak üzere ve yasalara uygun paylaşmanız, garanti yokluğu ve sorumluluk reddi.",
+    "heading": "Kullanım koşulları",
+    "intro": "Bu koşullar Captun'u ve bu web sitesini kapsar. Kısacası: Captun geliştirme aşamasındadır ve henüz bir sürümü yoktur; onu derleyip çalıştırırsanız bunu riski size ait olmak üzere yaparsınız ve paylaştığınız bağlantıdan ve o bağlantıdan geçenlerden siz sorumlusunuz.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Biz kimiz",
+        "paragraphs": [
+          "Captun'u Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) geliştirir. Bu koşullarda “biz” ve “bize” derken kastedilen odur."
+        ]
+      },
+      {
+        "id": "software",
+        "title": "Yazılım",
+        "paragraphs": [
+          "Captun aktif olarak geliştirilmektedir ve henüz bir sürümü yoktur. Kaynak kodu <a href=\"{repoUrl}\">GitHub'da</a> bulunur; Captun'u derleyip çalıştırırsanız bu koşullar geçerli olur. Bazı özellikler deneyseldir; hangilerinin deneysel olduğu bu web sitesinde belirtilir."
+        ]
+      },
+      {
+        "id": "responsible",
+        "title": "Bağlantınız ve içeri aldığınız cihazlar",
+        "list": [
+          "Yalnızca paylaşmanıza izin verilen bir bağlantıyı paylaşın: internet sağlayıcınızın, VPN hizmetinizin ya da işvereninizin kuralları bunu yasaklayabilir.",
+          "Hangi cihazların bağlanabileceğine siz karar verirsiniz ve bu cihazların bağlantınız üzerinden yaptıklarından siz sorumlusunuz.",
+          "VPN linklerini, proxy'leri ve engellemeyi yalnızca buna izin verilen yerlerde ve yalnızca yönlendirme hakkına sahip olduğunuz trafik için kullanın.",
+          "Captun, yönetici haklarına sahip bir hizmet çalıştırır ve bu bilgisayarın ağ ayarlarını değiştirir; Windows'ta WinDivert sürücüsünü kullanır. Captun'a güvenmeden önce onu nasıl durduracağınızı bilin."
+        ]
+      },
+      {
+        "id": "thirdparty",
+        "title": "Üçüncü taraf yazılımlar ve hizmetler",
+        "paragraphs": [
+          "Captun'da Xray-core, libusb ve Windows'ta WinDivert bulunur; her biri kendi lisansına tabidir (lisanslar README dosyasında listelenir). VPN ve proxy sağlayıcılarının ve kullandığınız engelleme listelerini yayımlayanların kendi koşulları vardır; bu koşullar, Captun onları sizin için kullandığında geçerli olur."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Garanti yok",
+        "paragraphs": [
+          "Captun, ticari elverişlilik, belirli bir amaca uygunluk ve üçüncü tarafların haklarını ihlal etmeme konusundaki zımni garantiler de dâhil olmak üzere, açık ya da zımni hiçbir türden garanti olmaksızın “olduğu gibi” sunulur. Henüz tamamlanmamıştır: hatalarla karşılaşmayı bekleyin ve bir arızanın zarara yol açacağı durumlarda ona güvenmeyin."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Sorumluluk reddi",
+        "paragraphs": [
+          "Captun'u riski size ait olmak üzere kullanırsınız. Yasaların izin verdiği ölçüde, Captun'u kullanmaktan, kullanamamaktan ya da ona güvenmekten doğan, doğrudan ya da dolaylı, arızi, özel ya da sonuç olarak ortaya çıkan her türlü kayıp veya zarardan ne biz sorumluyuz ne de Captun'a katkıda bulunmuş herhangi biri. Buna örneğin şunlar dâhildir:"
+        ],
+        "list": [
+          "Captun durduktan ya da çöktükten sonra yaşananlar da dâhil olmak üzere bağlantı kaybı ya da internete çıkamayan cihazlar;",
+          "eklediğiniz bir VPN linki ya da proxy üzerinden geçen trafik de dâhil olmak üzere yanlış yoldan giden ya da engellenen, yavaşlatılan veya açığa çıkan trafik;",
+          "bağlantınızı kullanan cihazların yaptıkları ve bağlantıyı paylaşan kişi olarak sorumlu tutulduğunuz şeyler;",
+          "bir bağlantıyı paylaşarak ya da bir VPN veya proxy kullanarak internet sağlayıcınızın, ağınızın ya da VPN hizmetinizin koşullarını veya bulunduğunuz yerdeki yasaları ihlal etmeniz;",
+          "Captun'un bu bilgisayarın ağ ayarlarında, sürücülerinde ve güvenlik duvarı kurallarında yaptığı değişiklikler;",
+          "VPN ve proxy sağlayıcıları ile engelleme listelerini yayımlayanlar gibi üçüncü tarafların yaptıkları ya da sakladıkları."
+        ],
+        "after": [
+          "Bu koşullardaki hiçbir hüküm, yasaların sınırlandırılmasına izin vermediği bir sorumluluğu, örneğin kasıt ya da ağır ihmalden doğan sorumluluğu veya ihmal sonucu meydana gelen ölüm ya da bedensel zarardan doğan sorumluluğu sınırlamaz. Ülkenizin yasaları size feragat edilemeyen haklar tanıyorsa bu koşullar bu hakları elinizden almaz."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Bu koşullardaki değişiklikler",
+        "paragraphs": [
+          "Bu koşullar değiştiğinde en üstteki tarih de değişir. Bir değişiklikten sonra Captun'u kullanmak, yeni koşulları kabul ettiğiniz anlamına gelir."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "İletişim",
+        "paragraphs": [
+          "Bu koşullarla ilgili sorularınız için <a href=\"mailto:{email}\">{email}</a> adresine yazın ya da <a href=\"{issuesUrl}\">github.com/SinaXhpm/captun/issues</a> adresinde bir issue açın."
+        ]
+      }
+    ]
   },
   "notFound": {
     "title": "Sayfa bulunamadı – Captun",

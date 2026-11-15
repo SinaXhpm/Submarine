@@ -33,6 +33,7 @@
     "faq": "Sorular",
     "releases": "Sürümler",
     "deleteAccount": "Hesabınızı silin",
+    "terms": "Kullanım koşulları",
     "verify": "İndirdiğiniz dosyayı doğrulayın",
     "issues": "Sorun bildirin",
     "author": "sinaxhpm.com",
@@ -657,7 +658,8 @@
       "Sunucularınız, parolalarınız, SSH anahtarlarınız ve notlarınız, profil parolanızdan türetilen bir anahtarla şifrelenmiş olarak cihazınızda kalır. Uygulamada analitik, reklam, takip ve çökme raporlama yoktur.",
       "Bulut eşitleme isteğe bağlıdır. Açarsanız eşitleme sunucusu, hesabınızın e-posta adresini ve profillerinizin şifreli hâlini saklar. Profillerin içinde ne olduğunu okuyamaz.",
       "Hesabınızı ve sunucunun bu hesap için tuttuğu her şeyi uygulamanın içinden ya da bu web sitesinden silebilirsiniz.",
-      "<em>Geri bildirim gönder</em> ile gönderdiğiniz mesaj geliştiriciye yalnızca yazdıklarınızla ulaşır."
+      "<em>Geri bildirim gönder</em> ile gönderdiğiniz mesaj geliştiriciye yalnızca yazdıklarınızla ulaşır.",
+      "Yapay zekâ asistanı isteğe bağlıdır ve siz kendi API anahtarınızla bir yapay zekâ sağlayıcısı ekleyene kadar hiçbir şey yapmaz. Sohbetleri cihazınızdan bize değil, o sağlayıcıya gider. Kendi makinenizdeki ya da ağınızdaki bir modelle sohbetler orada kalır."
     ],
     "sections": [
       {
@@ -673,18 +675,20 @@
         "list": [
           "<strong>Profilleriniz</strong> (sunucular, kimlik bilgileri, SSH anahtarları, tüneller, notlar, komutlar, bilinen sunucu anahtarları ve bir giriş penceresinden kaydetmeyi seçtiğiniz parolalar) uygulamanın veri klasöründe saklanır. Profil parolanızdan Argon2id ile türetilen bir anahtar kullanılarak AES-256-GCM ile şifrelenirler. Profil parolası hiçbir zaman saklanmaz ve hiçbir yere gönderilmez. Parolayı kurtarmanın hiçbir yolu yoktur: Unutursanız profil açılamaz.",
           "<strong>Hızlı kilit açma</strong> (isteğe bağlı, varsayılan olarak kapalı): Windows Hello'yu ya da Android'de parmak iziyle kilit açmayı etkinleştirirseniz profilin anahtarı, sistemin tuttuğu bir anahtarla (TPM ya da Android Keystore) mühürlenir. Parmak izinizi ya da PIN'inizi sistem denetler; uygulama bunu hiçbir zaman görmez. Windows'ta bunun yerine profilin otomatik açılmasını da seçebilirsiniz (bu da varsayılan olarak kapalıdır): o zaman profilin anahtarını hesabınız için Windows korur, hiçbir denetim yapılmaz; dolayısıyla o Windows hesabını kullanan herkes ve her program profili açabilir.",
+          "<strong>Yapay zekâ asistanının verileri</strong> (isteğe bağlı, aşağıya bakın): yapay zekâ sağlayıcılarınız ve bunların API anahtarları, sohbetleriniz, belirlediğiniz izin düzeyleri, her zaman çalıştırılmasına izin verdiğiniz komutlar ve asistanın etkinlik günlüğü. Bunlar profilin yanında, kendilerine ait ayrı bir dosyada, profilin anahtarından türetilen bir anahtar kullanılarak AES-256-GCM ile şifrelenmiş olarak saklanır; bu yüzden profil açıldığında onlar da açılır. Bu dosya hiçbir zaman eşitlenmez, hiçbir zaman paylaşılan bir profilin parçası olmaz ve hiçbir zaman dışa aktarılan bir profilde yer almaz.",
           "Pencere konumu, son kullanılan profilin adı ve renk teması gibi <strong>ayarlar</strong> ile yalnızca bu cihaz için yapılan seçimler (bir uzak masaüstünün hızı ve kalitesi, panoyu paylaşıp paylaşmadığı, bir RDP sunucusuyla paylaşılan klasör ya da sürücü ve hangi sunucuların her zaman kendi girişiyle açılan bir terminal aldığı) uygulamanın kendi ayarlarında şifrelenmeden saklanır ve hiçbir zaman eşitlenmez.",
           "<strong>Pano</strong> yalnızca yapıştırdığınızda okunur. Yapıştırdığınız şey, onu yapıştırdığınız terminalin ya da uzak masaüstü sekmesinin sunucusuna gider. <em>Panoyu paylaş</em> açıkken (RDP ve VNC sunucularında varsayılan budur), uzak masaüstünde kopyalanan metin bu cihazın panosuna konur. Panodaki hiçbir şey hiçbir zaman bize gönderilmez.",
           "<strong>Uzak Masaüstü Bağlantısı (Windows)</strong>, bir sunucunun kayıtlı parolasını kısa ömürlü bir .rdp dosyasında alır. Dosyadaki parola, Windows kullanıcınız için Windows DPAPI ile şifrelenir ve dosya okunduktan sonra silinir. Bir girişi RDP uygulamasının kendisinin hatırlamasına izin verirseniz onu Submarine değil, Windows saklar.",
-          "Uygulamadaki <strong>etkinlik günlüğü</strong> bellekte tutulur ve uygulama kapandığında kaybolur."
+          "Uygulamadaki <strong>etkinlik günlüğü</strong> bellekte tutulur ve uygulama kapandığında kaybolur. Yapay zekâ asistanı kendine ait bir günlük tutar (aşağıya bakın)."
         ]
       },
       {
         "id": "connects",
         "title": "Uygulamanın bağlandığı yerler",
         "list": [
-          "<strong>Kendi sunucularınız.</strong> Uygulama yalnızca eklediğiniz ya da açtığınız sunuculara bağlanır; bunu SSH, SFTP, Telnet, VNC veya RDP ile, varsa ayarladığınız proxy ya da atlama sunucusu (jump host) üzerinden yapar. Yazdıklarınız ve aktardıklarınız bize değil, o sunucuya gider. Bir uzak masaüstünde buna, oraya yapıştırdığınız pano metni ve yerleşik RDP istemcisiyle paylaşmayı seçerseniz bu bilgisayardaki bir klasör ya da sürücü de dâhildir. Düz Telnet ve düz VNC şifrelenmez; uygulama da bunu belirtir.",
+          "<strong>Kendi sunucularınız.</strong> Uygulama yalnızca eklediğiniz ya da açtığınız sunuculara bağlanır; bunu SSH, SFTP, FTP ya da FTPS, Telnet, VNC veya RDP ile, varsa ayarladığınız proxy ya da atlama sunucusu (jump host) üzerinden yapar. Yazdıklarınız ve aktardıklarınız bize değil, o sunucuya gider. Bir uzak masaüstünde buna, oraya yapıştırdığınız pano metni ve yerleşik RDP istemcisiyle paylaşmayı seçerseniz bu bilgisayardaki bir klasör ya da sürücü de dâhildir. Düz FTP, düz Telnet ve düz VNC şifrelenmez; uygulama da bunu belirtir.",
           "<strong>Eşitleme hizmeti</strong>, yalnızca bulut eşitlemeye giriş yaparsanız (aşağıya bakın). Bunun yerine uygulamayı kendi sunucunuza yönlendirebilirsiniz; bu durumda verileri o sunucunun işletmecisi işler.",
+          "<strong>Eklediğiniz yapay zekâ sağlayıcıları</strong>, yalnızca yapay zekâ asistanını kullanırsanız (aşağıya bakın). İstekler, o sağlayıcı için yapılan ayara göre cihazınızdan doğrudan sağlayıcıya ya da bir proxy veya sunucularınızdan biri üzerinden gider. Submarine'in kendine ait bir yapay zekâ hizmeti yoktur ve eşitleme hizmeti bu sürece dâhil değildir.",
           "<strong>GitHub</strong>, daha yeni bir sürüm olup olmadığına bakmak için (iOS uygulaması, Mac App Store sürümü ve Flatpak sürümü hariç; bunları kendi mağazaları güncel tutar). Profil listesi açıldığında ve “Güncellemeleri denetle” düğmesine bastığınızda uygulama, GitHub'ın herkese açık sürüm listesine (<code>api.github.com</code>) daha yeni bir sürüm olup olmadığını sorar. İstek, uygulamanın adını ve sürümünü (<code>submarine-app/x.y.z</code>) taşır, başka hiçbir şeyi taşımaz; her web isteğinde olduğu gibi GitHub IP adresinizi görür.",
           "<strong>Geri bildirim gönderdiğinizde geliştiricinin sunucusu</strong> (aşağıya bakın), yalnızca o zaman.",
           "Tıkladığınız <strong>bağlantılar</strong> sisteminizin varsayılan tarayıcısında açılır."
@@ -760,6 +764,37 @@
         ]
       },
       {
+        "id": "ai",
+        "title": "Yapay zekâ asistanı (isteğe bağlı)",
+        "paragraphs": [
+          "Siz <em>Ayarlar → AI assistant</em> bölümünde bir yapay zekâ sağlayıcısı ekleyene kadar asistan hiçbir şey yapmaz: Anthropic, OpenAI, OpenAI uyumlu başka bir hizmet (OpenRouter, DeepSeek, Groq ya da Google Gemini gibi) veya kendi makinenizdeki ya da ağınızdaki bir model (Ollama ya da LM Studio gibi). Sağlayıcı bunları gerektiriyorsa, o sağlayıcıda kendi hesabınızı ve API anahtarınızı kullanırsınız. Submarine'in kendine ait bir yapay zekâ hizmeti yoktur; sohbetlerinizi ya da anahtarlarınızı hiçbir zaman görmeyiz."
+        ],
+        "list": [
+          "<strong>İsteklerin gittiği yer.</strong> İstekler cihazınızdan doğrudan sağlayıcıya gider; ya da sistemin proxy'sinden veya sağlayıcı için ayarladığınız bir proxy'den geçer; ya da sunucularınızdan birinin açık SSH oturumu üzerinden o sunucudan dışarı çıkar. İstek bir sunucu üzerinden giderse sağlayıcı o sunucunun adresini görür. İstekler HTTPS kullanır; HTTPS cihazınızdan sağlayıcıya kadar şifreli kalır, bu yüzden aradaki bir proxy ya da sunucu yalnızca hangi ana bilgisayarla iletişim kurulduğunu ve ne kadar veri geçtiğini görür. Düz http'ye (şifrelenmemiş) yalnızca kendi makinenizdeki ya da ağınızdaki bir adres için veya sunucularınızdan biri üzerinden gidiliyorsa o sunucunun kendi makinesindeki ya da ağındaki bir adres için izin verilir. Düz http üzerinden o ağdaki herkes sohbeti ve sohbetle birlikte gönderilen her API anahtarını okuyabilir; başka bir ağda ise aynı adres başka birine ait olabilir.",
+          "<strong>Sağlayıcının aldıkları.</strong> Her istekle birlikte o ana kadarki sohbet: mesajlarınız (eklediğiniz terminal metni varsa onunla birlikte) ve asistanın yanıtları. Bir sunucuyla ilgili sohbette ayrıca asistanın orada okudukları ve yaptıkları (komut çıktıları, dosya içerikleri, klasör listeleri, yaptığı değişikliklerin sonuçları) ve onay istediğinde verdiğiniz yanıtlar. İstek, API anahtarınızı, uygulamanın adını ve sürümünü taşır; her web isteğinde olduğu gibi sağlayıcı isteğin geldiği adresi görür. Bir sohbeti başka bir sağlayıcıya geçirirseniz bir sonraki mesajınızla birlikte sohbetin tamamı o sağlayıcıya gider. <em>Test</em> ile gönderilen istek ve bir sağlayıcıya modellerini soran istekler anahtarınızı taşır; sohbetlerinizden ya da sunucularınızdan hiçbir şey taşımaz.",
+          "<strong>Sunucu bilgileri.</strong> Bir sunucuyla ilgili sohbet başladığında uygulama sunucu hakkında birkaç bilgi toplar ve bunları sohbetle birlikte gönderir: sistemin kısa adı ve sürüm numarası (<code>debian 12</code> gibi), çekirdeğin adı ve sürümü, işlemci türü, giriş yapan kullanıcının adı ve bir yönetici grubunda (sudo, wheel ya da admin) olup olmadığı, ana klasör, giriş kabuğunun adı ve bash, systemctl, docker, apt, dnf, yum, apk ve pacman araçlarından hangilerinin kurulu olduğu. Sohbet bunları <em>Server facts sent to the assistant</em> başlığı altında gösterir. Bu bilgiler sunucunun ana bilgisayar adını ya da adresini veya sunucuya verdiğiniz adı içermez; ancak asistan okuduklarında bunlara rastlayabilir.",
+          "<strong>Özel anahtarlar.</strong> Komut çıktısındaki bir özel anahtar bloğu (<code>-----BEGIN … PRIVATE KEY-----</code> ile PGP, SSH2 ve PuTTY biçimleri), gösterilmeden ya da gönderilmeden önce <code>[private key removed by Submarine]</code> ile değiştirilir; asistanın okuduğu bir dosyadaki böyle bir blok da öyle. Bu, bütün bir blok hâlinde yazdırılan ya da okunan bir anahtarı yakalar; anahtarın yalnızca bir kısmını yazdıran bir komut ya da başka biçimdeki bir anahtar yakalanmaz. Bu yüzden bunu, hiçbir anahtarın asla gönderilemeyeceğine dair bir söz olarak değil, kazalara karşı bir önlem olarak görün. Diğer dosya içerikleri ve eklediğiniz terminal metni olduğu gibi gönderilir, ancak gizli Unicode Tag karakterleri olmadan: bu karakterler ekranda görünmez ve bir model için talimat taşıyabilir; bu yüzden kendi mesajlarınız da dâhil olmak üzere asistana gönderilen her şeyden çıkarılır (mesajlarınızdan birinde bu karakterlerden bulunduğunda sohbet bunu size bildirir). Asistan, profilinizde kayıtlı parolaları ve anahtarları hiçbir zaman almaz: yalnızca sunucuda, açık oturum üzerinden çalışır.",
+          "<strong>Rızanız.</strong> Bir sağlayıcının aldıkları, o sağlayıcının kendi koşullarına ve gizlilik politikasına tabidir. İlk mesajınız bir sağlayıcıya gitmeden önce uygulama, sağlayıcının adresini belirterek size sorar; bu adresi başka bir ana bilgisayarla değiştirirseniz, sağlayıcının türünü değiştirirseniz ya da veri saklayabilecek sağlayıcılara izin verirseniz yeniden sorar. Bir ana bilgisayar için kaydedilen API anahtarı hiçbir zaman başka bir ana bilgisayara gönderilmez: ana bilgisayarı değiştirdiğinizde uygulama anahtarı yeniden ister. Bazı sağlayıcılar için bir not da ekler: Gemini (Google'ın ücretsiz katmanında Google verileri kendi ürünlerini geliştirmek için kullanabilir ve veriler insanlar tarafından okunabilir), DeepSeek (verileri Çin'de saklar) ve OpenRouter (istekleri başka sağlayıcılara iletir; OpenRouter hazır ayarıyla eklendiğinde Submarine, siz sağlayıcının ayarlarında diğerlerine izin vermedikçe ondan yalnızca verileri saklamayan ve verilerle model eğitmeyen sağlayıcıları kullanmasını ister). Rızanızı geri çekmek için <em>Ayarlar → AI assistant</em> bölümünde sağlayıcının yanındaki <em>withdraw</em> seçeneğini seçin: o sırada yanıt vermekte olan bir sohbet bir sonraki isteğinden önce durur ve uygulama bir sonraki mesajdan önce yeniden sorar. Bir sağlayıcının daha önce aldıkları, o sağlayıcının kendi kurallarına tabi olmaya devam eder.",
+          "<strong>Yerel bir model</strong> (Ollama, LM Studio ya da makinenizdeki veya ağınızdaki başka bir sunucu) verileri o makinede ya da ağda tutar.",
+          "<strong>Cihazınızda saklananlar</strong>: sağlayıcılarınız ve bunların API anahtarları, içlerindeki her şeyle birlikte sohbetleriniz, her sunucunun izin düzeyi ile orada her zaman çalıştırılmasını seçtiğiniz komutlar ve asistanın etkinlik günlüğü. Günlük; asistanın çalıştırdığı ya da çalıştırmayı istediği her komutu ve açtığı ya da değiştirdiği her klasörü veya dosyayı, bunun ne zaman olduğu, izin verilip verilmediği ve nasıl izin verildiği bilgisiyle listeler; ayrıca değişikliğin geri alınabilmesi için değiştirilen her dosyanın önceki içeriğini saklar. 90 günden eski günlük girdileri, asistanın dosyası açıldığında ve her yeni girdi eklendiğinde kaldırılır. Bunların tümü asistanın kendi şifreli dosyasındadır (<em>Cihazınızda kalanlar</em> bölümüne bakın).",
+          "<strong>Bu yanıtı bildir</strong> (her yanıtın altındaki “Report this reply” bayrak simgesi) yanıtı panonuza kopyalar ve siz onayladıktan sonra projenin GitHub'daki issue sayfasını tarayıcınızda açar. Uygulamanın kendisi hiçbir şey göndermez. Orada paylaştıklarınız herkese açıktır; bu yüzden sunucularınızdaki özel verileri eklemeyin."
+        ]
+      },
+      {
+        "id": "agents",
+        "title": "Bu bilgisayardaki yapay zekâ ajanları (isteğe bağlı)",
+        "paragraphs": [
+          "Bir bilgisayarda <em>Ayarlar → AI agents</em> bölümü, aynı bilgisayarda çalışan bir yapay zekâ ajanının (Claude Code gibi) Submarine üzerinden sunucularınızda iş yapmasına olanak tanır. Siz açana kadar kapalıdır."
+        ],
+        "list": [
+          "<strong>Kim bağlanabilir.</strong> Yalnızca bu bilgisayarda sizin kullanıcı hesabınızla çalışan programlar bağlanabilir; bunu da diğer kullanıcıların ve ağın açamadığı bir kanal üzerinden yaparlar. Submarine size hangi programın istekte bulunduğunu ve onu neyin başlattığını gösterir.",
+          "<strong>Onayınız olmadan hiçbir şey olmaz.</strong> Bir ajan erişim ister; sunucuyu, işlemleri, klasörleri, süreyi (en fazla 8 saat) ve işlemlerinin nasıl çalışacağını Submarine penceresinde siz seçersiniz. Erişim; süre dolduğunda, ajanın bağlantısı kesildiğinde, erişimi iptal ettiğinizde, profili kilitlediğinizde ya da uygulamayı kapattığınızda sona erer.",
+          "<strong>Bir ajanın aldıkları.</strong> İzin verdiğiniz işlemlerin sonuçları: komut çıktısı ile seçtiğiniz klasörlerdeki klasör listeleri ve dosya içerikleri. Parolalarınızı, anahtarlarınızı ya da kayıtlı diğer gizli bilgilerinizi ise hiçbir zaman almaz. Ajanın gördüklerinde Submarine'in bağlandığı adres değiştirilir; bir sunucunun yazdırdığı diğer adresler yine de görünebilir.",
+          "<strong>Bundan sonra nereye gider.</strong> Ajanın aldıklarıyla ne yaptığı, örneğin bunları kendi yapay zekâ sağlayıcısına göndermesi, o ajanın koşullarına ve gizlilik politikasına tabidir.",
+          "<strong>Cihazınızda saklananlar.</strong> Bir ajanın istediği her işlem, ajanın adıyla birlikte bu cihazda asistanın etkinlik günlüğüne kaydedilir."
+        ]
+      },
+      {
         "id": "website",
         "title": "Bu web sitesi",
         "paragraphs": [
@@ -775,6 +810,7 @@
           "<strong>Silme işleminden sonra yazılan günlük satırları</strong> en fazla {auditDays} gün saklanır: silme işleminin kendisi (e-posta adresi içermez) ve o e-posta adresiyle sonradan yapılan her giriş denemesi. Sunucu yazılımının güncellemeleri sırasında alınan yedekler yalnızca kısa bir süre tutulur.",
           "<strong>Tek bir profilin buluttaki kopyasını kaldırmak için</strong> uygulamada, profil listesinde ilgili profilin menüsünden <em>Buluttan sil…</em> komutunu seçin.",
           "<strong>Bir geri bildirim mesajını {feedbackDays} gün dolmadan silmek</strong> için rapor numarasıyla bize yazın.",
+          "<strong>Yapay zekâ asistanının sohbetlerini silmek için</strong> tek bir sohbeti kendi menüsünden (<em>Delete</em>), hepsini ise yapay zekâ asistanı sayfasındaki sohbet listesinin altında bulunan <em>Delete all</em> ile silin. Bir sohbeti silerken <em>Clear them</em> seçeneğini seçmezseniz asistanın etkinlik günlüğü sohbetler silindikten sonra da kalır; günlüğü istediğiniz zaman <em>Activity</em> görünümündeki <em>Clear the log</em> ile tek bir sunucu ya da tüm sunucular için temizleyebilirsiniz. Bir sağlayıcının API anahtarını silmek için <em>Ayarlar → AI assistant</em> bölümünde, sağlayıcının ayarlarında anahtarın yanındaki <em>Remove</em> seçeneğini seçip kaydedin ya da sağlayıcıyı silin. Bir profili silmek, asistanın dosyasını da onunla birlikte siler. Bir sağlayıcının aldıkları için o sağlayıcının kendi kuralları geçerlidir: sağlayıcıya başvurun.",
           "<strong>Bir cihazdaki verileri silmek için</strong> uygulamayı kaldırın (Windows'un taşınabilir sürümünde programın yanındaki klasörü silin).",
           "Eski bir sürüm kullanıyorsanız ya da uygulamayı artık açamıyorsanız bizimle iletişime geçin (aşağıya bakın); hesabın size ait olduğunu gösterebildiğinizde hesabı sileriz."
         ]
@@ -804,7 +840,119 @@
         "id": "contact",
         "title": "İletişim",
         "paragraphs": [
-          "Verilerinizle ilgili soru ve talepleriniz için <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> adresinde bir issue açın (lütfen oraya özel bilgi yazmayın) ya da <a href=\"https://sinaxhpm.com\">sinaxhpm.com</a> üzerinden yazın."
+          "Verilerinizle ilgili soru ve talepleriniz için <a href=\"mailto:{email}\">{email}</a> adresine yazın. <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> adresinde bir issue da açabilirsiniz (lütfen oraya özel bilgi yazmayın)."
+        ]
+      }
+    ]
+  },
+  "terms": {
+    "title": "Kullanım koşulları – Submarine",
+    "description": "Submarine uygulaması ve isteğe bağlı eşitleme hizmetinin koşulları: MIT lisansı, sunucularınız, hesabınızın adil kullanımı, garanti yokluğu, değişiklikler.",
+    "heading": "Kullanım koşulları",
+    "intro": "Bu koşullar Submarine uygulamasını, isteğe bağlı Submarine eşitleme hizmetini ve bu web sitesini kapsar. Kısacası: uygulama MIT lisansıyla ücretsiz ve açık kaynaklıdır, eşitleme hizmeti ücretsizdir ve olduğu gibi sunulur; ikisini de riski size ait olmak üzere ve yasalara uygun olarak kullanırsınız. Verilerinizi nasıl işlediğimiz <a href=\"{privacyUrl}\">gizlilik politikasında</a> açıklanır.",
+    "sections": [
+      {
+        "id": "who",
+        "title": "Biz kimiz",
+        "paragraphs": [
+          "Submarine'i ve eşitleme hizmetini Sina Xhpm (<a href=\"https://sinaxhpm.com\">sinaxhpm.com</a>) geliştirir ve işletir. Bu koşullarda “biz” ve “bize” derken kastedilen odur."
+        ]
+      },
+      {
+        "id": "app",
+        "title": "Uygulama",
+        "paragraphs": [
+          "Uygulama, <a href=\"{licenseUrl}\">MIT lisansıyla</a> ücretsiz ve açık kaynaklıdır. Uygulamayı bu lisansın izin verdiği şekilde kullanabilir, kopyalayabilir, değiştirebilir ve paylaşabilirsiniz. Bu koşullardaki hiçbir hüküm, lisansın size tanıdığı bir hakkı elinizden almaz.",
+          "Uygulamayı Apple'ın App Store ya da TestFlight hizmeti üzerinden edindiyseniz bu hizmetler için geçerli olan <a href=\"{appleTerms}\">Apple koşulları</a> da o kopya için geçerlidir."
+        ]
+      },
+      {
+        "id": "servers",
+        "title": "Sunucularınız ve onlarda yaptıklarınız",
+        "list": [
+          "Yalnızca size ait olan ya da kullanma izniniz bulunan sunuculara ve cihazlara bağlanın.",
+          "Bunlarda yaptıklarınızdan siz sorumlusunuz: çalıştırdığınız komutlar (aynı anda birçok sunucuya yazdığınızda da), değiştirdiğiniz ya da sildiğiniz dosyalar ve açtığınız tüneller ile paylaşılan klasörler.",
+          "Düz Telnet ve düz VNC şifrelenmez; bir bağlantı bunlardan birini kullandığında uygulama bunu belirtir.",
+          "Sunucularınızdaki önemli her şeyin kendi kopyalarını saklayın."
+        ]
+      },
+      {
+        "id": "account",
+        "title": "Eşitleme hizmeti ve hesabınız",
+        "list": [
+          "Bulut eşitleme isteğe bağlıdır ve makul sınırlar içinde ücretsizdir: hesap başına {limitMb} MB şifreli veri, {limitItems} öğe ve {limitProfiles} profil.",
+          "E-posta alabildiğiniz bir e-posta adresi gerekir. Hiç doğrulanmayan yeni hesaplar {unverifiedDays} gün sonra silinir.",
+          "Hesap parolanızı ve profil parolanızı güvende tutun. Profilleriniz cihazınızda şifrelenir; bu yüzden onları okuyamayız ve unutulan bir profil parolasını kurtaramayız.",
+          "Bunun yerine uygulamayı kendi eşitleme sunucunuza yönlendirebilirsiniz. Bu koşullar o sunucuyu kapsamaz: o sunucu için işletmecisinin kuralları geçerlidir."
+        ]
+      },
+      {
+        "id": "fair",
+        "title": "Eşitleme hizmetinin adil kullanımı",
+        "paragraphs": [
+          "Hizmet, kendi Submarine profillerinizi ve ekibinizinkileri eşitlenmiş tutmak için vardır. Lütfen şunları yapmayın:"
+        ],
+        "list": [
+          "hakkınız olmayan herhangi bir şeyi saklamak ya da paylaşmak veya hizmeti yasalara aykırı biçimde kullanmak;",
+          "başkalarının hesaplarına ya da verilerine erişmeye çalışmak;",
+          "hizmete saldırmak, hizmeti aşırı yüklemek ya da yoklamak veya sınırlarını atlatmak;",
+          "toplu hâlde ya da size ait olmayan e-posta adresleriyle hesap açmak."
+        ],
+        "after": [
+          "Bu kuralları ihlal eden ya da hizmete veya hizmeti kullanan kişilere zarar veren bir hesabı sınırlayabilir, askıya alabilir ya da silebiliriz. Mümkün olduğunda önce size e-postayla haber veririz."
+        ]
+      },
+      {
+        "id": "ending",
+        "title": "Hesabınızı silme ve hizmet sona ererse",
+        "paragraphs": [
+          "Hesabınızı istediğiniz zaman silebilirsiniz: uygulamada (Bulut eşitleme bölümündeki <em>Hesabı sil…</em>) ya da <a href=\"{deleteUrl}\">silme sayfasında</a>. Nelerin ne zaman silindiği <a href=\"{privacyUrl}\">gizlilik politikasında</a> açıklanır.",
+          "Eşitleme hizmetini değiştirebilir ya da durdurabiliriz. Profilleriniz cihazlarınızda şifreli olarak kalır; bu yüzden hizmetin durdurulması onları oradan silmez. Hizmet bir gün durursa bunu bu web sitesinde önceden, olabildiğince erken duyururuz."
+        ]
+      },
+      {
+        "id": "feedback",
+        "title": "Geri bildirim",
+        "paragraphs": [
+          "Gönderdiğiniz geri bildirimlerdeki fikirleri Submarine'i geliştirmek için kullanabiliriz. Bir geri bildirim mesajının neleri içerdiği ve ne kadar süre saklandığı <a href=\"{privacyUrl}\">gizlilik politikasında</a> açıklanır."
+        ]
+      },
+      {
+        "id": "warranty",
+        "title": "Garanti yok",
+        "paragraphs": [
+          "Uygulama ve eşitleme hizmeti, MIT lisansında belirtildiği gibi, ticari elverişlilik, belirli bir amaca uygunluk ve üçüncü tarafların haklarını ihlal etmeme konusundaki zımni garantiler de dâhil olmak üzere, açık ya da zımni hiçbir türden garanti olmaksızın “olduğu gibi” ve “mevcut olduğu şekliyle” sunulur. Hizmetin çalışır durumda kalması ve verilerinizin güvende olması için elimizden geleni yaparız; ancak hizmetin her zaman kullanılabilir, hatasız ya da belirli bir amaca uygun olacağını vaat etmeyiz."
+        ]
+      },
+      {
+        "id": "liability",
+        "title": "Sorumluluk reddi",
+        "paragraphs": [
+          "Uygulamayı ve eşitleme hizmetini riski size ait olmak üzere kullanırsınız. Yasaların izin verdiği ölçüde, uygulamayı ve eşitleme hizmetini kullanmaktan, kullanamamaktan ya da onlara güvenmekten doğan, doğrudan ya da dolaylı, arızi, özel ya da sonuç olarak ortaya çıkan her türlü kayıp veya zarardan ne biz sorumluyuz ne de Submarine'e katkıda bulunmuş herhangi biri. Buna örneğin şunlar dâhildir:"
+        ],
+        "list": [
+          "profiller, anahtarlar ve parolalar da dâhil olmak üzere kaybolan, bozulan ya da sızan veriler;",
+          "bağlandığınız sunucularda ve cihazlarda yapılan her şey, bunu kim yaparsa yapsın: siz, profil paylaştığınız kişiler, yapay zekâ asistanı ya da erişim verdiğiniz bir yapay zekâ ajanı;",
+          "bir sunucuya erişimin kaybedilmesi, kesinti süreleri ve emek, iş ya da kâr kaybı;",
+          "bağlandığınız sunucular, yapay zekâ sağlayıcılarınız ve ağ ile barındırma sağlayıcıları gibi üçüncü tarafların yaptıkları ya da sakladıkları;",
+          "eşitleme hizmetinin kullanılamaması, değiştirilmesi ya da sonlandırılması."
+        ],
+        "after": [
+          "Bu koşullardaki hiçbir hüküm, yasaların sınırlandırılmasına izin vermediği bir sorumluluğu, örneğin kasıt ya da ağır ihmalden doğan sorumluluğu veya ihmal sonucu meydana gelen ölüm ya da bedensel zarardan doğan sorumluluğu sınırlamaz. Ülkenizin yasaları size feragat edilemeyen haklar tanıyorsa bu koşullar bu hakları elinizden almaz."
+        ]
+      },
+      {
+        "id": "changes",
+        "title": "Bu koşullardaki değişiklikler",
+        "paragraphs": [
+          "Bu koşullar değiştiğinde en üstteki tarih de değişir. Bir değişiklik hesabınız açısından önemliyse bunu bu web sitesinde belirtiriz. Bir değişiklikten sonra uygulamayı ya da hizmeti kullanmak, yeni koşulları kabul ettiğiniz anlamına gelir."
+        ]
+      },
+      {
+        "id": "contact",
+        "title": "İletişim",
+        "paragraphs": [
+          "Bu koşullarla ilgili sorularınız için <a href=\"mailto:{email}\">{email}</a> adresine yazın ya da <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> adresinde bir issue açın."
         ]
       }
     ]
@@ -848,7 +996,7 @@
       "confirm": "Onaylamak için lütfen kutuyu işaretleyin."
     },
     "helpTitle": "Parolanız ya da erişiminiz yok mu?",
-    "help": "Giriş için her zaman e-postayla gelen bir kod kullanıyorsanız önce uygulamada bir parola belirleyin (Bulut eşitleme → Parolanızı mı unuttunuz?). Uygulamayı ya da bu formu kullanamıyorsanız, hiçbir özel bilgi eklemeden <a href=\"{issuesUrl}\">github.com/SinaXhpm/Submarine/issues</a> adresinde bir issue açın; hesabın size ait olduğunu gösterebildiğinizde hesabı sileriz."
+    "help": "Giriş için her zaman e-postayla gelen bir kod kullanıyorsanız önce uygulamada bir parola belirleyin (Bulut eşitleme → Parolanızı mı unuttunuz?). Uygulamayı ya da bu formu kullanamıyorsanız <a href=\"mailto:{email}\">{email}</a> adresine yazın; hesabın size ait olduğunu gösterebildiğinizde hesabı sileriz."
   },
   "notFound": {
     "title": "Sayfa bulunamadı – Submarine",
