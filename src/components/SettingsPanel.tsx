@@ -822,7 +822,7 @@ function LanguageSetting() {
 const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpenAgents, servers = [] }: any) => {
   const t = useT();
   const accentColors = [
-    { name: tk('Light Blue'), value: '#60a5fa' },
+    { name: tk('Light blue'), value: '#60a5fa' },
     { name: tk('Sky'), value: '#38bdf8' },
     { name: tk('Cyan'), value: '#22d3ee' },
     { name: tk('Indigo'), value: '#818cf8' },
@@ -835,7 +835,7 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
     { name: tk('Charcoal'), value: '#0a0a0c' },
     { name: tk('Slate'), value: '#0f172a' },
     { name: tk('Nord'), value: '#2e3440' },
-    { name: tk('Dark Gray'), value: '#1a1a1a' },
+    { name: tk('Dark gray'), value: '#1a1a1a' },
     { name: tk('Deep Space'), value: '#0d0d10' },
   ];
 

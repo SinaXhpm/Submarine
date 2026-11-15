@@ -798,10 +798,10 @@ const PruneView = ({ sessionId }: { sessionId: string }) => {
   const confirm = useConfirm();
 
   const scopes: { key: string; label: string; description: string; warning?: string }[] = [
-    { key: "containers", label: t("Stopped Containers"), description: t("Removes containers that are not running. Safe — restartable containers are unaffected.") },
-    { key: "images",     label: t("Dangling Images"),    description: t("Removes images with no tag and no container referencing them. Tagged images are untouched.") },
-    { key: "networks",   label: t("Unused Networks"),    description: t("Removes user-created networks no container is attached to. Default bridge/host/none are untouched.") },
-    { key: "builder",    label: t("Build Cache"),        description: t("Clears Docker BuildKit cache. Future builds re-download / rebuild base layers.") },
+    { key: "containers", label: t("Stopped containers"), description: t("Removes containers that are not running. Safe — restartable containers are unaffected.") },
+    { key: "images",     label: t("Dangling images"),    description: t("Removes images with no tag and no container referencing them. Tagged images are untouched.") },
+    { key: "networks",   label: t("Unused networks"),    description: t("Removes user-created networks no container is attached to. Default bridge/host/none are untouched.") },
+    { key: "builder",    label: t("Build cache"),        description: t("Clears Docker BuildKit cache. Future builds re-download / rebuild base layers.") },
     { key: "system",     label: t("Everything (safe)"),  description: t("Runs all of the above. Does NOT touch named volumes or tagged images."), warning: t("Combines all safe prune scopes in one go.") },
   ];
 
