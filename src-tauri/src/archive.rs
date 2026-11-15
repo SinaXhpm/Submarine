@@ -1250,8 +1250,7 @@ async fn run_remote_job(
 ) -> Result<RemoteRun, String> {
     use russh::ChannelMsg;
     let mut channel = crate::shell_sftp::open_session_channel(session).await?;
-    channel.exec(true, "sh -s").await.map_err(|e| e.to_string())?;
-    channel.data(script.as_bytes()).await.map_err(|e| e.to_string())?;
+    crate::remote_sh::start_script(&channel, script).await.map_err(|e| e.to_string())?;
     let mut out: Vec<u8> = Vec::new();
     let mut code: Option<u32> = None;
     let mut stop_sent: Option<std::time::Instant> = None;

@@ -81,8 +81,9 @@ pub(crate) enum Sudo {
 /// tcsh all pass it to `sh` as it is. It runs only the line that starts with
 /// SCRIPT_TAG and skips any line before it: if sudo ever leaves the password
 /// line unread, that line is never run. The `x` keeps `$(...)` from dropping a
-/// trailing newline of the script.
-const RUNNER: &str = r#"sh -c 'while IFS= read -r s; do case $s in SUBSH1:*) break;; esac; done; case $s in SUBSH1:*) ;; *) exit 97;; esac; s=$(printf "${s#SUBSH1:}x") || exit 97; eval "${s%x}"'"#;
+/// trailing newline of the script. `remote_sh` starts scripts with it too,
+/// where what comes after the script on stdin is the script's.
+pub(crate) const RUNNER: &str = r#"sh -c 'while IFS= read -r s; do case $s in SUBSH1:*) break;; esac; done; case $s in SUBSH1:*) ;; *) exit 97;; esac; s=$(printf "${s#SUBSH1:}x") || exit 97; eval "${s%x}"'"#;
 
 /// Starts the stdin line that holds the script.
 const SCRIPT_TAG: &str = "SUBSH1:";
@@ -179,7 +180,7 @@ fn qpath(p: &str) -> String {
 
 /// The script as RUNNER reads it: one line, SCRIPT_TAG then each byte as a
 /// `\ooo` escape.
-fn encode_script(script: &str) -> String {
+pub(crate) fn encode_script(script: &str) -> String {
     let mut line = String::with_capacity(SCRIPT_TAG.len() + script.len() * 4 + 1);
     line.push_str(SCRIPT_TAG);
     for b in script.bytes() {
