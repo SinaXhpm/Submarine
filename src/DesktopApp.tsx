@@ -2609,17 +2609,17 @@ function DesktopApp() {
                   <div className="flex flex-wrap gap-2">
                     <button
                       onClick={() => { setEditCredData(EMPTY_CRED); setIsCredPanelOpen(true); }}
-                      title={t("Add Password")}
+                      title={t("Add password")}
                       className="h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[12px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-zinc-800 transition-all flex items-center gap-1.5"
                     >
-                      <Plus size={14} /> <span className="hidden sm:inline">{t("Add Password")}</span><span className="sm:hidden">{t("Password")}</span>
+                      <Plus size={14} /> <span className="hidden sm:inline">{t("Add password")}</span><span className="sm:hidden">{t("Password")}</span>
                     </button>
                     <button
                       onClick={() => { setEditKeyData(EMPTY_KEY); setIsKeyPanelOpen(true); }}
-                      title={t("Add Key")}
+                      title={t("Add key")}
                       className="h-9 px-2.5 sm:px-4 bg-zinc-900 text-zinc-200 text-[12px] sm:text-[13px] font-bold rounded-xl border border-white/5 hover:bg-zinc-800 transition-all flex items-center gap-1.5"
                     >
-                      <Plus size={14} /> <span className="hidden sm:inline">{t("Add Key")}</span><span className="sm:hidden">{t("Key")}</span>
+                      <Plus size={14} /> <span className="hidden sm:inline">{t("Add key")}</span><span className="sm:hidden">{t("Key")}</span>
                     </button>
                     <button
                       onClick={async () => {
@@ -2634,10 +2634,10 @@ function DesktopApp() {
                         });
                         if (name) invoke("generate_ssh_key", { name }).then(() => refreshSshKeys()).catch((e) => addLog(`KEY_GENERATE_ERROR: ${e}`, "error"));
                       }}
-                      title={t("Generate Key")}
+                      title={t("Generate key")}
                       className="h-9 px-2.5 sm:px-4 bg-primary text-black text-[12px] sm:text-[13px] font-bold rounded-xl shadow-lg shadow-primary/20 flex items-center gap-1.5"
                     >
-                      <Key size={14} /> <span className="hidden sm:inline">{t("Generate Key")}</span><span className="sm:hidden">{t("Generate")}</span>
+                      <Key size={14} /> <span className="hidden sm:inline">{t("Generate key")}</span><span className="sm:hidden">{t("Generate")}</span>
                     </button>
                   </div>
                 </header>
@@ -3211,7 +3211,7 @@ function DesktopApp() {
                     (n.body || "").toLowerCase().includes(q))
                 : notes;
               const onCommandsTab = libraryTab === "commands";
-              const addLabel = onCommandsTab ? t("Add Command") : t("Add Note");
+              const addLabel = onCommandsTab ? t("Add command") : t("Add note");
               const openAdd = () => {
                 if (onCommandsTab) {
                   setEditCommandData({ id: null, title: "", content: "", scope: null });

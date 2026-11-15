@@ -2744,7 +2744,7 @@ const SessionViewImpl = ({ session, profile, displayName, onClose, addLog, onSta
           {activeTool === 'tunnels' && (
             <div className="flex-1 flex flex-col overflow-hidden">
               <ToolTitleBar
-                title={t("Port Forwarding")}
+                title={t("Port forwarding")}
                 shortTitle={t("Ports")}
                 toggle={
                   <SepToggle

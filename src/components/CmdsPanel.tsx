@@ -324,7 +324,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
               if (await flushDrafts()) { closedRef.current = true; onClose(); }
             }}
             className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all"
-            title={t("Close Panel")}
+            title={t("Close panel")}
           >
             <X size={14} />
           </button>
@@ -550,7 +550,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           ) : (
             <div className="flex flex-col items-center justify-center py-16 text-zinc-600 text-center px-4">
               <Terminal size={32} className="opacity-20 mb-2" />
-              <span className="text-xs font-bold text-zinc-500">{t("No Commands Found")}</span>
+              <span className="text-xs font-bold text-zinc-500">{t("No commands found")}</span>
               <p className="text-[10px] mt-1 text-zinc-600 max-w-[200px]">
                 {searchQuery ? t("No matches for your search query.") : t("Save commands in the main app to surface them here.")}
               </p>
@@ -644,7 +644,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         ) : (
           <div className="flex flex-col items-center justify-center py-16 text-zinc-600 text-center px-4">
             <StickyNote size={32} className="opacity-20 mb-2" />
-            <span className="text-xs font-bold text-zinc-500">{t("No Notes Found")}</span>
+            <span className="text-xs font-bold text-zinc-500">{t("No notes found")}</span>
             <p className="text-[10px] mt-1 text-zinc-600 max-w-[200px]">
               {searchQuery ? t("No matches for your search query.") : t("Add notes from the Notes tab to surface them here.")}
             </p>

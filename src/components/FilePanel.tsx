@@ -2048,7 +2048,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
               <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
             </button>
           </div>
-          <button onClick={() => setModal({ type: "mkdir", v1: "" })} title={t("New Folder")} aria-label={t("New Folder")}
+          <button onClick={() => setModal({ type: "mkdir", v1: "" })} title={t("New folder")} aria-label={t("New folder")}
             className={`${headerBtn} text-indigo-300 ml-auto`}>
             <FolderPlus size={11} />
           </button>
@@ -2491,7 +2491,7 @@ const FilePanel = forwardRef<FilePanelHandle, FilePanelProps>(({
 
           <button onClick={() => { setContextMenu(null); setModal({ type: "mkdir", v1: "" }); }}
             className="w-full flex items-center gap-2 p-1.5 rounded hover:bg-white/10 text-left hover:text-white">
-            <Plus size={11} className="text-indigo-300" /><span>{t("New Folder")}</span>
+            <Plus size={11} className="text-indigo-300" /><span>{t("New folder")}</span>
           </button>
           {!multi && (
             <button onClick={() => { setContextMenu(null); setModal({ type: "rename", entry: contextMenu.entry, v1: contextMenu.entry.name }); }}
