@@ -28,6 +28,15 @@ export function pasteIntoTerminal(detail: TerminalPaste) {
   window.dispatchEvent(new CustomEvent<TerminalPaste>(TERMINAL_PASTE, { detail }));
 }
 
+// Clear a terminal's display and scrollback, in the app only (Ctrl+Shift+K, or
+// its tab's menu). Nothing goes to the server or to broadcast targets. Every
+// view of the terminal takes it, its Wall tile too, so none keeps the old text.
+export const TERMINAL_CLEAR = "submarine-terminal-clear";
+
+export function clearTerminal(terminalId: string) {
+  window.dispatchEvent(new CustomEvent<string>(TERMINAL_CLEAR, { detail: terminalId }));
+}
+
 export interface WriteToTerminal {
   terminalId: string;
   text: string;

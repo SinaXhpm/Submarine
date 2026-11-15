@@ -5,14 +5,14 @@ import { SearchAddon, ISearchOptions } from 'xterm-addon-search';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import 'xterm/css/xterm.css';
-import { Eraser, KeyRound } from 'lucide-react';
+import { KeyRound } from 'lucide-react';
 import { useIsNarrow } from '../hooks/useViewport';
 import { MobileKeyBar, ModifiersState, ModKey, SpecialKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';
 import HistorySearchOverlay from './HistorySearchOverlay';
 import { DEFAULT_FONT_STACK, fontFamilyCss, readFontFamily, readFontSize } from '../util/terminalFont';
 import { readScrollback } from '../util/terminalScrollback';
-import { TERMINAL_PASTE, withoutPasteControls, type TerminalPaste } from '../util/pasteText';
+import { TERMINAL_CLEAR, TERMINAL_PASTE, clearTerminal, withoutPasteControls, type TerminalPaste } from '../util/pasteText';
 import { TERMINAL_READ, TERMINAL_READ_REPLY, type TerminalRead, type TerminalReadReply } from '../util/terminalRead';
 import { READABLE_CONTRAST, readBoldBright, readMinContrast, readScheme } from '../util/terminalTheme';
 import { readUseLocalShell } from '../util/terminalShell';
@@ -821,7 +821,9 @@ const TerminalView = ({
   // never reach here. A Ctrl+Shift combo gets no key from xterm and bubbles
   // untouched. Matched by keyCode, the layout's F and R keys (the ones xterm
   // goes by too), so Dvorak gets the same keys. The webview's own reload on
-  // Ctrl+Shift+R is cancelled app-wide (main.tsx).
+  // Ctrl+Shift+R is cancelled app-wide (main.tsx). Ctrl+Shift+K / Cmd+Shift+K
+  // clears the terminal in the app (see clearLocalTerminal), the key other
+  // terminals use for it (WezTerm, Konsole, Warp).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
@@ -841,11 +843,14 @@ const TerminalView = ({
       } else if (e.keyCode === 82) {
         e.preventDefault();
         setShowHistory(true);
+      } else if (e.keyCode === 75) {
+        e.preventDefault();
+        if (!e.repeat) clearTerminal(terminalId);
       }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [terminalId]);
 
   // Close + clear search decorations. Refocuses xterm so the user's next
   // keystroke goes to the shell, not to nowhere.
@@ -1659,6 +1664,10 @@ const TerminalView = ({
       void pasteRequested(text, enter);
     };
     window.addEventListener(TERMINAL_PASTE, onPasteRequest);
+    const onClearRequest = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === terminalId) clearLocalTerminalRef.current();
+    };
+    window.addEventListener(TERMINAL_CLEAR, onClearRequest);
     // The last `count` lines of the buffer, scrollback included, a wrapped
     // line rebuilt into one as buildSelectedText does. The blank lines at the
     // end (the rows under the prompt) are left out.
@@ -1897,6 +1906,7 @@ const TerminalView = ({
       document.removeEventListener('mouseup', onDocMouseUp);
       window.removeEventListener('blur', onWindowBlur);
       window.removeEventListener(TERMINAL_PASTE, onPasteRequest);
+      window.removeEventListener(TERMINAL_CLEAR, onClearRequest);
       window.removeEventListener(TERMINAL_READ, onReadRequest);
       window.visualViewport?.removeEventListener('resize', onVvResize);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -1926,23 +1936,26 @@ const TerminalView = ({
     };
   }, [sessionId, terminalId]);
 
-  // Local presentation only: never send input, reset the terminal modes,
-  // or fan this action out to broadcast targets or other views of the PTY.
+  // Local presentation only: never send input or reset the terminal modes.
+  // xterm keeps the row with the cursor; everything else goes, for good.
   const clearLocalTerminal = () => {
     const term = xtermRef.current;
     if (!term) return;
     // Full-screen applications own their alternate-screen layout. Clearing
     // it locally would leave their idea of the screen out of sync.
     if (term.buffer.active.type === 'alternate') {
-      notify('Leave the full-screen app before clearing scrollback.', 'err');
+      notify(t("Not while a full-screen app runs"), 'err');
       return;
     }
     searchAddonRef.current?.clearDecorations?.();
     term.clearSelection();
     term.clear();
-    term.scrollToBottom();
-    notify('Local scrollback cleared');
+    notify(t("Cleared"));
   };
+  // The clear request's listener lives as long as the xterm; it calls the
+  // latest one (its texts follow the language).
+  const clearLocalTerminalRef = useRef(clearLocalTerminal);
+  clearLocalTerminalRef.current = clearLocalTerminal;
 
   return (
     // flex-col so the MobileKeyBar can pin to the bottom of the terminal
@@ -1954,29 +1967,6 @@ const TerminalView = ({
         ref={terminalRef}
         className="flex-1 min-h-0 w-full overflow-hidden select-text"
       />
-      {/* Do not cover the search/history UI or the saved-password menu. */}
-      {!showSearch && !showHistory && !atPasswordPrompt && (
-        <button
-          type="button"
-          onMouseDown={(e) => {
-            // Keep keyboard focus and any in-progress composition in xterm.
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onKeyDown={(e) => e.stopPropagation()}
-          onKeyUp={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            clearLocalTerminal();
-          }}
-          aria-label="Clear terminal display and scrollback locally"
-          title="Clear local display and scrollback (keeps the current prompt line; sends nothing to the server)"
-          className="absolute top-2 right-2 z-20 flex items-center gap-1.5 rounded-md bg-zinc-800 border border-white/10 px-2 py-1 shadow-lg text-[11px] text-zinc-300 hover:text-white hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-        >
-          <Eraser size={12} className="shrink-0" />
-          <span>Clear</span>
-        </button>
-      )}
       {/* Search chip — floats above xterm; positioned inside the outer
           flex column so it never displaces the terminal grid. Absolute
           top-2 right-2 keeps it clear of the disconnected badge (which
