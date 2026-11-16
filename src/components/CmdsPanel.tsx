@@ -38,7 +38,7 @@ type Tab = "commands" | "notes" | "node";
 // flat tagged union is simpler than two parallel sets of useState fields.
 type EditTarget =
   | { kind: "command"; id: number | null; title: string; body: string; is_secret: boolean; tags: string } // id null = a new command being added
-  | { kind: "note"; id: number; title: string; body: string };
+  | { kind: "note"; id: number | null; title: string; body: string }; // id null = a new note being added
 
 // Whether the command of a card's Run button is cut short on that card. Measured,
 // not counted: a card shows about 30 characters in the narrowest panel and far
@@ -107,10 +107,10 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
 
   const isDirty = (target: EditTarget | null): boolean => {
     if (!target) return false;
-    // A new command has no saved original: dirty once a title and a body
-    // are both typed (the same bar as the main Library's save validation,
-    // so a half-typed draft is never auto-saved into existence).
-    if (target.kind === "command" && target.id === null) {
+    // A new command or note has no saved original: dirty once a title and
+    // a body are both typed (the same bar as the main Library's save
+    // validation, so a half-typed draft is never auto-saved into existence).
+    if (target.id === null) {
       return target.title.trim() !== "" && target.body.trim() !== "";
     }
     const o = originalForEdit(target);
@@ -187,12 +187,13 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
       if (target.kind === "command") {
         const isNew = target.id === null;
         await persistCommand(target);
-        // A new command has no id until it is reloaded; without this the
+        // A new row has no id until it is reloaded; without this the
         // auto-saved row would stay invisible until the next refresh.
         if (isNew) fetchAll();
       } else {
-        await invoke("edit_note", { id: target.id, title: target.title, body: target.body });
-        setNotes((prev) => prev.map((n) => n.id === target.id ? { ...n, title: target.title, body: target.body } : n));
+        const isNew = target.id === null;
+        await persistNote(target);
+        if (isNew) fetchAll();
       }
       return true;
     } catch (e) {
@@ -274,6 +275,23 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     }
   };
 
+  // Start a new note draft.
+  const beginAddNote = () => {
+    setEdit({ kind: "note", id: null, title: "", body: "" });
+  };
+
+  // Persist one note draft: add when id is null, edit otherwise. The new
+  // id comes back from a reload (add_note returns no id), so callers
+  // reload after an add.
+  const persistNote = async (target: Extract<EditTarget, { kind: "note" }>): Promise<void> => {
+    if (target.id === null) {
+      await invoke("add_note", { title: target.title, body: target.body });
+    } else {
+      await invoke("edit_note", { id: target.id, title: target.title, body: target.body });
+      setNotes((prev) => prev.map((n) => n.id === target.id ? { ...n, title: target.title, body: target.body } : n));
+    }
+  };
+
   const cancelEdit = () => {
     setEdit(null);
   };
@@ -291,16 +309,15 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setSaving(true);
     setSaveError(null);
     try {
+      const isNew = edit.id === null;
       if (edit.kind === "command") {
-        const isNew = edit.id === null;
         await persistCommand(edit);
-        // A new command was just created: clear the tag/secrets filters
-        // so it is visible in the list instead of hidden behind them.
-        if (isNew) { setSelectedTag(null); setSecretsOnly(false); }
       } else {
-        await invoke("edit_note", { id: edit.id, title: edit.title, body: edit.body });
-        setNotes((prev) => prev.map((n) => n.id === edit.id ? { ...n, title: edit.title, body: edit.body } : n));
+        await persistNote(edit);
       }
+      // Something was just created: clear the search and filters so it
+      // is visible in the list instead of hidden behind them.
+      if (isNew) { setSearchQuery(""); setSelectedTag(null); setSecretsOnly(false); }
       setEdit(null);
       fetchAll();
     } catch (e) {
@@ -452,6 +469,65 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     </div>
   );
 
+  // The note editor, shared by expanding a note and adding a new one.
+  // `isNew` adds a Cancel button (an existing note collapses to save)
+  // and labels the save button Add.
+  const renderNoteEditor = (target: Extract<EditTarget, { kind: "note" }>, isNew: boolean) => (
+    <div className="px-3 pb-3 space-y-2">
+      <input
+        type="text"
+        value={target.title}
+        onChange={(e) => setEdit({ ...target, title: e.target.value })}
+        placeholder={t("Title")}
+        className="w-full h-7 px-2 bg-black/40 border border-white/10 rounded text-[11px] text-white placeholder-zinc-600 focus:outline-none focus:border-primary/50"
+      />
+      <textarea
+        value={target.body}
+        onChange={(e) => setEdit({ ...target, body: e.target.value })}
+        onKeyDown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
+        }}
+        placeholder={t("Note body — markdown, paths, snippets…")}
+        rows={6}
+        className="w-full p-2 bg-black/40 border border-white/10 rounded font-sans text-[11px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-y focus:outline-none focus:border-primary/50 custom-scrollbar"
+        autoFocus
+      />
+      <div className="flex gap-1.5 flex-wrap">
+        {isNew && (
+        <button
+          onClick={cancelEdit}
+          disabled={saving}
+          className="flex-1 h-7 min-w-[64px] rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-50"
+        >
+          <X size={11} /> {t("Cancel")}
+        </button>
+        )}
+        <button
+          onClick={() => copyToClipboard(target.body || "")}
+          className="flex-1 h-7 min-w-[64px] rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
+          title={t("Copy current body to clipboard")}
+        >
+          <ClipboardCopy size={11} /> {t("Copy")}
+        </button>
+        <button
+          onClick={() => toTerminal(target.body || "", false)}
+          className="flex-1 h-7 min-w-[64px] rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
+          title={t("Paste body into active terminal (no Enter)")}
+        >
+          <Play size={11} fill="currentColor" /> {t("Paste")}
+        </button>
+        <button
+          onClick={saveEdit}
+          disabled={saving || !isDirty(target)}
+          className="flex-1 h-7 min-w-[64px] rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          title={isNew ? t("Add note") : (isDirty(target) ? t("Save changes (Ctrl+Enter)") : t("No unsaved changes"))}
+        >
+          {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {isNew ? t("Add") : t("Save")}
+        </button>
+      </div>
+    </div>
+  );
+
   const TabIcon = tab === "commands" ? Terminal : tab === "notes" ? StickyNote : Server;
 
   return (
@@ -465,14 +541,15 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {/* Add a command (or secret) from this session, without going
-              back to the main Library. Saves any open draft first. */}
-          {tab === "commands" && (
+          {/* Add a command (or secret) or a note from this session,
+              without going back to the main Library. Saves any open
+              draft first. */}
+          {(tab === "commands" || tab === "notes") && (
             <button
-              onClick={async () => { if (await flushDrafts()) beginAddCommand(); }}
+              onClick={async () => { if (await flushDrafts()) { if (tab === "commands") beginAddCommand(); else beginAddNote(); } }}
               disabled={loading}
               className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all disabled:opacity-50"
-              title={t("Add command")}
+              title={tab === "commands" ? t("Add command") : t("Add note")}
             >
               <Plus size={14} />
             </button>
@@ -737,7 +814,14 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
             </div>
             )}
           </>
-        ) : filteredNotes.length > 0 ? (
+        ) : (
+          <>
+            {edit?.kind === "note" && edit.id === null && (
+              <div className="group relative rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10 transition-all">
+                <div className="pt-3">{renderNoteEditor(edit, true)}</div>
+              </div>
+            )}
+            {filteredNotes.length > 0 ? (
           filteredNotes.map((n) => {
             const expanded = edit?.kind === "note" && edit.id === n.id;
             return (
@@ -773,56 +857,11 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                   </div>
                 </button>
 
-                {expanded && (
-                  <div className="px-3 pb-3 space-y-2">
-                    <input
-                      type="text"
-                      value={edit.title}
-                      onChange={(e) => setEdit({ ...edit, title: e.target.value })}
-                      placeholder={t("Title")}
-                      className="w-full h-7 px-2 bg-black/40 border border-white/10 rounded text-[11px] text-white placeholder-zinc-600 focus:outline-none focus:border-primary/50"
-                    />
-                    <textarea
-                      value={edit.body}
-                      onChange={(e) => setEdit({ ...edit, body: e.target.value })}
-                      onKeyDown={(e) => {
-                        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
-                      }}
-                      placeholder={t("Note body — markdown, paths, snippets…")}
-                      rows={6}
-                      className="w-full p-2 bg-black/40 border border-white/10 rounded font-sans text-[11px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-y focus:outline-none focus:border-primary/50 custom-scrollbar"
-                      autoFocus
-                    />
-                    <div className="flex gap-1.5 flex-wrap">
-                      <button
-                        onClick={() => copyToClipboard(edit.body || "")}
-                        className="flex-1 h-7 min-w-[64px] rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
-                        title={t("Copy current body to clipboard")}
-                      >
-                        <ClipboardCopy size={11} /> {t("Copy")}
-                      </button>
-                      <button
-                        onClick={() => toTerminal(edit.body || "", false)}
-                        className="flex-1 h-7 min-w-[64px] rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all"
-                        title={t("Paste body into active terminal (no Enter)")}
-                      >
-                        <Play size={11} fill="currentColor" /> {t("Paste")}
-                      </button>
-                      <button
-                        onClick={saveEdit}
-                        disabled={saving || !isDirty(edit)}
-                        className="flex-1 h-7 min-w-[64px] rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                        title={isDirty(edit) ? t("Save changes (Ctrl+Enter)") : t("No unsaved changes")}
-                      >
-                        {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {t("Save")}
-                      </button>
-                    </div>
-                  </div>
-                )}
+                {expanded && renderNoteEditor(edit, false)}
               </div>
             );
           })
-        ) : (
+        ) : edit?.kind === "note" && edit.id === null ? null : (
           <div className="flex flex-col items-center justify-center py-16 text-zinc-600 text-center px-4">
             <StickyNote size={32} className="opacity-20 mb-2" />
             <span className="text-xs font-bold text-zinc-500">{t("No notes found")}</span>
@@ -830,6 +869,8 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
               {searchQuery ? t("No matches for your search query.") : t("Add notes from the Notes tab to surface them here.")}
             </p>
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

@@ -691,6 +691,17 @@ function DesktopApp() {
     ]);
   };
 
+  // The session Library panel can add/edit commands and notes while this
+  // grid is hidden, and this grid otherwise only loads them at unlock.
+  // Reload both lists when the Library view is opened so it never shows
+  // a stale copy of what the panel just added.
+  useEffect(() => {
+    if (activeView === "library") { refreshCommands(); refreshNotes(); }
+    // refreshCommands/refreshNotes are plain functions (new each render);
+    // listing them would re-fire on every render. They read no state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView]);
+
   // What a shared profile waits on the user for: a new key, as a fingerprint
   // (until it's accepted a sync only pulls, see note_share_key), a grant the
   // sync couldn't open ("locked" while sharing is, "checking" until a sync has
