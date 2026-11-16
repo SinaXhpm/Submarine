@@ -1445,8 +1445,10 @@ const TerminalView = ({
     };
     // Ctrl+Shift+click (Cmd+Shift+click on a Mac) opens a new terminal. Only
     // those keys: on a Mac, Control+click is a right-click, which pastes here,
-    // and a click with Alt as well is left alone.
+    // and a click with Alt as well is left alone. Where no terminal can be
+    // opened from here (a Wall tile, a telnet tab), the click goes on to xterm.
     const onNewTerminalClick = (ev: MouseEvent) => {
+      if (!onNewTerminalRef.current) return;
       const primary = IS_MAC ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && !ev.metaKey;
       if (ev.button !== 0 || !primary || !ev.shiftKey || ev.altKey) return;
       ev.preventDefault();

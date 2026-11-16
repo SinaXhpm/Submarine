@@ -26,12 +26,14 @@ export function pasteKeysOf(
 }
 
 /** Text the user copied on a server. It goes on this device's clipboard only
- *  while the server's tab is in front: from behind another tab, a server could
- *  replace what the user just copied there, and have its own text pasted into
- *  another server. Otherwise, or when the webview refuses (one that wants a
- *  click for it), `hold` keeps it for the tab's "Copy it here" bar. */
+ *  while the server's tab is in front and the app has the focus: from behind
+ *  another tab, or while the user works in another app (a phone's split
+ *  screen keeps both shown), a server could replace what the user just copied
+ *  there, and have its own text pasted into another server. Otherwise, or
+ *  when the webview refuses (one that wants a click for it), `hold` keeps it
+ *  for the tab's "Copy it here" bar. */
 export function takeServerCopy(text: string, inFront: boolean, hold: (text: string | null) => void): void {
-  if (!inFront) {
+  if (!inFront || !document.hasFocus()) {
     hold(text);
     return;
   }

@@ -168,8 +168,22 @@ class SubmarinePlugin(private val activity: Activity) : Plugin(activity) {
       try {
         val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = cm.primaryClip
-        val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(activity)?.toString() ?: "" else ""
-        invoke.resolve(JSObject().apply { put("text", text) })
+        val item = if (clip != null && clip.itemCount > 0) clip.getItemAt(0) else null
+        val plain = item?.text
+        if (item == null || plain != null) {
+          invoke.resolve(JSObject().apply { put("text", plain?.toString() ?: "") })
+          return@runOnUiThread
+        }
+        // A clip that points to a file (a content: link) is read from that
+        // file, which can take a while: not on the thread that draws the app.
+        Thread {
+          try {
+            val text = item.coerceToText(activity)?.toString() ?: ""
+            invoke.resolve(JSObject().apply { put("text", text) })
+          } catch (e: Exception) {
+            invoke.reject(e.message ?: "The clipboard can't be read")
+          }
+        }.start()
       } catch (e: Exception) {
         invoke.reject(e.message ?: "The clipboard can't be read")
       }
