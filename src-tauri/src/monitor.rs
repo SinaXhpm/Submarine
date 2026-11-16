@@ -1150,7 +1150,9 @@ async fn poll_once(
         .await
         .map_err(|e| format!("open session: {}", e))?;
     // sh reads the probe whatever the login shell is (csh has no `2>`).
-    crate::remote_sh::run_script(&channel, &script)
+    // Sending it and reading what it prints share the time limit.
+    let deadline = tokio::time::Instant::now() + poll_timeout;
+    crate::remote_sh::run_script(&channel, &script, deadline)
         .await
         .map_err(|e| format!("exec: {}", e))?;
     let mut stream = channel.into_stream();
@@ -1182,7 +1184,7 @@ async fn poll_once(
             }
         }
     };
-    tokio::time::timeout(poll_timeout, read_fut)
+    tokio::time::timeout_at(deadline, read_fut)
         .await
         .map_err(|_| "probe script timed out".to_string())?;
     drop(stream);

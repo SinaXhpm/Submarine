@@ -46,6 +46,8 @@ const OUTPUT_TAIL: usize = 8 * 1024;
 /// How long a cancelled remote job gets to stop its tool and clean up before
 /// the channel is closed on it.
 const CANCEL_GRACE_SECS: u64 = 20;
+/// How long a server gets to take a remote job's script.
+const START_SECS: u64 = 60;
 /// The remote tools get the names as arguments. Past this a server could
 /// refuse the command line, so a bigger selection is refused up front.
 const NAMES_MAX_BYTES: usize = 128 * 1024;
@@ -1250,7 +1252,8 @@ async fn run_remote_job(
 ) -> Result<RemoteRun, String> {
     use russh::ChannelMsg;
     let mut channel = crate::shell_sftp::open_session_channel(session).await?;
-    crate::remote_sh::start_script(&channel, script).await.map_err(|e| e.to_string())?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(START_SECS);
+    crate::remote_sh::start_script(&channel, script, deadline).await?;
     let mut out: Vec<u8> = Vec::new();
     let mut code: Option<u32> = None;
     let mut stop_sent: Option<std::time::Instant> = None;

@@ -89,11 +89,11 @@ async fn run_capture(
             .ok_or_else(|| "Session not connected".to_string())?
     };
     let channel = crate::shell_sftp::open_session_channel(&session_arc).await?;
-    // sh reads it, whatever the login shell is (remote_sh).
+    // sh reads it, whatever the login shell is (remote_sh). Sending it and
+    // reading what it prints share the time limit.
     let wrapped = format!("{}\necho __DOCK_EXIT:$?", cmd);
-    crate::remote_sh::run_script(&channel, &wrapped)
-        .await
-        .map_err(|e| e.to_string())?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    crate::remote_sh::run_script(&channel, &wrapped, deadline).await?;
     let mut stream = channel.into_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
     let read_fut = async {
@@ -110,7 +110,7 @@ async fn run_capture(
             }
         }
     };
-    tokio::time::timeout(Duration::from_secs(timeout_secs), read_fut)
+    tokio::time::timeout_at(deadline, read_fut)
         .await
         .map_err(|_| format!("docker command timed out after {}s", timeout_secs))?;
     let text = String::from_utf8_lossy(&buf).into_owned();
@@ -546,9 +546,10 @@ pub async fn ssh_docker_logs_start(
     } else {
         raw_cmd
     };
-    crate::remote_sh::run_script(&channel, &cmd)
-        .await
-        .map_err(|e| e.to_string())?;
+    // The logs then come for as long as they are wanted; only starting has a
+    // time limit.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    crate::remote_sh::run_script(&channel, &cmd, deadline).await?;
     let mut stream = channel.into_stream();
 
     let app_clone = app.clone();

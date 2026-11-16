@@ -675,7 +675,9 @@ pub fn ftp_facts(user: &str, home: &str) -> Facts {
 /// counts as having no POSIX shell.
 pub async fn probe<H: russh::client::Handler>(conn: &tokio::sync::RwLock<russh::client::Handle<H>>, stop: tokio::sync::watch::Receiver<bool>) -> Result<Facts, String> {
     let mut channel = open_channel(conn).await?;
-    crate::remote_sh::run_script(&channel, FACTS_SCRIPT).await.map_err(|e| format!("couldn't run the probe: {e}"))?;
+    // Sending the script and reading the facts share the 20 seconds.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    crate::remote_sh::run_script(&channel, FACTS_SCRIPT, deadline).await.map_err(|e| format!("couldn't run the probe: {e}"))?;
     let mut out = Vec::new();
     let mut stop = stop;
     let read = async {
@@ -693,7 +695,7 @@ pub async fn probe<H: russh::client::Handler>(conn: &tokio::sync::RwLock<russh::
     };
     tokio::select! {
         _ = read => {}
-        _ = tokio::time::sleep(Duration::from_secs(20)) => {}
+        _ = tokio::time::sleep_until(deadline) => {}
         _ = stop.changed() => {}
     }
     let _ = channel.close().await;

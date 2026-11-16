@@ -19396,7 +19396,9 @@ async fn run_info_script(
 
     let start = std::time::Instant::now();
     let channel = shell_sftp::open_session_channel(&session_arc).await?;
-    remote_sh::run_script(&channel, script).await.map_err(|e| e.to_string())?;
+    // Sending the script and reading what it prints share the time limit.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    remote_sh::run_script(&channel, script, deadline).await?;
     let mut stream = channel.into_stream();
 
     // 1 MB cap — defends the UI against pathological output (e.g. a server
@@ -19426,7 +19428,7 @@ async fn run_info_script(
             }
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), read_fut)
+    tokio::time::timeout_at(deadline, read_fut)
         .await
         .map_err(|_| format!("probe timed out after {}s", timeout_secs))?;
 
@@ -19649,7 +19651,8 @@ async fn run_exec_capture(
             .ok_or_else(|| "Session not connected".to_string())?
     };
     let channel = shell_sftp::open_session_channel(&session_arc).await?;
-    remote_sh::run_script(&channel, cmd).await.map_err(|e| e.to_string())?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    remote_sh::run_script(&channel, cmd, deadline).await?;
     let mut stream = channel.into_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let read_fut = async {
@@ -19664,7 +19667,7 @@ async fn run_exec_capture(
             }
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), read_fut)
+    tokio::time::timeout_at(deadline, read_fut)
         .await
         .map_err(|_| format!("exec timed out after {}s", timeout_secs))?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
@@ -19905,16 +19908,11 @@ async fn exec_with_stdin_capture<H: russh::client::Handler>(
 ) -> Result<String, String> {
     use russh::ChannelMsg;
     let mut channel = shell_sftp::open_session_channel(session).await?;
-    let started = match stdin {
-        None => remote_sh::run_script(&channel, script).await,
-        Some(input) => async {
-            remote_sh::start_script_before_input(&channel, script).await?;
-            channel.data(input).await?;
-            channel.eof().await
-        }
-        .await,
-    };
-    started.map_err(|e| e.to_string())?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    match stdin {
+        None => remote_sh::run_script(&channel, script, deadline).await?,
+        Some(input) => remote_sh::start_script_with_input(&channel, script, input, true, deadline).await?,
+    }
     let mut out: Vec<u8> = Vec::new();
     let collect = async {
         while let Some(msg) = channel.wait().await {
@@ -19929,7 +19927,7 @@ async fn exec_with_stdin_capture<H: russh::client::Handler>(
             }
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), collect)
+    tokio::time::timeout_at(deadline, collect)
         .await
         .map_err(|_| format!("exec timed out after {}s", timeout_secs))?;
     Ok(String::from_utf8_lossy(&out).into_owned())
@@ -20201,28 +20199,28 @@ mod sftp_config_tests {
 /// rc prints before it is skipped. In password mode sudo always prompts
 /// (`-k`), so it consumes exactly the password line and the SFTP bytes that
 /// follow go to sftp-server. sh runs the line, and what follows it on stdin
-/// is left to sudo and sftp-server (`remote_sh::start_script_before_input`).
+/// is left to sudo and sftp-server (`remote_sh::start_script_with_input`).
 async fn open_elevated_sftp(
     session_arc: &SessionHandleArc,
     server_path: &str,
     password: Option<&zeroize::Zeroizing<String>>,
 ) -> Result<russh_sftp::client::SftpSession, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncReadExt;
     if !is_safe_remote_exec_path(server_path) {
         return Err(format!("{}: unusual sftp-server path", SUDO_FAILED));
     }
     let sudo = if password.is_some() { "sudo -S -k -p ''" } else { "sudo -n" };
     let script = format!("echo {}; exec {} {}", ELEVATED_SFTP_READY, sudo, server_path);
     let channel = shell_sftp::open_session_channel(session_arc).await?;
-    remote_sh::start_script_before_input(&channel, &script).await.map_err(|e| e.to_string())?;
-    let mut stream = channel.into_stream();
+    // The script, the password and the ready marker, all by one deadline.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut line = zeroize::Zeroizing::new(Vec::new());
     if let Some(pw) = password {
-        let mut line = zeroize::Zeroizing::new(Vec::with_capacity(pw.len() + 1));
         line.extend_from_slice(pw.as_bytes());
         line.push(b'\n');
-        stream.write_all(&line).await.map_err(|e| e.to_string())?;
-        stream.flush().await.map_err(|e| e.to_string())?;
     }
+    remote_sh::start_script_with_input(&channel, &script, &line, false, deadline).await?;
+    let mut stream = channel.into_stream();
     let wait_ready = async {
         let mut line: Vec<u8> = Vec::new();
         let mut byte = [0u8; 1];
@@ -20247,7 +20245,7 @@ async fn open_elevated_sftp(
             }
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(20), wait_ready)
+    tokio::time::timeout_at(deadline, wait_ready)
         .await
         .map_err(|_| format!("{}: timed out starting sftp-server via sudo", SUDO_FAILED))??;
     russh_sftp::client::SftpSession::new_with_config(sftp_listing::counted(stream), sftp_client_config())
