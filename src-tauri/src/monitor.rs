@@ -17,6 +17,7 @@
 //! V2 concern and would be additive rather than restructuring this module.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -103,6 +104,19 @@ impl MonitorSettings {
 }
 
 pub type SharedSettings = Arc<Mutex<MonitorSettings>>;
+
+/// The device's "Use keys from an ssh-agent" setting (src/util/sshAgent.ts),
+/// as the page last gave it. Device-local, so not in `MonitorSettings`, which
+/// is saved in the profile. A poller reads it at each connect, so a change
+/// reaches running monitors at their next connect. Off until the page says,
+/// so no agent is asked before then.
+static USE_AGENT: AtomicBool = AtomicBool::new(false);
+
+/// Set the device's "Use keys from an ssh-agent" setting for monitoring. The
+/// page gives it at start, whenever it changes, and with each resume.
+pub fn set_use_agent(on: bool) {
+    USE_AGENT.store(on, Ordering::Relaxed);
+}
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -534,7 +548,7 @@ async fn run_poller(
         // a slow or hung handshake tears the poller down at once, instead of
         // waiting out the connect/handshake budget (up to connect_timeout * 2).
         if handle.as_ref().map(|h| h.is_closed()).unwrap_or(true) {
-            let target = match with_ssh_config(&auth, &node_name).await {
+            let (target, agent_config) = match with_ssh_config(&auth, &node_name).await {
                 Ok(t) => t,
                 Err(why) => {
                     // Not a failure: no outage count, no alert. Looked at
@@ -547,10 +561,16 @@ async fn run_poller(
                     continue;
                 }
             };
+            // Read at each connect, so a change in Settings counts from the next one.
+            let use_agent = USE_AGENT.load(Ordering::Relaxed);
             let connected = tokio::select! {
                 _ = &mut stop_rx => break,
-                // The handshake has its own budget; the logins after it had none.
-                r = within(connect_timeout * 4, connect_for_monitor(&db, &target, connect_timeout)) => r,
+                // The handshake has its own budget; the logins after it had
+                // none. This bounds an ssh-agent's part too.
+                r = within(
+                    connect_timeout * 4,
+                    connect_for_monitor(&db, &target, &agent_config, connect_timeout, use_agent),
+                ) => r,
             };
             match connected {
                 Ok(h) => {
@@ -815,30 +835,106 @@ async fn open_transport(auth: &NodeAuth, connect_timeout: Duration) -> Result<Bo
     }
 }
 
-/// Decide what auth methods are actually usable from the resolved `NodeAuth`.
-/// A vault entry of type "key" yields `(key_pem, passphrase)`; a "password"
-/// vault entry yields `password`. We compute this once and present clear
-/// errors when the entry is somehow malformed (empty key body, etc.).
-fn classify_auth(auth: &NodeAuth) -> Result<(Option<(String, Option<String>)>, Option<String>), String> {
-    let key = auth
-        .private_key
-        .as_ref()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(|pem| (pem, auth.passphrase.clone()));
-    let pass = auth
-        .password
-        .as_ref()
-        .filter(|p| !p.is_empty())
-        .cloned();
-    if key.is_none() && pass.is_none() {
-        // A node saved without its password is asked for it at connect time
-        // (issue #30), but monitoring has no UI to ask on.
-        return Err(
-            "No saved password or key for this node — monitoring can't ask for one; save the password to monitor it".into(),
-        );
+/// How the monitor logs in to a node.
+#[derive(Debug, PartialEq)]
+enum Login {
+    /// The node's saved key, with its saved passphrase if any.
+    Key { pem: String, passphrase: Option<String> },
+    /// The node's saved password: only when no key is saved.
+    Password(String),
+    /// Neither is saved: the keys an ssh-agent on this device holds, without
+    /// its security keys (`log_in_with_agent`). Only with the device's "Use
+    /// keys from an ssh-agent" setting on.
+    Agent,
+}
+
+/// How to log in, from the resolved `NodeAuth` and the device's "Use keys from
+/// an ssh-agent" setting (`use_agent`). A vault entry of type "key" yields the
+/// key and its passphrase; a "password" entry yields the password. An empty
+/// key body or password counts as none.
+fn classify_auth(auth: &NodeAuth, use_agent: bool) -> Result<Login, String> {
+    if let Some(pem) = auth.private_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(Login::Key { pem: pem.to_string(), passphrase: auth.passphrase.clone() });
     }
-    Ok((key, pass))
+    if let Some(password) = auth.password.as_ref().filter(|p| !p.is_empty()) {
+        return Ok(Login::Password(password.clone()));
+    }
+    // A node saved without its password is asked for it at connect time
+    // (issue #30), but monitoring has no UI to ask on.
+    if use_agent {
+        Ok(Login::Agent)
+    } else {
+        Err(NO_SAVED_LOGIN.into())
+    }
+}
+
+const NO_SAVED_LOGIN: &str = "No password or key is saved for this node, and monitoring can't ask for one. Save a password or key, or turn on \"Use keys from an ssh-agent\" in Settings and load the key into the agent.";
+const NO_AGENT_WITH_KEY: &str = "No password or key is saved for this node, and no ssh-agent with a key was found. Save a password or key, or load the key into an ssh-agent.";
+const IDENTITIES_ONLY: &str = "No password or key is saved for this node, and ~/.ssh/config sets IdentitiesOnly yes for it, so the keys in an ssh-agent aren't used. Save a password or key to monitor it.";
+
+/// What `~/.ssh/config` says about the ssh-agent for a node, for a login with
+/// the agent's keys (`Login::Agent`).
+#[derive(Debug, Clone, Default)]
+struct AgentConfig {
+    /// `IdentityAgent`, when it applies: only that agent, or none.
+    identity_agent: Option<crate::ssh_config::IdentityAgent>,
+    /// `IdentitiesOnly yes`: only the key files the config names are used, so
+    /// none of the agent's keys, as in a session (`agent_allowed` in lib.rs).
+    identities_only: bool,
+}
+
+/// The ssh-agent for a node with no saved password or key, as `~/.ssh/config`
+/// allows. `Err` says why there's none, for the node's status line.
+async fn agent_for_monitor(config: &AgentConfig) -> Result<crate::agent_auth::AgentSession, String> {
+    if config.identities_only {
+        return Err(IDENTITIES_ONLY.into());
+    }
+    let mut why: Option<String> = None;
+    let found = crate::agent_auth::find_agent_for(config.identity_agent.clone(), |m| why = Some(m)).await;
+    match (found, why) {
+        (Some(agent), _) => Ok(agent),
+        // The config ruled the agent out, and says why.
+        (None, Some(why)) => Err(format!("No password or key is saved for this node. {why} Save a password or key to monitor it.")),
+        (None, None) => Err(NO_AGENT_WITH_KEY.into()),
+    }
+}
+
+/// Log in with the keys `agent` holds, leaving out its security keys
+/// (`Offer::Unattended`). An agent that asks to approve each use of a key asks
+/// once per connection, not per reading. `limit` bounds the whole offer, so an
+/// agent that never answers (waiting on an approval nobody gives) can't hold
+/// the poller; the error then names the agent, not the server.
+async fn log_in_with_agent<H: client::Handler>(
+    session: &mut client::Handle<H>,
+    user: &str,
+    agent: &mut crate::agent_auth::AgentSession,
+    limit: Duration,
+) -> Result<(), String> {
+    use crate::agent_auth::{capitalized, offer_keys, AgentOutcome, Offer};
+    let source = agent.source;
+    let offered = tokio::time::timeout(limit, offer_keys(session, user, agent, Offer::Unattended, |_| {})).await;
+    match offered {
+        Ok(Ok(AgentOutcome::Authenticated)) => Ok(()),
+        Ok(Ok(AgentOutcome::PartialSuccess { .. })) => Err(format!(
+            "The server accepted a key from {source} but asks for more, such as a password or a code, which monitoring can't give."
+        )),
+        Ok(Ok(AgentOutcome::NotAccepted)) => Err(format!(
+            "The server didn't accept the keys from {source}. Save a password or key for this node to monitor it."
+        )),
+        // Every key is a security key (the agent lists at least one key).
+        Ok(Ok(AgentOutcome::NothingToOffer)) => Err(format!(
+            "{} holds only security keys, which monitoring leaves out: they wait for a touch or a PIN. Save a password or key for this node to monitor it.",
+            capitalized(source)
+        )),
+        Ok(Err(russh::Error::Keys(e))) => Err(format!(
+            "{} would not sign with the key the server accepted ({e}). Unlock the agent or approve its request; monitoring tries again by itself.",
+            capitalized(source)
+        )),
+        Ok(Err(e)) => Err(format!("Logging in with keys from {source} failed: {e}")),
+        Err(_) => Err(format!(
+            "Logging in with keys from {source} took too long. If the agent asks to approve each use of a key, approve it; monitoring tries again by itself."
+        )),
+    }
 }
 
 /// russh client config for monitor connections. The algorithm lists and the
@@ -866,12 +962,13 @@ fn monitor_client_config() -> client::Config {
 }
 
 /// The node as `~/.ssh/config` resolves it: an alias's HostName and Port, and
-/// its User when none is saved. The monitor takes nothing else from the config
-/// (no ProxyCommand / ProxyJump, key files or agent): in the background it
-/// never runs commands or asks for anything. A node the config sends through
-/// a ProxyCommand or ProxyJump (and that has no proxy of its own) isn't
-/// checked at all: `Err` says why.
-async fn with_ssh_config(auth: &NodeAuth, node_name: &str) -> Result<NodeAuth, String> {
+/// its User when none is saved, plus what it says about the ssh-agent
+/// (IdentityAgent, IdentitiesOnly) for a node with no saved password or key.
+/// The monitor takes nothing else from the config (no ProxyCommand /
+/// ProxyJump or key files): in the background it never runs commands or asks
+/// for anything. A node the config sends through a ProxyCommand or ProxyJump
+/// (and that has no proxy of its own) isn't checked at all: `Err` says why.
+async fn with_ssh_config(auth: &NodeAuth, node_name: &str) -> Result<(NodeAuth, AgentConfig), String> {
     let mut t = crate::ConfigTarget::resolve(&auth.host, auth.port, &auth.username, Some(node_name.to_string())).await;
     let own_route = match auth.proxy_type.as_str() {
         "socks5" => Some("SOCKS5 proxy"),
@@ -881,7 +978,13 @@ async fn with_ssh_config(auth: &NodeAuth, node_name: &str) -> Result<NodeAuth, S
     match t.proxy(own_route) {
         Some(crate::ssh_config::Proxy::Command(_)) => Err(NOT_CHECKED_PROXY_COMMAND.into()),
         Some(crate::ssh_config::Proxy::Jump(_)) => Err(NOT_CHECKED_PROXY_JUMP.into()),
-        _ => Ok(NodeAuth { host: t.host, port: t.port, username: t.user, ..auth.clone() }),
+        _ => {
+            let agent = AgentConfig {
+                identity_agent: t.identity_agent(),
+                identities_only: t.config.as_ref().is_some_and(|c| c.identities_only == Some(true)),
+            };
+            Ok((NodeAuth { host: t.host, port: t.port, username: t.user, ..auth.clone() }, agent))
+        }
     }
 }
 
@@ -890,10 +993,15 @@ const NOT_CHECKED_PROXY_COMMAND: &str =
 const NOT_CHECKED_PROXY_JUMP: &str =
     "Not checked: ~/.ssh/config reaches this server through a ProxyJump, which status checks don't use.";
 
+/// Connect and log in. `use_agent` is the device's "Use keys from an
+/// ssh-agent" setting; `agent_config` what `~/.ssh/config` says about the
+/// agent for this node.
 async fn connect_for_monitor(
     db: &Arc<std::sync::Mutex<Option<rusqlite::Connection>>>,
     auth: &NodeAuth,
+    agent_config: &AgentConfig,
     connect_timeout: Duration,
+    use_agent: bool,
 ) -> Result<russh::client::Handle<MonitorHandler>, String> {
     if auth.username.trim().is_empty() {
         // A node saved without a username is asked "Login as" when a terminal
@@ -903,7 +1011,13 @@ async fn connect_for_monitor(
             "No username is saved for this node — monitoring can't ask for one; save the username to monitor it".into(),
         );
     }
-    let (key_pair, password) = classify_auth(auth)?;
+    let login = classify_auth(auth, use_agent)?;
+    // Looked for before the server is contacted: without an agent that holds
+    // a key there's nothing to log in with.
+    let mut agent = match login {
+        Login::Agent => Some(agent_for_monitor(agent_config).await?),
+        _ => None,
+    };
 
     // Asks the host for the kinds of host key on file for it first, as the
     // session does, so both negotiate the key that's trusted.
@@ -936,28 +1050,29 @@ async fn connect_for_monitor(
     .map_err(|_| format!("SSH handshake to {}:{} timed out", auth.host, auth.port))?
     .map_err(|e| format!("SSH connect: {}", e))?;
 
-    // Auth order: try key first (more secure), only fall back to password
-    // if key auth wasn't possible (no key in entry) or russh signalled
-    // "method failed but server said try another". We DO NOT silently fall
-    // back from a rejected key to password — that would risk leaking the
-    // password to a server the user explicitly chose key auth for.
+    // Auth order: the saved key first (more secure), the saved password only
+    // when no key is saved (`classify_auth`). We DO NOT silently fall back
+    // from a rejected key to password — that would risk leaking the password
+    // to a server the user explicitly chose key auth for. With neither saved,
+    // the keys an ssh-agent holds.
     let mut last_err: Option<String> = None;
     let mut accepted = false;
 
     // A security key's file holds only a handle, and signing with it would end
-    // the session: only an ssh-agent can sign for it, and monitoring doesn't
-    // use one. Looked for before decoding too, so a missing passphrase isn't
-    // blamed.
+    // the session: only an ssh-agent can sign for it, and monitoring offers no
+    // security key, not even an agent's (nobody is there to touch it). Looked
+    // for before decoding too, so a missing passphrase isn't blamed.
     let security_key = || {
         format!(
             "the SSH key for {}@{} is a security key, which monitoring can't use: only an ssh-agent can sign with it",
             auth.username, auth.host,
         )
     };
-    if key_pair.as_ref().is_some_and(|(pem, _)| crate::agent_auth::security_key_file(pem).is_some()) {
-        last_err = Some(security_key());
-    } else if let Some((pem, passphrase)) = key_pair.as_ref() {
-        match crate::decode_private_key_blocking(pem, passphrase.as_deref()).await {
+    match &login {
+        Login::Key { pem, .. } if crate::agent_auth::security_key_file(pem).is_some() => {
+            last_err = Some(security_key());
+        }
+        Login::Key { pem, passphrase } => match crate::decode_private_key_blocking(pem, passphrase.as_deref()).await {
             Ok(kp) if crate::agent_auth::is_security_key(&kp.algorithm()) => last_err = Some(security_key()),
             Ok(kp) => {
                 match crate::ssh_manager::authenticate_with_key(&mut session, &auth.username, kp)
@@ -991,13 +1106,10 @@ async fn connect_for_monitor(
             Err(crate::KeyDecodeError::Malformed(m)) => {
                 last_err = Some(format!("could not decode private key: {}", m));
             }
-        }
-    }
-
-    // Try password only if key wasn't configured at all. If key was
-    // configured but rejected, surface that — see comment above.
-    if !accepted && key_pair.is_none() {
-        if let Some(p) = password.as_ref() {
+        },
+        // Only when no key is saved. A saved key that was rejected is
+        // reported instead — see the comment above.
+        Login::Password(p) => {
             match crate::ssh_manager::authenticate_with_password(&mut session, &auth.username, p).await {
                 Ok(true) => accepted = true,
                 Ok(false) => last_err = Some(format!(
@@ -1006,6 +1118,16 @@ async fn connect_for_monitor(
                 )),
                 Err(e) => last_err = Some(format!("password: {}", e)),
             }
+        }
+        Login::Agent => {
+            // Looked up above, before the server was contacted.
+            let Some(agent) = agent.as_mut() else {
+                return Err(NO_AGENT_WITH_KEY.into());
+            };
+            // Within the connect's own limit (`within` in run_poller), and
+            // with a shorter one of its own, so the error names the agent.
+            log_in_with_agent(&mut session, &auth.username, agent, connect_timeout * 2).await?;
+            accepted = true;
         }
     }
 
@@ -1770,5 +1892,142 @@ mod tests {
             (session.gex.min_group_size(), session.gex.preferred_group_size(), session.gex.max_group_size()),
         );
         assert_eq!(monitor.keepalive_max, 0);
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::{
+        agent_for_monitor, classify_auth, log_in_with_agent, AgentConfig, Login, NodeAuth, IDENTITIES_ONLY,
+        NO_SAVED_LOGIN,
+    };
+    use crate::agent_auth::tests::{agent_holding, agent_never_signing, key, security_key};
+    use crate::ssh_config::IdentityAgent;
+    use crate::ssh_test_server::{self, TestClient, TestServer};
+    use russh::keys::PrivateKey;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn node(password: Option<&str>, private_key: Option<&str>) -> NodeAuth {
+        NodeAuth {
+            host: "h".into(),
+            port: 22,
+            username: "u".into(),
+            password: password.map(Into::into),
+            private_key: private_key.map(Into::into),
+            passphrase: None,
+            proxy_type: "none".into(),
+            proxy_host: None,
+            proxy_port: None,
+        }
+    }
+
+    #[test]
+    fn a_saved_key_or_password_is_used_whatever_the_agent_setting() {
+        for use_agent in [false, true] {
+            let mut with_key = node(Some("pw"), Some("  KEY \n"));
+            with_key.passphrase = Some("pp".into());
+            assert_eq!(
+                classify_auth(&with_key, use_agent),
+                Ok(Login::Key { pem: "KEY".into(), passphrase: Some("pp".into()) })
+            );
+            // A blank key body counts as none: the password is used.
+            assert_eq!(classify_auth(&node(Some("pw"), Some(" \n")), use_agent), Ok(Login::Password("pw".into())));
+            assert_eq!(classify_auth(&node(Some("pw"), None), use_agent), Ok(Login::Password("pw".into())));
+        }
+    }
+
+    #[test]
+    fn a_node_with_nothing_saved_uses_the_agent_only_when_the_setting_is_on() {
+        for empty in [node(None, None), node(Some(""), Some("  "))] {
+            assert_eq!(classify_auth(&empty, true), Ok(Login::Agent));
+            let err = classify_auth(&empty, false).unwrap_err();
+            assert_eq!(err, NO_SAVED_LOGIN);
+            assert!(err.contains("\"Use keys from an ssh-agent\""), "{err}");
+        }
+    }
+
+    // What ~/.ssh/config says rules the agent out before any agent is asked.
+    #[tokio::test]
+    async fn the_config_can_rule_the_agent_out() {
+        let only = AgentConfig { identities_only: true, ..AgentConfig::default() };
+        assert_eq!(agent_for_monitor(&only).await.err().as_deref(), Some(IDENTITIES_ONLY));
+        for setting in [IdentityAgent::Disabled, IdentityAgent::Unusable("$NOPE".into(), "NOPE isn't set".into())] {
+            let config = AgentConfig { identity_agent: Some(setting), identities_only: false };
+            let err = agent_for_monitor(&config).await.err().expect("no agent");
+            assert!(err.starts_with("No password or key is saved for this node. "), "{err}");
+            assert!(err.contains("IdentityAgent") && err.contains("so no ssh-agent is used."), "{err}");
+            assert!(err.ends_with("Save a password or key to monitor it."), "{err}");
+        }
+    }
+
+    /// An unauthenticated session to a server that accepts only `accept`, and
+    /// its count of public keys offered.
+    async fn session_to(accept: Option<&PrivateKey>) -> (russh::client::Handle<TestClient>, Arc<AtomicUsize>) {
+        let server = TestServer::accepting_key(accept.map(|k| k.public_key().clone()), false);
+        let offers = Arc::clone(&server.pk_offers);
+        let session = ssh_test_server::handshake(server, russh::client::Config::default())
+            .await
+            .expect("handshake");
+        (session, offers)
+    }
+
+    const LIMIT: Duration = Duration::from_secs(10);
+
+    #[tokio::test]
+    async fn the_monitor_logs_in_with_an_agents_key_and_leaves_security_keys_out() {
+        let (sk, plain) = (security_key(1), key(2));
+        let (mut session, offers) = session_to(Some(&plain)).await;
+        let mut agent = agent_holding(&[sk, plain], false).await;
+        log_in_with_agent(&mut session, "u", &mut agent, LIMIT).await.expect("logged in");
+        assert_eq!(offers.load(Ordering::SeqCst), 1, "only the plain key is offered");
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_only_security_keys_offers_nothing() {
+        // The server would take it: it's still not offered.
+        let sk = security_key(1);
+        let (mut session, offers) = session_to(Some(&sk)).await;
+        let mut agent = agent_holding(&[sk], false).await;
+        let err = log_in_with_agent(&mut session, "u", &mut agent, LIMIT).await.unwrap_err();
+        assert!(err.starts_with("The test agent holds only security keys"), "{err}");
+        assert_eq!(offers.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn keys_the_server_turns_down_are_reported() {
+        let (mut session, _) = session_to(None).await;
+        let mut agent = agent_holding(&[key(1)], false).await;
+        let err = log_in_with_agent(&mut session, "u", &mut agent, LIMIT).await.unwrap_err();
+        assert!(err.starts_with("The server didn't accept the keys from the test agent."), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_signature_names_the_agent() {
+        let a = key(1);
+        let (mut session, _) = session_to(Some(&a)).await;
+        let mut agent = agent_holding(&[a], true).await;
+        let err = log_in_with_agent(&mut session, "u", &mut agent, LIMIT).await.unwrap_err();
+        assert!(err.starts_with("The test agent would not sign"), "{err}");
+    }
+
+    // An agent waiting on an approval nobody gives can't hold the poller: the
+    // login ends at its limit, with an error that names the agent.
+    #[tokio::test]
+    async fn an_agent_that_never_signs_cannot_hold_the_monitor() {
+        let a = key(1);
+        let (mut session, _) = session_to(Some(&a)).await;
+        let mut agent = agent_never_signing(&[a]).await;
+        let started = std::time::Instant::now();
+        let ended = tokio::time::timeout(
+            LIMIT,
+            log_in_with_agent(&mut session, "u", &mut agent, Duration::from_millis(300)),
+        )
+        .await
+        .expect("the login's own limit ends it");
+        let err = ended.unwrap_err();
+        assert!(err.starts_with("Logging in with keys from the test agent took too long."), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }
