@@ -138,8 +138,35 @@ async fn run_docker_smart(
     docker_cmd: &str,
     timeout: u64,
 ) -> Result<(bool, String, bool), String> {
-    let cmd = format!("{} 2>&1", docker_cmd);
-    let (code1, out1) = run_capture(state, session_id, &cmd, timeout).await?;
+    let plain = format!("{} 2>&1", docker_cmd);
+    let with_sudo = format!("sudo -n {} 2>&1", docker_cmd);
+    run_with_sudo_retry(state, session_id, &plain, &with_sudo, timeout).await
+}
+
+// A compose command (`args` after `compose`), sudo-retried like the others.
+async fn run_compose_smart(
+    state: &SshState,
+    session_id: &str,
+    args: &str,
+    timeout: u64,
+) -> Result<(bool, String, bool), String> {
+    let plain = format!("{} 2>&1", compose_command(args, false));
+    let with_sudo = format!("{} 2>&1", compose_command(args, true));
+    run_with_sudo_retry(state, session_id, &plain, &with_sudo, timeout).await
+}
+
+// Runs `plain`; when that failed on the daemon socket's permission, runs
+// `with_sudo` instead. Both are whole commands: the caller decides where
+// `sudo -n` goes (in front of a compose command, not of the shell code that
+// picks it).
+async fn run_with_sudo_retry(
+    state: &SshState,
+    session_id: &str,
+    plain: &str,
+    with_sudo: &str,
+    timeout: u64,
+) -> Result<(bool, String, bool), String> {
+    let (code1, out1) = run_capture(state, session_id, plain, timeout).await?;
     let lower = out1.to_lowercase();
     let needs_sudo = code1 != 0
         && (lower.contains("permission denied")
@@ -149,8 +176,7 @@ async fn run_docker_smart(
     if code1 == 0 || !needs_sudo {
         return Ok((code1 == 0, out1, false));
     }
-    let sudo_cmd = format!("sudo -n {}", cmd);
-    let (code2, out2) = run_capture(state, session_id, &sudo_cmd, timeout).await?;
+    let (code2, out2) = run_capture(state, session_id, with_sudo, timeout).await?;
     Ok((code2 == 0, out2, true))
 }
 
@@ -339,8 +365,20 @@ pub async fn ssh_docker_volumes_list(
 
 // Compose plugin first (`docker compose`); fall back to legacy script if
 // the plugin isn't installed. Caller never has to care which is present.
-fn compose_prefix() -> &'static str {
-    "( docker compose version >/dev/null 2>&1 && CCMD='docker compose' ) || CCMD='docker-compose'; $CCMD"
+/// A compose command with `args`: the compose plugin (`docker compose`) when
+/// the server has it, else the old `docker-compose`. The choice is made in
+/// the same shell as the command. (It used to be made inside `( … )`, a
+/// subshell, so it was lost: with the plugin, "compose ls" ran a bare
+/// `ls --all` and the `-f` actions failed. And `sudo -n` in front of the
+/// whole line was a syntax error.) With `sudo`, `sudo -n` goes in front of
+/// the compose command itself. `$CCMD` is unquoted on purpose: `docker
+/// compose` is two words.
+fn compose_command(args: &str, sudo: bool) -> String {
+    format!(
+        "if docker compose version >/dev/null 2>&1; then CCMD='docker compose'; else CCMD='docker-compose'; fi; {}$CCMD {}",
+        if sudo { "sudo -n " } else { "" },
+        args
+    )
 }
 
 #[tauri::command]
@@ -353,8 +391,7 @@ pub async fn ssh_docker_compose_list(
     // others JSONL, others prefix deprecation warnings to the JSON which
     // breaks `JSON.parse`. The text columns are stable since the compose
     // plugin was added and are trivially parseable on the frontend.
-    let cmd = format!("{} ls --all", compose_prefix());
-    let (success, data, used_sudo) = run_docker_smart(&state, &session_id, &cmd, 20).await?;
+    let (success, data, used_sudo) = run_compose_smart(&state, &session_id, "ls --all", 20).await?;
     Ok(DockerTextResult {
         success,
         data,
@@ -395,12 +432,8 @@ pub async fn ssh_docker_compose_services(
     if !is_safe_path(&compose_file) {
         return Err("invalid compose file path".into());
     }
-    let cmd = format!(
-        "{} -f {} ps --all --format json",
-        compose_prefix(),
-        shq(&compose_file)
-    );
-    let (success, data, used_sudo) = run_docker_smart(&state, &session_id, &cmd, 30).await?;
+    let args = format!("-f {} ps --all --format json", shq(&compose_file));
+    let (success, data, used_sudo) = run_compose_smart(&state, &session_id, &args, 30).await?;
     Ok(DockerTextResult {
         success,
         data,
@@ -438,14 +471,8 @@ pub async fn ssh_docker_compose_action(
         "up" => "up -d --no-deps".to_string(),
         other => other.to_string(),
     };
-    let cmd = format!(
-        "{} -f {} {}{}",
-        compose_prefix(),
-        shq(&compose_file),
-        action_args,
-        svc
-    );
-    let (success, output, used_sudo) = run_docker_smart(&state, &session_id, &cmd, 300).await?;
+    let args = format!("-f {} {}{}", shq(&compose_file), action_args, svc);
+    let (success, output, used_sudo) = run_compose_smart(&state, &session_id, &args, 300).await?;
     Ok(DockerActionResult {
         success,
         output,
@@ -755,6 +782,59 @@ pub async fn open_container_terminal(
     ));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod compose_command_tests {
+    use super::compose_command;
+
+    #[test]
+    fn the_choice_is_made_in_the_same_shell_and_sudo_goes_on_the_compose_command() {
+        let plain = compose_command("ls --all", false);
+        assert!(!plain.contains('('), "no subshell: {plain}");
+        assert!(plain.starts_with("if docker compose version >/dev/null 2>&1; then CCMD='docker compose'; else CCMD='docker-compose'; fi; "));
+        assert!(plain.ends_with("; $CCMD ls --all"), "{plain}");
+        let sudo = compose_command("-f '/srv/app/compose.yml' up -d --no-deps", true);
+        assert!(sudo.ends_with("; sudo -n $CCMD -f '/srv/app/compose.yml' up -d --no-deps"), "{sudo}");
+        assert_eq!(sudo.matches("sudo").count(), 1, "sudo only on the compose command: {sudo}");
+    }
+
+    // The command text in a real sh, with a stand-in `docker` (and `sudo`) on
+    // PATH: with the compose plugin, without it, and through sudo.
+    #[cfg(unix)]
+    #[test]
+    fn the_command_runs_the_right_compose_in_sh() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("sub-compose-{}", std::process::id()));
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let tool = |name: &str, body: &str| {
+            let p = bin.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let run = |cmd: &str| {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{cmd} 2>&1"))
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        // A docker with the compose plugin: `docker compose version` works.
+        tool("docker", "echo \"docker $*\"");
+        tool("docker-compose", "echo \"docker-compose $*\"");
+        tool("sudo", "shift; \"$@\"");
+        assert_eq!(run(&compose_command("ls --all", false)), "docker compose ls --all");
+        assert_eq!(run(&compose_command("ls --all", true)), "docker compose ls --all");
+        // Without the plugin: `docker compose` fails, the old binary runs.
+        tool("docker", "[ \"$1\" = compose ] && exit 1; echo \"docker $*\"");
+        assert_eq!(run(&compose_command("-f 'a b.yml' ps", false)), "docker-compose -f a b.yml ps");
+        assert_eq!(run(&compose_command("-f 'a b.yml' ps", true)), "docker-compose -f a b.yml ps");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
