@@ -6,8 +6,8 @@
 // The VNC tab (VncSessionView) takes the same paste keys and reads the
 // clipboard the same way; it sends the key itself, after the text.
 
-import { invoke } from "@tauri-apps/api/core";
-import { IS_ANDROID, IS_LINUX } from "./platform";
+import { IS_ANDROID } from "./platform";
+import { copyText, readClipboardText } from "./clipboard";
 
 /** The paste keys the backend knows; kept equal to `rdp_client::PasteKeys`. */
 export type PasteKeys = "none" | "ctrlv" | "shiftinsert" | "cmdv";
@@ -38,14 +38,14 @@ export function takeServerCopy(text: string, inFront: boolean, hold: (text: stri
     hold(text);
     return;
   }
-  navigator.clipboard.writeText(text).then(
+  copyText(text).then(
     () => hold(null),
     () => hold(text),
   );
 }
 
-/** This computer's clipboard text. On Linux the backend reads it (the
- *  webview crashes on an empty clipboard there, see TerminalView). */
+/** This device's clipboard text. On Linux and Android the backend reads it
+ *  (see util/clipboard). */
 export function readLocalClipboard(): Promise<string> {
-  return IS_LINUX ? invoke<string>("clipboard_read_text") : navigator.clipboard.readText();
+  return readClipboardText();
 }

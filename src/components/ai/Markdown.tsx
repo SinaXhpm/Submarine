@@ -6,6 +6,7 @@ import {
   Block, Chunk, Inline, LinkDef, ListBlock, ListItem, RefMap, Split, TableBlock,
   inlineDir, inlineText, parseChunk, parseInline, splitBlocks, textDir,
 } from "./markdownParse";
+import { copyText } from "../../util/clipboard";
 
 // An AI reply, drawn from its Markdown (parsed in markdownParse.ts) with React
 // elements only: nothing here sets HTML, so markup in a reply shows as text.
@@ -425,7 +426,7 @@ function CodeBlock({ lang, code, open, insert }: { lang: string; code: string; o
   // down a clipboard write that comes later.
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(trimFinalNewlines(exact ? stripHidden(code) : code));
+      await copyText(trimFinalNewlines(exact ? stripHidden(code) : code));
       setCopied(true);
       window.clearTimeout(timer.current);
       timer.current = window.setTimeout(() => setCopied(false), 1500);

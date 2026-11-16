@@ -1,6 +1,8 @@
 package com.submarine.app
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -46,6 +48,11 @@ class SecureScreenArgs {
 @InvokeArg
 class KeepAliveArgs {
   var open: Boolean = false
+}
+
+@InvokeArg
+class ClipboardWriteArgs {
+  var text: String = ""
 }
 
 @InvokeArg
@@ -148,6 +155,38 @@ class SubmarinePlugin(private val activity: Activity) : Plugin(activity) {
     activity.runOnUiThread {
       applySecureScreen(activity, enabled)
       invoke.resolve(JSObject().apply { put("enabled", enabled) })
+    }
+  }
+
+  // Copy and paste for the page. Android's WebView refuses the page's own
+  // clipboard API (navigator.clipboard): a paste said "Clipboard read denied"
+  // and the copy buttons did nothing. So both go through the system clipboard
+  // here. Android shows its own "pasted from" note on a read (Android 12+).
+  @Command
+  fun clipboardRead(invoke: Invoke) {
+    activity.runOnUiThread {
+      try {
+        val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = cm.primaryClip
+        val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(activity)?.toString() ?: "" else ""
+        invoke.resolve(JSObject().apply { put("text", text) })
+      } catch (e: Exception) {
+        invoke.reject(e.message ?: "The clipboard can't be read")
+      }
+    }
+  }
+
+  @Command
+  fun clipboardWrite(invoke: Invoke) {
+    val text = invoke.parseArgs(ClipboardWriteArgs::class.java).text
+    activity.runOnUiThread {
+      try {
+        val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("Submarine", text))
+        invoke.resolve(JSObject())
+      } catch (e: Exception) {
+        invoke.reject(e.message ?: "The clipboard can't be written")
+      }
     }
   }
 

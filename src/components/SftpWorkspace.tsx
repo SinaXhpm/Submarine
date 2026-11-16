@@ -14,6 +14,7 @@ import { bookmarksKey } from "../util/sftpBookmarks";
 import { FOLLOW_SETUP, type ShellFolderState } from "../util/shellFolder";
 import { t, tk, tn, useT } from "../i18n";
 import { sentenceGap } from "../util/sentences";
+import { copyText } from "../util/clipboard";
 
 // Root (sudo) mode for the remote pane — see `sftp_set_elevated` in lib.rs.
 type ElevationStatus = { elevated: boolean; passwordless: boolean };
@@ -513,7 +514,7 @@ const SftpWorkspace = ({ sessionId, disabled = false, serverId = 0, mirrorsConfi
   }, [followPath, disabled]);
   const copyLine = async (line: string) => {
     try {
-      await navigator.clipboard.writeText(line);
+      await copyText(line);
       notify(t("Copied"), "success");
     } catch {
       notify(t("Couldn't copy it: select the line and copy it from there."), "error");

@@ -4,6 +4,7 @@ import { ExactSegments, ExactText, HiddenWarnings } from "./ExactText";
 import { LineDiff } from "./LineDiff";
 import { inspect, segments } from "../../util/hiddenChars";
 import type { Answer, CallRecord, Preview } from "../../util/aiApi";
+import { copyText } from "../../util/clipboard";
 
 // One tool call in the chat: what it does, exactly; the buttons
 // while it waits for the user; its output while it runs and after. No key
@@ -284,7 +285,7 @@ export const ToolCard = ({ call, live, canAlways, onDecide, onStop, onUndo, undo
                       {full ? "Show less" : `Show all ${lines.length} lines`}
                     </button>
                   )}
-                  <button type="button" onClick={() => void navigator.clipboard.writeText(output).catch(() => {})} className="ml-auto min-h-10 sm:min-h-0 text-[11px] text-zinc-500 hover:text-zinc-300 flex items-center gap-1">
+                  <button type="button" onClick={() => void copyText(output).catch(() => {})} className="ml-auto min-h-10 sm:min-h-0 text-[11px] text-zinc-500 hover:text-zinc-300 flex items-center gap-1">
                     <Copy size={11} /> Copy
                   </button>
                 </div>
