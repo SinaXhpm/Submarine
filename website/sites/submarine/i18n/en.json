@@ -7,6 +7,7 @@
     "skip": "Skip to content",
     "features": "Features",
     "remote": "Remote desktops",
+    "ai": "AI assistant",
     "security": "Security",
     "privacy": "Privacy",
     "download": "Download",
@@ -43,13 +44,13 @@
     "noTracking": "This website uses no cookies, no analytics and no third-party scripts."
   },
   "home": {
-    "title": "Submarine – free SSH & SFTP client with RDP, VNC and Telnet",
-    "description": "Free, open-source SSH and SFTP client with RDP, VNC and Telnet, for Windows, macOS, Linux and Android. Your servers, passwords and keys stay encrypted.",
+    "title": "Submarine – free SSH, SFTP and FTP client with RDP and VNC",
+    "description": "Free, open-source SSH, SFTP and FTP client with RDP, VNC and Telnet, for Windows, macOS, Linux and Android. Encrypted, with an optional AI assistant.",
     "hero": {
       "pillTag": "0.5",
-      "pill": "Remote desktops with a shared clipboard and speed choices",
+      "pill": "Remote desktops, FTP and an AI assistant",
       "title": "All your servers in <em>one encrypted app</em>",
-      "lede": "Submarine is an SSH, SFTP, RDP, VNC and Telnet client for Windows, macOS, Linux and Android. Your servers, passwords and keys are encrypted on your device, and they sync between your devices only if you want them to.",
+      "lede": "Submarine is an SSH, SFTP, FTP, RDP, VNC and Telnet client for Windows, macOS, Linux and Android. Your servers, passwords and keys are encrypted on your device, and they sync between your devices only if you want them to.",
       "download": "Download",
       "security": "How your data is protected",
       "trust": [
@@ -60,7 +61,7 @@
       ],
       "chips": [
         "Encrypted on your device",
-        "SSH · SFTP · RDP · VNC · Telnet",
+        "SSH · SFTP · FTP · RDP · VNC · Telnet",
         "Sync only if you want it"
       ],
       "imageAlt": "Submarine on a computer: an SSH terminal on the left and the two-pane file browser on the right"
@@ -70,6 +71,7 @@
       "items": [
         "a terminal",
         "an SFTP client",
+        "an FTP client",
         "a tunnel manager",
         "an RDP app",
         "a VNC viewer",
@@ -96,6 +98,25 @@
           "id": "files",
           "title": "Two-pane SFTP",
           "text": "Drag and drop, compare folders, edit remote files, archives, sudo, and servers without SFTP."
+        },
+        {
+          "id": "ai",
+          "title": "AI assistant",
+          "text": "Optional, with the AI provider you choose: Anthropic, OpenAI, OpenRouter, a model on your own computer and others. It reads and edits files and runs commands on a server, as far as the level you set allows.",
+          "wide": true,
+          "new": true
+        },
+        {
+          "id": "ftp",
+          "title": "FTP and FTPS",
+          "text": "The same file browser for FTP servers, with TLS by default, directly or through an SSH server or a proxy.",
+          "new": true
+        },
+        {
+          "id": "mcp",
+          "title": "AI agents",
+          "text": "Claude Code and other MCP agents can work on the servers you allow, without seeing a password or a key. On a computer.",
+          "new": true
         },
         {
           "id": "remote",
@@ -159,7 +180,7 @@
         {
           "id": "imports",
           "title": "Imports",
-          "text": "Bring your servers over from PuTTY, MobaXterm and OpenSSH."
+          "text": "Bring your servers over from PuTTY, MobaXterm, OpenSSH and FileZilla."
         }
       ]
     },
@@ -175,6 +196,7 @@
           "points": [
             "Search what the terminal shows with Ctrl+Shift+F, and the commands you typed with Ctrl+Shift+R (Cmd+Shift on a Mac). Plain Ctrl+F and Ctrl+R stay with the shell.",
             "Right-click the + button for a terminal with its own login, on a connection of its own: once, or always for that server.",
+            "Ctrl+Shift+K clears a terminal, Ctrl+Shift+W closes it, and Ctrl+Shift+click on it opens another one for the same server (Cmd+Shift on a Mac).",
             "True colour, {scrollback} lines of scrollback, colour schemes and Nerd Fonts."
           ],
           "alt": "The Wall: three servers side by side in one window"
@@ -187,7 +209,8 @@
             "Compare two folders: files that differ, are newer or exist on one side only are marked.",
             "Edit remote files live, and pack and unpack archives on the server.",
             "Work as root through sudo, even on servers without SFTP.",
-            "Mirror a local folder to a server as you change it (on a computer)."
+            "FTP and FTPS servers open in the same file browser, with TLS unless you choose plain FTP.",
+            "Mirror a local folder to a server as you change it, over SFTP or FTP (on a computer)."
           ],
           "alt": "Comparing a local folder with a remote one: files that differ are marked"
         },
@@ -204,7 +227,7 @@
         {
           "id": "fits",
           "title": "Works with what you already have",
-          "text": "Reads your ~/.ssh/config and imports from PuTTY, MobaXterm and OpenSSH.",
+          "text": "Reads your ~/.ssh/config and imports from PuTTY, MobaXterm, OpenSSH and FileZilla.",
           "points": [
             "Uses your SSH agent: Pageant, the Windows OpenSSH agent, 1Password, hardware keys.",
             "OpenSSH certificates, jump hosts, and HTTP and SOCKS proxies.",
@@ -238,8 +261,8 @@
           "title": "On your phone as well",
           "text": "The same profile on Android, with the same encryption.",
           "points": [
-            "A terminal with a key bar for Ctrl, Alt, Esc, Tab and the arrows.",
-            "File transfer and tunnels.",
+            "A terminal with a key bar for Ctrl, Alt, Shift, Esc, Tab, the arrows and | ~ / -. Tap Ctrl or Alt for the next key, or tap it twice to keep it on.",
+            "File transfer, tunnels and the AI assistant.",
             "Remote desktops with touch, zoom, the shared clipboard, the connection mark and the speed choices. A phone shares no files with an RDP server."
           ],
           "alt": "Submarine on an Android phone: an SSH terminal with a key bar"
@@ -287,6 +310,44 @@
       "altSettings": "The Speed and quality panel of a remote desktop tab",
       "note": "The built-in RDP client is experimental, and off until you choose it for a server (<em>Open in: Submarine's tab</em>). Until then, RDP opens in your computer's RDP app. On Android, the built-in client is the one used."
     },
+    "ai": {
+      "kicker": "New in 0.5",
+      "title": "An AI assistant <em>that asks first</em>",
+      "lede": "Off until you set it up, and with the AI provider you choose. It looks into a server for you, changes files and runs commands, as far as the level you set allows.",
+      "points": [
+        {
+          "id": "provider",
+          "title": "Your own provider",
+          "text": "Anthropic, OpenAI, an OpenAI-compatible service such as OpenRouter, DeepSeek, Groq or Google Gemini, or a model on your own computer through Ollama or LM Studio. Requests go straight from the app to the provider."
+        },
+        {
+          "id": "where",
+          "title": "In every session",
+          "text": "An AI tab in each SSH and FTP session, and an AI page with all your chats. A chat can switch to another model or provider midway."
+        },
+        {
+          "id": "tools",
+          "title": "Reads, edits and runs",
+          "text": "It reads files and folders, writes and edits files, and runs commands on SSH servers. The AI terminal shows each command and its output as it runs. On an FTP server it works with files only."
+        },
+        {
+          "id": "levels",
+          "title": "You choose how far it goes",
+          "text": "Five levels for each server, from <em>Suggest only</em> to <em>Full access</em>. At the default, <em>Ask</em>, commands the app can tell only read run by themselves, and the rest wait for your OK. Every file change is listed in <em>Activity</em> and can be undone there."
+        },
+        {
+          "id": "privacy",
+          "title": "It asks before sending",
+          "text": "Before your first message goes to a provider, the app asks, and names where it goes. A private key in a command's output or in a file is removed before anything is sent. Provider keys and chats are kept encrypted on your device and are never synced."
+        },
+        {
+          "id": "agents",
+          "title": "AI agents on your computer",
+          "text": "Claude Code and other agents that speak MCP can use your servers through Submarine, once you turn it on in <em>Settings → AI agents</em>. An agent asks for access, and you choose the server, the operations, the folders and for how long. It never gets a password, a key or the server's address."
+        }
+      ],
+      "note": "The screens of the AI assistant and the AI agents are in English for now."
+    },
     "privacy": {
       "kicker": "Private by design",
       "title": "Your data is yours. <em>We can't read it.</em>",
@@ -302,7 +363,7 @@
         },
         {
           "title": "No tracking",
-          "text": "No ads, no analytics, no crash reports. The app talks only to your servers, to the sync server if you sign in, to GitHub to check for a new version, and to us when you send feedback."
+          "text": "No ads, no analytics, no crash reports. The app talks only to your servers, to the sync server if you sign in, to GitHub to check for a new version, to us when you send feedback, and to an AI provider only if you add one and use the assistant."
         }
       ],
       "link": "How it works, and how to check it yourself"
@@ -315,7 +376,7 @@
         "Submarine is free and open source under the MIT license.",
         "You don't need an account. An account is only for the optional sync between your devices.",
         "The sync service is free as well, within fair limits: {limitMb} MB of encrypted data, {limitItems} items and {limitProfiles} profiles per account.",
-        "The source code is public. You can read it, build the app yourself, or use a sync server of your own."
+        "The source code of the app and of the sync server is public. You can read it, build the app yourself, or run a sync server of your own."
       ]
     },
     "download": {
@@ -327,12 +388,12 @@
         {
           "id": "windows",
           "name": "Windows",
-          "detail": "Windows 10 and 11 · installer (.exe or .msi)"
+          "detail": "Windows 10 and 11 · installer (.exe or .msi), or a portable .zip from version 0.5"
         },
         {
           "id": "macos",
           "name": "macOS",
-          "detail": "Apple Silicon (M1 and later) · .dmg"
+          "detail": "Apple Silicon (M1 and later), and Intel from version 0.5 · .dmg"
         },
         {
           "id": "linux",
@@ -379,12 +440,24 @@
           "a": "Yes, from version 0.5. VNC shows the screen in a tab and shares the clipboard (plain text). RDP opens in your computer's RDP app, or in a tab with the experimental built-in client, which shares the clipboard and, on a computer, a folder or a drive. In a Submarine tab, both show how the connection is doing and let you trade picture quality for less data. Telnet opens in a terminal tab. All three can go through an SSH server, and Telnet and plain VNC are marked as not encrypted."
         },
         {
+          "q": "Can I use FTP or FTPS?",
+          "a": "Yes, from version 0.5. An FTP server opens in a tab with the same file browser as SFTP, with FTPS (TLS) by default, directly, through an SSH server or through a proxy. Plain FTP is there if you choose it, and the app says it isn't encrypted."
+        },
+        {
+          "q": "Does Submarine have an AI assistant?",
+          "a": "Yes, from version 0.5, and it is off until you set it up in <em>Settings → AI Assistant</em>. It uses your own AI provider (Anthropic, OpenAI, an OpenAI-compatible service, or a local model through Ollama or LM Studio) and works on a server from that session's AI tab, at the level you choose. Nothing goes to a provider until you add one, agree, and send a message."
+        },
+        {
+          "q": "Can Claude Code or another AI agent use my servers through Submarine?",
+          "a": "Yes, on a computer, from version 0.5. Turn it on in <em>Settings → AI agents</em>, which shows how to add Submarine to the agent (it speaks MCP). The agent asks for access, and you choose the server, the operations, the folders and the time. It never gets a password, a key or the server's address."
+        },
+        {
           "q": "What does a remote desktop get from my computer?",
           "a": "Clipboard text when you paste into its tab, and nothing before that. Text copied on the server comes to your clipboard while <em>Share the clipboard</em> is on. Files only if you choose a folder or a drive for the built-in RDP client, on a computer. These choices are kept on your device and never synced, so nobody you share a profile with can turn them on."
         },
         {
           "q": "Which systems does it run on?",
-          "a": "Windows 10 and 11, macOS on Apple Silicon (M1 and later), Linux (.deb, .rpm, Arch, AppImage) and Android 7.0 or later. For iPhone and iPad (iOS 15 or later), there is a beta on <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>."
+          "a": "Windows 10 and 11, macOS on Apple Silicon (M1 and later) and, from version 0.5, on Intel Macs, Linux (.deb, .rpm, Arch, AppImage) and Android 7.0 or later. For iPhone and iPad (iOS 15 or later), there is a beta on <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>."
         },
         {
           "q": "Which languages is the app in?",
@@ -392,7 +465,7 @@
         },
         {
           "q": "Can I use my own sync server?",
-          "a": "Yes. In the app, open Cloud sync and change the sync server. Our server's code is not published, so a server of your own has to offer the same API, which is described in the app's source code."
+          "a": "Yes. The sync server's code is public: <a href=\"https://github.com/SinaXhpm/submarine-sync-server\">submarine-sync-server</a> on GitHub, with a guide for Docker or plain PHP hosting. In the app, open Cloud sync and change the sync server."
         },
         {
           "q": "How do I delete my account?",
@@ -416,6 +489,7 @@
       "The key is made from your profile password with Argon2id, a method that is slow on purpose so that guessing is expensive. The password is never stored or sent anywhere.",
       "If you turn on sync, each item is encrypted on your device before it is uploaded. The server stores data it cannot decrypt.",
       "The server does see the outside of your data: your email address, when you sync and from which IP address, how many items of each kind you have and how big they are, your profile names, and for shared profiles the share names and the members' email addresses.",
+      "The AI assistant and AI agents are optional and off until you set them up. The assistant sends your messages, and what it reads on your servers, only to the AI provider you add, and only after you agree.",
       "The app has no ads, no analytics and no crash reporting."
     ],
     "canCannot": {
@@ -541,7 +615,7 @@
         "id": "network",
         "title": "7. Everything the app connects to",
         "paragraphs": [
-          "Your own servers, and the proxies and jump hosts you set up for them. The sync server, only when you are signed in. Our server (<code>submarine.sinaxhpm.com</code>) when you send feedback, even if you sync with a server of your own, and then only with what you typed. And GitHub, to check for a newer version: when the profile list opens and when you press “Check for updates”, the app asks GitHub's public list of releases. That request carries only the app's name and version. The iOS app, the Mac App Store version and the Flatpak never ask: their stores keep them up to date.",
+          "Your own servers, and the proxies and jump hosts you set up for them. The sync server, only when you are signed in. Our server (<code>submarine.sinaxhpm.com</code>) when you send feedback, even if you sync with a server of your own, and then only with what you typed. The AI provider you add, while you use the AI assistant, and only after you agree to send it data. And GitHub, to check for a newer version: when the profile list opens and when you press “Check for updates”, the app asks GitHub's public list of releases. That request carries only the app's name and version. The iOS app, the Mac App Store version and the Flatpak never ask: their stores keep them up to date.",
           "There is no analytics, crash reporting or advertising code in the app. The app trusts only its own built-in list of certificate authorities for sync, and it never follows a redirect, so it cannot be quietly pointed at another server."
         ],
         "code": [
@@ -563,6 +637,26 @@
           "shareInside",
           "vncPaste"
         ]
+      },
+      {
+        "id": "ai",
+        "title": "9. The AI assistant and AI agents",
+        "paragraphs": [
+          "Both are optional and off until you set them up. The assistant talks to the AI provider you add, straight from the app; nothing goes through a server of ours. Before the first message goes to a provider, the app asks, naming the address it goes to, and it sends that provider nothing until you agree. What goes there: your messages, and what the assistant reads on your servers to answer them (command output, file contents, folder listings). The provider's own terms cover what it does with them.",
+          "A private key in a command's output or in a file the assistant reads is replaced by a marker before anything is sent. The providers' API keys and your chats are kept in a file of their own next to the profile, encrypted with AES-256-GCM under a key made from the profile's key, so unlocking the profile opens them too. They stay on this device: they are never synced or exported.",
+          "The assistant goes only as far as the level you chose for the server. At the default level, <em>Ask</em>, a command runs by itself only when the app can tell from its text that it only reads, or when it is on the server's always-run list. Every other command, every change to a file, and reading a file that may hold secrets wait for your OK. <em>Full access</em> is never saved: it ends when the tab closes. Every file change is listed in <em>Activity</em> and can be undone there.",
+          "AI agents reach the running app only through a named pipe (Windows) or a Unix socket (macOS, Linux) that only your user account can open; there is no network port. An agent sees no server until you grant it one, it never gets a password or a key, and the server's address is replaced in everything it reads."
+        ],
+        "code": [
+          "aiConsent",
+          "aiMask",
+          "aiFileKeys",
+          "aiStore",
+          "aiGate",
+          "agentPipe",
+          "agentSocket",
+          "agentMask"
+        ]
       }
     ],
     "verify": {
@@ -575,7 +669,7 @@
         },
         {
           "title": "Watch the connections",
-          "text": "Use a firewall or network monitor. You will see your own servers, the sync server only while you are signed in, submarine.sinaxhpm.com when you send feedback, and api.github.com when the profile list opens (not in the App Store and Flatpak versions). Nothing else."
+          "text": "Use a firewall or network monitor. You will see your own servers, the sync server only while you are signed in, submarine.sinaxhpm.com when you send feedback, api.github.com when the profile list opens (not in the App Store and Flatpak versions), and the AI provider you added while you use the assistant. Nothing else."
         },
         {
           "title": "Look at what the server stores",
@@ -625,6 +719,7 @@
         "A weak or reused password is the weakest point. Use a long, unique profile password, and a different account password.",
         "Telnet and plain VNC are not encrypted by design. The app labels them, and can run them through an SSH server. Over plain VNC, clipboard text you paste or the server copies crosses the network unencrypted too.",
         "The built-in RDP client is experimental (it is built from an IronRDP commit, not a release) and is off until you choose it for a server.",
+        "What the AI assistant sends to your provider is then covered by that provider's terms, not by this page. Don't use the assistant on servers whose data must not leave them.",
         "This page describes the app at {commit}. If the code changes, this page changes with it."
       ]
     },
@@ -645,7 +740,15 @@
       "feedbackBody": "What a feedback message carries",
       "feedbackSend": "Where a feedback message goes",
       "shareInside": "Keeping a shared folder's paths inside it",
-      "vncPaste": "What VNC's clipboard may carry"
+      "vncPaste": "What VNC's clipboard may carry",
+      "aiConsent": "No AI request before your yes for that provider",
+      "aiMask": "Private keys masked in command output",
+      "aiFileKeys": "Private keys hidden in files the assistant reads",
+      "aiStore": "The key and the encryption of the AI file",
+      "aiGate": "Which commands run without asking",
+      "agentPipe": "The agents' pipe: your user account only (Windows)",
+      "agentSocket": "The agents' socket: your user account only (macOS, Linux)",
+      "agentMask": "Hiding the server's address from an agent"
     }
   },
   "privacy": {

@@ -302,6 +302,27 @@
           "text": "When a new device joins or waits to be allowed, when a device has used 80% or all of its allowance, and last week's use. The allowance and weekly ones need the routing engine.",
           "routing": false,
           "alt": "Captun's settings: a data allowance for each device, and the three kinds of notifications"
+        },
+        {
+          "id": "proxy",
+          "title": "A proxy for other devices",
+          "text": "A phone, a computer or a single app goes online through Captun by naming it as an HTTP or SOCKS5 proxy, without joining the hotspot. It gets the same rules, ways out and limits as any other device.",
+          "routing": false,
+          "alt": "The Proxy page: a switch to let devices and apps use Captun as their proxy, who can use it, the port, SOCKS5 and HTTP, and a name and password"
+        },
+        {
+          "id": "capture",
+          "title": "See every connection",
+          "text": "Record a device and watch each connection it opens: where it went, whether it was let through and why, and how much it carried. Save it as a spreadsheet, JSON or a file for Wireshark. It is kept in memory only, and cookies, sign-ins and what forms send are never kept.",
+          "routing": true,
+          "alt": "The Capture page: a recorded phone's connections as they happen, each with its time, website, result and size"
+        },
+        {
+          "id": "web",
+          "title": "Manage it from a browser",
+          "text": "Open Captun's pages on your phone or another computer, signed in with an admin password, over HTTPS. On a computer without a screen, packages for Linux servers run Captun as services that start with the computer, and on a desktop it can start with the computer too.",
+          "routing": false,
+          "alt": "Settings, Manage from other devices: a switch to open Captun in a browser on other devices, a password, the port, and the address to open"
         }
       ],
       "note": "Not on GitHub yet: the version you can build from source today doesn't have them."

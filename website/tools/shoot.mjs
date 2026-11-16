@@ -58,7 +58,7 @@ for (const p of paths) {
     const name = `${p.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "") || "home"}-${w}.png`;
     fs.writeFileSync(path.join(outDir, name), Buffer.from(shot.result.data, "base64"));
     const msgs = events.filter((e) => (e.method === "Log.entryAdded" && !["info", "verbose"].includes(e.params.entry.level)) || e.method === "Runtime.consoleAPICalled" || e.method === "Runtime.exceptionThrown" || e.method === "Network.loadingFailed")
-      .map((e) => e.method === "Log.entryAdded" ? `${e.params.entry.level}: ${e.params.entry.text}` : e.method === "Network.loadingFailed" ? `failed: ${e.params.errorText} ${e.params.blockedReason || ""}` : e.method === "Runtime.exceptionThrown" ? `exception: ${e.params.exceptionDetails.text}` : `console.${e.params.type}: ${e.params.args.map((a) => a.value).join(" ")}`);
+      .map((e) => e.method === "Log.entryAdded" ? `${e.params.entry.level}: ${e.params.entry.text}` : e.method === "Network.loadingFailed" ? `failed: ${e.params.errorText} ${e.params.blockedReason || ""} ${events.find((x) => x.method === "Network.requestWillBeSent" && x.params.requestId === e.params.requestId)?.params.request.url || ""}` : e.method === "Runtime.exceptionThrown" ? `exception: ${e.params.exceptionDetails.text}` : `console.${e.params.type}: ${e.params.args.map((a) => a.value).join(" ")}`);
     const overflow = await send("Runtime.evaluate", { expression: "document.documentElement.scrollWidth > innerWidth + 1", returnByValue: true });
     if (overflow.result.result.value) msgs.push("layout: wider than the screen (horizontal scroll)");
     problems += msgs.length;

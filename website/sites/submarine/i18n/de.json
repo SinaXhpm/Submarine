@@ -7,6 +7,7 @@
     "skip": "Zum Inhalt springen",
     "features": "Funktionen",
     "remote": "Remote-Desktops",
+    "ai": "KI-Assistent",
     "security": "Sicherheit",
     "privacy": "Datenschutz",
     "download": "Herunterladen",
@@ -43,13 +44,13 @@
     "noTracking": "Diese Website setzt keine Cookies, keine Nutzungsanalyse und keine Skripte von Drittanbietern ein."
   },
   "home": {
-    "title": "Submarine – kostenloser SSH/SFTP-Client mit RDP, VNC, Telnet",
-    "description": "Open-Source-SSH/SFTP-Client mit RDP, VNC und Telnet, gratis für Windows, macOS, Linux und Android. Server, Passwörter und Schlüssel bleiben verschlüsselt.",
+    "title": "Submarine – kostenloser SSH/SFTP/FTP-Client mit RDP und VNC",
+    "description": "Kostenloser Open-Source-SSH/SFTP/FTP-Client mit RDP, VNC und Telnet für Windows, macOS, Linux und Android. Verschlüsselt, mit optionalem KI-Assistenten.",
     "hero": {
       "pillTag": "0.5",
-      "pill": "Remote-Desktops mit gemeinsamer Zwischenablage und wählbarer Geschwindigkeit",
+      "pill": "Remote-Desktops, FTP und ein KI-Assistent",
       "title": "Alle Ihre Server in <em>einer verschlüsselten App</em>",
-      "lede": "Submarine ist ein SSH-, SFTP-, RDP-, VNC- und Telnet-Client für Windows, macOS, Linux und Android. Ihre Server, Passwörter und Schlüssel werden auf Ihrem Gerät verschlüsselt und nur dann zwischen Ihren Geräten synchronisiert, wenn Sie das möchten.",
+      "lede": "Submarine ist ein SSH-, SFTP-, FTP-, RDP-, VNC- und Telnet-Client für Windows, macOS, Linux und Android. Ihre Server, Passwörter und Schlüssel werden auf Ihrem Gerät verschlüsselt und nur dann zwischen Ihren Geräten synchronisiert, wenn Sie das möchten.",
       "download": "Herunterladen",
       "security": "So werden Ihre Daten geschützt",
       "trust": [
@@ -60,7 +61,7 @@
       ],
       "chips": [
         "Auf Ihrem Gerät verschlüsselt",
-        "SSH · SFTP · RDP · VNC · Telnet",
+        "SSH · SFTP · FTP · RDP · VNC · Telnet",
         "Synchronisierung nur auf Wunsch"
       ],
       "imageAlt": "Submarine auf einem Computer: links ein SSH-Terminal, rechts der zweispaltige Dateibrowser"
@@ -70,6 +71,7 @@
       "items": [
         "Terminal",
         "SFTP-Client",
+        "FTP-Client",
         "Tunnel-Manager",
         "RDP-App",
         "VNC-Viewer",
@@ -96,6 +98,25 @@
           "id": "files",
           "title": "Zweispaltiges SFTP",
           "text": "Drag-and-drop, Ordner vergleichen, Dateien auf dem Server bearbeiten, Archive, sudo und Server ohne SFTP."
+        },
+        {
+          "id": "ai",
+          "title": "KI-Assistent",
+          "text": "Optional, mit dem KI-Anbieter Ihrer Wahl: Anthropic, OpenAI, OpenRouter, ein Modell auf Ihrem eigenen Computer und andere. Der Assistent liest und bearbeitet Dateien und führt Befehle auf einem Server aus, soweit es die Stufe erlaubt, die Sie festlegen.",
+          "wide": true,
+          "new": true
+        },
+        {
+          "id": "ftp",
+          "title": "FTP und FTPS",
+          "text": "Derselbe Dateibrowser für FTP-Server, standardmäßig mit TLS, direkt oder über einen SSH-Server oder einen Proxy.",
+          "new": true
+        },
+        {
+          "id": "mcp",
+          "title": "KI-Agenten",
+          "text": "Claude Code und andere MCP-Agenten können auf den Servern arbeiten, die Sie zulassen, ohne ein Passwort oder einen Schlüssel zu sehen. Auf einem Computer.",
+          "new": true
         },
         {
           "id": "remote",
@@ -159,7 +180,7 @@
         {
           "id": "imports",
           "title": "Import",
-          "text": "Übernehmen Sie Ihre Server aus PuTTY, MobaXterm und OpenSSH."
+          "text": "Übernehmen Sie Ihre Server aus PuTTY, MobaXterm, OpenSSH und FileZilla."
         }
       ]
     },
@@ -175,6 +196,7 @@
           "points": [
             "Durchsuchen Sie mit Ctrl+Shift+F, was das Terminal anzeigt, und mit Ctrl+Shift+R die Befehle, die Sie eingegeben haben (auf dem Mac Cmd+Shift). Ctrl+F und Ctrl+R ohne Shift gehen weiterhin an die Shell.",
             "Ein Rechtsklick auf die Schaltfläche + öffnet ein Terminal mit eigener Anmeldung über eine eigene Verbindung: einmalig oder immer für diesen Server.",
+            "Ctrl+Shift+K leert ein Terminal, Ctrl+Shift+W schließt es, und Ctrl+Shift+Klick darauf öffnet ein weiteres für denselben Server (auf dem Mac Cmd+Shift).",
             "True Color, {scrollback} Zeilen zum Zurückscrollen, Farbschemata und Nerd Fonts."
           ],
           "alt": "Die „Wall“: drei Server nebeneinander in einem Fenster"
@@ -187,7 +209,8 @@
             "Vergleichen Sie zwei Ordner: Dateien, die sich unterscheiden, neuer sind oder nur auf einer Seite vorhanden sind, werden markiert.",
             "Bearbeiten Sie Dateien direkt auf dem Server, und packen und entpacken Sie dort Archive.",
             "Arbeiten Sie per sudo als root, auch auf Servern ohne SFTP.",
-            "Spiegeln Sie einen lokalen Ordner auf einen Server, während Sie ihn ändern (auf einem Computer)."
+            "FTP- und FTPS-Server öffnen sich im selben Dateibrowser, mit TLS, sofern Sie nicht einfaches FTP wählen.",
+            "Spiegeln Sie einen lokalen Ordner über SFTP oder FTP auf einen Server, während Sie ihn ändern (auf einem Computer)."
           ],
           "alt": "Ein lokaler Ordner im Vergleich mit einem Ordner auf dem Server: Unterschiedliche Dateien sind markiert"
         },
@@ -204,7 +227,7 @@
         {
           "id": "fits",
           "title": "Funktioniert mit dem, was Sie schon haben",
-          "text": "Liest Ihre ~/.ssh/config und importiert aus PuTTY, MobaXterm und OpenSSH.",
+          "text": "Liest Ihre ~/.ssh/config und importiert aus PuTTY, MobaXterm, OpenSSH und FileZilla.",
           "points": [
             "Nutzt Ihren SSH-Agenten: Pageant, den OpenSSH-Agenten von Windows, 1Password, Hardware-Schlüssel.",
             "OpenSSH-Zertifikate, Jump-Hosts sowie HTTP- und SOCKS-Proxys.",
@@ -238,8 +261,8 @@
           "title": "Auch auf dem Smartphone",
           "text": "Dasselbe Profil unter Android, mit derselben Verschlüsselung.",
           "points": [
-            "Ein Terminal mit einer Tastenleiste für Ctrl, Alt, Esc, Tab und die Pfeiltasten.",
-            "Dateiübertragung und Tunnel.",
+            "Ein Terminal mit einer Tastenleiste für Ctrl, Alt, Shift, Esc, Tab, die Pfeiltasten und | ~ / -. Ctrl und Alt gelten nach einmaligem Tippen für die nächste Taste, nach zweimaligem Tippen bleiben sie festgestellt.",
+            "Dateiübertragung, Tunnel und der KI-Assistent.",
             "Remote-Desktops mit Touch-Bedienung, Zoom, gemeinsamer Zwischenablage, Verbindungsanzeige und wählbarer Geschwindigkeit. Ein Smartphone gibt keine Dateien für einen RDP-Server frei."
           ],
           "alt": "Submarine auf einem Android-Smartphone: ein SSH-Terminal mit Tastenleiste"
@@ -287,6 +310,44 @@
       "altSettings": "Der Bereich „Speed and quality“ eines Remote-Desktop-Tabs",
       "note": "Der eingebaute RDP-Client ist experimentell und ausgeschaltet, bis Sie ihn für einen Server wählen (<em>Öffnen in: Submarine-Tab</em>). Bis dahin öffnet sich RDP in der RDP-App Ihres Computers. Unter Android wird der eingebaute Client verwendet."
     },
+    "ai": {
+      "kicker": "Neu in 0.5",
+      "title": "Ein KI-Assistent, <em>der zuerst fragt</em>",
+      "lede": "Ausgeschaltet, bis Sie ihn einrichten, und mit dem KI-Anbieter Ihrer Wahl. Er sieht sich für Sie auf einem Server um, ändert Dateien und führt Befehle aus, soweit es die Stufe erlaubt, die Sie festlegen.",
+      "points": [
+        {
+          "id": "provider",
+          "title": "Ihr eigener Anbieter",
+          "text": "Anthropic, OpenAI, ein OpenAI-kompatibler Dienst wie OpenRouter, DeepSeek, Groq oder Google Gemini oder ein Modell auf Ihrem eigenen Computer über Ollama oder LM Studio. Anfragen gehen direkt von der App an den Anbieter."
+        },
+        {
+          "id": "where",
+          "title": "In jeder Sitzung",
+          "text": "Ein KI-Tab in jeder SSH- und FTP-Sitzung und eine KI-Seite mit all Ihren Chats. Ein Chat kann mittendrin zu einem anderen Modell oder Anbieter wechseln."
+        },
+        {
+          "id": "tools",
+          "title": "Lesen, bearbeiten, ausführen",
+          "text": "Er liest Dateien und Ordner, schreibt und bearbeitet Dateien und führt auf SSH-Servern Befehle aus. Das KI-Terminal zeigt jeden Befehl und seine Ausgabe, während der Befehl läuft. Auf einem FTP-Server arbeitet der Assistent nur mit Dateien."
+        },
+        {
+          "id": "levels",
+          "title": "Sie bestimmen, wie weit er geht",
+          "text": "Fünf Stufen für jeden Server, von <em>Suggest only</em> bis <em>Full access</em>. In der Standardstufe, <em>Ask</em>, laufen Befehle von selbst, bei denen die App erkennen kann, dass sie nur lesen; alle anderen warten auf Ihr OK. Jede Dateiänderung wird unter <em>Activity</em> aufgeführt und lässt sich dort rückgängig machen."
+        },
+        {
+          "id": "privacy",
+          "title": "Er fragt, bevor er sendet",
+          "text": "Bevor Ihre erste Nachricht an einen Anbieter geht, fragt die App Sie und nennt, wohin die Nachricht geht. Ein privater Schlüssel in einer Befehlsausgabe oder in einer Datei wird entfernt, bevor etwas gesendet wird. Die API-Schlüssel der Anbieter und die Chats werden verschlüsselt auf Ihrem Gerät gespeichert und nie synchronisiert."
+        },
+        {
+          "id": "agents",
+          "title": "KI-Agenten auf Ihrem Computer",
+          "text": "Claude Code und andere Agenten, die MCP unterstützen, können Ihre Server über Submarine nutzen, sobald Sie das unter <em>Einstellungen → AI agents</em> einschalten. Ein Agent bittet um Zugriff, und Sie wählen den Server, die Vorgänge, die Ordner und die Dauer. Er erhält nie ein Passwort, einen Schlüssel oder die Adresse des Servers."
+        }
+      ],
+      "note": "Die Bildschirme des KI-Assistenten und der KI-Agenten sind vorerst auf Englisch."
+    },
     "privacy": {
       "kicker": "Von Grund auf privat",
       "title": "Ihre Daten gehören Ihnen. <em>Wir können sie nicht lesen.</em>",
@@ -302,7 +363,7 @@
         },
         {
           "title": "Kein Tracking",
-          "text": "Keine Werbung, keine Nutzungsanalyse, keine Absturzberichte. Die App kommuniziert nur mit Ihren Servern, mit dem Sync-Server, wenn Sie sich anmelden, mit GitHub, um nach einer neuen Version zu suchen, und mit uns, wenn Sie Feedback senden."
+          "text": "Keine Werbung, keine Nutzungsanalyse, keine Absturzberichte. Die App kommuniziert nur mit Ihren Servern, mit dem Sync-Server, wenn Sie sich anmelden, mit GitHub, um nach einer neuen Version zu suchen, mit uns, wenn Sie Feedback senden, und mit einem KI-Anbieter nur, wenn Sie einen hinzufügen und den Assistenten nutzen."
         }
       ],
       "link": "Wie es funktioniert und wie Sie es selbst prüfen können"
@@ -315,7 +376,7 @@
         "Submarine ist kostenlos und Open Source unter der MIT-Lizenz.",
         "Sie brauchen kein Konto. Ein Konto ist nur für die optionale Synchronisierung zwischen Ihren Geräten gedacht.",
         "Auch der Sync-Dienst ist kostenlos, in fairen Grenzen: {limitMb} MB verschlüsselte Daten, {limitItems} Einträge und {limitProfiles} Profile pro Konto.",
-        "Der Quellcode ist öffentlich. Sie können ihn lesen, die App selbst bauen oder einen eigenen Sync-Server verwenden."
+        "Der Quellcode der App und des Sync-Servers ist öffentlich. Sie können ihn lesen, die App selbst bauen oder einen eigenen Sync-Server betreiben."
       ]
     },
     "download": {
@@ -327,12 +388,12 @@
         {
           "id": "windows",
           "name": "Windows",
-          "detail": "Windows 10 und 11 · Installationsprogramm (.exe oder .msi)"
+          "detail": "Windows 10 und 11 · Installationsprogramm (.exe oder .msi) oder ab Version 0.5 eine portable .zip-Datei"
         },
         {
           "id": "macos",
           "name": "macOS",
-          "detail": "Apple Silicon (ab M1) · .dmg"
+          "detail": "Apple Silicon (ab M1), ab Version 0.5 auch Intel · .dmg"
         },
         {
           "id": "linux",
@@ -379,12 +440,24 @@
           "a": "Ja, ab Version 0.5. VNC zeigt den Bildschirm in einem Tab und teilt die Zwischenablage (reiner Text). RDP öffnet sich in der RDP-App Ihres Computers oder in einem Tab mit dem experimentellen eingebauten Client. Dieser teilt die Zwischenablage und gibt auf einem Computer einen Ordner oder ein Laufwerk frei. In einem Submarine-Tab zeigen beide, wie es um die Verbindung steht, und lassen Sie Bildqualität gegen weniger Daten eintauschen. Telnet öffnet sich in einem Terminal-Tab. Alle drei lassen sich über einen SSH-Server leiten, und Telnet und einfaches VNC sind als unverschlüsselt gekennzeichnet."
         },
         {
+          "q": "Kann ich FTP oder FTPS nutzen?",
+          "a": "Ja, ab Version 0.5. Ein FTP-Server öffnet sich in einem Tab mit demselben Dateibrowser wie SFTP, standardmäßig mit FTPS (TLS), direkt, über einen SSH-Server oder über einen Proxy. Einfaches FTP können Sie ebenfalls wählen; die App weist dann darauf hin, dass es nicht verschlüsselt ist."
+        },
+        {
+          "q": "Hat Submarine einen KI-Assistenten?",
+          "a": "Ja, ab Version 0.5, und er ist ausgeschaltet, bis Sie ihn unter <em>Einstellungen → AI Assistant</em> einrichten. Er nutzt Ihren eigenen KI-Anbieter (Anthropic, OpenAI, einen OpenAI-kompatiblen Dienst oder ein lokales Modell über Ollama oder LM Studio) und arbeitet vom KI-Tab der jeweiligen Sitzung aus auf einem Server, mit der Stufe, die Sie wählen. An einen Anbieter geht erst etwas, wenn Sie einen hinzugefügt, zugestimmt und eine Nachricht gesendet haben."
+        },
+        {
+          "q": "Kann Claude Code oder ein anderer KI-Agent meine Server über Submarine nutzen?",
+          "a": "Ja, auf einem Computer, ab Version 0.5. Schalten Sie die Funktion unter <em>Einstellungen → AI agents</em> ein; dort steht auch, wie Sie Submarine im Agenten einrichten (über MCP). Der Agent bittet um Zugriff, und Sie wählen den Server, die Vorgänge, die Ordner und die Dauer. Er erhält nie ein Passwort, einen Schlüssel oder die Adresse des Servers."
+        },
+        {
           "q": "Was bekommt ein Remote-Desktop von meinem Computer?",
           "a": "Text aus der Zwischenablage, wenn Sie in seinen Tab einfügen, und vorher nichts. Text, der auf dem Server kopiert wird, landet in Ihrer Zwischenablage, solange <em>Zwischenablage teilen</em> eingeschaltet ist. Dateien nur, wenn Sie auf einem Computer einen Ordner oder ein Laufwerk für den eingebauten RDP-Client auswählen. Diese Einstellungen bleiben auf Ihrem Gerät und werden nie synchronisiert. Daher kann niemand, mit dem Sie ein Profil teilen, sie einschalten."
         },
         {
           "q": "Auf welchen Systemen läuft Submarine?",
-          "a": "Windows 10 und 11, macOS auf Apple Silicon (ab M1), Linux (.deb, .rpm, Arch, AppImage) und Android 7.0 oder neuer. Für iPhone und iPad (iOS 15 oder neuer) gibt es eine Beta über <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>."
+          "a": "Windows 10 und 11, macOS auf Apple Silicon (ab M1) und ab Version 0.5 auch auf Intel-Macs, Linux (.deb, .rpm, Arch, AppImage) und Android 7.0 oder neuer. Für iPhone und iPad (iOS 15 oder neuer) gibt es eine Beta über <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>."
         },
         {
           "q": "In welchen Sprachen gibt es die App?",
@@ -392,7 +465,7 @@
         },
         {
           "q": "Kann ich einen eigenen Sync-Server verwenden?",
-          "a": "Ja. Öffnen Sie in der App „Cloud-Synchronisierung“ und ändern Sie den Sync-Server. Der Code unseres Servers ist nicht veröffentlicht. Ein eigener Server muss daher dieselbe API anbieten; sie ist im Quellcode der App beschrieben."
+          "a": "Ja. Der Code des Sync-Servers ist öffentlich: <a href=\"https://github.com/SinaXhpm/submarine-sync-server\">submarine-sync-server</a> auf GitHub, mit einer Anleitung für Docker oder einfaches PHP-Hosting. Öffnen Sie in der App „Cloud-Synchronisierung“ und ändern Sie den Sync-Server."
         },
         {
           "q": "Wie lösche ich mein Konto?",
@@ -416,6 +489,7 @@
       "Der Schlüssel wird mit Argon2id aus Ihrem Profilpasswort abgeleitet. Dieses Verfahren ist absichtlich langsam, damit Rateversuche teuer sind. Das Passwort wird nie gespeichert und nirgendwohin gesendet.",
       "Wenn Sie die Synchronisierung einschalten, wird jeder Eintrag auf Ihrem Gerät verschlüsselt, bevor er hochgeladen wird. Der Server speichert Daten, die er nicht entschlüsseln kann.",
       "Der Server sieht aber, was von außen an Ihren Daten erkennbar ist: Ihre E-Mail-Adresse, wann und von welcher IP-Adresse aus Sie synchronisieren, wie viele Einträge jeder Art Sie haben und wie groß sie sind, Ihre Profilnamen und bei geteilten Profilen die Namen der Freigaben und die E-Mail-Adressen der Mitglieder.",
+      "Der KI-Assistent und die KI-Agenten sind optional und ausgeschaltet, bis Sie sie einrichten. Der Assistent sendet Ihre Nachrichten und das, was er auf Ihren Servern liest, nur an den KI-Anbieter, den Sie hinzufügen, und erst, nachdem Sie zugestimmt haben.",
       "In der App gibt es keine Werbung, keine Nutzungsanalyse und keine Absturzberichte."
     ],
     "canCannot": {
@@ -541,7 +615,7 @@
         "id": "network",
         "title": "7. Alles, womit sich die App verbindet",
         "paragraphs": [
-          "Ihre eigenen Server sowie die Proxys und Jump-Hosts, die Sie dafür einrichten. Der Sync-Server, nur wenn Sie angemeldet sind. Unser Server (<code>submarine.sinaxhpm.com</code>) beim Senden von Feedback, auch wenn Sie mit einem eigenen Server synchronisieren, und dabei nur mit dem, was Sie eingegeben haben. Und GitHub, um nach einer neueren Version zu suchen: Wenn sich die Profilliste öffnet und wenn Sie „Nach Updates suchen“ wählen, fragt die App die öffentliche Liste der Releases auf GitHub ab. Diese Anfrage enthält nur den Namen und die Version der App. Die iOS-App, die Version aus dem Mac App Store und das Flatpak fragen nie bei GitHub nach, denn ihre Stores halten sie aktuell.",
+          "Ihre eigenen Server sowie die Proxys und Jump-Hosts, die Sie dafür einrichten. Der Sync-Server, nur wenn Sie angemeldet sind. Unser Server (<code>submarine.sinaxhpm.com</code>) beim Senden von Feedback, auch wenn Sie mit einem eigenen Server synchronisieren, und dabei nur mit dem, was Sie eingegeben haben. Der KI-Anbieter, den Sie hinzugefügt haben, solange Sie den KI-Assistenten nutzen, und erst, nachdem Sie zugestimmt haben, ihm Daten zu senden. Und GitHub, um nach einer neueren Version zu suchen: Wenn sich die Profilliste öffnet und wenn Sie „Nach Updates suchen“ wählen, fragt die App die öffentliche Liste der Releases auf GitHub ab. Diese Anfrage enthält nur den Namen und die Version der App. Die iOS-App, die Version aus dem Mac App Store und das Flatpak fragen nie bei GitHub nach, denn ihre Stores halten sie aktuell.",
           "Die App enthält keinen Code für Nutzungsanalyse, Absturzberichte oder Werbung. Für die Synchronisierung vertraut die App nur ihrer eigenen eingebauten Liste von Zertifizierungsstellen, und sie folgt nie einer Umleitung. So kann sie nicht unbemerkt auf einen anderen Server umgelenkt werden."
         ],
         "code": [
@@ -563,6 +637,26 @@
           "shareInside",
           "vncPaste"
         ]
+      },
+      {
+        "id": "ai",
+        "title": "9. Der KI-Assistent und die KI-Agenten",
+        "paragraphs": [
+          "Beide sind optional und ausgeschaltet, bis Sie sie einrichten. Der Assistent kommuniziert direkt aus der App mit dem KI-Anbieter, den Sie hinzufügen; nichts läuft über einen unserer Server. Bevor die erste Nachricht an einen Anbieter geht, fragt die App Sie und nennt dabei die Adresse, an die gesendet wird, und sie sendet diesem Anbieter nichts, bis Sie zustimmen. Was dorthin geht: Ihre Nachrichten und das, was der Assistent auf Ihren Servern liest, um sie zu beantworten (Befehlsausgaben, Dateiinhalte, Ordnerauflistungen). Was der Anbieter damit macht, regeln seine eigenen Nutzungsbedingungen.",
+          "Ein privater Schlüssel in einer Befehlsausgabe oder in einer Datei, die der Assistent liest, wird durch einen Vermerk ersetzt, bevor etwas gesendet wird. Die API-Schlüssel der Anbieter und Ihre Chats liegen in einer eigenen Datei neben dem Profil und sind mit AES-256-GCM verschlüsselt; der Schlüssel dafür wird aus dem Schlüssel des Profils abgeleitet, sodass das Entsperren des Profils auch sie öffnet. Diese Daten bleiben auf diesem Gerät und werden nie synchronisiert oder exportiert.",
+          "Der Assistent geht nur so weit, wie es die Stufe erlaubt, die Sie für den Server gewählt haben. In der Standardstufe, <em>Ask</em>, läuft ein Befehl nur dann von selbst, wenn die App an seinem Text erkennen kann, dass er nur liest, oder wenn er auf der Liste der Befehle steht, die auf diesem Server immer laufen dürfen. Jeder andere Befehl, jede Änderung an einer Datei und das Lesen einer Datei, die Geheimnisse enthalten könnte, warten auf Ihr OK. <em>Full access</em> wird nie gespeichert: Diese Stufe endet, wenn der Tab geschlossen wird. Jede Dateiänderung wird unter <em>Activity</em> aufgeführt und lässt sich dort rückgängig machen.",
+          "KI-Agenten erreichen die laufende App nur über eine Named Pipe (Windows) oder einen Unix-Socket (macOS, Linux); öffnen kann diese nur Ihr Benutzerkonto, und einen Netzwerkport gibt es nicht. Ein Agent sieht keinen Server, bis Sie ihm einen freigeben, er erhält nie ein Passwort oder einen Schlüssel, und die Adresse des Servers wird in allem ersetzt, was er liest."
+        ],
+        "code": [
+          "aiConsent",
+          "aiMask",
+          "aiFileKeys",
+          "aiStore",
+          "aiGate",
+          "agentPipe",
+          "agentSocket",
+          "agentMask"
+        ]
       }
     ],
     "verify": {
@@ -575,7 +669,7 @@
         },
         {
           "title": "Die Verbindungen beobachten",
-          "text": "Verwenden Sie eine Firewall oder einen Netzwerkmonitor. Sie sehen Ihre eigenen Server, den Sync-Server nur, solange Sie angemeldet sind, submarine.sinaxhpm.com, wenn Sie Feedback senden, und api.github.com, wenn sich die Profilliste öffnet (nicht in den Versionen aus dem App Store oder im Flatpak). Sonst nichts."
+          "text": "Verwenden Sie eine Firewall oder einen Netzwerkmonitor. Sie sehen Ihre eigenen Server, den Sync-Server nur, solange Sie angemeldet sind, submarine.sinaxhpm.com, wenn Sie Feedback senden, api.github.com, wenn sich die Profilliste öffnet (nicht in den Versionen aus dem App Store oder im Flatpak), und den KI-Anbieter, den Sie hinzugefügt haben, solange Sie den Assistenten nutzen. Sonst nichts."
         },
         {
           "title": "Ansehen, was der Server speichert",
@@ -625,6 +719,7 @@
         "Ein schwaches oder mehrfach verwendetes Passwort ist der schwächste Punkt. Verwenden Sie ein langes Profilpasswort, das Sie nirgendwo sonst nutzen, und für Ihr Konto ein anderes Passwort.",
         "Telnet und einfaches VNC sind von Haus aus unverschlüsselt. Die App kennzeichnet sie und kann sie über einen SSH-Server leiten. Über einfaches VNC geht auch Text aus der Zwischenablage, den Sie einfügen oder den der Server kopiert, unverschlüsselt durch das Netzwerk.",
         "Der eingebaute RDP-Client ist experimentell (er wird aus einem Commit von IronRDP gebaut, nicht aus einem Release) und ist ausgeschaltet, bis Sie ihn für einen Server wählen.",
+        "Für das, was der KI-Assistent an Ihren Anbieter sendet, gelten dann die Nutzungsbedingungen dieses Anbieters, nicht diese Seite. Nutzen Sie den Assistenten nicht auf Servern, deren Daten sie nicht verlassen dürfen.",
         "Diese Seite beschreibt die App auf dem Stand {commit}. Wenn sich der Code ändert, ändert sich diese Seite mit."
       ]
     },
@@ -645,7 +740,15 @@
       "feedbackBody": "Was eine Feedback-Nachricht enthält",
       "feedbackSend": "Wohin eine Feedback-Nachricht geht",
       "shareInside": "Die Pfade innerhalb des freigegebenen Ordners halten",
-      "vncPaste": "Was die Zwischenablage über VNC übertragen darf"
+      "vncPaste": "Was die Zwischenablage über VNC übertragen darf",
+      "aiConsent": "Keine KI-Anfrage vor Ihrem Ja für diesen Anbieter",
+      "aiMask": "Private Schlüssel in Befehlsausgaben maskieren",
+      "aiFileKeys": "Private Schlüssel in Dateien verbergen, die der Assistent liest",
+      "aiStore": "Der Schlüssel und die Verschlüsselung der KI-Datei",
+      "aiGate": "Welche Befehle ohne Nachfrage laufen",
+      "agentPipe": "Die Pipe der Agenten: nur Ihr Benutzerkonto (Windows)",
+      "agentSocket": "Der Socket der Agenten: nur Ihr Benutzerkonto (macOS, Linux)",
+      "agentMask": "Die Adresse des Servers vor einem Agenten verbergen"
     }
   },
   "privacy": {

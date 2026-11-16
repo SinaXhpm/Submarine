@@ -57,4 +57,6 @@ export const ICON = {
   note: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>'),
   tablet: svg('<rect x="4.5" y="2.5" width="15" height="19" rx="2.2"/><path d="M11 18h2"/>'),
   store: svg('<path d="M4 8h16l-1.2 11.2A2 2 0 0 1 16.8 21H7.2a2 2 0 0 1-2-1.8z"/><path d="M8.5 8V6.5a3.5 3.5 0 0 1 7 0V8"/>'),
+  bot: svg('<rect x="4" y="8" width="16" height="12" rx="2.5"/><path d="M12 8V4.5H9M2 14h2M20 14h2M9.5 13v2M14.5 13v2"/>'),
+  transfer: svg('<path d="M4 8h14M14.5 4.5 18 8l-3.5 3.5M20 16H6M9.5 12.5 6 16l3.5 3.5"/>'),
 };

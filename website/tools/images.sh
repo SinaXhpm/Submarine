@@ -49,7 +49,12 @@ submarine)
   shot vault "$SRC/logins.png" 1100x940+0+0 550 1100
   shot phone "$SRC/android-terminal.png" - 360 720 1080
   # the Speed and quality panel, cut from a picture of a remote desktop tab with it open
-  shot remoteSettings "$SRC/remote-settings.png" 760x1232+1784+168 380 760
+  # (docs/screenshots no longer has that picture: without it, the pictures made from it before stay)
+  if [ -f "$SRC/remote-settings.png" ]; then
+    shot remoteSettings "$SRC/remote-settings.png" 760x1232+1784+168 380 760
+  else
+    echo "remoteSettings: no remote-settings.png, the pictures made before stay"
+  fi
   ICONS="$REPO/src-tauri/icons"
   magick "$ICONS/icon.png" -strip -resize 64x64 "$OUT/logo-64.png"
   magick "$ICONS/icon.png" -strip -resize 192x192 "$OUT/icon-192.png"
@@ -107,6 +112,10 @@ captun)
     shot nextBackup "$NEXT/new-outbound-health.png" 960x600+0+0 480 960
     shot nextCsv "$NEXT/new-usage-export.png" 960x600+0+0 480 960
     shot nextAlerts "$NEXT/new-settings-notifications.png" 960x600+0+210 480 960
+    # from the Captun README's screenshots (docs/screenshots: proxy, capture, other-devices)
+    shot nextProxy "$NEXT/proxy.png" 960x600+0+0 480 960
+    shot nextCapture "$NEXT/capture.png" 960x600+0+0 480 960
+    shot nextWeb "$NEXT/other-devices.png" 960x600+0+0 480 960
   fi
   ICONS="$CR/apps/desktop/src-tauri/icons"
   # the bare helm for the header, the navy tile for the rest

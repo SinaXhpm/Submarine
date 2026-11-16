@@ -302,6 +302,27 @@
           "text": "Yeni bir cihaz bağlandığında ya da izin beklediğinde, bir cihaz veri kotasının %80'ini ya da tamamını kullandığında haber verir; geçen haftanın kullanımını da bildirir. Kota ve haftalık bildirimler için yönlendirme motoru gerekir.",
           "routing": false,
           "alt": "Captun'un ayarları: her cihaz için bir veri kotası ve üç tür bildirim"
+        },
+        {
+          "id": "proxy",
+          "title": "Diğer cihazlar için proxy",
+          "text": "Captun'u HTTP ya da SOCKS5 proxy'si olarak ayarlayan bir telefon, bilgisayar ya da tek bir uygulama, hotspot'a bağlanmadan Captun üzerinden internete çıkar. Ona da diğer cihazlarla aynı kurallar, çıkışlar ve sınırlar uygulanır.",
+          "routing": false,
+          "alt": "Proxy sayfası: cihazların ve uygulamaların Captun'u proxy olarak kullanmasına izin veren bir açma/kapama düğmesi, kimlerin kullanabileceği, port, SOCKS5 ve HTTP ile bir kullanıcı adı ve parola"
+        },
+        {
+          "id": "capture",
+          "title": "Her bağlantıyı görün",
+          "text": "Bir cihazı kayda alın ve açtığı her bağlantıyı izleyin: nereye gittiğini, geçmesine izin verilip verilmediğini ve nedenini, ne kadar veri taşıdığını. Kaydı elektronik tablo, JSON ya da Wireshark için bir dosya olarak kaydedin. Kayıt yalnızca bellekte tutulur; çerezler, giriş bilgileri ve formların gönderdikleri hiçbir zaman saklanmaz.",
+          "routing": true,
+          "alt": "Capture sayfası: kayda alınan bir telefonun bağlantıları, gerçekleştikleri anda; her biri zamanı, web sitesi, sonucu ve boyutuyla birlikte"
+        },
+        {
+          "id": "web",
+          "title": "Tarayıcıdan yönetin",
+          "text": "Captun'un sayfalarını telefonunuzda ya da başka bir bilgisayarda, yönetici parolasıyla giriş yaparak HTTPS üzerinden açın. Ekranı olmayan bir bilgisayarda, Linux sunucuları için paketler Captun'u bilgisayarla birlikte başlayan hizmetler olarak çalıştırır; masaüstü bir bilgisayarda da Captun bilgisayarla birlikte başlayabilir.",
+          "routing": false,
+          "alt": "Settings sayfası, Manage from other devices bölümü: Captun'u diğer cihazlarda bir tarayıcıda açmayı sağlayan bir açma/kapama düğmesi, bir parola, port ve açılacak adres"
         }
       ],
       "note": "Henüz GitHub'da yok: Bugün kaynak kodundan derleyebileceğiniz sürümde bu özellikler bulunmuyor."

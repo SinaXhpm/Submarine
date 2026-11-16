@@ -302,6 +302,27 @@
           "text": "Quand un nouvel appareil se connecte ou attend d’être autorisé, quand un appareil a consommé 80 % ou la totalité de son quota de données, et la consommation de la semaine passée. Les notifications de quota et la notification hebdomadaire nécessitent le moteur de routage.",
           "routing": false,
           "alt": "Les réglages de Captun : un quota de données pour chaque appareil et les trois types de notifications"
+        },
+        {
+          "id": "proxy",
+          "title": "Un proxy pour d’autres appareils",
+          "text": "Un téléphone, un ordinateur ou une seule application accède à Internet via Captun en le désignant comme proxy HTTP ou SOCKS5, sans rejoindre le point d’accès. Il passe par les mêmes règles, sorties et limites que n’importe quel autre appareil.",
+          "routing": false,
+          "alt": "La page Proxy : un interrupteur pour permettre aux appareils et aux applications d’utiliser Captun comme proxy, qui peut l’utiliser, le port, SOCKS5 et HTTP, et un nom et un mot de passe"
+        },
+        {
+          "id": "capture",
+          "title": "Voir chaque connexion",
+          "text": "Capturez le trafic d’un appareil et suivez chaque connexion qu’il ouvre : où elle est allée, si elle a été autorisée et pourquoi, et combien de données elle a transportées. Enregistrez la capture sous forme de feuille de calcul, de fichier JSON ou de fichier pour Wireshark. Elle n’est gardée qu’en mémoire, et les cookies, les identifiants de connexion et ce qu’envoient les formulaires ne sont jamais conservés.",
+          "routing": true,
+          "alt": "La page Capture : les connexions d’un téléphone enregistrées en direct, chacune avec son heure, son site, son résultat et sa taille"
+        },
+        {
+          "id": "web",
+          "title": "Gérer Captun depuis un navigateur",
+          "text": "Ouvrez les pages de Captun en HTTPS sur votre téléphone ou sur un autre ordinateur, en vous connectant avec un mot de passe d’administrateur. Sur un ordinateur sans écran, des paquets pour serveurs Linux exécutent Captun sous forme de services lancés au démarrage de l’ordinateur, et sur un ordinateur avec écran, il peut aussi se lancer au démarrage.",
+          "routing": false,
+          "alt": "Réglages, « Manage from other devices » : un interrupteur pour ouvrir Captun dans un navigateur sur d’autres appareils, un mot de passe, le port et l’adresse à ouvrir"
         }
       ],
       "note": "Pas encore sur GitHub : la version que vous pouvez compiler à partir du code source aujourd’hui ne les inclut pas."

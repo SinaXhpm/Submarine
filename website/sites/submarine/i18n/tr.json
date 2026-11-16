@@ -7,6 +7,7 @@
     "skip": "İçeriğe geç",
     "features": "Özellikler",
     "remote": "Uzak masaüstleri",
+    "ai": "Yapay zekâ asistanı",
     "security": "Güvenlik",
     "privacy": "Gizlilik",
     "download": "İndir",
@@ -43,13 +44,13 @@
     "noTracking": "Bu web sitesi çerez, analitik ya da üçüncü taraf betik kullanmaz."
   },
   "home": {
-    "title": "Submarine – ücretsiz SSH, SFTP, RDP, VNC ve Telnet istemcisi",
-    "description": "Ücretsiz ve açık kaynaklı SSH, SFTP, RDP, VNC ve Telnet istemcisi. Windows, macOS, Linux ve Android için. Sunucu, parola ve anahtarlarınız şifreli kalır.",
+    "title": "Submarine – ücretsiz SSH, SFTP, FTP, RDP ve VNC istemcisi",
+    "description": "Ücretsiz ve açık kaynaklı SSH, SFTP, FTP, RDP, VNC ve Telnet istemcisi. Windows, macOS, Linux ve Android için. Şifreli; yapay zekâ asistanı isteğe bağlı.",
     "hero": {
       "pillTag": "0.5",
-      "pill": "Ortak pano ve hız seçenekleriyle uzak masaüstleri",
+      "pill": "Uzak masaüstleri, FTP ve yapay zekâ asistanı",
       "title": "Tüm sunucularınız <em>tek bir şifreli uygulamada</em>",
-      "lede": "Submarine; Windows, macOS, Linux ve Android için bir SSH, SFTP, RDP, VNC ve Telnet istemcisidir. Sunucularınız, parolalarınız ve anahtarlarınız cihazınızda şifrelenir ve yalnızca siz isterseniz cihazlarınız arasında eşitlenir.",
+      "lede": "Submarine; Windows, macOS, Linux ve Android için bir SSH, SFTP, FTP, RDP, VNC ve Telnet istemcisidir. Sunucularınız, parolalarınız ve anahtarlarınız cihazınızda şifrelenir ve yalnızca siz isterseniz cihazlarınız arasında eşitlenir.",
       "download": "İndir",
       "security": "Verileriniz nasıl korunuyor",
       "trust": [
@@ -60,7 +61,7 @@
       ],
       "chips": [
         "Cihazınızda şifrelenir",
-        "SSH · SFTP · RDP · VNC · Telnet",
+        "SSH · SFTP · FTP · RDP · VNC · Telnet",
         "Eşitleme yalnızca isterseniz"
       ],
       "imageAlt": "Bilgisayarda Submarine: solda bir SSH terminali, sağda iki panelli dosya tarayıcısı"
@@ -70,6 +71,7 @@
       "items": [
         "terminal",
         "SFTP istemcisi",
+        "FTP istemcisi",
         "tünel yöneticisi",
         "RDP uygulaması",
         "VNC görüntüleyici",
@@ -96,6 +98,25 @@
           "id": "files",
           "title": "İki panelli SFTP",
           "text": "Sürükle-bırak, klasör karşılaştırma, uzak dosya düzenleme, arşivler, sudo ve SFTP olmayan sunucular."
+        },
+        {
+          "id": "ai",
+          "title": "Yapay zekâ asistanı",
+          "text": "İsteğe bağlıdır ve seçtiğiniz yapay zekâ sağlayıcısıyla çalışır: Anthropic, OpenAI, OpenRouter, kendi bilgisayarınızdaki bir model ve diğerleri. Belirlediğiniz düzeyin izin verdiği ölçüde bir sunucuda dosyaları okur, düzenler ve komut çalıştırır.",
+          "wide": true,
+          "new": true
+        },
+        {
+          "id": "ftp",
+          "title": "FTP ve FTPS",
+          "text": "FTP sunucuları için aynı dosya tarayıcısı: varsayılan olarak TLS ile, doğrudan ya da bir SSH sunucusu veya proxy üzerinden.",
+          "new": true
+        },
+        {
+          "id": "mcp",
+          "title": "Yapay zekâ ajanları",
+          "text": "Claude Code ve diğer MCP ajanları, izin verdiğiniz sunucularda parola ya da anahtar görmeden çalışabilir. Bilgisayarda kullanılabilir.",
+          "new": true
         },
         {
           "id": "remote",
@@ -159,7 +180,7 @@
         {
           "id": "imports",
           "title": "İçe aktarma",
-          "text": "Sunucularınızı PuTTY, MobaXterm ve OpenSSH yapılandırmalarından içe aktarın."
+          "text": "Sunucularınızı PuTTY, MobaXterm, OpenSSH ve FileZilla yapılandırmalarından içe aktarın."
         }
       ]
     },
@@ -175,6 +196,7 @@
           "points": [
             "Terminalde görünenleri Ctrl+Shift+F ile, yazdığınız komutları Ctrl+Shift+R ile arayın (Mac'te Cmd+Shift). Shift'siz Ctrl+F ve Ctrl+R kabuğa (shell) bırakılır.",
             "Kendi girişiyle ve kendine ait bir bağlantı üzerinden açılan bir terminal için + düğmesine sağ tıklayın: bir kerelik ya da o sunucu için her zaman.",
+            "Ctrl+Shift+K terminali temizler, Ctrl+Shift+W kapatır; terminale Ctrl+Shift+tıklamak ise aynı sunucu için bir terminal daha açar (Mac'te Cmd+Shift).",
             "24 bit renk (true color), {scrollback} satırlık geri kaydırma, renk şemaları ve Nerd Fonts."
           ],
           "alt": "Wall görünümü: tek pencerede yan yana üç sunucu"
@@ -187,7 +209,8 @@
             "İki klasörü karşılaştırın: farklı olan, daha yeni olan ya da yalnızca bir tarafta bulunan dosyalar işaretlenir.",
             "Uzak dosyaları doğrudan düzenleyin; sunucuda arşiv oluşturup açın.",
             "sudo ile root olarak çalışın; SFTP olmayan sunucularda bile.",
-            "Yerel bir klasörü, siz değiştirdikçe bir sunucuya yansıtın (bilgisayarda)."
+            "FTP ve FTPS sunucuları aynı dosya tarayıcısında açılır; düz FTP'yi seçmediğiniz sürece TLS ile.",
+            "Yerel bir klasörü siz değiştirdikçe SFTP ya da FTP üzerinden bir sunucuya yansıtın (bilgisayarda)."
           ],
           "alt": "Yerel bir klasörün uzaktaki bir klasörle karşılaştırılması: Farklı olan dosyalar işaretli"
         },
@@ -204,7 +227,7 @@
         {
           "id": "fits",
           "title": "Zaten kullandıklarınızla çalışır",
-          "text": "~/.ssh/config dosyanızı okur; PuTTY, MobaXterm ve OpenSSH yapılandırmalarını içe aktarır.",
+          "text": "~/.ssh/config dosyanızı okur; PuTTY, MobaXterm, OpenSSH ve FileZilla yapılandırmalarını içe aktarır.",
           "points": [
             "SSH ajanınızı kullanır: Pageant, Windows'un OpenSSH ajanı, 1Password, donanım anahtarları.",
             "OpenSSH sertifikaları, atlama sunucuları (jump host) ile HTTP ve SOCKS proxy'leri.",
@@ -238,8 +261,8 @@
           "title": "Telefonunuzda da",
           "text": "Android'de aynı profil, aynı şifrelemeyle.",
           "points": [
-            "Ctrl, Alt, Esc, Tab ve ok tuşları için tuş çubuğu olan bir terminal.",
-            "Dosya aktarımı ve tüneller.",
+            "Ctrl, Alt, Shift, Esc, Tab, ok tuşları ve | ~ / - için tuş çubuğu olan bir terminal. Ctrl ya da Alt'a bir kez dokunursanız bir sonraki tuşa uygulanır, iki kez dokunursanız açık kalır.",
+            "Dosya aktarımı, tüneller ve yapay zekâ asistanı.",
             "Dokunma, yakınlaştırma, ortak pano, bağlantı göstergesi ve hız seçenekleriyle uzak masaüstleri. Telefon, bir RDP sunucusuyla dosya paylaşmaz."
           ],
           "alt": "Android telefonda Submarine: tuş çubuklu bir SSH terminali"
@@ -287,6 +310,44 @@
       "altSettings": "Bir uzak masaüstü sekmesinin Speed and quality paneli",
       "note": "Yerleşik RDP istemcisi deneyseldir ve bir sunucu için siz seçene kadar kapalıdır (<em>Açılacak yer: Submarine sekmesi</em>). O zamana kadar RDP, bilgisayarınızın RDP uygulamasında açılır. Android'de yerleşik istemci kullanılır."
     },
+    "ai": {
+      "kicker": "0.5'te yeni",
+      "title": "<em>Önce soran</em> bir yapay zekâ asistanı",
+      "lede": "Siz ayarlayana kadar kapalıdır ve seçtiğiniz yapay zekâ sağlayıcısıyla çalışır. Belirlediğiniz düzeyin izin verdiği ölçüde sizin için bir sunucuyu inceler, dosyaları değiştirir ve komut çalıştırır.",
+      "points": [
+        {
+          "id": "provider",
+          "title": "Kendi sağlayıcınız",
+          "text": "Anthropic, OpenAI, OpenRouter, DeepSeek, Groq ya da Google Gemini gibi OpenAI uyumlu bir hizmet veya Ollama ya da LM Studio ile kendi bilgisayarınızda çalışan bir model. İstekler uygulamadan doğrudan sağlayıcıya gider."
+        },
+        {
+          "id": "where",
+          "title": "Her oturumda",
+          "text": "Her SSH ve FTP oturumunda bir yapay zekâ sekmesi ve tüm sohbetlerinizin bulunduğu yapay zekâ asistanı sayfası. Bir sohbet, yarı yolda başka bir modele ya da sağlayıcıya geçebilir."
+        },
+        {
+          "id": "tools",
+          "title": "Okur, düzenler, çalıştırır",
+          "text": "Dosyaları ve klasörleri okur, dosya yazar ve düzenler, SSH sunucularında komut çalıştırır. Yapay zekâ terminali her komutu ve çıktısını, komut çalışırken gösterir. FTP sunucusunda yalnızca dosyalarla çalışır."
+        },
+        {
+          "id": "levels",
+          "title": "Ne kadar ileri gideceğini siz seçersiniz",
+          "text": "Her sunucu için <em>Suggest only</em> ile <em>Full access</em> arasında beş düzey. Varsayılan düzeyde (<em>Ask</em>), uygulamanın yalnızca okuma yaptığını anlayabildiği komutlar kendiliğinden çalışır; diğerleri onayınızı bekler. Her dosya değişikliği <em>Activity</em> görünümünde listelenir ve oradan geri alınabilir."
+        },
+        {
+          "id": "privacy",
+          "title": "Göndermeden önce sorar",
+          "text": "İlk mesajınız bir sağlayıcıya gitmeden önce uygulama size sorar ve mesajın nereye gideceğini söyler. Bir komutun çıktısındaki ya da bir dosyadaki özel anahtar, herhangi bir şey gönderilmeden önce çıkarılır. Sağlayıcıların API anahtarları ve sohbetler cihazınızda şifreli olarak saklanır ve hiçbir zaman eşitlenmez."
+        },
+        {
+          "id": "agents",
+          "title": "Bilgisayarınızdaki yapay zekâ ajanları",
+          "text": "Claude Code ve MCP destekleyen diğer ajanlar, siz bu özelliği <em>Ayarlar → AI agents</em> bölümünde açtığınızda sunucularınızı Submarine üzerinden kullanabilir. Bir ajan erişim ister; sunucuyu, işlemleri, klasörleri ve süreyi siz seçersiniz. Ajan hiçbir zaman parola, anahtar ya da sunucunun adresini almaz."
+        }
+      ],
+      "note": "Yapay zekâ asistanının ve yapay zekâ ajanlarının ekranları şimdilik İngilizcedir."
+    },
     "privacy": {
       "kicker": "Gizlilik odaklı tasarım",
       "title": "Verileriniz sizindir. <em>Biz okuyamayız.</em>",
@@ -302,7 +363,7 @@
         },
         {
           "title": "Takip yok",
-          "text": "Reklam yok, analitik yok, çökme raporu yok. Uygulama yalnızca sizin sunucularınızla, giriş yaparsanız eşitleme sunucusuyla, yeni bir sürüm olup olmadığını denetlemek için GitHub ile ve geri bildirim gönderdiğinizde bizimle iletişim kurar."
+          "text": "Reklam yok, analitik yok, çökme raporu yok. Uygulama yalnızca sizin sunucularınızla, giriş yaparsanız eşitleme sunucusuyla, yeni bir sürüm olup olmadığını denetlemek için GitHub ile, geri bildirim gönderdiğinizde bizimle ve ancak bir yapay zekâ sağlayıcısı ekleyip asistanı kullanırsanız o sağlayıcıyla iletişim kurar."
         }
       ],
       "link": "Nasıl çalıştığı ve bunu kendiniz nasıl doğrulayabileceğiniz"
@@ -315,7 +376,7 @@
         "Submarine, MIT lisansıyla ücretsiz ve açık kaynaklıdır.",
         "Hesap açmanıza gerek yok. Hesap yalnızca cihazlarınız arasındaki isteğe bağlı eşitleme içindir.",
         "Eşitleme hizmeti de makul sınırlar içinde ücretsizdir: hesap başına {limitMb} MB şifreli veri, {limitItems} öğe ve {limitProfiles} profil.",
-        "Kaynak kodu herkese açıktır. Kodu okuyabilir, uygulamayı kendiniz derleyebilir ya da kendi eşitleme sunucunuzu kullanabilirsiniz."
+        "Uygulamanın ve eşitleme sunucusunun kaynak kodu herkese açıktır. Kodu okuyabilir, uygulamayı kendiniz derleyebilir ya da kendi eşitleme sunucunuzu çalıştırabilirsiniz."
       ]
     },
     "download": {
@@ -327,12 +388,12 @@
         {
           "id": "windows",
           "name": "Windows",
-          "detail": "Windows 10 ve 11 · yükleyici (.exe ya da .msi)"
+          "detail": "Windows 10 ve 11 · yükleyici (.exe ya da .msi) veya 0.5 sürümünden itibaren taşınabilir .zip"
         },
         {
           "id": "macos",
           "name": "macOS",
-          "detail": "Apple Silicon (M1 ve sonrası) · .dmg"
+          "detail": "Apple Silicon (M1 ve sonrası) ve 0.5 sürümünden itibaren Intel · .dmg"
         },
         {
           "id": "linux",
@@ -379,12 +440,24 @@
           "a": "Evet, 0.5 sürümünden itibaren. VNC ekranı bir sekmede gösterir ve panoyu paylaşır (düz metin). RDP, bilgisayarınızın RDP uygulamasında ya da deneysel yerleşik istemciyle bir sekmede açılır; yerleşik istemci panoyu ve bilgisayarda bir klasörü ya da sürücüyü paylaşır. Bir Submarine sekmesinde ikisi de bağlantının durumunu gösterir ve daha az veri için görüntü kalitesinden ödün vermenizi sağlar. Telnet bir terminal sekmesinde açılır. Üçü de bir SSH sunucusu üzerinden geçebilir; Telnet ve düz VNC şifrelenmemiş olarak işaretlenir."
         },
         {
+          "q": "FTP ya da FTPS kullanabilir miyim?",
+          "a": "Evet, 0.5 sürümünden itibaren. Bir FTP sunucusu, SFTP ile aynı dosya tarayıcısıyla bir sekmede açılır; varsayılan olarak FTPS (TLS) kullanılır ve bağlantı doğrudan, bir SSH sunucusu ya da bir proxy üzerinden kurulabilir. Düz FTP'yi seçerseniz o da kullanılabilir; uygulama bunun şifrelenmediğini belirtir."
+        },
+        {
+          "q": "Submarine'de yapay zekâ asistanı var mı?",
+          "a": "Evet, 0.5 sürümünden itibaren var; siz <em>Ayarlar → AI Assistant</em> bölümünde ayarlayana kadar da kapalıdır. Kendi yapay zekâ sağlayıcınızı (Anthropic, OpenAI, OpenAI uyumlu bir hizmet ya da Ollama veya LM Studio ile yerel bir model) kullanır ve seçtiğiniz düzeyde, o oturumun yapay zekâ sekmesinden bir sunucu üzerinde çalışır. Siz bir sağlayıcı ekleyip onay verene ve bir mesaj gönderene kadar sağlayıcıya hiçbir şey gitmez."
+        },
+        {
+          "q": "Claude Code ya da başka bir yapay zekâ ajanı sunucularımı Submarine üzerinden kullanabilir mi?",
+          "a": "Evet, bilgisayarda, 0.5 sürümünden itibaren. Bu özelliği <em>Ayarlar → AI agents</em> bölümünde açın; Submarine'i ajana nasıl ekleyeceğiniz de orada gösterilir (Submarine MCP kullanır). Ajan erişim ister; sunucuyu, işlemleri, klasörleri ve süreyi siz seçersiniz. Ajan hiçbir zaman parola, anahtar ya da sunucunun adresini almaz."
+        },
+        {
           "q": "Uzak masaüstü bilgisayarımdan neler alır?",
           "a": "Sekmesine yapıştırdığınızda pano metnini alır; ondan önce hiçbir şey almaz. <em>Panoyu paylaş</em> açıkken sunucuda kopyalanan metin sizin panonuza gelir. Dosyaları ise yalnızca bilgisayarda, yerleşik RDP istemcisi için bir klasör ya da sürücü seçerseniz alır. Bu seçimler cihazınızda tutulur ve hiçbir zaman eşitlenmez; böylece profil paylaştığınız hiç kimse bunları açamaz."
         },
         {
           "q": "Hangi sistemlerde çalışıyor?",
-          "a": "Windows 10 ve 11, Apple Silicon üzerinde macOS (M1 ve sonrası), Linux (.deb, .rpm, Arch, AppImage) ve Android 7.0 veya üzeri. iPhone ve iPad (iOS 15 veya üzeri) için <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>'ta bir beta sürümü var."
+          "a": "Windows 10 ve 11, Apple Silicon (M1 ve sonrası) üzerinde ve 0.5 sürümünden itibaren Intel Mac'lerde macOS, Linux (.deb, .rpm, Arch, AppImage) ve Android 7.0 veya üzeri. iPhone ve iPad (iOS 15 veya üzeri) için <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>'ta bir beta sürümü var."
         },
         {
           "q": "Uygulama hangi dillerde kullanılabiliyor?",
@@ -392,7 +465,7 @@
         },
         {
           "q": "Kendi eşitleme sunucumu kullanabilir miyim?",
-          "a": "Evet. Uygulamada Bulut eşitleme bölümünü açın ve eşitleme sunucusunu değiştirin. Sunucumuzun kodu yayımlanmamıştır; bu yüzden kendi sunucunuzun aynı API'yi sunması gerekir. Bu API, uygulamanın kaynak kodunda açıklanmıştır."
+          "a": "Evet. Eşitleme sunucusunun kodu herkese açıktır: GitHub'daki <a href=\"https://github.com/SinaXhpm/submarine-sync-server\">submarine-sync-server</a> deposunda Docker ya da standart PHP barındırma için bir kılavuz da var. Uygulamada Bulut eşitleme bölümünü açın ve eşitleme sunucusunu değiştirin."
         },
         {
           "q": "Hesabımı nasıl silerim?",
@@ -416,6 +489,7 @@
       "Anahtar, profil parolanızdan Argon2id ile türetilir. Argon2id, tahmin denemelerini maliyetli kılmak için bilerek yavaş çalışan bir yöntemdir. Parola hiçbir zaman saklanmaz ve hiçbir yere gönderilmez.",
       "Eşitlemeyi açarsanız her öğe, yüklenmeden önce cihazınızda şifrelenir. Sunucu, şifresini çözemediği verileri saklar.",
       "Ancak sunucu, verilerinizin dışarıdan görünen kısmını görür: e-posta adresinizi, ne zaman ve hangi IP adresinden eşitleme yaptığınızı, her türden kaç öğeniz olduğunu ve bunların ne kadar büyük olduğunu, profil adlarınızı; paylaşılan profillerde de paylaşım adlarını ve üyelerin e-posta adreslerini.",
+      "Yapay zekâ asistanı ve yapay zekâ ajanları isteğe bağlıdır ve siz ayarlayana kadar kapalıdır. Asistan, mesajlarınızı ve sunucularınızda okuduklarını yalnızca eklediğiniz yapay zekâ sağlayıcısına ve yalnızca siz onay verdikten sonra gönderir.",
       "Uygulamada reklam, analitik ya da çökme raporlama yoktur."
     ],
     "canCannot": {
@@ -541,7 +615,7 @@
         "id": "network",
         "title": "7. Uygulamanın bağlandığı her yer",
         "paragraphs": [
-          "Kendi sunucularınız ve bunlar için ayarladığınız proxy'ler ile atlama sunucuları (jump host). Eşitleme sunucusu, ama yalnızca giriş yapmışsanız. Geri bildirim gönderdiğinizde, kendi sunucunuzla eşitleseniz bile, sunucumuz (<code>submarine.sinaxhpm.com</code>); o zaman da yalnızca yazdıklarınız gönderilir. Bir de daha yeni bir sürüm olup olmadığını denetlemek için GitHub: Profil listesi açıldığında ve “Güncellemeleri denetle” düğmesine bastığınızda uygulama, GitHub'ın herkese açık sürüm listesini sorgular. Bu istek yalnızca uygulamanın adını ve sürümünü taşır. iOS uygulaması, Mac App Store sürümü ve Flatpak sürümü GitHub'a hiçbir zaman sormaz: Bunları kendi mağazaları güncel tutar.",
+          "Kendi sunucularınız ve bunlar için ayarladığınız proxy'ler ile atlama sunucuları (jump host). Eşitleme sunucusu, ama yalnızca giriş yapmışsanız. Geri bildirim gönderdiğinizde, kendi sunucunuzla eşitleseniz bile, sunucumuz (<code>submarine.sinaxhpm.com</code>); o zaman da yalnızca yazdıklarınız gönderilir. Eklediğiniz yapay zekâ sağlayıcısı, yapay zekâ asistanını kullandığınız sırada ve yalnızca ona veri gönderilmesine onay verdikten sonra. Bir de daha yeni bir sürüm olup olmadığını denetlemek için GitHub: Profil listesi açıldığında ve “Güncellemeleri denetle” düğmesine bastığınızda uygulama, GitHub'ın herkese açık sürüm listesini sorgular. Bu istek yalnızca uygulamanın adını ve sürümünü taşır. iOS uygulaması, Mac App Store sürümü ve Flatpak sürümü GitHub'a hiçbir zaman sormaz: Bunları kendi mağazaları güncel tutar.",
           "Uygulamada analitik, çökme raporlama ya da reklam kodu yoktur. Uygulama, eşitleme için yalnızca kendi yerleşik sertifika yetkilisi listesine güvenir ve hiçbir yönlendirmeyi (redirect) izlemez; bu yüzden fark ettirmeden başka bir sunucuya yöneltilemez."
         ],
         "code": [
@@ -563,6 +637,26 @@
           "shareInside",
           "vncPaste"
         ]
+      },
+      {
+        "id": "ai",
+        "title": "9. Yapay zekâ asistanı ve yapay zekâ ajanları",
+        "paragraphs": [
+          "İkisi de isteğe bağlıdır ve siz ayarlayana kadar kapalıdır. Asistan, eklediğiniz yapay zekâ sağlayıcısıyla doğrudan uygulamadan iletişim kurar; hiçbir şey bizim sunucularımızdan geçmez. İlk mesaj bir sağlayıcıya gitmeden önce uygulama, mesajın gideceği adresi belirterek size sorar ve siz onay verene kadar o sağlayıcıya hiçbir şey göndermez. Oraya gidenler: mesajlarınız ve asistanın bunları yanıtlamak için sunucularınızda okudukları (komut çıktıları, dosya içerikleri, klasör listeleri). Sağlayıcının bunlarla ne yaptığı, sağlayıcının kendi koşullarına tabidir.",
+          "Bir komutun çıktısındaki ya da asistanın okuduğu bir dosyadaki özel anahtar, herhangi bir şey gönderilmeden önce kısa bir notla değiştirilir. Sağlayıcıların API anahtarları ve sohbetleriniz, profilin yanında kendilerine ait ayrı bir dosyada, profilin anahtarından türetilen bir anahtar kullanılarak AES-256-GCM ile şifrelenmiş olarak saklanır; bu yüzden profilin kilidini açmak onları da açar. Bu cihazda kalırlar: hiçbir zaman eşitlenmez ya da dışa aktarılmazlar.",
+          "Asistan, yalnızca sunucu için seçtiğiniz düzeyin izin verdiği kadar ileri gider. Varsayılan düzeyde (<em>Ask</em>) bir komut ancak uygulama, komutun metninden yalnızca okuma yaptığını anlayabiliyorsa ya da komut, o sunucuda her zaman çalıştırılmasına izin verdiğiniz komutlar listesindeyse kendiliğinden çalışır. Diğer tüm komutlar, dosyalardaki tüm değişiklikler ve gizli bilgiler içerebilecek bir dosyanın okunması onayınızı bekler. <em>Full access</em> hiçbir zaman kaydedilmez: sekme kapandığında sona erer. Her dosya değişikliği <em>Activity</em> görünümünde listelenir ve oradan geri alınabilir.",
+          "Yapay zekâ ajanları çalışan uygulamaya yalnızca bir adlandırılmış kanal (Windows) ya da Unix soketi (macOS, Linux) üzerinden ulaşır ve bunları yalnızca sizin kullanıcı hesabınız açabilir; ağ portu yoktur. Bir ajan, siz ona bir sunucuya erişim verene kadar hiçbir sunucu görmez; hiçbir zaman parola ya da anahtar almaz ve okuduğu her şeyde sunucunun adresi değiştirilir."
+        ],
+        "code": [
+          "aiConsent",
+          "aiMask",
+          "aiFileKeys",
+          "aiStore",
+          "aiGate",
+          "agentPipe",
+          "agentSocket",
+          "agentMask"
+        ]
       }
     ],
     "verify": {
@@ -575,7 +669,7 @@
         },
         {
           "title": "Ağ bağlantılarını izleyin",
-          "text": "Bir güvenlik duvarı ya da ağ izleme aracı kullanın. Kendi sunucularınızı, yalnızca giriş yapmışken eşitleme sunucusunu, geri bildirim gönderdiğinizde submarine.sinaxhpm.com adresini ve profil listesi açıldığında api.github.com adresini (App Store ve Flatpak sürümlerinde değil) göreceksiniz. Bunların dışında hiçbir şey görmezsiniz."
+          "text": "Bir güvenlik duvarı ya da ağ izleme aracı kullanın. Kendi sunucularınızı, yalnızca giriş yapmışken eşitleme sunucusunu, geri bildirim gönderdiğinizde submarine.sinaxhpm.com adresini, profil listesi açıldığında api.github.com adresini (App Store ve Flatpak sürümlerinde değil) ve asistanı kullanırken eklediğiniz yapay zekâ sağlayıcısını göreceksiniz. Bunların dışında hiçbir şey görmezsiniz."
         },
         {
           "title": "Sunucunun ne sakladığına bakın",
@@ -625,6 +719,7 @@
         "Zayıf ya da başka yerlerde de kullanılan bir parola en zayıf noktadır. Uzun ve benzersiz bir profil parolası, hesabınız için de farklı bir parola kullanın.",
         "Telnet ve düz VNC, tasarımları gereği şifreli değildir. Uygulama bunları işaretler ve bir SSH sunucusu üzerinden çalıştırabilir. Düz VNC üzerinden, yapıştırdığınız ya da sunucunun kopyaladığı pano metni de ağda şifrelenmeden gider.",
         "Yerleşik RDP istemcisi deneyseldir (yayımlanmış bir IronRDP sürümünden değil, bir IronRDP commit'inden derlenir) ve bir sunucu için siz seçene kadar kapalıdır.",
+        "Yapay zekâ asistanının sağlayıcınıza gönderdikleri, bundan sonra bu sayfaya değil, o sağlayıcının koşullarına tabidir. Verilerinin dışarı çıkmaması gereken sunucularda asistanı kullanmayın.",
         "Bu sayfa, uygulamanın {commit} sürümünü anlatır. Kod değişirse bu sayfa da onunla birlikte değişir."
       ]
     },
@@ -645,7 +740,15 @@
       "feedbackBody": "Bir geri bildirim mesajının taşıdıkları",
       "feedbackSend": "Bir geri bildirim mesajının gittiği yer",
       "shareInside": "Paylaşılan bir klasörün yollarının klasörün içinde kalması",
-      "vncPaste": "VNC panosunun taşıyabilecekleri"
+      "vncPaste": "VNC panosunun taşıyabilecekleri",
+      "aiConsent": "Onayınız olmadan o sağlayıcıya yapay zekâ isteği gitmez",
+      "aiMask": "Komut çıktısında özel anahtarların maskelenmesi",
+      "aiFileKeys": "Asistanın okuduğu dosyalarda özel anahtarların gizlenmesi",
+      "aiStore": "Yapay zekâ dosyasının anahtarı ve şifrelenmesi",
+      "aiGate": "Hangi komutların sormadan çalıştığı",
+      "agentPipe": "Ajanların kanalı: yalnızca sizin kullanıcı hesabınız (Windows)",
+      "agentSocket": "Ajanların soketi: yalnızca sizin kullanıcı hesabınız (macOS, Linux)",
+      "agentMask": "Sunucunun adresinin ajandan gizlenmesi"
     }
   },
   "privacy": {

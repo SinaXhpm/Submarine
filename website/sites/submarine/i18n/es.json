@@ -7,6 +7,7 @@
     "skip": "Saltar al contenido",
     "features": "Funciones",
     "remote": "Escritorios remotos",
+    "ai": "Asistente de IA",
     "security": "Seguridad",
     "privacy": "Privacidad",
     "download": "Descargar",
@@ -43,13 +44,13 @@
     "noTracking": "Este sitio web no usa cookies, ni analítica, ni scripts de terceros."
   },
   "home": {
-    "title": "Submarine – cliente SSH y SFTP gratis con RDP, VNC y Telnet",
-    "description": "Cliente SSH/SFTP de código abierto con RDP, VNC y Telnet, gratis en Windows, macOS, Linux y Android. Tus servidores, contraseñas y claves siguen cifrados.",
+    "title": "Submarine – cliente SSH, SFTP y FTP gratis con RDP y VNC",
+    "description": "Cliente SSH, SFTP y FTP gratis y de código abierto, con RDP, VNC y Telnet, para Windows, macOS, Linux y Android. Cifrado, con un asistente de IA opcional.",
     "hero": {
       "pillTag": "0.5",
-      "pill": "Escritorios remotos con portapapeles compartido y opciones de velocidad",
+      "pill": "Escritorios remotos, FTP y un asistente de IA",
       "title": "Todos tus servidores en <em>una sola aplicación cifrada</em>",
-      "lede": "Submarine es un cliente SSH, SFTP, RDP, VNC y Telnet para Windows, macOS, Linux y Android. Tus servidores, contraseñas y claves se cifran en tu dispositivo, y solo se sincronizan entre tus dispositivos si tú quieres.",
+      "lede": "Submarine es un cliente SSH, SFTP, FTP, RDP, VNC y Telnet para Windows, macOS, Linux y Android. Tus servidores, contraseñas y claves se cifran en tu dispositivo, y solo se sincronizan entre tus dispositivos si tú quieres.",
       "download": "Descargar",
       "security": "Cómo se protegen tus datos",
       "trust": [
@@ -60,7 +61,7 @@
       ],
       "chips": [
         "Cifrado en tu dispositivo",
-        "SSH · SFTP · RDP · VNC · Telnet",
+        "SSH · SFTP · FTP · RDP · VNC · Telnet",
         "Sincronización solo si la quieres"
       ],
       "imageAlt": "Submarine en una computadora: una terminal SSH a la izquierda y el explorador de archivos de dos paneles a la derecha"
@@ -70,6 +71,7 @@
       "items": [
         "una terminal",
         "un cliente SFTP",
+        "un cliente FTP",
         "un gestor de túneles",
         "una aplicación de RDP",
         "un visor VNC",
@@ -96,6 +98,25 @@
           "id": "files",
           "title": "SFTP de dos paneles",
           "text": "Arrastrar y soltar, comparar carpetas, editar archivos remotos, archivos comprimidos, sudo y servidores sin SFTP."
+        },
+        {
+          "id": "ai",
+          "title": "Asistente de IA",
+          "text": "Opcional, con el proveedor de IA que elijas: Anthropic, OpenAI, OpenRouter, un modelo en tu propia computadora y otros. El asistente lee y edita archivos y ejecuta comandos en un servidor, hasta donde lo permita el nivel que configures.",
+          "wide": true,
+          "new": true
+        },
+        {
+          "id": "ftp",
+          "title": "FTP y FTPS",
+          "text": "El mismo explorador de archivos para servidores FTP, con TLS de forma predeterminada, directamente o a través de un servidor SSH o de un proxy.",
+          "new": true
+        },
+        {
+          "id": "mcp",
+          "title": "Agentes de IA",
+          "text": "Claude Code y otros agentes MCP pueden trabajar en los servidores que permitas, sin ver ninguna contraseña ni ninguna clave. En una computadora.",
+          "new": true
         },
         {
           "id": "remote",
@@ -159,7 +180,7 @@
         {
           "id": "imports",
           "title": "Importación",
-          "text": "Trae tus servidores desde PuTTY, MobaXterm y OpenSSH."
+          "text": "Trae tus servidores desde PuTTY, MobaXterm, OpenSSH y FileZilla."
         }
       ]
     },
@@ -175,6 +196,7 @@
           "points": [
             "Busca en lo que muestra la terminal con Ctrl+Shift+F, y en los comandos que escribiste con Ctrl+Shift+R (Cmd+Shift en Mac). Ctrl+F y Ctrl+R, sin Shift, siguen llegando al shell.",
             "Haz clic derecho en el botón + para abrir una terminal con su propio inicio de sesión, en una conexión propia: una sola vez, o siempre para ese servidor.",
+            "Ctrl+Shift+K limpia una terminal, Ctrl+Shift+W la cierra y Ctrl+Shift+clic sobre ella abre otra para el mismo servidor (Cmd+Shift en Mac).",
             "Color de 24 bits, {scrollback} líneas de historial, esquemas de color y Nerd Fonts."
           ],
           "alt": "La vista Wall: tres servidores uno junto a otro en una sola ventana"
@@ -187,7 +209,8 @@
             "Compara dos carpetas: se marcan los archivos que difieren, los más recientes y los que solo existen en un lado.",
             "Edita archivos remotos en vivo, y comprime y descomprime archivos en el servidor.",
             "Trabaja como root mediante sudo, incluso en servidores sin SFTP.",
-            "Refleja una carpeta local en un servidor a medida que la cambias (en una computadora)."
+            "Los servidores FTP y FTPS se abren en el mismo explorador de archivos, con TLS salvo que elijas FTP simple.",
+            "Refleja una carpeta local en un servidor a medida que la cambias, por SFTP o FTP (en una computadora)."
           ],
           "alt": "Comparación de una carpeta local con una remota: los archivos que difieren aparecen marcados"
         },
@@ -204,7 +227,7 @@
         {
           "id": "fits",
           "title": "Funciona con lo que ya tienes",
-          "text": "Lee tu ~/.ssh/config e importa desde PuTTY, MobaXterm y OpenSSH.",
+          "text": "Lee tu ~/.ssh/config e importa desde PuTTY, MobaXterm, OpenSSH y FileZilla.",
           "points": [
             "Usa tu agente SSH: Pageant, el agente de OpenSSH de Windows, 1Password, llaves de hardware.",
             "Certificados de OpenSSH, servidores de salto y proxies HTTP y SOCKS.",
@@ -238,8 +261,8 @@
           "title": "También en tu teléfono",
           "text": "El mismo perfil en Android, con el mismo cifrado.",
           "points": [
-            "Una terminal con una barra de teclas para Ctrl, Alt, Esc, Tab y las flechas.",
-            "Transferencia de archivos y túneles.",
+            "Una terminal con una barra de teclas para Ctrl, Alt, Shift, Esc, Tab, las flechas y | ~ / -. Toca Ctrl o Alt una vez para usarla con la siguiente tecla, o dos veces para dejarla activada.",
+            "Transferencia de archivos, túneles y el asistente de IA.",
             "Escritorios remotos con control táctil, zoom, el portapapeles compartido, el indicador de conexión y las opciones de velocidad. Un teléfono no comparte archivos con un servidor RDP."
           ],
           "alt": "Submarine en un teléfono Android: una terminal SSH con barra de teclas"
@@ -287,6 +310,44 @@
       "altSettings": "El panel Speed and quality de una pestaña de escritorio remoto",
       "note": "El cliente RDP integrado es experimental y está desactivado hasta que lo eliges para un servidor (<em>Abrir en: Pestaña de Submarine</em>). Hasta entonces, RDP se abre en la aplicación de RDP de tu computadora. En Android se usa el cliente integrado."
     },
+    "ai": {
+      "kicker": "Nuevo en la 0.5",
+      "title": "Un asistente de IA <em>que pregunta primero</em>",
+      "lede": "Desactivado hasta que lo configures, y con el proveedor de IA que elijas. Examina un servidor por ti, cambia archivos y ejecuta comandos, hasta donde lo permita el nivel que configures.",
+      "points": [
+        {
+          "id": "provider",
+          "title": "Tu propio proveedor",
+          "text": "Anthropic, OpenAI, un servicio compatible con OpenAI como OpenRouter, DeepSeek, Groq o Google Gemini, o un modelo en tu propia computadora a través de Ollama o LM Studio. Las solicitudes van directamente de la aplicación al proveedor."
+        },
+        {
+          "id": "where",
+          "title": "En cada sesión",
+          "text": "Una pestaña de IA en cada sesión SSH y FTP, y una página de IA con todos tus chats. Un chat puede cambiar a otro modelo o a otro proveedor a mitad de conversación."
+        },
+        {
+          "id": "tools",
+          "title": "Lee, edita y ejecuta",
+          "text": "Lee archivos y carpetas, escribe y edita archivos, y ejecuta comandos en servidores SSH. La terminal de IA muestra cada comando y su salida mientras se ejecuta. En un servidor FTP, el asistente solo trabaja con archivos."
+        },
+        {
+          "id": "levels",
+          "title": "Tú decides hasta dónde llega",
+          "text": "Cinco niveles para cada servidor, desde <em>Suggest only</em> hasta <em>Full access</em>. En el nivel predeterminado, <em>Ask</em>, los comandos que la aplicación puede identificar como de solo lectura se ejecutan solos, y el resto espera tu aprobación. Cada cambio en un archivo aparece en <em>Activity</em> y se puede deshacer allí."
+        },
+        {
+          "id": "privacy",
+          "title": "Pregunta antes de enviar",
+          "text": "Antes de que tu primer mensaje vaya a un proveedor, la aplicación te pide permiso e indica adónde va. Una clave privada en la salida de un comando o en un archivo se elimina antes de enviar nada. Las claves de API de los proveedores y los chats se guardan cifrados en tu dispositivo y nunca se sincronizan."
+        },
+        {
+          "id": "agents",
+          "title": "Agentes de IA en tu computadora",
+          "text": "Claude Code y otros agentes compatibles con MCP pueden usar tus servidores a través de Submarine, una vez que lo actives en <em>Configuración → AI agents</em>. Un agente pide acceso, y tú eliges el servidor, las operaciones, las carpetas y durante cuánto tiempo. Nunca recibe ninguna contraseña, ninguna clave ni la dirección del servidor."
+        }
+      ],
+      "note": "Por ahora, las pantallas del asistente de IA y de los agentes de IA están en inglés."
+    },
     "privacy": {
       "kicker": "Privacidad desde el diseño",
       "title": "Tus datos son tuyos. <em>No podemos leerlos.</em>",
@@ -302,7 +363,7 @@
         },
         {
           "title": "Sin rastreo",
-          "text": "Sin anuncios, sin analítica, sin informes de fallos. La aplicación solo se comunica con tus servidores, con el servidor de sincronización si inicias sesión, con GitHub para comprobar si hay una versión nueva y con nosotros cuando envías comentarios."
+          "text": "Sin anuncios, sin analítica, sin informes de fallos. La aplicación solo se comunica con tus servidores, con el servidor de sincronización si inicias sesión, con GitHub para comprobar si hay una versión nueva, con nosotros cuando envías comentarios y con un proveedor de IA solo si añades uno y usas el asistente."
         }
       ],
       "link": "Cómo funciona y cómo comprobarlo por tu cuenta"
@@ -315,7 +376,7 @@
         "Submarine es gratuito y de código abierto, con licencia MIT.",
         "No necesitas una cuenta. La cuenta solo sirve para la sincronización opcional entre tus dispositivos.",
         "El servicio de sincronización también es gratuito, dentro de unos límites razonables: {limitMb} MB de datos cifrados, {limitItems} elementos y {limitProfiles} perfiles por cuenta.",
-        "El código fuente es público. Puedes leerlo, compilar la aplicación por tu cuenta o usar tu propio servidor de sincronización."
+        "El código fuente de la aplicación y del servidor de sincronización es público. Puedes leerlo, compilar la aplicación por tu cuenta o poner en marcha tu propio servidor de sincronización."
       ]
     },
     "download": {
@@ -327,12 +388,12 @@
         {
           "id": "windows",
           "name": "Windows",
-          "detail": "Windows 10 y 11 · instalador (.exe o .msi)"
+          "detail": "Windows 10 y 11 · instalador (.exe o .msi), o un .zip portable a partir de la versión 0.5"
         },
         {
           "id": "macos",
           "name": "macOS",
-          "detail": "Apple Silicon (M1 o posterior) · .dmg"
+          "detail": "Apple Silicon (M1 o posterior), e Intel a partir de la versión 0.5 · .dmg"
         },
         {
           "id": "linux",
@@ -379,12 +440,24 @@
           "a": "Sí, a partir de la versión 0.5. VNC muestra la pantalla en una pestaña y comparte el portapapeles (texto sin formato). RDP se abre en la aplicación de RDP de tu computadora, o en una pestaña con el cliente integrado experimental, que comparte el portapapeles y, en una computadora, una carpeta o una unidad. En una pestaña de Submarine, ambos muestran cómo va la conexión y te permiten sacrificar calidad de imagen a cambio de usar menos datos. Telnet se abre en una pestaña de terminal. Los tres pueden pasar por un servidor SSH, y Telnet y VNC en su forma básica se marcan como sin cifrar."
         },
         {
+          "q": "¿Puedo usar FTP o FTPS?",
+          "a": "Sí, a partir de la versión 0.5. Un servidor FTP se abre en una pestaña con el mismo explorador de archivos que SFTP, con FTPS (TLS) de forma predeterminada, directamente, a través de un servidor SSH o a través de un proxy. El FTP simple está disponible si lo eliges, y la aplicación avisa de que no está cifrado."
+        },
+        {
+          "q": "¿Submarine tiene un asistente de IA?",
+          "a": "Sí, a partir de la versión 0.5, y está desactivado hasta que lo configures en <em>Configuración → AI Assistant</em>. Usa tu propio proveedor de IA (Anthropic, OpenAI, un servicio compatible con OpenAI o un modelo local a través de Ollama o LM Studio) y trabaja en un servidor desde la pestaña de IA de su sesión, con el nivel que elijas. No se envía nada a ningún proveedor hasta que añadas uno, des tu consentimiento y envíes un mensaje."
+        },
+        {
+          "q": "¿Puede Claude Code u otro agente de IA usar mis servidores a través de Submarine?",
+          "a": "Sí, en una computadora, a partir de la versión 0.5. Actívalo en <em>Configuración → AI agents</em>, donde se explica cómo añadir Submarine al agente (por MCP). El agente pide acceso, y tú eliges el servidor, las operaciones, las carpetas y la duración. Nunca recibe ninguna contraseña, ninguna clave ni la dirección del servidor."
+        },
+        {
           "q": "¿Qué recibe un escritorio remoto de mi computadora?",
           "a": "El texto del portapapeles cuando pegas en su pestaña, y nada antes de eso. El texto copiado en el servidor llega a tu portapapeles mientras <em>Compartir el portapapeles</em> está activado. Archivos, solo si eliges una carpeta o una unidad para el cliente RDP integrado, en una computadora. Estas opciones se guardan en tu dispositivo y nunca se sincronizan, así que nadie con quien compartas un perfil puede activarlas."
         },
         {
           "q": "¿En qué sistemas funciona?",
-          "a": "Windows 10 y 11, macOS en Apple Silicon (M1 o posterior), Linux (.deb, .rpm, Arch, AppImage) y Android 7.0 o posterior. Para iPhone y iPad (iOS 15 o posterior) hay una beta en <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>."
+          "a": "Windows 10 y 11, macOS en Apple Silicon (M1 o posterior) y, a partir de la versión 0.5, en Mac con Intel, Linux (.deb, .rpm, Arch, AppImage) y Android 7.0 o posterior. Para iPhone y iPad (iOS 15 o posterior) hay una beta en <a href=\"https://testflight.apple.com/join/TmefAPrY\">TestFlight</a>."
         },
         {
           "q": "¿En qué idiomas está disponible la aplicación?",
@@ -392,7 +465,7 @@
         },
         {
           "q": "¿Puedo usar mi propio servidor de sincronización?",
-          "a": "Sí. En la aplicación, abre «Sincronización en la nube» y cambia el servidor de sincronización. El código de nuestro servidor no está publicado, así que un servidor propio tiene que ofrecer la misma API, que se describe en el código fuente de la aplicación."
+          "a": "Sí. El código del servidor de sincronización es público: <a href=\"https://github.com/SinaXhpm/submarine-sync-server\">submarine-sync-server</a> en GitHub, con una guía para Docker o para un alojamiento PHP sencillo. En la aplicación, abre «Sincronización en la nube» y cambia el servidor de sincronización."
         },
         {
           "q": "¿Cómo elimino mi cuenta?",
@@ -416,6 +489,7 @@
       "La clave se genera a partir de la contraseña de tu perfil con Argon2id, un método lento a propósito para que adivinarla resulte costoso. La contraseña nunca se guarda ni se envía a ningún sitio.",
       "Si activas la sincronización, cada elemento se cifra en tu dispositivo antes de subirse. El servidor guarda datos que no puede descifrar.",
       "Lo que el servidor sí ve es lo que rodea a tus datos: tu dirección de correo electrónico, cuándo sincronizas y desde qué dirección IP, cuántos elementos de cada tipo tienes y qué tamaño tienen, los nombres de tus perfiles y, en los perfiles compartidos, sus nombres y las direcciones de correo electrónico de los miembros.",
+      "El asistente de IA y los agentes de IA son opcionales y están desactivados hasta que los configures. El asistente envía tus mensajes, y lo que lee en tus servidores, solo al proveedor de IA que añadas, y solo después de que des tu consentimiento.",
       "La aplicación no tiene anuncios, ni analítica, ni informes de fallos."
     ],
     "canCannot": {
@@ -541,7 +615,7 @@
         "id": "network",
         "title": "7. Todas las conexiones de la aplicación",
         "paragraphs": [
-          "Tus propios servidores, y los proxies y servidores de salto que configures para ellos. El servidor de sincronización, solo cuando tienes la sesión iniciada. Nuestro servidor (<code>submarine.sinaxhpm.com</code>) cuando envías comentarios, incluso si sincronizas con un servidor propio, y entonces solo con lo que escribiste. Y GitHub, para comprobar si hay una versión más reciente: cuando se abre la lista de perfiles y cuando pulsas «Buscar actualizaciones», la aplicación consulta la lista pública de versiones de GitHub. Esa solicitud solo lleva el nombre y la versión de la aplicación. La aplicación para iOS, la versión del Mac App Store y el Flatpak nunca consultan GitHub: sus tiendas los mantienen actualizados.",
+          "Tus propios servidores, y los proxies y servidores de salto que configures para ellos. El servidor de sincronización, solo cuando tienes la sesión iniciada. Nuestro servidor (<code>submarine.sinaxhpm.com</code>) cuando envías comentarios, incluso si sincronizas con un servidor propio, y entonces solo con lo que escribiste. El proveedor de IA que hayas añadido, mientras usas el asistente de IA, y solo después de que aceptes enviarle datos. Y GitHub, para comprobar si hay una versión más reciente: cuando se abre la lista de perfiles y cuando pulsas «Buscar actualizaciones», la aplicación consulta la lista pública de versiones de GitHub. Esa solicitud solo lleva el nombre y la versión de la aplicación. La aplicación para iOS, la versión del Mac App Store y el Flatpak nunca consultan GitHub: sus tiendas los mantienen actualizados.",
           "La aplicación no contiene código de analítica, de informes de fallos ni de publicidad. Para la sincronización, la aplicación solo confía en su propia lista integrada de autoridades de certificación y nunca sigue una redirección, así que no se la puede desviar en silencio hacia otro servidor."
         ],
         "code": [
@@ -563,6 +637,26 @@
           "shareInside",
           "vncPaste"
         ]
+      },
+      {
+        "id": "ai",
+        "title": "9. El asistente de IA y los agentes de IA",
+        "paragraphs": [
+          "Ambos son opcionales y están desactivados hasta que los configures. El asistente se comunica directamente desde la aplicación con el proveedor de IA que añadas; nada pasa por ningún servidor nuestro. Antes de que el primer mensaje vaya a un proveedor, la aplicación te pregunta e indica la dirección de destino, y no le envía nada a ese proveedor hasta que aceptes. Lo que se envía: tus mensajes y lo que el asistente lee en tus servidores para responderlos (salida de comandos, contenido de archivos, listados de carpetas). Lo que el proveedor haga con ellos se rige por sus propias condiciones.",
+          "Antes de enviar nada, una clave privada que aparezca en la salida de un comando o en un archivo que lea el asistente se sustituye por un texto que indica que se ha eliminado. Las claves de API de los proveedores y tus chats se guardan en un archivo propio junto al perfil, cifrado con AES-256-GCM mediante una clave generada a partir de la clave del perfil, de modo que al desbloquear el perfil también se abren. Se quedan en este dispositivo: nunca se sincronizan ni se exportan.",
+          "El asistente solo llega hasta donde lo permite el nivel que elegiste para el servidor. En el nivel predeterminado, <em>Ask</em>, un comando se ejecuta por sí mismo únicamente cuando la aplicación puede deducir de su texto que solo lee, o cuando está en la lista de comandos que se ejecutan siempre en ese servidor. Cualquier otro comando, cualquier cambio en un archivo y la lectura de un archivo que pueda contener secretos esperan tu aprobación. <em>Full access</em> nunca se guarda: termina cuando se cierra la pestaña. Cada cambio en un archivo aparece en <em>Activity</em> y se puede deshacer allí.",
+          "Los agentes de IA solo llegan a la aplicación en ejecución a través de una canalización con nombre (Windows) o un socket Unix (macOS, Linux) que solo tu cuenta de usuario puede abrir; no hay ningún puerto de red. Un agente no ve ningún servidor hasta que le das acceso a uno, nunca recibe ninguna contraseña ni ninguna clave, y la dirección del servidor se sustituye en todo lo que lee."
+        ],
+        "code": [
+          "aiConsent",
+          "aiMask",
+          "aiFileKeys",
+          "aiStore",
+          "aiGate",
+          "agentPipe",
+          "agentSocket",
+          "agentMask"
+        ]
       }
     ],
     "verify": {
@@ -575,7 +669,7 @@
         },
         {
           "title": "Observa las conexiones",
-          "text": "Usa un cortafuegos o un monitor de red. Verás tus propios servidores, el servidor de sincronización solo mientras tengas la sesión iniciada, submarine.sinaxhpm.com cuando envíes comentarios, y api.github.com cuando se abra la lista de perfiles (no en las versiones del App Store ni en la de Flatpak). Nada más."
+          "text": "Usa un cortafuegos o un monitor de red. Verás tus propios servidores, el servidor de sincronización solo mientras tengas la sesión iniciada, submarine.sinaxhpm.com cuando envíes comentarios, api.github.com cuando se abra la lista de perfiles (no en las versiones del App Store ni en la de Flatpak) y el proveedor de IA que hayas añadido mientras uses el asistente. Nada más."
         },
         {
           "title": "Mira lo que guarda el servidor",
@@ -625,6 +719,7 @@
         "Una contraseña débil o reutilizada es el punto más débil. Usa una contraseña larga y única para el perfil, y otra distinta para la cuenta.",
         "Telnet y VNC en su forma básica no están cifrados por diseño. La aplicación los marca y puede hacer que pasen por un servidor SSH. Con VNC en su forma básica, el texto del portapapeles que pegas o que copia el servidor también viaja por la red sin cifrar.",
         "El cliente RDP integrado es experimental (se compila a partir de un commit de IronRDP, no de una versión publicada) y está desactivado hasta que lo eliges para un servidor.",
+        "Lo que el asistente de IA envía a tu proveedor queda entonces sujeto a las condiciones de ese proveedor, no a esta página. No uses el asistente en servidores cuyos datos no deban salir de ellos.",
         "Esta página describe la aplicación tal como está en {commit}. Si el código cambia, esta página cambia con él."
       ]
     },
@@ -645,7 +740,15 @@
       "feedbackBody": "Lo que lleva un mensaje de comentarios",
       "feedbackSend": "Adónde va un mensaje de comentarios",
       "shareInside": "Mantener las rutas de una carpeta compartida dentro de ella",
-      "vncPaste": "Lo que puede transmitir el portapapeles de VNC"
+      "vncPaste": "Lo que puede transmitir el portapapeles de VNC",
+      "aiConsent": "Ninguna solicitud de IA antes de tu sí para ese proveedor",
+      "aiMask": "Claves privadas enmascaradas en la salida de los comandos",
+      "aiFileKeys": "Claves privadas ocultas en los archivos que lee el asistente",
+      "aiStore": "La clave y el cifrado del archivo de IA",
+      "aiGate": "Qué comandos se ejecutan sin preguntar",
+      "agentPipe": "La canalización de los agentes: solo tu cuenta de usuario (Windows)",
+      "agentSocket": "El socket de los agentes: solo tu cuenta de usuario (macOS, Linux)",
+      "agentMask": "Ocultar la dirección del servidor a un agente"
     }
   },
   "privacy": {

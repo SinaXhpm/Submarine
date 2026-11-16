@@ -302,6 +302,27 @@
           "text": "Wenn sich ein neues Gerät verbindet oder darauf wartet, zugelassen zu werden, wenn ein Gerät 80 % oder sein ganzes Datenkontingent verbraucht hat, und die Nutzung der letzten Woche. Die Benachrichtigungen zum Datenkontingent und zur Wochennutzung brauchen die Routing-Engine.",
           "routing": false,
           "alt": "Die Einstellungen von Captun: ein Datenkontingent für jedes Gerät und die drei Arten von Benachrichtigungen"
+        },
+        {
+          "id": "proxy",
+          "title": "Ein Proxy für andere Geräte",
+          "text": "Ein Smartphone, ein Computer oder eine einzelne App geht über Captun online, ohne sich mit dem Hotspot zu verbinden, wenn Sie Captun dort als HTTP- oder SOCKS5-Proxy eintragen. Dafür gelten dieselben Regeln, Ausgänge und Limits wie für jedes andere Gerät.",
+          "routing": false,
+          "alt": "Die Proxy-Seite: ein Schalter, mit dem Geräte und Apps Captun als Proxy nutzen können, wer ihn nutzen darf, der Port, SOCKS5 und HTTP sowie ein Name und ein Passwort"
+        },
+        {
+          "id": "capture",
+          "title": "Jede Verbindung sehen",
+          "text": "Zeichnen Sie den Datenverkehr eines Geräts auf und verfolgen Sie jede Verbindung, die es öffnet: wohin sie ging, ob sie durchgelassen wurde und warum, und wie viele Daten sie übertragen hat. Speichern Sie die Aufzeichnung als Tabelle, als JSON oder als Datei für Wireshark. Captun hält sie nur im Arbeitsspeicher, und Cookies, Anmeldedaten und das, was Formulare senden, werden nie festgehalten.",
+          "routing": true,
+          "alt": "Die Capture-Seite: die Verbindungen eines aufgezeichneten Smartphones live, jeweils mit Uhrzeit, Website, Ergebnis und Größe"
+        },
+        {
+          "id": "web",
+          "title": "Im Browser verwalten",
+          "text": "Öffnen Sie die Seiten von Captun über HTTPS auf Ihrem Smartphone oder einem anderen Computer, angemeldet mit einem Admin-Passwort. Auf einem Computer ohne Bildschirm führen Pakete für Linux-Server Captun als Dienste aus, die mit dem Computer starten, und auf einem Desktop-System kann Captun ebenfalls mit dem Computer starten.",
+          "routing": false,
+          "alt": "Einstellungen, „Manage from other devices“: ein Schalter, um Captun auf anderen Geräten im Browser zu öffnen, ein Passwort, der Port und die Adresse zum Aufrufen"
         }
       ],
       "note": "Noch nicht auf GitHub: Die Version, die Sie heute aus dem Quellcode bauen können, enthält sie nicht."
