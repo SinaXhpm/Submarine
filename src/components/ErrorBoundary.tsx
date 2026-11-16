@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { t } from "../i18n";
 import { clearAiFocus, clearFeeds } from "../util/aiEvents";
 import { clearUrlCache } from "./ai/markdownParse";
+import { copyText } from "../util/clipboard";
 
 interface Props { children: ReactNode; }
 interface State { error: Error | null; info: ErrorInfo | null; }
@@ -59,7 +60,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             <button style={S.btn} onClick={this.reset}>{t("Try to continue")}</button>
             <button
               style={S.btn}
-              onClick={() => { navigator.clipboard?.writeText(`${error.message}\n\n${detail}`).catch(() => {}); }}
+              onClick={() => { copyText(`${error.message}\n\n${detail}`).catch(() => {}); }}
             >
               {t("Copy details")}
             </button>

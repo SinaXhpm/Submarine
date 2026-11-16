@@ -6,6 +6,7 @@ import { useConfirm } from "../ui/confirm";
 import { writeToTerminal } from "../util/pasteText";
 import { serverRowChanged } from "../util/serverJson";
 import { useT } from "../i18n";
+import { copyText } from "../util/clipboard";
 
 // Side panel that opens from a terminal session and surfaces *both* the
 // user's saved Quick Commands and their Notes. Two patterns for editing:
@@ -273,7 +274,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     void writeToTerminal({ terminalId: activeTab, text, enter: execute, cut, confirm });
 
   const copyToClipboard = async (text: string) => {
-    try { await navigator.clipboard.writeText(text); }
+    try { await copyText(text); }
     catch (e) { console.error("Clipboard write failed:", e); }
   };
 
