@@ -28,6 +28,11 @@ export const IS_MOBILE: boolean = IS_ANDROID || IS_IOS;
 export const IS_LINUX: boolean =
   typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent) && !IS_ANDROID;
 
+// A Mac, or an iPad (its WebView says "Macintosh" too): Command is the
+// shortcut key there, and Control+click is a right-click.
+export const IS_MAC: boolean =
+  typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent) && !IS_ANDROID;
+
 // Windows, where drives have letters (an RDP server may be given a whole one).
 export const IS_WINDOWS: boolean =
   typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);

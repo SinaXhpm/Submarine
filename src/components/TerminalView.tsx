@@ -19,7 +19,7 @@ import { readUseLocalShell } from '../util/terminalShell';
 import { holdTerminalInput, writeTerminal } from '../util/terminalWrite';
 import { readUseSshAgent } from '../util/sshAgent';
 import { readSendKeepalives } from '../util/sessionKeep';
-import { IS_MOBILE, IS_LINUX, IS_ANDROID } from '../util/platform';
+import { IS_MOBILE, IS_LINUX, IS_ANDROID, IS_MAC } from '../util/platform';
 import { useConfirm } from '../ui/confirm';
 import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
 import { tn, useT } from '../i18n';
@@ -1443,16 +1443,12 @@ const TerminalView = ({
       selectionArmed = false;
       void copySelectionIfAny();
     };
-    // Handler to open a new terminal on Ctrl+Shift+Click (or Cmd+Shift+Click on Mac).
+    // Ctrl+Shift+click (Cmd+Shift+click on a Mac) opens a new terminal. Only
+    // those keys: on a Mac, Control+click is a right-click, which pastes here,
+    // and a click with Alt as well is left alone.
     const onNewTerminalClick = (ev: MouseEvent) => {
-      if (
-        ev.button !== 0 ||
-        !(ev.ctrlKey || ev.metaKey) ||
-        !ev.shiftKey
-      ) {
-        return;
-      }
-
+      const primary = IS_MAC ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && !ev.metaKey;
+      if (ev.button !== 0 || !primary || !ev.shiftKey || ev.altKey) return;
       ev.preventDefault();
       ev.stopPropagation();
       onNewTerminalRef.current?.();
@@ -1648,6 +1644,8 @@ const TerminalView = ({
       }
       return true;
     });
+    // In the capture phase, before xterm's own handlers: with mouse tracking
+    // on (htop, vim) those send the click to the program and stop it there.
     terminalRef.current.addEventListener('mousedown', onNewTerminalClick, true);
     terminalRef.current.addEventListener('mousedown', onMouseDown);
     document.addEventListener('mouseup', onDocMouseUp);
