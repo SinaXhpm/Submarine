@@ -89,11 +89,11 @@ async fn run_capture(
             .ok_or_else(|| "Session not connected".to_string())?
     };
     let channel = crate::shell_sftp::open_session_channel(&session_arc).await?;
+    // sh reads it, whatever the login shell is (remote_sh). Sending it and
+    // reading what it prints share the time limit.
     let wrapped = format!("{}\necho __DOCK_EXIT:$?", cmd);
-    channel
-        .exec(true, wrapped.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    crate::remote_sh::run_script(&channel, &wrapped, deadline).await?;
     let mut stream = channel.into_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
     let read_fut = async {
@@ -110,7 +110,7 @@ async fn run_capture(
             }
         }
     };
-    tokio::time::timeout(Duration::from_secs(timeout_secs), read_fut)
+    tokio::time::timeout_at(deadline, read_fut)
         .await
         .map_err(|_| format!("docker command timed out after {}s", timeout_secs))?;
     let text = String::from_utf8_lossy(&buf).into_owned();
@@ -546,10 +546,10 @@ pub async fn ssh_docker_logs_start(
     } else {
         raw_cmd
     };
-    channel
-        .exec(true, cmd.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
+    // The logs then come for as long as they are wanted; only starting has a
+    // time limit.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    crate::remote_sh::run_script(&channel, &cmd, deadline).await?;
     let mut stream = channel.into_stream();
 
     let app_clone = app.clone();
@@ -668,6 +668,25 @@ pub async fn ssh_docker_logs_stop(
 
 // ---- terminal exec into container ------------------------------------------
 
+/// The command line for a terminal in `container`. Shell auto-detect runs
+/// inside the container: prefer bash, fall back to sh, fall back to ash
+/// (Alpine). Anything more exotic and the user can jump in via a regular ssh
+/// terminal and figure it out.
+///
+/// The login shell runs this line as it is (one of the few, see remote_sh):
+/// the terminal is its stdin, so no script can come there first. So it is a
+/// plain command with quoted words only, the same in sh, csh and fish: no
+/// line break, no `!`, no redirection outside the quotes.
+fn container_terminal_command(container: &str, use_sudo: bool) -> String {
+    let inner = r#"if command -v bash >/dev/null 2>&1; then exec bash; elif command -v sh >/dev/null 2>&1; then exec sh; elif command -v ash >/dev/null 2>&1; then exec ash; else echo 'no shell found in container' && exit 1; fi"#;
+    let docker_cmd = format!("docker exec -it {} sh -c {}", shq(container), shq(inner));
+    if use_sudo {
+        format!("sudo -n {}", docker_cmd)
+    } else {
+        docker_cmd
+    }
+}
+
 // Opens a PTY-backed exec channel running `docker exec -it <name> <shell>`
 // with shell auto-detect: try bash → sh. Wires into the same terminal-IO
 // pipeline (`terminal-output-<id>` events + write/resize/close commands)
@@ -702,18 +721,9 @@ pub async fn open_container_terminal(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Shell auto-detect runs inside the container: prefer bash, fall back to
-    // sh, fall back to ash (Alpine). Anything more exotic and the user can
-    // jump in via a regular ssh terminal and figure it out.
-    let inner = r#"if command -v bash >/dev/null 2>&1; then exec bash; elif command -v sh >/dev/null 2>&1; then exec sh; elif command -v ash >/dev/null 2>&1; then exec ash; else echo 'no shell found in container' && exit 1; fi"#;
-    let docker_cmd = format!("docker exec -it {} sh -c {}", shq(&container), shq(inner));
-    let cmd = if use_sudo {
-        format!("sudo -n {}", docker_cmd)
-    } else {
-        docker_cmd
-    };
+    let terminal_cmd = container_terminal_command(&container, use_sudo);
     channel
-        .exec(true, cmd.as_bytes())
+        .exec(true, terminal_cmd.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
 
@@ -749,7 +759,31 @@ pub async fn open_container_terminal(
 
 #[cfg(test)]
 mod name_tests {
-    use super::{is_safe_name, is_safe_path};
+    use super::{container_terminal_command, is_safe_name, is_safe_path};
+
+    #[test]
+    fn the_container_terminal_line_reads_the_same_in_any_login_shell() {
+        for sudo in [false, true] {
+            let line = container_terminal_command("web-1", sudo);
+            assert!(!line.contains(['\n', '!', '\\', '$']), "{line}");
+            // Outside quotes, only words; inside double quotes, only the `'`
+            // that shq puts there.
+            let (mut outside, mut quote) = (String::new(), None);
+            let mut doubled = String::new();
+            for c in line.chars() {
+                match (quote, c) {
+                    (None, '\'' | '"') => quote = Some(c),
+                    (None, _) => outside.push(c),
+                    (Some(q), _) if c == q => quote = None,
+                    (Some('"'), _) => doubled.push(c),
+                    _ => {}
+                }
+            }
+            assert!(quote.is_none(), "{line}");
+            assert!(outside.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-'), "{outside}");
+            assert!(doubled.chars().all(|c| c == '\''), "{doubled}");
+        }
+    }
 
     #[test]
     fn name_rejects_leading_dash_flags() {
