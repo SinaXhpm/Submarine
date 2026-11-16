@@ -86,6 +86,19 @@ export function rdpShare(o: RdpOptions): { kind: "folder" | "drive"; path: strin
   return o.share !== "off" && o.sharePath.trim() ? { kind: o.share, path: o.sharePath.trim(), readOnly: o.shareReadOnly } : null;
 }
 
+/** The name the server shows a share by (`\\tsclient\<name>`, "<name> on
+ *  Submarine" in a Windows server's This PC): the folder's own name or the
+ *  drive's letter, letters, digits, `-` and `_` only, at most 32, "Shared"
+ *  when nothing is left. Kept equal to `rdp_share::share_name`, which names
+ *  the share for real; this one is for the server form, before connecting. */
+export function rdpShareName(kind: "folder" | "drive", path: string): string {
+  const p = path.trim();
+  const raw = kind === "drive" && /^[A-Za-z]:[\\/]?$/.test(p)
+    ? p[0].toUpperCase()
+    : p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+  return [...raw].filter((c) => /^[A-Za-z0-9_-]$/.test(c)).slice(0, 32).join("") || "Shared";
+}
+
 /** The choices of the built-in client's speed and quality, as the form lists them. */
 export const RDP_COLOR_CHOICES: { value: RdpColors; label: string }[] = [
   { value: 32, label: tk("True colour (32-bit)") },
