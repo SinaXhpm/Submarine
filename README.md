@@ -283,7 +283,7 @@ The assistant's and the agents' screens are in English for now.
 - Turn it on to keep your profiles in step across your computers and your phone; sync sends **only what changed**, compressed
 - **Share a profile** with other accounts as **Owner, Editor or Viewer**; changes by others that would run something, and mass deletions, wait for your OK
 - Before a sync deletes rows from one of your profiles (a deletion arrives from the server), the profile is **copied next to its file** (`<name>.submarine.bak-<time>`, the newest five kept), and the sync log says how many rows went and where the copy is
-- Use the hosted server, or **point Submarine at your own sync server** (Cloud Sync → Sync server), with an optional proxy for the sync connection
+- Use the hosted server, or **point Submarine at your own sync server** ([submarine-sync-server](https://github.com/SinaXhpm/submarine-sync-server): Docker or plain PHP hosting) in Cloud Sync → Sync server, with an optional proxy for the sync connection
 - What the server can and can't see is spelled out under [Security and privacy](#security-and-privacy)
 
 ## Install
@@ -354,7 +354,7 @@ Built for Android 7.0 (API 24) and newer, on phones, tablets and Android-on-Chro
 - Each record is encrypted on your device before upload. The server **does see metadata**: record IDs, record types (servers, credentials, keys, notes, commands, folders), timestamps and deleted flags, the profile's display name, the number of records, and for shared profiles the share names and member email addresses.
 - The server also holds a copy of the vault key **sealed with your master password**. Someone who got hold of the server's data could try to guess a weak master password offline, at Argon2id cost — so use a **long master password** if you sync. A server breach does not hand over the plaintext, but the master password is the only thing standing in the way.
 - Cloud sync is **opt-in per account**: once you sign in, profiles you open are linked and synced (Auto-sync is on by default and can be turned off in Settings). Don't sign in on a computer if you don't want its profiles uploaded.
-- You can run **your own sync server** instead of the hosted one.
+- You can run **your own sync server** instead of the hosted one: [submarine-sync-server](https://github.com/SinaXhpm/submarine-sync-server).
 - **You can delete your account from inside the app** (Cloud sync → *Delete account…*, confirmed with your password): everything the server holds for it goes at once. The full details, with retention times, are in the [privacy policy](PRIVACY.md).
 - [How your data is protected](https://submarine.sinaxhpm.com/security/) explains all of this with links to the code that does it, and ways to check it yourself.
 
