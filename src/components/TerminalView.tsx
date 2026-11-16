@@ -1433,23 +1433,6 @@ const TerminalView = ({
     // hold the new selection and the release would copy nothing.
     let selectionArmed = false;
     const onMouseDown = (ev: MouseEvent) => {
-      // Shift+Ctrl/Meta+left-click opens a new terminal tab. The click is handled
-      // here so it doesn't go to the program (vi, mc, htop) that has mouse tracking
-      // on. A plain left-click still goes to the program, and a right-click still
-      // opens the context menu.
-      const newTerminalClick =
-        ev.button === 0 &&
-        (ev.ctrlKey || ev.metaKey) &&
-        ev.shiftKey;
-
-      if (newTerminalClick) {
-        selectionArmed = false;
-        ev.preventDefault();
-        ev.stopPropagation();
-        onNewTerminalRef.current?.();
-        return;
-      }
-
       // Assign (not just set-true) so a non-left mousedown re-disarms a flag
       // that got stuck from an earlier drag whose mouseup we never saw.
       selectionArmed = ev.button === 0;
@@ -1458,6 +1441,20 @@ const TerminalView = ({
       if (ev.button !== 0 || !selectionArmed) return;
       selectionArmed = false;
       void copySelectionIfAny();
+    };
+    // Handler to open a new terminal on Ctrl+Shift+Click (or Cmd+Shift+Click on Mac).
+    const onNewTerminalClick = (ev: MouseEvent) => {
+      if (
+        ev.button !== 0 ||
+        !(ev.ctrlKey || ev.metaKey) ||
+        !ev.shiftKey
+      ) {
+        return;
+      }
+
+      ev.preventDefault();
+      ev.stopPropagation();
+      onNewTerminalRef.current?.();
     };
     // If the window loses focus mid-drag (Alt-Tab, a focus-stealing dialog),
     // the button is released over another window and the matching `mouseup`
@@ -1654,6 +1651,7 @@ const TerminalView = ({
       }
       return true;
     });
+    terminalRef.current.addEventListener('mousedown', onNewTerminalClick, true);
     terminalRef.current.addEventListener('mousedown', onMouseDown);
     document.addEventListener('mouseup', onDocMouseUp);
     window.addEventListener('blur', onWindowBlur);
@@ -1916,6 +1914,7 @@ const TerminalView = ({
       window.clearTimeout(sizeTimer);
       window.clearTimeout(drawnTimer);
       if (container) {
+        container.removeEventListener('mousedown', onNewTerminalClick, true);
         container.removeEventListener('mousedown', onMouseDown);
         container.removeEventListener('contextmenu', onContextMenu);
         container.removeEventListener('paste', onPasteEvent, true);
