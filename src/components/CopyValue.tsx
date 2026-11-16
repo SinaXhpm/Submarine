@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Copy, Check } from "lucide-react";
 import { useT } from "../i18n";
+import { copyText } from "../util/clipboard";
 
 // Touch-friendly copy affordance for value-heavy fields (IP addresses,
 // ports, PIDs, unit names, etc). On desktop the icon is visible-on-hover
@@ -18,7 +19,7 @@ export default function CopyValue({ value, className, children }: Props) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    navigator.clipboard.writeText(value).then(() => {
+    copyText(value).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });

@@ -17,6 +17,7 @@ import { IS_MOBILE, IS_WINDOWS } from "../util/platform";
 import { TAG_COLOURS, customTagColour, pickerValue } from "../util/tagColours";
 import { USUAL_PORTS, isFtp, type FtpProtocol, type ServerProtocol } from "../util/serverProtocol";
 import { t, tn, tx, useT } from "../i18n";
+import { copyText } from "../util/clipboard";
 
 // Compact "2h ago" style relative time for the attribution line.
 function relTime(d: Date): string {
@@ -494,7 +495,7 @@ const AddNodePanel = ({ isOpen, onClose, newNode, setNewNode, onSave, credential
   const copyPublicKey = async () => {
     if (!generatedKey) return;
     try {
-      await navigator.clipboard.writeText(generatedKey.publicKey);
+      await copyText(generatedKey.publicKey);
       setPublicKeyCopied(true);
     } catch {
       setKeyBrowseNote(t("Couldn't copy — select the key text and copy it by hand."));

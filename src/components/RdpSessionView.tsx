@@ -17,6 +17,7 @@ import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from 
 import { scancodeFor } from "../util/scancodes";
 import { useT, tx } from "../i18n";
 import { sentenceGap } from "../util/sentences";
+import { copyText } from "../util/clipboard";
 
 // An RDP server's tab (issue #3). By default Submarine opens the system's RDP
 // app (through a forward on the node's own loopback address while the node
@@ -583,7 +584,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           <div role="status" className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-white/5 bg-primary/10 text-[11.5px] text-zinc-200">
             <span className="min-w-0 truncate">{t("Text was copied on the server ({count} characters).", { count: serverCopy.length })}</span>
             <button
-              onClick={() => navigator.clipboard.writeText(serverCopy).then(() => setServerCopy(null), () => {})}
+              onClick={() => copyText(serverCopy).then(() => setServerCopy(null), () => {})}
               className="shrink-0 h-6 px-2 rounded-md bg-primary/20 text-primary hover:bg-primary/30 font-semibold"
             >
               {t("Copy it here")}

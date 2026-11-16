@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Bot, Copy, Check } from "lucide-react";
 import { errText } from "../../util/aiApi";
 import { gateway, DURATIONS, minutesText, setupCommands, type GatewayOverview } from "../../util/gatewayApi";
+import { copyText } from "../../util/clipboard";
 
 export const AgentSettings = ({ onOpenPanel }: { onOpenPanel?: () => void }) => {
   const [ov, setOv] = useState<GatewayOverview | null>(null);
@@ -32,7 +33,7 @@ export const AgentSettings = ({ onOpenPanel }: { onOpenPanel?: () => void }) => 
   };
 
   const copy = (what: string, text: string) => {
-    void navigator.clipboard.writeText(text).then(() => {
+    void copyText(text).then(() => {
       setCopied(what);
       setTimeout(() => setCopied((c) => (c === what ? null : c)), 1500);
     });

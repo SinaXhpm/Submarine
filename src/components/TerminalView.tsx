@@ -23,6 +23,7 @@ import { IS_MOBILE, IS_LINUX, IS_ANDROID } from '../util/platform';
 import { useConfirm } from '../ui/confirm';
 import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
 import { tn, useT } from '../i18n';
+import { readClipboardText, copyText } from '../util/clipboard';
 
 // Does the recent remote OUTPUT look like a no-echo password / passphrase
 // prompt? Used to skip command-history capture so typed secrets (sudo, su,
@@ -1368,7 +1369,7 @@ const TerminalView = ({
     // to release the mouse, then copy whatever is currently selected.
     const writeClipboard = async (text: string) => {
       try {
-        await navigator.clipboard.writeText(text);
+        await copyText(text);
         return true;
       } catch {
         return false;
@@ -1463,13 +1464,6 @@ const TerminalView = ({
     // clobber the clipboard. Disarm on blur so only a release we actually see
     // can copy.
     const onWindowBlur = () => { selectionArmed = false; };
-    // The clipboard's text for a paste. On Linux it comes from the backend:
-    // WebKitGTK refuses the page's own clipboard read (#89), and where the
-    // webview reads the clipboard itself it crashes the whole app when the
-    // clipboard is empty (seen with WebKitGTK 2.54), so it is kept out of it
-    // there.
-    const readClipboardText = (): Promise<string> =>
-      IS_LINUX ? invoke<string>('clipboard_read_text') : navigator.clipboard.readText();
     // The lines a paste puts in, a line break at its end left out.
     const pasteLines = (text: string) => text.replace(/(\r\n|\r|\n)$/, '').split(/\r\n|\r|\n/);
     // More than one line into a program that hasn't turned bracketed-paste
@@ -1515,6 +1509,9 @@ const TerminalView = ({
       }
       if (toast) notify(t('Pasted'));
     };
+    // The clipboard's text comes from util/clipboard: on Linux and Android the
+    // backend reads it, since WebKitGTK refuses the page's own read (#89) and
+    // can crash on an empty clipboard, and Android's WebView refuses it outright.
     const pasteClipboard = async (toast: boolean) => {
       if (disabledRef.current) return;
       let text = '';
