@@ -1520,6 +1520,11 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
     // The same for a command's `scope` (#22): a peer from before it would
     // otherwise turn a command for some servers into one for all of them.
     let preserve_local_scope = spec.table == "commands" && !obj.contains_key("scope");
+    // The same for a command's `is_secret` and `tags` (#355): a peer from
+    // before them would otherwise clear a secret flag or its tags whenever
+    // it edits the command. NULL means not secret / no tags.
+    let preserve_local_secret = spec.table == "commands" && !obj.contains_key("is_secret");
+    let preserve_local_tags = spec.table == "commands" && !obj.contains_key("tags");
     // On a viewer, the secrets this record would empty stay as they are (see
     // `apply_remote_inner`).
     let keep = if keep_own { emptied_cols(spec.table, &secrets_here(conn, spec.table, &rec.uuid), obj) } else { Vec::new() };
@@ -1609,6 +1614,10 @@ fn apply_entity(conn: &Connection, key: &[u8; 32], spec: &EntitySpec, rec: &Sync
                 format!("run_on_connect_every={}.run_on_connect_every", spec.table)
             } else if c.as_str() == "scope" && preserve_local_scope {
                 format!("scope={}.scope", spec.table)
+            } else if c.as_str() == "is_secret" && preserve_local_secret {
+                format!("is_secret={}.is_secret", spec.table)
+            } else if c.as_str() == "tags" && preserve_local_tags {
+                format!("tags={}.tags", spec.table)
             } else if keep.contains(&c.as_str()) {
                 format!("{c}={}.{c}", spec.table)
             } else {
@@ -4269,7 +4278,7 @@ mod sync_engine_tests {
              CREATE TABLE ssh_keys(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
              CREATE TABLE servers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT, proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT, key_id INTEGER, autostart INTEGER, mirrors TEXT, color TEXT, notes TEXT, run_on_connect TEXT, run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});
-             CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT);
+             CREATE TABLE commands(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT, is_secret INTEGER, tags TEXT);
              CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE monitor_configs(node_id INTEGER PRIMARY KEY, enabled_metrics TEXT, custom_metrics TEXT, paused INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT{});",
             fk("FOREIGN KEY(key_id) REFERENCES ssh_keys(id)"),
@@ -4883,6 +4892,67 @@ mod sync_engine_tests {
         apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
         let every: Option<i64> = b.query_row("SELECT run_on_connect_every FROM servers WHERE name='db'", [], |r| r.get(0)).unwrap();
         assert_eq!(every, None);
+    }
+
+    #[test]
+    fn command_secret_and_tags_sync_and_an_older_peers_edit_keeps_them() {
+        // A current peer syncs a secret, tagged command.
+        let (a, _ha) = device("A");
+        a.execute(
+            "INSERT INTO commands(title, content, is_secret, tags) VALUES('deploy', 'kubectl rollout restart deploy/api', 1, 'k8s, prod')",
+            [],
+        )
+        .unwrap();
+        let (b, hb) = device("B");
+        apply_remote_records(&b, &KEY, &collect_local_records(&a, &KEY, "").unwrap(), &hb).unwrap();
+        let got = |c: &Connection| -> (Option<i64>, Option<String>) {
+            c.query_row("SELECT is_secret, tags FROM commands WHERE content='kubectl rollout restart deploy/api'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        assert_eq!(got(&b), (Some(1), Some("k8s, prod".to_string())), "they sync");
+
+        // An older peer edits the title. Its record omits both keys,
+        // so the secret flag and tags must survive on B.
+        a.execute("UPDATE commands SET title='deploy api' WHERE title='deploy'", []).unwrap();
+        let ahead = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "commands") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            let o = obj.as_object_mut().unwrap();
+            assert!(o.remove("is_secret").is_some(), "a current peer always sends the key");
+            assert!(o.remove("tags").is_some(), "a current peer always sends the key");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+            r.updated_at = format!("{ahead:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let title: String = b.query_row("SELECT title FROM commands WHERE content='kubectl rollout restart deploy/api'", [], |r| r.get(0)).unwrap();
+        assert_eq!(title, "deploy api", "the edit applies");
+        assert_eq!(got(&b), (Some(1), Some("k8s, prod".to_string())), "and the secret flag and tags are kept");
+
+        // A current peer clears both.
+        a.execute("UPDATE commands SET is_secret=0, tags=NULL WHERE title='deploy api'", []).unwrap();
+        let later = ahead + 60_000;
+        let mut recs = collect_local_records(&a, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "commands") {
+            r.updated_at = format!("{later:015}:00000:zzz");
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        assert_eq!(got(&b), (Some(0), None), "clearing from a current peer clears them");
+
+        // And a command new to this device, from an older peer, lands
+        // with both empty (NULL = not secret, no tags).
+        let (c, _hc) = device("C");
+        c.execute("INSERT INTO commands(title, content) VALUES('logs', 'kubectl logs -f deploy/api')", []).unwrap();
+        let mut recs = collect_local_records(&c, &KEY, "").unwrap();
+        for r in recs.iter_mut().filter(|r| r.entity_type == "commands") {
+            let mut obj: serde_json::Value = serde_json::from_slice(&decrypt_entity(r.blob.as_deref().unwrap(), &KEY).unwrap()).unwrap();
+            let o = obj.as_object_mut().unwrap();
+            o.remove("is_secret");
+            o.remove("tags");
+            r.blob = Some(encrypt_entity(&serde_json::to_vec(&obj).unwrap(), &KEY).unwrap());
+        }
+        apply_remote_records(&b, &KEY, &recs, &hb).unwrap();
+        let fresh: (Option<i64>, Option<String>) = b.query_row("SELECT is_secret, tags FROM commands WHERE title='logs'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(fresh, (None, None));
     }
 
     #[test]
@@ -7537,9 +7607,11 @@ async fn setup_master_db_inner(
             "ALTER TABLE commands ADD COLUMN scope TEXT",
             // Secret commands + tags: `is_secret` masks the content in the
             // UI (eye toggle to reveal); `tags` is a comma-separated list
-            // for filtering (normalize_command_tags). Both synced; 0/NULL
-            // is the safe default (not secret, no tags).
-            "ALTER TABLE commands ADD COLUMN is_secret INTEGER NOT NULL DEFAULT 0",
+            // for filtering (normalize_command_tags). Both synced; NULL
+            // is the safe default (not secret, no tags). `is_secret`
+            // stays nullable so a record from a peer that never sent
+            // it still lands (see apply_entity).
+            "ALTER TABLE commands ADD COLUMN is_secret INTEGER",
             "ALTER TABLE commands ADD COLUMN tags TEXT",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
@@ -7588,7 +7660,7 @@ async fn setup_master_db_inner(
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
              CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
-             CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT, is_secret INTEGER NOT NULL DEFAULT 0, tags TEXT);
+             CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT, is_secret INTEGER, tags TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
              CREATE TABLE monitor_configs (node_id INTEGER PRIMARY KEY, enabled_metrics TEXT NOT NULL DEFAULT '[\"cpu\",\"mem\",\"disk\",\"load\"]', custom_metrics TEXT NOT NULL DEFAULT '[]', paused INTEGER NOT NULL DEFAULT 1, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE);
@@ -9502,7 +9574,7 @@ fn normalize_command_tags(tags: Option<&str>) -> Result<Option<String>, String> 
             continue;
         }
         if tag.chars().count() > MAX_LEN {
-            return Err("[INPUT] BAD_TAGS".into());
+            return Err("Tags must be 32 characters or fewer".into());
         }
         if out.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
             continue;
@@ -9510,7 +9582,7 @@ fn normalize_command_tags(tags: Option<&str>) -> Result<Option<String>, String> 
         out.push(tag.to_string());
     }
     if out.len() > MAX_TAGS {
-        return Err("[INPUT] BAD_TAGS".into());
+        return Err("At most 20 tags".into());
     }
     if out.is_empty() {
         return Ok(None);
@@ -9613,15 +9685,19 @@ async fn add_command(state: tauri::State<'_, DbState>, title: String, content: S
     Ok(())
 }
 
+/// Renames / rewords a command. It deliberately does NOT touch
+/// `is_secret` or `tags`: those go through set_command_secret_tags,
+/// so an edit from a list loaded before a secret flag or tags
+/// changed elsewhere can't undo them (the session panel loads its
+/// list once).
 #[tauri::command]
-async fn edit_command(state: tauri::State<'_, DbState>, id: i32, title: String, content: String, is_secret: bool, tags: Option<String>) -> Result<(), String> {
-    let tags = normalize_command_tags(tags.as_deref())?;
+async fn edit_command(state: tauri::State<'_, DbState>, id: i32, title: String, content: String) -> Result<(), String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     
     conn.execute(
-        "UPDATE commands SET title=?1, content=?2, is_secret=?3, tags=?4 WHERE id=?5",
-        rusqlite::params![title, content, is_secret, tags, id],
+        "UPDATE commands SET title=?1, content=?2 WHERE id=?3",
+        rusqlite::params![title, content, id],
     ).map_err(|e| format!("[DATABASE] COMMAND_UPDATE_FAILED: {}", e))?;
     
     drop(conn_guard);
@@ -9641,6 +9717,27 @@ async fn set_command_scope(state: tauri::State<'_, DbState>, id: i32, scope: Opt
     let changed = conn.execute(
         "UPDATE commands SET scope=?1 WHERE id=?2 AND scope IS NOT ?1",
         rusqlite::params![scope, id],
+    ).map_err(|e| format!("[DATABASE] COMMAND_UPDATE_FAILED: {}", e))?;
+    drop(conn_guard);
+    if changed > 0 {
+        save_vault_internal(&state)?;
+    }
+    Ok(())
+}
+
+/// Sets a command's secret flag and tags, and nothing else (see
+/// set_command_scope). Apart from edit_command, so that an edit of
+/// the title or the command (the session's Library edits those)
+/// leaves them as they are. An unchanged pair doesn't touch the
+/// row, so it isn't synced again.
+#[tauri::command]
+async fn set_command_secret_tags(state: tauri::State<'_, DbState>, id: i32, is_secret: bool, tags: Option<String>) -> Result<(), String> {
+    let tags = normalize_command_tags(tags.as_deref())?;
+    let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
+    let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
+    let changed = conn.execute(
+        "UPDATE commands SET is_secret=?1, tags=?2 WHERE id=?3 AND (is_secret IS NOT ?1 OR tags IS NOT ?2)",
+        rusqlite::params![is_secret, tags, id],
     ).map_err(|e| format!("[DATABASE] COMMAND_UPDATE_FAILED: {}", e))?;
     drop(conn_guard);
     if changed > 0 {
@@ -9678,7 +9775,9 @@ async fn get_commands(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json
             // As a synced peer sent it: the frontend reads it defensively
             // (util/commandScope), so a broken one counts as all servers.
             "scope": row.get::<_, Option<String>>(3)?,
-            "is_secret": row.get::<_, i32>(4)? != 0,
+            // A NULL or out-of-range value from a peer must not fail
+            // the whole list (same shape as run_on_connect_every).
+            "is_secret": row.get::<_, Option<i64>>(4)?.unwrap_or(0) != 0,
             "tags": row.get::<_, Option<String>>(5)?
         }))
     }).map_err(|e| e.to_string())?;
@@ -26308,7 +26407,7 @@ pub fn run() {
             add_server, save_quick_connect_node, edit_server, delete_server, add_mirror_to_server, get_servers, allow_held, get_ssh_keys, set_server_color, set_folder_color, set_server_notes, set_server_run_on_connect, set_server_jump_host, set_server_protocol, reorder_servers, clone_server, reveal_server_password, reveal_credential_password, reveal_ssh_key,
             get_credentials, generate_ssh_key,
             add_folder, rename_folder, delete_folder, get_folders, move_folder, move_server_to_folder,
-            add_command, edit_command, set_command_scope, delete_command, get_commands,
+            add_command, edit_command, set_command_scope, set_command_secret_tags, delete_command, get_commands,
             cmd_history_add, cmd_history_list, cmd_history_clear,
             add_note, edit_note, delete_note, get_notes,
             mirror_dry_run, start_mirror, stop_mirror, list_mirrors, pick_local_directory,

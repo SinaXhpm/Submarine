@@ -1460,7 +1460,15 @@ function DesktopApp() {
       // get_commands returns. Do not "fix" the key back to snake_case —
       // that breaks the save with "missing required key isSecret".
       if (editCommandData.id) {
-        await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content, isSecret: editCommandData.is_secret, tags: editCommandData.tags || null });
+        // Title/content only: the secret flag and tags go through their
+        // own call, and only when they changed here — so this form can't
+        // undo a flag or tags set in the session panel since it opened.
+        const orig = commands.find((c) => c.id === editCommandData.id);
+        const secretChanged = !orig || !!orig.is_secret !== editCommandData.is_secret || (orig.tags || "") !== editCommandData.tags;
+        await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content });
+        if (secretChanged) {
+          await invoke("set_command_secret_tags", { id: editCommandData.id, isSecret: editCommandData.is_secret, tags: editCommandData.tags || null });
+        }
         await invoke("set_command_scope", { id: editCommandData.id, scope: scopeToJson(scope) });
       } else {
         await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope), isSecret: editCommandData.is_secret, tags: editCommandData.tags || null });
@@ -3728,7 +3736,7 @@ function DesktopApp() {
               <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Title")}</label>
               <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder={t("e.g. Update packages")} value={editCommandData.title} onChange={e => setEditCommandData({ ...editCommandData, title: e.target.value })} />
             </div>
-            {/* Standard vs Secret, like Termimus's snippet types: a secret's
+            {/* Standard vs Secret: a secret's
                 content is masked in the Library (eye toggle to reveal). */}
             <div className="grid grid-cols-2 gap-2">
               <button
@@ -3759,7 +3767,7 @@ function DesktopApp() {
                   defaultShow={editCommandData.id === null}
                   value={editCommandData.content}
                   onChange={(v) => setEditCommandData({ ...editCommandData, content: v })}
-                  placeholder={t("Enter password, secret token, or sensitive command…")}
+                  placeholder={t("Secret command — it runs in the shell and stays in its history")}
                   className="w-full flex-1 bg-black rounded-lg p-3 text-[13px] text-zinc-300 font-mono border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none"
                 />
               ) : (

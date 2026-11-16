@@ -3,11 +3,11 @@ import { Eye, EyeOff } from "lucide-react";
 import { useT } from "../i18n";
 
 // Multi-line secret input with a show/hide eye toggle. When hidden the
-// secret is shown as dots — one per character, like a password field and
-// the same ****** display Termimus uses — so it is never readable on
-// screen. The eye (or clicking the dots) reveals the real textarea for
-// editing. Mirrors PasswordField, which is single-line only — a secret
-// command can span lines, so this is a <textarea> instead.
+// secret is shown as dots — one per character, like a password field — so
+// it is never readable on screen. The eye (or clicking the dots) reveals
+// the real textarea for editing. Mirrors PasswordField, which is
+// single-line only — a secret command can span lines, so this is a
+// <textarea> instead.
 //
 // NOTE: the hidden state is a real masked display, not transparent text.
 // An earlier version hid the text with `color: transparent`, which left
@@ -18,7 +18,9 @@ import { useT } from "../i18n";
 // `className` is forwarded verbatim to both the textarea and the masked
 // display so the surrounding styling stays consistent with the
 // neighbouring fields in each form. We just add `pr-10` to make room for
-// the eye button.
+// the eye button. The outer wrapper is `flex-1 flex flex-col` so a
+// `flex-1` in that className actually fills the box (the main Library
+// form gives the field a fixed-height flex column to fill).
 
 interface Props {
   value: string;
@@ -48,7 +50,7 @@ const SecretTextarea = ({
   };
 
   return (
-    <div className="relative">
+    <div className="relative flex-1 flex flex-col">
       {show ? (
         <textarea
           ref={textRef}
@@ -65,6 +67,12 @@ const SecretTextarea = ({
       ) : (
         <div
           onClick={reveal}
+          onKeyDown={(e: any) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); reveal(); }
+          }}
+          tabIndex={0}
+          role="button"
+          aria-label={t("Show secret")}
           title={t("Show secret")}
           className={`pr-10 cursor-text overflow-hidden ${className || ""}`}
           // Keep the masked display about the same height as the textarea
@@ -84,7 +92,7 @@ const SecretTextarea = ({
       <button
         type="button"
         onClick={() => (show ? setShow(false) : reveal())}
-        tabIndex={-1}
+        aria-label={show ? t("Hide secret") : t("Show secret")}
         title={show ? t("Hide secret") : t("Show secret")}
         className="absolute right-1.5 top-2 w-7 h-7 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-white/5 flex items-center justify-center"
       >
