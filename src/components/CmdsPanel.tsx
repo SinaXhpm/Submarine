@@ -1,7 +1,7 @@
 import { Fragment, useState, useEffect, useRef } from "react";
-import { parseCommandScope, scopeMatches, serverScopeIds } from "../util/commandScope";
+import { parseCommandScope, scopeMatches, scopeToJson, serverScopeIds } from "../util/commandScope";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, ChevronDown, ChevronRight, Pencil, Check, Server, Lock, Tag } from "lucide-react";
+import { Play, Plus, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, ChevronDown, ChevronRight, Pencil, Check, Server, Lock, Tag } from "lucide-react";
 import { useConfirm } from "../ui/confirm";
 import { writeToTerminal } from "../util/pasteText";
 import SecretTextarea from "./SecretTextarea";
@@ -37,7 +37,7 @@ type Tab = "commands" | "notes" | "node";
 // editing at a time (notes expand-to-edit, commands toggle-to-edit), so a
 // flat tagged union is simpler than two parallel sets of useState fields.
 type EditTarget =
-  | { kind: "command"; id: number; title: string; body: string; is_secret: boolean; tags: string }
+  | { kind: "command"; id: number | null; title: string; body: string; is_secret: boolean; tags: string } // id null = a new command being added
   | { kind: "note"; id: number; title: string; body: string };
 
 // Whether the command of a card's Run button is cut short on that card. Measured,
@@ -62,6 +62,9 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   // the chips make filtering discoverable without knowing the tag names.
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [secretsOnly, setSecretsOnly] = useState(false);
+  // Scope for a command being added from this panel: this server (the
+  // session's server, so it lands under "For this server") or all servers.
+  const [newScope, setNewScope] = useState<"this" | "all">("this");
   const [loading, setLoading] = useState(false);
   // This session's server and its folders, by uuid, for the commands that
   // are for some servers only (util/commandScope). Null: not a saved server.
@@ -104,6 +107,12 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
 
   const isDirty = (target: EditTarget | null): boolean => {
     if (!target) return false;
+    // A new command has no saved original: dirty once a title and a body
+    // are both typed (the same bar as the main Library's save validation,
+    // so a half-typed draft is never auto-saved into existence).
+    if (target.kind === "command" && target.id === null) {
+      return target.title.trim() !== "" && target.body.trim() !== "";
+    }
     const o = originalForEdit(target);
     if (!o) return false;
     if (o.title !== target.title || o.body !== target.body) return true;
@@ -172,13 +181,15 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   // goes back into the editor, which may have closed already.
   const flushIfDirty = async (target: EditTarget | null) => {
     if (!target) return true;
-    const o = originalForEdit(target);
-    if (!o || !isDirty(target)) return true;
+    if (!isDirty(target)) return true;
     setSaveError(null);
     try {
       if (target.kind === "command") {
-        await invoke("edit_command", { id: target.id, title: target.title, content: target.body, isSecret: target.is_secret, tags: target.tags || null });
-        setCommands((prev) => prev.map((c) => c.id === target.id ? { ...c, title: target.title, content: target.body, is_secret: target.is_secret, tags: target.tags } : c));
+        const isNew = target.id === null;
+        await persistCommand(target);
+        // A new command has no id until it is reloaded; without this the
+        // auto-saved row would stay invisible until the next refresh.
+        if (isNew) fetchAll();
       } else {
         await invoke("edit_note", { id: target.id, title: target.title, body: target.body });
         setNotes((prev) => prev.map((n) => n.id === target.id ? { ...n, title: target.title, body: target.body } : n));
@@ -241,6 +252,28 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setEdit({ kind: "note", id: n.id, title: n.title || "", body: n.body || "" });
   };
 
+  // Start a new command draft, scoped to this server by default (when the
+  // panel has one) so it lands under "For this server" once saved.
+  const beginAddCommand = () => {
+    setNewScope(scopeIds?.server ? "this" : "all");
+    setEdit({ kind: "command", id: null, title: "", body: "", is_secret: false, tags: "" });
+  };
+
+  // Persist one command draft: add when id is null, edit otherwise. For a
+  // new command the scope comes from newScope; the new id comes back from
+  // a reload (add_command returns no id), so callers reload after an add.
+  const persistCommand = async (target: Extract<EditTarget, { kind: "command" }>): Promise<void> => {
+    if (target.id === null) {
+      const scope = newScope === "this" && scopeIds?.server
+        ? scopeToJson({ servers: [scopeIds.server], folders: [] })
+        : null;
+      await invoke("add_command", { title: target.title, content: target.body, scope, isSecret: target.is_secret, tags: target.tags || null });
+    } else {
+      await invoke("edit_command", { id: target.id, title: target.title, content: target.body, isSecret: target.is_secret, tags: target.tags || null });
+      setCommands((prev) => prev.map((c) => c.id === target.id ? { ...c, title: target.title, content: target.body, is_secret: target.is_secret, tags: target.tags } : c));
+    }
+  };
+
   const cancelEdit = () => {
     setEdit(null);
   };
@@ -259,8 +292,11 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setSaveError(null);
     try {
       if (edit.kind === "command") {
-        await invoke("edit_command", { id: edit.id, title: edit.title, content: edit.body, isSecret: edit.is_secret, tags: edit.tags || null });
-        setCommands((prev) => prev.map((c) => c.id === edit.id ? { ...c, title: edit.title, content: edit.body, is_secret: edit.is_secret, tags: edit.tags } : c));
+        const isNew = edit.id === null;
+        await persistCommand(edit);
+        // A new command was just created: clear the tag/secrets filters
+        // so it is visible in the list instead of hidden behind them.
+        if (isNew) { setSelectedTag(null); setSecretsOnly(false); }
       } else {
         await invoke("edit_note", { id: edit.id, title: edit.title, body: edit.body });
         setNotes((prev) => prev.map((n) => n.id === edit.id ? { ...n, title: edit.title, body: edit.body } : n));
@@ -317,6 +353,105 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   );
 
   const tabLabel = tab === "commands" ? t("Commands") : tab === "notes" ? t("Notes") : t("Node");
+  // The command editor, shared by editing a card and adding a new one.
+  // `isNew` adds the scope picker (this server vs all servers), starts
+  // a secret readable so the user can see what they type, and labels
+  // the save button Add. Edits keep the stored scope and start masked.
+  const renderCommandEditor = (target: Extract<EditTarget, { kind: "command" }>, isNew: boolean) => (
+    <div className="p-3 space-y-2">
+      <input
+        type="text"
+        value={target.title}
+        onChange={(e) => setEdit({ ...target, title: e.target.value })}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+        }}
+        placeholder={t("Title")}
+        className="w-full h-7 px-2 bg-black/40 border border-white/10 rounded text-[11px] text-white placeholder-zinc-600 focus:outline-none focus:border-primary/50"
+        autoFocus
+      />
+      {target.is_secret ? (
+        <SecretTextarea
+          value={target.body}
+          onChange={(v) => setEdit({ ...target, body: v })}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
+          }}
+          placeholder={t("Secret command — masked, eye toggle to reveal")}
+          rows={5}
+          defaultShow={isNew}
+          className="w-full p-2 bg-black/40 border border-white/10 rounded font-mono text-[11px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-y focus:outline-none focus:border-primary/50 custom-scrollbar"
+        />
+      ) : (
+        <textarea
+          value={target.body}
+          onChange={(e) => setEdit({ ...target, body: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
+          }}
+          placeholder={t("Command body — runnable in shell")}
+          rows={5}
+          className="w-full p-2 bg-black/40 border border-white/10 rounded font-mono text-[11px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-y focus:outline-none focus:border-primary/50 custom-scrollbar"
+        />
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setEdit({ ...target, is_secret: !target.is_secret })}
+          className={`flex items-center gap-1.5 h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-all ${target.is_secret ? "bg-amber-500/10 text-amber-300 border-amber-500/30" : "bg-white/[0.04] text-zinc-400 border-white/10 hover:text-white"}`}
+          title={t("Secret commands are masked in the list")}
+        >
+          <Lock size={11} /> {target.is_secret ? t("Secret") : t("Standard")}
+        </button>
+        <input
+          type="text"
+          value={target.tags}
+          onChange={(e) => setEdit({ ...target, tags: e.target.value })}
+          placeholder={t("Tags (comma separated)")}
+          className="flex-1 min-w-0 h-7 px-2 bg-black/40 border border-white/10 rounded text-[11px] text-white placeholder-zinc-600 focus:outline-none focus:border-primary/50"
+        />
+      </div>
+      {isNew && scopeIds?.server && (
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-bold text-zinc-500 shrink-0">{t("For")}</span>
+          <button
+            type="button"
+            onClick={() => setNewScope("this")}
+            className={`h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-all ${newScope === "this" ? "bg-primary/15 text-primary border-primary/40" : "bg-white/[0.04] text-zinc-400 border-white/10 hover:text-white"}`}
+          >
+            {serverName || t("This server")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setNewScope("all")}
+            className={`h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-all ${newScope === "all" ? "bg-primary/15 text-primary border-primary/40" : "bg-white/[0.04] text-zinc-400 border-white/10 hover:text-white"}`}
+          >
+            {t("All servers")}
+          </button>
+        </div>
+      )}
+      <div className="flex gap-1.5">
+        <button
+          onClick={cancelEdit}
+          disabled={saving}
+          className="flex-1 h-7 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-50"
+        >
+          <X size={11} /> {t("Cancel")}
+        </button>
+        <button
+          onClick={saveEdit}
+          disabled={saving || !isDirty(target)}
+          className="flex-1 h-7 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          title={isNew ? t("Add command") : t("Save (Ctrl+Enter)")}
+        >
+          {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {isNew ? t("Add") : t("Save")}
+        </button>
+      </div>
+    </div>
+  );
+
   const TabIcon = tab === "commands" ? Terminal : tab === "notes" ? StickyNote : Server;
 
   return (
@@ -330,6 +465,18 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {/* Add a command (or secret) from this session, without going
+              back to the main Library. Saves any open draft first. */}
+          {tab === "commands" && (
+            <button
+              onClick={async () => { if (await flushDrafts()) beginAddCommand(); }}
+              disabled={loading}
+              className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-white/5 transition-all disabled:opacity-50"
+              title={t("Add command")}
+            >
+              <Plus size={14} />
+            </button>
+          )}
           <button
             onClick={async () => { await flushDrafts(); fetchAll(); }}
             disabled={loading}
@@ -502,7 +649,13 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
             </div>
           </div>
         ) : tab === "commands" ? (
-          filteredCommands.length > 0 ? (
+          <>
+            {edit?.kind === "command" && edit.id === null && (
+              <div className="group relative rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10 transition-all">
+                {renderCommandEditor(edit, true)}
+              </div>
+            )}
+            {filteredCommands.length > 0 ? (
             filteredCommands.map((c, i) => {
               // Narrowed to the command being edited (or null): the editor
               // reads is_secret/tags, which only the command variant has.
@@ -518,80 +671,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                 <div
                   className="group relative rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10 transition-all"
                 >
-                  {cmdEdit ? (
-                    <div className="p-3 space-y-2">
-                      <input
-                        type="text"
-                        value={cmdEdit.title}
-                        onChange={(e) => setEdit({ ...cmdEdit, title: e.target.value })}
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
-                        }}
-                        placeholder={t("Title")}
-                        className="w-full h-7 px-2 bg-black/40 border border-white/10 rounded text-[11px] text-white placeholder-zinc-600 focus:outline-none focus:border-primary/50"
-                        autoFocus
-                      />
-                      {cmdEdit.is_secret ? (
-                        <SecretTextarea
-                          value={cmdEdit.body}
-                          onChange={(v) => setEdit({ ...cmdEdit, body: v })}
-                          onKeyDown={(e) => {
-                            if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
-                            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
-                          }}
-                          placeholder={t("Secret command — masked, eye toggle to reveal")}
-                          rows={5}
-                          className="w-full p-2 bg-black/40 border border-white/10 rounded font-mono text-[11px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-y focus:outline-none focus:border-primary/50 custom-scrollbar"
-                        />
-                      ) : (
-                        <textarea
-                          value={cmdEdit.body}
-                          onChange={(e) => setEdit({ ...cmdEdit, body: e.target.value })}
-                          onKeyDown={(e) => {
-                            if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
-                            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
-                          }}
-                          placeholder={t("Command body — runnable in shell")}
-                          rows={5}
-                          className="w-full p-2 bg-black/40 border border-white/10 rounded font-mono text-[11px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-y focus:outline-none focus:border-primary/50 custom-scrollbar"
-                        />
-                      )}
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setEdit({ ...cmdEdit, is_secret: !cmdEdit.is_secret })}
-                          className={`flex items-center gap-1.5 h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-all ${cmdEdit.is_secret ? "bg-amber-500/10 text-amber-300 border-amber-500/30" : "bg-white/[0.04] text-zinc-400 border-white/10 hover:text-white"}`}
-                          title={t("Secret commands are masked in the list")}
-                        >
-                          <Lock size={11} /> {cmdEdit.is_secret ? t("Secret") : t("Standard")}
-                        </button>
-                        <input
-                          type="text"
-                          value={cmdEdit.tags}
-                          onChange={(e) => setEdit({ ...cmdEdit, tags: e.target.value })}
-                          placeholder={t("Tags (comma separated)")}
-                          className="flex-1 min-w-0 h-7 px-2 bg-black/40 border border-white/10 rounded text-[11px] text-white placeholder-zinc-600 focus:outline-none focus:border-primary/50"
-                        />
-                      </div>
-                      <div className="flex gap-1.5">
-                        <button
-                          onClick={cancelEdit}
-                          disabled={saving}
-                          className="flex-1 h-7 rounded-lg bg-white/[0.04] border border-white/10 hover:bg-white/10 hover:border-white/20 text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-50"
-                        >
-                          <X size={11} /> {t("Cancel")}
-                        </button>
-                        <button
-                          onClick={saveEdit}
-                          disabled={saving || !isDirty(edit)}
-                          className="flex-1 h-7 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-zinc-950 hover:border-primary flex items-center justify-center gap-1.5 text-[10px] font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={t("Save (Ctrl+Enter)")}
-                        >
-                          {saving ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />} {t("Save")}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
+                  {cmdEdit ? renderCommandEditor(cmdEdit, false) : (
                     <div className="p-3" data-command-card>
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
@@ -647,7 +727,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                 </Fragment>
               );
             })
-          ) : (
+          ) : edit?.kind === "command" && edit.id === null ? null : (
             <div className="flex flex-col items-center justify-center py-16 text-zinc-600 text-center px-4">
               <Terminal size={32} className="opacity-20 mb-2" />
               <span className="text-xs font-bold text-zinc-500">{t("No commands found")}</span>
@@ -655,7 +735,8 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                 {searchQuery || selectedTag || secretsOnly ? t("No matches for your search or filters.") : t("Save commands in the main app to surface them here.")}
               </p>
             </div>
-          )
+            )}
+          </>
         ) : filteredNotes.length > 0 ? (
           filteredNotes.map((n) => {
             const expanded = edit?.kind === "note" && edit.id === n.id;

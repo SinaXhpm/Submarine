@@ -1920,6 +1920,7 @@
   "This profile syncs with {other}, not with {current}, so it doesn't sync now.": "This profile syncs with {other}, not with {current}, so it doesn't sync now.",
   "This replaces opening automatically.": "This replaces opening automatically.",
   "This replaces Windows Hello for this profile.": "This replaces Windows Hello for this profile.",
+  "This server": "This server",
   "This server doesn't answer the question the delay is measured with.": "This server doesn't answer the question the delay is measured with.",
   "This server has no SFTP, so files go over shell commands. Everything works the same, just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP.": "This server has no SFTP, so files go over shell commands. Everything works the same, just slower. On OpenWrt, `opkg install openssh-sftp-server` adds SFTP.",
   "This server moved from {was} to {now}, so the files, clipboard and login without NLA this device allowed are off.": "This server moved from {was} to {now}, so the files, clipboard and login without NLA this device allowed are off.",
