@@ -538,8 +538,9 @@ function DesktopApp() {
     localStorage.setItem(MIN_CONTRAST_KEY, appSettings.terminalMinContrast ? 'on' : 'off');
     localStorage.setItem(USE_LOCAL_SHELL_KEY, appSettings.useLocalShell ? 'on' : 'off');
     localStorage.setItem(USE_SSH_AGENT_KEY, appSettings.useSshAgent ? 'on' : 'off');
-    // Monitoring reads it at each connect, in the background.
-    invoke("set_use_ssh_agent", { enabled: readUseSshAgent() }).catch(() => {});
+    // Monitoring reads it at each connect, in the background. A phone or
+    // tablet has no ssh-agent (see readUseSshAgentForMonitor).
+    invoke("set_use_ssh_agent", { enabled: !IS_MOBILE && appSettings.useSshAgent }).catch(() => {});
     localStorage.setItem(SEND_KEEPALIVES_KEY, appSettings.sendKeepalives === false ? 'off' : 'on');
     localStorage.setItem(AUTO_RECONNECT_KEY, appSettings.autoReconnect === false ? 'off' : 'on');
     localStorage.setItem(USE_SSH_CONFIG_KEY, appSettings.useSshConfig ? 'on' : 'off');

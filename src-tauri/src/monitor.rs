@@ -113,9 +113,10 @@ pub type SharedSettings = Arc<Mutex<MonitorSettings>>;
 static USE_AGENT: AtomicBool = AtomicBool::new(false);
 
 /// Set the device's "Use keys from an ssh-agent" setting for monitoring. The
-/// page gives it at start, whenever it changes, and with each resume.
+/// page gives it at start, whenever it changes, and with each resume. Always
+/// off on a phone or tablet, which has no ssh-agent.
 pub fn set_use_agent(on: bool) {
-    USE_AGENT.store(on, Ordering::Relaxed);
+    USE_AGENT.store(on && cfg!(desktop), Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +141,12 @@ pub struct MonitorEntry {
     /// `tokio::select!` arm on `stop_rx` fires immediately and the
     /// task exits cleanly instead of hanging until the next interval.
     pub stop_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Set when the ssh-agent was asked to sign this node's login and didn't
+    /// (refused, or no answer in time), with the message to show. Until a
+    /// resume clears it (`set_paused`), the poller doesn't ask the agent
+    /// again: a smartcard's PIN or an agent that confirms each use would
+    /// otherwise prompt at every reconnect in the background.
+    pub agent_stopped: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -273,6 +280,7 @@ pub async fn start_monitor(
         resumed: Notify::new(),
         state: Arc::new(Mutex::new(MonitorState::default())),
         stop_tx: Mutex::new(Some(stop_tx)),
+        agent_stopped: Mutex::new(None),
     });
 
     map.lock().await.insert(node_id, Arc::clone(&entry));
@@ -318,8 +326,10 @@ pub async fn stop_all(map: MonitorMap) {
 /// `fut` with a deadline, for steps that wait on a server and had none: a
 /// connection that was accepted and never answered kept the poller waiting for
 /// good, so the node was never reported as down.
-async fn within<T>(limit: Duration, fut: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
-    tokio::time::timeout(limit, fut).await.unwrap_or_else(|_| Err("The server didn't answer in time".to_string()))
+async fn within<T, E: From<String>>(limit: Duration, fut: impl std::future::Future<Output = Result<T, E>>) -> Result<T, E> {
+    tokio::time::timeout(limit, fut)
+        .await
+        .unwrap_or_else(|_| Err(E::from("The server didn't answer in time".to_string())))
 }
 
 pub async fn set_paused(map: MonitorMap, node_id: i32, paused: bool) -> Result<(), String> {
@@ -331,6 +341,8 @@ pub async fn set_paused(map: MonitorMap, node_id: i32, paused: bool) -> Result<(
         .ok_or_else(|| format!("Node {} is not being monitored", node_id))?;
     *entry.paused.lock().await = paused;
     if !paused {
+        // A resume lets the poller ask the ssh-agent again (`agent_stopped`).
+        *entry.agent_stopped.lock().await = None;
         entry.resumed.notify_one();
     }
     Ok(())
@@ -563,12 +575,24 @@ async fn run_poller(
             };
             // Read at each connect, so a change in Settings counts from the next one.
             let use_agent = USE_AGENT.load(Ordering::Relaxed);
+            let via_agent = login_uses_agent(&target, use_agent);
+            if via_agent {
+                let stopped = entry.agent_stopped.lock().await.clone();
+                if let Some(why) = stopped {
+                    // The agent didn't sign last time: it isn't asked again
+                    // until a resume (or a stop). Counted as a failure then,
+                    // not again now.
+                    mark_disconnected(&app, &entry, Some(why)).await;
+                    if !wait_while_paused(&entry, &mut stop_rx).await {
+                        break;
+                    }
+                    continue;
+                }
+            }
             let connected = tokio::select! {
                 _ = &mut stop_rx => break,
-                // The handshake has its own budget; the logins after it had
-                // none. This bounds an ssh-agent's part too.
                 r = within(
-                    connect_timeout * 4,
+                    connect_limit(connect_timeout, via_agent),
                     connect_for_monitor(&db, &target, &agent_config, connect_timeout, use_agent),
                 ) => r,
             };
@@ -586,9 +610,12 @@ async fn run_poller(
                     // reconnect doesn't produce a giant nonsense CPU/net spike.
                     last = None;
                 }
-                Err(e) => {
-                    record_failure(&app, &entry, &node_name, threshold, &e, notify, beep).await;
-                    mark_disconnected(&app, &entry, Some(e)).await;
+                Err(ConnectError { message, agent_unsigned }) => {
+                    if agent_unsigned {
+                        *entry.agent_stopped.lock().await = Some(message.clone());
+                    }
+                    record_failure(&app, &entry, &node_name, threshold, &message, notify, beep).await;
+                    mark_disconnected(&app, &entry, Some(message)).await;
                     tokio::select! {
                         _ = &mut stop_rx => break,
                         _ = tokio::time::sleep(backoff) => {}
@@ -863,14 +890,72 @@ fn classify_auth(auth: &NodeAuth, use_agent: bool) -> Result<Login, String> {
     // (issue #30), but monitoring has no UI to ask on.
     if use_agent {
         Ok(Login::Agent)
-    } else {
+    } else if cfg!(desktop) {
         Err(NO_SAVED_LOGIN.into())
+    } else {
+        // A phone or tablet has no ssh-agent, nor the setting.
+        Err(NO_SAVED_LOGIN_NO_AGENT.into())
     }
 }
 
+/// Whether a login to this node goes through the ssh-agent's keys.
+fn login_uses_agent(auth: &NodeAuth, use_agent: bool) -> bool {
+    matches!(classify_auth(auth, use_agent), Ok(Login::Agent))
+}
+
 const NO_SAVED_LOGIN: &str = "No password or key is saved for this node, and monitoring can't ask for one. Save a password or key, or turn on \"Use keys from an ssh-agent\" in Settings and load the key into the agent.";
+const NO_SAVED_LOGIN_NO_AGENT: &str = "No password or key is saved for this node, and monitoring can't ask for one. Save a password or key to monitor it.";
 const NO_AGENT_WITH_KEY: &str = "No password or key is saved for this node, and no ssh-agent with a key was found. Save a password or key, or load the key into an ssh-agent.";
 const IDENTITIES_ONLY: &str = "No password or key is saved for this node, and ~/.ssh/config sets IdentitiesOnly yes for it, so the keys in an ssh-agent aren't used. Save a password or key to monitor it.";
+const AGENT_LOOKUP_SLOW: &str = "No password or key is saved for this node, and looking for an ssh-agent took too long. Save a password or key, or check that the agent is running.";
+/// Added to the message when the agent didn't sign (`MonitorEntry::agent_stopped`).
+const AGENT_STOPPED: &str = "So that its prompts don't keep coming back, monitoring stops using the agent for this node until you pause and resume it.";
+
+/// The most the look for an ssh-agent may take. Each place it looks bounds
+/// its own wait (3 s to connect, 3 s to list keys); Windows looks in up to
+/// three places.
+const AGENT_LOOKUP_LIMIT: Duration = Duration::from_secs(20);
+/// The least time the agent's part of a login gets, whatever the connect
+/// timeout: the agent may show a prompt to approve the key's use.
+const AGENT_LOGIN_MIN: Duration = Duration::from_secs(30);
+
+/// The limit for the agent's part of a login.
+fn agent_login_limit(connect_timeout: Duration) -> Duration {
+    (connect_timeout * 2).max(AGENT_LOGIN_MIN)
+}
+
+/// The limit for a whole connect, login included. Reaching the address has
+/// `connect_timeout` and the handshake twice that; the logins after it had
+/// none, and get one more. A login with the agent's keys gets the agent's
+/// limits on top, so their own errors, which name the agent, come first.
+fn connect_limit(connect_timeout: Duration, via_agent: bool) -> Duration {
+    let base = connect_timeout * 4;
+    if via_agent {
+        base + AGENT_LOOKUP_LIMIT + agent_login_limit(connect_timeout)
+    } else {
+        base
+    }
+}
+
+/// Why a connect failed: the message for the node's status line, and whether
+/// the ssh-agent was asked to sign and didn't (`MonitorEntry::agent_stopped`).
+#[derive(Debug)]
+struct ConnectError {
+    message: String,
+    agent_unsigned: bool,
+}
+
+impl From<String> for ConnectError {
+    fn from(message: String) -> Self {
+        Self { message, agent_unsigned: false }
+    }
+}
+
+impl From<&str> for ConnectError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
 
 /// What `~/.ssh/config` says about the ssh-agent for a node, for a login with
 /// the agent's keys (`Login::Agent`).
@@ -903,37 +988,49 @@ async fn agent_for_monitor(config: &AgentConfig) -> Result<crate::agent_auth::Ag
 /// (`Offer::Unattended`). An agent that asks to approve each use of a key asks
 /// once per connection, not per reading. `limit` bounds the whole offer, so an
 /// agent that never answers (waiting on an approval nobody gives) can't hold
-/// the poller; the error then names the agent, not the server.
+/// the poller; the error then names the agent, not the server. When the agent
+/// was asked to sign and didn't, the error says so (`agent_unsigned`), and the
+/// poller stops asking it.
 async fn log_in_with_agent<H: client::Handler>(
     session: &mut client::Handle<H>,
     user: &str,
     agent: &mut crate::agent_auth::AgentSession,
     limit: Duration,
-) -> Result<(), String> {
+) -> Result<(), ConnectError> {
     use crate::agent_auth::{capitalized, offer_keys, AgentOutcome, Offer};
     let source = agent.source;
     let offered = tokio::time::timeout(limit, offer_keys(session, user, agent, Offer::Unattended, |_| {})).await;
+    let unsigned = |message: String| ConnectError { message: format!("{message} {AGENT_STOPPED}"), agent_unsigned: true };
     match offered {
         Ok(Ok(AgentOutcome::Authenticated)) => Ok(()),
         Ok(Ok(AgentOutcome::PartialSuccess { .. })) => Err(format!(
             "The server accepted a key from {source} but asks for more, such as a password or a code, which monitoring can't give."
-        )),
-        Ok(Ok(AgentOutcome::NotAccepted)) => Err(format!(
-            "The server didn't accept the keys from {source}. Save a password or key for this node to monitor it."
-        )),
+        )
+        .into()),
+        Ok(Ok(AgentOutcome::NotAccepted)) => Err(match agent.untried_keys() {
+            0 => format!("The server didn't accept the keys from {source}. Save a password or key for this node to monitor it."),
+            // The attempt budget kept some back (offer_keys logs the same).
+            n => format!(
+                "The server didn't accept the keys tried from {source}, which holds {n} more key{} that {} not tried: the server limits failed attempts. Save the key for this node to monitor it.",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "was" } else { "were" },
+            ),
+        }
+        .into()),
         // Every key is a security key (the agent lists at least one key).
         Ok(Ok(AgentOutcome::NothingToOffer)) => Err(format!(
             "{} holds only security keys, which monitoring leaves out: they wait for a touch or a PIN. Save a password or key for this node to monitor it.",
             capitalized(source)
-        )),
-        Ok(Err(russh::Error::Keys(e))) => Err(format!(
-            "{} would not sign with the key the server accepted ({e}). Unlock the agent or approve its request; monitoring tries again by itself.",
+        )
+        .into()),
+        Ok(Err(russh::Error::Keys(e))) => Err(unsigned(format!(
+            "{} would not sign with the key the server accepted ({e}).",
             capitalized(source)
-        )),
-        Ok(Err(e)) => Err(format!("Logging in with keys from {source} failed: {e}")),
-        Err(_) => Err(format!(
-            "Logging in with keys from {source} took too long. If the agent asks to approve each use of a key, approve it; monitoring tries again by itself."
-        )),
+        ))),
+        Ok(Err(e)) => Err(format!("Logging in with keys from {source} failed: {e}").into()),
+        Err(_) => Err(unsigned(format!(
+            "Logging in with keys from {source} took too long: the agent may be waiting for an approval, a PIN or a touch."
+        ))),
     }
 }
 
@@ -1002,7 +1099,7 @@ async fn connect_for_monitor(
     agent_config: &AgentConfig,
     connect_timeout: Duration,
     use_agent: bool,
-) -> Result<russh::client::Handle<MonitorHandler>, String> {
+) -> Result<russh::client::Handle<MonitorHandler>, ConnectError> {
     if auth.username.trim().is_empty() {
         // A node saved without a username is asked "Login as" when a terminal
         // connects (issue #54); monitoring can't ask, and falling back to root
@@ -1015,7 +1112,10 @@ async fn connect_for_monitor(
     // Looked for before the server is contacted: without an agent that holds
     // a key there's nothing to log in with.
     let mut agent = match login {
-        Login::Agent => Some(agent_for_monitor(agent_config).await?),
+        Login::Agent => match tokio::time::timeout(AGENT_LOOKUP_LIMIT, agent_for_monitor(agent_config)).await {
+            Ok(found) => Some(found?),
+            Err(_) => return Err(AGENT_LOOKUP_SLOW.into()),
+        },
         _ => None,
     };
 
@@ -1124,15 +1224,15 @@ async fn connect_for_monitor(
             let Some(agent) = agent.as_mut() else {
                 return Err(NO_AGENT_WITH_KEY.into());
             };
-            // Within the connect's own limit (`within` in run_poller), and
-            // with a shorter one of its own, so the error names the agent.
-            log_in_with_agent(&mut session, &auth.username, agent, connect_timeout * 2).await?;
+            // Its own limit ends before the connect's (`connect_limit`), so
+            // the error names the agent.
+            log_in_with_agent(&mut session, &auth.username, agent, agent_login_limit(connect_timeout)).await?;
             accepted = true;
         }
     }
 
     if !accepted {
-        return Err(last_err.unwrap_or_else(|| "auth failed".into()));
+        return Err(last_err.unwrap_or_else(|| "auth failed".to_string()).into());
     }
     Ok(session)
 }
@@ -1818,7 +1918,25 @@ mod tests {
             resumed: Notify::new(),
             state: Arc::new(Mutex::new(MonitorState::default())),
             stop_tx: Mutex::new(Some(stop)),
+            agent_stopped: Mutex::new(None),
         })
+    }
+
+    // After the agent didn't sign, only a resume lets the poller ask it again:
+    // a pause doesn't, and a resume wakes the poller that waits for it.
+    #[tokio::test]
+    async fn a_resume_lets_a_node_use_the_agent_again() {
+        let (tx, mut rx) = oneshot::channel::<()>();
+        let e = entry(1, tx);
+        let map: MonitorMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        map.lock().await.insert(1, Arc::clone(&e));
+        *e.agent_stopped.lock().await = Some("stopped".into());
+        set_paused(Arc::clone(&map), 1, true).await.unwrap();
+        assert!(e.agent_stopped.lock().await.is_some(), "a pause keeps it stopped");
+        let (woke, resume) = tokio::join!(wait_while_paused(&e, &mut rx), set_paused(Arc::clone(&map), 1, false));
+        resume.unwrap();
+        assert!(woke, "the waiting poller wakes");
+        assert!(e.agent_stopped.lock().await.is_none(), "a resume clears it");
     }
 
     #[tokio::test]
@@ -1898,7 +2016,8 @@ mod tests {
 #[cfg(test)]
 mod login_tests {
     use super::{
-        agent_for_monitor, classify_auth, log_in_with_agent, AgentConfig, Login, NodeAuth, IDENTITIES_ONLY,
+        agent_for_monitor, agent_login_limit, classify_auth, connect_limit, log_in_with_agent, login_uses_agent,
+        AgentConfig, Login, NodeAuth, AGENT_LOGIN_MIN, AGENT_LOOKUP_LIMIT, AGENT_STOPPED, IDENTITIES_ONLY,
         NO_SAVED_LOGIN,
     };
     use crate::agent_auth::tests::{agent_holding, agent_never_signing, key, security_key};
@@ -1981,6 +2100,7 @@ mod login_tests {
         let (mut session, offers) = session_to(Some(&plain)).await;
         let mut agent = agent_holding(&[sk, plain], false).await;
         log_in_with_agent(&mut session, "u", &mut agent, LIMIT).await.expect("logged in");
+        assert_eq!(agent.untried_keys(), 0);
         assert_eq!(offers.load(Ordering::SeqCst), 1, "only the plain key is offered");
     }
 
@@ -1991,7 +2111,8 @@ mod login_tests {
         let (mut session, offers) = session_to(Some(&sk)).await;
         let mut agent = agent_holding(&[sk], false).await;
         let err = log_in_with_agent(&mut session, "u", &mut agent, LIMIT).await.unwrap_err();
-        assert!(err.starts_with("The test agent holds only security keys"), "{err}");
+        assert!(err.message.starts_with("The test agent holds only security keys"), "{err:?}");
+        assert!(!err.agent_unsigned);
         assert_eq!(offers.load(Ordering::SeqCst), 0);
     }
 
@@ -2000,20 +2121,37 @@ mod login_tests {
         let (mut session, _) = session_to(None).await;
         let mut agent = agent_holding(&[key(1)], false).await;
         let err = log_in_with_agent(&mut session, "u", &mut agent, LIMIT).await.unwrap_err();
-        assert!(err.starts_with("The server didn't accept the keys from the test agent."), "{err}");
+        assert!(err.message.starts_with("The server didn't accept the keys from the test agent."), "{err:?}");
+        assert!(!err.agent_unsigned, "no prompt was shown: the agent may be asked again");
     }
 
+    // The keys the attempt budget kept back are named, not left unexplained.
     #[tokio::test]
-    async fn a_refused_signature_names_the_agent() {
+    async fn keys_left_untried_are_counted() {
+        let keys: Vec<PrivateKey> = (1..=4).map(key).collect();
+        let (mut session, offers) = session_to(None).await;
+        let mut agent = agent_holding(&keys, false).await;
+        let err = log_in_with_agent(&mut session, "u", &mut agent, LIMIT).await.unwrap_err();
+        assert_eq!(offers.load(Ordering::SeqCst), crate::agent_auth::AGENT_MAX_ATTEMPTS);
+        assert!(err.message.contains("which holds 1 more key that was not tried"), "{err:?}");
+        assert!(err.message.ends_with("Save the key for this node to monitor it."), "{err:?}");
+    }
+
+    // A refused signature (a declined prompt, a locked agent) stops the agent
+    // for this node, so its prompt doesn't come back at every reconnect.
+    #[tokio::test]
+    async fn a_refused_signature_names_the_agent_and_stops_it() {
         let a = key(1);
         let (mut session, _) = session_to(Some(&a)).await;
         let mut agent = agent_holding(&[a], true).await;
         let err = log_in_with_agent(&mut session, "u", &mut agent, LIMIT).await.unwrap_err();
-        assert!(err.starts_with("The test agent would not sign"), "{err}");
+        assert!(err.message.starts_with("The test agent would not sign"), "{err:?}");
+        assert!(err.agent_unsigned && err.message.ends_with(AGENT_STOPPED), "{err:?}");
     }
 
     // An agent waiting on an approval nobody gives can't hold the poller: the
-    // login ends at its limit, with an error that names the agent.
+    // login ends at its limit, with an error that names the agent, and the
+    // agent is stopped for this node.
     #[tokio::test]
     async fn an_agent_that_never_signs_cannot_hold_the_monitor() {
         let a = key(1);
@@ -2027,7 +2165,32 @@ mod login_tests {
         .await
         .expect("the login's own limit ends it");
         let err = ended.unwrap_err();
-        assert!(err.starts_with("Logging in with keys from the test agent took too long."), "{err}");
+        assert!(err.message.starts_with("Logging in with keys from the test agent took too long:"), "{err:?}");
+        assert!(err.agent_unsigned && err.message.ends_with(AGENT_STOPPED), "{err:?}");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    // The agent gets time to show its prompt even with the shortest connect
+    // timeout, and its own limits end before the whole connect's: a slow
+    // agent is reported as the agent, not as a server that didn't answer.
+    #[test]
+    fn the_agents_limits_end_before_the_connects() {
+        for secs in [2, 10, 120] {
+            let t = Duration::from_secs(secs);
+            assert!(agent_login_limit(t) >= AGENT_LOGIN_MIN);
+            assert!(agent_login_limit(t) >= t * 2);
+            // Lookup, then reaching the address and the handshake, then the
+            // agent's part: each bounded on its own.
+            assert!(connect_limit(t, true) > AGENT_LOOKUP_LIMIT + t * 3 + agent_login_limit(t), "{secs} s");
+            assert_eq!(connect_limit(t, false), t * 4, "unchanged without the agent");
+        }
+    }
+
+    #[test]
+    fn only_a_node_with_nothing_saved_logs_in_with_the_agent() {
+        assert!(login_uses_agent(&node(None, None), true));
+        assert!(!login_uses_agent(&node(None, None), false));
+        assert!(!login_uses_agent(&node(Some("pw"), None), true));
+        assert!(!login_uses_agent(&node(None, Some("KEY")), true));
     }
 }

@@ -125,6 +125,16 @@ impl AgentSession {
     pub(crate) fn was_offered(&self, key: &PublicKey) -> bool {
         key_blob(key).is_some_and(|blob| self.offered.contains(&blob))
     }
+
+    /// The agent's keys not offered on this connection, security keys left
+    /// out: after an `Offer::Unattended`, the ones the attempt budget kept back.
+    pub(crate) fn untried_keys(&self) -> usize {
+        self.identities
+            .iter()
+            .filter(|id| !is_security_key(&id.public_key().algorithm()))
+            .filter(|id| identity_blob(id).is_some_and(|blob| !self.offered.contains(&blob)))
+            .count()
+    }
 }
 
 /// Look for an ssh-agent on this device that holds at least one key: an
