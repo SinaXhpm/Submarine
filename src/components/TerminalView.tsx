@@ -1433,6 +1433,23 @@ const TerminalView = ({
     // hold the new selection and the release would copy nothing.
     let selectionArmed = false;
     const onMouseDown = (ev: MouseEvent) => {
+      // Shift+Ctrl/Meta+left-click opens a new terminal tab. The click is handled
+      // here so it doesn't go to the program (vi, mc, htop) that has mouse tracking
+      // on. A plain left-click still goes to the program, and a right-click still
+      // opens the context menu.
+      const newTerminalClick =
+        ev.button === 0 &&
+        (ev.ctrlKey || ev.metaKey) &&
+        ev.shiftKey;
+
+      if (newTerminalClick) {
+        selectionArmed = false;
+        ev.preventDefault();
+        ev.stopPropagation();
+        onNewTerminalRef.current?.();
+        return;
+      }
+
       // Assign (not just set-true) so a non-left mousedown re-disarms a flag
       // that got stuck from an earlier drag whose mouseup we never saw.
       selectionArmed = ev.button === 0;
