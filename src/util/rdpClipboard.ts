@@ -6,14 +6,11 @@
 // The VNC tab (VncSessionView) takes the same paste keys and reads the
 // clipboard the same way; it sends the key itself, after the text.
 
-import { IS_ANDROID } from "./platform";
+import { IS_MAC } from "./platform";
 import { copyText, readClipboardText } from "./clipboard";
 
 /** The paste keys the backend knows; kept equal to `rdp_client::PasteKeys`. */
 export type PasteKeys = "none" | "ctrlv" | "shiftinsert" | "cmdv";
-
-export const IS_MAC: boolean =
-  typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent) && !IS_ANDROID;
 
 /** The paste a key press asks for, if it is one: Ctrl+V, Shift+Insert, and
  *  on a Mac Cmd+V (which the server would take for Win+V). */
