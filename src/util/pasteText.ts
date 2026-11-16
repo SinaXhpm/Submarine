@@ -46,6 +46,9 @@ export interface WriteToTerminal {
   cut?: boolean;
   /** The caller's `useConfirm()`, which asks the user. */
   confirm: (opts: ConfirmOptions) => Promise<boolean>;
+  /** A secret (Library) command: the confirm dialog must not show its
+      content — the message says only that it is a secret command. */
+  secret?: boolean;
 }
 
 /**
@@ -62,7 +65,7 @@ export interface WriteToTerminal {
  * terminal asks once more there (TerminalView). True when the text was sent
  * to the terminal.
  */
-export async function writeToTerminal({ terminalId, text, enter, cut = false, confirm }: WriteToTerminal): Promise<boolean> {
+export async function writeToTerminal({ terminalId, text, enter, cut = false, confirm, secret = false }: WriteToTerminal): Promise<boolean> {
   if (!terminalId) return false;
   // A loop, not /\n+$/: that regex retries from every line break of a long
   // run that isn't at the end, and a reply can hold 200,000 of them.
@@ -77,7 +80,8 @@ export async function writeToTerminal({ terminalId, text, enter, cut = false, co
       title: enter
         ? (lines > 1 ? t("Run these {count} lines?", { count: lines }) : t("Run this line?"))
         : (lines > 1 ? t("Paste these {count} lines?", { count: lines }) : t("Paste this line?")),
-      message: clean,
+      // A secret's content never goes in the dialog — only that it is one.
+      message: secret ? t("Secret command — its content is hidden.") : clean,
       okLabel: enter ? t("Run") : t("Paste"),
       safeDefault: true,
     });

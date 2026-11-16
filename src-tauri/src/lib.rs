@@ -1023,7 +1023,7 @@ const ENTITIES: &[EntitySpec] = &[
             Fk { key: "jump_uuid", col: "jump_host_id", ref_table: "servers", required: false },
         ],
     },
-    EntitySpec { table: "commands", cols: &["title", "content", "edited_by", "scope"], fks: &[] },
+    EntitySpec { table: "commands", cols: &["title", "content", "edited_by", "scope", "is_secret", "tags"], fks: &[] },
     EntitySpec { table: "notes", cols: &["title", "body", "edited_by"], fks: &[] },
     // Must come after `servers`: its node_id is resolved from the server's uuid,
     // so the server has to already be in place when this is applied.
@@ -1074,6 +1074,7 @@ fn col_kind(table: &str, col: &str) -> ColKind {
         ("servers", "port") => ColKind::Int32,
         ("servers", "proxy_port") => ColKind::OptionalInt32,
         ("servers", "autostart" | "position" | "run_on_connect_every") => ColKind::OptionalInt,
+        ("commands", "is_secret") => ColKind::OptionalInt,
         ("servers", "tunnels" | "mirrors") => ColKind::ObjectList,
         _ => ColKind::Text,
     }
@@ -7534,6 +7535,12 @@ async fn setup_master_db_inner(
             // Which servers a command is for (#22): JSON of server and folder
             // uuids, NULL for all servers (normalize_command_scope). Synced.
             "ALTER TABLE commands ADD COLUMN scope TEXT",
+            // Secret commands + tags: `is_secret` masks the content in the
+            // UI (eye toggle to reveal); `tags` is a comma-separated list
+            // for filtering (normalize_command_tags). Both synced; 0/NULL
+            // is the safe default (not secret, no tags).
+            "ALTER TABLE commands ADD COLUMN is_secret INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE commands ADD COLUMN tags TEXT",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let s = e.to_string();
@@ -7581,7 +7588,7 @@ async fn setup_master_db_inner(
              CREATE TABLE ssh_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, public_key TEXT, private_key TEXT, passphrase TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, auth_type TEXT, username TEXT, password TEXT, key_id INTEGER, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(key_id) REFERENCES ssh_keys(id));
              CREATE TABLE servers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, username TEXT, password TEXT, credential_id INTEGER, folder_id INTEGER, proxy_type TEXT DEFAULT 'none', proxy_host TEXT, proxy_port INTEGER, tunnels TEXT, auth_type TEXT DEFAULT 'vault', key_id INTEGER, autostart INTEGER NOT NULL DEFAULT 0, mirrors TEXT NOT NULL DEFAULT '[]', color TEXT, notes TEXT NOT NULL DEFAULT '', run_on_connect TEXT NOT NULL DEFAULT '', run_on_connect_every INTEGER, jump_host_id INTEGER, protocol TEXT, position INTEGER NOT NULL DEFAULT 0, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(folder_id) REFERENCES folders(id));
-             CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT);
+             CREATE TABLE commands (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, scope TEXT, is_secret INTEGER NOT NULL DEFAULT 0, tags TEXT);
              CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, body TEXT, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT);
              CREATE TABLE known_hosts (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, port INTEGER, fingerprint TEXT, key_type TEXT);
              CREATE TABLE monitor_configs (node_id INTEGER PRIMARY KEY, enabled_metrics TEXT NOT NULL DEFAULT '[\"cpu\",\"mem\",\"disk\",\"load\"]', custom_metrics TEXT NOT NULL DEFAULT '[]', paused INTEGER NOT NULL DEFAULT 1, uuid TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, edited_by TEXT, FOREIGN KEY(node_id) REFERENCES servers(id) ON DELETE CASCADE);
@@ -9478,6 +9485,39 @@ fn normalize_command_scope(scope: Option<&str>) -> Result<Option<String>, String
     Ok(Some(json!({ "servers": servers, "folders": folders }).to_string()))
 }
 
+/// A command's tags, as kept in `commands.tags`: a comma-separated list,
+/// `None` for no tags. Checked and rewritten in one form: each tag is
+/// trimmed, empties are dropped, repeats (case-insensitive) collapse to
+/// the first spelling. At most 20 tags, each at most 32 chars.
+fn normalize_command_tags(tags: Option<&str>) -> Result<Option<String>, String> {
+    const MAX_TAGS: usize = 20;
+    const MAX_LEN: usize = 32;
+    let Some(text) = tags.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.split(',') {
+        let tag = raw.trim();
+        if tag.is_empty() {
+            continue;
+        }
+        if tag.chars().count() > MAX_LEN {
+            return Err("[INPUT] BAD_TAGS".into());
+        }
+        if out.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+            continue;
+        }
+        out.push(tag.to_string());
+    }
+    if out.len() > MAX_TAGS {
+        return Err("[INPUT] BAD_TAGS".into());
+    }
+    if out.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(out.join(", ")))
+}
+
 #[cfg(test)]
 mod hostile_server_loop_tests {
     use super::http_connect_host_ok;
@@ -9529,15 +9569,43 @@ mod command_scope_tests {
     }
 }
 
+#[cfg(test)]
+mod command_tags_tests {
+    use super::normalize_command_tags as n;
+
+    #[test]
+    fn empty_is_none() {
+        assert_eq!(n(None).unwrap(), None);
+        assert_eq!(n(Some("")).unwrap(), None);
+        assert_eq!(n(Some("  , , ")).unwrap(), None);
+    }
+
+    #[test]
+    fn trimmed_deduped_joined() {
+        assert_eq!(
+            n(Some("docker, sysadmin, docker, Ubuntu")).unwrap().as_deref(),
+            Some("docker, sysadmin, Ubuntu"),
+        );
+    }
+
+    #[test]
+    fn limits_are_refused() {
+        assert!(n(Some(&"a".repeat(33))).is_err());
+        let many: Vec<String> = (0..21).map(|i| format!("t{i}")).collect();
+        assert!(n(Some(&many.join(","))).is_err());
+    }
+}
+
 #[tauri::command]
-async fn add_command(state: tauri::State<'_, DbState>, title: String, content: String, scope: Option<String>) -> Result<(), String> {
+async fn add_command(state: tauri::State<'_, DbState>, title: String, content: String, scope: Option<String>, is_secret: bool, tags: Option<String>) -> Result<(), String> {
     let scope = normalize_command_scope(scope.as_deref())?;
+    let tags = normalize_command_tags(tags.as_deref())?;
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
 
     conn.execute(
-        "INSERT INTO commands (title, content, scope) VALUES (?1, ?2, ?3)",
-        rusqlite::params![title, content, scope],
+        "INSERT INTO commands (title, content, scope, is_secret, tags) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![title, content, scope, is_secret, tags],
     ).map_err(|e| format!("[DATABASE] COMMAND_INSERT_FAILED: {}", e))?;
     
     drop(conn_guard);
@@ -9546,13 +9614,14 @@ async fn add_command(state: tauri::State<'_, DbState>, title: String, content: S
 }
 
 #[tauri::command]
-async fn edit_command(state: tauri::State<'_, DbState>, id: i32, title: String, content: String) -> Result<(), String> {
+async fn edit_command(state: tauri::State<'_, DbState>, id: i32, title: String, content: String, is_secret: bool, tags: Option<String>) -> Result<(), String> {
+    let tags = normalize_command_tags(tags.as_deref())?;
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
     
     conn.execute(
-        "UPDATE commands SET title=?1, content=?2 WHERE id=?3",
-        rusqlite::params![title, content, id],
+        "UPDATE commands SET title=?1, content=?2, is_secret=?3, tags=?4 WHERE id=?5",
+        rusqlite::params![title, content, is_secret, tags, id],
     ).map_err(|e| format!("[DATABASE] COMMAND_UPDATE_FAILED: {}", e))?;
     
     drop(conn_guard);
@@ -9599,7 +9668,7 @@ async fn delete_command(state: tauri::State<'_, DbState>, id: i32) -> Result<(),
 async fn get_commands(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json::Value>, String> {
     let conn_guard = state.conn.lock().map_err(|_| "[STATE] LOCK_FAILED")?;
     let conn = conn_guard.as_ref().ok_or("[STATE] DATABASE_NOT_INITIALIZED")?;
-    let mut stmt = conn.prepare("SELECT id, title, content, scope FROM commands").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, title, content, scope, is_secret, tags FROM commands").map_err(|e| e.to_string())?;
 
     let rows = stmt.query_map([], |row| {
         Ok(json!({
@@ -9608,7 +9677,9 @@ async fn get_commands(state: tauri::State<'_, DbState>) -> Result<Vec<serde_json
             "content": row.get::<_, String>(2)?,
             // As a synced peer sent it: the frontend reads it defensively
             // (util/commandScope), so a broken one counts as all servers.
-            "scope": row.get::<_, Option<String>>(3)?
+            "scope": row.get::<_, Option<String>>(3)?,
+            "is_secret": row.get::<_, i32>(4)? != 0,
+            "tags": row.get::<_, Option<String>>(5)?
         }))
     }).map_err(|e| e.to_string())?;
     
