@@ -29,13 +29,16 @@ interface Props {
   autoFocus?: boolean;
   onKeyDown?: (e: any) => void;
   disabled?: boolean;
+  // Start revealed (readable) when set: used for a brand-new secret, so
+  // the user can see what they type. Existing secrets start masked.
+  defaultShow?: boolean;
 }
 
 const SecretTextarea = ({
-  value, onChange, placeholder, className, rows, autoFocus, onKeyDown, disabled,
+  value, onChange, placeholder, className, rows, autoFocus, onKeyDown, disabled, defaultShow,
 }: Props) => {
   const t = useT();
-  const [show, setShow] = useState(false);
+  const [show, setShow] = useState(defaultShow ?? false);
   const textRef = useRef<HTMLTextAreaElement>(null);
 
   const reveal = () => {

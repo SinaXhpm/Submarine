@@ -3740,6 +3740,12 @@ function DesktopApp() {
               <label className="text-[12px] font-bold text-zinc-400 ml-1">{editCommandData.is_secret ? t("Secret command") : t("Command")}</label>
               {editCommandData.is_secret ? (
                 <SecretTextarea
+                  // A new secret starts readable so the user can see what
+                  // they type; an existing one starts masked. The key
+                  // remounts the field when switching commands so the
+                  // default applies per command, not per panel open.
+                  key={editCommandData.id ?? "new"}
+                  defaultShow={editCommandData.id === null}
                   value={editCommandData.content}
                   onChange={(v) => setEditCommandData({ ...editCommandData, content: v })}
                   placeholder={t("Enter password, secret token, or sensitive command…")}
