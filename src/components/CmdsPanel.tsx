@@ -57,6 +57,11 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   const [commands, setCommands] = useState<CommandItem[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  // Visible filters for the commands list: one tag at a time, and/or
+  // secrets only. Typing a tag in the search box already matches it, but
+  // the chips make filtering discoverable without knowing the tag names.
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [secretsOnly, setSecretsOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   // This session's server and its folders, by uuid, for the commands that
   // are for some servers only (util/commandScope). Null: not a saved server.
@@ -284,12 +289,22 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   };
 
   const q = searchQuery.toLowerCase();
+  // Distinct tags across all loaded commands, for the filter chips below.
+  // Tags are normalised at save time (case-insensitive dedupe), so the
+  // stored spellings are already unique per tag.
+  const allTags = Array.from(
+    new Set(commands.flatMap((c) => (c.tags || "").split(",").map((tag) => tag.trim()).filter(Boolean)))
+  ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  const hasSecrets = commands.some((c) => !!c.is_secret);
   // Commands for this server first (#22), then those for every server; the
   // ones for other servers aren't shown. A session that isn't a saved server
   // (quick connect) shows those for every server.
-  const matching = commands.filter(
-    (c) => c.title.toLowerCase().includes(q) || c.content.toLowerCase().includes(q) || (c.tags || "").toLowerCase().includes(q)
-  );
+  const matching = commands.filter((c) => {
+    const matchesQuery = c.title.toLowerCase().includes(q) || c.content.toLowerCase().includes(q) || (c.tags || "").toLowerCase().includes(q);
+    const matchesTag = !selectedTag || (c.tags || "").split(",").map((tag) => tag.trim().toLowerCase()).includes(selectedTag.toLowerCase());
+    const matchesSecret = !secretsOnly || !!c.is_secret;
+    return matchesQuery && matchesTag && matchesSecret;
+  });
   const forThisServer = matching.filter((c) => {
     const s = parseCommandScope(c.scope);
     return !!s && !!scopeIds && scopeMatches(s, scopeIds);
@@ -392,12 +407,46 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
             <input
               type="text"
-              placeholder={tab === "commands" ? t("Search commands (title + body)...") : t("Search notes (title + body)...")}
+              placeholder={tab === "commands" ? t("Search commands (title, body, tags)...") : t("Search notes (title + body)...")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full h-8 pl-9 pr-3 bg-white/5 border border-white/5 rounded-lg text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-primary/50 focus:bg-white/10 transition-all"
             />
           </div>
+          {/* Filter chips — commands tab only. "All" clears both filters;
+              "Secrets" shows only secret commands; a tag chip shows only
+              commands carrying that tag. The tag and secrets filters
+              combine (a tagged secret shows under both). */}
+          {tab === "commands" && (allTags.length > 0 || hasSecrets) && (
+            <div className="flex gap-1.5 mt-2 overflow-x-auto no-scrollbar">
+              <button
+                type="button"
+                onClick={() => { setSelectedTag(null); setSecretsOnly(false); }}
+                className={`shrink-0 h-6 px-2.5 rounded-full border text-[10px] font-bold transition-all ${!selectedTag && !secretsOnly ? "bg-primary/15 text-primary border-primary/40" : "bg-white/5 border-white/10 text-zinc-400 hover:text-white"}`}
+              >
+                {t("All")}
+              </button>
+              {hasSecrets && (
+                <button
+                  type="button"
+                  onClick={() => setSecretsOnly((s) => !s)}
+                  className={`shrink-0 h-6 px-2.5 rounded-full border text-[10px] font-bold transition-all flex items-center gap-1 ${secretsOnly ? "bg-amber-500/15 text-amber-300 border-amber-500/40" : "bg-white/5 border-white/10 text-zinc-400 hover:text-white"}`}
+                >
+                  <Lock size={10} /> {t("Secrets")}
+                </button>
+              )}
+              {allTags.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => setSelectedTag((prev) => (prev === tag ? null : tag))}
+                  className={`shrink-0 h-6 px-2.5 rounded-full border text-[10px] font-bold transition-all flex items-center gap-1 ${selectedTag === tag ? "bg-primary/15 text-primary border-primary/40" : "bg-white/5 border-white/10 text-zinc-400 hover:text-white"}`}
+                >
+                  <Tag size={10} /> {tag}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -603,7 +652,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
               <Terminal size={32} className="opacity-20 mb-2" />
               <span className="text-xs font-bold text-zinc-500">{t("No commands found")}</span>
               <p className="text-[10px] mt-1 text-zinc-600 max-w-[200px]">
-                {searchQuery ? t("No matches for your search query.") : t("Save commands in the main app to surface them here.")}
+                {searchQuery || selectedTag || secretsOnly ? t("No matches for your search or filters.") : t("Save commands in the main app to surface them here.")}
               </p>
             </div>
           )
