@@ -1442,11 +1442,17 @@ function DesktopApp() {
       return;
     }
     try {
+      // Tauri's #[tauri::command] macro exposes Rust snake_case params as
+      // camelCase arg keys, so the key here is `isSecret`, not `is_secret`
+      // (same as the existing `deleteThem` in resolve_held_deletions). The
+      // value stays the snake_case `is_secret` field, which is what
+      // get_commands returns. Do not "fix" the key back to snake_case —
+      // that breaks the save with "missing required key isSecret".
       if (editCommandData.id) {
-        await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content, is_secret: editCommandData.is_secret, tags: editCommandData.tags || null });
+        await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content, isSecret: editCommandData.is_secret, tags: editCommandData.tags || null });
         await invoke("set_command_scope", { id: editCommandData.id, scope: scopeToJson(scope) });
       } else {
-        await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope), is_secret: editCommandData.is_secret, tags: editCommandData.tags || null });
+        await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope), isSecret: editCommandData.is_secret, tags: editCommandData.tags || null });
       }
       closeCommandPanel();
       refreshCommands();

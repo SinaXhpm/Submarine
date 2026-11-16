@@ -172,7 +172,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setSaveError(null);
     try {
       if (target.kind === "command") {
-        await invoke("edit_command", { id: target.id, title: target.title, content: target.body, is_secret: target.is_secret, tags: target.tags || null });
+        await invoke("edit_command", { id: target.id, title: target.title, content: target.body, isSecret: target.is_secret, tags: target.tags || null });
         setCommands((prev) => prev.map((c) => c.id === target.id ? { ...c, title: target.title, content: target.body, is_secret: target.is_secret, tags: target.tags } : c));
       } else {
         await invoke("edit_note", { id: target.id, title: target.title, body: target.body });
@@ -254,7 +254,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setSaveError(null);
     try {
       if (edit.kind === "command") {
-        await invoke("edit_command", { id: edit.id, title: edit.title, content: edit.body, is_secret: edit.is_secret, tags: edit.tags || null });
+        await invoke("edit_command", { id: edit.id, title: edit.title, content: edit.body, isSecret: edit.is_secret, tags: edit.tags || null });
         setCommands((prev) => prev.map((c) => c.id === edit.id ? { ...c, title: edit.title, content: edit.body, is_secret: edit.is_secret, tags: edit.tags } : c));
       } else {
         await invoke("edit_note", { id: edit.id, title: edit.title, body: edit.body });
