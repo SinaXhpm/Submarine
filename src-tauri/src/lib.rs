@@ -10639,6 +10639,15 @@ fn set_use_ssh_config(enabled: bool) {
     ssh_config::set_enabled(enabled);
 }
 
+/// The device's "Use keys from an ssh-agent" setting, for monitoring: its
+/// pollers run in the background and read it at each connect. The page calls
+/// this at start and whenever the setting changes. Logins the page starts get
+/// the setting with each call (`use_ssh_agent`).
+#[tauri::command]
+fn set_use_ssh_agent(enabled: bool) {
+    monitor::set_use_agent(enabled);
+}
+
 /// Whether an ssh-agent holding at least one key is running on this device.
 /// Looks only once per login.
 async fn agent_available(ctx: &SecretPromptCtx<'_>) -> bool {
@@ -25859,7 +25868,12 @@ async fn monitor_resume(
     map: tauri::State<'_, MonitorMap>,
     settings: tauri::State<'_, SharedSettings>,
     node_id: i32,
+    use_ssh_agent: Option<bool>,
 ) -> Result<(), String> {
+    // For a node with no saved password or key (see monitor::Login::Agent).
+    if let Some(on) = use_ssh_agent {
+        monitor::set_use_agent(on);
+    }
     let (auth, metrics, customs, name) = {
         let guard = db_state.conn.lock().map_err(|_| "lock")?;
         let conn = guard.as_ref().ok_or("db not ready")?;
@@ -25933,7 +25947,12 @@ async fn monitor_resume_all(
     db_state: tauri::State<'_, DbState>,
     map: tauri::State<'_, MonitorMap>,
     settings: tauri::State<'_, SharedSettings>,
+    use_ssh_agent: Option<bool>,
 ) -> Result<(), String> {
+    // For a node with no saved password or key (see monitor::Login::Agent).
+    if let Some(on) = use_ssh_agent {
+        monitor::set_use_agent(on);
+    }
     // Persist all to unpaused first.
     let node_ids: Vec<i32> = {
         let guard = db_state.conn.lock().map_err(|_| "lock")?;
@@ -26265,7 +26284,7 @@ pub fn run() {
             add_credential, edit_credential, delete_credential,
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
-            initiate_connection, verify_fingerprint_response, submit_kbi_response, kbi_save_choice, disconnect_session, set_use_ssh_config,
+            initiate_connection, verify_fingerprint_response, submit_kbi_response, kbi_save_choice, disconnect_session, set_use_ssh_config, set_use_ssh_agent,
             initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_resize, rdp_builtin_shown, rdp_builtin_close, rdp_share_drives,
             telnet_connect, telnet_open_terminal, ftp_connect, vnc_open, vnc_input, vnc_resize, vnc_paste, vnc_shown, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
