@@ -40,7 +40,16 @@ const SecretTextarea = ({
         // Masked: the textarea can't show dots per character the way a
         // password input does, so hide the text entirely until revealed.
         // The field keeps its height so the form doesn't jump.
-        className={`pr-10 ${show ? "" : "text-transparent caret-white selection:text-transparent selection:bg-white/20"} ${className || ""}`}
+        // NOTE: the colour must be an inline style, not a Tailwind
+        // `text-transparent` class. The caller passes its own text colour
+        // (e.g. `text-zinc-300`) in `className`, and Tailwind resolves
+        // conflicting colour utilities by stylesheet order, not by class
+        // order — so the caller's colour beat `text-transparent` and the
+        // secret stayed readable while "hidden". An inline style beats
+        // every class, so it masks reliably whatever the caller passes.
+        style={show ? undefined : { color: "transparent" }}
+        spellCheck={false}
+        className={`pr-10 ${show ? "" : "caret-white selection:text-transparent selection:bg-white/20"} ${className || ""}`}
       />
       <button
         type="button"
