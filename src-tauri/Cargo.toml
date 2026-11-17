@@ -23,10 +23,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
-# Embeds the Common-Controls v6 manifest into `cargo test` binaries (see
-# build.rs). Already in the tree via tauri-build/tauri-winres, so this direct
-# dep adds no new crate.
-embed-resource = "3"
 
 # Compile crypto + compression dependencies with full optimization even
 # in `cargo build` (debug). Without this, `npm run tauri dev` runs the
