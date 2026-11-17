@@ -238,17 +238,19 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     setEdit({ kind: "note", id: n.id, title: n.title || "", body: n.body || "" });
   };
 
-  // Persist one command edit: title/content go through edit_command, and
-  // the secret flag/tags only through set_command_secret_tags when they
-  // actually changed — so a title edit here can't undo a flag or tags set
-  // in the main Library since this panel loaded its list.
+  // Persist one command edit: the secret flag/tags go through
+  // set_command_secret_tags FIRST, and only when they actually changed.
+  // That call validates the tags and refuses a bad one, so a bad tag stops
+  // the save before the title/content are written — the other way round,
+  // the text would be saved but the secret/tags not, and nothing would
+  // say so. Title/content go through edit_command after it.
   const persistCommand = async (target: Extract<EditTarget, { kind: "command" }>): Promise<void> => {
     const o = originalForEdit(target);
     const secretChanged = !o || o.is_secret !== target.is_secret || (o.tags || "") !== target.tags;
-    await invoke("edit_command", { id: target.id, title: target.title, content: target.body });
     if (secretChanged) {
       await invoke("set_command_secret_tags", { id: target.id, isSecret: target.is_secret, tags: target.tags || null });
     }
+    await invoke("edit_command", { id: target.id, title: target.title, content: target.body });
     setCommands((prev) => prev.map((c) => c.id === target.id ? { ...c, title: target.title, content: target.body, is_secret: target.is_secret, tags: target.tags } : c));
   };
 

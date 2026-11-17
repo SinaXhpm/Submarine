@@ -215,6 +215,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   const owPanelRef = useRef<HTMLDivElement | null>(null);
   const confirmPanelRef = useRef<HTMLDivElement | null>(null);
   const confirmOkRef = useRef<HTMLButtonElement | null>(null);
+  const confirmRevealRef = useRef<HTMLButtonElement | null>(null);
   const tpPanelRef = useRef<HTMLDivElement | null>(null);
   const usPanelRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(owState?.id ?? null, owPanelRef);
@@ -323,14 +324,22 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   // muscle memory keeps working. A key still held down from before (auto
   // repeat) answers nothing: it was not pressed for this prompt. In a prompt
   // whose default is Cancel (`safeDefault`), Enter does what the focused
-  // button does, so an Enter alone never says yes.
+  // button does, so an Enter alone never says yes. The reveal toggle is
+  // not a dialog answer: Enter on it only flips the reveal, it never
+  // confirms or cancels the prompt.
   useEffect(() => {
     if (!state) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) close(false); }
       if (e.key === "Enter")  {
         e.preventDefault();
-        if (!e.repeat) close(state.opts.safeDefault ? document.activeElement === confirmOkRef.current : true);
+        if (!e.repeat) {
+          if (document.activeElement === confirmRevealRef.current) {
+            setConfirmRevealed((r) => !r);
+            return;
+          }
+          close(state.opts.safeDefault ? document.activeElement === confirmOkRef.current : true);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -481,6 +490,8 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             {state.opts.revealableText && (
               <button
                 type="button"
+                ref={confirmRevealRef}
+                aria-expanded={confirmRevealed}
                 onClick={() => setConfirmRevealed((r) => !r)}
                 className="mb-2 text-[11px] font-semibold text-primary hover:underline"
               >

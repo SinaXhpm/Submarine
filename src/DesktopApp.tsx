@@ -1463,12 +1463,15 @@ function DesktopApp() {
         // Title/content only: the secret flag and tags go through their
         // own call, and only when they changed here — so this form can't
         // undo a flag or tags set in the session panel since it opened.
+        // The secret/tags call runs FIRST: it validates the tags and
+        // refuses a bad one, so a bad tag stops the save before the
+        // title/content are written.
         const orig = commands.find((c) => c.id === editCommandData.id);
         const secretChanged = !orig || !!orig.is_secret !== editCommandData.is_secret || (orig.tags || "") !== editCommandData.tags;
-        await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content });
         if (secretChanged) {
           await invoke("set_command_secret_tags", { id: editCommandData.id, isSecret: editCommandData.is_secret, tags: editCommandData.tags || null });
         }
+        await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content });
         await invoke("set_command_scope", { id: editCommandData.id, scope: scopeToJson(scope) });
       } else {
         await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope), isSecret: editCommandData.is_secret, tags: editCommandData.tags || null });
