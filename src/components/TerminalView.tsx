@@ -1437,6 +1437,12 @@ const TerminalView = ({
       const ok = await writeClipboard(text);
       if (ok) notify(t('Copied'));
     };
+    // A program that takes the mouse (mc, htop, vim with mouse=a) gets the
+    // clicks from xterm. xterm keeps a click for the terminal only while the
+    // bypass key is held: Shift, or Option on a Mac (macOptionClickForcesSelection
+    // in the options above). The copy and the paste here go by the same key.
+    const programHasMouse = () => term.modes.mouseTrackingMode !== 'none';
+    const bypassesProgram = (ev: MouseEvent) => (IS_MAC ? ev.altKey : ev.shiftKey);
     // Copy-on-select must fire wherever the mouse is RELEASED — not only inside
     // the terminal. A user who drags a selection and lets go past the terminal's
     // edge (a very natural motion) still expects the copy, but the old handler
@@ -1451,34 +1457,51 @@ const TerminalView = ({
     // selection) still can't clobber it. The selection end is set by the last
     // mousemove, so it's final by the time we read it on mouseup.
     //
-    // A drag that a mouse-tracking program takes (vi with mouse=a, mc, htop)
-    // can't copy stale text here: xterm clears its own selection when the
-    // program turns mouse tracking on, and again when it sends the program a
-    // mouse report. No snapshot of the selection at mousedown is kept: xterm
-    // makes a double- or triple-click's word or line in its own mousedown
-    // handler, which runs before this one, so such a snapshot would already
-    // hold the new selection and the release would copy nothing.
+    // Both in the capture phase, before xterm's own handlers (#369). In a
+    // program that takes the mouse, xterm stops the bypass key's mousedown at
+    // its own element, so a listener further out never saw that selection and
+    // nothing was copied. And xterm sends the program the release all the same,
+    // which in the SGR mouse mode most programs use counts as input and clears
+    // the selection: it's read before that, and put back on screen after it.
+    //
+    // A press without the bypass key in such a program is the program's, so it
+    // doesn't arm: no stale selection is copied by it. No snapshot of the
+    // selection at mousedown is kept: xterm makes a double- or triple-click's
+    // word or line in its own mousedown handler, after this one, and the
+    // release reads it.
     let selectionArmed = false;
+    let selectionForced = false;
     const onMouseDown = (ev: MouseEvent) => {
       // Assign (not just set-true) so a non-left mousedown re-disarms a flag
       // that got stuck from an earlier drag whose mouseup we never saw.
-      selectionArmed = ev.button === 0;
+      const program = programHasMouse();
+      selectionArmed = ev.button === 0 && (!program || bypassesProgram(ev));
+      selectionForced = selectionArmed && program;
     };
     const onDocMouseUp = (ev: MouseEvent) => {
       if (ev.button !== 0 || !selectionArmed) return;
       selectionArmed = false;
+      const range = selectionForced ? term.getSelectionPosition() : undefined;
+      // Reads the selection at once, before its first await.
       void copySelectionIfAny();
+      if (!range) return;
+      setTimeout(() => {
+        const length = (range.end.y - range.start.y) * term.cols + range.end.x - range.start.x;
+        if (!term.hasSelection() && length > 0) term.select(range.start.x, range.start.y, length);
+      }, 0);
     };
     // Ctrl+Shift+click (Cmd+Shift+click on a Mac) opens a new terminal. Only
     // those keys: on a Mac, Control+click is a right-click, which pastes here,
     // and a click with Alt as well is left alone. Where no terminal can be
     // opened from here (a Wall tile, a telnet tab), the click goes on to xterm.
+    // Nothing else of this terminal sees it, the copy-on-select listener beside
+    // this one included: the click doesn't copy a selection already there.
     const onNewTerminalClick = (ev: MouseEvent) => {
       if (!onNewTerminalRef.current) return;
       const primary = IS_MAC ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && !ev.metaKey;
       if (ev.button !== 0 || !primary || !ev.shiftKey || ev.altKey) return;
       ev.preventDefault();
-      ev.stopPropagation();
+      ev.stopImmediatePropagation();
       onNewTerminalRef.current?.();
     };
     // If the window loses focus mid-drag (Alt-Tab, a focus-stealing dialog),
@@ -1573,6 +1596,11 @@ const TerminalView = ({
         });
         return;
       }
+      // A program that takes the mouse got this click from xterm (mc selects a
+      // file with it), so pasting as well would type the clipboard into it
+      // (#369). With the bypass key held, xterm kept the click for the
+      // terminal, and it pastes, as Shift+right-click does in PuTTY.
+      if (programHasMouse() && !bypassesProgram(ev)) return;
       void pasteClipboard(true);
     };
     // A key held down while the focus moved here (Enter on a panel's close
@@ -1690,9 +1718,10 @@ const TerminalView = ({
     });
     // In the capture phase, before xterm's own handlers: with mouse tracking
     // on (htop, vim) those send the click to the program and stop it there.
+    // The new-terminal click goes first, so it can keep the copy out.
     terminalRef.current.addEventListener('mousedown', onNewTerminalClick, true);
-    terminalRef.current.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('mouseup', onDocMouseUp);
+    terminalRef.current.addEventListener('mousedown', onMouseDown, true);
+    document.addEventListener('mouseup', onDocMouseUp, true);
     window.addEventListener('blur', onWindowBlur);
     terminalRef.current.addEventListener('pointerdown', onPointerDown, true);
     terminalRef.current.addEventListener('contextmenu', onContextMenu);
@@ -1955,12 +1984,12 @@ const TerminalView = ({
       window.clearTimeout(drawnTimer);
       if (container) {
         container.removeEventListener('mousedown', onNewTerminalClick, true);
-        container.removeEventListener('mousedown', onMouseDown);
+        container.removeEventListener('mousedown', onMouseDown, true);
         container.removeEventListener('pointerdown', onPointerDown, true);
         container.removeEventListener('contextmenu', onContextMenu);
         container.removeEventListener('paste', onPasteEvent, true);
       }
-      document.removeEventListener('mouseup', onDocMouseUp);
+      document.removeEventListener('mouseup', onDocMouseUp, true);
       window.removeEventListener('blur', onWindowBlur);
       window.removeEventListener(TERMINAL_PASTE, onPasteRequest);
       window.removeEventListener(TERMINAL_CLEAR, onClearRequest);
