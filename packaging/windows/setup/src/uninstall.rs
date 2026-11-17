@@ -41,7 +41,10 @@ fn data_dirs() -> Vec<PathBuf> {
 }
 
 /// The running uninstaller can't delete itself, but it can move: to the temp
-/// folder (Windows clears it), so the install folder can go.
+/// folder (Windows clears it), so the install folder can go. The temp folder
+/// can be on another drive (an install on D:), where nothing can be moved: a
+/// copy of the uninstaller there removes this file and the emptied folder once
+/// this process has ended.
 fn move_self_out(dir: &Path) {
     let Ok(me) = std::env::current_exe() else { return };
     if !me.parent().is_some_and(|p| fsx::same_path(p, dir)) {
@@ -49,9 +52,37 @@ fn move_self_out(dir: &Path) {
         return;
     }
     let away = std::env::temp_dir().join(format!("{}-uninstall-{}.exe", IDENTIFIER, std::process::id()));
-    if let Err(e) = fs::rename(&me, &away) {
+    let Err(e) = fs::rename(&me, &away) else { return };
+    log!("can't move {} to the temp folder ({e}): a copy there removes it", me.display());
+    let started = fs::copy(&me, &away).and_then(|_| {
+        std::process::Command::new(&away)
+            .arg("--cleanup")
+            .arg(std::process::id().to_string())
+            .arg(format!("_?={}", dir.display()))
+            .current_dir(std::env::temp_dir())
+            .spawn()
+    });
+    if let Err(e) = started {
         log!("left {}: {e}", me.display());
     }
+}
+
+/// `--cleanup <pid> _?=<folder>`: once that uninstaller has ended, its file
+/// and the folder (only if empty) go. Nothing else is touched.
+fn clean_up_after(pid: u32, dir: &Path) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    unsafe {
+        if let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+            WaitForSingleObject(h, 60_000);
+            let _ = CloseHandle(h);
+        }
+    }
+    match fsx::remove_file(&dir.join(UNINSTALL_EXE)) {
+        Ok(()) => log!("removed {}", dir.join(UNINSTALL_EXE).display()),
+        Err(e) => log!("left {}: {e}", dir.join(UNINSTALL_EXE).display()),
+    }
+    let _ = fs::remove_dir(dir);
 }
 
 /// Uninstallers moved out by earlier runs.
@@ -260,6 +291,10 @@ pub fn main() -> i32 {
     let args = crate::args::from_process();
     log::start("uninstall");
     log!("{args:?}");
+    if let (Some(pid), Some(dir)) = (args.cleanup, args.in_place_dir.as_ref()) {
+        clean_up_after(pid, Path::new(dir));
+        return 0;
+    }
     let s = Strings::load(i18n::pick());
     clear_old_copies();
     // _?=folder (as NSIS installers pass it), else the folder this file is in.

@@ -20,6 +20,9 @@ pub struct Args {
     pub update: bool,
     pub dir: Option<String>,
     pub in_place_dir: Option<String>,
+    /// (uninstaller, internal) `--cleanup <pid>`: wait for that uninstaller to
+    /// end, then remove it and its emptied folder (see uninstall.rs).
+    pub cleanup: Option<u32>,
 }
 
 pub fn from_process() -> Args {
@@ -77,13 +80,18 @@ pub fn parse(line: &str) -> Args {
             args.in_place_dir = value(v);
             break;
         }
-        let (token, after) = next_token(rest);
+        let (token, mut after) = next_token(rest);
         match token.to_ascii_uppercase().as_str() {
             "/S" => args.silent = true,
             "/P" => args.passive = true,
             "/NS" => args.no_shortcuts = true,
             "/R" => args.relaunch = true,
             "/UPDATE" => args.update = true,
+            "--CLEANUP" => {
+                let (pid, next) = next_token(after.trim_start());
+                args.cleanup = pid.parse().ok();
+                after = next;
+            }
             _ => {}
         }
         rest = after;
@@ -107,6 +115,14 @@ mod tests {
         let a = parse(r"C:\x\uninstall.exe /P /UPDATE _?=C:\Users\a b\AppData\Local\Submarine");
         assert!(a.passive && a.update);
         assert_eq!(a.in_place_dir.as_deref(), Some(r"C:\Users\a b\AppData\Local\Submarine"));
+    }
+
+    #[test]
+    fn cleanup() {
+        let a = parse(r"C:\Temp\x-uninstall-7.exe --cleanup 4242 _?=D:\Apps\Sub marine");
+        assert_eq!(a.cleanup, Some(4242));
+        assert_eq!(a.in_place_dir.as_deref(), Some(r"D:\Apps\Sub marine"));
+        assert_eq!(parse("u.exe --cleanup x").cleanup, None);
     }
 
     #[test]

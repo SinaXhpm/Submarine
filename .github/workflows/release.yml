@@ -311,7 +311,9 @@ jobs:
           if ($version -ne $env:VERSION_STRICT) { throw "Apps entry says $version" }
           $u = Start-Process -FilePath (Join-Path $dir "uninstall.exe") -ArgumentList "/S" -Wait -PassThru
           if ($u.ExitCode -ne 0) { throw "uninstall ended with $($u.ExitCode)" }
-          Start-Sleep -Seconds 2
+          # RUNNER_TEMP is on D: and the temp folder on C:, so the uninstaller
+          # can't move itself out: a copy removes it just after it ends.
+          for ($i = 0; $i -lt 40 -and (Test-Path $dir); $i++) { Start-Sleep -Milliseconds 500 }
           if (Test-Path $dir) { throw "the install folder is still there" }
           if (Test-Path $key) { throw "the Apps entry is still there" }
           "setup installs and uninstalls cleanly"
