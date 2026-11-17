@@ -19,7 +19,11 @@ import { readUseLocalShell } from '../util/terminalShell';
 import { holdTerminalInput, writeTerminal } from '../util/terminalWrite';
 import { readUseSshAgent } from '../util/sshAgent';
 import { readSendKeepalives } from '../util/sessionKeep';
-import { IS_MOBILE, IS_LINUX, IS_ANDROID, IS_MAC } from '../util/platform';
+import { IS_MOBILE, IS_ANDROID, IS_MAC } from '../util/platform';
+import {
+  TERMINAL_SHORTCUTS, comboOf, isWebviewEditKey, leftToWebview, matchShortcut, reachesTerminal, shortcutFor,
+  type ShortcutAction,
+} from '../util/shortcuts';
 import { lastInputWasTouch } from '../util/lastInput';
 import { useConfirm } from '../ui/confirm';
 import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
@@ -64,6 +68,11 @@ const RESET_INPUT_MODES = '\x1b[?9;1000;1002;1003;1004;1005;1006;1015;1016;2004l
 // them takes Shift or sits on another non-letter key gets the same, except that
 // the \ key without Shift stays ^\ (see attachCustomKeyEventHandler).
 const isUnderscoreKey = (key: string) => key === "-" || key === "/" || key === "_";
+
+// Once a terminal's shell has ended, the keys for these work without Shift as
+// well: Ctrl+W closes it then, as it closes a browser's tab (see runShortcut).
+const WITHOUT_SHIFT_ONCE_ENDED: readonly ShortcutAction[] = ['closeTerminal', 'newTerminal'];
+const FIND: readonly ShortcutAction[] = ['find'];
 
 // Shared search options — highlight all matches in yellow, the active
 // match in orange. `decorations` uses the marker overlay so the highlight
@@ -810,50 +819,9 @@ const TerminalView = ({
     return () => cancelAnimationFrame(id);
   }, [focusSignal]);
 
-  // Ctrl+Shift+F / Cmd+Shift+F opens the search chip — but only when the
-  // user is focused inside this terminal's DOM subtree. Document-level
-  // listener is needed because xterm's textarea steals keyboard focus, so
-  // the wrapper never sees the keydown via bubbling within React's synthetic
-  // tree. Gate on `document.activeElement` so multiple terminals in tabs /
-  // split panes don't all pop their search chip on a single press.
-  //
-  // The same gate opens the command history overlay on Ctrl+Shift+R /
-  // Cmd+Shift+R. The plain combos stay the shell's: Ctrl+R is its
-  // reverse-i-search and Ctrl+F pages forward in less and vim. xterm turns
-  // those into ^R and ^F for the shell and stops them from bubbling, so they
-  // never reach here. A Ctrl+Shift combo gets no key from xterm and bubbles
-  // untouched. Matched by keyCode, the layout's F and R keys (the ones xterm
-  // goes by too), so Dvorak gets the same keys. The webview's own reload on
-  // Ctrl+Shift+R is cancelled app-wide (main.tsx). Ctrl+Shift+K / Cmd+Shift+K
-  // clears the terminal in the app (see clearLocalTerminal), the key other
-  // terminals use for it (WezTerm, Konsole, Warp).
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
-      const wrapper = terminalRef.current;
-      if (!wrapper) return;
-      const active = document.activeElement;
-      if (!(active instanceof Node) || !wrapper.contains(active)) return;
-      if (e.keyCode === 70) {
-        e.preventDefault();
-        setShowSearch(true);
-        // If already open, refocus the input so a second press selects the
-        // existing query for a quick overwrite.
-        requestAnimationFrame(() => {
-          searchInputRef.current?.focus();
-          searchInputRef.current?.select();
-        });
-      } else if (e.keyCode === 82) {
-        e.preventDefault();
-        setShowHistory(true);
-      } else if (e.keyCode === 75) {
-        e.preventDefault();
-        if (!e.repeat) clearTerminal(terminalId);
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [terminalId]);
+  // The keys for the search chip, the command history and clearing the
+  // terminal are with the terminal's other shortcuts (runShortcut, where xterm
+  // is set up).
 
   // Close + clear search decorations. Refocuses xterm so the user's next
   // keystroke goes to the shell, not to nowhere.
@@ -1426,10 +1394,11 @@ const TerminalView = ({
       }
       return lines.join('\n');
     };
+    // A selection that runs past the last line ends in empty rows: Select all
+    // takes the whole buffer, the blank rows under the prompt included.
+    const selectedText = () => buildSelectedText().replace(/\n+$/, '');
     const copySelectionIfAny = async () => {
-      // A selection that runs past the last line ends in empty rows: Ctrl+Shift+A
-      // takes the whole buffer, the blank rows under the prompt included.
-      const text = buildSelectedText().replace(/\n+$/, '');
+      const text = selectedText();
       // Selections of only blank padding (easy to grab when dragging across
       // a TUI screen) must neither clobber the clipboard with invisible
       // spaces nor toast a lie.
@@ -1656,12 +1625,82 @@ const TerminalView = ({
     let noKeySinceFocus = false;
     const onTextareaFocus = () => { noKeySinceFocus = true; };
     term.textarea?.addEventListener('focus', onTextareaFocus);
-    // Ctrl+Shift+A / Ctrl+Shift+C / Ctrl+Shift+V — Warp/GNOME-Terminal-style
-    // select-all / copy / paste, deliberately on the SHIFTED combo so plain
-    // Ctrl+A (start of line) and Ctrl+C (SIGINT) keep going straight to the
-    // remote shell untouched, exactly as every readline/zle user expects.
-    // xterm.js only allows one attachCustomKeyEventHandler at a time, so all
-    // three live in this single handler rather than three separate calls.
+    // The terminal's shortcuts (util/shortcuts; Settings → Keyboard
+    // shortcuts): another terminal, close it, the search chip, the command
+    // history, clear, copy, paste, select all. Taken here, before xterm turns
+    // a key into input, so a key the shell uses can be set as well (Ctrl+C to
+    // copy, say). Only the terminal with the keyboard sees its keys, so split
+    // panes and tabs don't all act on one press. Returns false for keys used
+    // here, true for keys left to the webview's own copy or paste, and
+    // undefined for any other key.
+    //
+    // By default they're Ctrl+Shift combinations (⌘ on a Mac), which xterm
+    // gives the program nothing for, so plain Ctrl+A (start of line), Ctrl+C
+    // (SIGINT), Ctrl+R (reverse-i-search) and Ctrl+F (a page forward in less
+    // and vim) keep going to it. Once the shell has ended, the keys to close
+    // the terminal and open another work without Shift too. The webview's own
+    // reload on Ctrl+Shift+R is cancelled app-wide (main.tsx). Clear is the
+    // key other terminals use for it (WezTerm, Konsole, Warp).
+    const runShortcut = (ev: KeyboardEvent): boolean | undefined => {
+      const combo = comboOf(ev);
+      if (!combo) return undefined;
+      const action = shortcutFor(combo, TERMINAL_SHORTCUTS, shellEndedRef.current ? WITHOUT_SHIFT_ONCE_ENDED : []);
+      if (!action) {
+        // A key the webview copies or pastes with by itself, which isn't set
+        // for that: it does nothing here.
+        if (isWebviewEditKey(combo)) {
+          ev.preventDefault();
+          return false;
+        }
+        return undefined;
+      }
+      if (leftToWebview(action, combo)) return true;
+      const first = !ev.repeat;
+      switch (action) {
+        case 'closeTerminal':
+          if (first) onCloseRef.current?.();
+          break;
+        case 'newTerminal':
+          if (first) onNewTerminalRef.current?.();
+          break;
+        case 'find':
+          setShowSearch(true);
+          // If already open, refocus the input so a second press selects the
+          // existing query for a quick overwrite.
+          requestAnimationFrame(() => {
+            searchInputRef.current?.focus();
+            searchInputRef.current?.select();
+          });
+          break;
+        case 'history':
+          setShowHistory(true);
+          break;
+        case 'clear':
+          if (first) clearTerminal(terminalId);
+          break;
+        case 'selectAll':
+          if (first) term.selectAll();
+          break;
+        case 'copy':
+          // With nothing selected, keys the program would get go on to it:
+          // Ctrl+C set to copy still stops a program, as in Windows Terminal.
+          // After a copy on such keys the selection goes, so the next press
+          // reaches the program again.
+          if (!selectedText().trim()) {
+            if (reachesTerminal(combo)) return true;
+          } else if (first) {
+            void copySelectionIfAny();
+            if (reachesTerminal(combo)) term.clearSelection();
+          }
+          break;
+        case 'paste':
+          // The clipboard's text, through the same checks as a right-click's.
+          if (first) void pasteClipboard(false);
+          break;
+      }
+      ev.preventDefault();
+      return false;
+    };
     term.attachCustomKeyEventHandler((ev) => {
       // A held key's repeats (see noKeySinceFocus).
       if (ev.type === 'keydown' && !ev.repeat) noKeySinceFocus = false;
@@ -1669,74 +1708,9 @@ const TerminalView = ({
         ev.preventDefault();
         return false;
       }
-      const primaryModifier = ev.ctrlKey || ev.metaKey;
-
-      // Ctrl+Shift+W always closes the current terminal tab.
-      // Plain Ctrl+W does so only after its shell has ended; while the shell
-      // is running, ^W remains available to readline and other applications.
-      if (
-        ev.type === 'keydown' &&
-        !ev.repeat &&
-        primaryModifier &&
-        !ev.altKey &&
-        ev.code === 'KeyW' &&
-        (ev.shiftKey || shellEndedRef.current)
-      ) {
-        ev.preventDefault();
-        onCloseRef.current?.();
-        return false;
-      }
-      // Ctrl+Shift+Plus opens another terminal while the shell is running.
-      // Once the shell has ended, Ctrl+Plus works as well.
-      //
-      // Matched by the key's character, so only the plus key counts: "+" itself,
-      // the keypad's plus, the US "=/+" key unshifted (Ctrl+= once the shell has
-      // ended), and the German plus key with Shift, which gives "*". A key in
-      // the same place on another layout ("]" or "}" on a US keyboard) doesn't.
-      const isPlusKey =
-        ev.key === '+' ||
-        ev.code === 'NumpadAdd' ||
-        (ev.code === 'Equal' && ev.key === '=') ||
-        (ev.code === 'BracketRight' && ev.key === '*');
-
-      if (
-        ev.type === 'keydown' &&
-        !ev.repeat &&
-        primaryModifier &&
-        !ev.altKey &&
-        isPlusKey &&
-        (ev.shiftKey || shellEndedRef.current)
-      ) {
-        ev.preventDefault();
-        onNewTerminalRef.current?.();
-        return false;
-      }
-      const noOtherMods = !ev.altKey && !ev.metaKey && ev.ctrlKey && ev.shiftKey;
-      if (noOtherMods && ev.code === 'KeyA') {
-        if (ev.type === 'keydown' && !ev.repeat) term.selectAll();
-        ev.preventDefault();
-        return false;
-      }
-      if (noOtherMods && ev.code === 'KeyC') {
-        if (ev.type === 'keydown' && !ev.repeat) void copySelectionIfAny();
-        ev.preventDefault();
-        return false;
-      }
-      // Linux only: paste. Elsewhere the webview's own Ctrl+Shift+V /
-      // Shift+Insert already reaches xterm's built-in paste handling, but
-      // WebKitGTK's own clipboard read is the one that crashes on an empty
-      // clipboard (#89), so it's taken over here and routed through the
-      // same path as a right-click instead.
-      if (IS_LINUX) {
-        const isPasteKey = !ev.altKey && !ev.metaKey && (
-          (ev.ctrlKey && ev.shiftKey && ev.code === 'KeyV') ||
-          (ev.shiftKey && !ev.ctrlKey && ev.key === 'Insert')
-        );
-        if (isPasteKey) {
-          ev.preventDefault();
-          if (ev.type === 'keydown' && !ev.repeat) void pasteClipboard(false);
-          return false;
-        }
+      if (ev.type === 'keydown') {
+        const used = runShortcut(ev);
+        if (used !== undefined) return used;
       }
       // ^_ (see isUnderscoreKey). No Alt or Meta: those combinations aren't ^_,
       // and with Ctrl+Alt the layout may be typing the character. No letter key:
@@ -2136,9 +2110,8 @@ const TerminalView = ({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              // Stop keys from leaking to the document listener
-              // (Ctrl+Shift+F reopen loop) and to xterm's textarea (which
-              // would type into the shell).
+              // Keys typed here stay here (stopPropagation below): none of
+              // them may reach the page's other key handlers.
               if (e.key === 'Escape') {
                 e.preventDefault();
                 setQuery('');
@@ -2146,9 +2119,8 @@ const TerminalView = ({
               } else if (e.key === 'Enter') {
                 e.preventDefault();
                 runFind(e.shiftKey ? 'prev' : 'next');
-              } else if ((e.ctrlKey || e.metaKey) && e.keyCode === 70) {
-                // Swallow so the outer document handler doesn't re-fire
-                // (which would just refocus us — harmless but noisy).
+              } else if (matchShortcut(e.nativeEvent, FIND)) {
+                // The find key again: select the query to type over it.
                 e.preventDefault();
                 (e.currentTarget as HTMLInputElement).select();
               }
