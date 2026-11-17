@@ -5,7 +5,7 @@ import { SearchAddon, ISearchOptions } from 'xterm-addon-search';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import 'xterm/css/xterm.css';
-import { KeyRound } from 'lucide-react';
+import { ClipboardPaste, KeyRound } from 'lucide-react';
 import { useIsNarrow } from '../hooks/useViewport';
 import { MobileKeyBar, ModifiersState, ModKey, SpecialKey } from './MobileKeyBar';
 import { useBroadcast } from '../ui/broadcast';
@@ -885,6 +885,30 @@ const TerminalView = ({
     toastTimerRef.current = window.setTimeout(() => setToast(null), 1400);
   };
 
+  // A long press on a touch screen shows a Paste button by the finger (see
+  // onContextMenu), and only a tap on it pastes: people long-press on a
+  // phone to select or to look, and a pasted line that ends in a line break
+  // would run. Any other touch, key or scroll takes the button away.
+  const [pasteAt, setPasteAt] = useState<{ x: number; y: number } | null>(null);
+  const pasteClipboardRef = useRef<((toast: boolean) => Promise<void>) | null>(null);
+  useEffect(() => {
+    if (!pasteAt) return;
+    const hide = () => setPasteAt(null);
+    const timer = window.setTimeout(hide, 6000);
+    const onDown = (e: PointerEvent) => {
+      if (!(e.target instanceof Element && e.target.closest('[data-paste-button]'))) hide();
+    };
+    window.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('keydown', hide, true);
+    window.addEventListener('wheel', hide, { capture: true, passive: true });
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('keydown', hide, true);
+      window.removeEventListener('wheel', hide, true);
+    };
+  }, [pasteAt]);
+
   // The output ends in a password prompt (sudo, su, …): a button offers to
   // type a saved password there (#28). The next key typed or more output
   // takes it away. The backend types the password: it never comes here.
@@ -1517,6 +1541,7 @@ const TerminalView = ({
       catch { notify(t('Clipboard read denied'), 'err'); return; }
       await pasteText(text, toast);
     };
+    pasteClipboardRef.current = pasteClipboard;
     // Ctrl+V, Ctrl+Shift+V, Shift+Insert and a phone's paste menu would reach
     // xterm's own paste. They go through pasteText instead, like a right-click,
     // so control characters and the question about several lines apply to
@@ -1528,9 +1553,24 @@ const TerminalView = ({
       void pasteText(raw, false);
     };
     // Right-click → paste. preventDefault swallows the platform context menu
-    // so the user gets the terminal-style behavior they asked for.
+    // so the user gets the terminal-style behavior they asked for. A long
+    // press on a touch screen comes as a context menu too: it only shows the
+    // Paste button there (see pasteAt).
+    let lastPointerType = '';
+    const onPointerDown = (ev: PointerEvent) => { lastPointerType = ev.pointerType; };
     const onContextMenu = (ev: MouseEvent) => {
       ev.preventDefault();
+      const touch = IS_MOBILE || lastPointerType === 'touch' || (ev as PointerEvent).pointerType === 'touch';
+      const pane = terminalRef.current?.parentElement?.getBoundingClientRect();
+      if (touch && pane) {
+        if (disabledRef.current) return;
+        // Kept inside the pane: the button is drawn above the finger.
+        setPasteAt({
+          x: Math.min(Math.max(ev.clientX - pane.left, 64), Math.max(pane.width - 64, 64)),
+          y: Math.max(ev.clientY - pane.top, 64),
+        });
+        return;
+      }
       void pasteClipboard(true);
     };
     // A key held down while the focus moved here (Enter on a panel's close
@@ -1652,6 +1692,7 @@ const TerminalView = ({
     terminalRef.current.addEventListener('mousedown', onMouseDown);
     document.addEventListener('mouseup', onDocMouseUp);
     window.addEventListener('blur', onWindowBlur);
+    terminalRef.current.addEventListener('pointerdown', onPointerDown, true);
     terminalRef.current.addEventListener('contextmenu', onContextMenu);
     terminalRef.current.addEventListener('paste', onPasteEvent, true);
     // A paste from outside the terminal (see TERMINAL_PASTE). Text only to be
@@ -1913,6 +1954,7 @@ const TerminalView = ({
       if (container) {
         container.removeEventListener('mousedown', onNewTerminalClick, true);
         container.removeEventListener('mousedown', onMouseDown);
+        container.removeEventListener('pointerdown', onPointerDown, true);
         container.removeEventListener('contextmenu', onContextMenu);
         container.removeEventListener('paste', onPasteEvent, true);
       }
@@ -1980,6 +2022,22 @@ const TerminalView = ({
         ref={terminalRef}
         className="flex-1 min-h-0 w-full overflow-hidden select-text"
       />
+      {/* The long press's Paste button (see pasteAt). Pressing it doesn't
+          take the focus, so the soft keyboard stays up. */}
+      {pasteAt && !disabled && (
+        <button
+          type="button"
+          data-paste-button
+          onPointerDown={(e) => e.preventDefault()}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => { setPasteAt(null); void pasteClipboardRef.current?.(true); }}
+          style={{ left: pasteAt.x, top: pasteAt.y }}
+          className="absolute z-30 -translate-x-1/2 -translate-y-full -mt-3 h-10 px-4 flex items-center gap-1.5 rounded-lg bg-zinc-800 border border-white/15 shadow-xl text-[13px] font-semibold text-zinc-100 active:bg-zinc-700"
+        >
+          <ClipboardPaste size={15} className="text-primary shrink-0" />
+          {t('Paste')}
+        </button>
+      )}
       {/* Search chip — floats above xterm; positioned inside the outer
           flex column so it never displaces the terminal grid. Absolute
           top-2 right-2 keeps it clear of the disconnected badge (which
