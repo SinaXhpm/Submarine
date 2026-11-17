@@ -20,6 +20,7 @@ import { holdTerminalInput, writeTerminal } from '../util/terminalWrite';
 import { readUseSshAgent } from '../util/sshAgent';
 import { readSendKeepalives } from '../util/sessionKeep';
 import { IS_MOBILE, IS_LINUX, IS_ANDROID, IS_MAC } from '../util/platform';
+import { lastInputWasTouch } from '../util/lastInput';
 import { useConfirm } from '../ui/confirm';
 import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
 import { tn, useT } from '../i18n';
@@ -726,7 +727,10 @@ const TerminalView = ({
   // become-active effect and the parent-driven focus signal below, so the
   // user can type the moment a terminal tab (or its server tab) is selected
   // — issue #51. Bails in every situation where grabbing focus is wrong:
-  //   • touch devices — focusing xterm pops the soft keyboard unasked;
+  //   • a phone or tablet, or a tap last on a PC's touch screen — focusing
+  //     xterm would bring up the on-screen keyboard unasked. A PC with a
+  //     touch screen used with its mouse and keys still gets the focus
+  //     (lastInputWasTouch);
   //   • a terminal whose SessionView isn't the frontmost server tab, or an
   //     attach-only Wall mirror (isActiveView=false) — never steal from the
   //     session the user is actually looking at;
@@ -740,9 +744,7 @@ const TerminalView = ({
   //   • a modal dialog is open — confirm / overwrite / text-prompt all carry
   //     aria-modal.
   const focusTerminal = () => {
-    const coarsePointer =
-      typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
-    if (IS_MOBILE || coarsePointer) return;
+    if (IS_MOBILE || lastInputWasTouch()) return;
     if (!isActiveViewRef.current) return;
     if (disabledRef.current) return;
     const term = xtermRef.current;
