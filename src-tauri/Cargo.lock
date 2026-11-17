@@ -5878,6 +5878,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "directories",
+ "embed-resource",
  "filetime",
  "flate2",
  "fontdb",
