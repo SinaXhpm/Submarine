@@ -301,6 +301,8 @@ Pick a binary from the [latest release](https://github.com/sinaxhpm/submarine/re
 | Android 7.0+ | `.apk` — sideload, no Play Store required |
 | iPhone / iPad (iOS 15+), and macOS signed by Apple | the beta on [TestFlight](https://testflight.apple.com/join/TmefAPrY) — install Apple's TestFlight app, then open the link |
 
+The Windows `.exe` installs for the current user and needs no administrator rights; `/S` installs silently and `/D=<folder>` (last on the line) picks the folder. The `.msi` installs for all users.
+
 > The Windows build is **not code-signed**. Windows SmartScreen will prompt — click "More info → Run anyway". The macOS download isn't signed by Apple yet: macOS says the app is damaged until you move it to Applications and run `xattr -dr com.apple.quarantine /Applications/Submarine.app`, or take the TestFlight version, which Apple signs. The Android APK **is signed** with the author's key: `apksigner verify --print-certs` should show the certificate SHA-256 `e9e350dc9f8628bee461be3424c0c2b2180f00685cc380de80c86808ae669f1c`. Android sideloading needs "Install unknown apps" enabled for the installer source. Releases from v0.4.0-beta.1 on carry a `SHA256SUMS` file to check a download against.
 
 ### Portable mode (Windows)
