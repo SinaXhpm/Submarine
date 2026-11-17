@@ -26194,20 +26194,11 @@ fn open_main_window(app: &tauri::App) {
     } else {
         error.as_str()
     };
-    // Plain Win32 message box, not rfd::MessageDialog: rfd's dialog uses
-    // TaskDialogIndirect (COMCTL32 v6), and the `cargo test` binary loads
-    // COMCTL32 v5 (no v6 manifest — tauri-build embeds it in the app binary
-    // only), so the test binary fails to start with 0xc0000139
-    // STATUS_ENTRYPOINT_NOT_FOUND before any test runs. MessageBoxW lives in
-    // user32.dll and needs no manifest, and nothing else in the binary
-    // references TaskDialogIndirect once this call is gone.
-    use windows::core::HSTRING;
-    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-    let text = HSTRING::from(format!("Submarine couldn't open its window.\n\n{why}"));
-    let caption = HSTRING::from("Submarine");
-    unsafe {
-        MessageBoxW(None, &text, &caption, MB_OK | MB_ICONERROR);
-    }
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Submarine")
+        .set_description(format!("Submarine couldn't open its window.\n\n{why}"))
+        .show();
     std::process::exit(1);
 }
 
