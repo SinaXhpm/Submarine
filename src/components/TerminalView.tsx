@@ -1603,6 +1603,51 @@ const TerminalView = ({
       if (programHasMouse() && !bypassesProgram(ev)) return;
       void pasteClipboard(true);
     };
+    // A finger's swipe does what a mouse wheel does (#372). xterm scrolls its
+    // scrollback by touch on its own, but gives a program nothing: one on the
+    // alternate screen (less, vim) got no arrow keys, and one that takes the
+    // mouse (Claude Code's fullscreen view, tmux with the mouse on) no wheel,
+    // so on a phone there was no way to scroll back in it. There, each row the
+    // finger moves goes to xterm as one line of a wheel, and xterm sends it on
+    // as it does a wheel's: as arrow keys, or as the program's wheel reports.
+    // A second finger ends the swipe.
+    let swipeY: number | null = null;
+    let swipeRest = 0;
+    const onTouchStart = (ev: TouchEvent) => {
+      swipeRest = 0;
+      swipeY = ev.touches.length === 1 && (programHasMouse() || term.buffer.active.type === 'alternate')
+        ? ev.touches[0].clientY
+        : null;
+    };
+    const onTouchMove = (ev: TouchEvent) => {
+      if (swipeY === null) return;
+      const screen = term.element?.querySelector('.xterm-screen');
+      if (ev.touches.length !== 1 || !screen) {
+        swipeY = null;
+        return;
+      }
+      if (ev.cancelable) ev.preventDefault();
+      const finger = ev.touches[0];
+      // A finger moving down shows what was above: the wheel turned up.
+      swipeRest += swipeY - finger.clientY;
+      swipeY = finger.clientY;
+      const rowHeight = screen.getBoundingClientRect().height / term.rows;
+      if (!(rowHeight > 0)) return;
+      const lines = Math.trunc(swipeRest / rowHeight);
+      if (!lines) return;
+      swipeRest -= lines * rowHeight;
+      for (let i = 0; i < Math.abs(lines); i++) {
+        screen.dispatchEvent(new WheelEvent('wheel', {
+          deltaY: Math.sign(lines),
+          deltaMode: WheelEvent.DOM_DELTA_LINE,
+          clientX: finger.clientX,
+          clientY: finger.clientY,
+          bubbles: true,
+          cancelable: true,
+        }));
+      }
+    };
+    const onTouchEnd = () => { swipeY = null; };
     // A key held down while the focus moved here (Enter on a panel's close
     // button) goes on repeating into the terminal. It wasn't pressed for the
     // shell, so its repeats are dropped until a key goes down here. Keys an
@@ -1726,6 +1771,12 @@ const TerminalView = ({
     terminalRef.current.addEventListener('pointerdown', onPointerDown, true);
     terminalRef.current.addEventListener('contextmenu', onContextMenu);
     terminalRef.current.addEventListener('paste', onPasteEvent, true);
+    // Before xterm's own touch handlers too; touchmove can't be passive, it
+    // keeps the swipe from scrolling the page.
+    terminalRef.current.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+    terminalRef.current.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
+    terminalRef.current.addEventListener('touchend', onTouchEnd, true);
+    terminalRef.current.addEventListener('touchcancel', onTouchEnd, true);
     // A paste from outside the terminal (see TERMINAL_PASTE). Text only to be
     // pasted (the Library's Paste, the AI's Insert) was asked about as a
     // paste; where each of its lines would run as it lands, that is asked
@@ -1988,6 +2039,10 @@ const TerminalView = ({
         container.removeEventListener('pointerdown', onPointerDown, true);
         container.removeEventListener('contextmenu', onContextMenu);
         container.removeEventListener('paste', onPasteEvent, true);
+        container.removeEventListener('touchstart', onTouchStart, true);
+        container.removeEventListener('touchmove', onTouchMove, true);
+        container.removeEventListener('touchend', onTouchEnd, true);
+        container.removeEventListener('touchcancel', onTouchEnd, true);
       }
       document.removeEventListener('mouseup', onDocMouseUp, true);
       window.removeEventListener('blur', onWindowBlur);
