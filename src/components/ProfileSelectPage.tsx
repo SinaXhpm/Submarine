@@ -10,6 +10,7 @@ import { CloudConfigView, hostOf } from "./SyncServerSetting";
 import logoUrl from "../assets/logo.png";
 import { IS_ANDROID, IS_IOS, IS_MOBILE } from "../util/platform";
 import { PRIVACY_URL } from "../util/links";
+import { readUpdateBeta } from "../util/updateChannel";
 import { openFeedback } from "./Feedback";
 import { useTextPrompt, useConfirm } from "../ui/confirm";
 import { forgetProfileBookmarks } from "../util/sftpBookmarks";
@@ -295,7 +296,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
   // fetch+semver-compare happens in Rust (about::check_for_updates), and any
   // failure — offline, rate-limited, no releases — simply shows nothing.
   useEffect(() => {
-    invoke<UpdateInfo>("check_for_updates")
+    invoke<UpdateInfo>("check_for_updates", { includeBeta: readUpdateBeta() })
       .then((u) => { if (u.has_update && u.latest) setUpdate(u); })
       .catch(() => {});
   }, []);
@@ -325,7 +326,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     if (check === "checking") return;
     setCheck("checking");
     try {
-      const u = await invoke<UpdateInfo>("check_for_updates");
+      const u = await invoke<UpdateInfo>("check_for_updates", { includeBeta: readUpdateBeta() });
       if (u.has_update && u.latest) {
         setUpdate(u);
         setCheck("idle");

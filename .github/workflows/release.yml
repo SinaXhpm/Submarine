@@ -116,6 +116,9 @@ jobs:
           VERSION_STRICT="${VERSION%%-*}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "VERSION_STRICT=$VERSION_STRICT" >> "$GITHUB_ENV"
+          # The full version for the app itself (about.rs running_version), so a
+          # Windows build, stamped with VERSION_STRICT, still knows it is a beta.
+          echo "SUBMARINE_RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Resolved release version: $VERSION (strict: $VERSION_STRICT)"
 
       # Stamp the version into Cargo.toml and tauri.conf.json so the
