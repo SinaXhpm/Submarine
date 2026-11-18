@@ -95,13 +95,16 @@ fn product(repo: &Path) -> Product {
     let mut name = s(&conf["productName"]);
     let mut version = s(&conf["version"]);
     // The registry key the NSIS installer kept the install folder under:
-    // Software\<the identifier's second part>\<product> ("submarine"). It stays
-    // that key, so installs made with that one keep updating in place.
+    // Software\<the identifier's second part>\<product> ("submarine"; NSIS took
+    // that part because bundle.publisher was not set then). It stays that key,
+    // so installs made with that one keep updating in place.
     let mut manufacturer = identifier.split('.').nth(1).unwrap_or(&identifier).to_string();
-    // The publisher Settings > Apps shows, and the exe's company name.
+    // The publisher Settings > Apps shows and the exe's company name, picked
+    // the way Tauri picks it for the .msi and the app: bundle.publisher, else
+    // the identifier's second part.
     let publisher = match conf["bundle"]["publisher"].as_str() {
         Some(p) if !p.is_empty() => p.to_string(),
-        _ => "Sina Xhpm".to_string(),
+        _ => manufacturer.clone(),
     };
     // The exe's name: mainBinaryName, else the Cargo package's name.
     let main_exe = match conf["mainBinaryName"].as_str() {

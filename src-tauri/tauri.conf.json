@@ -30,6 +30,7 @@
     "active": true,
     "targets": "all",
     "homepage": "https://submarine.sinaxhpm.com",
+    "publisher": "Sina Xhpm",
     "copyright": "Copyright (c) Sina Xhpm. MIT License.",
     "license": "MIT",
     "category": "DeveloperTool",
