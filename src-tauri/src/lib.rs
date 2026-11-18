@@ -19334,15 +19334,30 @@ fi
 
 // Process list for the Processes tab. First line is a format tag the frontend
 // switches on. Prefer the procps `-eo` custom format (Linux); fall back to
-// BSD-style `ps aux` for busybox / minimal userlands. Sorting + capping happen
-// client-side so the probe stays a single cheap snapshot suitable for a ~1s
-// auto-refresh.
+// BSD-style `ps aux` for minimal userlands. BusyBox's own `ps` (OpenWrt and
+// other routers, #386) takes neither and prints only PID USER VSZ STAT COMMAND:
+// there CPU and memory come from /proc, in one awk over every process. %CPU is
+// the lifetime average, as procps' pcpu (utime+stime over the time since the
+// process started, in clock ticks of 100 a second); RSS is VmRSS (KiB), %MEM
+// that over MemTotal. Sorting + capping happen client-side so the probe stays
+// a single cheap snapshot suitable for a ~1s auto-refresh.
 const INFO_SCRIPT_PROCESSES: &str = r#"if ps -eo pid,user,pcpu,pmem,rss,comm >/dev/null 2>&1; then
   printf 'PSFMT:full\n'
   ps -eo pid,user,pcpu,pmem,rss,comm 2>/dev/null
 elif ps aux >/dev/null 2>&1; then
   printf 'PSFMT:aux\n'
   ps aux 2>/dev/null
+elif ps w >/dev/null 2>&1; then
+  printf 'PSFMT:busybox\n'
+  ps w 2>/dev/null
+  printf 'PSSTAT\n'
+  { echo "UP $(cut -d' ' -f1 /proc/uptime)"; grep '^MemTotal:' /proc/meminfo; cat /proc/[0-9]*/stat 2>/dev/null; grep -H '^VmRSS:' /proc/[0-9]*/status 2>/dev/null; } | awk -v hz=100 '
+    $1 == "UP" { up = $2; next }
+    $1 == "MemTotal:" { mt = $2; next }
+    /^\/proc\// { split($1, a, "/"); rss[a[3]] = $2; next }
+    /^[0-9]+ \(/ { pid = $1; l = $0; sub(/^.*\) /, "", l); split(l, f, " "); el = up - f[20] / hz; cpu[pid] = (el > 0) ? 100 * (f[12] + f[13]) / hz / el : 0 }
+    END { for (p in cpu) printf "%s %.1f %.1f %d\n", p, cpu[p], (mt > 0 ? 100 * rss[p] / mt : 0), rss[p] }
+  '
 else
   printf 'PSFMT:none\n'
   ps 2>/dev/null

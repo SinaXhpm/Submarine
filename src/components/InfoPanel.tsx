@@ -715,16 +715,33 @@ interface ProcRow {
   command: string;
 }
 // `PSFMT:full` → `ps -eo pid,user,pcpu,pmem,rss,comm`; `PSFMT:aux` → BSD-style
-// `ps aux` (busybox fallback). Both skip the header row and validate the PID.
+// `ps aux`; `PSFMT:busybox` → BusyBox's `ps w` (PID USER VSZ STAT COMMAND),
+// then a `PSSTAT` line and "pid %cpu %mem rssKiB" per process from /proc (the
+// backend's INFO_SCRIPT_PROCESSES). All skip the header row and validate the
+// PID.
 function parseProcesses(raw: string): { available: boolean; rows: ProcRow[] } {
   const trimmed = raw.trim();
   if (!trimmed) return { available: false, rows: [] };
   const nl = trimmed.indexOf("\n");
   const header = nl >= 0 ? trimmed.slice(0, nl).trim() : trimmed;
-  const m = header.match(/^PSFMT:(full|aux|none)$/);
+  const m = header.match(/^PSFMT:(full|aux|busybox|none)$/);
   const fmt = m ? m[1] : "unknown";
   if (fmt === "none" || fmt === "unknown") return { available: false, rows: [] };
-  const body = nl >= 0 ? trimmed.slice(nl + 1) : "";
+  let body = nl >= 0 ? trimmed.slice(nl + 1) : "";
+  // BusyBox: the figures from /proc, by PID, after the PSSTAT line.
+  const stats = new Map<string, { cpu: number; mem: number; rssKb: number }>();
+  if (fmt === "busybox") {
+    const at = body.search(/^PSSTAT\s*$/m);
+    if (at >= 0) {
+      for (const line of body.slice(at).split(/\r?\n/).slice(1)) {
+        const p = line.trim().split(/\s+/);
+        if (p.length === 4 && /^\d+$/.test(p[0])) {
+          stats.set(p[0], { cpu: parseFloat(p[1]) || 0, mem: parseFloat(p[2]) || 0, rssKb: parseInt(p[3], 10) || 0 });
+        }
+      }
+      body = body.slice(0, at);
+    }
+  }
   const rows: ProcRow[] = [];
   for (const line of body.split(/\r?\n/)) {
     const t = line.trim();
@@ -741,6 +758,19 @@ function parseProcesses(raw: string): { available: boolean; rows: ProcRow[] } {
         mem: parseFloat(parts[3]) || 0,
         rssKb: parseInt(parts[4], 10) || 0,
         command: parts.slice(5).join(" "),
+      });
+    } else if (fmt === "busybox") {
+      // pid user vsz stat command...
+      if (parts.length < 5) continue;
+      if (!/^\d+$/.test(parts[0])) continue;
+      const s = stats.get(parts[0]);
+      rows.push({
+        pid: parts[0],
+        user: parts[1],
+        cpu: s?.cpu ?? 0,
+        mem: s?.mem ?? 0,
+        rssKb: s?.rssKb ?? 0,
+        command: parts.slice(4).join(" "),
       });
     } else {
       // aux: user pid %cpu %mem vsz rss tty stat start time command...
