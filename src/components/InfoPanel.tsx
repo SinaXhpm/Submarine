@@ -545,8 +545,11 @@ function parseFirewall(section: string): FirewallData {
 // DNS resolvers, extracted from the section [4] blob (resolvectl / resolv.conf).
 // `servers` are the distinct configured resolvers; `stub` flags that the
 // systemd-resolved 127.0.0.53 loopback stub was present (real upstreams, when
-// resolvectl surfaced them, are listed instead of the stub).
+// resolvectl surfaced them, are listed instead of the stub). Another loopback
+// resolver is a server of its own, listed as it is: OpenWrt's dnsmasq at
+// 127.0.0.1 and ::1, or a local unbound.
 interface DnsData { servers: string[]; stub: boolean; }
+const isResolvedStub = (ip: string) => ip === "127.0.0.53" || ip === "127.0.0.54";
 function parseDns(section: string): DnsData {
   const trimmed = section.trim();
   if (!trimmed) return { servers: [], stub: false };
@@ -563,7 +566,6 @@ function parseDns(section: string): DnsData {
     /^(?:[0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$/.test(t) &&
     !/:::/.test(t) &&
     (t.includes("::") || (t.match(/:/g) || []).length >= 2);
-  const isLoopback = (ip: string) => ip.startsWith("127.") || ip === "::1";
   const seen = new Set<string>();
   const real: string[] = [];
   let stub = false;
@@ -571,7 +573,7 @@ function parseDns(section: string): DnsData {
     for (let tok of line.split(/[\s,]+/)) {
       tok = tok.replace(/[.,;]+$/, "").split("%")[0];
       if (!isV4(tok) && !isV6(tok)) continue;
-      if (isLoopback(tok)) { stub = true; continue; }
+      if (isResolvedStub(tok)) { stub = true; continue; }
       if (seen.has(tok)) continue;
       seen.add(tok);
       real.push(tok);
@@ -715,7 +717,8 @@ interface ProcRow {
   command: string;
 }
 // `PSFMT:full` → `ps -eo pid,user,pcpu,pmem,rss,comm`; `PSFMT:aux` → BSD-style
-// `ps aux`; `PSFMT:busybox` → BusyBox's `ps w` (PID USER VSZ STAT COMMAND),
+// `ps aux`; `PSFMT:busybox` → BusyBox's `ps w` (PID USER VSZ STAT COMMAND, or
+// PID USER TIME COMMAND where BusyBox is built with more of ps, as on Alpine),
 // then a `PSSTAT` line and "pid %cpu %mem rssKiB" per process from /proc (the
 // backend's INFO_SCRIPT_PROCESSES). All skip the header row and validate the
 // PID.
@@ -730,6 +733,9 @@ function parseProcesses(raw: string): { available: boolean; rows: ProcRow[] } {
   let body = nl >= 0 ? trimmed.slice(nl + 1) : "";
   // BusyBox: the figures from /proc, by PID, after the PSSTAT line.
   const stats = new Map<string, { cpu: number; mem: number; rssKb: number }>();
+  // Where BusyBox's COMMAND column starts: PID USER VSZ STAT COMMAND on
+  // OpenWrt, PID USER TIME COMMAND on Alpine. Its header says which.
+  let commandAt = 4;
   if (fmt === "busybox") {
     const at = body.search(/^PSSTAT\s*$/m);
     if (at >= 0) {
@@ -741,6 +747,9 @@ function parseProcesses(raw: string): { available: boolean; rows: ProcRow[] } {
       }
       body = body.slice(0, at);
     }
+    const head = body.split(/\r?\n/).map((l) => l.trim().split(/\s+/)).find((p) => p[0] === "PID");
+    const col = head ? head.indexOf("COMMAND") : -1;
+    if (col >= 2) commandAt = col;
   }
   const rows: ProcRow[] = [];
   for (const line of body.split(/\r?\n/)) {
@@ -760,8 +769,8 @@ function parseProcesses(raw: string): { available: boolean; rows: ProcRow[] } {
         command: parts.slice(5).join(" "),
       });
     } else if (fmt === "busybox") {
-      // pid user vsz stat command...
-      if (parts.length < 5) continue;
+      // pid user (vsz stat | time) command...
+      if (parts.length <= commandAt) continue;
       if (!/^\d+$/.test(parts[0])) continue;
       const s = stats.get(parts[0]);
       rows.push({
@@ -770,7 +779,7 @@ function parseProcesses(raw: string): { available: boolean; rows: ProcRow[] } {
         cpu: s?.cpu ?? 0,
         mem: s?.mem ?? 0,
         rssKb: s?.rssKb ?? 0,
-        command: parts.slice(4).join(" "),
+        command: parts.slice(commandAt).join(" "),
       });
     } else {
       // aux: user pid %cpu %mem vsz rss tty stat start time command...
@@ -802,19 +811,32 @@ function fmtKb(kb: number): string {
 
 interface ServiceRow {
   unit: string;
-  load: string;        // loaded | not-found | masked
-  active: string;      // active | inactive | failed | activating
-  sub: string;         // running | dead | exited | failed
+  load: string;        // loaded | not-found | masked (systemd only)
+  active: string;      // active | inactive | failed | activating; unknown (procd, not root)
+  sub: string;         // running | dead | exited | failed; enabled | disabled (OpenRC, procd)
   desc: string;
 }
-function parseServices(raw: string): { available: boolean; rows: ServiceRow[] } {
-  const m = raw.match(/^ENGINE:(systemd|none)\s*\n([\s\S]*)/);
-  if (!m || m[1] !== "systemd") return { available: false, rows: [] };
+// The service manager the probe found: the Services tab's actions go through it.
+type ServiceManager = "systemd" | "openrc" | "procd";
+interface ServicesData { available: boolean; manager: ServiceManager; rows: ServiceRow[] }
+// `ENGINE:systemd` → systemctl list-units lines (unit load active sub desc…).
+// `ENGINE:openrc` (Alpine) and `ENGINE:procd` (OpenWrt) → "name state boot":
+// the state already in systemd's words, `boot` enabled or disabled.
+function parseServices(raw: string): ServicesData {
+  const m = raw.match(/^ENGINE:(systemd|openrc|procd|none)\s*\n?([\s\S]*)/);
+  if (!m || m[1] === "none") return { available: false, manager: "systemd", rows: [] };
+  const manager = m[1] as ServiceManager;
   const body = m[2];
   const rows: ServiceRow[] = [];
   for (const line of body.split(/\r?\n/)) {
     const t = line.trim();
     if (!t) continue;
+    if (manager !== "systemd") {
+      const p = t.split(/\s+/);
+      if (p.length !== 3 || !/^[A-Za-z0-9._@-]+$/.test(p[0])) continue;
+      rows.push({ unit: p[0], load: "", active: p[1], sub: p[2], desc: "" });
+      continue;
+    }
     // `●` markers from systemctl status (we use --plain to drop them, but be safe).
     const cleaned = t.replace(/^[●○]\s*/, "");
     const parts = cleaned.split(/\s+/);
@@ -827,7 +849,7 @@ function parseServices(raw: string): { available: boolean; rows: ServiceRow[] } 
       desc: parts.slice(4).join(" "),
     });
   }
-  return { available: true, rows };
+  return { available: true, manager, rows };
 }
 
 // ---------- DOCKER ----------
@@ -878,7 +900,7 @@ const InfoPanel = ({ sessionId, disabled, visible = true, onOpenContainerTermina
   const [overview, setOverview] = useState<TabState<OverviewData>>(freshTab);
   const [network, setNetwork] = useState<TabState<NetworkData>>(freshTab);
   const [ports, setPorts] = useState<TabState<PortsData>>(freshTab);
-  const [services, setServices] = useState<TabState<{ available: boolean; rows: ServiceRow[] }>>(freshTab);
+  const [services, setServices] = useState<TabState<ServicesData>>(freshTab);
   // Docker tab has its own internal state (lives in DockerTab.tsx) so we
   // don't allocate a TabState here. The umbrella InfoPanel just renders
   // the component; its lazy fetch ladder runs independently.
@@ -1260,13 +1282,13 @@ const NetworkTab = ({ sessionId, data }: { sessionId: string; data: NetworkData 
                 <span className="text-zinc-200 truncate min-w-0 flex-1">
                   <CopyValue value={s}>{s}</CopyValue>
                 </span>
-                {data.dns.stub && s.startsWith("127.") && (
+                {data.dns.stub && isResolvedStub(s) && (
                   <span className="text-[9px] uppercase tracking-wider text-amber-400/80 shrink-0">{t("stub")}</span>
                 )}
               </div>
             ))}
           </div>
-          {data.dns.stub && data.dns.servers.some(s => !s.startsWith("127.")) && (
+          {data.dns.stub && data.dns.servers.some(s => !isResolvedStub(s)) && (
             <div className="text-[10px] text-zinc-500 italic mt-2 px-1">
               {t("Resolved through the local systemd-resolved stub (127.0.0.53).")}
             </div>
@@ -1859,7 +1881,7 @@ const ProcessesTab = ({ sessionId, disabled, visible = true }: { sessionId: stri
   );
 };
 
-const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: { available: boolean; rows: ServiceRow[] }; onRefresh: () => void }) => {
+const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: ServicesData; onRefresh: () => void }) => {
   const t = useT();
   const [filter, setFilter] = useState("");
   const [stateFilter, setStateFilter] = useState<"all" | "active" | "inactive" | "failed">("active");
@@ -1917,7 +1939,7 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
   if (!data.available) {
     return (
       <BannerIcon tone="amber" icon={<AlertTriangle size={14} />}>
-        {tx("{systemctl} not available. This server likely uses a different init system (e.g. OpenRC, runit).", { systemctl: <code className="font-mono px-1">systemctl</code> })}
+        {t("This server has none of the service managers the app works with: systemd, OpenRC or OpenWrt's init scripts. It likely uses another init system, such as runit.")}
       </BannerIcon>
     );
   }
@@ -1935,7 +1957,7 @@ const ServicesTab = ({ sessionId, data, onRefresh }: { sessionId: string; data: 
     setBusy(b => ({ ...b, [unit]: true }));
     setLastResult(r => ({ ...r, [unit]: undefined }));
     try {
-      const r = await invoke<SystemctlResult>("ssh_systemctl_action", { sessionId, unit, action });
+      const r = await invoke<SystemctlResult>("ssh_systemctl_action", { sessionId, unit, action, manager: data.manager });
       setLastResult(prev => ({
         ...prev,
         [unit]: {
