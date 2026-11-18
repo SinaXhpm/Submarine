@@ -1,7 +1,8 @@
 # dmgbuild settings for the window of the GitHub download's DMG. apple.yml
 # (mac-build) runs it from the repository's root, around an empty Submarine.app:
-#   dmgbuild -s packaging/macos/dmg-settings.py -D app=<Submarine.app> -D size=<n>m Submarine <out.dmg>
-# and mac-sign puts the signed app in that Submarine.app's place.
+#   dmgbuild -s packaging/macos/dmg-settings.py -D app=<Submarine.app> Submarine <out.dmg>
+# and mac-sign makes room in the image and puts the signed app in that
+# Submarine.app's place.
 #
 # The window is 660 x 400 points. dmg-background.png and its @2x (rendered from
 # dmg-background.svg; dmgbuild merges the two into one Retina TIFF) are drawn for
@@ -16,7 +17,6 @@ symlinks = {"Applications": "/Applications"}
 icon_locations = {os.path.basename(app.rstrip("/")): (170, 172), "Applications": (490, 172)}
 background = "packaging/macos/dmg-background.png"
 icon = "src-tauri/icons/icon.icns"
-size = defines.get("size")
 format = "UDZO"
 window_rect = ((200, 120), (660, 400))
 icon_size = 128

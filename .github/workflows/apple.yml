@@ -373,12 +373,8 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/dmgbuild"
           "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet --no-deps --only-binary :all: --require-hashes -r packaging/macos/dmg-requirements.txt
           mkdir -p "$RUNNER_TEMP/dmg-app/Submarine.app"
-          # Room for the signed app: its size and a fifth more (hdiutil's own
-          # guess came out too small for v0.5.0-beta.1).
-          APP_MB=$(du -sm src-tauri/target/universal-apple-darwin/release/bundle/macos/Submarine.app | cut -f1)
           "$RUNNER_TEMP/dmgbuild/bin/dmgbuild" -s packaging/macos/dmg-settings.py \
-            -D app="$RUNNER_TEMP/dmg-app/Submarine.app" -D size="$(( APP_MB * 12 / 10 + 20 ))m" \
-            Submarine mac-dmg-window.dmg
+            -D app="$RUNNER_TEMP/dmg-app/Submarine.app" Submarine mac-dmg-window.dmg
 
       - name: Upload the DMG window
         if: matrix.variant == 'direct'
@@ -454,6 +450,10 @@ jobs:
           RW="$RUNNER_TEMP/dmg-rw.dmg"
           MNT="$RUNNER_TEMP/dmg-mnt"
           hdiutil convert dmg-window/mac-dmg-window.dmg -format UDRW -o "$RW"
+          # dmgbuild leaves the image no bigger than what it holds: room for the
+          # app, its size and a fifth more (hdiutil's own guess came out too
+          # small for v0.5.0-beta.1), and back to the smallest size further down.
+          hdiutil resize -size "$(( $(du -sm "$APP" | cut -f1) * 12 / 10 + 20 ))m" "$RW"
           mkdir -p "$MNT"
           hdiutil attach "$RW" -nobrowse -noautoopen -mountpoint "$MNT"
           # Only the window's own files and the two icons go out with the app
@@ -470,6 +470,7 @@ jobs:
           if [ "$SIGNED" = true ]; then codesign --verify --strict --verbose=2 "$MNT/Submarine.app"; fi
           for d in "${OS_DIRS[@]}"; do rm -rf "${MNT:?}/$d"; done
           hdiutil detach "$MNT"
+          hdiutil resize -sectors min "$RW"
           hdiutil convert "$RW" -format UDZO -o "$DMG"
 
           if [ "$SIGNED" = true ]; then
