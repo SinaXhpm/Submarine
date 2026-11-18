@@ -5,6 +5,7 @@ import { Play, RefreshCw, Search, X, Terminal, StickyNote, ClipboardCopy, Chevro
 import { useConfirm } from "../ui/confirm";
 import { writeToTerminal } from "../util/pasteText";
 import SecretTextarea from "./SecretTextarea";
+import { splitTags, tagKey, tagsProblem } from "../util/commandTags";
 import { serverRowChanged } from "../util/serverJson";
 import { useT } from "../i18n";
 
@@ -248,6 +249,9 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
     const o = originalForEdit(target);
     const secretChanged = !o || o.is_secret !== target.is_secret || (o.tags || "") !== target.tags;
     if (secretChanged) {
+      // In the user's language, before the backend refuses them in English.
+      const problem = tagsProblem(target.tags);
+      if (problem) throw problem;
       await invoke("set_command_secret_tags", { id: target.id, isSecret: target.is_secret, tags: target.tags || null });
     }
     await invoke("edit_command", { id: target.id, title: target.title, content: target.body });
@@ -308,11 +312,10 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
 
   const q = searchQuery.toLowerCase();
   // Distinct tags across all loaded commands, for the filter chips below.
-  // Tags are normalised at save time (case-insensitive dedupe), so the
-  // stored spellings are already unique per tag.
-  const allTags = Array.from(
-    new Set(commands.flatMap((c) => (c.tags || "").split(",").map((tag) => tag.trim()).filter(Boolean)))
-  ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  // Each command's tags are unique (normalize_command_tags), but two
+  // commands can spell one tag differently ("Docker", "docker"): one chip.
+  const allTags = splitTags(commands.map((c) => c.tags || "").join(","))
+    .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
   const hasSecrets = commands.some((c) => !!c.is_secret);
   // A filter whose chip is gone (its tag was renamed away, or the last
   // secret was unmarked) would leave an empty list with no way back.
@@ -328,7 +331,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
   // (quick connect) shows those for every server.
   const matching = commands.filter((c) => {
     const matchesQuery = c.title.toLowerCase().includes(q) || c.content.toLowerCase().includes(q) || (c.tags || "").toLowerCase().includes(q);
-    const matchesTag = !selectedTag || (c.tags || "").split(",").map((tag) => tag.trim().toLowerCase()).includes(selectedTag.toLowerCase());
+    const matchesTag = !selectedTag || splitTags(c.tags).some((tag) => tagKey(tag) === tagKey(selectedTag));
     const matchesSecret = !secretsOnly || !!c.is_secret;
     return matchesQuery && matchesTag && matchesSecret;
   });
@@ -367,7 +370,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
             if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
             if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); saveEdit(); }
           }}
-          placeholder={t("Secret command — masked, eye toggle to reveal")}
+          placeholder={t("Secret command — it runs in the shell and stays in its history")}
           rows={5}
           className="w-full p-2 bg-black/40 border border-white/10 rounded font-mono text-[11px] text-zinc-200 placeholder-zinc-600 leading-relaxed resize-y focus:outline-none focus:border-primary/50 custom-scrollbar"
         />
@@ -385,13 +388,17 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
         />
       )}
       <div className="flex items-center gap-2">
+        {/* A toggle: its name stays "Secret", and aria-pressed says
+            whether it is on (a label that turned into "Standard" left it
+            unclear what a press would do). */}
         <button
           type="button"
+          aria-pressed={target.is_secret}
           onClick={() => setEdit({ ...target, is_secret: !target.is_secret })}
           className={`flex items-center gap-1.5 h-10 sm:h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-all ${target.is_secret ? "bg-amber-500/10 text-amber-300 border-amber-500/30" : "bg-white/[0.04] text-zinc-400 border-white/10 hover:text-white"}`}
           title={t("Secret commands are masked in the list")}
         >
-          <Lock size={11} /> {target.is_secret ? t("Secret") : t("Standard")}
+          <Lock size={11} /> {t("Secret")}
         </button>
         <input
           type="text"
@@ -574,6 +581,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
             <div className="flex gap-1.5 mt-2 overflow-x-auto no-scrollbar">
               <button
                 type="button"
+                aria-pressed={!selectedTag && !secretsOnly}
                 onClick={() => { setSelectedTag(null); setSecretsOnly(false); }}
                 className={`shrink-0 h-6 px-2.5 rounded-full border text-[10px] font-bold transition-all ${!selectedTag && !secretsOnly ? "bg-primary/15 text-primary border-primary/40" : "bg-white/5 border-white/10 text-zinc-400 hover:text-white"}`}
               >
@@ -582,6 +590,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
               {hasSecrets && (
                 <button
                   type="button"
+                  aria-pressed={secretsOnly}
                   onClick={() => setSecretsOnly((s) => !s)}
                   className={`shrink-0 h-6 px-2.5 rounded-full border text-[10px] font-bold transition-all flex items-center gap-1 ${secretsOnly ? "bg-amber-500/15 text-amber-300 border-amber-500/40" : "bg-white/5 border-white/10 text-zinc-400 hover:text-white"}`}
                 >
@@ -592,6 +601,7 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                 <button
                   key={tag}
                   type="button"
+                  aria-pressed={selectedTag === tag}
                   onClick={() => setSelectedTag((prev) => (prev === tag ? null : tag))}
                   className={`shrink-0 h-6 px-2.5 rounded-full border text-[10px] font-bold transition-all flex items-center gap-1 ${selectedTag === tag ? "bg-primary/15 text-primary border-primary/40" : "bg-white/5 border-white/10 text-zinc-400 hover:text-white"}`}
                 >
@@ -682,13 +692,13 @@ export const CmdsPanel = ({ activeTab, onClose, headerActions, serverId, serverN
                           </h4>
                           <pre
                             className="mt-1.5 p-1.5 px-2 bg-black/40 rounded border border-white/5 font-mono text-[10px] text-zinc-400 truncate whitespace-nowrap overflow-hidden"
-                            title={c.is_secret ? t("Secret command — content hidden") : c.content}
+                            title={c.is_secret ? t("Secret command — its content is hidden.") : c.content}
                           >
                             {c.is_secret ? "••••••" : <>{c.content.split('\n')[0] || ""}{c.content.split('\n').length > 1 ? " ..." : ""}</>}
                           </pre>
                           {c.tags && (
                             <div className="mt-1.5 flex flex-wrap gap-1">
-                              {c.tags.split(",").map((tag) => tag.trim()).filter(Boolean).map((tag) => (
+                              {splitTags(c.tags).map((tag) => (
                                 <span key={tag} className="inline-flex items-center gap-0.5 h-4 px-1.5 rounded-full bg-white/5 border border-white/10 text-[9px] font-semibold text-zinc-400">
                                   <Tag size={8} /> {tag}
                                 </span>

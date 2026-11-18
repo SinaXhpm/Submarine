@@ -15,6 +15,7 @@ import ProfileSelectPage from "./components/ProfileSelectPage";
 import logoUrl from "./assets/logo.png";
 import PasswordField from "./components/PasswordField";
 import SecretTextarea from "./components/SecretTextarea";
+import { splitTags, tagsProblem } from "./util/commandTags";
 import QuickConnectModal, { QuickAuth } from "./components/QuickConnectModal";
 import { useConfirm, useTextPrompt } from "./ui/confirm";
 import { useSlideOverFocus } from "./ui/slideOverFocus";
@@ -1450,6 +1451,12 @@ function DesktopApp() {
     const scope = editCommandData.scope;
     if (scope && !scope.servers.length && !scope.folders.length) {
       setFormError(t("Tick at least one server or folder, or choose All servers."));
+      return;
+    }
+    // In the user's language, before the backend refuses them in English.
+    const tagsWrong = tagsProblem(editCommandData.tags);
+    if (tagsWrong) {
+      setFormError(tagsWrong);
       return;
     }
     try {
@@ -3350,7 +3357,7 @@ function DesktopApp() {
                             </div>
                             {cmd.tags && (
                               <div className="mt-2 flex flex-wrap gap-1">
-                                {cmd.tags.split(",").map((tag: string) => tag.trim()).filter(Boolean).map((tag: string) => (
+                                {splitTags(cmd.tags).map((tag) => (
                                   <span key={tag} className="inline-flex items-center gap-0.5 h-4 px-1.5 rounded-full bg-white/5 border border-white/10 text-[9px] font-semibold text-zinc-400">
                                     <Tag size={8} /> {tag}
                                   </span>
@@ -3744,6 +3751,7 @@ function DesktopApp() {
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
+                aria-pressed={!editCommandData.is_secret}
                 onClick={() => setEditCommandData({ ...editCommandData, is_secret: false })}
                 className={`h-10 rounded-lg border text-[12px] font-bold flex items-center justify-center gap-1.5 transition-all ${!editCommandData.is_secret ? "bg-primary/15 text-primary border-primary/40" : "bg-black border-white/10 text-zinc-400 hover:text-white"}`}
               >
@@ -3751,6 +3759,7 @@ function DesktopApp() {
               </button>
               <button
                 type="button"
+                aria-pressed={editCommandData.is_secret}
                 onClick={() => setEditCommandData({ ...editCommandData, is_secret: true })}
                 className={`h-10 rounded-lg border text-[12px] font-bold flex items-center justify-center gap-1.5 transition-all ${editCommandData.is_secret ? "bg-amber-500/15 text-amber-300 border-amber-500/40" : "bg-black border-white/10 text-zinc-400 hover:text-white"}`}
                 title={t("Secret commands are masked in the list")}
