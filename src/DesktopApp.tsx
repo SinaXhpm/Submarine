@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -14,7 +14,8 @@ import { useBroadcast } from "./ui/broadcast";
 import ProfileSelectPage from "./components/ProfileSelectPage";
 import logoUrl from "./assets/logo.png";
 import PasswordField from "./components/PasswordField";
-import QuickConnectModal, { QuickAuth } from "./components/QuickConnectModal";
+import type { QuickAuth } from "./components/QuickConnectModal";
+import { fromWorkspace, loadWorkspace, workspaceNow } from "./workspaceLoader";
 import { useConfirm, useTextPrompt } from "./ui/confirm";
 import { useSlideOverFocus } from "./ui/slideOverFocus";
 import { RenameInput } from "./ui/renameInput";
@@ -35,27 +36,13 @@ import { USE_SSH_CONFIG_KEY, readUseSshConfig } from "./util/sshConfig";
 import { DEFAULT_RDP_OPTIONS, forgetRdpOptions, readRdpOptions, writeRdpOptions } from "./util/rdpOptions";
 import { DEFAULT_VNC_OPTIONS, forgetVncOptions, readVncOptions, writeVncOptions } from "./util/vncOptions";
 import { Sidebar } from "./components/Sidebar";
-import { NodeGrid } from "./components/NodeGrid";
 import { OpenServerMenu } from "./components/OpenServerMenu";
 import { accentOf } from "./util/serverLook";
 import { folderTree } from "./util/folderTree";
 import { CommandScope, describeScope, parseCommandScope, scopeToJson } from "./util/commandScope";
 import CommandScopePicker from "./components/CommandScopePicker";
 import type { HeldDeletion } from "./components/HeldDeletions";
-import AddNodePanel from "./components/AddNodePanel";
-import TerminalView from "./components/TerminalView";
-import SettingsPanel from "./components/SettingsPanel";
-import ProfilePanel from "./components/ProfilePanel";
-import { SessionView } from "./components/SessionView";
-import RdpSessionView from "./components/RdpSessionView";
-import TelnetSessionView from "./components/TelnetSessionView";
-import FtpSessionView from "./components/FtpSessionView";
 import { isFtp, serverProtocol, type ServerProtocol } from "./util/serverProtocol";
-import VncSessionView from "./components/VncSessionView";
-import MonitoringPanel from "./components/MonitoringPanel";
-import { AiPage } from "./components/ai/AiPage";
-import { AgentsPanel } from "./components/agents/AgentsPanel";
-import { clearUrlCache } from "./components/ai/markdownParse";
 import { ai, errText, AI_OPEN_EVENT, AI_OPEN_SERVER_EVENT, type AiOpenServerDetail } from "./util/aiApi";
 import { clearAiFocus, clearFeeds, requestAiFocus } from "./util/aiEvents";
 import { ErrorBoundary, Guarded } from "./ui/ErrorBoundary";
@@ -63,6 +50,23 @@ import { FormError, unsavedQuestion, useUnsavedGuard } from "./ui/slideOverForm"
 import { normalizeMirror, normalizeTunnel, parseObjectList } from "./util/serverJson";
 import { tk, tn, tx, useT } from "./i18n";
 import { joinSentences } from "./util/sentences";
+
+// The unlocked app is a chunk of its own (workspace.ts); these stand in for its
+// components and render them directly once it is loaded.
+const QuickConnectModal = fromWorkspace("QuickConnectModal");
+const NodeGrid = fromWorkspace("NodeGrid");
+const AddNodePanel = fromWorkspace("AddNodePanel");
+const TerminalView = fromWorkspace("TerminalView");
+const SettingsPanel = fromWorkspace("SettingsPanel");
+const ProfilePanel = fromWorkspace("ProfilePanel");
+const SessionView = fromWorkspace("SessionView");
+const RdpSessionView = fromWorkspace("RdpSessionView");
+const TelnetSessionView = fromWorkspace("TelnetSessionView");
+const FtpSessionView = fromWorkspace("FtpSessionView");
+const VncSessionView = fromWorkspace("VncSessionView");
+const MonitoringPanel = fromWorkspace("MonitoringPanel");
+const AiPage = fromWorkspace("AiPage");
+const AgentsPanel = fromWorkspace("AgentsPanel");
 
 const appWindow = getCurrentWindow();
 
@@ -1047,6 +1051,23 @@ function DesktopApp() {
 
   const confirm = useConfirm();
   const textPrompt = useTextPrompt();
+  // The unlocked app's chunk (workspace.ts): fetched once the picker is up
+  // and the page is idle, so it is in by the time a password is typed. The
+  // slide-overs that stay mounted render once it is in (`workspaceIn`, also
+  // when it came in another way, after a load here failed).
+  const [workspaceReady, setWorkspaceReady] = useState(() => workspaceNow() !== null);
+  useEffect(() => {
+    let alive = true;
+    const go = () => { loadWorkspace().then(() => { if (alive) setWorkspaceReady(true); }, () => {}); };
+    // Safari's WebView (iOS) has no requestIdleCallback.
+    const idle = typeof window.requestIdleCallback === "function";
+    const id = idle ? window.requestIdleCallback(go, { timeout: 1500 }) : window.setTimeout(go, 300);
+    return () => {
+      alive = false;
+      if (idle) window.cancelIdleCallback(id); else window.clearTimeout(id);
+    };
+  }, []);
+  const workspaceIn = workspaceReady || workspaceNow() !== null;
 
   // A shared profile's grant changed while sharing was locked, so the sync
   // can't tell whether its key did: unlock sharing, and sync, which opens the
@@ -1209,7 +1230,7 @@ function DesktopApp() {
     // still streaming checks its links again.
     clearAiFocus();
     clearFeeds();
-    clearUrlCache();
+    workspaceNow()?.clearUrlCache();
     // Reset all client state so the picker starts fresh — no stale
     // servers/credentials/sessions leaking across profile contexts.
     setIsUnlocked(false);
@@ -2518,6 +2539,7 @@ function DesktopApp() {
         // renders at the bottom while staying first in DOM order — keyboard
         // tab-order stays intuitive and <main> grabs the full screen width
         // (terminal gains the ~50px the vertical rail used to eat).
+        <Suspense fallback={null}>
         <div inert={overlayOpen ? "" : undefined} className={`flex-1 flex ${isMobile ? 'flex-col-reverse' : ''} overflow-hidden pt-10`}>
           <Sidebar activeTab={activeView.startsWith('session-') ? 'nodes' : activeView} setActiveTab={setActiveView} isMobile={isMobile} onLogout={handleLogout} profileName={activeProfile} syncing={cloudSyncing} agentsOn={agentsState.enabled} agentsWaiting={agentsState.waiting} />
 
@@ -3477,8 +3499,10 @@ function DesktopApp() {
 
           </main>
         </div>
+        </Suspense>
       )}
 
+      {workspaceIn && (
       <ErrorBoundary overlay label={t("Server form")} onReset={() => { setIsPanelOpen(false); setFormError(""); }}>
       <AddNodePanel
         isOpen={isPanelOpen} onClose={() => { setIsPanelOpen(false); setFormError(""); }}
@@ -3670,7 +3694,9 @@ function DesktopApp() {
         isMobile={isMobile}
       />
       </ErrorBoundary>
+      )}
 
+      {workspaceIn && (
       <ErrorBoundary overlay label={t("Quick connect")} onReset={() => setIsQuickConnectOpen(false)}>
         <QuickConnectModal
           isOpen={isQuickConnectOpen}
@@ -3678,6 +3704,7 @@ function DesktopApp() {
           onConnect={openQuickConnect}
         />
       </ErrorBoundary>
+      )}
 
 
       {/* The slide-overs stay mounted while closed (to slide out): inert
