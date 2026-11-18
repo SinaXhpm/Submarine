@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "xterm";
+import { disposeTerminal } from "../../util/xtermDispose";
 import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
 import { DEFAULT_FONT_STACK, readFontSize } from "../../util/terminalFont";
@@ -290,7 +291,7 @@ export const AiTerminal = ({ feed, active, onStop }: Props) => {
       offChat();
       ro.disconnect();
       input.dispose();
-      term.dispose();
+      disposeTerminal(term);
       termRef.current = null;
     };
   }, [feed]);

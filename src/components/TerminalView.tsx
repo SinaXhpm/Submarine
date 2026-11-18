@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from 'xterm';
+import { disposeTerminal } from '../util/xtermDispose';
 import { FitAddon } from 'xterm-addon-fit';
 import { SearchAddon, ISearchOptions } from 'xterm-addon-search';
 import { invoke } from '@tauri-apps/api/core';
@@ -2054,7 +2055,7 @@ const TerminalView = ({
       unlistenPromise.then(unlisten => unlisten());
       searchAddon.dispose();
       searchAddonRef.current = null;
-      term.dispose();
+      disposeTerminal(term);
       // Only the PTY owner tears the backend PTY down on unmount.
       // Attach-only viewers unmount without closing so the primary
       // xterm (in the session tab) keeps working.
