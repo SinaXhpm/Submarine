@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="493" height="58" viewBox="0 0 493 58">
+  <!-- The .msi's other pages: a 493 x 58 banner. Windows Installer writes the
+       page's title and description in black over its left part. -->
+  <defs>
+    <radialGradient id="glow"><stop offset="0" stop-color="#22d3ee" stop-opacity=".16"/><stop offset="1" stop-color="#3b82f6" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="493" height="58" fill="#ffffff"/>
+  <ellipse cx="458" cy="29" rx="52" ry="34" fill="url(#glow)"/>
+  <image x="436" y="7" width="44" height="44" href="../../../src-tauri/icons/128x128@2x.png" xlink:href="../../../src-tauri/icons/128x128@2x.png"/>
+</svg>

@@ -42,6 +42,12 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "wix": {
+        "bannerPath": "../packaging/windows/msi/banner.bmp",
+        "dialogImagePath": "../packaging/windows/msi/dialog.bmp"
+      }
+    }
   }
 }
