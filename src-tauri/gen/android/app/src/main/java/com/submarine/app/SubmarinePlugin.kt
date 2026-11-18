@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
@@ -202,6 +203,19 @@ class SubmarinePlugin(private val activity: Activity) : Plugin(activity) {
         invoke.reject(e.message ?: "The clipboard can't be written")
       }
     }
+  }
+
+  // Whether a hardware keyboard is in use: a keyboard cover, or a USB or
+  // Bluetooth keyboard. A new terminal takes the focus then (TerminalView),
+  // since no on-screen keyboard comes up over the screen. The activity
+  // handles keyboard changes itself (configChanges), so its configuration
+  // is current when the page asks.
+  @Command
+  fun hardwareKeyboard(invoke: Invoke) {
+    val c = activity.resources.configuration
+    val attached = c.keyboard != Configuration.KEYBOARD_NOKEYS &&
+      c.hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO
+    invoke.resolve(JSObject().apply { put("attached", attached) })
   }
 
   // The keep-alive service runs while a connection is open: the Rust side

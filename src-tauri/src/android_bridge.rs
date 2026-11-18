@@ -163,6 +163,20 @@ pub async fn clipboard_write(app: &AppHandle, text: &str) -> Result<(), String> 
         .map_err(|e| format!("Couldn't copy: {}", e))
 }
 
+#[derive(Deserialize)]
+struct HardwareKeyboard {
+    attached: bool,
+}
+
+/// Whether a hardware keyboard is in use (lib.rs `hardware_keyboard_attached`).
+pub async fn hardware_keyboard(app: &AppHandle) -> Result<bool, String> {
+    bridge(app)?
+        .run_mobile_plugin_async::<HardwareKeyboard>("hardwareKeyboard", ())
+        .await
+        .map(|r| r.attached)
+        .map_err(|e| e.to_string())
+}
+
 /// A call for quick unlock (quick_unlock.rs): the Keystore key behind
 /// BiometricPrompt. The error is the plugin's own ("CANCELLED", "KEY_GONE",
 /// …), which quick_unlock reads.
