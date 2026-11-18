@@ -360,6 +360,34 @@ jobs:
           path: mac-unsigned-${{ matrix.variant }}.zip
           if-no-files-found: error
 
+      # The DMG's window (packaging/macos/dmg-settings.py): the background, the
+      # icons' places and the volume icon, laid out by dmgbuild around an empty
+      # Submarine.app. dmgbuild comes from PyPI, so it runs here, without
+      # secrets, after the app is uploaded; mac-sign puts the signed app in the
+      # empty one's place with Apple's tools only.
+      - name: DMG window
+        if: matrix.variant == 'direct'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet --no-deps --only-binary :all: --require-hashes -r packaging/macos/dmg-requirements.txt
+          mkdir -p "$RUNNER_TEMP/dmg-app/Submarine.app"
+          # Room for the signed app: its size and a fifth more (hdiutil's own
+          # guess came out too small for v0.5.0-beta.1).
+          APP_MB=$(du -sm src-tauri/target/universal-apple-darwin/release/bundle/macos/Submarine.app | cut -f1)
+          "$RUNNER_TEMP/dmgbuild/bin/dmgbuild" -s packaging/macos/dmg-settings.py \
+            -D app="$RUNNER_TEMP/dmg-app/Submarine.app" -D size="$(( APP_MB * 12 / 10 + 20 ))m" \
+            Submarine mac-dmg-window.dmg
+
+      - name: Upload the DMG window
+        if: matrix.variant == 'direct'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mac-dmg-window
+          path: mac-dmg-window.dmg
+          if-no-files-found: error
+
   # The GitHub download: Developer ID signature, a DMG, notarization. Without
   # the Developer ID certificate it ships unsigned, as before.
   mac-sign:
@@ -371,6 +399,12 @@ jobs:
         with:
           name: mac-unsigned-direct
           path: unsigned
+
+      - name: Download the DMG window
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mac-dmg-window
+          path: dmg-window
 
       - name: Sign, package and notarize
         shell: bash
@@ -412,16 +446,31 @@ jobs:
             echo "::warning::No Developer ID certificate (DEVELOPER_ID_P12): the macOS download stays unsigned."
           fi
 
-          # The DMG: the app and a link to Applications to drag it onto.
-          mkdir -p dmg-root artifacts
-          cp -R "$APP" dmg-root/
-          ln -s /Applications dmg-root/Applications
+          # The DMG: the window mac-build laid out (the background, the icons'
+          # places, the volume icon and a link to Applications to drag the app
+          # onto), with the signed app in place of its empty Submarine.app.
+          mkdir -p artifacts
           DMG="artifacts/Submarine_${VERSION}_universal.dmg"
-          # hdiutil sizes the image from the folder by itself, and for this app
-          # that came out too small ("No space left on device", v0.5.0-beta.1):
-          # it gets the folder's size and a fifth more.
-          SIZE_MB=$(( $(du -sm dmg-root | cut -f1) * 12 / 10 + 20 ))
-          hdiutil create -volname Submarine -srcfolder dmg-root -ov -format UDZO -size "${SIZE_MB}m" "$DMG"
+          RW="$RUNNER_TEMP/dmg-rw.dmg"
+          MNT="$RUNNER_TEMP/dmg-mnt"
+          hdiutil convert dmg-window/mac-dmg-window.dmg -format UDRW -o "$RW"
+          mkdir -p "$MNT"
+          hdiutil attach "$RW" -nobrowse -noautoopen -mountpoint "$MNT"
+          # Only the window's own files and the two icons go out with the app
+          # (and none of the folders macOS keeps on a volume it mounts).
+          OS_DIRS=(.fseventsd .Trashes .Spotlight-V100 .DocumentRevisions-V100 .TemporaryItems)
+          for d in "${OS_DIRS[@]}"; do rm -rf "${MNT:?}/$d"; done
+          FOUND="$(cd "$MNT" && ls -A | LC_ALL=C sort | tr '\n' ' ')"
+          [ "$FOUND" = ".DS_Store .VolumeIcon.icns .background.tiff Applications Submarine.app " ] ||
+            { echo "::error::Unexpected files in the DMG window: $FOUND"; exit 1; }
+          [ "$(readlink "$MNT/Applications")" = /Applications ] || { echo "::error::Applications does not link to /Applications"; exit 1; }
+          [ -z "$(ls -A "$MNT/Submarine.app")" ] || { echo "::error::The DMG window's Submarine.app is not empty"; exit 1; }
+          rm -rf "$MNT/Submarine.app"
+          ditto "$APP" "$MNT/Submarine.app"
+          if [ "$SIGNED" = true ]; then codesign --verify --strict --verbose=2 "$MNT/Submarine.app"; fi
+          for d in "${OS_DIRS[@]}"; do rm -rf "${MNT:?}/$d"; done
+          hdiutil detach "$MNT"
+          hdiutil convert "$RW" -format UDZO -o "$DMG"
 
           if [ "$SIGNED" = true ]; then
             codesign --force --timestamp --sign "$ID" --keychain "$KC" "$DMG"
@@ -445,6 +494,48 @@ jobs:
         with:
           name: submarine-macos
           path: artifacts/*
+          if-no-files-found: error
+
+  # Test runs only (no upload): the DMG's window as Finder draws it, in Light
+  # and in Dark, as pictures in the artifact mac-dmg-pictures.
+  mac-dmg-pictures:
+    needs: mac-sign
+    if: ${{ !inputs.upload }}
+    runs-on: macos-latest
+    steps:
+      - name: Download the DMG
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: submarine-macos
+          path: mac
+
+      - name: Open it and take pictures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pictures
+          DMG="$(ls mac/*.dmg | head -1)"
+          MNT="$(hdiutil attach "$DMG" -noautoopen | awk -F'\t' '/\/Volumes\//{print $NF}' | tail -1)"
+          [ -d "$MNT" ] || { echo "::error::The DMG did not mount"; exit 1; }
+          ls -la "$MNT"
+          codesign --verify --strict --verbose=2 "$MNT/Submarine.app" || echo "::warning::The app in the DMG is not signed"
+          appearance() { osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $1" || echo "::warning::Could not set dark mode to $1"; }
+          appearance false
+          open "$MNT"
+          sleep 8
+          screencapture -x pictures/light.png
+          appearance true
+          sleep 5
+          screencapture -x pictures/dark.png
+          appearance false
+          osascript -e 'tell application "Finder" to get bounds of front window' > pictures/window-bounds.txt 2>&1 || true
+          hdiutil detach "$MNT" || hdiutil detach -force "$MNT"
+
+      - name: Upload the pictures
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mac-dmg-pictures
+          path: pictures/*
           if-no-files-found: error
 
   # The Mac App Store build: sandboxed, signed for the store, packaged and

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="400" viewBox="0 0 660 400">
+  <!-- Submarine's DMG window: 660 x 400 points, with dmgbuild's settings in
+       dmg-settings.py (the icons at (170, 172) and (490, 172), 128 points).
+       Finder draws the icons and their names over it; it draws the names in
+       black in Light and Dark alike, so they sit on the two light plates. -->
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="660" y2="0" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#22d3ee"/><stop offset=".55" stop-color="#3b82f6"/><stop offset="1" stop-color="#a855f7"/>
+  </linearGradient>
+    <radialGradient id="skyTop"><stop offset="0" stop-color="#22d3ee" stop-opacity=".09"/><stop offset=".7" stop-color="#22d3ee" stop-opacity="0"/></radialGradient>
+    <radialGradient id="skyLow"><stop offset="0" stop-color="#3b82f6" stop-opacity=".12"/><stop offset=".7" stop-color="#3b82f6" stop-opacity="0"/></radialGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#22d3ee" stop-opacity=".2"/><stop offset=".55" stop-color="#3b82f6" stop-opacity=".1"/><stop offset="1" stop-color="#3b82f6" stop-opacity="0"/></radialGradient>
+    <linearGradient id="arrow" x1="252" y1="0" x2="408" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22d3ee"/><stop offset=".55" stop-color="#3b82f6"/><stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <rect width="660" height="400" fill="#0a0a0c"/>
+  <ellipse cx="330" cy="120" rx="300" ry="150" fill="url(#skyTop)"/>
+  <ellipse cx="330" cy="472" rx="300" ry="130" fill="url(#skyLow)"/>
+  <circle cx="170" cy="172" r="104" fill="url(#glow)"/>
+  <g fill="none" stroke="#22d3ee">
+    <circle cx="170" cy="172" r="80" stroke-opacity=".26" stroke-width="1.5"/>
+    <circle cx="170" cy="172" r="104" stroke-opacity=".13" stroke-width="1.5"/>
+  </g>
+  <g fill="none" stroke="url(#arrow)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M252 172H394" stroke-dasharray="0.1 11"/>
+    <path d="M395 160L408 172L395 184"/>
+  </g>
+  <path d="M0 371C50.04 355.53 99.96 355.53 150 371S249.96 386.47 300 371C350.04 355.53 399.96 355.53 450 371S549.96 386.47 600 371C650.04 355.53 699.96 355.53 750 371S849.96 386.47 900 371V400H0Z" fill="url(#sea)" fill-opacity=".1"/>
+  <path d="M-70 379C-33.31 367.8 3.31 367.8 40 379S113.31 390.2 150 379C186.69 367.8 223.31 367.8 260 379S333.31 390.2 370 379C406.69 367.8 443.31 367.8 480 379S553.31 390.2 590 379C626.69 367.8 663.31 367.8 700 379S773.31 390.2 810 379V400H-70Z" fill="url(#sea)" fill-opacity=".17"/>
+  <rect x="104" y="238" width="132" height="26" rx="9" fill="#e7ecf4"/>
+  <rect x="424" y="238" width="132" height="26" rx="9" fill="#e7ecf4"/>
+</svg>
