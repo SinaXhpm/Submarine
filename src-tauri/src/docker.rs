@@ -20,13 +20,32 @@ use tokio::task::AbortHandle;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024; // 4 MB cap for logs
 
 // State for active streaming sessions (live logs, etc.) keyed by a
-// frontend-generated stream id so the user can stop them individually.
+// frontend-generated stream id so the user can stop them individually, with
+// the session each one reads from.
 #[derive(Default)]
 pub struct DockerStreams {
-    pub streams: Arc<TokioMutex<HashMap<String, AbortHandle>>>,
+    pub streams: Arc<TokioMutex<HashMap<String, (String, AbortHandle)>>>,
 }
 impl DockerStreams {
     pub fn new() -> Self { Self::default() }
+
+    /// Ends the session's streams: a stream holds its own channel, which
+    /// kept the connection up after a Disconnect, with `docker logs -f`
+    /// running on the server and its lines still coming in.
+    pub async fn stop_for_session(&self, session_id: &str) {
+        self.streams.lock().await.retain(|_, (sid, h)| {
+            let mine = sid == session_id;
+            if mine { h.abort(); }
+            !mine
+        });
+    }
+
+    /// Ends every stream: the profile closes.
+    pub async fn stop_all(&self) {
+        for (_, (_, h)) in self.streams.lock().await.drain() {
+            h.abort();
+        }
+    }
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -678,7 +697,7 @@ pub async fn ssh_docker_logs_start(
         .streams
         .lock()
         .await
-        .insert(stream_id, handle.abort_handle());
+        .insert(stream_id, (session_id, handle.abort_handle()));
     Ok(())
 }
 
@@ -687,7 +706,7 @@ pub async fn ssh_docker_logs_stop(
     streams: tauri::State<'_, DockerStreams>,
     stream_id: String,
 ) -> Result<(), String> {
-    if let Some(h) = streams.streams.lock().await.remove(&stream_id) {
+    if let Some((_, h)) = streams.streams.lock().await.remove(&stream_id) {
         h.abort();
     }
     Ok(())
@@ -782,6 +801,33 @@ pub async fn open_container_terminal(
     ));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::DockerStreams;
+
+    // A tab's Disconnect ends its own log streams and no other tab's; the
+    // profile closing ends them all.
+    #[tokio::test]
+    async fn streams_end_with_their_session() {
+        let streams = DockerStreams::new();
+        let forever = || tokio::spawn(async { std::future::pending::<()>().await });
+        let (a, b, c) = (forever(), forever(), forever());
+        {
+            let mut map = streams.streams.lock().await;
+            map.insert("s-a".into(), ("session-1".into(), a.abort_handle()));
+            map.insert("s-b".into(), ("session-10".into(), b.abort_handle()));
+            map.insert("s-c".into(), ("session-1".into(), c.abort_handle()));
+        }
+        streams.stop_for_session("session-1").await;
+        assert!(a.await.unwrap_err().is_cancelled());
+        assert!(c.await.unwrap_err().is_cancelled());
+        assert_eq!(streams.streams.lock().await.keys().cloned().collect::<Vec<String>>(), vec!["s-b".to_string()]);
+        streams.stop_all().await;
+        assert!(b.await.unwrap_err().is_cancelled());
+        assert!(streams.streams.lock().await.is_empty());
+    }
 }
 
 #[cfg(test)]

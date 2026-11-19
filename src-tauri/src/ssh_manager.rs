@@ -888,6 +888,19 @@ where
     server_ended
 }
 
+/// Why a live-edit watcher is told to end (`SshState::live_edits`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LiveEditEnd {
+    /// The same file was opened again: a new watcher has its copy now, so this
+    /// one goes without a word and leaves the copy alone.
+    Replaced,
+}
+
+/// The `SshState::live_edits` key of a session's remote file.
+pub fn live_edit_key(session_id: &str, remote_path: &str) -> String {
+    format!("{session_id}\u{0}{remote_path}")
+}
+
 pub struct SshState {
     pub fp_txs: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     /// Pending keyboard-interactive (2FA / OTP) prompt responses, keyed by the
@@ -934,6 +947,11 @@ pub struct SshState {
     /// `initiate_connection` can re-establish every forward the user had
     /// open — including ad-hoc ones not in the saved server row.
     pub session_tunnel_specs: Arc<Mutex<HashMap<String, Vec<crate::tunnel::TunnelSpec>>>>,
+    /// One per live-edit watcher (`sftp_open_remote_file`), keyed by
+    /// `live_edit_key(session, remote path)`. Opening the same file again
+    /// sends `Replaced` to the watcher it replaces; dropping an entry (the
+    /// tab's Disconnect, the profile closing) ends its watcher.
+    pub live_edits: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<LiveEditEnd>>>>,
     /// Monotonic generation counter, bumped on every successful
     /// `initiate_connection` for a given session_id. The disconnect-watcher
     /// task captures the value at spawn time and bails out silently if it
@@ -1017,6 +1035,7 @@ impl SshState {
             forwarded_targets: Arc::new(Mutex::new(HashMap::new())),
             transfer_cancels: Arc::new(Mutex::new(HashMap::new())),
             session_tunnel_specs: Arc::new(Mutex::new(HashMap::new())),
+            live_edits: Arc::new(Mutex::new(HashMap::new())),
             session_generation: Arc::new(Mutex::new(HashMap::new())),
             sftp_elevation: Arc::new(Mutex::new(HashMap::new())),
             sftp_shell: Arc::new(Mutex::new(std::collections::HashSet::new())),
@@ -1645,6 +1664,17 @@ impl client::Handler for ClientHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A tab's Disconnect drops the live edits whose key starts with its own;
+    // session-10's don't start with session-1's.
+    #[test]
+    fn a_live_edit_key_names_its_session_alone() {
+        let prefix = live_edit_key("session-1", "");
+        assert!(live_edit_key("session-1", "/etc/hosts").starts_with(&prefix));
+        assert!(!live_edit_key("session-10", "/etc/hosts").starts_with(&prefix));
+        assert!(!live_edit_key("session-1::sftp", "/etc/hosts").starts_with(&prefix));
+        assert_ne!(live_edit_key("session-1", "/a"), live_edit_key("session-1", "/b"));
+    }
 
     fn sink(got: &std::cell::RefCell<Vec<u8>>) -> impl FnMut(&mut Vec<u8>) + '_ {
         move |b: &mut Vec<u8>| {
