@@ -1276,10 +1276,12 @@ echo SWAP $(awk '
 ' /proc/meminfo 2>/dev/null)
 echo LOAD $(awk '{print $1; exit}' /proc/loadavg 2>/dev/null)
 # Disk usage on root: -k forces 1024-byte blocks so total/used are in KiB,
-# which the parser already expects. Skipping -P: busybox 1.x's df doesn't
-# always support it, and column ordering ($2 total, $3 used) is the same
-# without it on every distro we've seen.
-echo DISK $(df -k / 2>/dev/null | awk 'NR==2 {print $2, $3; exit}')
+# which the parser already expects. -P keeps the figures on the device's
+# line: without it BusyBox's df puts a device name longer than 20 characters
+# (Alpine's /dev/mapper/vg0-lv_root) on a line of its own. A df without -P
+# gets the plain form; the columns ($2 total, $3 used) are the same.
+D=$(df -Pk / 2>/dev/null) || D=$(df -k / 2>/dev/null)
+echo DISK $(printf '%s\n' "$D" | awk 'NR==2 {print $2, $3; exit}')
 # Network totals across all real interfaces (skip loopback). Tolerates
 # both `eth0:` and `  eth0:` formatting variants found in /proc/net/dev.
 echo NET $(awk '
