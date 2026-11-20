@@ -1528,6 +1528,20 @@ pub async fn list(map: &MirrorMap, session_id: Option<&str>) -> Vec<MirrorStatus
     out
 }
 
+/// Every mirror, whatever its session, all at once: the profile closes
+/// (teardown_profile), and a reload has no tab left to stop them.
+pub async fn stop_all(map: &MirrorMap) {
+    let ids: Vec<String> = map.lock().await.keys().cloned().collect();
+    let mut stopping = tokio::task::JoinSet::new();
+    for id in ids {
+        let map = Arc::clone(map);
+        stopping.spawn(async move {
+            let _ = stop(&map, &id).await;
+        });
+    }
+    while stopping.join_next().await.is_some() {}
+}
+
 pub async fn stop_all_for_session(map: &MirrorMap, session_id: &str) {
     let candidates: Vec<(String, Arc<Mutex<MirrorStatus>>)> = {
         let map = map.lock().await;
