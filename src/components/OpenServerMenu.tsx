@@ -1,5 +1,6 @@
 // The + after the last tab: opens a saved server from anywhere, without going
-// back to the Servers page. Type to narrow the list; Enter opens the first
+// back to the Servers page. Its shortcut (Ctrl+Shift+T or ⌘T by default, see
+// util/shortcuts) opens it too. Type to narrow the list; Enter opens the first
 // match, or the one picked with the arrow keys. Quick connect is at the foot.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
@@ -7,6 +8,9 @@ import { Search, Zap } from "lucide-react";
 import { useT } from "../i18n";
 import { folderTree } from "../util/folderTree";
 import { PROTOCOL_ICON, TAB_DOT, avatarStyle, protocolOf } from "../util/serverLook";
+import { matchShortcut, type ShortcutAction } from "../util/shortcuts";
+
+const OPEN_SERVER: readonly ShortcutAction[] = ["openServer"];
 
 export function OpenServerMenu({ servers, folders, serverTabs, anchor, onOpen, onQuickConnect, onClose }: {
   servers: any[];
@@ -72,7 +76,8 @@ export function OpenServerMenu({ servers, folders, serverTabs, anchor, onOpen, o
     if (e.key === "ArrowDown") { e.preventDefault(); setPick((p) => Math.min(p + 1, matches.length - 1)); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setPick((p) => Math.max(p - 1, 0)); }
     else if (e.key === "Enter") { e.preventDefault(); const s = matches[pick]; if (s) open(s); }
-    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); }
+    // Escape, or the key that opens the menu (util/shortcuts), pressed again.
+    else if (e.key === "Escape" || matchShortcut(e.nativeEvent, OPEN_SERVER)) { e.preventDefault(); e.stopPropagation(); close(true); }
   };
 
   return createPortal(

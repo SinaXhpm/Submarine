@@ -13,6 +13,8 @@ import { invoke } from "@tauri-apps/api/core";
 import CopyValue from "./CopyValue";
 import { AiSettings } from "./ai/AiSettings";
 import { AgentSettings } from "./agents/AgentSettings";
+import { ShortcutSettings } from "./ShortcutSettings";
+import { useIsNarrow } from "../hooks/useViewport";
 import FontPicker from "./FontPicker";
 import { loadInstalledFonts } from "../util/systemFonts";
 import { MAX_SCROLLBACK, MIN_SCROLLBACK, clampScrollback } from "../util/terminalScrollback";
@@ -821,6 +823,7 @@ function LanguageSetting() {
 
 const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpenAgents, servers = [] }: any) => {
   const t = useT();
+  const narrow = useIsNarrow();
   const accentColors = [
     { name: tk('Light blue'), value: '#60a5fa' },
     { name: tk('Sky'), value: '#38bdf8' },
@@ -964,6 +967,9 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
           
           <ShellConfigSyncSettings servers={servers} />
         </section>
+
+        {/* Not on a phone, which has no keyboard for them. A tablet may. */}
+        {!(IS_MOBILE && narrow) && <ShortcutSettings />}
 
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
           <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
