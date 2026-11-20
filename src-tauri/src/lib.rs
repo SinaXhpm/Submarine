@@ -26357,8 +26357,10 @@ pub fn run() {
 
     // Clear out live-edit / drag temp dirs a crashed earlier run left behind
     // (only ones older than a day — a newer one may be another copy of the app
-    // running right now). This run's own dir is swept on exit, below.
-    sweep_app_temp(false);
+    // running right now). This run's own dir is swept on exit, below. On a
+    // thread of its own, so the window doesn't wait: it lists the whole temp
+    // folder, which can hold thousands of entries and sit on a cold disk.
+    let _ = std::thread::Builder::new().name("temp-sweep".into()).spawn(|| sweep_app_temp(false));
 
     builder
         .build(context)
