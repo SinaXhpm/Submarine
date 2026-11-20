@@ -429,6 +429,12 @@ pub async fn run<H: russh::client::Handler>(
     }
     let started = Instant::now();
     let sent = async {
+        // Not through `remote_sh`, on purpose. The login shell gets only
+        // RUNNER, a fixed line made for any login shell (csh and fish too),
+        // and the command runs in bash or sh; RUNNER reads the command
+        // itself, whole, between its marks. Where the probe found no POSIX
+        // sh (a Windows server) there is nothing else to run it in: the
+        // command goes to the server's own shell as it is.
         if let Some(login_shell) = shell {
             let mark = new_mark();
             let text = framed(command, &mark);
@@ -608,21 +614,20 @@ pub async fn run<H: russh::client::Handler>(
     Ok(Outcome { ended, status, signal, elapsed, timeout, stdout: out.capture, stderr: err.capture, tail })
 }
 
-/// The facts probe's script. One exec of `sh -c '…'` with no `'`, `!` or
-/// backslash inside, so any login shell passes it to sh. It never runs sudo,
-/// and never runs what a file holds: os-release is read with sed, not
-/// sourced, and only letters, digits and a few marks of its two fields are
-/// kept. A value with a line break in it is left out (`$n` is the line
-/// break, the last character of a shell's own IFS): printed, its second line
-/// would be a fact of its own. printf, not echo: dash's echo reads a
-/// backslash and n in a value as a line break too.
-pub const FACTS_SCRIPT: &str = "sh -c 'echo SUB_SH=1; uname -srm 2>/dev/null | sed \"s/^/SUB_UNAME=/\"; \
+/// The facts probe's script, run with sh whatever the login shell is
+/// (`remote_sh::run_script`). It never runs sudo, and never runs what a file
+/// holds: os-release is read with sed, not sourced, and only letters, digits
+/// and a few marks of its two fields are kept. A value with a line break in
+/// it is left out (`$n` is the line break, the last character of a shell's
+/// own IFS): printed, its second line would be a fact of its own. printf, not
+/// echo: dash's echo reads a backslash and n in a value as a line break too.
+pub const FACTS_SCRIPT: &str = "echo SUB_SH=1; uname -srm 2>/dev/null | sed \"s/^/SUB_UNAME=/\"; \
 osr() { sed -n \"s/^$1=//p\" /etc/os-release 2>/dev/null | tr -cd \"A-Za-z0-9 ._()/+:,-\"; }; \
 if [ -r /etc/os-release ]; then echo \"SUB_OS=$(osr ID) $(osr VERSION_ID)\"; fi; \
 n=${IFS#??}; o() { case $2 in *\"$n\"*) ;; *) printf \"%s=%s%s\" \"$1\" \"$2\" \"$n\";; esac; }; \
 o SUB_USER \"$(id -un 2>/dev/null)\"; o SUB_GROUPS \"$(id -Gn 2>/dev/null)\"; \
 o SUB_HOME \"$HOME\"; o SUB_REALHOME \"$(cd -P \"$HOME\" 2>/dev/null && pwd -P)\"; o SUB_SHELL \"$SHELL\"; \
-for p in bash systemctl docker apt dnf yum apk pacman; do command -v $p >/dev/null 2>&1 && echo SUB_HAS=$p; done; true'";
+for p in bash systemctl docker apt dnf yum apk pacman; do command -v $p >/dev/null 2>&1 && echo SUB_HAS=$p; done; true";
 
 /// What the probe found.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -670,8 +675,9 @@ pub fn ftp_facts(user: &str, home: &str) -> Facts {
 /// counts as having no POSIX shell.
 pub async fn probe<H: russh::client::Handler>(conn: &tokio::sync::RwLock<russh::client::Handle<H>>, stop: tokio::sync::watch::Receiver<bool>) -> Result<Facts, String> {
     let mut channel = open_channel(conn).await?;
-    channel.exec(true, FACTS_SCRIPT).await.map_err(|e| format!("couldn't run the probe: {e}"))?;
-    let _ = channel.eof().await;
+    // Sending the script and reading the facts share the 20 seconds.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    crate::remote_sh::run_script(&channel, FACTS_SCRIPT, deadline).await.map_err(|e| format!("couldn't run the probe: {e}"))?;
     let mut out = Vec::new();
     let mut stop = stop;
     let read = async {
@@ -689,7 +695,7 @@ pub async fn probe<H: russh::client::Handler>(conn: &tokio::sync::RwLock<russh::
     };
     tokio::select! {
         _ = read => {}
-        _ = tokio::time::sleep(Duration::from_secs(20)) => {}
+        _ = tokio::time::sleep_until(deadline) => {}
         _ = stop.changed() => {}
     }
     let _ = channel.close().await;
@@ -831,15 +837,13 @@ mod tests {
 
     #[test]
     fn the_fixed_lines_are_safe_for_any_login_shell() {
-        for script in [RUNNER, FACTS_SCRIPT] {
-            let inner = script.strip_prefix("sh -c '").and_then(|s| s.strip_suffix('\'')).unwrap();
-            assert!(!inner.contains('\''), "no single quote inside");
-            // csh and tcsh read a `!` as history, inside single quotes too,
-            // unless a blank follows it.
-            assert!(inner.match_indices('!').all(|(at, _)| inner[at + 1..].starts_with(' ')), "a blank after every !");
-            assert!(!inner.contains('\\'), "no backslash (fish reads some inside quotes)");
-            assert!(!inner.contains('\n'), "one line");
-        }
+        let inner = RUNNER.strip_prefix("sh -c '").and_then(|s| s.strip_suffix('\'')).unwrap();
+        assert!(!inner.contains('\''), "no single quote inside");
+        // csh and tcsh read a `!` as history, inside single quotes too,
+        // unless a blank follows it.
+        assert!(inner.match_indices('!').all(|(at, _)| inner[at + 1..].starts_with(' ')), "a blank after every !");
+        assert!(!inner.contains('\\'), "no backslash (fish reads some inside quotes)");
+        assert!(!inner.contains('\n'), "one line");
         // The probe reads os-release; it never runs it.
         assert!(!FACTS_SCRIPT.contains(". /etc/os-release") && !FACTS_SCRIPT.contains("source "));
         // The runner never gives a command its own script as stdin: each of

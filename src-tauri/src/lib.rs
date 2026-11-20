@@ -37,6 +37,7 @@ mod webkit_sandbox;
 mod sftp_listing;
 mod sftp_remove;
 mod shell_sftp;
+mod remote_sh;
 mod archive;
 mod approvals;
 mod agent_auth;
@@ -6476,6 +6477,7 @@ async fn select_profile(
 /// `known_hosts` writes they triggered to the NEXT profile's DB.
 #[tauri::command]
 async fn close_profile(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DbState>,
     ssh: tauri::State<'_, SshState>,
     monitor_map: tauri::State<'_, MonitorMap>,
@@ -6483,7 +6485,7 @@ async fn close_profile(
 ) -> Result<(), String> {
     quick_unlock::profile_closed();
     let opened = state.generation_now();
-    teardown_profile(&state, &ssh, &monitor_map, &cloud, opened).await?;
+    teardown_profile(&app, &state, &ssh, &monitor_map, &cloud, opened).await?;
     // Here and not in the teardown: after a reload the name may be the one
     // the new page has just picked.
     *state.active_profile.lock().map_err(|_| "[STATE] LOCK_FAILED_PROFILE")? = None;
@@ -6506,6 +6508,8 @@ async fn close_after_reload(app: tauri::AppHandle, _closing: tokio::sync::OwnedM
     };
     let ssh = app.state::<SshState>();
     let mut sessions: Vec<String> = ssh.connections.lock().await.keys().cloned().collect();
+    // FTP tabs too: their mirrors and live edits stop with them.
+    sessions.extend(ssh.ftp_sessions.lock().await.keys().cloned());
     sessions.extend(app.state::<rdp::RdpSessions>().lock().await.keys().cloned());
     sessions.extend(app.state::<vnc_client::VncClients>().lock().await.keys().cloned());
     sessions.extend(app.state::<RdpClients>().lock().await.keys().cloned());
@@ -6519,7 +6523,7 @@ async fn close_after_reload(app: tauri::AppHandle, _closing: tokio::sync::OwnedM
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), disconnect_all).await;
     let monitor_map = app.state::<MonitorMap>();
     let cloud = app.state::<std::sync::Arc<cloud::CloudState>>();
-    let teardown = teardown_profile(&db, &ssh, &monitor_map, &cloud, opened);
+    let teardown = teardown_profile(&app, &db, &ssh, &monitor_map, &cloud, opened);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(10), teardown).await;
 }
 
@@ -6546,6 +6550,7 @@ pub(crate) async fn any_connection_open(app: &tauri::AppHandle) -> bool {
 /// What closing a profile takes down, see `close_profile`. `opened` is the
 /// generation of the profile that closes.
 async fn teardown_profile(
+    app: &tauri::AppHandle,
     state: &DbState,
     ssh: &SshState,
     monitor_map: &MonitorMap,
@@ -6592,6 +6597,14 @@ async fn teardown_profile(
     for flag in ssh.transfer_cancels.lock().await.values() {
         flag.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    // So does what else runs on its own beside the tabs, each holding its
+    // connection open: folder mirrors (an FTP tab's went on syncing after a
+    // reload), live-edit watchers and Docker's live logs. A tab's Disconnect
+    // stops its own; after a reload, or a tab whose Disconnect didn't finish
+    // in time, this is what does.
+    mirror::stop_all(app.state::<MirrorMap>().inner()).await;
+    ssh.live_edits.lock().await.clear();
+    app.state::<docker::DockerStreams>().stop_all().await;
 
     // 2b. Collect every active session id, then run the standard
     // disconnect path for each one. This frees tunnel listener sockets,
@@ -6648,6 +6661,12 @@ async fn teardown_profile(
     ssh.ftp_sessions.lock().await.clear();
     ssh.connections.lock().await.clear();
     ssh.jump_connections.lock().await.clear();
+    // The forwarding rules each tab replays when it connects again. A tab is
+    // `session-<server id>`, and the next profile's servers are numbered from
+    // 1 too: a list left here (a tab whose connection had dropped, so a
+    // reload didn't disconnect it) was replayed on that profile's server of
+    // the same number, with this profile's forwards.
+    ssh.session_tunnel_specs.lock().await.clear();
     ssh.fp_txs.lock().await.clear();
     ssh.kbi_txs.lock().await.clear();
 
@@ -10806,6 +10825,15 @@ fn start_proxy_command(
 #[tauri::command]
 fn set_use_ssh_config(enabled: bool) {
     ssh_config::set_enabled(enabled);
+}
+
+/// The device's "Use keys from an ssh-agent" setting, for monitoring: its
+/// pollers run in the background and read it at each connect. The page calls
+/// this at start and whenever the setting changes. Logins the page starts get
+/// the setting with each call (`use_ssh_agent`).
+#[tauri::command]
+fn set_use_ssh_agent(enabled: bool) {
+    monitor::set_use_agent(enabled);
 }
 
 /// Whether an ssh-agent holding at least one key is running on this device.
@@ -15372,6 +15400,7 @@ async fn initiate_connection(
                         let state_gen_w = Arc::clone(&state_session_generation);
                         let state_tunnels_w = Arc::clone(&state_tunnels);
                         let state_mirrors_w: MirrorMap = mirrors_owned.clone();
+                        let state_jump_w = Arc::clone(&state_jump_connections);
                         // Captured so the watcher can periodically re-attempt a
                         // configured tunnel that failed to bind while the session
                         // stays alive (see the retry block in the loop below).
@@ -15615,6 +15644,18 @@ async fn initiate_connection(
                                         match conns.get(&sid_w) {
                                             Some(cur) if Arc::ptr_eq(cur, &handle_arc) => { conns.remove(&sid_w); }
                                             _ => break, // superseded by a fresh connection — leave it be
+                                        }
+                                    }
+                                    // The jump hosts (ProxyJump) it went through
+                                    // close with it: their connections stayed
+                                    // open, for nothing, until the tab was
+                                    // disconnected or reconnected. A reconnect
+                                    // opens its own; one already under way has
+                                    // a newer generation, and its jump hosts stay.
+                                    {
+                                        let g = state_gen_w.lock().await;
+                                        if g.get(&sid_w).copied().unwrap_or(0) == my_gen {
+                                            state_jump_w.lock().await.remove(&sid_w);
                                         }
                                     }
                                     // Close the SFTP session too, not just
@@ -18980,6 +19021,12 @@ async fn disconnect_session(
     // Running transfers hold their own SFTP session, so dropping the cached one
     // below wouldn't reach them.
     cancel_session_transfers(state.inner(), &session_id).await;
+    // Docker's live logs and the live-edit watchers end with the tab too. A
+    // log stream holds a channel of its own, which kept the connection up
+    // after the Disconnect, `docker logs -f` running on the server.
+    app.state::<docker::DockerStreams>().stop_for_session(&session_id).await;
+    let live_edit_prefix = ssh_manager::live_edit_key(&session_id, "");
+    state.live_edits.lock().await.retain(|key, _| !key.starts_with(&live_edit_prefix));
     // Drop SFTP first so the channel it holds is freed before we tear down the
     // underlying SSH handle. The tab is gone, so is its root (sudo) mode and
     // the in-memory sudo password.
@@ -19098,6 +19145,9 @@ fn local_shell() -> Option<String> {
 // (sshd sets $SHELL to it). Sent as `sh -c '<script>' sh <shell>`: the
 // account's shell, whatever it is (fish and csh included), only runs a plain
 // command, and the path arrives as an argument, never inside the script.
+// One of the few lines the login shell gets as it is (see remote_sh): the
+// terminal's input is the shell's stdin, so the script can't come there. It
+// stays one line with no `'`, `!` or backslash inside its quotes.
 const LOGIN_SHELL_SCRIPT: &str =
     r#"if [ -x "$1" ]; then SHELL=$1; export SHELL; exec "$1" -l; fi; exec "${SHELL:-/bin/sh}" -l"#;
 
@@ -19111,9 +19161,9 @@ fn login_shell_command(shell: &str) -> String {
 // gets the plain shell request, as with the setting off: a terminal opens in
 // any case. Asked on a channel of its own, before the terminal's.
 async fn server_runs_login_shell(session_arc: &SessionHandleArc, shell: &str) -> bool {
-    let cmd = format!("sh -c '[ -x \"$1\" ] && echo __SUB_SHELL:OK' sh {}", crate::docker::shq(shell));
+    let script = remote_sh::with_args(&[shell], r#"[ -x "$1" ] && echo __SUB_SHELL:OK"#);
     matches!(
-        exec_with_stdin_capture(session_arc, &cmd, None, 4).await,
+        exec_with_stdin_capture(session_arc, &script, None, 4).await,
         Ok(out) if out.lines().any(|line| line.trim() == "__SUB_SHELL:OK")
     )
 }
@@ -19258,7 +19308,8 @@ async fn close_terminal(state: tauri::State<'_, SshState>, terminal_id: String) 
 // upfront mega-probe. Splitting the scripts keeps each round-trip small
 // (≤200 ms typical) and lets a failing section never block the others.
 const INFO_SCRIPT_OVERVIEW: &str = r#"echo __SUB_INFO_OV_SEP__
-hostname 2>/dev/null
+# OpenWrt has no `hostname`; `uname -n` is the same name.
+hostname 2>/dev/null || uname -n 2>/dev/null
 echo __SUB_INFO_OV_SEP__
 ( . /etc/os-release 2>/dev/null && printf "%s" "$PRETTY_NAME" ) || cat /etc/issue 2>/dev/null
 printf "\n"
@@ -19267,13 +19318,15 @@ uname -srm 2>/dev/null
 echo __SUB_INFO_OV_SEP__
 uptime 2>/dev/null
 echo __SUB_INFO_OV_SEP__
-# Memory. procps `free -b` gives bytes + an `available` column; busybox `free`
-# ignores `-b` (prints KiB) and has no `available`, so fall back to the
-# universal /proc/meminfo (kB) with a format tag the frontend switches on.
-if F=$(free -b 2>/dev/null) && printf '%s' "$F" | grep -q '^Mem:'; then
-  printf 'MEMFMT:free-b\n'; printf '%s\n' "$F"
-else
+# Memory, from /proc/meminfo (kB) where there is one, with a format tag the
+# frontend switches on. It is what procps' `free` reads too. BusyBox's `free`
+# on OpenWrt ignores `-b` and prints KiB under the same header as procps'
+# bytes, so its figures can't be told apart. `free -b` stays for a system
+# without /proc/meminfo.
+if [ -r /proc/meminfo ]; then
   printf 'MEMFMT:meminfo\n'; cat /proc/meminfo 2>/dev/null
+elif F=$(free -b 2>/dev/null) && printf '%s' "$F" | grep -q '^Mem:'; then
+  printf 'MEMFMT:free-b\n'; printf '%s\n' "$F"
 fi
 echo __SUB_INFO_OV_SEP__
 # Disks. `-T` (fs-type column) + `-k` (1 KiB blocks) is GNU coreutils; busybox
@@ -19491,24 +19544,78 @@ fi
 
 // Process list for the Processes tab. First line is a format tag the frontend
 // switches on. Prefer the procps `-eo` custom format (Linux); fall back to
-// BSD-style `ps aux` for busybox / minimal userlands. Sorting + capping happen
-// client-side so the probe stays a single cheap snapshot suitable for a ~1s
-// auto-refresh.
+// BSD-style `ps aux` for minimal userlands. BusyBox's own `ps` (OpenWrt and
+// other routers, #386; Alpine) takes no `-eo` and has no %CPU column: on
+// OpenWrt it refuses `aux`, and on Alpine it takes `aux` and prints its own
+// PID USER TIME COMMAND, so `aux` counts only with a %CPU column. BusyBox's
+// `ps w` gives PID, USER and COMMAND (VSZ and STAT, or TIME, between them):
+// there CPU and memory come from /proc, in one awk over every process. %CPU is
+// the lifetime average, as procps' pcpu (utime+stime over the time since the
+// process started, in clock ticks of 100 a second); RSS is VmRSS (KiB), %MEM
+// that over MemTotal. Sorting + capping happen client-side so the probe stays
+// a single cheap snapshot suitable for a ~1s auto-refresh.
 const INFO_SCRIPT_PROCESSES: &str = r#"if ps -eo pid,user,pcpu,pmem,rss,comm >/dev/null 2>&1; then
   printf 'PSFMT:full\n'
   ps -eo pid,user,pcpu,pmem,rss,comm 2>/dev/null
-elif ps aux >/dev/null 2>&1; then
+elif A=$(ps aux 2>/dev/null) && printf '%s\n' "$A" | head -n 1 | grep -q '%CPU'; then
   printf 'PSFMT:aux\n'
-  ps aux 2>/dev/null
+  printf '%s\n' "$A"
+elif ps w >/dev/null 2>&1; then
+  printf 'PSFMT:busybox\n'
+  ps w 2>/dev/null
+  printf 'PSSTAT\n'
+  { echo "UP $(cut -d' ' -f1 /proc/uptime)"; grep '^MemTotal:' /proc/meminfo; cat /proc/[0-9]*/stat 2>/dev/null; grep -H '^VmRSS:' /proc/[0-9]*/status 2>/dev/null; } | awk -v hz=100 '
+    $1 == "UP" { up = $2; next }
+    $1 == "MemTotal:" { mt = $2; next }
+    /^\/proc\// { split($1, a, "/"); rss[a[3]] = $2; next }
+    /^[0-9]+ \(/ { pid = $1; l = $0; sub(/^.*\) /, "", l); split(l, f, " "); el = up - f[20] / hz; cpu[pid] = (el > 0) ? 100 * (f[12] + f[13]) / hz / el : 0 }
+    END { for (p in cpu) printf "%s %.1f %.1f %d\n", p, cpu[p], (mt > 0 ? 100 * rss[p] / mt : 0), rss[p] }
+  '
 else
   printf 'PSFMT:none\n'
   ps 2>/dev/null
 fi
 "#;
 
+// Services: systemd's running, failed and activating units; else OpenRC's
+// services (Alpine, Gentoo) or OpenWrt's init scripts (procd). For those two
+// a line is `name state boot`: the state in systemd's words (active,
+// inactive, failed, activating; `unknown` where procd won't tell this user),
+// and `enabled` for a service that starts at boot (an OpenRC runlevel other
+// than shutdown, an OpenWrt /etc/rc.d/S link). As systemd's list has the
+// running units, these have the services that run or start at boot: a
+// stopped one in no runlevel, or in shutdown only (killprocs, mount-ro), is
+// nothing to start or stop from here.
 const INFO_SCRIPT_SERVICES: &str = r#"if command -v systemctl >/dev/null 2>&1; then
   printf 'ENGINE:systemd\n'
   systemctl list-units --type=service --no-legend --plain --no-pager --state=running,failed,activating 2>/dev/null
+elif command -v rc-status >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1; then
+  printf 'ENGINE:openrc\n'
+  { rc-update show -v 2>/dev/null | sed 's/^/RL /'; rc-status -s -C 2>/dev/null; } | awk '
+    $1 == "RL" { for (i = 4; i <= NF; i++) if ($i != "shutdown") boot[$2] = 1; next }
+    $2 == "[" && $1 ~ /^[A-Za-z0-9._@-]+$/ { st[$1] = $3 }
+    END {
+      for (n in st) {
+        s = st[n]
+        a = (s == "started") ? "active" : ((s == "crashed" || s == "failed") ? "failed" : ((s == "starting" || s == "stopping") ? "activating" : "inactive"))
+        if (a != "inactive" || (n in boot)) printf "%s %s %s\n", n, a, ((n in boot) ? "enabled" : "disabled")
+      }
+    }'
+elif [ -f /etc/rc.common ] && [ -d /etc/init.d ]; then
+  printf 'ENGINE:procd\n'
+  J=$(ubus call service list 2>/dev/null) || J=
+  for f in /etc/init.d/*; do
+    n=${f##*/}
+    [ -f "$f" ] && [ -x "$f" ] || continue
+    case $n in ''|-*|*[!A-Za-z0-9._@-]*) continue ;; esac
+    b=disabled
+    for l in /etc/rc.d/S[0-9][0-9]"$n"; do [ -L "$l" ] && b=enabled; done
+    if [ -z "$J" ]; then a=unknown
+    elif jsonfilter -q -s "$J" -e "@['$n'].instances[*].running" 2>/dev/null | grep -q true; then a=active
+    else a=inactive; fi
+    [ "$a" != active ] && [ "$b" = disabled ] && continue
+    printf '%s %s %s\n' "$n" "$a" "$b"
+  done
 else
   printf 'ENGINE:none\n'
 fi
@@ -19540,9 +19647,24 @@ struct InfoSectionResult {
     exec_ms: u64,
 }
 
+// What the Info panel's scripts and commands start with: the sbin folders at
+// the end of PATH. sshd gives a normal user none on Debian
+// (/usr/local/bin:/usr/bin:/bin:/usr/games), and neither does Alpine's
+// Dropbear (/usr/bin:/bin). `iptables`, `nft` and `ufw` live there, on Alpine
+// `ip`, `ifconfig`, `route` and `rc-service` too: without them the panel said
+// a server had no firewall, or no network, where it could have read them or
+// asked `sudo -n`. At the end, the user's own programs still come first.
+const INFO_PATH: &str = "PATH=\"${PATH:-/usr/bin:/bin}:/usr/local/sbin:/usr/sbin:/sbin\"; export PATH\n";
+
+fn with_info_path(script: &str) -> String {
+    format!("{INFO_PATH}{script}")
+}
+
 // Run a script through a fresh exec channel on the live SSH session and
 // return everything it printed (up to a 1 MB cap). Stays read-only — the
 // callers in this module only invoke shell built-ins and inspection tools.
+// sh reads the script, never the login shell (remote_sh): under csh,
+// `hostname 2>/dev/null` was `hostname 2` and renamed the server (#352).
 async fn run_info_script(
     state: &SshState,
     session_id: &str,
@@ -19560,7 +19682,9 @@ async fn run_info_script(
 
     let start = std::time::Instant::now();
     let channel = shell_sftp::open_session_channel(&session_arc).await?;
-    channel.exec(true, script.as_bytes()).await.map_err(|e| e.to_string())?;
+    // Sending the script and reading what it prints share the time limit.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    remote_sh::run_script(&channel, &with_info_path(script), deadline).await?;
     let mut stream = channel.into_stream();
 
     // 1 MB cap — defends the UI against pathological output (e.g. a server
@@ -19590,7 +19714,7 @@ async fn run_info_script(
             }
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), read_fut)
+    tokio::time::timeout_at(deadline, read_fut)
         .await
         .map_err(|_| format!("probe timed out after {}s", timeout_secs))?;
 
@@ -19644,12 +19768,54 @@ fn is_safe_systemctl_unit(unit: &str) -> bool {
 
 /// The command line for `systemctl <action> <unit>` (`sudo -n` in front for
 /// the retry), for a unit that passed `is_safe_systemctl_unit`. The unit goes
-/// in single quotes (that check lets no quote through): the login shell
-/// reads this line, and a backslash is how systemd writes a dash inside an
-/// instance name (`dev-disk-by\x2duuid-….service`), which the shell would
+/// in single quotes (that check lets no quote through): sh reads this line
+/// (`run_exec_capture`), and a backslash is how systemd writes a dash inside
+/// an instance name (`dev-disk-by\x2duuid-….service`), which the shell would
 /// otherwise eat or decode.
 fn systemctl_command(sudo: bool, action: &str, unit: &str) -> String {
     format!("{}systemctl {} '{}' 2>&1; echo __SUB_EXITCODE:$?", if sudo { "sudo -n " } else { "" }, action, unit)
+}
+
+/// The service managers the Services tab works with (INFO_SCRIPT_SERVICES).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ServiceManager {
+    Systemd,
+    /// Alpine, Gentoo: `rc-service <name> <action>`.
+    OpenRc,
+    /// OpenWrt: the init script itself, `/etc/init.d/<name> <action>`.
+    Procd,
+}
+
+impl ServiceManager {
+    fn from_word(word: Option<&str>) -> Option<Self> {
+        match word.unwrap_or("systemd") {
+            "systemd" => Some(Self::Systemd),
+            "openrc" => Some(Self::OpenRc),
+            "procd" => Some(Self::Procd),
+            _ => None,
+        }
+    }
+}
+
+// An OpenRC service or an OpenWrt init script: a file name in /etc/init.d, so
+// no `/`, and no leading `-` or `.` (an option, `..`).
+fn is_safe_init_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('-')
+        && !name.starts_with('.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@'))
+}
+
+/// The command line for a service action under `manager`, for a name its
+/// check let through (no quote: it goes in single quotes, as for systemctl).
+fn service_command(manager: ServiceManager, sudo: bool, action: &str, name: &str) -> String {
+    let sudo = if sudo { "sudo -n " } else { "" };
+    match manager {
+        ServiceManager::Systemd => systemctl_command(!sudo.is_empty(), action, name),
+        ServiceManager::OpenRc => format!("{sudo}rc-service '{name}' {action} 2>&1; echo __SUB_EXITCODE:$?"),
+        ServiceManager::Procd => format!("{sudo}/etc/init.d/'{name}' {action} 2>&1; echo __SUB_EXITCODE:$?"),
+    }
 }
 
 // Two-stage firewall probe (lazy detail fetch). The network section returns
@@ -19709,9 +19875,139 @@ printf '%s' \"$OUT\"",
     run_exec_capture(&state, &session_id, &cmd, 15).await
 }
 
+#[cfg(all(test, unix))]
+mod info_script_tests {
+    use super::{with_info_path, INFO_SCRIPT_PROCESSES};
+    use std::io::Write;
+
+    /// `script` as the Info panel sends it, run by this machine's sh with
+    /// `path` as PATH; what it printed.
+    fn run(script: &str, path: &str) -> String {
+        let mut sh = std::process::Command::new("/bin/sh")
+            .arg("-s")
+            .env("PATH", path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        sh.stdin.take().unwrap().write_all(crate::remote_sh::whole(&with_info_path(script)).as_bytes()).unwrap();
+        String::from_utf8_lossy(&sh.wait_with_output().unwrap().stdout).into_owned()
+    }
+
+    // A normal user's PATH from Debian's sshd has no sbin folder, where
+    // iptables, nft and ufw are; the scripts get them, after the user's own.
+    #[test]
+    fn the_scripts_find_the_sbin_tools_after_the_users_own() {
+        assert_eq!(run("printf %s \"$PATH\"", "/usr/local/bin:/usr/bin:/bin:/usr/games"), "/usr/local/bin:/usr/bin:/bin:/usr/games:/usr/local/sbin:/usr/sbin:/sbin");
+    }
+
+    // Alpine's BusyBox takes `ps aux` and prints its own PID USER TIME COMMAND:
+    // that isn't the BSD layout, so the BusyBox branch reads it.
+    #[test]
+    fn a_ps_aux_without_a_cpu_column_is_read_as_busyboxs() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = std::env::temp_dir().join(format!("sub-ps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&bin);
+        std::fs::create_dir_all(&bin).unwrap();
+        let ps = bin.join("ps");
+        std::fs::write(
+            &ps,
+            "#!/bin/sh\ncase \"$1\" in -eo) echo \"ps: bad -o argument 'pcpu'\" >&2; exit 1;; esac\nprintf 'PID   USER     TIME  COMMAND\\n    1 root      0:08 /sbin/init\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        let out = run(INFO_SCRIPT_PROCESSES, &path);
+        let _ = std::fs::remove_dir_all(&bin);
+        assert_eq!(out.lines().next(), Some("PSFMT:busybox"), "{out}");
+        assert!(out.lines().any(|l| l.trim() == "1 root      0:08 /sbin/init"), "{out}");
+        assert!(out.lines().any(|l| l == "PSSTAT"), "{out}");
+    }
+
+    // OpenRC (Alpine): every service's state from rc-status and its runlevels
+    // from rc-update, one line each for those that run or start at boot.
+    #[test]
+    fn openrc_services_come_with_their_state_and_boot() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = std::env::temp_dir().join(format!("sub-openrc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&bin);
+        std::fs::create_dir_all(&bin).unwrap();
+        let tool = |name: &str, body: &str| {
+            let p = bin.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        tool("rc-update", "printf '%s\\n' '              subdemo |      default' '            killprocs |                       shutdown' '                 sshd |      default' '                crond | ' '                local | '");
+        tool("rc-status", "printf '%s\\n' ' * Caching service dependencies ... [ ok ]' ' subdemo        [  started  ]' ' killprocs      [  stopped  ]' ' sshd           [  crashed  ]' ' crond          [  started 00:01:02 (0)  ]' ' local          [  stopped  ]' ' networking     [  starting  ]'");
+        tool("rc-service", "exit 0");
+        for real in ["sed", "awk"] {
+            let found = std::process::Command::new("/bin/sh").arg("-c").arg(format!("command -v {real}")).output().unwrap();
+            std::os::unix::fs::symlink(String::from_utf8_lossy(&found.stdout).trim(), bin.join(real)).unwrap();
+        }
+        let out = run(super::INFO_SCRIPT_SERVICES, &bin.display().to_string());
+        let _ = std::fs::remove_dir_all(&bin);
+        let mut lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.first(), Some(&"ENGINE:openrc"), "{out}");
+        lines.remove(0);
+        lines.sort_unstable();
+        assert_eq!(lines, ["crond active disabled", "networking activating disabled", "sshd failed enabled", "subdemo active enabled"], "{out}");
+    }
+
+    // procps' `ps aux` has its %CPU column and stays the `aux` branch.
+    #[test]
+    fn a_bsd_ps_aux_stays_aux() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = std::env::temp_dir().join(format!("sub-psaux-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&bin);
+        std::fs::create_dir_all(&bin).unwrap();
+        let ps = bin.join("ps");
+        std::fs::write(
+            &ps,
+            "#!/bin/sh\ncase \"$1\" in -eo) exit 1;; esac\nprintf 'USER PID %%CPU %%MEM VSZ RSS TTY STAT START TIME COMMAND\\nroot 1 0.0 0.1 1000 900 ? Ss 10:00 0:01 /sbin/init\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        let out = run(INFO_SCRIPT_PROCESSES, &path);
+        let _ = std::fs::remove_dir_all(&bin);
+        assert_eq!(out.lines().collect::<Vec<_>>(), ["PSFMT:aux", "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND", "root 1 0.0 0.1 1000 900 ? Ss 10:00 0:01 /sbin/init"], "{out}");
+    }
+}
+
 #[cfg(test)]
 mod remote_ident_tests {
-    use super::{is_safe_fw_ident, is_safe_systemctl_unit, systemctl_command};
+    use super::{is_safe_fw_ident, is_safe_init_name, is_safe_systemctl_unit, service_command, sudo_missing, systemctl_command, ServiceManager};
+
+    #[test]
+    fn init_names_are_plain_file_names() {
+        for ok in ["sshd", "crond", "dnsmasq", "network", "openvpn.tun0", "getty@tty1", "s6-svscan", "php-fpm84"] {
+            assert!(is_safe_init_name(ok), "{ok:?} must be accepted");
+        }
+        let long = "a".repeat(129);
+        for bad in ["", "-x", "--help", ".", "..", ".hidden", "a/b", "../../bin/sh", "a b", "a'b", "a;b", "$(id)", long.as_str()] {
+            assert!(!is_safe_init_name(bad), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn each_manager_gets_its_own_command_with_the_name_quoted() {
+        assert_eq!(service_command(ServiceManager::OpenRc, false, "restart", "sshd"), "rc-service 'sshd' restart 2>&1; echo __SUB_EXITCODE:$?");
+        assert_eq!(service_command(ServiceManager::Procd, true, "stop", "dnsmasq"), "sudo -n /etc/init.d/'dnsmasq' stop 2>&1; echo __SUB_EXITCODE:$?");
+        assert_eq!(service_command(ServiceManager::Systemd, true, "start", "nginx.service"), systemctl_command(true, "start", "nginx.service"));
+        assert_eq!(ServiceManager::from_word(None), Some(ServiceManager::Systemd));
+        assert_eq!(ServiceManager::from_word(Some("openrc")), Some(ServiceManager::OpenRc));
+        assert_eq!(ServiceManager::from_word(Some("procd")), Some(ServiceManager::Procd));
+        assert_eq!(ServiceManager::from_word(Some("runit")), None);
+    }
+
+    #[test]
+    fn a_server_without_sudo_is_told_apart() {
+        assert!(sudo_missing(127, "sh: 1: sudo: not found"));
+        assert!(sudo_missing(127, "/bin/sh: sudo: not found"));
+        assert!(!sudo_missing(1, "sudo: a password is required"));
+        assert!(!sudo_missing(1, "sudo: rc-service: command not found"));
+        assert!(!sudo_missing(127, "rc-service: service `x' not found"));
+    }
 
     #[test]
     fn fw_ident_rejects_leading_dash_flags() {
@@ -19813,7 +20109,8 @@ async fn run_exec_capture(
             .ok_or_else(|| "Session not connected".to_string())?
     };
     let channel = shell_sftp::open_session_channel(&session_arc).await?;
-    channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    remote_sh::run_script(&channel, &with_info_path(cmd), deadline).await?;
     let mut stream = channel.into_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let read_fut = async {
@@ -19828,7 +20125,7 @@ async fn run_exec_capture(
             }
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), read_fut)
+    tokio::time::timeout_at(deadline, read_fut)
         .await
         .map_err(|_| format!("exec timed out after {}s", timeout_secs))?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
@@ -19845,23 +20142,38 @@ fn parse_exit_marker(raw: &str) -> (i32, String) {
     }
 }
 
+/// Start, stop or restart a service (Services tab) under the server's service
+/// manager: systemd (`manager` left out), OpenRC or OpenWrt's procd, as the
+/// Services probe found it.
 #[tauri::command]
 async fn ssh_systemctl_action(
     state: tauri::State<'_, SshState>,
     session_id: String,
     unit: String,
     action: String,
+    manager: Option<String>,
 ) -> Result<SystemctlActionResult, String> {
+    let manager = ServiceManager::from_word(manager.as_deref()).ok_or("unknown service manager")?;
     // Locked allow-list. Anything not in this list is rejected outright
-    // — we never want to dispatch arbitrary subcommands from the UI.
-    let valid_action = matches!(action.as_str(), "start" | "stop" | "restart" | "reload" | "status");
+    // — we never want to dispatch arbitrary subcommands from the UI. OpenRC
+    // and OpenWrt's scripts have no `reload` or `status` of their own for
+    // every service.
+    let valid_action = match manager {
+        ServiceManager::Systemd => matches!(action.as_str(), "start" | "stop" | "restart" | "reload" | "status"),
+        ServiceManager::OpenRc | ServiceManager::Procd => matches!(action.as_str(), "start" | "stop" | "restart"),
+    };
     if !valid_action {
         return Err(format!("invalid action: {}", action));
     }
     // Reject hostile unit names. systemd unit names are restricted to
     // `[A-Za-z0-9:_.\\@-]+\.<suffix>` — adding any shell metachar here would
-    // otherwise let the caller smuggle in a command.
-    if !is_safe_systemctl_unit(&unit) {
+    // otherwise let the caller smuggle in a command. The other two take a
+    // file name in /etc/init.d.
+    let name_ok = match manager {
+        ServiceManager::Systemd => is_safe_systemctl_unit(&unit),
+        ServiceManager::OpenRc | ServiceManager::Procd => is_safe_init_name(&unit),
+    };
+    if !name_ok {
         return Err("invalid unit name".to_string());
     }
 
@@ -19869,7 +20181,7 @@ async fn ssh_systemctl_action(
     // If that fails with permission-denied semantics, retry with `sudo -n` —
     // works on hosts that gave this user NOPASSWD sudo. The `-n` ensures we
     // never block on a tty password prompt that nobody can answer.
-    let plain_cmd = systemctl_command(false, &action, &unit);
+    let plain_cmd = service_command(manager, false, &action, &unit);
     let raw1 = run_exec_capture(&state, &session_id, &plain_cmd, 30).await?;
     let (code1, out1) = parse_exit_marker(&raw1);
     let needs_sudo = code1 != 0 && (
@@ -19880,19 +20192,25 @@ async fn ssh_systemctl_action(
         || out1.to_lowercase().contains("access denied")
     );
 
+    let plain = SystemctlActionResult {
+        success: code1 == 0,
+        exit_code: code1,
+        stdout: out1,
+        stderr: String::new(),
+        used_sudo: false,
+    };
     if code1 == 0 || !needs_sudo {
-        return Ok(SystemctlActionResult {
-            success: code1 == 0,
-            exit_code: code1,
-            stdout: out1,
-            stderr: String::new(),
-            used_sudo: false,
-        });
+        return Ok(plain);
     }
 
-    let sudo_cmd = systemctl_command(true, &action, &unit);
+    let sudo_cmd = service_command(manager, true, &action, &unit);
     let raw2 = run_exec_capture(&state, &session_id, &sudo_cmd, 30).await?;
     let (code2, out2) = parse_exit_marker(&raw2);
+    // A server without sudo (OpenWrt, Alpine as installed): the first answer
+    // says why, not "sudo: not found".
+    if sudo_missing(code2, &out2) {
+        return Ok(plain);
+    }
     Ok(SystemctlActionResult {
         success: code2 == 0,
         exit_code: code2,
@@ -19900,6 +20218,12 @@ async fn ssh_systemctl_action(
         stderr: String::new(),
         used_sudo: true,
     })
+}
+
+/// The `sudo -n` retry ended because there is no sudo: sh's "not found"
+/// (status 127) for it.
+fn sudo_missing(code: i32, out: &str) -> bool {
+    code == 127 && out.contains("sudo") && out.to_lowercase().contains("not found")
 }
 
 /// Signal a process by PID (Ports / Processes tab "kill" action). Tries the
@@ -19932,19 +20256,23 @@ async fn ssh_kill_process(
             || low.contains("permission denied")
             || low.contains("operation not permitted"));
 
+    let plain_result = SystemctlActionResult {
+        success: code1 == 0,
+        exit_code: code1,
+        stdout: out1,
+        stderr: String::new(),
+        used_sudo: false,
+    };
     if code1 == 0 || !needs_sudo {
-        return Ok(SystemctlActionResult {
-            success: code1 == 0,
-            exit_code: code1,
-            stdout: out1,
-            stderr: String::new(),
-            used_sudo: false,
-        });
+        return Ok(plain_result);
     }
 
     let sudo_cmd = format!("sudo -n kill -{} {} 2>&1; echo __SUB_EXITCODE:$?", sig, pid);
     let raw2 = run_exec_capture(&state, &session_id, &sudo_cmd, 15).await?;
     let (code2, out2) = parse_exit_marker(&raw2);
+    if sudo_missing(code2, &out2) {
+        return Ok(plain_result);
+    }
     Ok(SystemctlActionResult {
         success: code2 == 0,
         exit_code: code2,
@@ -20003,11 +20331,11 @@ const SUDO_NO_SFTP_SERVER: &str = "[SUDO] NO_SFTP_SERVER";
 const SUDO_FAILED: &str = "[SUDO] FAILED";
 const ELEVATED_SFTP_READY: &str = "__SUB_SUDO_READY__";
 
-// POSIX sh, run as `sh -c '<script>'`: no single quotes inside, and no `!`
-// (tcsh history expansion) so it survives any login shell. `SUB_MODE=pw`
-// makes sudo read the password from stdin; `-k` ignores a cached ticket so
-// the password is really checked. `sudo -l <cmd>` tests the exact command
-// we will run, which also works for sudoers rules scoped to sftp-server.
+// POSIX sh, run by `exec_with_stdin_capture` (remote_sh), so whatever the
+// login shell is. `SUB_MODE=pw` makes sudo read the password from stdin;
+// `-k` ignores a cached ticket so the password is really checked. `sudo -l
+// <cmd>` tests the exact command we will run, which also works for sudoers
+// rules scoped to sftp-server.
 const SUDO_SFTP_PROBE: &str = r#"S=
 for p in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server /usr/libexec/sftp-server /usr/lib/sftp-server /usr/local/libexec/sftp-server /usr/local/lib/sftp-server /usr/lib64/misc/sftp-server; do
   if [ -x "$p" ]; then S=$p; break; fi
@@ -20059,21 +20387,21 @@ fn classify_sudo_failure(msg: &str) -> String {
     }
 }
 
-/// Run a command on its own exec channel, optionally feeding stdin, and
-/// collect stdout+stderr until the channel closes.
-async fn exec_with_stdin_capture(
-    session_arc: &SessionHandleArc,
-    cmd: &str,
+/// Run a script with sh on its own exec channel, optionally feeding its
+/// commands `stdin`, and collect stdout+stderr until the channel closes.
+async fn exec_with_stdin_capture<H: russh::client::Handler>(
+    session: &tokio::sync::RwLock<russh::client::Handle<H>>,
+    script: &str,
     stdin: Option<&[u8]>,
     timeout_secs: u64,
 ) -> Result<String, String> {
     use russh::ChannelMsg;
-    let mut channel = shell_sftp::open_session_channel(session_arc).await?;
-    channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
-    if let Some(input) = stdin {
-        channel.data(input).await.map_err(|e| e.to_string())?;
+    let mut channel = shell_sftp::open_session_channel(session).await?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    match stdin {
+        None => remote_sh::run_script(&channel, script, deadline).await?,
+        Some(input) => remote_sh::start_script_with_input(&channel, script, input, true, deadline).await?,
     }
-    channel.eof().await.map_err(|e| e.to_string())?;
     let mut out: Vec<u8> = Vec::new();
     let collect = async {
         while let Some(msg) = channel.wait().await {
@@ -20088,7 +20416,7 @@ async fn exec_with_stdin_capture(
             }
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), collect)
+    tokio::time::timeout_at(deadline, collect)
         .await
         .map_err(|_| format!("exec timed out after {}s", timeout_secs))?;
     Ok(String::from_utf8_lossy(&out).into_owned())
@@ -20097,9 +20425,9 @@ async fn exec_with_stdin_capture(
 /// Find sftp-server and check sudo for it. Returns the sftp-server path.
 async fn probe_sudo_sftp(session_arc: &SessionHandleArc, password: Option<&str>) -> Result<String, String> {
     let mode = if password.is_some() { "pw" } else { "n" };
-    let cmd = format!("env SUB_MODE={} sh -c '{}'", mode, SUDO_SFTP_PROBE);
+    let script = format!("SUB_MODE={}\n{}", mode, SUDO_SFTP_PROBE);
     let stdin = password.map(|p| zeroize::Zeroizing::new(format!("{}\n", p)));
-    let out = exec_with_stdin_capture(session_arc, &cmd, stdin.as_ref().map(|s| s.as_bytes()), 25).await?;
+    let out = exec_with_stdin_capture(session_arc, &script, stdin.as_ref().map(|s| s.as_bytes()), 25).await?;
     let mut path: Option<String> = None;
     for line in out.lines() {
         let Some(rest) = line.trim().strip_prefix("__SUB_SUDO:") else { continue };
@@ -20127,8 +20455,8 @@ async fn probe_sudo_sftp(session_arc: &SessionHandleArc, password: Option<&str>)
 }
 
 // For a server without sftp-server: file operations as root run as shell
-// commands under sudo (`shell_sftp`), so sudo must allow `sh`. Same rules as
-// SUDO_SFTP_PROBE (sent as `sh -c '<script>'`).
+// commands under sudo (`shell_sftp`), so sudo must allow `sh`. Run the same
+// way as SUDO_SFTP_PROBE.
 const SUDO_SHELL_PROBE: &str = r#"if command -v sudo >/dev/null 2>&1; then :; else echo __SUB_SUDO:NO_SUDO; exit 0; fi
 if [ "$SUB_MODE" = pw ]; then OUT=$(sudo -S -k -p "" -l sh 2>&1); else OUT=$(sudo -n -l sh 2>&1); fi
 if [ $? -eq 0 ]; then echo __SUB_SUDO:OK; else echo "__SUB_SUDO:FAIL:$(printf %s "$OUT" | tr "\n" " ")"; fi"#;
@@ -20143,9 +20471,9 @@ async fn probe_sudo_files(session_arc: &SessionHandleArc, password: Option<&str>
         Err(e) => return Err(e),
     }
     let mode = if password.is_some() { "pw" } else { "n" };
-    let cmd = format!("env SUB_MODE={} sh -c '{}'", mode, SUDO_SHELL_PROBE);
+    let script = format!("SUB_MODE={}\n{}", mode, SUDO_SHELL_PROBE);
     let stdin = password.map(|p| zeroize::Zeroizing::new(format!("{}\n", p)));
-    let out = exec_with_stdin_capture(session_arc, &cmd, stdin.as_ref().map(|s| s.as_bytes()), 25).await?;
+    let out = exec_with_stdin_capture(session_arc, &script, stdin.as_ref().map(|s| s.as_bytes()), 25).await?;
     for line in out.lines() {
         match line.trim().strip_prefix("__SUB_SUDO:") {
             Some("OK") => return Ok(None),
@@ -20359,28 +20687,29 @@ mod sftp_config_tests {
 /// russh-sftp. The shell echoes a ready marker first; anything a noisy shell
 /// rc prints before it is skipped. In password mode sudo always prompts
 /// (`-k`), so it consumes exactly the password line and the SFTP bytes that
-/// follow go to sftp-server.
+/// follow go to sftp-server. sh runs the line, and what follows it on stdin
+/// is left to sudo and sftp-server (`remote_sh::start_script_with_input`).
 async fn open_elevated_sftp(
     session_arc: &SessionHandleArc,
     server_path: &str,
     password: Option<&zeroize::Zeroizing<String>>,
 ) -> Result<russh_sftp::client::SftpSession, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncReadExt;
     if !is_safe_remote_exec_path(server_path) {
         return Err(format!("{}: unusual sftp-server path", SUDO_FAILED));
     }
     let sudo = if password.is_some() { "sudo -S -k -p ''" } else { "sudo -n" };
-    let cmd = format!("echo {}; exec {} {}", ELEVATED_SFTP_READY, sudo, server_path);
+    let script = format!("echo {}; exec {} {}", ELEVATED_SFTP_READY, sudo, server_path);
     let channel = shell_sftp::open_session_channel(session_arc).await?;
-    channel.exec(true, cmd.as_bytes()).await.map_err(|e| e.to_string())?;
-    let mut stream = channel.into_stream();
+    // The script, the password and the ready marker, all by one deadline.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut line = zeroize::Zeroizing::new(Vec::new());
     if let Some(pw) = password {
-        let mut line = zeroize::Zeroizing::new(Vec::with_capacity(pw.len() + 1));
         line.extend_from_slice(pw.as_bytes());
         line.push(b'\n');
-        stream.write_all(&line).await.map_err(|e| e.to_string())?;
-        stream.flush().await.map_err(|e| e.to_string())?;
     }
+    remote_sh::start_script_with_input(&channel, &script, &line, false, deadline).await?;
+    let mut stream = channel.into_stream();
     let wait_ready = async {
         let mut line: Vec<u8> = Vec::new();
         let mut byte = [0u8; 1];
@@ -20405,7 +20734,7 @@ async fn open_elevated_sftp(
             }
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(20), wait_ready)
+    tokio::time::timeout_at(deadline, wait_ready)
         .await
         .map_err(|_| format!("{}: timed out starting sftp-server via sudo", SUDO_FAILED))??;
     russh_sftp::client::SftpSession::new_with_config(sftp_listing::counted(stream), sftp_client_config())
@@ -20457,12 +20786,19 @@ mod elevated_sftp_tests {
         assert!(!is_safe_remote_exec_path("/usr/lib/$(id)/sftp-server"));
     }
 
-    #[test]
-    fn probe_script_survives_single_quote_wrapping_in_any_shell() {
-        // It is sent as `sh -c '<script>'`: a single quote would end the
-        // argument early, and `!` triggers history expansion in tcsh.
-        assert!(!SUDO_SFTP_PROBE.contains('\''));
-        assert!(!SUDO_SFTP_PROBE.contains('!'));
+    // The probes go to sh whatever the login shell is (#352). A password
+    // comes after the script, for the script's sudo to read.
+    #[tokio::test]
+    async fn the_probes_go_to_sh_and_the_password_after_them() {
+        use crate::ssh_test_server::{connect, TestServer};
+        let server = TestServer::echoing_stdin();
+        let commands = Arc::clone(&server.commands);
+        let s = tokio::sync::RwLock::new(connect(server, |_| {}, build_ssh_client_config()).await.unwrap());
+        let out = exec_with_stdin_capture(&s, "id -un", None, 5).await.unwrap();
+        assert_eq!(out, remote_sh::whole("id -un"));
+        let out = exec_with_stdin_capture(&s, SUDO_SFTP_PROBE, Some(&b"pw\n"[..]), 5).await.unwrap();
+        assert_eq!(out, format!("{}pw\n", shell_sftp::encode_script(SUDO_SFTP_PROBE)));
+        assert_eq!(*commands.lock().unwrap(), vec![remote_sh::SH_STDIN.to_string(), shell_sftp::RUNNER.to_string()]);
     }
 }
 
@@ -20478,20 +20814,55 @@ mod owner_lookup_tests {
         assert_eq!(got, vec![(0, "root"), (1003, "deploy")]);
     }
 
-    #[test]
-    fn the_script_survives_single_quote_wrapping_in_any_shell() {
-        assert!(!OWNER_LOOKUP_SCRIPT.contains('\''));
-        assert!(!OWNER_LOOKUP_SCRIPT.contains('!'));
-    }
-
-    // The script itself, run by this machine's sh: uid 0 is root everywhere.
+    // The script itself, run by this machine's sh as the server's gets it:
+    // uid 0 is root everywhere.
     #[cfg(unix)]
     #[test]
     fn the_script_names_root_and_ends_with_its_marker() {
-        let out = std::process::Command::new("sh")
-            .args(["-c", OWNER_LOOKUP_SCRIPT, "sh", "0", "3999999999"])
-            .output()
+        use std::io::Write;
+        let mut sh = std::process::Command::new("sh")
+            .arg("-s")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
             .unwrap();
+        let script = remote_sh::whole(&remote_sh::with_args(&["0", "3999999999"], OWNER_LOOKUP_SCRIPT));
+        sh.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        let out = sh.wait_with_output().unwrap();
+        let out = String::from_utf8_lossy(&out.stdout);
+        assert!(out.lines().any(|l| l == "0\troot"), "{out}");
+        assert!(out.lines().any(|l| l == "__SUB_OWNERS:OK"), "{out}");
+        assert_eq!(parse_owners(&out, &[0, 3999999999]).len(), 1, "{out}");
+    }
+
+    // Where neither `id` nor getent names a uid, as on OpenWrt (BusyBox's `id`
+    // takes a name only, and there is no getent), /etc/passwd itself does.
+    #[cfg(unix)]
+    #[test]
+    fn without_id_or_getent_the_names_come_from_etc_passwd() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let bin = std::env::temp_dir().join(format!("sub-owners-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&bin);
+        std::fs::create_dir_all(&bin).unwrap();
+        let id = bin.join("id");
+        std::fs::write(&id, "#!/bin/sh\necho \"id: unknown user $2\" >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&id, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for tool in ["awk", "cut", "head"] {
+            let found = std::process::Command::new("/bin/sh").arg("-c").arg(format!("command -v {tool}")).output().unwrap();
+            std::os::unix::fs::symlink(String::from_utf8_lossy(&found.stdout).trim(), bin.join(tool)).unwrap();
+        }
+        let mut sh = std::process::Command::new("/bin/sh")
+            .arg("-s")
+            .env("PATH", &bin)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let script = remote_sh::whole(&remote_sh::with_args(&["0", "3999999999"], OWNER_LOOKUP_SCRIPT));
+        sh.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        let out = sh.wait_with_output().unwrap();
+        let _ = std::fs::remove_dir_all(&bin);
         let out = String::from_utf8_lossy(&out.stdout);
         assert!(out.lines().any(|l| l == "0\troot"), "{out}");
         assert!(out.lines().any(|l| l == "__SUB_OWNERS:OK"), "{out}");
@@ -20515,9 +20886,12 @@ mod login_shell_tests {
     fn the_script_survives_single_quote_wrapping_in_any_shell() {
         // Sent as `sh -c '<script>'` through the account's own shell: a single
         // quote would end the argument early, and `!` triggers history
-        // expansion in tcsh.
+        // expansion in tcsh. csh ends a quote at a line break, and fish
+        // reads some backslashes inside single quotes.
         assert!(!LOGIN_SHELL_SCRIPT.contains('\''));
         assert!(!LOGIN_SHELL_SCRIPT.contains('!'));
+        assert!(!LOGIN_SHELL_SCRIPT.contains('\n'));
+        assert!(!LOGIN_SHELL_SCRIPT.contains('\\'));
     }
 
     // What the script does, run by this machine's own sh, with a stand-in
@@ -20598,10 +20972,10 @@ struct SftpOwners {
 }
 
 // The names behind the uids of an SFTP listing, which carries numbers only:
-// each uid through `id -un`, else the passwd database. The uids come as
-// arguments (numbers); the script is fixed and has no single quote, as it is
-// sent as `sh -c '<script>' sh <uid>...`.
-const OWNER_LOOKUP_SCRIPT: &str = r#"for uid; do name=$(id -un "$uid" 2>/dev/null) || name=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1 | head -n 1); [ -n "$name" ] && printf "%s\t%s\n" "$uid" "$name"; done; echo __SUB_OWNERS:OK"#;
+// each uid through `id -un`, else the passwd database, else /etc/passwd itself.
+// BusyBox's `id` takes a name only ("unknown user 0"), and OpenWrt has no
+// `getent`. The uids come as arguments (numbers); the script is fixed.
+const OWNER_LOOKUP_SCRIPT: &str = r#"for uid; do name=$(id -un "$uid" 2>/dev/null) || name=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1 | head -n 1); [ -n "$name" ] || name=$(awk -F: -v u="$uid" '$3 == u { print $1; exit }' /etc/passwd 2>/dev/null); [ -n "$name" ] && printf "%s\t%s\n" "$uid" "$name"; done; echo __SUB_OWNERS:OK"#;
 
 // One lookup takes this many uids at most; a listing rarely has a handful.
 const OWNER_LOOKUP_MAX: usize = 256;
@@ -20639,9 +21013,9 @@ async fn sftp_resolve_owners(
         return Ok(SftpOwners { owners: Vec::new(), status: "complete" });
     }
     let (_, session_arc) = sftp_transport(&state, &session_id).await?;
-    let args = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(" ");
-    let cmd = format!("sh -c '{}' sh {}", OWNER_LOOKUP_SCRIPT, args);
-    let out = exec_with_stdin_capture(&session_arc, &cmd, None, 5).await?;
+    let args = uids.iter().map(u32::to_string).collect::<Vec<_>>();
+    let script = remote_sh::with_args(&args, OWNER_LOOKUP_SCRIPT);
+    let out = exec_with_stdin_capture(&session_arc, &script, None, 5).await?;
     let complete = out.lines().any(|line| line.trim() == "__SUB_OWNERS:OK");
     Ok(SftpOwners {
         owners: parse_owners(&out, &uids),
@@ -23342,6 +23716,13 @@ async fn sftp_open_remote_file(
     // then /b/index.php wrote b's content over a's copy, and a's watcher
     // uploaded it to /a/index.php without any edit.
     let copy_dir = session_sftp_dir(&session_id)?.join(live_edit_dir_name(&remote_path));
+    // The file opened again: the copy is written anew below, and the watcher
+    // made for it the last time ends here, before it, or two watchers would
+    // upload each save. It goes without a word and leaves the copy alone.
+    let (end_tx, end_rx) = tokio::sync::oneshot::channel::<ssh_manager::LiveEditEnd>();
+    if let Some(old) = state.live_edits.lock().await.insert(ssh_manager::live_edit_key(&session_id, &remote_path), end_tx) {
+        let _ = old.send(ssh_manager::LiveEditEnd::Replaced);
+    }
     std::fs::create_dir_all(&copy_dir)
         .map_err(|e| format!("Failed to create temp dir: {}", e))?;
     let temp_file_path = copy_dir.join(&filename);
@@ -23413,6 +23794,8 @@ async fn sftp_open_remote_file(
 
     // Spawn modification watcher task in background
     let connections_clone = Arc::clone(&state.connections);
+    // An FTP tab has no SSH connection: its saves go over its own FTP one.
+    let ftp_sessions_clone = Arc::clone(&state.ftp_sessions);
     let elevation_clone = Arc::clone(&state.sftp_elevation);
     let app_handle_clone = app_handle.clone();
     let session_id_clone = session_id.clone();
@@ -23428,12 +23811,20 @@ async fn sftp_open_remote_file(
         // after that was neither uploaded nor reported.
         let mut deadline = tokio::time::Instant::now() + LIVE_EDIT_IDLE_LIMIT;
         let mut idle_end = false;
+        let mut replaced = false;
+        let mut end_rx = end_rx;
         let mut synced_hash = synced_hash;
         loop {
             let wait = tokio::time::sleep_until(deadline);
             tokio::select! {
                 _ = wait => {
                     idle_end = true;
+                    break;
+                }
+                // Told to end: the file opened again (Replaced), or the tab
+                // disconnected or the profile closed (the entry dropped).
+                end = &mut end_rx => {
+                    replaced = matches!(end, Ok(ssh_manager::LiveEditEnd::Replaced));
                     break;
                 }
                 maybe = tok_rx.recv() => {
@@ -23457,10 +23848,13 @@ async fn sftp_open_remote_file(
                     if content_hash == synced_hash { continue; }
                     // Cheap pre-check: if the session is gone we exit the
                     // watcher entirely instead of looping and spamming
-                    // "Auto-sync failed" toasts on every subsequent save.
+                    // "Auto-sync failed" toasts on every subsequent save. An FTP
+                    // tab is in ftp_sessions, an SSH one in connections (one
+                    // lock at a time).
                     {
-                        let connections = connections_clone.lock().await;
-                        if !connections.contains_key(&session_id_clone) {
+                        let ftp_tab = ftp_sessions_clone.lock().await.contains_key(&session_id_clone);
+                        let ssh_tab = !ftp_tab && connections_clone.lock().await.contains_key(&session_id_clone);
+                        if !ftp_tab && !ssh_tab {
                             let _ = app_handle_clone.emit(
                                 &format!("sftp-sync-status-{}", session_id_clone),
                                 serde_json::json!({
@@ -23472,6 +23866,13 @@ async fn sftp_open_remote_file(
                         }
                     }
                     let upload_res = async {
+                    // An FTP tab: the file goes back over the tab's own FTP
+                    // connection, which serves its file pane (ftp_sftp.rs).
+                    let ftp = ftp_sessions_clone.lock().await.get(&session_id_clone).map(|live| Arc::clone(&live.sftp));
+                    let ssh_sftp;
+                    let sftp: &russh_sftp::client::SftpSession = match ftp.as_deref() {
+                        Some(ftp) => ftp,
+                        None => {
                     let session_arc = {
                         let connections = connections_clone.lock().await;
                         connections.get(&session_id_clone).map(|sess| Arc::clone(sess))
@@ -23489,10 +23890,14 @@ async fn sftp_open_remote_file(
                     // An elevated tab (file ops as root via sudo) must save
                     // back the same way, or root-owned files can't be written.
                     let elevation = elevation_clone.lock().await.get(&session_id_clone).cloned();
-                    let (sftp, _) = if let Some(elev) = elevation {
+                    ssh_sftp = if let Some(elev) = elevation {
                         open_elevated(&session_arc, &elev).await?
                     } else {
                         open_sftp(&session_arc).await?
+                    }
+                    .0;
+                    &ssh_sftp
+                        }
                     };
 
                     use russh_sftp::protocol::OpenFlags;
@@ -23539,6 +23944,10 @@ async fn sftp_open_remote_file(
         // intentionally ignored: on Windows the editor may still hold a lock on the
         // file, and the worst case is the file persists until the OS cleans temp.
         drop(debouncer);
+        // Replaced: the copy is the new watcher's now.
+        if replaced {
+            return;
+        }
         let unsynced = {
             use sha2::{Digest, Sha256};
             std::fs::read(&temp_file_path_clone).map(|c| Sha256::digest(&c).to_vec() != synced_hash).unwrap_or(false)
@@ -26009,7 +26418,12 @@ async fn monitor_resume(
     map: tauri::State<'_, MonitorMap>,
     settings: tauri::State<'_, SharedSettings>,
     node_id: i32,
+    use_ssh_agent: Option<bool>,
 ) -> Result<(), String> {
+    // For a node with no saved password or key (see monitor::Login::Agent).
+    if let Some(on) = use_ssh_agent {
+        monitor::set_use_agent(on);
+    }
     let (auth, metrics, customs, name) = {
         let guard = db_state.conn.lock().map_err(|_| "lock")?;
         let conn = guard.as_ref().ok_or("db not ready")?;
@@ -26083,7 +26497,12 @@ async fn monitor_resume_all(
     db_state: tauri::State<'_, DbState>,
     map: tauri::State<'_, MonitorMap>,
     settings: tauri::State<'_, SharedSettings>,
+    use_ssh_agent: Option<bool>,
 ) -> Result<(), String> {
+    // For a node with no saved password or key (see monitor::Login::Agent).
+    if let Some(on) = use_ssh_agent {
+        monitor::set_use_agent(on);
+    }
     // Persist all to unpaused first.
     let node_ids: Vec<i32> = {
         let guard = db_state.conn.lock().map_err(|_| "lock")?;
@@ -26128,8 +26547,11 @@ async fn monitor_resume_all(
     Ok(())
 }
 
-/// The clipboard's text, for a paste into the terminal. Only the Linux
-/// frontend asks; the others read it in the page.
+/// The clipboard's text, for a paste. The Linux and Android frontends ask;
+/// the others read it in the page.
+///
+/// Android's WebView refuses the page's `navigator.clipboard` altogether, so
+/// there the app's own Android plugin reads the system clipboard.
 ///
 /// WebKitGTK refuses the page's `navigator.clipboard.readText()` (#89). And
 /// where the webview reads the clipboard itself (a keyboard paste, or the
@@ -26154,10 +26576,47 @@ async fn clipboard_read_text(app: tauri::AppHandle) -> Result<String, String> {
             _ => Err("The clipboard did not answer.".to_string()),
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "android")]
+    {
+        android_bridge::clipboard_read(&app).await
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
         let _ = app;
-        Err("Reading the clipboard here is only for Linux.".to_string())
+        Err("Reading the clipboard here is only for Linux and Android.".to_string())
+    }
+}
+
+/// Text onto the clipboard, for a copy on Android: its WebView refuses the
+/// page's `navigator.clipboard`, so the app's own Android plugin writes the
+/// system clipboard. The other platforms copy in the page.
+#[tauri::command]
+async fn clipboard_write_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        android_bridge::clipboard_write(&app, &text).await
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, text);
+        Err("Writing the clipboard here is only for Android.".to_string())
+    }
+}
+
+/// Whether Android has a hardware keyboard in use (a keyboard cover, a USB or
+/// Bluetooth keyboard): a new terminal takes the focus then, as no on-screen
+/// keyboard comes up over it (TerminalView). False everywhere else, and when
+/// Android can't say.
+#[tauri::command]
+async fn hardware_keyboard_attached(app: tauri::AppHandle) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        android_bridge::hardware_keyboard(&app).await.unwrap_or(false)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        false
     }
 }
 
@@ -26415,7 +26874,7 @@ pub fn run() {
             add_credential, edit_credential, delete_credential,
             add_ssh_key, edit_ssh_key, delete_ssh_key,
             pick_ssh_key_file, read_ssh_key_file, import_ssh_key_file,
-            initiate_connection, verify_fingerprint_response, submit_kbi_response, kbi_save_choice, disconnect_session, set_use_ssh_config,
+            initiate_connection, verify_fingerprint_response, submit_kbi_response, kbi_save_choice, disconnect_session, set_use_ssh_config, set_use_ssh_agent,
             initiate_rdp, rdp_open_again, rdp_builtin_open, rdp_builtin_input, rdp_builtin_paste, rdp_builtin_resize, rdp_builtin_shown, rdp_builtin_close, rdp_share_drives,
             telnet_connect, telnet_open_terminal, ftp_connect, vnc_open, vnc_input, vnc_resize, vnc_paste, vnc_shown, screen_ack,
             start_tunnel, stop_tunnel, list_tunnels, restart_session_tunnels, persist_session_tunnels,
@@ -26459,13 +26918,17 @@ pub fn run() {
             feedback::send_feedback,
             portable::get_storage_info,
             fonts::list_system_fonts,
-            clipboard_read_text
+            clipboard_read_text,
+            clipboard_write_text,
+            hardware_keyboard_attached
         ]);
 
     // Clear out live-edit / drag temp dirs a crashed earlier run left behind
     // (only ones older than a day — a newer one may be another copy of the app
-    // running right now). This run's own dir is swept on exit, below.
-    sweep_app_temp(false);
+    // running right now). This run's own dir is swept on exit, below. On a
+    // thread of its own, so the window doesn't wait: it lists the whole temp
+    // folder, which can hold thousands of entries and sit on a cold disk.
+    let _ = std::thread::Builder::new().name("temp-sweep".into()).spawn(|| sweep_app_temp(false));
 
     builder
         .build(context)

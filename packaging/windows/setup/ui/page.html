@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>/*__STYLE__*/</style>
+</head>
+<body>
+<div class="sky" aria-hidden="true"></div>
+
+<header class="titlebar">
+  <div class="drag" id="drag"></div>
+  <button class="tb" id="tb-min" type="button" data-label="minimize">
+    <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8"/></svg>
+  </button>
+  <button class="tb tb-close" id="tb-close" type="button" data-label="close">
+    <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg>
+  </button>
+</header>
+
+<main class="stage">
+  <!-- Install: the first screen -->
+  <section class="page" id="p-welcome" aria-labelledby="welcome-name">
+    <div class="hero">
+      <div class="glow"></div>
+      <img class="logo" src="__LOGO__" alt="">
+    </div>
+    <h1 id="welcome-name" class="name"></h1>
+    <p class="tagline" data-t="tagline"></p>
+    <p class="pill" id="welcome-status"></p>
+    <p class="note" id="welcome-msi" hidden data-t="status.msi"></p>
+    <div class="actions">
+      <button class="btn primary wide" id="welcome-go" type="button"></button>
+    </div>
+    <button class="link" id="welcome-options" type="button">
+      <span data-t="options"></span>
+      <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5L8 6l-3.5 3.5"/></svg>
+    </button>
+  </section>
+
+  <!-- Install: folder and shortcut -->
+  <section class="page form" id="p-options" aria-labelledby="options-title">
+    <h2 id="options-title" data-t="options.title"></h2>
+    <label class="label" for="options-path" data-t="folder"></label>
+    <div class="field">
+      <div class="path" id="options-path" role="textbox" aria-readonly="true" tabindex="-1"><span dir="ltr" id="options-path-text"></span></div>
+      <button class="btn secondary small" id="options-change" type="button" data-t="change"></button>
+    </div>
+    <p class="hint" id="options-space"></p>
+    <label class="check">
+      <input type="checkbox" id="options-desktop">
+      <span data-t="desktop"></span>
+    </label>
+    <div class="actions end">
+      <button class="btn secondary" id="options-back" type="button" data-t="back"></button>
+      <button class="btn primary" id="options-go" type="button"></button>
+    </div>
+  </section>
+
+  <!-- Uninstall: the first screen -->
+  <section class="page" id="p-uninstall" aria-labelledby="uninstall-title">
+    <div class="hero small">
+      <div class="glow dim"></div>
+      <img class="logo" src="__LOGO__" alt="">
+    </div>
+    <h2 id="uninstall-title" data-t="un.heading"></h2>
+    <p class="body" data-t="un.body"></p>
+    <label class="check boxed">
+      <input type="checkbox" id="uninstall-data">
+      <span>
+        <span class="check-title" data-t="un.data"></span>
+        <span class="check-hint" data-t="un.dataHint"></span>
+      </span>
+    </label>
+    <div class="actions">
+      <button class="btn secondary" id="uninstall-cancel" type="button" data-t="cancel"></button>
+      <button class="btn danger" id="uninstall-go" type="button" data-t="un.button"></button>
+    </div>
+  </section>
+
+  <!-- The app is running -->
+  <section class="page" id="p-running" aria-labelledby="running-title">
+    <div class="badge warn" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M12 7.5v6M12 16.8v.2"/></svg>
+    </div>
+    <h2 id="running-title" data-t="running.title"></h2>
+    <p class="body" data-t="running.body"></p>
+    <div class="actions">
+      <button class="btn secondary" id="running-cancel" type="button" data-t="cancel"></button>
+      <button class="btn primary" id="running-close" type="button" data-t="running.close"></button>
+    </div>
+  </section>
+
+  <!-- Working -->
+  <section class="page" id="p-progress" aria-labelledby="progress-title">
+    <div class="hero sonar">
+      <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+      <div class="glow"></div>
+      <img class="logo" src="__LOGO__" alt="">
+    </div>
+    <h2 id="progress-title"></h2>
+    <div class="bar" id="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-labelledby="progress-title">
+      <i id="progress-fill"></i>
+    </div>
+    <p class="percent" id="progress-percent" aria-hidden="true"></p>
+  </section>
+
+  <!-- Finished -->
+  <section class="page" id="p-done" aria-labelledby="done-title">
+    <div class="hero">
+      <div class="glow"></div>
+      <img class="logo" src="__LOGO__" alt="">
+      <span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.5 12.5l3.5 3.5 7.5-8"/></svg></span>
+    </div>
+    <h2 id="done-title"></h2>
+    <p class="body" id="done-body"></p>
+    <div class="actions">
+      <button class="btn secondary" id="done-close" type="button" data-t="close"></button>
+      <button class="btn primary" id="done-open" type="button" data-t="open"></button>
+    </div>
+  </section>
+
+  <!-- Failed -->
+  <section class="page" id="p-error" aria-labelledby="error-title">
+    <div class="badge bad" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M12 7.5v6M12 16.8v.2"/></svg>
+    </div>
+    <h2 id="error-title"></h2>
+    <p class="message" id="error-message"></p>
+    <p class="hint" id="error-log"></p>
+    <div class="actions">
+      <button class="btn secondary" id="error-close" type="button" data-t="close"></button>
+      <button class="btn secondary" id="error-back" type="button" data-t="options" hidden></button>
+      <button class="btn secondary" id="error-anyway" type="button" data-t="error.msi.continue" hidden></button>
+      <button class="btn primary" id="error-retry" type="button" data-t="error.retry" hidden></button>
+    </div>
+  </section>
+
+  <p class="sr" id="live" aria-live="polite"></p>
+</main>
+
+<div class="waves" aria-hidden="true">
+  <div class="wave back"></div>
+  <div class="wave front"></div>
+</div>
+
+<script>/*__SCRIPT__*/</script>
+</body>
+</html>

@@ -20,13 +20,32 @@ use tokio::task::AbortHandle;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024; // 4 MB cap for logs
 
 // State for active streaming sessions (live logs, etc.) keyed by a
-// frontend-generated stream id so the user can stop them individually.
+// frontend-generated stream id so the user can stop them individually, with
+// the session each one reads from.
 #[derive(Default)]
 pub struct DockerStreams {
-    pub streams: Arc<TokioMutex<HashMap<String, AbortHandle>>>,
+    pub streams: Arc<TokioMutex<HashMap<String, (String, AbortHandle)>>>,
 }
 impl DockerStreams {
     pub fn new() -> Self { Self::default() }
+
+    /// Ends the session's streams: a stream holds its own channel, which
+    /// kept the connection up after a Disconnect, with `docker logs -f`
+    /// running on the server and its lines still coming in.
+    pub async fn stop_for_session(&self, session_id: &str) {
+        self.streams.lock().await.retain(|_, (sid, h)| {
+            let mine = sid == session_id;
+            if mine { h.abort(); }
+            !mine
+        });
+    }
+
+    /// Ends every stream: the profile closes.
+    pub async fn stop_all(&self) {
+        for (_, (_, h)) in self.streams.lock().await.drain() {
+            h.abort();
+        }
+    }
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -89,11 +108,11 @@ async fn run_capture(
             .ok_or_else(|| "Session not connected".to_string())?
     };
     let channel = crate::shell_sftp::open_session_channel(&session_arc).await?;
+    // sh reads it, whatever the login shell is (remote_sh). Sending it and
+    // reading what it prints share the time limit.
     let wrapped = format!("{}\necho __DOCK_EXIT:$?", cmd);
-    channel
-        .exec(true, wrapped.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    crate::remote_sh::run_script(&channel, &wrapped, deadline).await?;
     let mut stream = channel.into_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
     let read_fut = async {
@@ -110,7 +129,7 @@ async fn run_capture(
             }
         }
     };
-    tokio::time::timeout(Duration::from_secs(timeout_secs), read_fut)
+    tokio::time::timeout_at(deadline, read_fut)
         .await
         .map_err(|_| format!("docker command timed out after {}s", timeout_secs))?;
     let text = String::from_utf8_lossy(&buf).into_owned();
@@ -138,8 +157,35 @@ async fn run_docker_smart(
     docker_cmd: &str,
     timeout: u64,
 ) -> Result<(bool, String, bool), String> {
-    let cmd = format!("{} 2>&1", docker_cmd);
-    let (code1, out1) = run_capture(state, session_id, &cmd, timeout).await?;
+    let plain = format!("{} 2>&1", docker_cmd);
+    let with_sudo = format!("sudo -n {} 2>&1", docker_cmd);
+    run_with_sudo_retry(state, session_id, &plain, &with_sudo, timeout).await
+}
+
+// A compose command (`args` after `compose`), sudo-retried like the others.
+async fn run_compose_smart(
+    state: &SshState,
+    session_id: &str,
+    args: &str,
+    timeout: u64,
+) -> Result<(bool, String, bool), String> {
+    let plain = format!("{} 2>&1", compose_command(args, false));
+    let with_sudo = format!("{} 2>&1", compose_command(args, true));
+    run_with_sudo_retry(state, session_id, &plain, &with_sudo, timeout).await
+}
+
+// Runs `plain`; when that failed on the daemon socket's permission, runs
+// `with_sudo` instead. Both are whole commands: the caller decides where
+// `sudo -n` goes (in front of a compose command, not of the shell code that
+// picks it).
+async fn run_with_sudo_retry(
+    state: &SshState,
+    session_id: &str,
+    plain: &str,
+    with_sudo: &str,
+    timeout: u64,
+) -> Result<(bool, String, bool), String> {
+    let (code1, out1) = run_capture(state, session_id, plain, timeout).await?;
     let lower = out1.to_lowercase();
     let needs_sudo = code1 != 0
         && (lower.contains("permission denied")
@@ -149,8 +195,7 @@ async fn run_docker_smart(
     if code1 == 0 || !needs_sudo {
         return Ok((code1 == 0, out1, false));
     }
-    let sudo_cmd = format!("sudo -n {}", cmd);
-    let (code2, out2) = run_capture(state, session_id, &sudo_cmd, timeout).await?;
+    let (code2, out2) = run_capture(state, session_id, with_sudo, timeout).await?;
     Ok((code2 == 0, out2, true))
 }
 
@@ -339,8 +384,20 @@ pub async fn ssh_docker_volumes_list(
 
 // Compose plugin first (`docker compose`); fall back to legacy script if
 // the plugin isn't installed. Caller never has to care which is present.
-fn compose_prefix() -> &'static str {
-    "( docker compose version >/dev/null 2>&1 && CCMD='docker compose' ) || CCMD='docker-compose'; $CCMD"
+/// A compose command with `args`: the compose plugin (`docker compose`) when
+/// the server has it, else the old `docker-compose`. The choice is made in
+/// the same shell as the command. (It used to be made inside `( … )`, a
+/// subshell, so it was lost: with the plugin, "compose ls" ran a bare
+/// `ls --all` and the `-f` actions failed. And `sudo -n` in front of the
+/// whole line was a syntax error.) With `sudo`, `sudo -n` goes in front of
+/// the compose command itself. `$CCMD` is unquoted on purpose: `docker
+/// compose` is two words.
+fn compose_command(args: &str, sudo: bool) -> String {
+    format!(
+        "if docker compose version >/dev/null 2>&1; then CCMD='docker compose'; else CCMD='docker-compose'; fi; {}$CCMD {}",
+        if sudo { "sudo -n " } else { "" },
+        args
+    )
 }
 
 #[tauri::command]
@@ -353,8 +410,7 @@ pub async fn ssh_docker_compose_list(
     // others JSONL, others prefix deprecation warnings to the JSON which
     // breaks `JSON.parse`. The text columns are stable since the compose
     // plugin was added and are trivially parseable on the frontend.
-    let cmd = format!("{} ls --all", compose_prefix());
-    let (success, data, used_sudo) = run_docker_smart(&state, &session_id, &cmd, 20).await?;
+    let (success, data, used_sudo) = run_compose_smart(&state, &session_id, "ls --all", 20).await?;
     Ok(DockerTextResult {
         success,
         data,
@@ -395,12 +451,8 @@ pub async fn ssh_docker_compose_services(
     if !is_safe_path(&compose_file) {
         return Err("invalid compose file path".into());
     }
-    let cmd = format!(
-        "{} -f {} ps --all --format json",
-        compose_prefix(),
-        shq(&compose_file)
-    );
-    let (success, data, used_sudo) = run_docker_smart(&state, &session_id, &cmd, 30).await?;
+    let args = format!("-f {} ps --all --format json", shq(&compose_file));
+    let (success, data, used_sudo) = run_compose_smart(&state, &session_id, &args, 30).await?;
     Ok(DockerTextResult {
         success,
         data,
@@ -438,14 +490,8 @@ pub async fn ssh_docker_compose_action(
         "up" => "up -d --no-deps".to_string(),
         other => other.to_string(),
     };
-    let cmd = format!(
-        "{} -f {} {}{}",
-        compose_prefix(),
-        shq(&compose_file),
-        action_args,
-        svc
-    );
-    let (success, output, used_sudo) = run_docker_smart(&state, &session_id, &cmd, 300).await?;
+    let args = format!("-f {} {}{}", shq(&compose_file), action_args, svc);
+    let (success, output, used_sudo) = run_compose_smart(&state, &session_id, &args, 300).await?;
     Ok(DockerActionResult {
         success,
         output,
@@ -546,10 +592,10 @@ pub async fn ssh_docker_logs_start(
     } else {
         raw_cmd
     };
-    channel
-        .exec(true, cmd.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
+    // The logs then come for as long as they are wanted; only starting has a
+    // time limit.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    crate::remote_sh::run_script(&channel, &cmd, deadline).await?;
     let mut stream = channel.into_stream();
 
     let app_clone = app.clone();
@@ -651,7 +697,7 @@ pub async fn ssh_docker_logs_start(
         .streams
         .lock()
         .await
-        .insert(stream_id, handle.abort_handle());
+        .insert(stream_id, (session_id, handle.abort_handle()));
     Ok(())
 }
 
@@ -660,13 +706,32 @@ pub async fn ssh_docker_logs_stop(
     streams: tauri::State<'_, DockerStreams>,
     stream_id: String,
 ) -> Result<(), String> {
-    if let Some(h) = streams.streams.lock().await.remove(&stream_id) {
+    if let Some((_, h)) = streams.streams.lock().await.remove(&stream_id) {
         h.abort();
     }
     Ok(())
 }
 
 // ---- terminal exec into container ------------------------------------------
+
+/// The command line for a terminal in `container`. Shell auto-detect runs
+/// inside the container: prefer bash, fall back to sh, fall back to ash
+/// (Alpine). Anything more exotic and the user can jump in via a regular ssh
+/// terminal and figure it out.
+///
+/// The login shell runs this line as it is (one of the few, see remote_sh):
+/// the terminal is its stdin, so no script can come there first. So it is a
+/// plain command with quoted words only, the same in sh, csh and fish: no
+/// line break, no `!`, no redirection outside the quotes.
+fn container_terminal_command(container: &str, use_sudo: bool) -> String {
+    let inner = r#"if command -v bash >/dev/null 2>&1; then exec bash; elif command -v sh >/dev/null 2>&1; then exec sh; elif command -v ash >/dev/null 2>&1; then exec ash; else echo 'no shell found in container' && exit 1; fi"#;
+    let docker_cmd = format!("docker exec -it {} sh -c {}", shq(container), shq(inner));
+    if use_sudo {
+        format!("sudo -n {}", docker_cmd)
+    } else {
+        docker_cmd
+    }
+}
 
 // Opens a PTY-backed exec channel running `docker exec -it <name> <shell>`
 // with shell auto-detect: try bash → sh. Wires into the same terminal-IO
@@ -702,18 +767,9 @@ pub async fn open_container_terminal(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Shell auto-detect runs inside the container: prefer bash, fall back to
-    // sh, fall back to ash (Alpine). Anything more exotic and the user can
-    // jump in via a regular ssh terminal and figure it out.
-    let inner = r#"if command -v bash >/dev/null 2>&1; then exec bash; elif command -v sh >/dev/null 2>&1; then exec sh; elif command -v ash >/dev/null 2>&1; then exec ash; else echo 'no shell found in container' && exit 1; fi"#;
-    let docker_cmd = format!("docker exec -it {} sh -c {}", shq(&container), shq(inner));
-    let cmd = if use_sudo {
-        format!("sudo -n {}", docker_cmd)
-    } else {
-        docker_cmd
-    };
+    let terminal_cmd = container_terminal_command(&container, use_sudo);
     channel
-        .exec(true, cmd.as_bytes())
+        .exec(true, terminal_cmd.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
 
@@ -748,8 +804,112 @@ pub async fn open_container_terminal(
 }
 
 #[cfg(test)]
+mod stream_tests {
+    use super::DockerStreams;
+
+    // A tab's Disconnect ends its own log streams and no other tab's; the
+    // profile closing ends them all.
+    #[tokio::test]
+    async fn streams_end_with_their_session() {
+        let streams = DockerStreams::new();
+        let forever = || tokio::spawn(async { std::future::pending::<()>().await });
+        let (a, b, c) = (forever(), forever(), forever());
+        {
+            let mut map = streams.streams.lock().await;
+            map.insert("s-a".into(), ("session-1".into(), a.abort_handle()));
+            map.insert("s-b".into(), ("session-10".into(), b.abort_handle()));
+            map.insert("s-c".into(), ("session-1".into(), c.abort_handle()));
+        }
+        streams.stop_for_session("session-1").await;
+        assert!(a.await.unwrap_err().is_cancelled());
+        assert!(c.await.unwrap_err().is_cancelled());
+        assert_eq!(streams.streams.lock().await.keys().cloned().collect::<Vec<String>>(), vec!["s-b".to_string()]);
+        streams.stop_all().await;
+        assert!(b.await.unwrap_err().is_cancelled());
+        assert!(streams.streams.lock().await.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod compose_command_tests {
+    use super::compose_command;
+
+    #[test]
+    fn the_choice_is_made_in_the_same_shell_and_sudo_goes_on_the_compose_command() {
+        let plain = compose_command("ls --all", false);
+        assert!(!plain.contains('('), "no subshell: {plain}");
+        assert!(plain.starts_with("if docker compose version >/dev/null 2>&1; then CCMD='docker compose'; else CCMD='docker-compose'; fi; "));
+        assert!(plain.ends_with("; $CCMD ls --all"), "{plain}");
+        let sudo = compose_command("-f '/srv/app/compose.yml' up -d --no-deps", true);
+        assert!(sudo.ends_with("; sudo -n $CCMD -f '/srv/app/compose.yml' up -d --no-deps"), "{sudo}");
+        assert_eq!(sudo.matches("sudo").count(), 1, "sudo only on the compose command: {sudo}");
+    }
+
+    // The command text in a real sh, with a stand-in `docker` (and `sudo`) on
+    // PATH: with the compose plugin, without it, and through sudo.
+    #[cfg(unix)]
+    #[test]
+    fn the_command_runs_the_right_compose_in_sh() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("sub-compose-{}", std::process::id()));
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let tool = |name: &str, body: &str| {
+            let p = bin.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let run = |cmd: &str| {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{cmd} 2>&1"))
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        // A docker with the compose plugin: `docker compose version` works.
+        tool("docker", "echo \"docker $*\"");
+        tool("docker-compose", "echo \"docker-compose $*\"");
+        tool("sudo", "shift; \"$@\"");
+        assert_eq!(run(&compose_command("ls --all", false)), "docker compose ls --all");
+        assert_eq!(run(&compose_command("ls --all", true)), "docker compose ls --all");
+        // Without the plugin: `docker compose` fails, the old binary runs.
+        tool("docker", "[ \"$1\" = compose ] && exit 1; echo \"docker $*\"");
+        assert_eq!(run(&compose_command("-f 'a b.yml' ps", false)), "docker-compose -f a b.yml ps");
+        assert_eq!(run(&compose_command("-f 'a b.yml' ps", true)), "docker-compose -f a b.yml ps");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod name_tests {
-    use super::{is_safe_name, is_safe_path};
+    use super::{container_terminal_command, is_safe_name, is_safe_path};
+
+    #[test]
+    fn the_container_terminal_line_reads_the_same_in_any_login_shell() {
+        for sudo in [false, true] {
+            let line = container_terminal_command("web-1", sudo);
+            assert!(!line.contains(['\n', '!', '\\', '$']), "{line}");
+            // Outside quotes, only words; inside double quotes, only the `'`
+            // that shq puts there.
+            let (mut outside, mut quote) = (String::new(), None);
+            let mut doubled = String::new();
+            for c in line.chars() {
+                match (quote, c) {
+                    (None, '\'' | '"') => quote = Some(c),
+                    (None, _) => outside.push(c),
+                    (Some(q), _) if c == q => quote = None,
+                    (Some('"'), _) => doubled.push(c),
+                    _ => {}
+                }
+            }
+            assert!(quote.is_none(), "{line}");
+            assert!(outside.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-'), "{outside}");
+            assert!(doubled.chars().all(|c| c == '\''), "{doubled}");
+        }
+    }
 
     #[test]
     fn name_rejects_leading_dash_flags() {

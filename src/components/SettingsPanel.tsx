@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Settings, Palette, RefreshCw, List, Cloud, Minus, Plus, ArrowRight, X, KeyRound, EyeOff, ExternalLink, MessageSquare } from "lucide-react";
+import { Settings, Palette, RefreshCw, List, Cloud, Minus, Plus, ArrowRight, X, KeyRound, EyeOff, ExternalLink, MessageSquare, ArrowUpCircle } from "lucide-react";
 import { openFeedback } from "./Feedback";
 import {
   MAX_FONT_SIZE, MIN_FONT_SIZE, clampFontSize, fontFamilyCss,
@@ -13,6 +13,8 @@ import { invoke } from "@tauri-apps/api/core";
 import CopyValue from "./CopyValue";
 import { AiSettings } from "./ai/AiSettings";
 import { AgentSettings } from "./agents/AgentSettings";
+import { ShortcutSettings } from "./ShortcutSettings";
+import { useIsNarrow } from "../hooks/useViewport";
 import FontPicker from "./FontPicker";
 import { loadInstalledFonts } from "../util/systemFonts";
 import { MAX_SCROLLBACK, MIN_SCROLLBACK, clampScrollback } from "../util/terminalScrollback";
@@ -821,6 +823,7 @@ function LanguageSetting() {
 
 const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpenAgents, servers = [] }: any) => {
   const t = useT();
+  const narrow = useIsNarrow();
   const accentColors = [
     { name: tk('Light blue'), value: '#60a5fa' },
     { name: tk('Sky'), value: '#38bdf8' },
@@ -844,6 +847,12 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
   const [storage, setStorage] = useState<StorageInfo | null>(null);
   useEffect(() => {
     invoke<StorageInfo>("get_storage_info").then(setStorage).catch(() => setStorage(null));
+  }, []);
+  // Updates: only in builds that look for them on GitHub (not the stores',
+  // not Flatpak: about::app_info).
+  const [updatesOn, setUpdatesOn] = useState(false);
+  useEffect(() => {
+    invoke<{ updates: boolean }>("app_info").then((i) => setUpdatesOn(!!i.updates)).catch(() => setUpdatesOn(false));
   }, []);
 
   return (
@@ -959,6 +968,9 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
           <ShellConfigSyncSettings servers={servers} />
         </section>
 
+        {/* Not on a phone, which has no keyboard for them. A tablet may. */}
+        {!(IS_MOBILE && narrow) && <ShortcutSettings />}
+
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
           <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
             <RefreshCw size={14} /> {t("Connections")}
@@ -1071,6 +1083,35 @@ const SettingsPanel = ({ settings, setSettings, onOpenLogs, onOpenAiChats, onOpe
             )}
           </div>
         </section>
+
+        {/* Updates Section */}
+        {updatesOn && (
+          <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">
+            <div className="flex items-center gap-2 text-zinc-400 font-semibold text-xs">
+              <ArrowUpCircle size={14} /> {t("Updates")}
+            </div>
+
+            <div className="bg-[#121215] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-zinc-100">{t("Tell me about beta versions")}</div>
+                  <p className="text-[12px] text-zinc-400 leading-relaxed mt-1">
+                    {t("Betas are test builds of the next version and may still have rough edges. With this on, the notice on the profile list also tells you about them.")}
+                  </p>
+                </div>
+                <button
+                  role="switch"
+                  aria-label={t("Tell me about beta versions")}
+                  aria-checked={!!settings.updateBeta}
+                  onClick={() => setSettings((s: any) => ({ ...s, updateBeta: !s.updateBeta }))}
+                  className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${settings.updateBeta ? 'bg-primary' : 'bg-zinc-700'}`}
+                >
+                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${settings.updateBeta ? 'left-[22px]' : 'left-0.5'}`} />
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Maintenance Section */}
         <section className="break-inside-avoid space-y-3 mb-4 sm:mb-8">

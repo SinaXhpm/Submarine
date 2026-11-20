@@ -1,8 +1,11 @@
 package com.submarine.app
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
@@ -46,6 +49,11 @@ class SecureScreenArgs {
 @InvokeArg
 class KeepAliveArgs {
   var open: Boolean = false
+}
+
+@InvokeArg
+class ClipboardWriteArgs {
+  var text: String = ""
 }
 
 @InvokeArg
@@ -149,6 +157,65 @@ class SubmarinePlugin(private val activity: Activity) : Plugin(activity) {
       applySecureScreen(activity, enabled)
       invoke.resolve(JSObject().apply { put("enabled", enabled) })
     }
+  }
+
+  // Copy and paste for the page. Android's WebView refuses the page's own
+  // clipboard API (navigator.clipboard): a paste said "Clipboard read denied"
+  // and the copy buttons did nothing. So both go through the system clipboard
+  // here. Android shows its own "pasted from" note on a read (Android 12+).
+  @Command
+  fun clipboardRead(invoke: Invoke) {
+    activity.runOnUiThread {
+      try {
+        val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = cm.primaryClip
+        val item = if (clip != null && clip.itemCount > 0) clip.getItemAt(0) else null
+        val plain = item?.text
+        if (item == null || plain != null) {
+          invoke.resolve(JSObject().apply { put("text", plain?.toString() ?: "") })
+          return@runOnUiThread
+        }
+        // A clip that points to a file (a content: link) is read from that
+        // file, which can take a while: not on the thread that draws the app.
+        Thread {
+          try {
+            val text = item.coerceToText(activity)?.toString() ?: ""
+            invoke.resolve(JSObject().apply { put("text", text) })
+          } catch (e: Exception) {
+            invoke.reject(e.message ?: "The clipboard can't be read")
+          }
+        }.start()
+      } catch (e: Exception) {
+        invoke.reject(e.message ?: "The clipboard can't be read")
+      }
+    }
+  }
+
+  @Command
+  fun clipboardWrite(invoke: Invoke) {
+    val text = invoke.parseArgs(ClipboardWriteArgs::class.java).text
+    activity.runOnUiThread {
+      try {
+        val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("Submarine", text))
+        invoke.resolve(JSObject())
+      } catch (e: Exception) {
+        invoke.reject(e.message ?: "The clipboard can't be written")
+      }
+    }
+  }
+
+  // Whether a hardware keyboard is in use: a keyboard cover, or a USB or
+  // Bluetooth keyboard. A new terminal takes the focus then (TerminalView),
+  // since no on-screen keyboard comes up over the screen. The activity
+  // handles keyboard changes itself (configChanges), so its configuration
+  // is current when the page asks.
+  @Command
+  fun hardwareKeyboard(invoke: Invoke) {
+    val c = activity.resources.configuration
+    val attached = c.keyboard != Configuration.KEYBOARD_NOKEYS &&
+      c.hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO
+    invoke.resolve(JSObject().apply { put("attached", attached) })
   }
 
   // The keep-alive service runs while a connection is open: the Rust side

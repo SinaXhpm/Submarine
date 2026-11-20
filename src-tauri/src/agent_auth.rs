@@ -17,7 +17,8 @@
 //! only (a) where a passphrase or password would otherwise have to be asked
 //! for, (b) after the node's own key was turned down, and (c) for a security
 //! key the node or `~/.ssh/config` names, whose file can't sign. See the
-//! callers in lib.rs.
+//! callers in lib.rs. Monitoring uses it only for a node with no saved
+//! password or key, and never offers a security key there (see monitor.rs).
 
 use std::time::Duration;
 
@@ -123,6 +124,16 @@ impl AgentSession {
     /// Whether `key` was offered on this connection already.
     pub(crate) fn was_offered(&self, key: &PublicKey) -> bool {
         key_blob(key).is_some_and(|blob| self.offered.contains(&blob))
+    }
+
+    /// The agent's keys not offered on this connection, security keys left
+    /// out: after an `Offer::Unattended`, the ones the attempt budget kept back.
+    pub(crate) fn untried_keys(&self) -> usize {
+        self.identities
+            .iter()
+            .filter(|id| !is_security_key(&id.public_key().algorithm()))
+            .filter(|id| identity_blob(id).is_some_and(|blob| !self.offered.contains(&blob)))
+            .count()
     }
 }
 
@@ -279,6 +290,11 @@ pub(crate) enum Offer<'a> {
     Only(&'a PublicKey),
     /// The keys not offered yet, within `AGENT_MAX_ATTEMPTS` per connection.
     Rest,
+    /// Like `Rest`, but without security keys: for a login nobody watches
+    /// (monitoring), where the touch or PIN such a key waits for never comes.
+    /// The agent may still ask to approve a plain key's use, as it would for
+    /// any login.
+    Unattended,
 }
 
 /// What came of offering agent keys.
@@ -487,8 +503,11 @@ fn pick(
             let hit = (0..identities.len()).find(|&i| fresh(i) && is_copy_of(&identities[i], wanted));
             (hit.into_iter().collect(), Vec::new())
         }
-        Offer::Rest => {
-            let mut fresh: Vec<usize> = (0..identities.len()).filter(|&i| fresh(i)).collect();
+        Offer::Rest | Offer::Unattended => {
+            let unattended = matches!(which, Offer::Unattended);
+            let mut fresh: Vec<usize> = (0..identities.len())
+                .filter(|&i| fresh(i) && !(unattended && is_security_key(&identities[i].public_key().algorithm())))
+                .collect();
             let room = AGENT_MAX_ATTEMPTS.saturating_sub(attempts);
             let skipped = fresh.split_off(room.min(fresh.len()));
             (fresh, skipped)
@@ -503,7 +522,7 @@ fn is_copy_of(identity: &AgentIdentity, key: &PublicKey) -> bool {
 }
 
 /// `source` at the start of a sentence ("the agent at …" → "The agent at …").
-fn capitalized(source: &str) -> String {
+pub(crate) fn capitalized(source: &str) -> String {
     let mut chars = source.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
@@ -544,8 +563,9 @@ fn describe(identity: &AgentIdentity) -> String {
     }
 }
 
+/// The keys and the in-memory agent here are also used by monitor.rs's tests.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::ssh_test_server::{self, TestClient, TestServer};
     use russh::keys::agent::server::{Agent, MessageType};
@@ -554,14 +574,14 @@ mod tests {
     use std::sync::Arc;
 
     /// A throwaway Ed25519 key per seed.
-    fn key(seed: u8) -> PrivateKey {
+    pub(crate) fn key(seed: u8) -> PrivateKey {
         use russh::keys::ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
         PrivateKey::from(Ed25519Keypair::from(Ed25519PrivateKey::from_bytes(&[seed; 32])))
     }
 
     /// A made-up FIDO key per seed: an agent can hold and list it, but nothing
     /// can sign with it.
-    fn security_key(seed: u8) -> PrivateKey {
+    pub(crate) fn security_key(seed: u8) -> PrivateKey {
         use russh::keys::ssh_key::private::{KeypairData, SkEd25519};
         use russh::keys::ssh_key::public;
         let public = public::SkEd25519::new(*key(seed).public_key().key_data().ed25519().unwrap(), "ssh:");
@@ -570,23 +590,42 @@ mod tests {
     }
 
     /// russh's own agent server; `refuse_signing` makes it turn down every
-    /// signature, like a declined confirmation or a removed card.
+    /// signature, like a declined confirmation or a removed card, and
+    /// `never_sign` leaves every signature request unanswered, like an agent
+    /// waiting on an approval nobody gives.
     #[derive(Clone)]
     struct TestAgent {
         refuse_signing: bool,
+        never_sign: bool,
     }
 
     impl Agent for TestAgent {
         fn confirm_request(&self, msg: MessageType) -> impl std::future::Future<Output = bool> + Send {
-            let allowed = !(self.refuse_signing && matches!(msg, MessageType::Sign));
-            async move { allowed }
+            let sign = matches!(msg, MessageType::Sign);
+            let allowed = !(self.refuse_signing && sign);
+            let hang = self.never_sign && sign;
+            async move {
+                if hang {
+                    std::future::pending::<()>().await;
+                }
+                allowed
+            }
         }
     }
 
-    async fn agent_holding(keys: &[PrivateKey], refuse_signing: bool) -> AgentSession {
+    pub(crate) async fn agent_holding(keys: &[PrivateKey], refuse_signing: bool) -> AgentSession {
+        agent_with(keys, TestAgent { refuse_signing, never_sign: false }).await
+    }
+
+    /// An agent that lists its keys and never answers a signature request.
+    pub(crate) async fn agent_never_signing(keys: &[PrivateKey]) -> AgentSession {
+        agent_with(keys, TestAgent { refuse_signing: false, never_sign: true }).await
+    }
+
+    async fn agent_with(keys: &[PrivateKey], agent: TestAgent) -> AgentSession {
         let (client_end, server_end) = tokio::io::duplex(64 * 1024);
         let listener = futures::stream::iter(vec![Ok::<_, std::io::Error>(server_end)]);
-        tokio::spawn(russh::keys::agent::server::serve(listener, TestAgent { refuse_signing }));
+        tokio::spawn(russh::keys::agent::server::serve(listener, agent));
         let mut client = AgentClient::connect(client_end);
         for k in keys {
             client.add_identity(k, &[]).await.expect("agent takes the key");
@@ -733,6 +772,40 @@ mod tests {
         agent.mark_offered(a.public_key());
         let _ = offer_keys(&mut session, "u", &mut agent, Offer::Rest, |_| {}).await.unwrap();
         assert_eq!(offers.load(Ordering::SeqCst), 1, "the node's own key isn't offered twice");
+    }
+
+    fn identities(keys: &[PrivateKey]) -> Vec<AgentIdentity> {
+        keys.iter().map(|k| AgentIdentity::from(k.public_key().clone())).collect()
+    }
+
+    // A login nobody watches leaves security keys out: the touch or PIN they
+    // wait for never comes. The other keys keep the usual budget.
+    #[test]
+    fn unattended_offers_leave_security_keys_out() {
+        let ids = identities(&[security_key(1), key(2), security_key(3), key(4), key(5), key(6)]);
+        assert_eq!(pick(&ids, &[], &Offer::Unattended, 0), (vec![1, 3, 4], vec![5]));
+        assert_eq!(pick(&ids, &[], &Offer::Rest, 0), (vec![0, 1, 2], vec![3, 4, 5]));
+        // Within what's left of the connection's budget.
+        assert_eq!(pick(&ids, &[], &Offer::Unattended, 2), (vec![1], vec![3, 4, 5]));
+        // Only security keys: nothing to offer, and none counts as left out
+        // by the budget.
+        let only_security_keys = identities(&[security_key(1), security_key(2)]);
+        assert_eq!(pick(&only_security_keys, &[], &Offer::Unattended, 0), (vec![], vec![]));
+    }
+
+    #[tokio::test]
+    async fn an_unattended_login_never_offers_a_security_key() {
+        let (sk, plain) = (security_key(1), key(2));
+        // The server would take the security key, which can't sign here: had
+        // it been offered, the login would have failed.
+        let (mut session, offers) = session_to(Some(&sk), false).await;
+        let mut agent = agent_holding(&[sk.clone(), plain], false).await;
+        let mut logged = Vec::new();
+        let out = offer_keys(&mut session, "u", &mut agent, Offer::Unattended, |m| logged.push(m)).await.unwrap();
+        assert!(matches!(out, AgentOutcome::NotAccepted));
+        assert_eq!(offers.load(Ordering::SeqCst), 1, "only the plain key is offered");
+        assert!(!agent.was_offered(sk.public_key()));
+        assert!(logged.iter().all(|m| !m.contains("touch")), "{logged:?}");
     }
 
     #[tokio::test]

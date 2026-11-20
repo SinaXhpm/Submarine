@@ -2,11 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { ChoiceRow, QuickChoiceRow, SwitchRow } from "./FormRows";
 import {
   RDP_COLOR_CHOICES, RDP_EFFECT_CHOICES, RDP_NETWORK_CHOICES, RDP_PRESETS, RDP_RESOLUTION_CHOICES,
-  rdpPresetOf, rdpShareChoices,
+  rdpPresetOf, rdpShareChoices, rdpShareName,
   type RdpColors, type RdpEffects, type RdpNetwork, type RdpOptions, type RdpPreset, type RdpResolution, type RdpShareKind,
 } from "../util/rdpOptions";
 import { IS_WINDOWS } from "../util/platform";
 import { tk, useT } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // The built-in RDP client's choices of what it shares and of its speed and
 // quality, as the server form and the RDP tab's panels show them. Both keep
@@ -21,7 +22,9 @@ export function RdpShareFields({ o, set, drives }: Fields & { drives: string[] }
     <div className="space-y-2">
       <ChoiceRow
         label={t("Share files")}
-        hint={o.share === "off" ? t("Nothing of this computer's is shared.") : t("The server sees it as \\\\tsclient\\<name>, and nothing else of this computer's.")}
+        hint={o.share === "off"
+          ? t("Nothing of this computer's is shared.")
+          : t("On a Windows server it's in This PC as \"{name} on Submarine\".", { name: rdpShareName(o.share, o.sharePath) }) + sentenceGap() + t("Nothing else of this computer's is shared.")}
         value={o.share}
         onChange={(v) => {
           const share = v as RdpShareKind;

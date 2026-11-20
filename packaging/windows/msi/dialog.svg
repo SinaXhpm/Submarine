@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="493" height="312" viewBox="0 0 493 312">
+  <!-- The .msi's welcome and finish page: 493 x 312 pixels. Windows Installer
+       writes the text in black from x = 180, so the art keeps to the left. -->
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="164" y2="0" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#22d3ee"/><stop offset=".55" stop-color="#3b82f6"/><stop offset="1" stop-color="#a855f7"/>
+  </linearGradient>
+    <radialGradient id="sky"><stop offset="0" stop-color="#22d3ee" stop-opacity=".12"/><stop offset=".7" stop-color="#22d3ee" stop-opacity="0"/></radialGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#22d3ee" stop-opacity=".22"/><stop offset=".55" stop-color="#3b82f6" stop-opacity=".1"/><stop offset="1" stop-color="#3b82f6" stop-opacity="0"/></radialGradient>
+    <clipPath id="panel"><rect width="164" height="312"/></clipPath>
+  </defs>
+  <rect width="493" height="312" fill="#ffffff"/>
+  <g clip-path="url(#panel)">
+    <rect width="164" height="312" fill="#0a0a0c"/>
+    <ellipse cx="82" cy="108" rx="150" ry="120" fill="url(#sky)"/>
+    <circle cx="82" cy="118" r="74" fill="url(#glow)"/>
+    <g fill="none" stroke="#22d3ee">
+      <circle cx="82" cy="118" r="58" stroke-opacity=".28" stroke-width="1.2"/>
+      <circle cx="82" cy="118" r="76" stroke-opacity=".14" stroke-width="1.2"/>
+    </g>
+    <image x="40" y="76" width="84" height="84" href="../../../src-tauri/icons/128x128@2x.png" xlink:href="../../../src-tauri/icons/128x128@2x.png"/>
+    <path d="M0 292C25.02 281.33 49.98 281.33 75 292S124.98 302.67 150 292C175.02 281.33 199.98 281.33 225 292S274.98 302.67 300 292V312H0Z" fill="url(#sea)" fill-opacity=".14"/>
+    <path d="M-40 297.5C-21.65 289.77 -3.35 289.77 15 297.5S51.65 305.23 70 297.5C88.35 289.77 106.65 289.77 125 297.5S161.65 305.23 180 297.5V312H-40Z" fill="url(#sea)" fill-opacity=".24"/>
+  </g>
+</svg>

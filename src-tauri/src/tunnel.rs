@@ -187,6 +187,10 @@ pub struct ForwardEntry {
     /// sockets, memory) — the inbound mirror of the local/dynamic forwards'
     /// `conn_limiter`. Shared (Arc) across every inbound connection on the port.
     pub conn_limiter: Arc<Semaphore>,
+    /// Turns true when the forward stops (or its sender goes): the
+    /// connections it carries end then, as a local forward's do. They went on
+    /// passing data after Stop until one side closed them.
+    pub stopped: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Per-session map of `server_port → ForwardEntry`. Created once per SSH
@@ -1164,6 +1168,7 @@ async fn run_remote_forward(
     // Register the handler-side mapping FIRST, so any race between the
     // server confirming the forward and the first incoming channel is
     // resolved correctly.
+    let (stopped_tx, stopped_rx) = tokio::sync::watch::channel(false);
     let entry = ForwardEntry {
         target: local_target.clone(),
         status: Arc::clone(&status),
@@ -1172,6 +1177,7 @@ async fn run_remote_forward(
         // callback path.
         app: app.clone(),
         conn_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_CONNS)),
+        stopped: stopped_rx,
     };
     forwarded_targets.lock().await.insert(server_port, entry);
 
@@ -1215,8 +1221,11 @@ async fn run_remote_forward(
     // sender side is dropped — either way the channel resolves).
     let _ = stop_rx.await;
 
-    // Best-effort: tell the server to release the port and drop our map entry.
-    // Same timeout as the setup request so teardown can't hang.
+    // No new connection is taken, and the ones running end. Then, best-effort,
+    // the server is told to release the port. Same timeout as the setup
+    // request so teardown can't hang.
+    forwarded_targets.lock().await.remove(&server_port);
+    let _ = stopped_tx.send(true);
     {
         let h = handle.read().await;
         let _ = tokio::time::timeout(
@@ -1224,7 +1233,6 @@ async fn run_remote_forward(
             h.cancel_tcpip_forward(&bind_addr, server_port),
         ).await;
     }
-    forwarded_targets.lock().await.remove(&server_port);
     Ok(())
 }
 
@@ -1265,12 +1273,25 @@ pub async fn bridge_forwarded_channel(
         crate::dial::connect(entry.target.as_str()),
     )
     .await;
+    // The forward stopped meanwhile: nothing is accepted for it any more.
+    let mut stopped = entry.stopped.clone();
+    if *stopped.borrow() {
+        drop(channel);
+        reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+        return;
+    }
     match connect {
         Ok(Ok(mut local)) => {
             apply_tunnel_sockopts(&local);
             reply.accept().await;
             let mut stream = drained_stream(channel);
-            pump_channel(&mut local, &mut stream).await;
+            // Until either side closes, or the forward stops (Stop, the tab's
+            // Disconnect, the profile closing): the channel this holds kept
+            // the connection, and the data, going after that.
+            tokio::select! {
+                _ = pump_channel(&mut local, &mut stream) => {}
+                _ = stopped.wait_for(|s| *s) => {}
+            }
         }
         Ok(Err(e)) => {
             eprintln!("[remote-forward] connect to {} failed: {}", entry.target, e);

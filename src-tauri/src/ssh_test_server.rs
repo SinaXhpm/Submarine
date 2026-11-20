@@ -78,6 +78,8 @@ pub(crate) struct TestServer {
     after_exit: std::collections::HashMap<ChannelId, Answers>,
     /// `env` requests the client has sent.
     pub asks: Arc<AtomicUsize>,
+    /// Every `exec` command line, in the order they came.
+    pub commands: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 /// How a request is answered on a channel whose command has ended.
@@ -363,6 +365,7 @@ impl server::Handler for TestServer {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         let command = String::from_utf8_lossy(data).into_owned();
+        self.commands.lock().unwrap().push(command.clone());
         #[cfg(unix)]
         if self.shell.is_some() {
             self.spawn_shell(channel, command, session.handle());

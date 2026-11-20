@@ -6,14 +6,11 @@
 // The VNC tab (VncSessionView) takes the same paste keys and reads the
 // clipboard the same way; it sends the key itself, after the text.
 
-import { invoke } from "@tauri-apps/api/core";
-import { IS_ANDROID, IS_LINUX } from "./platform";
+import { IS_MAC } from "./platform";
+import { copyText, readClipboardText } from "./clipboard";
 
 /** The paste keys the backend knows; kept equal to `rdp_client::PasteKeys`. */
 export type PasteKeys = "none" | "ctrlv" | "shiftinsert" | "cmdv";
-
-export const IS_MAC: boolean =
-  typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent) && !IS_ANDROID;
 
 /** The paste a key press asks for, if it is one: Ctrl+V, Shift+Insert, and
  *  on a Mac Cmd+V (which the server would take for Win+V). */
@@ -29,23 +26,25 @@ export function pasteKeysOf(
 }
 
 /** Text the user copied on a server. It goes on this device's clipboard only
- *  while the server's tab is in front: from behind another tab, a server could
- *  replace what the user just copied there, and have its own text pasted into
- *  another server. Otherwise, or when the webview refuses (one that wants a
- *  click for it), `hold` keeps it for the tab's "Copy it here" bar. */
+ *  while the server's tab is in front and the app has the focus: from behind
+ *  another tab, or while the user works in another app (a phone's split
+ *  screen keeps both shown), a server could replace what the user just copied
+ *  there, and have its own text pasted into another server. Otherwise, or
+ *  when the webview refuses (one that wants a click for it), `hold` keeps it
+ *  for the tab's "Copy it here" bar. */
 export function takeServerCopy(text: string, inFront: boolean, hold: (text: string | null) => void): void {
-  if (!inFront) {
+  if (!inFront || !document.hasFocus()) {
     hold(text);
     return;
   }
-  navigator.clipboard.writeText(text).then(
+  copyText(text).then(
     () => hold(null),
     () => hold(text),
   );
 }
 
-/** This computer's clipboard text. On Linux the backend reads it (the
- *  webview crashes on an empty clipboard there, see TerminalView). */
+/** This device's clipboard text. On Linux and Android the backend reads it
+ *  (see util/clipboard). */
 export function readLocalClipboard(): Promise<string> {
-  return IS_LINUX ? invoke<string>("clipboard_read_text") : navigator.clipboard.readText();
+  return readClipboardText();
 }

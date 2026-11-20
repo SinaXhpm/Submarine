@@ -8,6 +8,7 @@ import { formatBytes, formatRate, GOOD_BELOW_MS, LINK_WORDS, linkQuality, WEAK_F
 import type { RdpOptions } from "../util/rdpOptions";
 import type { VncOptions } from "../util/vncOptions";
 import { t, tk, tx, useT } from "../i18n";
+import { sentenceGap } from "../util/sentences";
 
 // The tools in the bar of a remote screen tab (the built-in RDP client, VNC):
 // how the link is doing, the speed and quality, and for RDP what of this
@@ -153,12 +154,15 @@ export function LinkPanel({ link, onLessData }: { link: LinkStats | null; onLess
 }
 
 // `shared`: what the session now open shares; undefined while none is open.
-export function FilesPanel({ shared, o, set, drives, reconnect }: {
+// `onOpenOnServer`: opens the share on a Windows server (Win+R with its
+// address typed in), while one is shared.
+export function FilesPanel({ shared, o, set, drives, reconnect, onOpenOnServer }: {
   shared: SharedNow | null | undefined;
   o: RdpOptions;
   set: (patch: Partial<RdpOptions>) => void;
   drives: string[];
   reconnect: (() => void) | null;
+  onOpenOnServer?: () => void;
 }) {
   const t = useT();
   const share = shared ? <span className="font-mono">\\tsclient\{shared.name}</span> : null;
@@ -175,6 +179,27 @@ export function FilesPanel({ shared, o, set, drives, reconnect }: {
             </div>
           ) : (
             <div className="text-zinc-300">{t("Nothing of this computer's.")}</div>
+          )}
+          {shared && (
+            <p className="mt-1.5 text-zinc-400">
+              {t("On a Windows server it's in This PC as \"{name} on Submarine\".", { name: shared.name })}
+              {sentenceGap()}
+              {t("On a Linux server with xrdp it's in thinclient_drives in your home folder.")}
+            </p>
+          )}
+          {shared && onOpenOnServer && (
+            <>
+              <button
+                type="button"
+                onClick={onOpenOnServer}
+                className="mt-2 h-10 sm:h-8 px-3 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 text-[12px] font-semibold transition-colors"
+              >
+                {t("Open it on the server")}
+              </button>
+              <p className="mt-1 text-[11px] text-zinc-500">
+                {t("Opens Run on a Windows server with the folder's address typed in. Press Enter there to open it.")}
+              </p>
+            </>
           )}
         </div>
       )}

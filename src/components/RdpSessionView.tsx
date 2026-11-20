@@ -17,6 +17,7 @@ import { type PasteKeys, pasteKeysOf, readLocalClipboard, takeServerCopy } from 
 import { scancodeFor } from "../util/scancodes";
 import { useT, tx } from "../i18n";
 import { sentenceGap } from "../util/sentences";
+import { copyText } from "../util/clipboard";
 
 // An RDP server's tab (issue #3). By default Submarine opens the system's RDP
 // app (through a forward on the node's own loopback address while the node
@@ -325,6 +326,27 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
     void pasteToServer(keys, true);
   };
 
+  // "Open it on the server" (Files panel): Win+R on the server, then the
+  // share's address typed into Run. Enter is left to the user: with the
+  // server's session locked, Win+R does nothing there and the address would
+  // go into the password box, where an Enter would be a failed login.
+  // Closing the panel gives the screen the keyboard again for that Enter.
+  const openShareOnServer = async () => {
+    const win = scancodeFor("MetaLeft"), r = scancodeFor("KeyR");
+    if (!shared || win === null || r === null) return;
+    const send = (events: object[]) => invoke("rdp_builtin_input", { sessionId: session.id, events });
+    try {
+      await send([{ t: "key", code: win, down: true }, { t: "key", code: r, down: true }, { t: "key", code: r, down: false }, { t: "key", code: win, down: false }]);
+      // Run takes a moment to open; what is typed before goes to the window in front.
+      await new Promise((done) => setTimeout(done, 1000));
+      const address = `\\\\tsclient\\${shared.name}`;
+      await send([...address].flatMap((ch) => [{ t: "text", ch, down: true }, { t: "text", ch, down: false }]));
+    } catch (e) {
+      pushLog({ msg: String(e), type: "warning" });
+    }
+    setPanel(null);
+  };
+
   // A choice made in a panel: kept for the server on this device at once,
   // over what the server form may have changed meanwhile.
   const setOpt = (patch: Partial<RdpOptions>) => {
@@ -583,7 +605,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
           <div role="status" className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-white/5 bg-primary/10 text-[11.5px] text-zinc-200">
             <span className="min-w-0 truncate">{t("Text was copied on the server ({count} characters).", { count: serverCopy.length })}</span>
             <button
-              onClick={() => navigator.clipboard.writeText(serverCopy).then(() => setServerCopy(null), () => {})}
+              onClick={() => copyText(serverCopy).then(() => setServerCopy(null), () => {})}
               className="shrink-0 h-6 px-2 rounded-md bg-primary/20 text-primary hover:bg-primary/30 font-semibold"
             >
               {t("Copy it here")}
@@ -621,7 +643,7 @@ export default function RdpSessionView({ session, displayName, onClose, onStatus
         )}
         {panel === "files" && (
           <ToolPanel title={t("Shared files")} onClose={() => setPanel(null)}>
-            <FilesPanel shared={connected ? shared : undefined} o={opts} set={setOpt} drives={drives} reconnect={reconnectForOpts} />
+            <FilesPanel shared={connected ? shared : undefined} o={opts} set={setOpt} drives={drives} reconnect={reconnectForOpts} onOpenOnServer={connected && shared ? openShareOnServer : undefined} />
           </ToolPanel>
         )}
         {panel === "settings" && (

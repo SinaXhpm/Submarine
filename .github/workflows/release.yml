@@ -47,11 +47,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Windows: ships .msi (WiX) and .exe (NSIS). Both let the user
-          # double-click to install with no extra friction.
+          # Windows: ships the .msi (WiX) from Tauri, and the setup .exe from
+          # packaging/windows/setup (built further down, with the app inside).
           - platform: windows-latest
             os_name: windows
-            bundles: "msi,nsis"
+            bundles: "msi"
             rust_target: x86_64-pc-windows-msvc
 
           # macOS is built in apple.yml (the `apple` job below): one universal
@@ -116,6 +116,9 @@ jobs:
           VERSION_STRICT="${VERSION%%-*}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "VERSION_STRICT=$VERSION_STRICT" >> "$GITHUB_ENV"
+          # The full version for the app itself (about.rs running_version), so a
+          # Windows build, stamped with VERSION_STRICT, still knows it is a beta.
+          echo "SUBMARINE_RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Resolved release version: $VERSION (strict: $VERSION_STRICT)"
 
       # Stamp the version into Cargo.toml and tauri.conf.json so the
@@ -168,7 +171,10 @@ jobs:
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: src-tauri
+          # The Windows setup is a crate of its own, built only on Windows.
+          workspaces: |
+            src-tauri
+            packaging/windows/setup
 
       # Linux-only: WebKit + AppImage tooling + rpmbuild. The Tauri Linux
       # build links webkit2gtk-4.1, ships an AppImage built via
@@ -266,8 +272,54 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          Get-ChildItem -Path "src-tauri/target/${{ matrix.rust_target }}/release/bundle" -Recurse -Include *.msi,*.exe |
+          Get-ChildItem -Path "src-tauri/target/${{ matrix.rust_target }}/release/bundle" -Recurse -Include *.msi |
             Copy-Item -Destination artifacts/
+
+      # The setup .exe: Submarine's own installer (packaging/windows/setup),
+      # with the app built above packed inside. It installs per user, into
+      # the folder and under the Apps entry the NSIS installer used, so
+      # copies installed with that one update in place. The uninstaller is
+      # built first: setup carries it too. Its name stays the NSIS one's.
+      - name: Build Windows setup
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        working-directory: packaging/windows/setup
+        run: |
+          $target = "${{ matrix.rust_target }}"
+          cargo build --release --locked --target $target --bin uninstall
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $payload = New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP "setup-payload")
+          Copy-Item "target/$target/release/uninstall.exe" $payload.FullName
+          $env:SUBMARINE_SETUP_APP = (Resolve-Path "../../../src-tauri/target/$target/release/submarine.exe").Path
+          $env:SUBMARINE_SETUP_UNINSTALLER = Join-Path $payload.FullName "uninstall.exe"
+          cargo build --release --locked --target $target --bin setup
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Copy-Item "target/$target/release/setup.exe" "../../../artifacts/Submarine_${env:VERSION_STRICT}_x64-setup.exe"
+
+      # Installs silently into a temporary folder, checks that the app is the
+      # one built above, and uninstalls again: nothing may be left.
+      - name: Check Windows setup
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          $setup = "artifacts/Submarine_${env:VERSION_STRICT}_x64-setup.exe"
+          $dir = Join-Path $env:RUNNER_TEMP "submarine-setup-check"
+          $p = Start-Process -FilePath $setup -ArgumentList "/S", "/NS", "/D=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "setup ended with $($p.ExitCode)" }
+          $built = (Get-FileHash "src-tauri/target/${{ matrix.rust_target }}/release/submarine.exe").Hash
+          $installed = (Get-FileHash (Join-Path $dir "submarine.exe")).Hash
+          if ($built -ne $installed) { throw "the installed app isn't the one built" }
+          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Submarine"
+          $version = (Get-ItemProperty $key).DisplayVersion
+          if ($version -ne $env:VERSION_STRICT) { throw "Apps entry says $version" }
+          $u = Start-Process -FilePath (Join-Path $dir "uninstall.exe") -ArgumentList "/S" -Wait -PassThru
+          if ($u.ExitCode -ne 0) { throw "uninstall ended with $($u.ExitCode)" }
+          # RUNNER_TEMP is on D: and the temp folder on C:, so the uninstaller
+          # can't move itself out: a copy removes it just after it ends.
+          for ($i = 0; $i -lt 40 -and (Test-Path $dir); $i++) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path $dir) { throw "the install folder is still there" }
+          if (Test-Path $key) { throw "the Apps entry is still there" }
+          "setup installs and uninstalls cleanly"
 
       # Portable build (#35): the bare exe alongside an empty submarine-data
       # folder — that folder is the switch that makes Submarine keep all of its

@@ -133,6 +133,50 @@ pub fn watch_connections(app: AppHandle) {
     });
 }
 
+#[derive(Serialize)]
+struct ClipboardWriteArgs<'a> {
+    text: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ClipboardText {
+    text: String,
+}
+
+/// The system clipboard's text. Android's WebView refuses the page's own
+/// clipboard API, so the page reads it through here (lib.rs
+/// `clipboard_read_text`). Empty when the clipboard holds no text.
+pub async fn clipboard_read(app: &AppHandle) -> Result<String, String> {
+    bridge(app)?
+        .run_mobile_plugin_async::<ClipboardText>("clipboardRead", ())
+        .await
+        .map(|r| r.text)
+        .map_err(|e| format!("Couldn't read the clipboard: {}", e))
+}
+
+/// Puts `text` on the system clipboard (lib.rs `clipboard_write_text`).
+pub async fn clipboard_write(app: &AppHandle, text: &str) -> Result<(), String> {
+    bridge(app)?
+        .run_mobile_plugin_async::<serde_json::Value>("clipboardWrite", ClipboardWriteArgs { text })
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("Couldn't copy: {}", e))
+}
+
+#[derive(Deserialize)]
+struct HardwareKeyboard {
+    attached: bool,
+}
+
+/// Whether a hardware keyboard is in use (lib.rs `hardware_keyboard_attached`).
+pub async fn hardware_keyboard(app: &AppHandle) -> Result<bool, String> {
+    bridge(app)?
+        .run_mobile_plugin_async::<HardwareKeyboard>("hardwareKeyboard", ())
+        .await
+        .map(|r| r.attached)
+        .map_err(|e| e.to_string())
+}
+
 /// A call for quick unlock (quick_unlock.rs): the Keystore key behind
 /// BiometricPrompt. The error is the plugin's own ("CANCELLED", "KEY_GONE",
 /// …), which quick_unlock reads.
