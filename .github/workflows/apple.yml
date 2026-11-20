@@ -457,10 +457,13 @@ jobs:
           mkdir -p "$MNT"
           hdiutil attach "$RW" -nobrowse -noautoopen -mountpoint "$MNT"
           # Only the window's own files and the two icons go out with the app
-          # (and none of the folders macOS keeps on a volume it mounts).
+          # (and none of the folders macOS keeps on a volume it mounts). Those
+          # are removed here and again before the detach, and the check doesn't
+          # count them: fseventsd can make its folder again at once, and did on
+          # a runner in November 2026.
           OS_DIRS=(.fseventsd .Trashes .Spotlight-V100 .DocumentRevisions-V100 .TemporaryItems)
           for d in "${OS_DIRS[@]}"; do rm -rf "${MNT:?}/$d"; done
-          FOUND="$(cd "$MNT" && ls -A | LC_ALL=C sort | tr '\n' ' ')"
+          FOUND="$(cd "$MNT" && ls -A | { grep -vxF "$(printf '%s\n' "${OS_DIRS[@]}")" || true; } | LC_ALL=C sort | tr '\n' ' ')"
           [ "$FOUND" = ".DS_Store .VolumeIcon.icns .background.tiff Applications Submarine.app " ] ||
             { echo "::error::Unexpected files in the DMG window: $FOUND"; exit 1; }
           [ "$(readlink "$MNT/Applications")" = /Applications ] || { echo "::error::Applications does not link to /Applications"; exit 1; }
