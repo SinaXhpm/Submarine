@@ -46,6 +46,24 @@ interface KeptCopy { file: string; when: number; }
 // `has_update` is true only when `latest` is a strictly newer semver than the
 // running build.
 interface UpdateInfo { current: string; latest: string | null; has_update: boolean; release_url: string | null; }
+
+// The silent check's answer, kept until the app is closed: this page mounts
+// again on every Lock, and each check downloads GitHub's list of releases and
+// counts against GitHub's limit for anonymous requests (60 an hour per
+// address). A check that failed is asked again on the next visit. The
+// footer's "Check for updates" always asks, and its answer is kept too.
+let keptUpdateCheck: Promise<UpdateInfo | null> | null = null;
+function silentUpdateCheck(): Promise<UpdateInfo | null> {
+  if (keptUpdateCheck) return keptUpdateCheck;
+  const answer: Promise<UpdateInfo | null> = invoke<UpdateInfo>("check_for_updates").catch(() => {
+    if (keptUpdateCheck === answer) keptUpdateCheck = null;
+    return null;
+  });
+  keptUpdateCheck = answer;
+  return answer;
+}
+const keepUpdateCheck = (u: UpdateInfo) => { keptUpdateCheck = Promise.resolve(u); };
+
 // The running version and the project's GitHub page (backend: about::app_info).
 // `updates` is false in the App Store's builds, which don't look on GitHub.
 interface AppInfo { version: string; updates: boolean; github_repo_url: string; }
@@ -290,14 +308,15 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
 
   useEffect(() => { refreshCloud(); }, [refreshCloud]);
 
-  // Check GitHub for a newer release once per app open (this page mounts on
-  // launch and on every return to the picker). Best-effort and silent: the
-  // fetch+semver-compare happens in Rust (about::check_for_updates), and any
-  // failure — offline, rate-limited, no releases — simply shows nothing.
+  // Check GitHub for a newer release (this page mounts on launch and on every
+  // return to the picker; silentUpdateCheck asks once while the app runs).
+  // Best-effort and silent: the fetch+semver-compare happens in Rust
+  // (about::check_for_updates), and any failure — offline, rate-limited, no
+  // releases — simply shows nothing.
   useEffect(() => {
-    invoke<UpdateInfo>("check_for_updates")
-      .then((u) => { if (u.has_update && u.latest) setUpdate(u); })
-      .catch(() => {});
+    let mounted = true;
+    void silentUpdateCheck().then((u) => { if (mounted && u?.has_update && u.latest) setUpdate(u); });
+    return () => { mounted = false; };
   }, []);
 
   // A link that can't be opened (no browser / URL handler on this device)
@@ -326,6 +345,7 @@ const ProfileSelectPage = ({ onUnlocked }: Props) => {
     setCheck("checking");
     try {
       const u = await invoke<UpdateInfo>("check_for_updates");
+      keepUpdateCheck(u);
       if (u.has_update && u.latest) {
         setUpdate(u);
         setCheck("idle");
