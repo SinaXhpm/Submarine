@@ -26,6 +26,7 @@ import {
   type ShortcutAction,
 } from '../util/shortcuts';
 import { lastInputWasTouch } from '../util/lastInput';
+import { hardwareKeyboardAttached } from '../util/hardwareKeyboard';
 import { useConfirm } from '../ui/confirm';
 import { parseOsc1337, parseOsc7, type ShellFolder } from '../util/shellFolder';
 import { tn, useT } from '../i18n';
@@ -740,7 +741,9 @@ const TerminalView = ({
   //   • a phone or tablet, or a tap last on a PC's touch screen — focusing
   //     xterm would bring up the on-screen keyboard unasked. A PC with a
   //     touch screen used with its mouse and keys still gets the focus
-  //     (lastInputWasTouch);
+  //     (lastInputWasTouch), and so does Android with a hardware keyboard
+  //     in use (a keyboard cover, a USB or Bluetooth one), which shows no
+  //     on-screen keyboard (hardwareKeyboardAttached);
   //   • a terminal whose SessionView isn't the frontmost server tab, or an
   //     attach-only Wall mirror (isActiveView=false) — never steal from the
   //     session the user is actually looking at;
@@ -754,7 +757,15 @@ const TerminalView = ({
   //   • a modal dialog is open — confirm / overwrite / text-prompt all carry
   //     aria-modal.
   const focusTerminal = () => {
+    if (IS_ANDROID) {
+      // The checks below run once Android has answered, on the state then.
+      void hardwareKeyboardAttached().then((attached) => { if (attached) focusNow(); });
+      return;
+    }
     if (IS_MOBILE || lastInputWasTouch()) return;
+    focusNow();
+  };
+  const focusNow = () => {
     if (!isActiveViewRef.current) return;
     if (disabledRef.current) return;
     const term = xtermRef.current;
@@ -1341,8 +1352,20 @@ const TerminalView = ({
     // is sent here, one for each, as the timer did. Inside a composition
     // nothing changes: the keydown still reaches xterm, and the word goes when
     // the composition ends.
+    //
+    // A hardware keyboard (a keyboard cover, a USB or Bluetooth one): a key
+    // typed with Shift or AltGr held comes as the modifier's own keydown, then
+    // the character, as text from the keyboard app or as a keydown of its own.
+    // xterm takes any keydown as "this key is mine" until a key comes up and
+    // drops text that comes in between; after AltGr it also leaves the next
+    // keydown to a keypress that never sends it. Capitals and symbols were
+    // lost. The modifier alone sends nothing in xterm, so xterm doesn't get it.
     let imeKeyHidden = false;
     const onAndroidKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Shift" || ev.key === "AltGraph") {
+        ev.stopPropagation();
+        return;
+      }
       imeKeyHidden = ev.keyCode === 229 && !ev.isComposing && !composingRef.current;
       if (imeKeyHidden) ev.stopPropagation();
     };

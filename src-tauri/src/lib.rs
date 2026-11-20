@@ -26433,6 +26433,23 @@ async fn clipboard_write_text(app: tauri::AppHandle, text: String) -> Result<(),
     }
 }
 
+/// Whether Android has a hardware keyboard in use (a keyboard cover, a USB or
+/// Bluetooth keyboard): a new terminal takes the focus then, as no on-screen
+/// keyboard comes up over it (TerminalView). False everywhere else, and when
+/// Android can't say.
+#[tauri::command]
+async fn hardware_keyboard_attached(app: tauri::AppHandle) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        android_bridge::hardware_keyboard(&app).await.unwrap_or(false)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        false
+    }
+}
+
 /// How long `open_main_window` waits for an earlier run's WebView2 to let go.
 #[cfg(windows)]
 const MAIN_WINDOW_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
@@ -26732,7 +26749,8 @@ pub fn run() {
             portable::get_storage_info,
             fonts::list_system_fonts,
             clipboard_read_text,
-            clipboard_write_text
+            clipboard_write_text,
+            hardware_keyboard_attached
         ]);
 
     // Clear out live-edit / drag temp dirs a crashed earlier run left behind
