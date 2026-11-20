@@ -302,6 +302,27 @@
           "text": "Cuando un dispositivo nuevo se conecta o espera autorización, cuando un dispositivo ha usado el 80 % o toda su cuota de datos, y el uso de la semana pasada. Las notificaciones de cuota y la semanal necesitan el motor de enrutamiento.",
           "routing": false,
           "alt": "La configuración de Captun: una cuota de datos para cada dispositivo y los tres tipos de notificaciones"
+        },
+        {
+          "id": "proxy",
+          "title": "Un proxy para otros dispositivos",
+          "text": "Un teléfono, una computadora o una sola aplicación se conecta a internet a través de Captun, sin unirse al punto de acceso, si configuras Captun como su proxy HTTP o SOCKS5. Se le aplican las mismas reglas, salidas y límites que a cualquier otro dispositivo.",
+          "routing": false,
+          "alt": "La página Proxy: un interruptor para que los dispositivos y las aplicaciones usen Captun como proxy, quién puede usarlo, el puerto, SOCKS5 y HTTP, y un nombre y una contraseña"
+        },
+        {
+          "id": "capture",
+          "title": "Mira cada conexión",
+          "text": "Captura el tráfico de un dispositivo y observa cada conexión que abre: adónde fue, si se dejó pasar y por qué, y cuántos datos transfirió. Guarda la captura como hoja de cálculo, como JSON o como archivo para Wireshark. Solo se conserva en memoria, y nunca se guardan las cookies, los datos de inicio de sesión ni lo que envían los formularios.",
+          "routing": true,
+          "alt": "La página Capture: las conexiones de un teléfono capturadas en tiempo real, cada una con su hora, sitio web, resultado y tamaño"
+        },
+        {
+          "id": "web",
+          "title": "Gestiónalo desde un navegador",
+          "text": "Abre las páginas de Captun por HTTPS en tu teléfono o en otra computadora, iniciando sesión con una contraseña de administrador. En una computadora sin pantalla, los paquetes para servidores Linux ejecutan Captun como servicios que se inician con la computadora, y en una computadora con pantalla también puede iniciarse con ella.",
+          "routing": false,
+          "alt": "Configuración, «Manage from other devices»: un interruptor para abrir Captun en un navegador en otros dispositivos, una contraseña, el puerto y la dirección que hay que abrir"
         }
       ],
       "note": "Aún no están en GitHub: la versión que puedes compilar hoy desde el código fuente no las incluye."

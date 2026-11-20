@@ -15,17 +15,21 @@ const en = JSON.parse(fs.readFileSync(path.join(DIR, "en.json"), "utf8"));
 // so its site names its tools and buttons as the app shows them.
 const KEEP = {
   submarine: ["Submarine", "SSH", "SFTP", "RDP", "VNC", "Telnet", "GitHub", "Argon2id", "AES-256-GCM", "SHA256SUMS", "MIT",
-    "X-Auth-Token", "cloud_token.json", "Ctrl+Shift+F", "Ctrl+Shift+R", "DPAPI", "Windows Hello", "IronRDP", "Echoes", "TestFlight"],
+    "X-Auth-Token", "cloud_token.json", "Ctrl+Shift+F", "Ctrl+Shift+R", "DPAPI", "Windows Hello", "IronRDP", "Echoes", "TestFlight",
+    "FTP", "FTPS", "TLS", "FileZilla", "Ctrl+Shift+K", "Ctrl+Shift+W", "MCP", "Claude Code", "Anthropic", "OpenAI", "OpenRouter",
+    "Ollama", "LM Studio", "submarine-sync-server",
+    // the AI screens are in English only for now, so the page names their levels and tabs as the app shows them
+    "<em>Suggest only</em>", "<em>Ask</em>", "<em>Full access</em>", "<em>Activity</em>"],
   echoes: ["Echoes", "App Store", "GitHub", "MIT", "Submarine", "cURL", "Doctor", "String Lab", "TLS Inspector", "Telegram", "Cloudflare",
     "v2rayNG", "Hiddify", "Xray", "PRIVACY.md", "Port Scanner", "Check Host", "Web Server", "Start sharing"],
   // Captun is in English only too: its button and setting names stay as the app shows them.
   captun: ["Captun", "GitHub", "Echoes", "Submarine", "VLESS", "VMess", "Trojan", "Shadowsocks", "Hysteria2", "REALITY", "Xray-core",
     "SOCKS5", "WinDivert", "TUN", "libusb", "adb", "Rust", "Tauri", "Node.js", "README", "NetworkManager", "hostapd", "DHCP",
-    "Update lists", "Route devices through Captun", "Android", "iOS", "Windows", "Linux", "macOS"],
+    "Update lists", "Route devices through Captun", "Android", "iOS", "Windows", "Linux", "macOS", "HTTP", "HTTPS", "JSON", "Wireshark"],
 }[site] || [];
 // Keys whose text is a name in the app: the same in every language.
 const FIXED = {
-  submarine: [/\b(id|file)$/],
+  submarine: [/\b(id|file)$/, /\.code\[\d+\]$/],
   captun: [/\b(id)$/],
   echoes: [/\b(id|file)$/, /tools\.groups\[\d+\]\.items\[\d+\]\.title$/, /download\.platforms\[\d+\]\.links\[\d+\]\.label$/],
 }[site];
@@ -43,6 +47,9 @@ const APP_LABELS = {
       "Less data", "Send feedback", "Suggest a fix"].map((k) => [k, (d) => d[k]]),
     ["<em>Feedback</em>", (d) => `<em>${d.Feedback}</em>`],
     ["Settings → Language", (d) => `${d.Settings} → ${d.Language}`],
+    // Settings is translated in the app; the AI sections in it are in English only for now
+    ["Settings → AI Assistant", (d) => `${d.Settings} → AI Assistant`],
+    ["Settings → AI agents", (d) => `${d.Settings} → AI agents`],
     ["Open in: Submarine's tab", (d) => d["Open in"]],
     ["Open in: Submarine's tab", (d) => d["Submarine's tab (experimental)"].replace(/\s*[（(][^（()）]*[)）]\s*$/, "")],
     ...["Good", "Fair", "Weak", "Not answering"].map((k) => [k, (d) => d[k], /^home\.remote\.points\[0\]\.text$/]),

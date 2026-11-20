@@ -59,6 +59,14 @@ const CODE = {
   rdpPassword: { file: "src-tauri/src/rdp.rs", from: /^pub fn protect_password\(/ },
   shareInside: { file: "src-tauri/src/rdp_share.rs", from: /^pub fn inside\(/ },
   vncPaste: { file: "src-tauri/src/vnc_client.rs", from: /^pub fn paste_refusal\(/ },
+  aiConsent: { file: "src-tauri/src/ai/mod.rs", from: /^fn ready_provider\(/ },
+  aiMask: { file: "src-tauri/src/ai/shape.rs", from: /^\/\/\/ Masks private-key blocks in a byte stream/ },
+  aiFileKeys: { file: "src-tauri/src/ai/files.rs", from: /^fn key_lines\(/ },
+  aiStore: { file: "src-tauri/src/ai/store.rs", from: /^pub fn derive_key\(/, through: /^fn seal\(/ },
+  aiGate: { file: "src-tauri/src/ai/gate.rs", from: /^pub fn decide\(/ },
+  agentPipe: { file: "src-tauri/src/gateway/ipc.rs", from: /^ {4}fn descriptor\(sid: &str\)/ },
+  agentSocket: { file: "src-tauri/src/gateway/ipc.rs", from: /^ {4}fn our_folder\(dir: &Path\)/, through: /^ {8}pub async fn accept\(&mut self\)/ },
+  agentMask: { file: "src-tauri/src/gateway/mask.rs", from: /^ {4}pub fn apply<'a>\(&self, text: &'a str\)/ },
 };
 
 function resolveCode(commit) {
@@ -118,12 +126,13 @@ const SHOTS = {
   fits: { widths: [448, 896], ratio: [896, 1060], sizes: "(max-width: 900px) 80vw, 380px", cls: "tall" },
   monitor: { widths: [960, 1600, 2560], ratio: [2560, 680], sizes: "(max-width: 900px) 100vw, 680px" },
   vault: { widths: [550, 1100], ratio: [1100, 940], sizes: "(max-width: 900px) 100vw, 680px" },
-  phone: { widths: [360, 720, 1080], ratio: [1080, 2160], sizes: "(max-width: 900px) 70vw, 300px", cls: "phone" },
+  phone: { widths: [360, 720, 1080], ratio: [1080, 2158], sizes: "(max-width: 900px) 70vw, 300px", cls: "phone" },
 };
 // Which picture goes with which feature row, and the icons of the tiles and points.
 const FEATURE_SHOT = { terminal: "terminal", files: "files", tunnels: "tunnels", fits: "fits", monitor: "monitor", vault: "vault", phone: "phone" };
-const TILE_ICON = { terminal: "terminal", wall: "split", files: "folder", remote: "desktop", telnet: "server", languages: "globe", tunnels: "tunnel", agent: "key", sync: "sync", sharing: "users", monitor: "activity", vault: "lock", phone: "phone", commands: "code", imports: "plug" };
+const TILE_ICON = { terminal: "terminal", wall: "split", files: "folder", ai: "sparkles", ftp: "transfer", mcp: "bot", remote: "desktop", telnet: "server", languages: "globe", tunnels: "tunnel", agent: "key", sync: "sync", sharing: "users", monitor: "activity", vault: "lock", phone: "phone", commands: "code", imports: "plug" };
 const POINT_ICON = { clipboard: "clipboard", files: "folder", quality: "sliders", mark: "shieldCheck", ssh: "tunnel", keyboard: "keyboard", password: "key", split: "split" };
+const AI_ICON = { provider: "key", where: "terminal", tools: "code", levels: "sliders", privacy: "shieldCheck", agents: "bot" };
 const PLATFORM_ICON = { windows: "windows", macos: "laptop", linux: "box", android: "phone" };
 
 export default function build({ out, commit, date }) {
@@ -138,7 +147,7 @@ export default function build({ out, commit, date }) {
     langs: LANGS.map((l) => l.code),
     slugs: { home: "", security: "security/", privacy: "privacy/", delete: "delete-account/", terms: "terms/" },
     themeColor: "#04070f",
-    ogAlt: "Submarine: SSH, SFTP, RDP, VNC and Telnet client",
+    ogAlt: "Submarine: SSH, SFTP, FTP, RDP, VNC and Telnet client",
     nav: (lang, page, t) => [
       [`${site.pagePath(lang, "home")}#features`, t.nav.features, null],
       [`${site.pagePath(lang, "home")}#remote`, t.nav.remote, null],
@@ -151,7 +160,7 @@ export default function build({ out, commit, date }) {
       const home = site.pagePath(lang, "home");
       const f = t.footer;
       const cols = [
-        { title: f.product, links: [[`${home}#features`, t.nav.features], [`${home}#remote`, t.nav.remote], [`${home}#download`, t.nav.download], [`${home}#faq`, f.faq], [RELEASES_URL, f.releases]] },
+        { title: f.product, links: [[`${home}#features`, t.nav.features], [`${home}#remote`, t.nav.remote], [`${home}#ai`, t.nav.ai], [`${home}#download`, t.nav.download], [`${home}#faq`, f.faq], [RELEASES_URL, f.releases]] },
         { title: f.trust, links: [[site.pagePath(lang, "security"), t.nav.security], [site.pagePath(lang, "privacy"), t.nav.privacy], [site.pagePath(lang, "terms"), f.terms], [site.pagePath(lang, "delete"), f.deleteAccount], [`${home}#verify`, f.verify]] },
         { title: f.project, links: [[REPO_URL, t.nav.github], [ISSUES_URL, f.issues], ["https://sinaxhpm.com", f.author]] },
       ];
@@ -275,9 +284,16 @@ ${head2(r, v, where)}
 ${r.note ? `<p class="note reveal">${rich(r.note, v, where)}</p>` : ""}
 </div></section>`;
 
+    const a = h.ai;
+    const ai = `<section class="alt" id="ai"><div class="wrap">
+${head2(a, v, where)}
+<div class="points grid3">${a.points.map((p) => `<div class="point reveal"><div class="ico">${ICON[AI_ICON[p.id]] || ICON.sparkles}</div><div><h3>${esc(p.title)}</h3><p>${rich(p.text, v, where)}</p></div></div>`).join("")}</div>
+${a.note ? `<p class="note reveal">${rich(a.note, v, where)}</p>` : ""}
+</div></section>`;
+
     const pv = h.privacy;
     const privacyIcons = [ICON.lock, ICON.sync, ICON.eyeOff];
-    const privacy = `<section class="alt" id="private"><div class="wrap">
+    const privacy = `<section id="private"><div class="wrap">
 <div class="glow-card reveal"><div class="inner">
 ${head2(pv, v, where)}
 <div class="cards">${pv.items.map((c, i) => `<div class="card"><div class="ico">${privacyIcons[i] || ICON.shield}</div><h3>${esc(c.title)}</h3><p>${rich(c.text, v, where)}</p></div>`).join("")}</div>
@@ -286,20 +302,20 @@ ${head2(pv, v, where)}
 </div></section>`;
 
     const fr = h.free;
-    const free = `<section id="free"><div class="wrap free">
+    const free = `<section class="alt" id="free"><div class="wrap free">
 <div class="reveal"><span class="kicker">${esc(fr.kicker)}</span><p class="big grad">${esc(fr.big)}</p><p>${rich(fr.text, v, where)}</p></div>
 <ul class="checks reveal">${fr.items.map((x) => `<li>${ICON.check}<span>${rich(x, v, where)}</span></li>`).join("")}</ul>
 </div></section>`;
 
     const dl = h.download;
-    const download = `<section class="alt" id="download"><div class="wrap">
+    const download = `<section id="download"><div class="wrap">
 ${head2(dl, v, where)}
 <div class="platform-cards">${dl.platforms.map((p) => `<div class="platform-card reveal"><div class="ico">${ICON[PLATFORM_ICON[p.id]]}</div><h3>${esc(p.name)}</h3><p>${esc(p.detail)}</p><a class="btn primary" href="${RELEASES_URL}/latest">${ICON.download}${esc(dl.button)}</a></div>`).join("")}</div>
 <p class="note">${rich(dl.betaNote, v, where)}</p>
 <div class="verify-box" id="verify"><h3>${ICON.shieldCheck}${esc(dl.verifyTitle)}</h3>${ul(dl.verify, v, where)}</div>
 </div></section>`;
 
-    const faq = `<section id="faq"><div class="wrap">
+    const faq = `<section class="alt" id="faq"><div class="wrap">
 ${head2(h.faq, v, where)}
 <div class="faq">${h.faq.items.map((q) => `<details><summary>${esc(q.q)}${ICON.plus}</summary><div><p>${rich(q.a, v, where)}</p></div></details>`).join("")}</div>
 </div></section>`;
@@ -338,7 +354,7 @@ ${head2(h.faq, v, where)}
         { "@type": "WebSite", "@id": `${ORIGIN}/#site`, name: "Submarine", url: `${ORIGIN}/`, inLanguage: site.built.map((l) => l.hreflang) },
       ],
     };
-    return site.page({ lang, page: "home", title: plain(h.title, v, where), description: plain(h.description, v, where), ld, main: [hero, instead, overview, features, remote, privacy, free, download, faq].join("\n"), t, v });
+    return site.page({ lang, page: "home", title: plain(h.title, v, where), description: plain(h.description, v, where), ld, main: [hero, instead, overview, features, remote, ai, privacy, free, download, faq].join("\n"), t, v });
   }
 
   // ---- security ----
@@ -471,7 +487,7 @@ ${site.translationNote(lang, "delete", t)}
 
 > ${stripTags(fill(t.home.description, v, "llms"))}
 
-Submarine is a free, open-source (MIT) remote-access client by Sina Xhpm: SSH terminal, two-pane SFTP, port forwarding, folder mirror, a built-in RDP client, VNC and Telnet, for Windows 10/11, macOS (Apple Silicon: M1 and later), Linux and Android 7.0+, with a beta for iPhone and iPad (iOS 15+) on TestFlight. From version 0.5 the app is in ${appLangs.length} languages (${appLangs.map((a) => a.name).join(", ")}). Built with Rust and Tauri. No ads, no analytics, no paid plan; the optional encrypted sync service is free within limits (${FACTS.limitMb} MB of encrypted data, ${FACTS.limitItems.toLocaleString("en")} items and ${FACTS.limitProfiles} profiles per account).
+Submarine is a free, open-source (MIT) remote-access client by Sina Xhpm: SSH terminal, two-pane SFTP, FTP and FTPS, port forwarding, folder mirror, a built-in RDP client, VNC and Telnet, and from version 0.5 an optional AI assistant that uses your own AI provider (Anthropic, OpenAI, OpenAI-compatible services, Ollama, LM Studio) and access for AI agents such as Claude Code over MCP. For Windows 10/11, macOS (Apple Silicon; Intel too from version 0.5), Linux and Android 7.0+, with a beta for iPhone and iPad (iOS 15+) on TestFlight. From version 0.5 the app is in ${appLangs.length} languages (${appLangs.map((a) => a.name).join(", ")}). Built with Rust and Tauri. No ads, no analytics, no paid plan; the optional encrypted sync service is free within limits (${FACTS.limitMb} MB of encrypted data, ${FACTS.limitItems.toLocaleString("en")} items and ${FACTS.limitProfiles} profiles per account).
 
 ## Features
 

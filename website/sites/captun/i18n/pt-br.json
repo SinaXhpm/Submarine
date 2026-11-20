@@ -302,6 +302,27 @@
           "text": "Quando um novo dispositivo entra ou aguarda permissão, quando um dispositivo já usou 80% ou toda a sua franquia de dados, e o uso da semana passada. As notificações de franquia e as semanais precisam do motor de roteamento.",
           "routing": false,
           "alt": "As configurações do Captun: uma franquia de dados para cada dispositivo e os três tipos de notificações"
+        },
+        {
+          "id": "proxy",
+          "title": "Um proxy para outros dispositivos",
+          "text": "Um celular, um computador ou um único app entra na internet pelo Captun ao indicá-lo como proxy HTTP ou SOCKS5, sem se conectar ao hotspot. Valem para ele as mesmas regras, saídas e limites de qualquer outro dispositivo.",
+          "routing": false,
+          "alt": "A página Proxy: uma chave para permitir que dispositivos e apps usem o Captun como proxy, quem pode usá-lo, a porta, SOCKS5 e HTTP, e um nome de usuário e uma senha"
+        },
+        {
+          "id": "capture",
+          "title": "Veja cada conexão",
+          "text": "Grave as conexões de um dispositivo e acompanhe cada uma delas: para onde foi, se foi liberada e por quê, e quantos dados passaram por ela. Salve a gravação como planilha, JSON ou arquivo para o Wireshark. Ela fica só na memória, e cookies, logins e o que os formulários enviam nunca são guardados.",
+          "routing": true,
+          "alt": "A página Capture: as conexões de um celular em gravação, à medida que acontecem, cada uma com horário, site, resultado e tamanho"
+        },
+        {
+          "id": "web",
+          "title": "Gerencie pelo navegador",
+          "text": "Abra as páginas do Captun no seu celular ou em outro computador, entrando com uma senha de administrador, via HTTPS. Em um computador sem tela, pacotes para servidores Linux rodam o Captun como serviços que iniciam junto com o computador, e em um desktop ele também pode iniciar junto com o computador.",
+          "routing": false,
+          "alt": "A página Settings, seção Manage from other devices: uma chave para abrir o Captun pelo navegador de outros dispositivos, uma senha, a porta e o endereço a ser aberto"
         }
       ],
       "note": "Ainda não estão no GitHub: a versão que você pode compilar hoje a partir do código-fonte não tem esses recursos."

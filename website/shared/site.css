@@ -255,6 +255,9 @@ section { position: relative; padding-block: 104px; }
 .point h3 { font-size: 1.02rem; margin: 2px 0 4px; }
 .point p { margin: 0; color: var(--muted); font-size: 0.95rem; }
 @media (max-width: 960px) { .showcase { grid-template-columns: 1fr; } }
+.points.grid3 { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 1020px) { .points.grid3 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 620px) { .points.grid3 { grid-template-columns: 1fr; } }
 
 /* ---- cards ---- */
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }

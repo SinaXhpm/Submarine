@@ -30,13 +30,13 @@ const SHOTS = {
   dns: { widths: [720, 1440], ratio: [1440, 690], sizes: "(max-width: 900px) 100vw, 640px" },
   usage: { widths: [720, 1440], ratio: [1440, 930], sizes: "(max-width: 900px) 100vw, 640px" },
   // close-ups of what the next version adds, all 8:5
-  ...Object.fromEntries(["nextQr", "nextKinds", "nextPause", "nextBackup", "nextCsv", "nextAlerts"].map((n) => [n, { widths: [480, 960], ratio: [960, 600], sizes: "(max-width: 700px) 92vw, (max-width: 1020px) 46vw, 360px" }])),
+  ...Object.fromEntries(["nextQr", "nextKinds", "nextPause", "nextBackup", "nextCsv", "nextAlerts", "nextProxy", "nextCapture", "nextWeb"].map((n) => [n, { widths: [480, 960], ratio: [960, 600], sizes: "(max-width: 700px) 92vw, (max-width: 1020px) 46vw, 360px" }])),
 };
 const USE_ICON = { vpn: "lock", usb: "plug", rules: "shield", watch: "users" };
 const SHARE_ICON = { wifi: "wifi", cable: "network", usb: "plug", reach: "ban" };
 const DEVICE_ICON = { phone: "phone", tv: "desktop", laptop: "laptop", tablet: "tablet" };
 const OUT_ICON = { direct: "globe", vpn: "lock", proxy: "server" };
-const NEXT_SHOT = { qr: "nextQr", kinds: "nextKinds", pause: "nextPause", backup: "nextBackup", csv: "nextCsv", alerts: "nextAlerts" };
+const NEXT_SHOT = { qr: "nextQr", kinds: "nextKinds", pause: "nextPause", backup: "nextBackup", csv: "nextCsv", alerts: "nextAlerts", proxy: "nextProxy", capture: "nextCapture", web: "nextWeb" };
 const PRIVACY_ICON = [ICON.eyeOff, ICON.lock, ICON.tunnel];
 const PLATFORM_ICON = { windows: "windows", linux: "box", macos: "laptop" };
 
