@@ -7,7 +7,7 @@ import {
   Plus, X, RefreshCw, Terminal, Key, Trash2,
   ArrowLeftRight, Shield, User, Cpu, TerminalSquare, List, Edit2,
   StickyNote, Search, Square, Copy, ChevronLeft, ChevronRight, MoreVertical, Radio,
-  ChevronDown, Columns, LayoutGrid, Pin, PinOff, Server
+  ChevronDown, Columns, LayoutGrid, Pin, PinOff, Server, Lock, Tag
 } from "lucide-react";
 import { useBroadcast } from "./ui/broadcast";
 
@@ -16,6 +16,8 @@ import logoUrl from "./assets/logo-ui.png";
 import PasswordField from "./components/PasswordField";
 import type { QuickAuth } from "./components/QuickConnectModal";
 import { fromWorkspace, loadWorkspace, workspaceNow } from "./workspaceLoader";
+import SecretTextarea from "./components/SecretTextarea";
+import { splitTags, tagsProblem } from "./util/commandTags";
 import { useConfirm, useTextPrompt } from "./ui/confirm";
 import { useSlideOverFocus } from "./ui/slideOverFocus";
 import { RenameInput } from "./ui/renameInput";
@@ -330,7 +332,7 @@ function DesktopApp() {
   const [logs, setLogs] = useState<{ msg: string, type: string, time: string }[]>([]);
   const [isCommandPanelOpen, setIsCommandPanelOpen] = useState(false);
   // `scope`: which servers it's for (util/commandScope); null for all of them.
-  const [editCommandData, setEditCommandData] = useState<{ id: number | null, title: string, content: string, scope: CommandScope | null }>({ id: null, title: "", content: "", scope: null });
+  const [editCommandData, setEditCommandData] = useState<{ id: number | null, title: string, content: string, scope: CommandScope | null, is_secret: boolean, tags: string }>({ id: null, title: "", content: "", scope: null, is_secret: false, tags: "" });
 
   const [notes, setNotes] = useState<any[]>([]);
   const [isNotePanelOpen, setIsNotePanelOpen] = useState(false);
@@ -699,6 +701,17 @@ function DesktopApp() {
       refreshNotes(),
     ]);
   };
+
+  // The session Library panel can add/edit commands and notes while this
+  // grid is hidden, and this grid otherwise only loads them at unlock.
+  // Reload both lists when the Library view is opened so it never shows
+  // a stale copy of what the panel just added.
+  useEffect(() => {
+    if (activeView === "library") { refreshCommands(); refreshNotes(); }
+    // refreshCommands/refreshNotes are plain functions (new each render);
+    // listing them would re-fire on every render. They read no state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView]);
 
   // What a shared profile waits on the user for: a new key, as a fingerprint
   // (until it's accepted a sync only pulls, see note_share_key), a grant the
@@ -1467,12 +1480,35 @@ function DesktopApp() {
       setFormError(t("Tick at least one server or folder, or choose All servers."));
       return;
     }
+    // In the user's language, before the backend refuses them in English.
+    const tagsWrong = tagsProblem(editCommandData.tags);
+    if (tagsWrong) {
+      setFormError(tagsWrong);
+      return;
+    }
     try {
+      // Tauri's #[tauri::command] macro exposes Rust snake_case params as
+      // camelCase arg keys, so the key here is `isSecret`, not `is_secret`
+      // (same as the existing `deleteThem` in resolve_held_deletions). The
+      // value stays the snake_case `is_secret` field, which is what
+      // get_commands returns. Do not "fix" the key back to snake_case —
+      // that breaks the save with "missing required key isSecret".
       if (editCommandData.id) {
+        // Title/content only: the secret flag and tags go through their
+        // own call, and only when they changed here — so this form can't
+        // undo a flag or tags set in the session panel since it opened.
+        // The secret/tags call runs FIRST: it validates the tags and
+        // refuses a bad one, so a bad tag stops the save before the
+        // title/content are written.
+        const orig = commands.find((c) => c.id === editCommandData.id);
+        const secretChanged = !orig || !!orig.is_secret !== editCommandData.is_secret || (orig.tags || "") !== editCommandData.tags;
+        if (secretChanged) {
+          await invoke("set_command_secret_tags", { id: editCommandData.id, isSecret: editCommandData.is_secret, tags: editCommandData.tags || null });
+        }
         await invoke("edit_command", { id: editCommandData.id, title: editCommandData.title, content: editCommandData.content });
         await invoke("set_command_scope", { id: editCommandData.id, scope: scopeToJson(scope) });
       } else {
-        await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope) });
+        await invoke("add_command", { title: editCommandData.title, content: editCommandData.content, scope: scopeToJson(scope), isSecret: editCommandData.is_secret, tags: editCommandData.tags || null });
       }
       closeCommandPanel();
       refreshCommands();
@@ -3246,7 +3282,8 @@ function DesktopApp() {
               const filteredCommands = q
                 ? commands.filter(c =>
                     (c.title || "").toLowerCase().includes(q) ||
-                    (c.content || "").toLowerCase().includes(q))
+                    (c.content || "").toLowerCase().includes(q) ||
+                    (c.tags || "").toLowerCase().includes(q))
                 : commands;
               const filteredNotes = q
                 ? notes.filter(n =>
@@ -3257,7 +3294,7 @@ function DesktopApp() {
               const addLabel = onCommandsTab ? t("Add command") : t("Add note");
               const openAdd = () => {
                 if (onCommandsTab) {
-                  setEditCommandData({ id: null, title: "", content: "", scope: null });
+                  setEditCommandData({ id: null, title: "", content: "", scope: null, is_secret: false, tags: "" });
                   setIsCommandPanelOpen(true);
                 } else {
                   setEditNoteData({ id: null, title: "", body: "" });
@@ -3345,9 +3382,12 @@ function DesktopApp() {
                         filteredCommands.map(cmd => (
                           <div key={cmd.id} className="bg-[#16161a] border border-white/5 rounded-2xl p-4 flex flex-col group relative overflow-hidden shadow-inner h-[150px]">
                             <div className="flex justify-between items-start mb-2">
-                              <h3 className="text-[16px] font-bold text-primary tracking-tight truncate flex-1">{cmd.title}</h3>
+                              <h3 className="text-[16px] font-bold text-primary tracking-tight truncate flex-1 flex items-center gap-1.5">
+                                {cmd.is_secret && <Lock size={13} className="text-amber-400 shrink-0" />}
+                                <span className="truncate">{cmd.title}</span>
+                              </h3>
                               <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:opacity-100 transition-opacity">
-                                <button aria-label={t("Edit {name}", { name: cmd.title })} onClick={() => { setEditCommandData({ id: cmd.id, title: cmd.title, content: cmd.content, scope: parseCommandScope(cmd.scope) }); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
+                                <button aria-label={t("Edit {name}", { name: cmd.title })} onClick={() => { setEditCommandData({ id: cmd.id, title: cmd.title, content: cmd.content, scope: parseCommandScope(cmd.scope), is_secret: !!cmd.is_secret, tags: cmd.tags || "" }); setIsCommandPanelOpen(true); }} className="text-zinc-500 hover:text-white transition-colors"><Edit2 size={14} /></button>
                                 <button aria-label={t("Delete {name}", { name: cmd.title })} onClick={async () => {
                                   const ok = await confirm({ title: t("Delete command?"), message: t("“{name}” will be removed.", { name: cmd.title }), destructive: true });
                                   if (!ok) return;
@@ -3356,8 +3396,17 @@ function DesktopApp() {
                               </div>
                             </div>
                             <div className="bg-black/30 rounded-xl p-3 border border-white/5 flex-1 relative group-hover:border-primary/20 transition-colors overflow-hidden">
-                              <pre className="text-[12px] text-zinc-400 font-mono whitespace-pre-wrap leading-relaxed line-clamp-3">{cmd.content}</pre>
+                              <pre className="text-[12px] text-zinc-400 font-mono whitespace-pre-wrap leading-relaxed line-clamp-3">{cmd.is_secret ? "••••••" : cmd.content}</pre>
                             </div>
+                            {cmd.tags && (
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {splitTags(cmd.tags).map((tag) => (
+                                  <span key={tag} className="inline-flex items-center gap-0.5 h-4 px-1.5 rounded-full bg-white/5 border border-white/10 text-[9px] font-semibold text-zinc-400">
+                                    <Tag size={8} /> {tag}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                             {parseCommandScope(cmd.scope) && (
                               <div className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-400 min-w-0" data-command-scope>
                                 <Server size={11} className="shrink-0 text-zinc-500" />
@@ -3745,9 +3794,49 @@ function DesktopApp() {
               <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Title")}</label>
               <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder={t("e.g. Update packages")} value={editCommandData.title} onChange={e => setEditCommandData({ ...editCommandData, title: e.target.value })} />
             </div>
+            {/* Standard vs Secret: a secret's
+                content is masked in the Library (eye toggle to reveal). */}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                aria-pressed={!editCommandData.is_secret}
+                onClick={() => setEditCommandData({ ...editCommandData, is_secret: false })}
+                className={`h-10 rounded-lg border text-[12px] font-bold flex items-center justify-center gap-1.5 transition-all ${!editCommandData.is_secret ? "bg-primary/15 text-primary border-primary/40" : "bg-black border-white/10 text-zinc-400 hover:text-white"}`}
+              >
+                {t("Standard")}
+              </button>
+              <button
+                type="button"
+                aria-pressed={editCommandData.is_secret}
+                onClick={() => setEditCommandData({ ...editCommandData, is_secret: true })}
+                className={`h-10 rounded-lg border text-[12px] font-bold flex items-center justify-center gap-1.5 transition-all ${editCommandData.is_secret ? "bg-amber-500/15 text-amber-300 border-amber-500/40" : "bg-black border-white/10 text-zinc-400 hover:text-white"}`}
+                title={t("Secret commands are masked in the list")}
+              >
+                <Lock size={13} /> {t("Secret")}
+              </button>
+            </div>
             <div className="space-y-1.5 flex-1 flex flex-col h-64">
-              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Command")}</label>
-              <textarea className="w-full flex-1 bg-black rounded-lg p-3 text-[13px] text-zinc-300 font-mono border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none" placeholder="sudo apt update && sudo apt upgrade -y" value={editCommandData.content} onChange={e => setEditCommandData({ ...editCommandData, content: e.target.value })} />
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{editCommandData.is_secret ? t("Secret command") : t("Command")}</label>
+              {editCommandData.is_secret ? (
+                <SecretTextarea
+                  // A new secret starts readable so the user can see what
+                  // they type; an existing one starts masked. The key
+                  // remounts the field when switching commands so the
+                  // default applies per command, not per panel open.
+                  key={editCommandData.id ?? "new"}
+                  defaultShow={editCommandData.id === null}
+                  value={editCommandData.content}
+                  onChange={(v) => setEditCommandData({ ...editCommandData, content: v })}
+                  placeholder={t("Secret command — it runs in the shell and stays in its history")}
+                  className="w-full flex-1 bg-black rounded-lg p-3 text-[13px] text-zinc-300 font-mono border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none"
+                />
+              ) : (
+                <textarea className="w-full flex-1 bg-black rounded-lg p-3 text-[13px] text-zinc-300 font-mono border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner custom-scrollbar resize-none" placeholder="sudo apt update && sudo apt upgrade -y" value={editCommandData.content} onChange={e => setEditCommandData({ ...editCommandData, content: e.target.value })} />
+              )}
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-[12px] font-bold text-zinc-400 ml-1">{t("Tags")}</label>
+              <input type="text" className="w-full h-10 bg-black rounded-lg px-3 text-[13px] text-white border border-white/10 outline-none focus:border-primary/50 focus:bg-zinc-900/50 transition-all shadow-inner" placeholder={t("docker, sysadmin, ubuntu, maintenance")} value={editCommandData.tags} onChange={e => setEditCommandData({ ...editCommandData, tags: e.target.value })} />
             </div>
             {/* Remounted per command opened, so it starts from that command's choice. */}
             <CommandScopePicker

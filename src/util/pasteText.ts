@@ -46,6 +46,9 @@ export interface WriteToTerminal {
   cut?: boolean;
   /** The caller's `useConfirm()`, which asks the user. */
   confirm: (opts: ConfirmOptions) => Promise<boolean>;
+  /** A secret (Library) command: the confirm dialog hides its content
+      unless the user asks to show it there, and a run always asks first. */
+  secret?: boolean;
 }
 
 /**
@@ -57,12 +60,15 @@ export interface WriteToTerminal {
  * (util/hiddenChars), and what can't be seen whole is shown whole first: more
  * than one line, a run of 16 or more blanks, or a line to be run that the
  * caller cut short (`cut`; a line only pasted can be read at the prompt).
+ * A secret is always confirmed before it runs, with a way to show the text
+ * in the dialog — a one-line secret would otherwise run with no dialog at
+ * all (its card shows dots, so it never counts as cut).
  * A shell without bracketed paste (plain sh, BusyBox, an older bash) runs
  * each line of a paste as it lands, so for text only to be pasted the
  * terminal asks once more there (TerminalView). True when the text was sent
  * to the terminal.
  */
-export async function writeToTerminal({ terminalId, text, enter, cut = false, confirm }: WriteToTerminal): Promise<boolean> {
+export async function writeToTerminal({ terminalId, text, enter, cut = false, confirm, secret = false }: WriteToTerminal): Promise<boolean> {
   if (!terminalId) return false;
   // A loop, not /\n+$/: that regex retries from every line break of a long
   // run that isn't at the end, and a reply can hold 200,000 of them.
@@ -72,12 +78,18 @@ export async function writeToTerminal({ terminalId, text, enter, cut = false, co
   clean = clean.slice(0, end);
   if (!clean) return false;
   const lines = clean.split("\n").length;
-  if (lines > 1 || cut || inspect(clean).longBlanks) {
+  // A secret run always asks (see above); a paste keeps the existing rule,
+  // since the text stays at the prompt for review.
+  const needsConfirm = (secret && enter) || lines > 1 || cut || inspect(clean).longBlanks;
+  if (needsConfirm) {
     const ok = await confirm({
       title: enter
         ? (lines > 1 ? t("Run these {count} lines?", { count: lines }) : t("Run this line?"))
         : (lines > 1 ? t("Paste these {count} lines?", { count: lines }) : t("Paste this line?")),
-      message: clean,
+      // A secret's content stays hidden unless the user asks to see it
+      // in the dialog (revealableText).
+      message: secret ? t("Secret command — its content is hidden.") : clean,
+      revealableText: secret ? clean : undefined,
       okLabel: enter ? t("Run") : t("Paste"),
       safeDefault: true,
     });

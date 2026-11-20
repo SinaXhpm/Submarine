@@ -81,6 +81,9 @@ export interface ConfirmOptions {
   /** Focus starts on Cancel: an Enter meant for something else (the
    *  terminal the prompt appeared over) can't answer yes. */
   safeDefault?: boolean;
+  /** Hidden text the user can reveal inside the dialog (a secret command
+   *  about to run): the message stays hidden until they ask to see it. */
+  revealableText?: string;
 }
 
 type Resolver = (value: boolean) => void;
@@ -162,7 +165,8 @@ const UNSAVED_POINTER_GRACE_MS = 300;
 
 const sameConfirm = (a: ConfirmOptions, b: ConfirmOptions) =>
   a.title === b.title && a.message === b.message && a.okLabel === b.okLabel &&
-  a.cancelLabel === b.cancelLabel && !!a.destructive === !!b.destructive;
+  a.cancelLabel === b.cancelLabel && !!a.destructive === !!b.destructive &&
+  a.revealableText === b.revealableText;
 
 // A dialog comes up under the pointer of the click that asked for it, so the
 // second click of a double-click lands on the dialog: beside it, or on one of
@@ -196,6 +200,9 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   const [, repaint] = useReducer((n: number) => n + 1, 0);
   const [tpValue, setTpValue] = useState("");
   const [tpError, setTpError] = useState<string | null>(null);
+  // Whether the confirm on screen is showing its revealable text (a
+  // secret command about to run). Reset with each new prompt.
+  const [confirmRevealed, setConfirmRevealed] = useState(false);
 
   const active = queueRef.current[0] ?? null;
   const state = active?.kind === "confirm" ? active : null;
@@ -208,6 +215,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   const owPanelRef = useRef<HTMLDivElement | null>(null);
   const confirmPanelRef = useRef<HTMLDivElement | null>(null);
   const confirmOkRef = useRef<HTMLButtonElement | null>(null);
+  const confirmRevealRef = useRef<HTMLButtonElement | null>(null);
   const tpPanelRef = useRef<HTMLDivElement | null>(null);
   const usPanelRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(owState?.id ?? null, owPanelRef);
@@ -220,6 +228,7 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   const primeText = useCallback((p: Pending | undefined) => {
     setTpValue(p?.kind === "text" ? p.opts.initialValue ?? "" : "");
     setTpError(null);
+    setConfirmRevealed(false);
   }, []);
 
   const enqueue = useCallback((p: Pending) => {
@@ -315,14 +324,22 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
   // muscle memory keeps working. A key still held down from before (auto
   // repeat) answers nothing: it was not pressed for this prompt. In a prompt
   // whose default is Cancel (`safeDefault`), Enter does what the focused
-  // button does, so an Enter alone never says yes.
+  // button does, so an Enter alone never says yes. The reveal toggle is
+  // not a dialog answer: Enter on it only flips the reveal, it never
+  // confirms or cancels the prompt.
   useEffect(() => {
     if (!state) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) close(false); }
       if (e.key === "Enter")  {
         e.preventDefault();
-        if (!e.repeat) close(state.opts.safeDefault ? document.activeElement === confirmOkRef.current : true);
+        if (!e.repeat) {
+          if (document.activeElement === confirmRevealRef.current) {
+            setConfirmRevealed((r) => !r);
+            return;
+          }
+          close(state.opts.safeDefault ? document.activeElement === confirmOkRef.current : true);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -470,8 +487,19 @@ export const ConfirmProvider = ({ children }: { children: React.ReactNode }) => 
             </div>
             {/* Scrolls: a Library command is shown whole, however long it is,
                 and the buttons have to stay on screen. */}
+            {state.opts.revealableText && (
+              <button
+                type="button"
+                ref={confirmRevealRef}
+                aria-expanded={confirmRevealed}
+                onClick={() => setConfirmRevealed((r) => !r)}
+                className="mb-2 text-[11px] font-semibold text-primary hover:underline"
+              >
+                {confirmRevealed ? t("Hide command") : t("Show command")}
+              </button>
+            )}
             <p className="text-[12px] text-zinc-300 leading-relaxed mb-4 whitespace-pre-wrap break-words max-h-[60vh] overflow-y-auto custom-scrollbar">
-              {state.opts.message}
+              {confirmRevealed && state.opts.revealableText ? state.opts.revealableText : state.opts.message}
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => close(false)}
