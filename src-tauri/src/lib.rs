@@ -23624,6 +23624,8 @@ async fn sftp_open_remote_file(
 
     // Spawn modification watcher task in background
     let connections_clone = Arc::clone(&state.connections);
+    // An FTP tab has no SSH connection: its saves go over its own FTP one.
+    let ftp_sessions_clone = Arc::clone(&state.ftp_sessions);
     let elevation_clone = Arc::clone(&state.sftp_elevation);
     let app_handle_clone = app_handle.clone();
     let session_id_clone = session_id.clone();
@@ -23676,10 +23678,13 @@ async fn sftp_open_remote_file(
                     if content_hash == synced_hash { continue; }
                     // Cheap pre-check: if the session is gone we exit the
                     // watcher entirely instead of looping and spamming
-                    // "Auto-sync failed" toasts on every subsequent save.
+                    // "Auto-sync failed" toasts on every subsequent save. An FTP
+                    // tab is in ftp_sessions, an SSH one in connections (one
+                    // lock at a time).
                     {
-                        let connections = connections_clone.lock().await;
-                        if !connections.contains_key(&session_id_clone) {
+                        let ftp_tab = ftp_sessions_clone.lock().await.contains_key(&session_id_clone);
+                        let ssh_tab = !ftp_tab && connections_clone.lock().await.contains_key(&session_id_clone);
+                        if !ftp_tab && !ssh_tab {
                             let _ = app_handle_clone.emit(
                                 &format!("sftp-sync-status-{}", session_id_clone),
                                 serde_json::json!({
@@ -23691,6 +23696,13 @@ async fn sftp_open_remote_file(
                         }
                     }
                     let upload_res = async {
+                    // An FTP tab: the file goes back over the tab's own FTP
+                    // connection, which serves its file pane (ftp_sftp.rs).
+                    let ftp = ftp_sessions_clone.lock().await.get(&session_id_clone).map(|live| Arc::clone(&live.sftp));
+                    let ssh_sftp;
+                    let sftp: &russh_sftp::client::SftpSession = match ftp.as_deref() {
+                        Some(ftp) => ftp,
+                        None => {
                     let session_arc = {
                         let connections = connections_clone.lock().await;
                         connections.get(&session_id_clone).map(|sess| Arc::clone(sess))
@@ -23708,10 +23720,14 @@ async fn sftp_open_remote_file(
                     // An elevated tab (file ops as root via sudo) must save
                     // back the same way, or root-owned files can't be written.
                     let elevation = elevation_clone.lock().await.get(&session_id_clone).cloned();
-                    let (sftp, _) = if let Some(elev) = elevation {
+                    ssh_sftp = if let Some(elev) = elevation {
                         open_elevated(&session_arc, &elev).await?
                     } else {
                         open_sftp(&session_arc).await?
+                    }
+                    .0;
+                    &ssh_sftp
+                        }
                     };
 
                     use russh_sftp::protocol::OpenFlags;
